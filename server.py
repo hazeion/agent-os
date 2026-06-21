@@ -39,6 +39,7 @@ HERMES_HOME = default_hermes_home()
 OBSIDIAN_VAULT = Path(os.environ.get("OBSIDIAN_VAULT_PATH", "E:/Obsidian Notes"))
 STATE_DB = HERMES_HOME / "state.db"
 CRON_JOBS = HERMES_HOME / "cron" / "jobs.json"
+CONFIG_PATH = HERMES_HOME / "config.yaml"
 
 PROJECT_NOTES = [
     "Agentic OS Project Home.md",
@@ -116,6 +117,161 @@ def parse_iso(value):
         return dt
     except Exception:
         return None
+
+
+SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|credential|auth)", re.I)
+SECRET_VALUE_RE = re.compile(r"(?i)(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})")
+
+
+def mask_config_text(text: str) -> str:
+    """Return config text safe to render in the browser."""
+    masked_lines = []
+    for line in text.splitlines():
+        if SECRET_KEY_RE.search(line):
+            if ":" in line:
+                masked_lines.append(re.sub(r":.*$", ": ***", line))
+            elif "=" in line:
+                masked_lines.append(re.sub(r"=.*$", "=***", line))
+            else:
+                masked_lines.append("***")
+            continue
+        masked_lines.append(SECRET_VALUE_RE.sub("***", line))
+    return "\n".join(masked_lines)
+
+
+def first_config_value(masked_text: str, key: str) -> str | None:
+    match = re.search(rf"^[ \t]*{re.escape(key)}[ \t]*:[ \t]*([^#\n]+)", masked_text, re.M)
+    if not match:
+        return None
+    value = match.group(1).strip().strip("'\"")
+    if value in {"", "***", "{}", "[]"}:
+        return None
+    return value
+
+
+def hermes_config():
+    if not CONFIG_PATH.exists():
+        return {"exists": False, "path": str(CONFIG_PATH), "summary": {}, "masked_config": ""}
+    try:
+        raw = CONFIG_PATH.read_text(encoding="utf-8", errors="replace")
+        masked = mask_config_text(raw)
+        lines = masked.splitlines()
+        if len(lines) > 360:
+            masked = "\n".join(lines[:360] + ["# … truncated for dashboard display …"])
+        summary = {
+            "default_model": first_config_value(masked, "default"),
+            "provider": first_config_value(masked, "provider"),
+            "max_turns": first_config_value(masked, "max_turns"),
+            "reasoning_effort": first_config_value(masked, "reasoning_effort"),
+        }
+        return {
+            "exists": True,
+            "path": str(CONFIG_PATH),
+            "size": human_bytes(CONFIG_PATH.stat().st_size),
+            "modified_at": file_mtime_iso(CONFIG_PATH),
+            "summary": {k: v for k, v in summary.items() if v},
+            "masked_config": masked,
+        }
+    except Exception as exc:
+        return {"exists": True, "path": str(CONFIG_PATH), "error": str(exc), "summary": {}, "masked_config": ""}
+
+
+def fts_query(query: str) -> str | None:
+    terms = re.findall(r"[A-Za-z0-9_]+", query or "")[:8]
+    if not terms:
+        return None
+    return " ".join(f"{term}*" for term in terms)
+
+
+def message_excerpt(content: str | None, query: str, limit: int = 260) -> str:
+    text = re.sub(r"\s+", " ", content or "").strip()
+    if not text:
+        return ""
+    terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_]+", query or "")]
+    lower = text.lower()
+    hits = [lower.find(term) for term in terms if term and lower.find(term) >= 0]
+    start = max(0, min(hits) - 80) if hits else 0
+    excerpt = text[start : start + limit]
+    if start > 0:
+        excerpt = "…" + excerpt
+    if start + limit < len(text):
+        excerpt += "…"
+    return excerpt
+
+
+def search_messages(query: str, limit: int = 20):
+    query = clean_snippet(query, 120)
+    if len(query.strip()) < 2:
+        return {"query": query, "results": [], "count": 0, "source": str(STATE_DB)}
+    if not STATE_DB.exists():
+        return {"query": query, "results": [], "count": 0, "source": str(STATE_DB), "error": "Hermes state.db not found"}
+
+    try:
+        con = sqlite_connect()
+        if con is None:
+            return {"query": query, "results": [], "count": 0, "source": str(STATE_DB), "error": "Hermes state.db unavailable"}
+        con.row_factory = sqlite3.Row
+        table_rows = con.execute("select name from sqlite_master where type in ('table','virtual table')").fetchall()
+        tables = {row["name"] for row in table_rows}
+        rows = []
+        fts = fts_query(query)
+        if "messages_fts" in tables and fts:
+            try:
+                rows = con.execute(
+                    """
+                    select m.id as message_id, m.session_id, m.role, m.content, m.timestamp,
+                           s.title, s.source, s.model
+                    from messages_fts
+                    join messages m on messages_fts.rowid = m.id
+                    join sessions s on s.id = m.session_id
+                    where messages_fts match ?
+                      and coalesce(m.active, 1) = 1
+                      and length(trim(coalesce(m.content, ''))) > 0
+                      and coalesce(s.archived, 0) = 0
+                      and m.role in ('user', 'assistant')
+                    order by bm25(messages_fts)
+                    limit ?
+                    """,
+                    (fts, limit),
+                ).fetchall()
+            except sqlite3.Error:
+                rows = []
+
+        if not rows:
+            like = f"%{query}%"
+            rows = con.execute(
+                """
+                select m.id as message_id, m.session_id, m.role, m.content, m.timestamp,
+                       s.title, s.source, s.model
+                from messages m
+                join sessions s on s.id = m.session_id
+                where m.content like ?
+                  and coalesce(m.active, 1) = 1
+                  and length(trim(coalesce(m.content, ''))) > 0
+                  and coalesce(s.archived, 0) = 0
+                  and m.role in ('user', 'assistant')
+                order by m.timestamp desc
+                limit ?
+                """,
+                (like, limit),
+            ).fetchall()
+        con.close()
+        results = [
+            {
+                "message_id": row["message_id"],
+                "session_id": row["session_id"],
+                "title": row["title"] or "Untitled session",
+                "source": row["source"],
+                "model": row["model"],
+                "role": row["role"],
+                "timestamp": epoch_to_iso(row["timestamp"]),
+                "snippet": message_excerpt(row["content"], query),
+            }
+            for row in rows
+        ]
+        return {"query": query, "results": results, "count": len(results), "source": str(STATE_DB)}
+    except Exception as exc:
+        return {"query": query, "results": [], "count": 0, "source": str(STATE_DB), "error": str(exc)}
 
 
 def read_cron_jobs():
@@ -221,6 +377,142 @@ def recent_sessions(limit: int = 8):
         }
     except Exception as exc:
         return {"exists": True, "source": str(STATE_DB), "error": str(exc), "sessions": []}
+
+
+def session_detail(session_id: str, target_message_id: str | None = None):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", session_id or ""):
+        return {"error": "Invalid session id"}, 400
+    if target_message_id and not re.fullmatch(r"\d+", str(target_message_id)):
+        return {"error": "Invalid target message id"}, 400
+    if not STATE_DB.exists():
+        return {"error": "Hermes state.db not found", "source": str(STATE_DB)}, 404
+
+    try:
+        con = sqlite_connect()
+        if con is None:
+            return {"error": "Hermes state.db not available", "source": str(STATE_DB)}, 404
+        con.row_factory = sqlite3.Row
+        session = con.execute(
+            """
+            select id, title, source, model, started_at, ended_at,
+                   message_count, tool_call_count, input_tokens, output_tokens,
+                   estimated_cost_usd
+            from sessions
+            where id = ? and coalesce(archived, 0) = 0
+            """,
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            con.close()
+            return {"error": f"Session not found: {session_id}"}, 404
+
+        total_visible = con.execute(
+            """
+            select count(*)
+            from messages
+            where session_id = ?
+              and coalesce(active, 1) = 1
+              and role in ('user', 'assistant')
+            """,
+            (session_id,),
+        ).fetchone()[0]
+
+        target_id = int(target_message_id) if target_message_id else None
+        target_found = False
+        if target_id:
+            before = con.execute(
+                """
+                select id, role, content, tool_name, timestamp, token_count, finish_reason
+                from messages
+                where session_id = ?
+                  and coalesce(active, 1) = 1
+                  and role in ('user', 'assistant')
+                  and id <= ?
+                order by id desc
+                limit 160
+                """,
+                (session_id, target_id),
+            ).fetchall()
+            after = con.execute(
+                """
+                select id, role, content, tool_name, timestamp, token_count, finish_reason
+                from messages
+                where session_id = ?
+                  and coalesce(active, 1) = 1
+                  and role in ('user', 'assistant')
+                  and id > ?
+                order by id asc
+                limit 220
+                """,
+                (session_id, target_id),
+            ).fetchall()
+            rows = list(reversed(before)) + list(after)
+            target_found = any(row["id"] == target_id for row in rows)
+        else:
+            rows = con.execute(
+                """
+                select id, role, content, tool_name, timestamp, token_count, finish_reason
+                from messages
+                where session_id = ?
+                  and coalesce(active, 1) = 1
+                  and role in ('user', 'assistant')
+                order by id asc
+                limit 500
+                """,
+                (session_id,),
+            ).fetchall()
+
+        if target_id and not target_found:
+            rows = con.execute(
+                """
+                select id, role, content, tool_name, timestamp, token_count, finish_reason
+                from messages
+                where session_id = ?
+                  and coalesce(active, 1) = 1
+                  and role in ('user', 'assistant')
+                order by id asc
+                limit 500
+                """,
+                (session_id,),
+            ).fetchall()
+
+        con.close()
+        return {
+            "session": {
+                "id": session["id"],
+                "title": session["title"] or "Untitled session",
+                "source": session["source"],
+                "model": session["model"],
+                "started_at": epoch_to_iso(session["started_at"]),
+                "ended_at": epoch_to_iso(session["ended_at"]),
+                "message_count": session["message_count"],
+                "tool_call_count": session["tool_call_count"],
+                "input_tokens": session["input_tokens"],
+                "output_tokens": session["output_tokens"],
+                "estimated_cost_usd": session["estimated_cost_usd"],
+            },
+            "message_window": {
+                "mode": "around_target" if target_id and target_found else "from_start",
+                "target_message_id": target_id if target_found else None,
+                "returned": len(rows),
+                "total_visible": total_visible,
+                "truncated": len(rows) < total_visible,
+            },
+            "messages": [
+                {
+                    "id": row["id"],
+                    "role": row["role"],
+                    "content": row["content"] or "",
+                    "tool_name": row["tool_name"],
+                    "timestamp": epoch_to_iso(row["timestamp"]),
+                    "token_count": row["token_count"],
+                    "finish_reason": row["finish_reason"],
+                }
+                for row in rows
+            ],
+        }, 200
+    except Exception as exc:
+        return {"error": str(exc), "source": str(STATE_DB)}, 500
 
 
 def obsidian_notes():
@@ -377,7 +669,13 @@ API_ROUTES = {
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),
+    "/api/hermes/config": hermes_config,
     "/api/health": health,
+}
+
+
+GET_ROUTES = {
+    re.compile(r"^/api/hermes/sessions/([^/]+)$"): session_detail,
 }
 
 
@@ -435,9 +733,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/hermes/search":
+            try:
+                query = parse_qs(parsed.query).get("q", [""])[0]
+                self.send_json(search_messages(query))
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=500)
+            return
         if parsed.path in API_ROUTES:
             try:
                 self.send_json(API_ROUTES[parsed.path]())
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=500)
+            return
+        for pattern, handler in GET_ROUTES.items():
+            match = pattern.match(parsed.path)
+            if not match:
+                continue
+            try:
+                message_id = parse_qs(parsed.query).get("message_id", [None])[0]
+                payload, status = handler(*[unquote(part) for part in match.groups()], message_id)
+                self.send_json(payload, status=status)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=500)
             return

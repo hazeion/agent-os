@@ -55,18 +55,28 @@ inventory.md
 
 Current dashboard features:
 
-- Header with `Hello Brandon` and animated/poppy Agent OS logo.
-- Overview cards.
+- Left navigation shell with Today, Agents/Sessions, Calendar, Projects/Tasks, Notes, and Settings destinations.
+- Today View command center as the primary mental model.
+- Agents/Sessions view shell with searchable recent Hermes sessions and click-to-read conversation detail.
+- Message-level Hermes search from read-only `state.db` FTS, with highlighted results that open a focused conversation window around the matched message.
+- Historical Session Analytics side panel based on recent Hermes sessions; this is explicitly read-only and not live heartbeat tracking.
+- Masked Hermes config/model viewer in Settings.
+- `Hello Brandon` header and clean dark futuristic styling.
+- Overview metric cards.
 - Needs Attention panel.
 - Attention items can be resolved from the dashboard.
 - Local calendar placeholder.
-- Grouped tasks list.
+- Concise task list with status/project pills; tags are intentionally hidden until they become useful/searchable UI.
 - Active project panel.
 - Completed work summary.
 - Cron monitor.
-- Recent Hermes sessions.
 - Obsidian notes panel.
 - Health/status indicator.
+
+Near-term project/task direction:
+
+- Keep tasks searchable by title, description, status, and project name from the top search bar.
+- Rework project cards later so clicking a project opens a stylized progress/detail list showing completed steps vs. remaining steps.
 
 ## Run locally
 
@@ -101,9 +111,15 @@ from pathlib import Path
 for p in ['data/projects.json','data/tasks.json','data/attention.json','data/calendar.json']:
     json.loads(Path(p).read_text(encoding='utf-8'))
 print('json ok')
-for path in ['/', '/api/overview', '/api/attention', '/api/health', '/api/hermes/sessions']:
+for path in ['/', '/api/overview', '/api/attention', '/api/health', '/api/hermes/sessions', '/api/hermes/config', '/api/hermes/search?q=Wilson']:
     with urllib.request.urlopen('http://127.0.0.1:8888'+path, timeout=5) as r:
         print(path, r.status, r.headers.get('Cache-Control'))
+search = json.load(urllib.request.urlopen('http://127.0.0.1:8888/api/hermes/search?q=Wilson', timeout=5))
+print('search_count', search.get('count'))
+first = (search.get('results') or [{}])[0]
+if first.get('session_id') and first.get('message_id'):
+    detail = json.load(urllib.request.urlopen(f"http://127.0.0.1:8888/api/hermes/sessions/{first['session_id']}?message_id={first['message_id']}", timeout=5))
+    print('detail_window', detail.get('message_window'))
 PY
 ```
 
@@ -153,6 +169,30 @@ Resolved items are hidden from open counts and the Needs Attention panel.
 4. Mask secrets if any config display is added later.
 5. Preserve the clean dark futuristic design direction.
 6. Avoid re-adding the removed Latest Hermes Activity section unless Brandon asks for it.
+
+## Code review agent: Wilson Milsen
+
+Wilson Milsen is the project's impartial code and project reviewer.
+
+Wilson's rules:
+
+- Review only; do **not** edit, patch, format, or rewrite files.
+- Understand the project purpose before scoring: read `AGENTS.md`, `README.md`, `server.py`, `public/index.html`, `public/app.js`, `public/styles.css`, and the JSON files under `data/` as needed.
+- Apply YAGNI: flag code that adds complexity before the project needs it.
+- Look for unneeded imports, redundant code, verbose code, repeated markup/data structures, unnecessary runtime work, avoidable DOM churn, and changes that would make Agent OS run faster without changing its purpose or fundamental behavior.
+- Grade efficiency, effectiveness, and conciseness, then provide an overall effectiveness score from 1-100.
+- Suggestions must be safe, incremental, and compatible with the local-only/read-only-to-Hermes boundaries.
+
+Wilson's review output should include:
+
+```text
+Score: <1-100>
+Verdict: <one short paragraph>
+Must-fix before score >80: <bullets or none>
+YAGNI / conciseness suggestions: <bullets>
+Performance suggestions: <bullets>
+Verification notes: <commands/results if checked>
+```
 
 ## Known Windows/runtime pitfalls
 

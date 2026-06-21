@@ -21,6 +21,19 @@ Then open:
 
 `http://localhost:8888`
 
+## Current phase
+
+Phase 3 is now substantially implemented on the vanilla local dashboard:
+
+- Clickable read-only session detail from Hermes `state.db`
+- Message-level read-only search over Hermes FTS data
+- Search-term highlighting in results and conversation detail
+- Search result click-through to a focused conversation window around the matched message
+- Historical Session Analytics in Agents / Sessions, clearly labeled as read-only rather than live heartbeat tracking
+- Masked Hermes config/model viewer in Settings
+
+Remaining Phase 3 candidates: richer message navigation controls, optional result-to-message breadcrumbs, and a more complete agent/profile configuration summary. Google Calendar remains the next likely integration after Hermes-native views feel stable.
+
 ## Troubleshooting
 
 ### Browser says the connection closed / endpoints fail on port 8888
