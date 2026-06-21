@@ -10,7 +10,6 @@ const endpoints = {
   calendar: '/api/calendar',
   crons: '/api/hermes/crons',
   sessions: '/api/hermes/sessions',
-  activity: '/api/hermes/activity',
   notes: '/api/obsidian-notes',
   health: '/api/health',
 };
@@ -107,7 +106,7 @@ function renderTaskGroups(tasks = []) {
     </article>
     <article class="item">
       <div class="item-title"><span>Agent/session outputs</span><span class="pill">read-only</span></div>
-      <div class="item-meta">See Recent Sessions and Activity for latest Hermes work.</div>
+      <div class="item-meta">See Recent Sessions for latest Hermes work.</div>
     </article>
   ` : `<div class="empty">No completed task data yet.</div>`;
 }
@@ -164,17 +163,6 @@ function renderNotes(payload = {}) {
   `).join('') : `<div class="empty">No Obsidian project notes found.</div>`;
 }
 
-function renderActivity(payload = {}) {
-  const items = payload.items || [];
-  $('#activity-feed').innerHTML = items.length ? items.map((item) => `
-    <article class="item">
-      <div class="item-title"><span>${escapeHtml(item.role)}</span><span class="pill">${humanDate(item.timestamp)}</span></div>
-      <div class="item-desc">${escapeHtml(item.snippet)}</div>
-      <div class="item-meta mono">session ${escapeHtml(item.session_id || 'unknown')}</div>
-    </article>
-  `).join('') : `<div class="empty">No recent activity found.</div>`;
-}
-
 function renderHealth(payload = {}) {
   const dot = $('#health-dot');
   const label = $('#health-label');
@@ -184,7 +172,7 @@ function renderHealth(payload = {}) {
 
 async function refresh() {
   try {
-    const [overview, projects, tasks, attention, calendar, crons, sessions, activity, notes, health] = await Promise.all([
+    const [overview, projects, tasks, attention, calendar, crons, sessions, notes, health] = await Promise.all([
       api(endpoints.overview),
       api(endpoints.projects),
       api(endpoints.tasks),
@@ -192,7 +180,6 @@ async function refresh() {
       api(endpoints.calendar),
       api(endpoints.crons),
       api(endpoints.sessions),
-      api(endpoints.activity),
       api(endpoints.notes),
       api(endpoints.health),
     ]);
@@ -204,7 +191,6 @@ async function refresh() {
     renderCalendar(calendar.items);
     renderCrons(crons);
     renderSessions(sessions);
-    renderActivity(activity);
     renderNotes(notes);
     renderHealth(health);
     $('#last-updated').textContent = fmt.format(new Date());

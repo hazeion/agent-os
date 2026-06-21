@@ -214,47 +214,6 @@ def recent_sessions(limit: int = 8):
         return {"exists": True, "source": str(STATE_DB), "error": str(exc), "sessions": []}
 
 
-def recent_activity(limit: int = 10):
-    if not STATE_DB.exists():
-        return {"exists": False, "source": str(STATE_DB), "items": []}
-    try:
-        con = sqlite_connect()
-        if con is None:
-            return {"exists": False, "source": str(STATE_DB), "items": []}
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            """
-            select id, session_id, role, content, tool_name, timestamp
-            from messages
-            where content is not null
-              and trim(content) != ''
-              and role in ('user', 'assistant')
-              and substr(trim(content), 1, 1) not in ('{', '[')
-            order by timestamp desc
-            limit ?
-            """,
-            (limit,),
-        ).fetchall()
-        con.close()
-        return {
-            "exists": True,
-            "source": str(STATE_DB),
-            "items": [
-                {
-                    "id": r["id"],
-                    "session_id": r["session_id"],
-                    "role": r["role"],
-                    "tool_name": r["tool_name"],
-                    "timestamp": epoch_to_iso(r["timestamp"]),
-                    "snippet": clean_snippet(r["content"], 220),
-                }
-                for r in rows
-            ],
-        }
-    except Exception as exc:
-        return {"exists": True, "source": str(STATE_DB), "error": str(exc), "items": []}
-
-
 def obsidian_notes():
     notes = []
     for name in PROJECT_NOTES:
@@ -378,7 +337,6 @@ API_ROUTES = {
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),
-    "/api/hermes/activity": lambda: recent_activity(limit=12),
     "/api/health": health,
 }
 
