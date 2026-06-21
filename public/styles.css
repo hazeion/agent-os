@@ -310,6 +310,39 @@ h1, h2, h3, p { margin: 0; }
   border-radius: var(--radius);
   position: relative;
   overflow: hidden;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.metric-card-button {
+  appearance: none;
+  width: 100%;
+  cursor: pointer;
+}
+.metric-card-button:hover,
+.metric-card-button:focus-visible {
+  border-color: rgba(110,231,255,.42);
+  background: linear-gradient(135deg, rgba(110,231,255,.11), rgba(157,124,255,.075)), var(--card);
+  box-shadow: var(--shadow), 0 0 28px rgba(110,231,255,.1);
+  transform: translateY(-2px);
+  outline: none;
+}
+.metric-card-button:active { transform: translateY(0); }
+.metric-arrow {
+  position: absolute;
+  top: 12px;
+  right: 13px;
+  color: var(--muted-2);
+  font: 800 .75rem/1 var(--mono);
+  opacity: .62;
+  transition: opacity .18s ease, color .18s ease, transform .18s ease;
+}
+.metric-card-button:hover .metric-arrow,
+.metric-card-button:focus-visible .metric-arrow {
+  color: var(--accent);
+  opacity: 1;
+  transform: translate(2px, -2px);
 }
 
 .metric-card::after,
@@ -387,6 +420,9 @@ h1, h2, h3, p { margin: 0; }
   overflow: hidden;
 }
 .panel > * { position: relative; z-index: 1; }
+.jump-highlight {
+  animation: jump-highlight-pulse 1.6s ease-out;
+}
 
 .priority-panel {
   background: linear-gradient(180deg, rgba(40, 20, 32, .9), rgba(13, 20, 31, .86));
@@ -723,6 +759,11 @@ code { font-family: var(--mono); color: var(--accent); }
 @keyframes logo-shimmer {
   0%, 100% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }
+}
+@keyframes jump-highlight-pulse {
+  0% { box-shadow: var(--shadow), 0 0 0 0 rgba(110,231,255,.44); border-color: rgba(110,231,255,.58); }
+  45% { box-shadow: var(--shadow), 0 0 0 8px rgba(110,231,255,.12), 0 0 38px rgba(110,231,255,.18); border-color: rgba(110,231,255,.5); }
+  100% { box-shadow: var(--shadow); }
 }
 
 @media (prefers-reduced-motion: reduce) {

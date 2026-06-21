@@ -141,27 +141,51 @@ function setView(view) {
   };
   const eyebrow = $('.command-header .eyebrow');
   if (eyebrow) eyebrow.textContent = titles[view] || 'Mission Control';
-  if (state.hasBootstrapped && viewChanged) refresh();
+  if (state.hasBootstrapped && viewChanged) return refresh();
+  return Promise.resolve();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function flashTarget(target) {
+  if (!target) return;
+  target.classList.remove('jump-highlight');
+  void target.offsetWidth;
+  target.classList.add('jump-highlight');
+  window.setTimeout(() => target.classList.remove('jump-highlight'), 1600);
+}
+
+async function jumpToDashboardSection(view, targetSelector) {
+  if (!view) return;
+  await setView(view);
+  await sleep(60);
+  const target = targetSelector ? document.querySelector(targetSelector) : document.querySelector(`[data-view-panel="${view}"]`);
+  if (!target) return;
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  flashTarget(target);
 }
 
 function renderCards(cards = {}) {
   const defs = [
-    ['needs_attention', 'Attention', 'open items', 'danger'],
-    ['active_tasks', 'Active Tasks', 'today focus', 'accent'],
-    ['completed_this_week', 'Completed', 'this week', 'success'],
-    ['recent_sessions', 'Sessions', 'recent Hermes work', 'purple'],
-    ['scheduled_crons', 'Crons', 'scheduled jobs', 'warn'],
-    ['active_projects', 'Projects', 'active portfolio', 'accent'],
+    ['needs_attention', 'Attention', 'open items', 'danger', 'today', '#attention-panel'],
+    ['active_tasks', 'Active Tasks', 'today focus', 'accent', 'projects', '#tasks-panel'],
+    ['completed_this_week', 'Completed', 'this week', 'success', 'projects', '#completed-work-panel'],
+    ['recent_sessions', 'Sessions', 'recent Hermes work', 'purple', 'agents', '#conversation-library-panel'],
+    ['scheduled_crons', 'Crons', 'scheduled jobs', 'warn', 'agents', '#cron-monitor-panel'],
+    ['active_projects', 'Projects', 'active portfolio', 'accent', 'projects', '#projects-panel'],
   ];
-  $('#overview-cards').innerHTML = defs.map(([key, label, sub, tone]) => `
-    <article class="metric-card ${tone}">
+  $('#overview-cards').innerHTML = defs.map(([key, label, sub, tone, jumpView, jumpTarget]) => `
+    <button class="metric-card metric-card-button ${tone}" type="button" data-jump-view="${escapeHtml(jumpView)}" data-jump-target="${escapeHtml(jumpTarget)}" aria-label="Open ${escapeHtml(label)} details">
       <div class="metric-icon" aria-hidden="true">${metricIcons[key]}</div>
       <div>
         <div class="metric-value">${cards[key] ?? 0}</div>
         <div class="metric-label">${escapeHtml(label)}</div>
         <div class="metric-sub">${escapeHtml(sub)}</div>
       </div>
-    </article>
+      <span class="metric-arrow" aria-hidden="true">↗</span>
+    </button>
   `).join('');
 }
 
@@ -246,7 +270,7 @@ function renderTaskList(tasks = []) {
   }).join('') : `<div class="empty">No tasks match this search.</div>`;
 
   const completed = tasks.filter((t) => taskArea(t) === 'completed');
-  $('#completed-list').innerHTML = `
+  const completedMarkup = `
     <article class="item">
       <div class="item-title"><span>Completed tasks</span><span class="pill success">${completed.length}</span></div>
       <div class="item-meta">${completed.length ? completed.map((t) => escapeHtml(t.title)).join(' · ') : 'No completed tasks yet.'}</div>
@@ -256,6 +280,9 @@ function renderTaskList(tasks = []) {
       <div class="item-meta">Use Agents / Sessions for the searchable conversation space.</div>
     </article>
   `;
+  $('#completed-list').innerHTML = completedMarkup;
+  const projectCompleted = $('#project-completed-list');
+  if (projectCompleted) projectCompleted.innerHTML = completedMarkup;
 }
 
 function projectTone(status = '') {
@@ -579,7 +606,15 @@ function queueMessageSearch(query) {
 $('#refresh-rate').textContent = `${REFRESH_MS / 1000}s`;
 
 $$('.nav-item').forEach((button) => {
-  button.addEventListener('click', () => setView(button.dataset.view));
+  button.addEventListener('click', () => {
+    void setView(button.dataset.view);
+  });
+});
+
+$('#overview-cards').addEventListener('click', (event) => {
+  const card = event.target.closest('.metric-card-button');
+  if (!card) return;
+  void jumpToDashboardSection(card.dataset.jumpView, card.dataset.jumpTarget);
 });
 
 const globalSearch = $('#global-search');

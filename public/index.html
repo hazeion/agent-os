@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Agent OS · Mission Control</title>
-  <link rel="stylesheet" href="/styles.css?v=phase3-reader-3" />
+  <link rel="stylesheet" href="/styles.css?v=phase3-card-links-1" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
@@ -64,7 +64,7 @@
 
       <section class="view active" id="view-today" data-view-panel="today">
         <section class="today-grid">
-          <section class="panel priority-panel command-card">
+          <section class="panel priority-panel command-card" id="attention-panel">
             <div class="panel-head">
               <div>
                 <div class="eyebrow">Today</div>
@@ -75,7 +75,7 @@
             <div id="attention-list" class="stack"></div>
           </section>
 
-          <section class="panel command-card">
+          <section class="panel command-card" id="today-active-work-panel">
             <div class="panel-head">
               <div>
                 <div class="eyebrow">Focus Stack</div>
@@ -86,7 +86,7 @@
             <div id="focus-task-list" class="stack"></div>
           </section>
 
-          <section class="panel command-card agent-pulse-panel">
+          <section class="panel command-card agent-pulse-panel" id="agent-pulse-panel">
             <div class="panel-head">
               <div>
                 <div class="eyebrow">Agents</div>
@@ -108,7 +108,7 @@
             <div id="calendar-list" class="stack"></div>
           </section>
 
-          <section class="panel command-card span-2">
+          <section class="panel command-card span-2" id="today-completed-panel">
             <div class="panel-head">
               <div>
                 <div class="eyebrow">Completed Work</div>
@@ -123,7 +123,7 @@
 
       <section class="view" id="view-agents" data-view-panel="agents">
         <section class="split-layout">
-          <section class="panel">
+          <section class="panel" id="conversation-library-panel">
             <div class="panel-head">
               <div>
                 <div class="eyebrow">Agents / Sessions</div>
@@ -149,7 +149,7 @@
           </section>
 
           <aside class="side-stack">
-            <section class="panel">
+            <section class="panel" id="session-analytics-panel">
               <div class="panel-head">
                 <div>
                   <div class="eyebrow">Observed Agents</div>
@@ -161,7 +161,7 @@
               <div class="item-meta mono">Read-only summary from recent Hermes sessions. This is not live heartbeat tracking.</div>
             </section>
 
-            <section class="panel">
+            <section class="panel" id="cron-monitor-panel">
               <div class="panel-head">
                 <div>
                   <div class="eyebrow">Automation</div>
@@ -177,7 +177,7 @@
 
       <section class="view" id="view-projects" data-view-panel="projects">
         <section class="split-layout">
-          <section class="panel">
+          <section class="panel" id="tasks-panel">
             <div class="panel-head">
               <div>
                 <div class="eyebrow">Execution</div>
@@ -188,7 +188,7 @@
             <div id="task-list" class="task-list"></div>
           </section>
           <aside class="side-stack">
-            <section class="panel">
+            <section class="panel" id="projects-panel">
               <div class="panel-head">
                 <div>
                   <div class="eyebrow">Portfolio</div>
@@ -196,6 +196,16 @@
                 </div>
               </div>
               <div id="project-list" class="project-list"></div>
+            </section>
+            <section class="panel" id="completed-work-panel">
+              <div class="panel-head">
+                <div>
+                  <div class="eyebrow">Completed Work</div>
+                  <h2>This Week</h2>
+                </div>
+                <span class="pill success">done</span>
+              </div>
+              <div id="project-completed-list" class="stack"></div>
             </section>
           </aside>
         </section>
@@ -256,6 +266,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=phase3-reader-3"></script>
+  <script src="/app.js?v=phase3-card-links-1"></script>
 </body>
 </html>
