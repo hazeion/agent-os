@@ -14,7 +14,6 @@ const endpoints = {
   search: '/api/hermes/search',
   config: '/api/hermes/config',
   notes: '/api/obsidian-notes',
-  obsidianGraph: '/api/obsidian-graph',
   health: '/api/health',
 };
 
@@ -26,15 +25,6 @@ const state = {
   selectedSessionId: '',
   activeView: 'today',
   messageSearchTimer: null,
-  obsidianGraph: null,
-  graphAnimationId: null,
-  graphResizeObserver: null,
-  graphPointer: null,
-  graphAngles: { yaw: -0.5, pitch: 0.25 },
-  graphZoom: 560,
-  graphHoverId: '',
-  graphSelectedId: '',
-  graphLastFrame: 0,
   isRefreshing: false,
   needsRefresh: false,
   hasBootstrapped: false,
@@ -298,291 +288,6 @@ function renderCalendar(items = []) {
   $('#calendar-full-list').innerHTML = markup;
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function prepareObsidianGraph(payload = {}) {
-  const rawNodes = payload.nodes || [];
-  const total = rawNodes.length || 1;
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const nodes = rawNodes.map((node, index) => {
-    const yUnit = total === 1 ? 0 : 1 - (index / (total - 1)) * 2;
-    const radial = Math.sqrt(Math.max(0, 1 - yUnit * yUnit));
-    const theta = index * golden;
-    const shell = 145 + Number(node.degree || 0) * 24 + (index % 4) * 12;
-    return {
-      ...node,
-      x: Math.cos(theta) * radial * shell,
-      y: yUnit * shell * 0.76,
-      z: Math.sin(theta) * radial * shell,
-    };
-  });
-  const nodeById = Object.fromEntries(nodes.map((node) => [node.id, node]));
-  const links = (payload.links || []).filter((link) => nodeById[link.source] && nodeById[link.target]);
-  return { ...payload, nodes, links, nodeById };
-}
-
-function resizeGraphCanvas(canvas) {
-  const wrap = canvas?.parentElement;
-  if (!canvas || !wrap) return false;
-  const rect = wrap.getBoundingClientRect();
-  const width = Math.max(320, Math.floor(rect.width));
-  const height = Math.max(320, Math.floor(rect.height));
-  const ratio = window.devicePixelRatio || 1;
-  if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
-    canvas.width = Math.floor(width * ratio);
-    canvas.height = Math.floor(height * ratio);
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-  }
-  return true;
-}
-
-function projectGraphPoint(node, canvas) {
-  const width = canvas.width / (window.devicePixelRatio || 1);
-  const height = canvas.height / (window.devicePixelRatio || 1);
-  const { yaw, pitch } = state.graphAngles;
-  const cy = Math.cos(yaw);
-  const sy = Math.sin(yaw);
-  const cp = Math.cos(pitch);
-  const sp = Math.sin(pitch);
-  const x1 = node.x * cy - node.z * sy;
-  const z1 = node.x * sy + node.z * cy;
-  const y1 = node.y * cp - z1 * sp;
-  const z2 = node.y * sp + z1 * cp;
-  const camera = 520;
-  const perspective = camera / (camera + z2 + 360);
-  const viewportScale = Math.min(width, height) / 390 * (state.graphZoom / 560);
-  return {
-    node,
-    sx: width / 2 + x1 * perspective * viewportScale,
-    sy: height / 2 + y1 * perspective * viewportScale,
-    scale: perspective,
-    depth: z2,
-    radius: clamp((node.project_note ? 7.5 : 5.4) * perspective + Number(node.degree || 0) * 0.7, 4.2, 14),
-  };
-}
-
-function projectedGraphNodes(canvas) {
-  const graph = state.obsidianGraph;
-  if (!graph?.nodes?.length || !canvas) return [];
-  return graph.nodes.map((node) => projectGraphPoint(node, canvas));
-}
-
-function drawGraphBackground(ctx, width, height, time) {
-  const gradient = ctx.createRadialGradient(width * .5, height * .45, 20, width * .5, height * .5, Math.max(width, height) * .72);
-  gradient.addColorStop(0, 'rgba(23, 38, 61, 0.96)');
-  gradient.addColorStop(.48, 'rgba(7, 12, 24, 0.98)');
-  gradient.addColorStop(1, 'rgba(1, 4, 10, 1)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
-  for (let i = 0; i < 86; i += 1) {
-    const x = (Math.sin(i * 91.37) * 0.5 + 0.5) * width;
-    const y = (Math.cos(i * 47.13) * 0.5 + 0.5) * height;
-    const pulse = 0.28 + 0.24 * Math.sin(time * 0.001 + i);
-    ctx.fillStyle = `rgba(157, 220, 255, ${pulse})`;
-    ctx.beginPath();
-    ctx.arc(x, y, i % 11 === 0 ? 1.6 : 0.8, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-function drawGraphLabel(ctx, point, text, accent = false) {
-  const title = text.length > 34 ? `${text.slice(0, 33)}…` : text;
-  ctx.font = `${accent ? 700 : 650} 11px ${getComputedStyle(document.documentElement).getPropertyValue('--mono')}`;
-  const padX = 7;
-  const w = ctx.measureText(title).width + padX * 2;
-  const x = clamp(point.sx - w / 2, 8, ctx.canvas.width / (window.devicePixelRatio || 1) - w - 8);
-  const y = point.sy + point.radius + 13;
-  ctx.fillStyle = accent ? 'rgba(11, 24, 33, .88)' : 'rgba(5, 12, 22, .72)';
-  ctx.strokeStyle = accent ? 'rgba(110,231,255,.42)' : 'rgba(255,255,255,.14)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, 21, 8);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = accent ? '#dff9ff' : 'rgba(204,226,241,.86)';
-  ctx.fillText(title, x + padX, y + 14.5);
-}
-
-function updateGraphDetails(node = null) {
-  const detail = $('#obsidian-graph-details');
-  const count = $('#obsidian-graph-count');
-  const graph = state.obsidianGraph;
-  if (!detail || !count) return;
-  const stats = graph?.stats || {};
-  count.textContent = graph?.nodes?.length ? `${stats.displayed_notes || graph.nodes.length} notes` : 'empty';
-  if (node) {
-    detail.innerHTML = `<strong>${escapeHtml(node.title)}</strong> · degree ${escapeHtml(node.degree || 0)} · ${escapeHtml(node.relative_path || '')}${node.tags?.length ? `<br>tags: ${node.tags.map(escapeHtml).join(', ')}` : ''}`;
-    return;
-  }
-  detail.textContent = `${stats.displayed_notes || 0} notes · ${stats.links || 0} links · ${stats.unresolved_links || 0} unresolved · ${graph?.vault || 'vault unavailable'}`;
-}
-
-function selectGraphNode(nodeId = '') {
-  state.graphSelectedId = nodeId;
-  const node = state.obsidianGraph?.nodeById?.[nodeId] || null;
-  updateGraphDetails(node);
-}
-
-function graphNodeAt(clientX, clientY) {
-  const canvas = $('#obsidian-graph-canvas');
-  if (!canvas) return null;
-  const rect = canvas.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const y = clientY - rect.top;
-  const candidates = projectedGraphNodes(canvas).sort((a, b) => b.depth - a.depth);
-  let nearest = null;
-  let nearestDistance = Infinity;
-  candidates.forEach((point) => {
-    const distance = Math.hypot(point.sx - x, point.sy - y);
-    if (distance < point.radius + 10 && distance < nearestDistance) {
-      nearest = point.node;
-      nearestDistance = distance;
-    }
-  });
-  return nearest;
-}
-
-function setupGraphInteractions(canvas) {
-  if (!canvas || canvas.dataset.graphReady === 'true') return;
-  canvas.dataset.graphReady = 'true';
-  canvas.addEventListener('pointerdown', (event) => {
-    canvas.setPointerCapture?.(event.pointerId);
-    state.graphPointer = { x: event.clientX, y: event.clientY, moved: false };
-  });
-  canvas.addEventListener('pointermove', (event) => {
-    if (state.graphPointer) {
-      const dx = event.clientX - state.graphPointer.x;
-      const dy = event.clientY - state.graphPointer.y;
-      if (Math.abs(dx) + Math.abs(dy) > 2) state.graphPointer.moved = true;
-      state.graphAngles.yaw += dx * 0.007;
-      state.graphAngles.pitch = clamp(state.graphAngles.pitch + dy * 0.006, -1.25, 1.25);
-      state.graphPointer.x = event.clientX;
-      state.graphPointer.y = event.clientY;
-      return;
-    }
-    const hover = graphNodeAt(event.clientX, event.clientY);
-    state.graphHoverId = hover?.id || '';
-    canvas.style.cursor = hover ? 'pointer' : 'grab';
-  });
-  canvas.addEventListener('pointerup', (event) => {
-    const pointer = state.graphPointer;
-    state.graphPointer = null;
-    const node = graphNodeAt(event.clientX, event.clientY);
-    state.graphHoverId = node?.id || '';
-    if (node && pointer && !pointer.moved) selectGraphNode(node.id);
-    canvas.releasePointerCapture?.(event.pointerId);
-  });
-  canvas.addEventListener('pointerleave', () => {
-    if (!state.graphPointer) state.graphHoverId = '';
-  });
-  canvas.addEventListener('wheel', (event) => {
-    event.preventDefault();
-    const direction = event.deltaY < 0 ? 1.08 : 0.92;
-    state.graphZoom = clamp(state.graphZoom * direction, 360, 920);
-  }, { passive: false });
-}
-
-function drawObsidianGraphFrame(timestamp = 0) {
-  const canvas = $('#obsidian-graph-canvas');
-  const graph = state.obsidianGraph;
-  if (!canvas || !graph) return;
-  resizeGraphCanvas(canvas);
-  const ratio = window.devicePixelRatio || 1;
-  const ctx = canvas.getContext('2d');
-  const width = canvas.width / ratio;
-  const height = canvas.height / ratio;
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  drawGraphBackground(ctx, width, height, timestamp);
-
-  if (!graph.nodes.length) {
-    state.graphAnimationId = requestAnimationFrame(drawObsidianGraphFrame);
-    return;
-  }
-
-  if (!state.graphPointer && timestamp - state.graphLastFrame > 16) {
-    state.graphAngles.yaw += 0.00045 * (timestamp - (state.graphLastFrame || timestamp));
-  }
-  state.graphLastFrame = timestamp;
-
-  const projected = projectedGraphNodes(canvas);
-  const byId = Object.fromEntries(projected.map((point) => [point.node.id, point]));
-
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
-  graph.links.forEach((link) => {
-    const source = byId[link.source];
-    const target = byId[link.target];
-    if (!source || !target) return;
-    const alpha = clamp((source.scale + target.scale) / 2 * 0.45, 0.14, 0.58);
-    const grad = ctx.createLinearGradient(source.sx, source.sy, target.sx, target.sy);
-    grad.addColorStop(0, `rgba(110,231,255,${alpha})`);
-    grad.addColorStop(1, `rgba(157,124,255,${alpha})`);
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = clamp((source.scale + target.scale) * 0.7, 0.5, 1.8);
-    ctx.beginPath();
-    ctx.moveTo(source.sx, source.sy);
-    ctx.lineTo(target.sx, target.sy);
-    ctx.stroke();
-  });
-  ctx.restore();
-
-  projected.sort((a, b) => a.depth - b.depth).forEach((point) => {
-    const node = point.node;
-    const selected = state.graphSelectedId === node.id;
-    const hovered = state.graphHoverId === node.id;
-    const glow = selected || hovered || node.project_note;
-    const gradient = ctx.createRadialGradient(point.sx, point.sy, 0, point.sx, point.sy, point.radius * (glow ? 4.8 : 3.2));
-    gradient.addColorStop(0, node.project_note ? 'rgba(255,209,102,.95)' : 'rgba(185,243,255,.96)');
-    gradient.addColorStop(.22, selected ? 'rgba(90,247,164,.82)' : 'rgba(110,231,255,.5)');
-    gradient.addColorStop(1, 'rgba(110,231,255,0)');
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(point.sx, point.sy, point.radius * (glow ? 4.8 : 3.2), 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = node.project_note ? '#ffd166' : selected ? '#5af7a4' : '#dff9ff';
-    ctx.strokeStyle = selected ? 'rgba(90,247,164,.9)' : 'rgba(255,255,255,.55)';
-    ctx.lineWidth = selected ? 2 : 1;
-    ctx.beginPath();
-    ctx.arc(point.sx, point.sy, point.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    if (selected || hovered || node.project_note || graph.nodes.length <= 12) {
-      drawGraphLabel(ctx, point, node.title, selected || hovered || node.project_note);
-    }
-  });
-
-  state.graphAnimationId = requestAnimationFrame(drawObsidianGraphFrame);
-}
-
-function renderObsidianGraph(payload = {}) {
-  const empty = $('#obsidian-graph-empty');
-  const canvas = $('#obsidian-graph-canvas');
-  if (!canvas || !empty) return;
-  if (!payload.exists) {
-    empty.textContent = `Obsidian vault not found: ${payload.vault || 'unknown path'}`;
-    empty.hidden = false;
-    return;
-  }
-  state.obsidianGraph = prepareObsidianGraph(payload);
-  empty.hidden = state.obsidianGraph.nodes.length > 0;
-  setupGraphInteractions(canvas);
-  updateGraphDetails(state.graphSelectedId ? state.obsidianGraph.nodeById[state.graphSelectedId] : null);
-  if (!state.graphAnimationId) state.graphAnimationId = requestAnimationFrame(drawObsidianGraphFrame);
-  if (!state.graphResizeObserver && canvas.parentElement) {
-    state.graphResizeObserver = new ResizeObserver(() => resizeGraphCanvas(canvas));
-    state.graphResizeObserver.observe(canvas.parentElement);
-  }
-}
-
 function renderCrons(payload = {}) {
   const jobs = payload.jobs || [];
   $('#cron-count').textContent = `${jobs.length} jobs`;
@@ -815,7 +520,6 @@ async function refresh() {
     health: api(endpoints.health),
   };
 
-  if (activeView === 'today') requests.obsidianGraph = api(endpoints.obsidianGraph);
   if (activeView === 'projects') requests.projects = api(endpoints.projects);
   if (activeView === 'agents') requests.crons = api(endpoints.crons);
   if (activeView === 'notes') requests.notes = api(endpoints.notes);
@@ -831,7 +535,6 @@ async function refresh() {
     renderFocusTasks(data.tasks.tasks);
     renderAttention(data.attention.attention);
     renderCalendar(data.calendar.items);
-    if (data.obsidianGraph) renderObsidianGraph(data.obsidianGraph);
     if (data.crons) renderCrons(data.crons);
     renderSessions(data.sessions);
     renderSessionStats(data.sessions);
