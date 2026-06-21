@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Agent OS local dashboard server.
 
-Read-only toward Hermes core files. Writes only happen manually to data/*.json
-for now; this server currently exposes read endpoints only.
+Read-only toward Hermes core files. Dashboard write-back is limited to
+project-owned data/*.json files.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -77,6 +77,15 @@ def read_json_file(name: str, default):
         return default
     except json.JSONDecodeError as exc:
         return {"error": f"Invalid JSON in {path}: {exc}"}
+
+
+def write_json_file(name: str, payload):
+    """Write only dashboard-owned local JSON files under data/."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = DATA_DIR / name
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 def clean_snippet(text: str | None, limit: int = 180) -> str:
@@ -328,6 +337,37 @@ def overview():
     }
 
 
+def resolve_attention_item(attention_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", attention_id or ""):
+        return {"error": "Invalid attention item id"}, 400
+
+    attention = read_json_file("attention.json", [])
+    if not isinstance(attention, list):
+        return {"error": "attention.json must contain a list"}, 500
+
+    resolved_item = None
+    for item in attention:
+        if not isinstance(item, dict):
+            continue
+        if item.get("id") == attention_id:
+            item["status"] = "resolved"
+            item["resolved_at"] = now_iso()
+            resolved_item = item
+            break
+
+    if resolved_item is None:
+        return {"error": f"Attention item not found: {attention_id}"}, 404
+
+    write_json_file("attention.json", attention)
+    open_items = [item for item in attention if isinstance(item, dict) and item.get("status", "open") == "open"]
+    return {"ok": True, "resolved": resolved_item, "attention": attention, "open_count": len(open_items)}, 200
+
+
+POST_ROUTES = {
+    re.compile(r"^/api/attention/([^/]+)/resolve$"): resolve_attention_item,
+}
+
+
 API_ROUTES = {
     "/api/overview": overview,
     "/api/projects": lambda: {"projects": read_json_file("projects.json", [])},
@@ -386,6 +426,7 @@ class Handler(BaseHTTPRequestHandler):
             content_type = mimetypes.guess_type(str(resolved))[0] or "application/octet-stream"
             self.send_response(200)
             self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -401,6 +442,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, status=500)
             return
         self.send_static(self.path)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        for pattern, handler in POST_ROUTES.items():
+            match = pattern.match(parsed.path)
+            if not match:
+                continue
+            try:
+                payload, status = handler(*[unquote(part) for part in match.groups()])
+                self.send_json(payload, status=status)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=500)
+            return
+        self.send_json({"error": "Not found"}, status=404)
 
 
 if __name__ == "__main__":

@@ -7,9 +7,9 @@
     "source": "agent",
     "project": "Agent OS",
     "severity": "medium",
-    "status": "open",
+    "status": "resolved",
     "created_at": "2026-06-20T22:32:04",
-    "resolved_at": null,
+    "resolved_at": "2026-06-20T23:35:57-07:00",
     "link": "[[Agent OS - Implementation Spec]]"
   }
 ]

@@ -324,6 +324,26 @@ h2 { font-size: 1rem; letter-spacing: -0.03em; }
 .item-title span:first-child { min-width: 0; }
 .item-meta { margin-top: 7px; color: var(--muted); font-size: .82rem; line-height: 1.45; }
 .item-desc { margin-top: 8px; color: #bfd0dd; font-size: .9rem; line-height: 1.45; }
+.item-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+.action-button {
+  appearance: none;
+  border: 1px solid rgba(90, 247, 164, .35);
+  background: linear-gradient(135deg, rgba(90,247,164,.12), rgba(110,231,255,.08));
+  color: var(--success);
+  border-radius: 999px;
+  cursor: pointer;
+  font: 700 .72rem/1 var(--mono);
+  letter-spacing: .04em;
+  padding: 8px 12px;
+  text-transform: uppercase;
+  transition: transform .18s ease, border-color .18s ease, background .18s ease, opacity .18s ease;
+}
+.action-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(90, 247, 164, .75);
+  background: linear-gradient(135deg, rgba(90,247,164,.2), rgba(110,231,255,.14));
+}
+.action-button:disabled { cursor: wait; opacity: .65; }
 
 .task-groups {
   display: grid;

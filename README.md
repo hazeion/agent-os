@@ -49,6 +49,10 @@ python server.py
 - Uses local JSON files for projects, tasks, attention items, and calendar placeholder data
 - Google Calendar integration is planned later
 
+## Attention items
+
+Open items from `data/attention.json` appear in the Needs Attention panel. Click **Resolve** on an item after handling it; the dashboard marks it `resolved`, sets `resolved_at`, and hides it from open counts while keeping history in the JSON file.
+
 ## Main files
 
 ```text

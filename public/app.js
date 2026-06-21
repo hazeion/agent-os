@@ -23,10 +23,14 @@ function escapeHtml(value = '') {
     .replaceAll("'", '&#039;');
 }
 
-async function api(path) {
-  const res = await fetch(path, { cache: 'no-store' });
+async function api(path, options = {}) {
+  const res = await fetch(path, { cache: 'no-store', ...options });
   if (!res.ok) throw new Error(`${path} returned ${res.status}`);
   return res.json();
+}
+
+async function resolveAttentionItem(id) {
+  return api(`/api/attention/${encodeURIComponent(id)}/resolve`, { method: 'POST' });
 }
 
 function humanDate(value) {
@@ -58,13 +62,16 @@ function renderAttention(items = []) {
   const open = items.filter((item) => item.status !== 'resolved');
   $('#attention-count').textContent = `${open.length} open`;
   $('#attention-list').innerHTML = open.length ? open.map((item) => `
-    <article class="item">
+    <article class="item attention-item">
       <div class="item-title">
         <span>${escapeHtml(item.title)}</span>
         <span class="pill ${item.severity === 'high' ? 'danger' : 'warn'}">${escapeHtml(item.severity || 'medium')}</span>
       </div>
       <div class="item-desc">${escapeHtml(item.description || '')}</div>
       <div class="item-meta mono">${escapeHtml(item.type || 'manual')} · ${escapeHtml(item.project || 'General')} · ${humanDate(item.created_at)}</div>
+      <div class="item-actions">
+        <button class="action-button resolve-attention" type="button" data-attention-id="${escapeHtml(item.id)}">Resolve</button>
+      </div>
     </article>
   `).join('') : `<div class="empty">No open attention items. Clear skies.</div>`;
 }
@@ -202,5 +209,25 @@ async function refresh() {
 }
 
 $('#refresh-rate').textContent = `${REFRESH_MS / 1000}s`;
+$('#attention-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('.resolve-attention');
+  if (!button) return;
+
+  const id = button.dataset.attentionId;
+  if (!id) return;
+
+  button.disabled = true;
+  button.textContent = 'Resolving…';
+  try {
+    await resolveAttentionItem(id);
+    await refresh();
+  } catch (err) {
+    console.error(err);
+    button.disabled = false;
+    button.textContent = 'Resolve';
+    $('#health-dot').className = 'dot degraded';
+    $('#health-label').textContent = `Resolve failed: ${err.message}`;
+  }
+});
 refresh();
 setInterval(refresh, REFRESH_MS);
