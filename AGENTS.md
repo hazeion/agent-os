@@ -60,6 +60,7 @@ Current dashboard features:
 - Agents/Sessions view shell with searchable recent Hermes sessions and click-to-read conversation detail.
 - Message-level Hermes search from read-only `state.db` FTS, with highlighted results that open a focused conversation window around the matched message.
 - Historical Session Analytics side panel based on recent Hermes sessions; this is explicitly read-only and not live heartbeat tracking.
+- 3D Obsidian Constellation in Today view, generated from read-only vault wikilinks and navigable by drag, wheel zoom, and click-select.
 - Masked Hermes config/model viewer in Settings.
 - `Hello Brandon` header and clean dark futuristic styling.
 - Overview metric cards.
@@ -111,7 +112,7 @@ from pathlib import Path
 for p in ['data/projects.json','data/tasks.json','data/attention.json','data/calendar.json']:
     json.loads(Path(p).read_text(encoding='utf-8'))
 print('json ok')
-for path in ['/', '/api/overview', '/api/attention', '/api/health', '/api/hermes/sessions', '/api/hermes/config', '/api/hermes/search?q=Wilson']:
+for path in ['/', '/api/overview', '/api/attention', '/api/health', '/api/hermes/sessions', '/api/hermes/config', '/api/hermes/search?q=Wilson', '/api/obsidian-graph']:
     with urllib.request.urlopen('http://127.0.0.1:8888'+path, timeout=5) as r:
         print(path, r.status, r.headers.get('Cache-Control'))
 search = json.load(urllib.request.urlopen('http://127.0.0.1:8888/api/hermes/search?q=Wilson', timeout=5))
@@ -221,12 +222,18 @@ This is a local git repo on branch `main`.
 Key commits so far:
 
 ```text
+9ae4282 feat: improve Hermes session search reader
+8d2d883 docs: add agent handoff guide
 5715bdf feat: resolve attention items from dashboard
 260ef0a feat: polish header and remove activity feed
 14724b2 feat: bootstrap local agent os dashboard
 ```
 
-GitHub push is intentionally set aside for now. A token existed but could not create a repo due to GitHub permissions.
+GitHub remote:
+
+```text
+origin https://github.com/hazeion/agent-os.git
+```
 
 ## Best first steps for a new agent
 

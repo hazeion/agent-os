@@ -68,6 +68,23 @@
     "completed_at": "2026-06-21T02:59:43-07:00"
   },
   {
+    "id": "task_phase3_obsidian_constellation",
+    "title": "Add 3D Obsidian constellation graph",
+    "description": "Parse Obsidian wikilinks into a read-only note graph and render a draggable, zoomable starfield-style 3D canvas in the Today dashboard.",
+    "project": "Agent OS",
+    "status": "completed",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "agent",
+    "tags": ["phase-3", "obsidian", "graph", "visualization"],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T03:22:45-07:00",
+    "updated_at": "2026-06-21T03:22:45-07:00",
+    "completed_at": "2026-06-21T03:22:45-07:00"
+  },
+  {
     "id": "task_google_calendar_later",
     "title": "Connect Google Calendar later",
     "description": "After the dashboard shell is stable, connect read-only Google Calendar integration via OAuth.",

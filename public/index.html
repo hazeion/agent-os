@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Agent OS · Mission Control</title>
-  <link rel="stylesheet" href="/styles.css?v=phase3-reader-3" />
+  <link rel="stylesheet" href="/styles.css?v=phase3-obsidian-3d-2" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
@@ -75,15 +75,24 @@
             <div id="attention-list" class="stack"></div>
           </section>
 
-          <section class="panel command-card">
-            <div class="panel-head">
+          <section class="panel command-card constellation-panel">
+            <div class="panel-head constellation-head">
               <div>
-                <div class="eyebrow">Focus Stack</div>
-                <h2>Active Work</h2>
+                <div class="eyebrow">Knowledge Graph</div>
+                <h2>Obsidian Constellation</h2>
               </div>
-              <span class="pill">tasks</span>
+              <span class="pill" id="obsidian-graph-count">loading</span>
             </div>
-            <div id="focus-task-list" class="stack"></div>
+            <div id="obsidian-graph-wrap" class="obsidian-graph-wrap">
+              <canvas id="obsidian-graph-canvas" aria-label="3D Obsidian note graph" role="img"></canvas>
+              <div class="graph-hud mono">
+                <span>drag orbit</span>
+                <span>wheel zoom</span>
+                <span>click select</span>
+              </div>
+              <div id="obsidian-graph-empty" class="graph-empty empty">Loading Obsidian constellation…</div>
+            </div>
+            <div id="obsidian-graph-details" class="graph-details mono">Read-only links from E:/Obsidian Notes.</div>
           </section>
 
           <section class="panel command-card agent-pulse-panel">
@@ -95,6 +104,17 @@
               <span class="pill success" id="agent-pulse-pill">observed</span>
             </div>
             <div id="agent-pulse" class="agent-pulse"></div>
+          </section>
+
+          <section class="panel command-card">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">Focus Stack</div>
+                <h2>Active Work</h2>
+              </div>
+              <span class="pill">tasks</span>
+            </div>
+            <div id="focus-task-list" class="stack"></div>
           </section>
 
           <section class="panel command-card">
@@ -256,6 +276,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=phase3-reader-3"></script>
+  <script src="/app.js?v=phase3-obsidian-3d-2"></script>
 </body>
 </html>

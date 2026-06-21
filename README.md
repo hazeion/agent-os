@@ -30,6 +30,7 @@ Phase 3 is now substantially implemented on the vanilla local dashboard:
 - Search-term highlighting in results and conversation detail
 - Search result click-through to a focused conversation window around the matched message
 - Historical Session Analytics in Agents / Sessions, clearly labeled as read-only rather than live heartbeat tracking
+- 3D Obsidian Constellation on Today, generated from read-only vault wikilinks and navigable with drag/zoom/click
 - Masked Hermes config/model viewer in Settings
 
 Remaining Phase 3 candidates: richer message navigation controls, optional result-to-message breadcrumbs, and a more complete agent/profile configuration summary. Google Calendar remains the next likely integration after Hermes-native views feel stable.

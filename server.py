@@ -47,6 +47,10 @@ PROJECT_NOTES = [
     "Agent OS - Implementation Spec.md",
 ]
 
+WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+TAG_RE = re.compile(r"(?<![\w/])#([A-Za-z0-9_/-]{2,})")
+SKIP_OBSIDIAN_DIRS = {".obsidian", ".trash", ".git", "node_modules"}
+
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -538,6 +542,134 @@ def obsidian_notes():
     return {"vault": str(OBSIDIAN_VAULT), "notes": notes}
 
 
+def obsidian_markdown_paths(limit: int = 600):
+    if not OBSIDIAN_VAULT.exists():
+        return []
+    paths = []
+    for path in OBSIDIAN_VAULT.rglob("*.md"):
+        try:
+            rel_parts = path.relative_to(OBSIDIAN_VAULT).parts
+        except ValueError:
+            continue
+        if any(part in SKIP_OBSIDIAN_DIRS for part in rel_parts):
+            continue
+        paths.append(path)
+    paths.sort(key=lambda p: (p.stat().st_mtime if p.exists() else 0), reverse=True)
+    return paths[:limit]
+
+
+def note_graph_id(path: Path) -> str:
+    rel = path.relative_to(OBSIDIAN_VAULT).as_posix()
+    return rel[:-3] if rel.lower().endswith(".md") else rel
+
+
+def normalize_wikilink_target(raw: str) -> str:
+    target = raw.split("|", 1)[0].split("#", 1)[0].strip().replace("\\", "/")
+    if target.lower().endswith(".md"):
+        target = target[:-3]
+    return target.strip("/")
+
+
+def obsidian_graph(max_nodes: int = 180):
+    """Read-only Obsidian note graph derived from markdown wikilinks."""
+    if not OBSIDIAN_VAULT.exists():
+        return {
+            "exists": False,
+            "vault": str(OBSIDIAN_VAULT),
+            "nodes": [],
+            "links": [],
+            "stats": {"notes": 0, "links": 0, "displayed_notes": 0, "unresolved_links": 0},
+        }
+
+    records = {}
+    aliases = {}
+    unresolved = set()
+    for path in obsidian_markdown_paths():
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            stat = path.stat()
+        except OSError:
+            continue
+        node_id = note_graph_id(path)
+        title = path.stem
+        links = {normalize_wikilink_target(match) for match in WIKILINK_RE.findall(text)}
+        links = {link for link in links if link}
+        tags = sorted({tag.strip("/") for tag in TAG_RE.findall(text)})[:8]
+        records[node_id] = {
+            "id": node_id,
+            "title": title,
+            "path": str(path),
+            "relative_path": path.relative_to(OBSIDIAN_VAULT).as_posix(),
+            "links_raw": links,
+            "tags": tags,
+            "size": stat.st_size,
+            "modified_at": file_mtime_iso(path),
+            "degree": 0,
+        }
+        aliases[node_id.lower()] = node_id
+        aliases[title.lower()] = node_id
+        aliases[path.relative_to(OBSIDIAN_VAULT).as_posix()[:-3].lower()] = node_id
+
+    link_pairs = set()
+    for source_id, record in records.items():
+        for raw_target in record["links_raw"]:
+            target_id = aliases.get(raw_target.lower()) or aliases.get(Path(raw_target).stem.lower())
+            if not target_id:
+                unresolved.add(raw_target)
+                continue
+            if target_id == source_id:
+                continue
+            pair = tuple(sorted((source_id, target_id)))
+            link_pairs.add(pair)
+
+    for source_id, target_id in link_pairs:
+        records[source_id]["degree"] += 1
+        records[target_id]["degree"] += 1
+
+    project_ids = {
+        note_graph_id(OBSIDIAN_VAULT / name)
+        for name in PROJECT_NOTES
+        if (OBSIDIAN_VAULT / name).exists()
+    }
+    ranked = sorted(
+        records.values(),
+        key=lambda r: (r["id"] not in project_ids, -r["degree"], -(Path(r["path"]).stat().st_mtime if Path(r["path"]).exists() else 0), r["title"].lower()),
+    )
+    kept = {record["id"] for record in ranked[:max_nodes]}
+    nodes = [
+        {
+            "id": record["id"],
+            "title": record["title"],
+            "relative_path": record["relative_path"],
+            "modified_at": record["modified_at"],
+            "size": human_bytes(record["size"]),
+            "degree": record["degree"],
+            "tags": record["tags"],
+            "project_note": record["id"] in project_ids,
+        }
+        for record in ranked
+        if record["id"] in kept
+    ]
+    links = [
+        {"source": source_id, "target": target_id}
+        for source_id, target_id in sorted(link_pairs)
+        if source_id in kept and target_id in kept
+    ]
+    return {
+        "exists": True,
+        "vault": str(OBSIDIAN_VAULT),
+        "nodes": nodes,
+        "links": links,
+        "stats": {
+            "notes": len(records),
+            "displayed_notes": len(nodes),
+            "links": len(links),
+            "unresolved_links": len(unresolved),
+            "max_nodes": max_nodes,
+        },
+    }
+
+
 def windows_memory():
     if not sys.platform.startswith("win"):
         return None
@@ -667,6 +799,7 @@ API_ROUTES = {
     "/api/attention": lambda: {"attention": read_json_file("attention.json", [])},
     "/api/calendar": lambda: {"items": read_json_file("calendar.json", [])},
     "/api/obsidian-notes": obsidian_notes,
+    "/api/obsidian-graph": obsidian_graph,
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),
     "/api/hermes/config": hermes_config,
