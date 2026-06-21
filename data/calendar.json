@@ -1,0 +1,10 @@
+[
+  {
+    "id": "cal_placeholder_google",
+    "title": "Google Calendar integration not connected yet",
+    "start": null,
+    "end": null,
+    "type": "placeholder",
+    "description": "Agent OS v1 uses this local calendar.json placeholder. Later, this panel can pull read-only events from Google Calendar after OAuth setup."
+  }
+]

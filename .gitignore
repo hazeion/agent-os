@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local runtime/log output
+*.log
+logs/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Future local secrets/auth files
+.env
+*.secret
+secrets.json
+users.json
+
+# Keep project-owned JSON seed data tracked unless intentionally moved to private/local data.

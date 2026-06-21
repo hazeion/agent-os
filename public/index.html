@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent OS · Mission Control</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="grid-bg" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">Hermes / Local Mission Control</div>
+      <h1>Agent OS</h1>
+      <p>Day-centered command surface for agents, tasks, automations, notes, and attention.</p>
+    </div>
+    <div class="status-panel">
+      <div class="status-line"><span id="health-dot" class="dot stale"></span><span id="health-label">Starting…</span></div>
+      <div class="mono small">Refresh: <span id="refresh-rate">30s</span></div>
+      <div class="mono small">Updated: <span id="last-updated">—</span></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="cards" id="overview-cards"></section>
+
+    <section class="layout">
+      <aside class="column">
+        <section class="panel priority-panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Today</div>
+              <h2>Needs Attention</h2>
+            </div>
+            <span class="pill danger" id="attention-count">0 open</span>
+          </div>
+          <div id="attention-list" class="stack"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Near-term</div>
+              <h2>Calendar</h2>
+            </div>
+            <span class="pill">local json</span>
+          </div>
+          <div id="calendar-list" class="stack"></div>
+        </section>
+      </aside>
+
+      <section class="column wide">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Execution</div>
+              <h2>Tasks</h2>
+            </div>
+            <span class="pill">grouped list</span>
+          </div>
+          <div id="task-groups" class="task-groups"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Portfolio</div>
+              <h2>Projects</h2>
+            </div>
+            <span class="pill">active</span>
+          </div>
+          <div id="project-list" class="project-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Completed work</div>
+              <h2>This Week</h2>
+            </div>
+            <span class="pill success">separated by type</span>
+          </div>
+          <div id="completed-list" class="stack"></div>
+        </section>
+      </section>
+
+      <aside class="column">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Automation</div>
+              <h2>Cron Monitor</h2>
+            </div>
+            <span class="pill" id="cron-count">0 jobs</span>
+          </div>
+          <div id="cron-list" class="stack"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Hermes</div>
+              <h2>Recent Sessions</h2>
+            </div>
+            <span class="pill">read-only</span>
+          </div>
+          <div id="session-list" class="stack compact"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Knowledge</div>
+              <h2>Obsidian Notes</h2>
+            </div>
+            <span class="pill">vault</span>
+          </div>
+          <div id="notes-list" class="stack compact"></div>
+        </section>
+      </aside>
+    </section>
+
+    <section class="panel full-width">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow">Activity</div>
+          <h2>Latest Hermes Activity</h2>
+        </div>
+        <span class="pill">state.db</span>
+      </div>
+      <div id="activity-feed" class="activity-feed"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span class="mono">Agent OS v0.1</span>
+    <span>Local-only · Hermes core read-only · Project data in <code>E:/code/agent-os/data</code></span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

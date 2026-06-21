@@ -1,0 +1,12 @@
+[
+  {
+    "id": "project_agent_os",
+    "name": "Agent OS",
+    "type": "software",
+    "status": "active",
+    "description": "Local mission-control and personal productivity dashboard for Hermes Agent workflows.",
+    "obsidian_note": "Agentic OS Project Home",
+    "created_at": "2026-06-20T22:32:04",
+    "updated_at": "2026-06-20T22:32:04"
+  }
+]

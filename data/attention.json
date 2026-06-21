@@ -1,0 +1,15 @@
+[
+  {
+    "id": "attn_review_dashboard",
+    "title": "Review first Agent OS dashboard shell",
+    "description": "Confirm that the v1 dashboard layout, dark style, and seed data match the intended direction before adding more integrations.",
+    "type": "review_required",
+    "source": "agent",
+    "project": "Agent OS",
+    "severity": "medium",
+    "status": "open",
+    "created_at": "2026-06-20T22:32:04",
+    "resolved_at": null,
+    "link": "[[Agent OS - Implementation Spec]]"
+  }
+]

@@ -1,0 +1,53 @@
+[
+  {
+    "id": "task_inventory",
+    "title": "Run Hermes inventory",
+    "description": "Discover Hermes paths, state DB shape, cron availability, Obsidian notes, and runtime tools.",
+    "project": "Agent OS",
+    "status": "completed",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "agent",
+    "tags": ["phase-1", "inventory"],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-20T22:32:04",
+    "updated_at": "2026-06-20T22:32:04",
+    "completed_at": "2026-06-20T22:32:04"
+  },
+  {
+    "id": "task_dashboard_shell",
+    "title": "Build dashboard shell",
+    "description": "Create Python server, local JSON data files, and first clean dark dashboard UI.",
+    "project": "Agent OS",
+    "status": "completed",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "agent",
+    "tags": ["phase-2", "dashboard"],
+    "review_required": true,
+    "needs_attention": true,
+    "created_at": "2026-06-20T22:32:04",
+    "updated_at": "2026-06-20T22:46:26",
+    "completed_at": "2026-06-20T22:46:26"
+  },
+  {
+    "id": "task_google_calendar_later",
+    "title": "Connect Google Calendar later",
+    "description": "After the dashboard shell is stable, connect read-only Google Calendar integration via OAuth.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": ["calendar", "google", "later"],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-20T22:32:04",
+    "updated_at": "2026-06-20T22:32:04",
+    "completed_at": null
+  }
+]
