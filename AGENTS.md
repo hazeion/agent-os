@@ -31,7 +31,7 @@ Current v1 direction:
 - Start with only the Agent OS project.
 - Use local JSON files for project-owned data.
 - Read Hermes core files only; do not write to Hermes core.
-- Google Calendar integration is planned later.
+- Google Calendar read-only integration is connected through Hermes-managed OAuth; local `calendar.json` remains the fallback.
 - No separate Latest Hermes Activity section.
 
 ## Current implementation
@@ -65,7 +65,7 @@ Current dashboard features:
 - Overview metric cards.
 - Needs Attention panel.
 - Attention items can be resolved from the dashboard.
-- Local calendar placeholder.
+- Google Calendar read-only integration through Hermes-managed OAuth, with local `calendar.json` fallback.
 - Concise task list with status/project pills; tags are intentionally hidden until they become useful/searchable UI.
 - Active project panel.
 - Completed work summary.

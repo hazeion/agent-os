@@ -40,6 +40,7 @@ OBSIDIAN_VAULT = Path(os.environ.get("OBSIDIAN_VAULT_PATH", "E:/Obsidian Notes")
 STATE_DB = HERMES_HOME / "state.db"
 CRON_JOBS = HERMES_HOME / "cron" / "jobs.json"
 CONFIG_PATH = HERMES_HOME / "config.yaml"
+GOOGLE_TOKEN = HERMES_HOME / "google_token.json"
 
 PROJECT_NOTES = [
     "Agentic OS Project Home.md",
@@ -80,6 +81,27 @@ def read_json_file(name: str, default):
         return {"error": f"Invalid JSON in {path}: {exc}"}
 
 
+def google_credentials(scopes: list[str]):
+    """Return Google OAuth credentials if the local Hermes token exists."""
+    if not GOOGLE_TOKEN.exists():
+        return None, "Google OAuth token not found"
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+
+        creds = Credentials.from_authorized_user_file(str(GOOGLE_TOKEN), scopes=scopes)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            payload = json.loads(creds.to_json())
+            payload.setdefault("type", "authorized_user")
+            GOOGLE_TOKEN.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        if not creds.valid:
+            return None, "Google OAuth token is invalid"
+        return creds, None
+    except Exception as exc:
+        return None, str(exc)
+
+
 def write_json_file(name: str, payload):
     """Write only dashboard-owned local JSON files under data/."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,6 +139,71 @@ def parse_iso(value):
         return dt
     except Exception:
         return None
+
+
+def google_calendar_events(days: int = 14, limit: int = 20):
+    """Read upcoming Google Calendar events with local JSON fallback metadata."""
+    scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
+    creds, auth_error = google_credentials(scopes)
+    fallback = read_json_file("calendar.json", [])
+    if creds is None:
+        return {
+            "items": fallback if isinstance(fallback, list) else [],
+            "source": "local",
+            "auth": "not_connected",
+            "error": auth_error,
+        }
+
+    try:
+        from googleapiclient.discovery import build
+
+        start = datetime.now(timezone.utc)
+        end = start + timedelta(days=days)
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        response = (
+            service.events()
+            .list(
+                calendarId="primary",
+                timeMin=start.isoformat().replace("+00:00", "Z"),
+                timeMax=end.isoformat().replace("+00:00", "Z"),
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=limit,
+            )
+            .execute()
+        )
+        items = []
+        for event in response.get("items", []):
+            start_value = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date")
+            end_value = event.get("end", {}).get("dateTime") or event.get("end", {}).get("date")
+            items.append(
+                {
+                    "id": event.get("id"),
+                    "title": event.get("summary") or "Untitled event",
+                    "start": start_value,
+                    "end": end_value,
+                    "type": "google",
+                    "description": clean_snippet(event.get("description"), 180),
+                    "location": event.get("location") or "",
+                    "status": event.get("status"),
+                    "htmlLink": event.get("htmlLink"),
+                }
+            )
+        return {
+            "items": items,
+            "source": "google",
+            "auth": "connected",
+            "calendar": "primary",
+            "range_days": days,
+            "updated_at": now_iso(),
+        }
+    except Exception as exc:
+        return {
+            "items": fallback if isinstance(fallback, list) else [],
+            "source": "local",
+            "auth": "error",
+            "error": str(exc),
+        }
 
 
 SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|credential|auth)", re.I)
@@ -665,7 +752,7 @@ API_ROUTES = {
     "/api/projects": lambda: {"projects": read_json_file("projects.json", [])},
     "/api/tasks": lambda: {"tasks": read_json_file("tasks.json", [])},
     "/api/attention": lambda: {"attention": read_json_file("attention.json", [])},
-    "/api/calendar": lambda: {"items": read_json_file("calendar.json", [])},
+    "/api/calendar": google_calendar_events,
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),

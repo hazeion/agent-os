@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Agent OS · Mission Control</title>
-  <link rel="stylesheet" href="/styles.css?v=phase3-card-links-1" />
+  <link rel="stylesheet" href="/styles.css?v=phase4-google-calendar-1" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
@@ -103,7 +103,7 @@
                 <div class="eyebrow">Near-term</div>
                 <h2>Calendar</h2>
               </div>
-              <span class="pill">local json</span>
+              <span class="pill" id="calendar-source-pill">local json</span>
             </div>
             <div id="calendar-list" class="stack"></div>
           </section>
@@ -218,7 +218,7 @@
               <div class="eyebrow">Calendar</div>
               <h2>Upcoming</h2>
             </div>
-            <span class="pill">Google later</span>
+            <span class="pill" id="calendar-full-source-pill">Google later</span>
           </div>
           <div id="calendar-full-list" class="stack"></div>
         </section>
@@ -266,6 +266,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=phase3-card-links-1"></script>
+  <script src="/app.js?v=phase4-google-calendar-1"></script>
 </body>
 </html>

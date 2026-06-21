@@ -89,16 +89,15 @@
     "title": "Connect Google Calendar later",
     "description": "After the dashboard shell is stable, connect read-only Google Calendar integration via OAuth.",
     "project": "Agent OS",
-    "status": "todo",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Hermes",
     "due_date": null,
     "source": "manual",
-    "tags": ["calendar", "google", "later"],
+    "tags": ["calendar", "google", "oauth", "read-only"],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-20T22:32:04",
-    "updated_at": "2026-06-20T22:32:04",
-    "completed_at": null
-  }
-]
+    "updated_at": "2026-06-21T11:23:00-07:00",
+    "completed_at": "2026-06-21T11:23:00-07:00"
+  }]

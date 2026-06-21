@@ -32,7 +32,7 @@ Phase 3 is now substantially implemented on the vanilla local dashboard:
 - Historical Session Analytics in Agents / Sessions, clearly labeled as read-only rather than live heartbeat tracking
 - Masked Hermes config/model viewer in Settings
 
-Remaining Phase 3 candidates: richer message navigation controls, optional result-to-message breadcrumbs, and a more complete agent/profile configuration summary. Google Calendar remains the next likely integration after Hermes-native views feel stable.
+Remaining Phase 3 candidates: richer message navigation controls, optional result-to-message breadcrumbs, and a more complete agent/profile configuration summary. Google Calendar read-only integration is now connected; the future email pane can reuse the same read-only Gmail OAuth grant.
 
 ## Troubleshooting
 
@@ -59,8 +59,8 @@ python server.py
 - Local-only v1
 - Reads Hermes data from `HERMES_HOME`
 - Writes only inside `E:/code/agent-os/`
-- Uses local JSON files for projects, tasks, attention items, and calendar placeholder data
-- Google Calendar integration is planned later
+- Uses local JSON files for projects, tasks, attention items, and calendar fallback data
+- Google Calendar uses the Hermes Google OAuth token at `HERMES_HOME/google_token.json` for read-only upcoming events
 
 ## Attention items
 

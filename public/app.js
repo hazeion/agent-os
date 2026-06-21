@@ -303,14 +303,25 @@ function renderProjects(projects = []) {
   `).join('') : `<div class="empty">No projects found.</div>`;
 }
 
-function renderCalendar(items = []) {
+function renderCalendar(payload = {}) {
+  const items = Array.isArray(payload) ? payload : (payload.items || []);
+  const source = Array.isArray(payload) ? 'local' : (payload.source || 'local');
+  const auth = Array.isArray(payload) ? 'legacy' : (payload.auth || 'unknown');
+  const sourceLabel = source === 'google' ? 'Google live' : source === 'local' && auth === 'error' ? 'Google error' : 'local json';
+  const pillClass = source === 'google' ? 'pill success' : auth === 'error' ? 'pill warn' : 'pill';
+  ['#calendar-source-pill', '#calendar-full-source-pill'].forEach((selector) => {
+    const pill = $(selector);
+    if (!pill) return;
+    pill.textContent = sourceLabel;
+    pill.className = pillClass;
+  });
   const markup = items.length ? items.map((item) => `
     <article class="item">
       <div class="item-title"><span>${escapeHtml(item.title)}</span><span class="pill">${escapeHtml(item.type || 'event')}</span></div>
-      <div class="item-desc">${escapeHtml(item.description || '')}</div>
+      <div class="item-desc">${escapeHtml(item.description || item.location || '')}</div>
       <div class="item-meta mono">${humanDate(item.start)} → ${humanDate(item.end)}</div>
     </article>
-  `).join('') : `<div class="empty">No local calendar items yet. Google Calendar integration is planned later.</div>`;
+  `).join('') : `<div class="empty">${source === 'google' ? 'No upcoming Google Calendar events in the selected window.' : 'No local calendar items yet. Google Calendar integration is planned later.'}</div>`;
   $('#calendar-list').innerHTML = markup;
   $('#calendar-full-list').innerHTML = markup;
 }
@@ -561,7 +572,7 @@ async function refresh() {
     renderTaskList(data.tasks.tasks);
     renderFocusTasks(data.tasks.tasks);
     renderAttention(data.attention.attention);
-    renderCalendar(data.calendar.items);
+    renderCalendar(data.calendar);
     if (data.crons) renderCrons(data.crons);
     renderSessions(data.sessions);
     renderSessionStats(data.sessions);
