@@ -650,38 +650,34 @@ h1, h2, h3, p { margin: 0; }
   z-index: 19;
   overflow: visible;
 }
-.visually-hidden {
-  position: absolute !important;
-  width: 1px !important;
-  height: 1px !important;
-  padding: 0 !important;
-  margin: -1px !important;
-  overflow: hidden !important;
-  clip: rect(0 0 0 0) !important;
-  white-space: nowrap !important;
-  border: 0 !important;
-}
+
 .status-filter-button {
   appearance: none;
-  min-width: 9.75rem;
+  min-width: 11rem;
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid rgba(110,231,255,.18);
+  border: 1px solid rgba(110,231,255,.26);
   outline: 0;
-  background: rgba(4, 8, 14, .82);
-  color: var(--text);
-  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(10, 15, 22, .98), rgba(6, 9, 14, .98));
+  color: #eaf5ff;
+  border-radius: 10px;
   cursor: pointer;
   font: 760 .72rem/1 var(--mono);
-  padding: 7px 10px;
+  padding: 8px 12px;
   text-align: left;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.03);
 }
 .status-filter-button:hover,
 .status-filter-button:focus-visible {
-  border-color: rgba(110,231,255,.55);
-  box-shadow: 0 0 0 3px rgba(110,231,255,.12);
+  border-color: rgba(110,231,255,.58);
+  box-shadow: 0 0 0 3px rgba(110,231,255,.12), inset 0 0 0 1px rgba(255,255,255,.04);
+}
+.status-filter-button[aria-expanded="true"] {
+  border-color: rgba(90, 247, 226, .7);
+  background: linear-gradient(180deg, rgba(13, 22, 28, .99), rgba(6, 10, 15, .99));
+  box-shadow: 0 0 0 3px rgba(90, 247, 226, .11), inset 0 0 0 1px rgba(90, 247, 226, .12);
 }
 .select-chevron-icon {
   width: 16px;
@@ -703,55 +699,56 @@ h1, h2, h3, p { margin: 0; }
 }
 .status-filter-menu {
   position: absolute;
-  top: calc(100% + 8px);
+  top: calc(100% + 10px);
   right: 0;
   z-index: 140;
-  min-width: 100%;
-  border: 1px solid rgba(110,231,255,.22);
-  border-radius: 10px;
+  min-width: 15rem;
+  border: 1px solid rgba(110,231,255,.28);
+  border-radius: 12px;
   overflow: hidden;
-  background: linear-gradient(180deg, rgba(8, 14, 24, .995), rgba(4, 8, 14, .992));
-  background-color: rgba(5, 10, 18, .992);
-  -webkit-backdrop-filter: blur(18px) saturate(155%);
-  backdrop-filter: blur(18px) saturate(155%);
-  box-shadow: 0 22px 52px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.045) inset, 0 0 24px rgba(110,231,255,.12);
-  padding: 6px;
-}
-.status-filter-menu::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(180deg, rgba(110,231,255,.055), rgba(157,124,255,.028));
+  background: linear-gradient(180deg, rgba(10, 15, 22, .995), rgba(5, 8, 12, .995));
+  background-color: rgba(6, 9, 13, .995);
+  box-shadow: 0 24px 60px rgba(0,0,0,.62), 0 0 0 1px rgba(255,255,255,.045) inset, 0 0 28px rgba(90,247,226,.08);
+  padding: 8px;
 }
 .status-filter-menu button {
   appearance: none;
   width: 100%;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #d9eafa;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(255,255,255,.03);
+  color: #edf7ff;
   cursor: pointer;
-  display: block;
-  font: 760 .72rem/1.2 var(--mono);
-  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font: 760 .74rem/1.2 var(--mono);
+  padding: 10px 12px;
   text-align: left;
   white-space: nowrap;
   position: relative;
   z-index: 1;
+  margin: 0 0 4px;
+  transition: background-color .14s ease, border-color .14s ease, color .14s ease, transform .14s ease;
+}
+.status-filter-menu button:last-child {
+  margin-bottom: 0;
 }
 .status-filter-menu button:hover,
 .status-filter-menu button:focus-visible,
 .status-filter-menu button[aria-selected="true"] {
   outline: none;
-  color: var(--text);
-  background: rgba(110,231,255,.105);
+  color: #ffffff;
+  background: linear-gradient(180deg, rgba(20, 34, 46, .98), rgba(12, 20, 28, .98));
+  border-color: rgba(110,231,255,.28);
+  transform: translateX(1px);
 }
 .status-filter-menu button[aria-selected="true"]::after {
   content: "✓";
-  float: right;
   color: var(--success);
-  margin-left: 12px;
+  margin-left: auto;
+  font-weight: 900;
 }
 .mini-button {
   appearance: none;
@@ -766,6 +763,7 @@ h1, h2, h3, p { margin: 0; }
   text-transform: uppercase;
 }
 .mini-button:hover { border-color: rgba(157,124,255,.55); }
+
 .task-filter-strip {
   display: flex;
   align-items: center;

@@ -47,6 +47,14 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn(".task-detail-card", CSS)
         self.assertIn(".task-list-item-button.active", CSS)
 
+    def test_task_status_filter_uses_only_the_custom_dropdown_controls(self):
+        self.assertIn('id="task-status-button"', INDEX)
+        self.assertIn('id="task-status-menu"', INDEX)
+        self.assertNotIn('id="task-status-filter"', INDEX)
+        self.assertNotIn('visually-hidden', INDEX)
+        self.assertNotIn('.visually-hidden', CSS)
+        self.assertNotIn('const taskStatusFilter =', APP_JS)
+
     def test_refined_a_mobile_fallback_avoids_duplicate_status_pill_in_detail_header(self):
         self.assertIn('id="selected-task-back"', INDEX)
         self.assertIn('"queue"\n      "status"', CSS)

@@ -253,11 +253,9 @@ function syncTaskStatusControl() {
   const value = state.taskStatusFilter || 'open';
   const label = $('#task-status-label');
   const button = $('#task-status-button');
-  const select = $('#task-status-filter');
   const menu = $('#task-status-menu');
 
   if (label) label.textContent = taskStatusLabels[value] || value;
-  if (select && select.value !== value) select.value = value;
   if (button) button.dataset.value = value;
   menu?.querySelectorAll('[data-status-value]').forEach((option) => {
     option.setAttribute('aria-selected', option.dataset.statusValue === value ? 'true' : 'false');
@@ -361,8 +359,6 @@ function renderFocusTasks(tasks = []) {
 
 function renderTaskList(tasks = []) {
   state.tasks = tasks;
-  const filterSelect = $('#task-status-filter');
-  if (filterSelect && filterSelect.value !== state.taskStatusFilter) filterSelect.value = state.taskStatusFilter;
   syncTaskStatusControl();
 
   const filtered = visibleTasks(tasks);
@@ -1122,7 +1118,6 @@ if (sessionSearch) {
   });
 }
 
-const taskStatusFilter = $('#task-status-filter');
 const taskStatusButton = $('#task-status-button');
 const taskStatusMenu = $('#task-status-menu');
 const taskStatusShell = $('#task-status-select-shell');
@@ -1170,12 +1165,6 @@ if (taskStatusButton && taskStatusMenu && taskStatusShell) {
 
   document.addEventListener('pointerdown', (event) => {
     if (!taskStatusShell.contains(event.target)) setStatusDropdownOpen(false);
-  });
-}
-
-if (taskStatusFilter) {
-  taskStatusFilter.addEventListener('change', (event) => {
-    applyTaskStatusFilter(event.target.value);
   });
 }
 
