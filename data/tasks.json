@@ -221,9 +221,9 @@
   {
     "id": "task_next_modularization_slice",
     "title": "Choose the next small Mentat modularization slice",
-    "description": "Continue modularization only as needed, one concern at a time. Recommended candidates are extracting health checks, Hermes/session data access, project/task/attention data helpers, or one frontend view renderer. Keep endpoint contracts stable and do not introduce React/build tooling yet.",
+    "description": "Selected and completed the next small Mentat modularization slice: extracted /api/health subsystem diagnostics from server.py into health_checks.py while preserving endpoint contracts and avoiding new product scope.",
     "project": "Agent OS",
-    "status": "todo",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Hermes",
     "due_date": null,
@@ -238,8 +238,32 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-22T02:18:19-07:00",
-    "updated_at": "2026-06-22T02:18:19-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-22T02:35:11-07:00",
+    "completed_at": "2026-06-22T02:35:11-07:00"
+  },
+  {
+    "id": "task_extract_health_checks_module",
+    "title": "Extract Mentat health checks into a dedicated module",
+    "description": "Completed: /api/health subsystem diagnostics now live in health_checks.py behind a HealthContext dependency wrapper. server.py delegates to build_health_payload(health_context()), endpoint payload contracts remain stable, focused health tests pass, and full suite is 38/38.",
+    "project": "Agent OS",
+    "status": "completed",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "architecture",
+      "modularization",
+      "health",
+      "mentat"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-22T02:31:19-07:00",
+    "updated_at": "2026-06-22T02:35:11-07:00",
+    "completed_at": "2026-06-22T02:35:11-07:00"
   },
   {
     "id": "task_local_assumption_audit",
