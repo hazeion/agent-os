@@ -61,11 +61,13 @@ Current dashboard features:
 - Message-level Hermes search from read-only `state.db` FTS, with highlighted results that open a focused conversation window around the matched message.
 - Historical Session Analytics side panel based on recent Hermes sessions; this is explicitly read-only and not live heartbeat tracking.
 - Masked Hermes config/model viewer in Settings.
-- `Hello Brandon` header and clean dark futuristic styling.
+- Project-configured `Hello <name>` header with JetBrains Mono and blue/teal/white glow styling.
+- Low-poly/digitized SVG brain mark in the top-right header, animated with a deliberately choppy 15-frame stepped spin.
 - Overview metric cards.
 - Needs Attention panel.
 - Open items from `data/attention.json` can be resolved from the dashboard; tasks tagged `needs attention` / `needs_attention` or otherwise marked `needs_attention` also surface there as task-derived attention items that jump to the relevant task queue.
-- Google Calendar read-only integration through Hermes-managed OAuth, with local `calendar.json` fallback.
+- Google Calendar read-only source integration through Hermes OAuth, with local `calendar.json` fallback and grouped Today/Calendar agenda rendering.
+- `docs/react-readiness.md` documents when to move the frontend from vanilla JS to React without prematurely adding a build step.
 - Projects / Tasks command center with a Project Portfolio selector, Open Task Queue defaulting to actionable work, Project Status panel, and compact Recent Completed Work timeline.
 - Project Portfolio is a fixed-width horizontal card rail with progress bars on project cards; overflow scrolls left/right with rail arrow controls when enough projects exist.
 - Project Status deliberately lists percent complete as text/number only, not a second progress bar, to avoid duplicating the portfolio progress bars.
@@ -77,8 +79,9 @@ Current dashboard features:
 
 Near-term project/task direction:
 
-- The next work should finish **Phase 2.5 UI/UX stabilization** before major new integrations: review Today/Projects/Tasks screenshots, polish remaining responsive issues, and remove dummy fixtures when no longer needed.
-- Google Calendar is connected at a read-only source level; the next external-data phase should polish the Calendar/Today agenda experience and fallback/stale states.
+- The dummy project/task fixtures have been removed; keep the local data focused on the real Agent OS project unless Brandon asks for temporary UI fixtures again.
+- Phase 2.5 UI/UX stabilization review is completed; the current dashboard keeps the stabilized command-center UI while Phase 3 integrations expand.
+- Google Calendar has been polished into a read-only 7-day agenda with a Today preview, grouped events, Google live/local fallback source pills, stale/error fallback metadata, and a 5-minute in-memory Google API cache.
 - Future dashboard write-back should start with dashboard-native project/task creation using project-owned endpoints/data files, not Hermes core writes.
 - Agent Pulse 2.0 requires a project-owned heartbeat/write-back model before claiming live active-agent tracking.
 - Email should come after calendar stabilizes, initially read-only and focused on priority/needs-attention surfacing.
@@ -86,6 +89,15 @@ Near-term project/task direction:
 - Dashboard project creation remains a future feature; currently new projects are added by updating `data/projects.json` and related tasks in `data/tasks.json`, usually by asking Hermes to do it safely.
 
 ## Run locally
+
+Install the pinned Python runtime dependencies first:
+
+```bash
+cd /e/code/agent-os
+python -m pip install -r requirements.txt
+```
+
+Agent OS currently has no npm/package.json dependency step; the frontend remains static HTML/CSS/vanilla JS.
 
 From Git Bash:
 
@@ -112,6 +124,7 @@ Run from `E:/code/agent-os`:
 
 ```bash
 python -m py_compile server.py
+python -m unittest discover -s tests -v
 python - <<'PY'
 import json, urllib.request
 from pathlib import Path
@@ -173,7 +186,7 @@ Resolved manual items are hidden from open counts and the Needs Attention panel.
    - `~/.hermes/cron/jobs.json`
    - `~/.hermes/config.yaml`
    - `~/.hermes/skills/`
-2. Dashboard write-back is allowed only inside `E:/code/agent-os/data/` unless Brandon explicitly approves otherwise.
+2. Dashboard write-back is allowed only through server allowlisted project-owned JSON files under `E:/code/agent-os/data/` unless Brandon explicitly approves otherwise.
 3. Keep the app local-only for now. Do not expose port 8888 publicly.
 4. Mask secrets if any config display is added later.
 5. Preserve the clean dark futuristic design direction.

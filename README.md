@@ -4,6 +4,15 @@ Local mission-control and personal productivity dashboard for Brandon's Hermes A
 
 ## Run
 
+Install the pinned Python runtime dependencies first:
+
+```bash
+cd /e/code/agent-os
+python -m pip install -r requirements.txt
+```
+
+Agent OS currently has **no npm/package.json dependency step**; the frontend is static HTML/CSS/vanilla JS.
+
 From Git Bash:
 
 ```bash
@@ -14,7 +23,7 @@ python server.py
 From Windows Explorer / cmd:
 
 ```bat
-E:\code\agent-os\run.bat
+E:/code/agent-os/run.bat
 ```
 
 Then open:
@@ -23,7 +32,7 @@ Then open:
 
 ## Current phase
 
-Agent OS is in **Phase 2.5 UI/UX stabilization with substantial Phase 3 read-only integration already in place**.
+Agent OS is transitioning out of **Phase 2.5 UI/UX stabilization** with the first important Phase 3 read-only integration polished.
 
 Implemented Phase 3 / integration pieces:
 
@@ -33,17 +42,21 @@ Implemented Phase 3 / integration pieces:
 - Search result click-through to a focused conversation window around the matched message
 - Historical Session Analytics in Agents / Sessions, clearly labeled as read-only rather than live heartbeat tracking
 - Masked Hermes config/model viewer in Settings
-- Google Calendar read-only source integration through the Hermes Google OAuth token, with local `calendar.json` fallback
+- Google Calendar read-only source integration through the Hermes Google OAuth token, with local `calendar.json` fallback, 7-day agenda grouping, Today preview, visible read-only/fallback/stale states, and a short in-memory cache so dashboard polling does not hit Google every 30 seconds
 
 Current UI stabilization focus:
 
 - Today View is the primary command center.
+- The `Hello <name>` hero title is project-configured from `data/dashboard.json`, styled with JetBrains Mono, and now uses the dashboard's blue/teal/white glow instead of the prior amber dot-matrix treatment.
+- The old right-side Local badge has been replaced by a low-poly/digitized SVG brain mark animated with a deliberately choppy 15-frame stepped spin.
 - Projects / Tasks is a project command center with Project Portfolio, Open Task Queue, Project Status, and Recent Completed Work.
 - Project Portfolio keeps visual progress bars; Project Status lists percent complete as text only.
 - Project Portfolio cards are fixed-width in a horizontal rail with arrow controls when the rail overflows.
 - The task status filter is a custom dark dropdown/listbox with a centered SVG chevron, click-to-toggle behavior, outside-click close, Escape close, and keyboard navigation.
 
-Next likely phase: finish responsive/visual QA and remove dummy fixtures, then polish the Google Calendar agenda experience before adding dashboard-native write-back or email.
+Next likely phase: begin Phase 3 expansion around the next high-value interaction surfaces after calendar stabilization, then move toward dashboard-native project/task write-back. React remains deferred until direct editing, routing, modals/drawers, or live agent heartbeat interactions justify it.
+
+React migration is deliberately deferred until interaction complexity justifies it. See `docs/react-readiness.md` for the trigger points and migration path.
 
 ## Troubleshooting
 
@@ -69,7 +82,7 @@ python server.py
 
 - Local-only v1
 - Reads Hermes data from `HERMES_HOME`
-- Writes only inside `E:/code/agent-os/`
+- Dashboard write-back is allowlisted to project-owned JSON files under `E:/code/agent-os/data/`
 - Uses local JSON files for projects, tasks, attention items, and calendar fallback data
 - Google Calendar uses the Hermes Google OAuth token at `HERMES_HOME/google_token.json` for read-only upcoming events
 
@@ -86,11 +99,9 @@ For now, new projects are added by editing `data/projects.json` and linking task
 
 ## Future roadmap tasks
 
-Future-phase TODOs are tracked under the `Agent OS` project in `data/tasks.json`:
+- Phase 2.5 UI/UX stabilization review and Google Calendar read-only polish are completed; move into the next Phase 3 expansion only after keeping the dashboard verified and local-only.
+- Future-phase TODOs are tracked under the `Agent OS` project in `data/tasks.json`:
 
-- Finish Phase 2.5 UI/UX stabilization review
-- Remove Dummy Test Project fixtures after UI validation
-- Polish Google Calendar read-only integration
 - Build dashboard-native project and task creation
 - Design Agent Pulse 2.0 heartbeat/write-back model
 - Evaluate Kanban or richer task board write-back

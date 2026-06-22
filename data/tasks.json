@@ -33,8 +33,8 @@
       "phase-2",
       "dashboard"
     ],
-    "review_required": true,
-    "needs_attention": true,
+    "review_required": false,
+    "needs_attention": false,
     "created_at": "2026-06-20T22:32:04",
     "updated_at": "2026-06-20T22:46:26",
     "completed_at": "2026-06-20T22:46:26"
@@ -84,9 +84,141 @@
     "completed_at": "2026-06-21T02:59:43-07:00"
   },
   {
+    "id": "task_dependency_manifest",
+    "title": "Add reproducible dependency manifest for Agent OS",
+    "description": "Create a requirements.txt or pyproject.toml that captures Agent OS runtime dependencies, especially Google Calendar integration packages, so setup is reproducible and not tied to Brandon's current machine.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "dependencies",
+      "reproducibility"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T22:04:34-07:00",
+    "updated_at": "2026-06-21T22:04:34-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_health_signal_upgrade",
+    "title": "Upgrade dashboard health from soft heartbeat to real subsystem health",
+    "description": "Make /api/health report meaningful status for state.db readability, config readability, calendar auth or fallback state, cron/jobs availability, and degraded conditions instead of always reporting healthy.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "health",
+      "observability"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T22:04:34-07:00",
+    "updated_at": "2026-06-21T22:04:34-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_behavior_regression_tests",
+    "title": "Add behavior-oriented regression tests for key dashboard flows",
+    "description": "Supplement string-contract tests with higher-value endpoint, data-shape, and interaction-focused checks for calendar payloads, attention resolution, project hydration, and other critical read-only flows.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "tests",
+      "quality"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T22:04:34-07:00",
+    "updated_at": "2026-06-21T22:04:34-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_local_server_lifecycle",
+    "title": "Add safer local server startup and shutdown handling",
+    "description": "Reduce stale-listener and port-conflict issues with a safer local server workflow such as port checks, one-instance guard, or stop/restart helper while keeping Agent OS local-only.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "windows",
+      "devx"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T22:04:34-07:00",
+    "updated_at": "2026-06-21T22:04:34-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_light_modularization",
+    "title": "Reduce monolith risk in server.py and app.js without changing scope",
+    "description": "Do a light internal refactor to split large frontend and server helpers by concern and keep endpoint contracts stable, without introducing React or expanding the product surface.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "architecture",
+      "maintainability"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T22:04:34-07:00",
+    "updated_at": "2026-06-21T22:04:34-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_local_assumption_audit",
+    "title": "Audit hardcoded local assumptions and document intentional Brandon-specific defaults",
+    "description": "Identify which Obsidian, drive, and path assumptions are intentionally personal-local versus which should move to config or env so Agent OS stays consciously Brandon-shaped rather than accidentally hardcoded everywhere.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "low",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "portability",
+      "config"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T22:04:34-07:00",
+    "updated_at": "2026-06-21T22:04:34-07:00",
+    "completed_at": null
+  },
+  {
     "id": "task_agent_pulse_heartbeat",
     "title": "Design Agent Pulse 2.0 heartbeat model",
-    "description": "Turn Agent Pulse from a historical session summary into a useful day-to-day agent status panel backed by project-owned write-back data: active/idle/blocked/done/failed status, current task, last heartbeat, latest output summary, user-input needed flag, and links to related tasks/sessions/projects.",
+    "description": "Turn Agent Pulse from the current read-only historical session count into an active Phase 4 heartbeat/status panel backed by project-owned write-back data: running/idle/blocked/done/failed state, current task, last heartbeat, latest output, and needs-user-input flag.",
     "project": "Agent OS",
     "status": "todo",
     "priority": "medium",
@@ -98,12 +230,13 @@
       "agents",
       "heartbeat",
       "agent-pulse",
-      "write-back"
+      "write-back",
+      "live-status"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T10:30:07-07:00",
-    "updated_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T19:47:32-07:00",
     "completed_at": null
   },
   {
@@ -129,100 +262,11 @@
     "completed_at": "2026-06-21T11:23:00-07:00"
   },
   {
-    "id": "dummy_test_task_1",
-    "title": "dummy task 1",
-    "description": "Temporary fixture for validating the todo task state in Agent OS.",
-    "project": "Dummy Test Project",
-    "status": "todo",
-    "priority": "medium",
-    "assignee": "Hermes",
-    "due_date": null,
-    "source": "dummy",
-    "temporary": true,
-    "tags": [
-      "dummy",
-      "test-fixture",
-      "Dummy Test Project"
-    ],
-    "review_required": false,
-    "needs_attention": false,
-    "created_at": "2026-06-21T15:11:28-07:00",
-    "updated_at": "2026-06-21T15:11:28-07:00",
-    "completed_at": null
-  },
-  {
-    "id": "dummy_test_task_2",
-    "title": "dummy task 2",
-    "description": "Temporary fixture for validating the completed task state in Agent OS.",
-    "project": "Dummy Test Project",
-    "status": "completed",
-    "priority": "low",
-    "assignee": "Hermes",
-    "due_date": null,
-    "source": "dummy",
-    "temporary": true,
-    "tags": [
-      "dummy",
-      "test-fixture",
-      "Dummy Test Project"
-    ],
-    "review_required": false,
-    "needs_attention": false,
-    "created_at": "2026-06-21T15:11:28-07:00",
-    "updated_at": "2026-06-21T15:11:28-07:00",
-    "completed_at": "2026-06-21T15:11:28-07:00"
-  },
-  {
-    "id": "dummy_test_task_3",
-    "title": "dummy task 3",
-    "description": "Temporary fixture for validating the needs attention task state in Agent OS.",
-    "project": "Dummy Test Project",
-    "status": "needs_attention",
-    "priority": "high",
-    "assignee": "Hermes",
-    "due_date": null,
-    "source": "dummy",
-    "temporary": true,
-    "tags": [
-      "dummy",
-      "test-fixture",
-      "Dummy Test Project"
-    ],
-    "review_required": true,
-    "needs_attention": true,
-    "created_at": "2026-06-21T15:11:28-07:00",
-    "updated_at": "2026-06-21T15:11:28-07:00",
-    "completed_at": null
-  },
-  {
-    "id": "dummy_test_task_4",
-    "title": "dummy task 4",
-    "description": "Temporary fixture for validating the waiting task state in Agent OS.",
-    "project": "Dummy Test Project",
-    "status": "waiting",
-    "priority": "medium",
-    "assignee": "Hermes",
-    "due_date": null,
-    "source": "dummy",
-    "temporary": true,
-    "tags": [
-      "dummy",
-      "test-fixture",
-      "Dummy Test Project",
-      "needs attention"
-    ],
-    "review_required": false,
-    "needs_attention": false,
-    "created_at": "2026-06-21T15:11:28-07:00",
-    "updated_at": "2026-06-21T15:11:28-07:00",
-    "completed_at": null
-  },
-  {
     "id": "task_phase25_ui_stabilization_review",
     "title": "Finish Phase 2.5 UI/UX stabilization review",
     "description": "Review Today, Projects, and Tasks desktop/mobile UX after the command-center redesign; refine the connected header/task rail, project portfolio rail, dropdown behavior, screenshots, and any remaining redundancy before larger integrations.",
     "project": "Agent OS",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
@@ -236,36 +280,15 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-21T18:00:37-07:00",
-    "completed_at": null
-  },
-  {
-    "id": "task_remove_dummy_fixture_data",
-    "title": "Remove Dummy Test Project fixtures after UI validation",
-    "description": "When Brandon is done using the dummy project for visual QA, remove project_dummy_test and dummy_test_task_* fixtures from local JSON so the dashboard returns to real Agent OS data only.",
-    "project": "Agent OS",
-    "status": "todo",
-    "priority": "medium",
-    "assignee": "Hermes",
-    "due_date": null,
-    "source": "manual",
-    "tags": [
-      "cleanup",
-      "dummy-data",
-      "phase-2.5"
-    ],
-    "review_required": false,
-    "needs_attention": false,
-    "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-21T18:00:37-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-21T20:52:20-07:00",
+    "completed_at": "2026-06-21T20:52:20-07:00"
   },
   {
     "id": "task_calendar_phase_next",
     "title": "Polish Google Calendar read-only integration",
     "description": "Turn the connected Google Calendar source into a useful Today/Calendar experience: today and 7-day agenda, fallback/stale states, event grouping, and read-only OAuth boundaries.",
     "project": "Agent OS",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
@@ -279,8 +302,8 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-21T18:00:37-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-21T20:52:20-07:00",
+    "completed_at": "2026-06-21T20:52:20-07:00"
   },
   {
     "id": "task_native_project_task_creation",
@@ -397,7 +420,7 @@
     "title": "Run Wilson Milsen review before the next major expansion",
     "description": "Before adding larger integrations, ask Wilson Milsen for a read-only YAGNI/code review of AGENTS.md, README.md, server.py, frontend files, data JSON, and the current diff; implement only high-impact safe suggestions.",
     "project": "Agent OS",
-    "status": "todo",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Hermes",
     "due_date": null,
@@ -411,7 +434,7 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-21T18:00:37-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-21T22:04:34-07:00",
+    "completed_at": "2026-06-21T22:04:34-07:00"
   }
 ]

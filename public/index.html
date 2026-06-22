@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Agent OS · Mission Control</title>
-  <link rel="stylesheet" href="/styles.css?v=project-command-center-7" />
+  <link rel="stylesheet" href="/styles.css?v=sidebar-brain-logo-1" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
@@ -12,7 +12,41 @@
   <div class="app-shell">
     <aside class="sidebar" aria-label="Agent OS navigation">
       <div class="brand-block">
-        <div class="brand-mark">AO</div>
+        <div class="brand-mark brain-brand" role="img" aria-label="Digitized Agent OS brain logo">
+          <div class="brain-frame" aria-hidden="true">
+            <svg class="brain-model" viewBox="0 0 160 160" focusable="false">
+              <defs>
+                <linearGradient id="brain-edge" x1="20" y1="20" x2="140" y2="140" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stop-color="#f8fdff" />
+                  <stop offset="0.36" stop-color="#6ee7ff" />
+                  <stop offset="0.7" stop-color="#5af7e2" />
+                  <stop offset="1" stop-color="#9d7cff" />
+                </linearGradient>
+                <radialGradient id="brain-core" cx="50%" cy="42%" r="62%">
+                  <stop offset="0" stop-color="#f8fdff" stop-opacity="0.9" />
+                  <stop offset="0.42" stop-color="#6ee7ff" stop-opacity="0.42" />
+                  <stop offset="1" stop-color="#03111f" stop-opacity="0.9" />
+                </radialGradient>
+              </defs>
+              <path class="brain-fill" d="M47 51 65 35h33l20 15 10 27-8 34-24 17H63l-27-17-8-31 7-21Z" />
+              <g class="brain-mesh">
+                <path d="M47 51 73 54l25-19 20 15-11 29 21-2" />
+                <path d="M35 59 63 80l10-26 21 27 24-31" />
+                <path d="M28 80h35l17 27 27-28 13 32" />
+                <path d="M36 111 80 107l16 21 11-49" />
+                <path d="M63 128V80l35-45" />
+                <path d="M47 51 36 111 63 128" />
+                <path d="M98 35 96 128" />
+              </g>
+              <g class="brain-nodes">
+                <circle cx="47" cy="51" r="3" /><circle cx="73" cy="54" r="2.5" /><circle cx="98" cy="35" r="3" />
+                <circle cx="118" cy="50" r="3" /><circle cx="128" cy="77" r="2.5" /><circle cx="120" cy="111" r="3" />
+                <circle cx="96" cy="128" r="2.5" /><circle cx="63" cy="128" r="3" /><circle cx="36" cy="111" r="2.5" />
+                <circle cx="28" cy="80" r="3" /><circle cx="63" cy="80" r="2.5" /><circle cx="80" cy="107" r="3" />
+              </g>
+            </svg>
+          </div>
+        </div>
         <div>
           <div class="brand-name">Agent OS</div>
           <div class="brand-subtitle">Local Command</div>
@@ -47,8 +81,7 @@
     <main class="command-surface">
       <header class="command-header">
         <div>
-          <div class="eyebrow">Mission Control / Today</div>
-          <h1>Hello Brandon</h1>
+          <h1 class="hero-title" data-text="Hello Operator">Hello Operator</h1>
           <p>Day-centered command surface for attention, active work, agents, sessions, notes, and calendar context.</p>
         </div>
         <div class="header-actions">
@@ -56,7 +89,6 @@
             <span>⌕</span>
             <input id="global-search" type="search" placeholder="Search sessions and tasks…" />
           </label>
-          <div class="system-badge"><span class="signal-dot"></span><span>Local</span></div>
         </div>
       </header>
 
@@ -67,7 +99,6 @@
           <section class="panel priority-panel command-card" id="attention-panel">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Today</div>
                 <h2>Needs Attention</h2>
               </div>
               <span class="pill danger" id="attention-count">0 open</span>
@@ -78,7 +109,6 @@
           <section class="panel command-card" id="today-active-work-panel">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Project Focus</div>
                 <h2>Open Queue / Next Moves</h2>
               </div>
               <span class="pill" id="focus-count-pill">0 open</span>
@@ -89,7 +119,6 @@
           <section class="panel command-card agent-pulse-panel" id="agent-pulse-panel">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Agents</div>
                 <h2>Agent Pulse</h2>
               </div>
               <span class="pill success" id="agent-pulse-pill">observed</span>
@@ -100,7 +129,6 @@
           <section class="panel command-card">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Near-term</div>
                 <h2>Calendar</h2>
               </div>
               <span class="pill" id="calendar-source-pill">local json</span>
@@ -111,7 +139,6 @@
           <section class="panel command-card span-2" id="today-completed-panel">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">This Week</div>
                 <h2>Completed Work</h2>
               </div>
               <span class="pill success">separated by type</span>
@@ -126,7 +153,6 @@
           <section class="panel" id="conversation-library-panel">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Agents / Sessions</div>
                 <h2>Conversation Library</h2>
               </div>
               <span class="pill">searchable shell</span>
@@ -152,7 +178,6 @@
             <section class="panel" id="session-analytics-panel">
               <div class="panel-head">
                 <div>
-                  <div class="eyebrow">Observed Agents</div>
                   <h2>Session Analytics</h2>
                 </div>
                 <span class="pill">historical</span>
@@ -164,7 +189,6 @@
             <section class="panel" id="cron-monitor-panel">
               <div class="panel-head">
                 <div>
-                  <div class="eyebrow">Automation</div>
                   <h2>Cron Monitor</h2>
                 </div>
                 <span class="pill" id="cron-count">0 jobs</span>
@@ -272,10 +296,9 @@
         <section class="panel">
           <div class="panel-head">
             <div>
-              <div class="eyebrow">Calendar</div>
-              <h2>Upcoming</h2>
+              <h2>Next 7 Days</h2>
             </div>
-            <span class="pill" id="calendar-full-source-pill">Google later</span>
+            <span class="pill" id="calendar-full-source-pill">connected / fallback</span>
           </div>
           <div id="calendar-full-list" class="stack"></div>
         </section>
@@ -285,7 +308,6 @@
         <section class="panel">
           <div class="panel-head">
             <div>
-              <div class="eyebrow">Knowledge</div>
               <h2>Obsidian Notes</h2>
             </div>
             <span class="pill">vault</span>
@@ -298,20 +320,18 @@
         <section class="panel">
           <div class="panel-head">
             <div>
-              <div class="eyebrow">Settings</div>
               <h2>Local Runtime</h2>
             </div>
             <span class="pill">read-only</span>
           </div>
           <div class="settings-list">
             <article class="item"><div class="item-title"><span>Runtime mode</span><span class="pill success">local-only</span></div><div class="item-desc">Agent OS reads Hermes data and writes only project-owned JSON files.</div></article>
-            <article class="item"><div class="item-title"><span>Calendar</span><span class="pill warn">placeholder</span></div><div class="item-desc">Local calendar.json is active. Google Calendar OAuth can be added later.</div></article>
+            <article class="item"><div class="item-title"><span>Calendar</span><span class="pill">connected / fallback</span></div><div class="item-desc">Google Calendar read-only sync is connected when the Hermes token is available, with local <code>calendar.json</code> used as the fallback.</div></article>
             <article class="item"><div class="item-title"><span>Agent chat</span><span class="pill warn">planned</span></div><div class="item-desc">Direct chat from the dashboard will need a deliberate Hermes gateway/API integration.</div></article>
           </div>
           <div class="section-divider"></div>
           <div class="panel-head compact-head">
             <div>
-              <div class="eyebrow">Hermes</div>
               <h2>Agent / Model Config</h2>
             </div>
             <span class="pill">masked</span>
@@ -323,6 +343,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=project-command-center-7"></script>
+  <script src="/app.js?v=sidebar-brain-logo-1"></script>
 </body>
 </html>

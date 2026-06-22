@@ -2,6 +2,8 @@ const REFRESH_MS = 30_000;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const fmt = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+const timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
 
 const endpoints = {
   overview: '/api/overview',
@@ -21,6 +23,9 @@ const state = {
   sessions: [],
   tasks: [],
   projects: [],
+  projectsLoaded: false,
+  greetingName: 'Operator',
+  greetingPrefix: 'Hello',
   sessionFilter: '',
   taskFilter: '',
   taskStatusFilter: 'open',
@@ -92,6 +97,15 @@ function escapeHtml(value = '') {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function safeExternalUrl(value = '') {
+  try {
+    const url = new URL(String(value));
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+  } catch {
+    return '';
+  }
 }
 
 function escapeRegExp(value = '') {
@@ -218,22 +232,23 @@ function humanDate(value) {
   return fmt.format(d);
 }
 
-function setView(view) {
+function renderGreeting(identity = {}) {
+  state.greetingName = (identity.display_name || state.greetingName || 'Operator').trim();
+  state.greetingPrefix = (identity.greeting_prefix || state.greetingPrefix || 'Hello').trim();
+  const title = `${state.greetingPrefix} ${state.greetingName}`.trim();
+  const hero = document.querySelector('.hero-title');
+  if (!hero) return;
+  hero.textContent = title;
+  hero.dataset.text = title;
+  hero.setAttribute('aria-label', title);
+}
+
+function setView(view, { refreshOnChange = true } = {}) {
   const viewChanged = state.activeView !== view;
   state.activeView = view;
   $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === view));
   $$('[data-view-panel]').forEach((panel) => panel.classList.toggle('active', panel.dataset.viewPanel === view));
-  const titles = {
-    today: 'Mission Control / Today',
-    agents: 'Agents / Sessions',
-    calendar: 'Calendar',
-    projects: 'Projects / Tasks',
-    notes: 'Knowledge Base',
-    settings: 'Settings',
-  };
-  const eyebrow = $('.command-header .eyebrow');
-  if (eyebrow) eyebrow.textContent = titles[view] || 'Mission Control';
-  if (state.hasBootstrapped && viewChanged) return refresh();
+  if (state.hasBootstrapped && viewChanged && refreshOnChange) return refresh();
   return Promise.resolve();
 }
 
@@ -257,6 +272,12 @@ async function jumpToDashboardSection(view, targetSelector) {
   if (!target) return;
   target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   flashTarget(target);
+}
+
+function renderProjectScopedViews() {
+  renderTaskList(state.tasks);
+  renderFocusTasks(state.tasks);
+  renderProjects(state.projects);
 }
 
 function renderCards(cards = {}) {
@@ -698,27 +719,156 @@ function renderProjects(projects = []) {
   renderProjectStatus(projects, state.tasks);
 }
 
-function renderCalendar(payload = {}) {
+function isDateOnly(value = '') {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value));
+}
+
+function calendarDate(value) {
+  if (!value) return null;
+  const raw = String(value);
+  const d = new Date(isDateOnly(raw) ? `${raw}T00:00:00` : raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function sameCalendarDay(a, b) {
+  return a && b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function calendarDayLabel(date) {
+  if (!date) return 'Unscheduled';
+  const today = new Date();
+  const tomorrow = new Date();
+  tomorrow.setDate(today.getDate() + 1);
+  if (sameCalendarDay(date, today)) return 'Today';
+  if (sameCalendarDay(date, tomorrow)) return 'Tomorrow';
+  return dayFmt.format(date);
+}
+
+function calendarTimeLabel(item = {}) {
+  const start = calendarDate(item.start);
+  const end = calendarDate(item.end);
+  if (!start) return 'No scheduled time';
+  if (isDateOnly(item.start)) return 'All day';
+  if (end && !sameCalendarDay(start, end)) return `${timeFmt.format(start)} → ${dayFmt.format(end)} ${timeFmt.format(end)}`;
+  return end ? `${timeFmt.format(start)} → ${timeFmt.format(end)}` : timeFmt.format(start);
+}
+
+function sortedCalendarItems(items = []) {
+  return [...items].sort((a, b) => {
+    const aDate = calendarDate(a.start);
+    const bDate = calendarDate(b.start);
+    if (!aDate && !bDate) return 0;
+    if (!aDate) return 1;
+    if (!bDate) return -1;
+    return aDate - bDate;
+  });
+}
+
+function calendarGroups(items = []) {
+  return sortedCalendarItems(items).reduce((groups, item) => {
+    const date = calendarDate(item.start);
+    const label = calendarDayLabel(date);
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(item);
+    return groups;
+  }, new Map());
+}
+
+function calendarStatusDateLabel(value) {
+  const date = calendarDate(value);
+  if (!date) return 'unscheduled';
+  return isDateOnly(value) ? `${calendarDayLabel(date)} all day` : `${calendarDayLabel(date)} ${timeFmt.format(date)}`;
+}
+
+function calendarStatusText(payload = {}, items = []) {
+  const summary = payload.summary || {};
+  const next = summary.next_event;
+  const range = payload.window?.label || `Today + next ${(payload.range_days || 7) - 1} days`;
+  if (payload.source === 'google') {
+    return next ? `${items.length} live · ${range} · next ${calendarStatusDateLabel(next.start)}` : `${items.length} live events · ${range} · read-only`;
+  }
+  const stale = summary.stale ? 'stale ' : '';
+  if (payload.auth === 'error') return `Google error · ${stale}local fallback${payload.data_updated_at ? ` · ${humanDate(payload.data_updated_at)}` : ''}`;
+  if (payload.auth === 'not_connected') return `Google not connected · ${stale}local fallback`;
+  return `${stale}local calendar fallback`;
+}
+
+function calendarEventLink(item = {}) {
+  const href = safeExternalUrl(item.htmlLink || '');
+  return href ? ` · <a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">Open in Google</a>` : '';
+}
+
+function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
+  const container = $(selector);
+  if (!container) return;
   const items = Array.isArray(payload) ? payload : (payload.items || []);
+  const visible = sortedCalendarItems(items).slice(0, limit);
   const source = Array.isArray(payload) ? 'local' : (payload.source || 'local');
   const auth = Array.isArray(payload) ? 'legacy' : (payload.auth || 'unknown');
-  const sourceLabel = source === 'google' ? 'Google live' : source === 'local' && auth === 'error' ? 'Google error' : 'local json';
+  const summary = payload.summary || {};
+  const statusLine = calendarStatusText(payload, items);
+  const groups = calendarGroups(visible);
+
+  const summaryMarkup = `
+    <section class="calendar-agenda-summary ${source === 'google' ? 'live' : auth === 'error' ? 'fallback-error' : 'fallback'} ${summary.stale ? 'stale' : ''}">
+      <div>
+        <div class="calendar-summary-kicker mono">${source === 'google' ? 'Google Calendar · read-only' : 'Local fallback'}</div>
+        <strong>${escapeHtml(statusLine)}</strong>
+        <p>${escapeHtml(payload.read_only ? 'Read-only agenda; Agent OS never writes calendar events.' : 'Calendar feed')}</p>
+      </div>
+      <div class="calendar-summary-stats mono">
+        <span><b>${summary.today_count ?? 0}</b> today</span>
+        <span><b>${items.length}</b> ${payload.range_days || 7}d</span>
+      </div>
+    </section>
+  `;
+
+  if (!visible.length) {
+    const emptyText = source === 'google'
+      ? 'No upcoming Google Calendar events in the next 7 days.'
+      : 'No usable local calendar items available. Google Calendar read-only sync will appear here when connected; otherwise Agent OS falls back to local calendar data.';
+    container.innerHTML = `${summaryMarkup}<div class="empty">${emptyText}</div>`;
+    return;
+  }
+
+  const groupMarkup = Array.from(groups.entries()).map(([label, groupItems]) => `
+    <section class="calendar-day-group">
+      <div class="calendar-day-heading mono"><span>${escapeHtml(label)}</span><small>${groupItems.length} item${groupItems.length === 1 ? '' : 's'}</small></div>
+      <div class="calendar-day-list">
+        ${groupItems.map((item) => `
+          <article class="item calendar-event ${source === 'google' ? 'google-event' : 'local-event'}">
+            <div class="calendar-event-time mono">${escapeHtml(calendarTimeLabel(item))}</div>
+            <div class="calendar-event-body">
+              <div class="item-title"><span>${escapeHtml(item.title || 'Untitled event')}</span><span class="pill">${escapeHtml(item.type || 'event')}</span></div>
+              <div class="item-desc">${escapeHtml(item.description || item.location || '')}</div>
+              <div class="item-meta mono">${escapeHtml(item.location || source)}${calendarEventLink(item)}</div>
+            </div>
+          </article>
+        `).join('')}
+      </div>
+    </section>
+  `).join('');
+
+  const overflow = items.length > visible.length
+    ? `<div class="item-meta mono calendar-overflow">+${items.length - visible.length} later events hidden in this compact view.</div>`
+    : '';
+  container.innerHTML = `${summaryMarkup}${groupMarkup}${overflow}`;
+}
+
+function renderCalendar(payload = {}) {
+  const source = Array.isArray(payload) ? 'local' : (payload.source || 'local');
+  const auth = Array.isArray(payload) ? 'legacy' : (payload.auth || 'unknown');
+  const sourceLabel = source === 'google' ? 'Google live' : source === 'local' && auth === 'error' ? 'Google error' : source === 'local' && auth === 'not_connected' ? 'local fallback' : 'local json';
   const pillClass = source === 'google' ? 'pill success' : auth === 'error' ? 'pill warn' : 'pill';
   ['#calendar-source-pill', '#calendar-full-source-pill'].forEach((selector) => {
     const pill = $(selector);
     if (!pill) return;
     pill.textContent = sourceLabel;
     pill.className = pillClass;
+    if (payload.error) pill.title = payload.error;
   });
-  const markup = items.length ? items.map((item) => `
-    <article class="item">
-      <div class="item-title"><span>${escapeHtml(item.title)}</span><span class="pill">${escapeHtml(item.type || 'event')}</span></div>
-      <div class="item-desc">${escapeHtml(item.description || item.location || '')}</div>
-      <div class="item-meta mono">${humanDate(item.start)} → ${humanDate(item.end)}</div>
-    </article>
-  `).join('') : `<div class="empty">${source === 'google' ? 'No upcoming Google Calendar events in the selected window.' : 'No local calendar items yet. Google Calendar integration is planned later.'}</div>`;
-  $('#calendar-list').innerHTML = markup;
-  $('#calendar-full-list').innerHTML = markup;
+  renderCalendarInto('#calendar-list', payload, { limit: 4 });
+  renderCalendarInto('#calendar-full-list', payload, { limit: Infinity });
 }
 
 function renderCrons(payload = {}) {
@@ -856,7 +1006,6 @@ function renderSessionDetail(payload = null, context = {}) {
   detail.innerHTML = `
     <div class="session-detail-head">
       <div>
-        <div class="eyebrow">Session Detail</div>
         <h3>${escapeHtml(session.title || 'Untitled session')}</h3>
         <div class="item-meta mono">${humanDate(session.ended_at || session.started_at)} · ${escapeHtml(visibleLabel)} · ${session.model ? escapeHtml(session.model) : 'model n/a'}</div>
       </div>
@@ -907,12 +1056,12 @@ function renderAgentPulse(payload = {}) {
   const sessions = payload.sessions || [];
   const recentCount = sessions.length;
   const latest = sessions[0];
-  $('#agent-pulse-pill').textContent = `${recentCount} sessions`;
+  $('#agent-pulse-pill').textContent = 'read-only now';
   $('#agent-pulse').innerHTML = `
-    <div class="agent-orb"><span>${recentCount}</span><small>recent</small></div>
+    <div class="agent-orb"><span>${recentCount}</span><small>sessions</small></div>
     <div>
-      <div class="item-title"><span>Hermes session pulse</span></div>
-      <div class="item-desc">Recent read-only Hermes activity from state.db. Live agent heartbeat tracking can be added later when there is real roster data.</div>
+      <div class="item-title"><span>Historical pulse now · live heartbeat later</span></div>
+      <div class="item-desc">Right now this only counts recent Hermes sessions from state.db. In Phase 4, Agent Pulse should become an active heartbeat/status panel where agents self-report running, blocked, done, failed, and needs-user-input states.</div>
       <div class="item-meta mono">Latest: ${latest ? `${escapeHtml(latest.title || 'Untitled')} · ${humanDate(latest.ended_at || latest.started_at)}` : 'No session data yet'}</div>
     </div>
   `;
@@ -932,8 +1081,18 @@ function renderNotes(payload = {}) {
 function renderHealth(payload = {}) {
   const dot = $('#health-dot');
   const label = $('#health-label');
+  const diskEntries = Object.entries(payload.disk || {}).filter(([, value]) => value && value.free);
+  const [diskLabel, diskInfo] = diskEntries.find(([path]) => path === 'E:/') || diskEntries[0] || [];
   dot.className = 'dot healthy';
-  label.textContent = `Healthy · DB ${payload.state_db_size || 'n/a'} · E: ${payload.disk?.['E:/']?.free || 'n/a'} free`;
+  label.textContent = `Healthy · DB ${payload.state_db_size || 'n/a'}${diskInfo ? ` · ${diskLabel} ${diskInfo.free} free` : ''}`;
+}
+
+async function ensureProjectsLoaded() {
+  if (state.projectsLoaded) return;
+  const payload = await api(endpoints.projects);
+  state.projects = payload.projects || [];
+  state.projectsLoaded = true;
+  renderProjects(state.projects);
 }
 
 async function refresh() {
@@ -948,11 +1107,11 @@ async function refresh() {
     overview: api(endpoints.overview),
     tasks: api(endpoints.tasks),
     attention: api(endpoints.attention),
-    calendar: api(endpoints.calendar),
-    sessions: api(endpoints.sessions),
     health: api(endpoints.health),
   };
 
+  if (activeView === 'today' || activeView === 'calendar') requests.calendar = api(endpoints.calendar);
+  if (activeView === 'today' || activeView === 'agents') requests.sessions = api(endpoints.sessions);
   if (activeView === 'projects') requests.projects = api(endpoints.projects);
   if (activeView === 'agents') requests.crons = api(endpoints.crons);
   if (activeView === 'notes') requests.notes = api(endpoints.notes);
@@ -962,17 +1121,23 @@ async function refresh() {
     const entries = await Promise.all(Object.entries(requests).map(async ([key, promise]) => [key, await promise]));
     const data = Object.fromEntries(entries);
 
+    renderGreeting(data.overview.identity || {});
     renderCards(data.overview.cards);
-    if (data.projects) state.projects = data.projects.projects || [];
+    if (data.projects) {
+      state.projects = data.projects.projects || [];
+      state.projectsLoaded = true;
+    }
     renderTaskList(data.tasks.tasks);
     if (data.projects) renderProjects(state.projects);
     renderFocusTasks(data.tasks.tasks);
     renderAttention(data.attention.attention);
-    renderCalendar(data.calendar);
+    if (data.calendar) renderCalendar(data.calendar);
     if (data.crons) renderCrons(data.crons);
-    renderSessions(data.sessions);
-    renderSessionStats(data.sessions);
-    renderAgentPulse(data.sessions);
+    if (data.sessions) {
+      renderSessions(data.sessions);
+      renderSessionStats(data.sessions);
+      renderAgentPulse(data.sessions);
+    }
     if (data.notes) renderNotes(data.notes);
     if (data.config) renderConfig(data.config);
     renderHealth(data.health);
@@ -1031,7 +1196,7 @@ $('#focus-task-list').addEventListener('click', (event) => {
 
 const globalSearch = $('#global-search');
 if (globalSearch) {
-  globalSearch.addEventListener('input', (event) => {
+  globalSearch.addEventListener('input', async (event) => {
     const query = event.target.value.trim();
     state.sessionFilter = query;
     state.taskFilter = query;
@@ -1041,8 +1206,18 @@ if (globalSearch) {
     renderTaskList(state.tasks);
     if (query) {
       const taskHits = state.tasks.filter((task) => taskMatches(task, query));
-      setView(taskHits.length ? 'projects' : 'agents');
-      if (!taskHits.length) queueMessageSearch(query);
+      if (taskHits.length) {
+        try {
+          await ensureProjectsLoaded();
+        } catch (err) {
+          console.error(err);
+        }
+        await setView('projects', { refreshOnChange: false });
+        renderProjectScopedViews();
+      } else {
+        void setView('agents', { refreshOnChange: false });
+        queueMessageSearch(query);
+      }
     } else {
       renderMessageSearchResults({}, '');
     }
@@ -1124,9 +1299,7 @@ const clearProjectFilter = $('#clear-project-filter');
 if (clearProjectFilter) {
   clearProjectFilter.addEventListener('click', () => {
     state.projectFilter = '';
-    renderTaskList(state.tasks);
-    renderFocusTasks(state.tasks);
-    renderProjects(state.projects);
+    renderProjectScopedViews();
   });
 }
 
@@ -1135,9 +1308,7 @@ $('#project-list').addEventListener('click', async (event) => {
   if (!card) return;
   state.projectFilter = card.dataset.projectName || '';
   await setView('projects');
-  renderTaskList(state.tasks);
-  renderFocusTasks(state.tasks);
-  renderProjects(state.projects);
+  renderProjectScopedViews();
 });
 
 $('#session-list').addEventListener('click', (event) => {
@@ -1160,9 +1331,7 @@ $('#attention-list').addEventListener('click', async (event) => {
     state.projectFilter = taskButton.dataset.projectName || '';
     state.taskStatusFilter = 'open';
     await setView('projects');
-    renderTaskList(state.tasks);
-    renderFocusTasks(state.tasks);
-    renderProjects(state.projects);
+    renderProjectScopedViews();
     const tasksPanel = $('#tasks-panel');
     tasksPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     flashTarget(tasksPanel);

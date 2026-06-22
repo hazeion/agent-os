@@ -1,0 +1,10 @@
+# Agent OS runtime dependencies
+# Keep this file intentionally small and pinned for reproducible local setup.
+# Standard-library modules are omitted.
+
+# Google Calendar read-only integration
+# google.auth.transport.requests is imported directly in server.py, so requests
+# must stay explicit here instead of relying on unrelated environment packages.
+google-api-python-client==2.194.0
+google-auth==2.49.2
+requests==2.33.0

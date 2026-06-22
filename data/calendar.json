@@ -1,10 +1,10 @@
 [
   {
     "id": "cal_placeholder_google",
-    "title": "Google Calendar integration not connected yet",
+    "title": "Local calendar fallback data",
     "start": null,
     "end": null,
     "type": "placeholder",
-    "description": "Agent OS v1 uses this local calendar.json placeholder. Later, this panel can pull read-only events from Google Calendar after OAuth setup."
+    "description": "Fallback event shown when Google Calendar read-only sync is unavailable. When the Hermes Google token is present, Agent OS should prefer live Google events and only fall back to this local file on auth or API errors."
   }
 ]

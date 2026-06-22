@@ -41,6 +41,9 @@ STATE_DB = HERMES_HOME / "state.db"
 CRON_JOBS = HERMES_HOME / "cron" / "jobs.json"
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 GOOGLE_TOKEN = HERMES_HOME / "google_token.json"
+ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json"}
+CALENDAR_CACHE_TTL_SECONDS = 300
+CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
 
 PROJECT_NOTES = [
     "Agentic OS Project Home.md",
@@ -92,9 +95,6 @@ def google_credentials(scopes: list[str]):
         creds = Credentials.from_authorized_user_file(str(GOOGLE_TOKEN), scopes=scopes)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            payload = json.loads(creds.to_json())
-            payload.setdefault("type", "authorized_user")
-            GOOGLE_TOKEN.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         if not creds.valid:
             return None, "Google OAuth token is invalid"
         return creds, None
@@ -103,9 +103,14 @@ def google_credentials(scopes: list[str]):
 
 
 def write_json_file(name: str, payload):
-    """Write only dashboard-owned local JSON files under data/."""
+    """Write only explicitly allowlisted dashboard-owned JSON files under data/."""
+    if name not in ALLOWED_DATA_WRITES or "/" in name or "\\" in name:
+        raise ValueError(f"Refusing to write non-allowlisted dashboard data file: {name}")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path = DATA_DIR / name
+    data_root = DATA_DIR.resolve()
+    path = (DATA_DIR / name).resolve()
+    if path.parent != data_root:
+        raise ValueError(f"Refusing to write outside dashboard data directory: {name}")
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)
@@ -141,18 +146,117 @@ def parse_iso(value):
         return None
 
 
-def google_calendar_events(days: int = 14, limit: int = 20):
+def calendar_sort_key(item: dict):
+    dt = parse_iso(item.get("start")) if isinstance(item, dict) else None
+    return dt or datetime.max.replace(tzinfo=datetime.now().astimezone().tzinfo)
+
+
+def calendar_payload(items, source: str, auth: str, *, days: int = 7, error: str | None = None, calendar: str | None = None, fallback_available: bool | None = None):
+    """Normalize calendar responses for the Today preview and 7-day agenda."""
+    safe_items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    safe_items = sorted(safe_items, key=calendar_sort_key)
+    now = datetime.now().astimezone()
+    window_end = now + timedelta(days=days)
+    today = now.date()
+    today_count = 0
+    next_event = None
+    dated_count = 0
+    for item in safe_items:
+        start_dt = parse_iso(item.get("start"))
+        if start_dt:
+            dated_count += 1
+        if start_dt and start_dt.date() == today:
+            today_count += 1
+        if start_dt and start_dt >= now and next_event is None:
+            next_event = {"title": item.get("title") or "Untitled event", "start": item.get("start"), "type": item.get("type") or source}
+
+    local_updated = file_mtime_iso(DATA_DIR / "calendar.json")
+    local_updated_dt = parse_iso(local_updated)
+    local_stale = source == "local" and (
+        local_updated_dt is None
+        or local_updated_dt < now - timedelta(hours=24)
+        or dated_count == 0
+    )
+
+    payload = {
+        "items": safe_items,
+        "source": source,
+        "auth": auth,
+        "calendar": calendar,
+        "range_days": days,
+        "updated_at": now_iso(),
+        "data_updated_at": local_updated if source == "local" else None,
+        "read_only": True,
+        "window": {
+            "start": now.isoformat(timespec="seconds"),
+            "end": window_end.isoformat(timespec="seconds"),
+            "label": f"Today + next {days - 1} days" if days > 1 else "Today",
+        },
+        "summary": {
+            "count": len(safe_items),
+            "today_count": today_count,
+            "next_event": next_event,
+            "fallback_available": bool(fallback_available) if fallback_available is not None else bool(read_json_file("calendar.json", [])),
+            "stale": local_stale,
+        },
+    }
+    if error:
+        payload["error"] = clean_snippet(error, 240)
+    return payload
+
+
+def calendar_cache_key(days: int, limit: int):
+    return {
+        "days": days,
+        "limit": limit,
+        "token_mtime": file_mtime_iso(GOOGLE_TOKEN),
+    }
+
+
+def copy_calendar_payload(payload: dict, *, cached: bool, fetched_at: datetime | None = None) -> dict:
+    clone = json.loads(json.dumps(payload, default=str))
+    fetched = fetched_at or datetime.now(timezone.utc)
+    clone["cache"] = {
+        "enabled": True,
+        "cached": cached,
+        "ttl_seconds": CALENDAR_CACHE_TTL_SECONDS,
+        "fetched_at": fetched.astimezone().isoformat(timespec="seconds"),
+    }
+    return clone
+
+
+def cached_calendar_payload(key: dict) -> dict | None:
+    fetched_at = CALENDAR_CACHE.get("fetched_at")
+    payload = CALENDAR_CACHE.get("payload")
+    if CALENDAR_CACHE.get("key") != key or payload is None or fetched_at is None:
+        return None
+    age = (datetime.now(timezone.utc) - fetched_at).total_seconds()
+    if age >= CALENDAR_CACHE_TTL_SECONDS:
+        return None
+    return copy_calendar_payload(payload, cached=True, fetched_at=fetched_at)
+
+
+def store_calendar_cache(key: dict, payload: dict) -> dict:
+    fetched_at = datetime.now(timezone.utc)
+    CALENDAR_CACHE["key"] = key
+    CALENDAR_CACHE["payload"] = json.loads(json.dumps(payload, default=str))
+    CALENDAR_CACHE["fetched_at"] = fetched_at
+    return copy_calendar_payload(payload, cached=False, fetched_at=fetched_at)
+
+
+def google_calendar_events(days: int = 7, limit: int = 50):
     """Read upcoming Google Calendar events with local JSON fallback metadata."""
     scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
-    creds, auth_error = google_credentials(scopes)
     fallback = read_json_file("calendar.json", [])
+    fallback_available = bool(fallback)
+    cache_key = calendar_cache_key(days, limit)
+    cached = cached_calendar_payload(cache_key)
+    if cached:
+        return cached
+
+    creds, auth_error = google_credentials(scopes)
     if creds is None:
-        return {
-            "items": fallback if isinstance(fallback, list) else [],
-            "source": "local",
-            "auth": "not_connected",
-            "error": auth_error,
-        }
+        return calendar_payload(fallback, "local", "not_connected", days=days, error=auth_error, fallback_available=fallback_available)
 
     try:
         from googleapiclient.discovery import build
@@ -189,21 +293,10 @@ def google_calendar_events(days: int = 14, limit: int = 20):
                     "htmlLink": event.get("htmlLink"),
                 }
             )
-        return {
-            "items": items,
-            "source": "google",
-            "auth": "connected",
-            "calendar": "primary",
-            "range_days": days,
-            "updated_at": now_iso(),
-        }
+        payload = calendar_payload(items, "google", "connected", days=days, calendar="primary", fallback_available=fallback_available)
+        return store_calendar_cache(cache_key, payload)
     except Exception as exc:
-        return {
-            "items": fallback if isinstance(fallback, list) else [],
-            "source": "local",
-            "auth": "error",
-            "error": str(exc),
-        }
+        return calendar_payload(fallback, "local", "error", days=days, error=str(exc), fallback_available=fallback_available)
 
 
 SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|credential|auth)", re.I)
@@ -763,13 +856,24 @@ def overview():
     projects = read_json_file("projects.json", [])
     tasks = read_json_file("tasks.json", [])
     attention = read_json_file("attention.json", [])
-    calendar = read_json_file("calendar.json", [])
     crons = read_cron_jobs()
     sessions = recent_sessions(limit=5)
+    dashboard = read_json_file("dashboard.json", {})
+
+    if not isinstance(dashboard, dict):
+        dashboard = {}
+
+    greeting_name = clean_snippet(
+        os.environ.get("AGENT_OS_DISPLAY_NAME")
+        or dashboard.get("display_name")
+        or "Operator",
+        40,
+    ) or "Operator"
+    greeting_prefix = clean_snippet(dashboard.get("greeting_prefix") or "Hello", 16) or "Hello"
 
     open_attention = open_attention_items(attention, tasks)
-    active_tasks = [t for t in tasks if t.get("status") in {"todo", "in_progress", "waiting", "needs_attention"}] if isinstance(tasks, list) else []
-    active_projects = [p for p in projects if p.get("status") == "active"] if isinstance(projects, list) else []
+    active_tasks = [t for t in tasks if isinstance(t, dict) and task_status_area(t) != "completed"] if isinstance(tasks, list) else []
+    active_projects = [p for p in projects if isinstance(p, dict) and str(p.get("status") or "").strip().lower() == "active"] if isinstance(projects, list) else []
     week_ago = datetime.now().astimezone() - timedelta(days=7)
     completed_this_week = []
     if isinstance(tasks, list):
@@ -780,6 +884,10 @@ def overview():
 
     return {
         "generated_at": now_iso(),
+        "identity": {
+            "display_name": greeting_name,
+            "greeting_prefix": greeting_prefix,
+        },
         "cards": {
             "needs_attention": len(open_attention),
             "active_tasks": len(active_tasks),
@@ -787,7 +895,6 @@ def overview():
             "scheduled_crons": crons.get("count", 0),
             "recent_sessions": len(sessions.get("sessions", [])),
             "active_projects": len(active_projects),
-            "calendar_items": len(calendar) if isinstance(calendar, list) else 0,
         },
     }
 
