@@ -69,7 +69,7 @@ This keeps the dashboard local-only by default while making later VPS migration 
 Current modularization / naming status:
 
 - The user-facing dashboard brand is now **Mentat**.
-- The repo path, helper names, task project key, and compatibility docs still use `agent-os` / Agent OS until the larger rename is approved.
+- The project/task data now use **Mentat** as the project name; repo path, helper names, Python compatibility modules, and some compatibility docs still use `agent-os` / Agent OS until the larger rename is deliberately planned.
 - Runtime config loading lives in `runtime_config.py`; `server.py` now focuses more narrowly on data access, routes, and HTTP serving.
 - Shared browser constants, markdown helpers, and API helpers live in `public/core.js`; `public/app.js` remains the UI orchestrator.
 - See `docs/modularization-plan.md` for the staged split plan.
@@ -141,15 +141,16 @@ Projects / Tasks is now a project command center rather than a duplicate task/ar
 
 - **Project Portfolio** selects the project scope, uses fixed-width horizontal cards, and keeps the visual progress bar.
 - **Open Task Queue** defaults to actionable work only; completed tasks are available through the custom status dropdown but are not shown by default.
+- **Selected Task** uses the refined-A inspector pattern: the queue stays compact and the selected task's full description, status metadata, tags, and next-move guidance live in a persistent detail rail. On narrow/mobile layouts, the queue stacks above the detail panel and exposes a Back to Queue control instead of duplicating the status pill in the detail header.
 - **Project Status** shows percent complete as text only, plus open/completed counts, blockers/waiting count, next move, and latest completed item.
 - **Recent Completed Work** is a compact timeline/archive below the queue.
 
-For now, new projects are added by editing `data/projects.json` and linking tasks in `data/tasks.json` — usually by asking Hermes to add them safely. A dashboard-native project creation flow is still a future feature.
+For now, new projects/tasks are added by editing `data/projects.json` and `data/tasks.json` — usually by asking Hermes to add them safely. A dashboard-native project/task creation and editing flow is the next likely write-back feature.
 
 ## Future roadmap tasks
 
 - Phase 2.5 UI/UX stabilization review and Google Calendar read-only polish are completed; move into the next Phase 3 expansion only after keeping the dashboard verified and local-only.
-- Future-phase TODOs are tracked under the `Agent OS` project in `data/tasks.json`:
+- Future-phase TODOs are tracked under the `Mentat` project in `data/tasks.json`:
 
 - Build dashboard-native project and task creation
 - Design Agent Pulse 2.0 heartbeat/write-back model

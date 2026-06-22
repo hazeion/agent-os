@@ -4,6 +4,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 INDEX = (ROOT / "public" / "index.html").read_text(encoding="utf-8")
 CSS = (ROOT / "public" / "styles.css").read_text(encoding="utf-8")
+APP_JS = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
 
 
 class VisualContractTests(unittest.TestCase):
@@ -33,6 +34,25 @@ class VisualContractTests(unittest.TestCase):
         reduced_motion_block = CSS[CSS.index("prefers-reduced-motion") :]
         self.assertIn("animation: none !important", reduced_motion_block)
         self.assertNotIn("animation-name: brain-spin", reduced_motion_block)
+
+    def test_projects_tasks_view_uses_refined_a_task_inspector(self):
+        self.assertIn('id="selected-task-panel"', INDEX)
+        self.assertIn('id="selected-task-detail"', INDEX)
+        self.assertIn("Selected Task", INDEX)
+        self.assertIn("function renderSelectedTaskInspector", APP_JS)
+        self.assertIn("selectedTaskId", APP_JS)
+        self.assertIn("task-list-item-button", APP_JS)
+        self.assertIn("data-task-id", APP_JS)
+        self.assertIn("aria-pressed", APP_JS)
+        self.assertIn(".task-detail-card", CSS)
+        self.assertIn(".task-list-item-button.active", CSS)
+
+    def test_refined_a_mobile_fallback_avoids_duplicate_status_pill_in_detail_header(self):
+        self.assertIn('id="selected-task-back"', INDEX)
+        self.assertIn('"queue"\n      "status"', CSS)
+        self.assertIn("task-detail-meta-row", APP_JS)
+        self.assertNotIn("Status</small><strong", APP_JS)
+        self.assertNotIn("selected-task-status-pill", INDEX + APP_JS)
 
 
 if __name__ == "__main__":

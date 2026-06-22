@@ -28,7 +28,7 @@ Current v1 direction:
 
 - Local-only dashboard.
 - Clean dark UI with subtle hacker/futuristic styling.
-- Start with only the Agent OS project.
+- Start with only the Mentat project.
 - Use local JSON files for project-owned data.
 - Read Hermes core files only; do not write to Hermes core.
 - Google Calendar read-only integration is connected through Hermes-managed OAuth; local `calendar.json` remains the fallback.
@@ -78,8 +78,9 @@ Current dashboard features:
 - Open items from `data/attention.json` can be resolved from the dashboard; tasks tagged `needs attention` / `needs_attention` or otherwise marked `needs_attention` also surface there as task-derived attention items that jump to the relevant task queue.
 - Google Calendar read-only source integration through Hermes OAuth, with local `calendar.json` fallback and grouped Today/Calendar agenda rendering.
 - `docs/react-readiness.md` documents when to move the frontend from vanilla JS to React without prematurely adding a build step.
-- Projects / Tasks command center with a Project Portfolio selector, Open Task Queue defaulting to actionable work, Project Status panel, and compact Recent Completed Work timeline.
+- Projects / Tasks command center with a Project Portfolio selector, Open Task Queue defaulting to actionable work, refined-A Selected Task inspector, Project Status panel, and compact Recent Completed Work timeline.
 - Project Portfolio is a fixed-width horizontal card rail with progress bars on project cards; overflow scrolls left/right with rail arrow controls when enough projects exist.
+- The Open Task Queue stays compact for scale; selecting a task opens its full description, status metadata, tags, and next-move guidance in the persistent Selected Task detail rail. Narrow/mobile layouts stack queue then detail and expose Back to Queue without duplicating the task status pill in the detail header.
 - Project Status deliberately lists percent complete as text/number only, not a second progress bar, to avoid duplicating the portfolio progress bars.
 - Task list supports a custom dark status dropdown/listbox with a centered SVG chevron; it toggles open/closed when clicked, closes on outside click/Escape, and keeps completed tasks available by filter but excluded from the default open queue.
 - Project cards filter the queue/status/completion timeline and show open/completed counts with progress.
@@ -91,7 +92,7 @@ Current dashboard features:
 
 Near-term project/task direction:
 
-- The dummy project/task fixtures have been removed; keep the local data focused on the real Agent OS project unless Brandon asks for temporary UI fixtures again.
+- The dummy project/task fixtures have been removed; keep the local data focused on the real Mentat project unless Brandon asks for temporary UI fixtures again.
 - Phase 2.5 UI/UX stabilization review is completed; the current dashboard keeps the stabilized command-center UI while Phase 3 integrations expand.
 - Google Calendar has been polished into a read-only 7-day agenda with a Today preview, grouped events, Google live/local fallback source pills, stale/error fallback metadata, and a 5-minute in-memory Google API cache.
 - Future dashboard write-back should start with dashboard-native project/task creation using project-owned endpoints/data files, not Hermes core writes.
@@ -103,7 +104,7 @@ Near-term project/task direction:
 - Local lifecycle cleanup is now in place too: runtime state lives under `data/runtime/server-state.json`, runtime state records `launcher_pid` when available, and the helper should be the first stop before manually killing ports.
 - Important Windows/Hermes nuance: Hermes background-session kill can still leave the real Python listener alive even when the project launch helpers are correct. Treat `./stop.sh` / `python agent_os_lifecycle.py stop` plus `./status.sh` as the trustworthy stop/verify workflow until that upstream process-manager behavior is fixed.
 - Light modularization has started: config parsing was extracted to `runtime_config.py`, browser constants/helpers/API helpers were extracted to `public/core.js`, and the staged plan lives at `docs/modularization-plan.md`.
-- Fast rename boundary completed: the browser title/sidebar brand now say **Mentat**, but repo paths, helper script names, Python compatibility modules, task/project data, and most planning notes intentionally remain Agent OS until a larger rename pass is approved.
+- Rename boundary update: the browser title/sidebar brand and project/task data now use **Mentat**. Repo paths, helper script names, Python compatibility modules, and many historical planning notes still intentionally use Agent OS / `agent-os` until a larger compatibility-aware rename pass is approved.
 
 ## Run locally
 
