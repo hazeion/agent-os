@@ -88,7 +88,7 @@
     "title": "Add reproducible dependency manifest for Agent OS",
     "description": "Create a requirements.txt or pyproject.toml that captures Agent OS runtime dependencies, especially Google Calendar integration packages, so setup is reproducible and not tied to Brandon's current machine.",
     "project": "Agent OS",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
@@ -102,8 +102,8 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T22:04:34-07:00",
-    "updated_at": "2026-06-21T22:04:34-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-21T22:30:59-07:00",
+    "completed_at": "2026-06-21T22:30:59-07:00"
   },
   {
     "id": "task_health_signal_upgrade",
