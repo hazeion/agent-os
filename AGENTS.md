@@ -1,4 +1,4 @@
-# Agent OS — Agent Handoff Guide
+# Mentat / Agent OS — Agent Handoff Guide
 
 This file is the first thing a new agent should read when working on Brandon's Agent OS project.
 
@@ -20,9 +20,9 @@ Important notes:
 - `E:/Obsidian Notes/Agent OS - Implementation Spec.md`
 - `E:/Obsidian Notes/Agent OS - Research Summary & Prompt Stack.md`
 
-## What Agent OS is
+## What Mentat / Agent OS is
 
-Agent OS is Brandon's local mission-control and personal productivity dashboard for Hermes Agent workflows.
+Mentat is the user-facing name for Brandon's local mission-control and personal productivity dashboard for Hermes Agent workflows.
 
 Current v1 direction:
 
@@ -36,14 +36,24 @@ Current v1 direction:
 
 ## Current implementation
 
-The app is a small Python HTTP server plus static frontend.
+The app is a small Python HTTP server plus static frontend. The current user-facing brand is **Mentat**; repo/helper/task compatibility names still use Agent OS / `agent-os` until the larger rename boundary is approved.
 
 Main files:
 
 ```text
 server.py
+runtime_config.py
+agent_os_lifecycle.py
+agent-os.toml
+run.sh
+stop.sh
+status.sh
+run.bat
+stop.bat
+status.bat
 public/index.html
 public/styles.css
+public/core.js
 public/app.js
 data/projects.json
 data/tasks.json
@@ -75,7 +85,9 @@ Current dashboard features:
 - Project cards filter the queue/status/completion timeline and show open/completed counts with progress.
 - Cron monitor.
 - Obsidian notes panel.
-- Health/status indicator.
+- Subsystem-aware health/status indicator: `/api/health` now reports real state for Hermes `state.db`, masked config readability, Google Calendar live/fallback status, cron store availability, and host resource pressure instead of a fixed healthy heartbeat.
+- Layered runtime configuration via `agent-os.toml`, optional `agent-os.local.toml`, environment variables, and CLI flags so paths/host/port are no longer hardcoded directly in `server.py`.
+- Local server lifecycle helper via `agent_os_lifecycle.py`, `run.sh` / `run.bat`, `stop.sh` / `stop.bat`, and `status.sh` / `status.bat`; startup now performs a preflight cleanup and runtime state tracking to reduce stale-listener confusion.
 
 Near-term project/task direction:
 
@@ -87,6 +99,11 @@ Near-term project/task direction:
 - Email should come after calendar stabilizes, initially read-only and focused on priority/needs-attention surfacing.
 - Keep tasks searchable by title, description, status, and project name from the top search bar.
 - Dashboard project creation remains a future feature; currently new projects are added by updating `data/projects.json` and related tasks in `data/tasks.json`, usually by asking Hermes to do it safely.
+- The runtime config foundation is now in place: shared repo defaults live in `agent-os.toml`, Brandon's machine-specific overrides can live in gitignored `agent-os.local.toml`, and env/CLI overrides are available for VPS or alternate-local runs later.
+- Local lifecycle cleanup is now in place too: runtime state lives under `data/runtime/server-state.json`, runtime state records `launcher_pid` when available, and the helper should be the first stop before manually killing ports.
+- Important Windows/Hermes nuance: Hermes background-session kill can still leave the real Python listener alive even when the project launch helpers are correct. Treat `./stop.sh` / `python agent_os_lifecycle.py stop` plus `./status.sh` as the trustworthy stop/verify workflow until that upstream process-manager behavior is fixed.
+- Light modularization has started: config parsing was extracted to `runtime_config.py`, browser constants/helpers/API helpers were extracted to `public/core.js`, and the staged plan lives at `docs/modularization-plan.md`.
+- Fast rename boundary completed: the browser title/sidebar brand now say **Mentat**, but repo paths, helper script names, Python compatibility modules, task/project data, and most planning notes intentionally remain Agent OS until a larger rename pass is approved.
 
 ## Run locally
 
@@ -99,12 +116,38 @@ python -m pip install -r requirements.txt
 
 Agent OS currently has no npm/package.json dependency step; the frontend remains static HTML/CSS/vanilla JS.
 
-From Git Bash:
+From Git Bash / Hermes terminal, prefer the lifecycle-aware bash launcher:
 
 ```bash
 cd /e/code/agent-os
-python server.py
+./run.sh
 ```
+
+From Windows Explorer / cmd, use:
+
+```bat
+E:/code/agent-os/run.bat
+```
+
+Inspect the effective runtime config when needed:
+
+```bash
+cd /e/code/agent-os
+python server.py --print-config
+```
+
+Config precedence is:
+- built-in defaults
+- `agent-os.toml`
+- `agent-os.local.toml` (gitignored, machine-specific)
+- environment variables (`AGENT_OS_PORT`, `AGENT_OS_HOST`, `HERMES_HOME`, `OBSIDIAN_VAULT_PATH`, `AGENT_OS_CONFIG`)
+- CLI flags (`--port`, `--host`, `--obsidian-vault`, `--config`, etc.)
+
+Lifecycle helpers:
+- `./status.sh` — report current managed listeners and runtime state
+- `./stop.sh` — stop managed Agent OS listeners and clear runtime state
+- `./run.sh` — preflight cleanup + foreground server start in Git Bash / Hermes terminal
+- `./run.bat` — preflight cleanup + foreground server start in cmd / Explorer
 
 Then open:
 

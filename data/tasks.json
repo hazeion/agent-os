@@ -110,7 +110,7 @@
     "title": "Upgrade dashboard health from soft heartbeat to real subsystem health",
     "description": "Make /api/health report meaningful status for state.db readability, config readability, calendar auth or fallback state, cron/jobs availability, and degraded conditions instead of always reporting healthy.",
     "project": "Agent OS",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
@@ -124,15 +124,15 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T22:04:34-07:00",
-    "updated_at": "2026-06-21T22:04:34-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-21T23:10:03-07:00",
+    "completed_at": "2026-06-21T23:10:03-07:00"
   },
   {
     "id": "task_behavior_regression_tests",
     "title": "Add behavior-oriented regression tests for key dashboard flows",
     "description": "Supplement string-contract tests with higher-value endpoint, data-shape, and interaction-focused checks for calendar payloads, attention resolution, project hydration, and other critical read-only flows.",
     "project": "Agent OS",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
@@ -146,16 +146,16 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T22:04:34-07:00",
-    "updated_at": "2026-06-21T22:04:34-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-21T23:56:40-07:00",
+    "completed_at": "2026-06-21T23:56:40-07:00"
   },
   {
     "id": "task_local_server_lifecycle",
     "title": "Add safer local server startup and shutdown handling",
-    "description": "Reduce stale-listener and port-conflict issues with a safer local server workflow such as port checks, one-instance guard, or stop/restart helper while keeping Agent OS local-only.",
+    "description": "Add a safer local Agent OS server lifecycle workflow with preflight port checks, runtime state tracking, and stop/status helpers so stale listeners and restart conflicts are easier to resolve while keeping the dashboard local-only.",
     "project": "Agent OS",
-    "status": "todo",
-    "priority": "medium",
+    "status": "completed",
+    "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
     "source": "manual",
@@ -163,21 +163,46 @@
       "phase-3.5",
       "cleanup",
       "windows",
-      "devx"
+      "devx",
+      "lifecycle"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T22:04:34-07:00",
-    "updated_at": "2026-06-21T22:04:34-07:00",
+    "updated_at": "2026-06-22T00:42:03-07:00",
+    "completed_at": "2026-06-22T00:42:03-07:00"
+  },
+  {
+    "id": "task_wrapper_listener_coupling",
+    "title": "Tighten Hermes launcher and Python listener lifecycle coupling",
+    "description": "Narrow the remaining Windows dev-loop mismatch between Hermes-managed background sessions and the real Agent OS listener. Project-side mitigations now exist (bash-native launch/stop/status helpers plus launcher PID diagnostics in runtime state), but killing a Hermes background session still does not reliably terminate the Windows listener, so the remaining work is now a Hermes/process-manager integration follow-up.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "windows",
+      "devx",
+      "lifecycle",
+      "hermes-integration"
+    ],
+    "review_required": false,
+    "needs_attention": true,
+    "created_at": "2026-06-22T01:01:27-07:00",
+    "updated_at": "2026-06-22T01:39:30-07:00",
     "completed_at": null
   },
   {
     "id": "task_light_modularization",
     "title": "Reduce monolith risk in server.py and app.js without changing scope",
-    "description": "Do a light internal refactor to split large frontend and server helpers by concern and keep endpoint contracts stable, without introducing React or expanding the product surface.",
+    "description": "Completed the first scoped light modularization slice: runtime config parsing moved to runtime_config.py, shared browser constants/markdown/API helpers moved to public/core.js, index.html loads core.js before app.js, visible dashboard self-reference copy and startup output use Mentat, and verification now covers the split with 36/36 tests.",
     "project": "Agent OS",
-    "status": "todo",
-    "priority": "medium",
+    "status": "completed",
+    "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
     "source": "manual",
@@ -190,16 +215,39 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T22:04:34-07:00",
-    "updated_at": "2026-06-21T22:04:34-07:00",
+    "updated_at": "2026-06-22T02:18:19-07:00",
+    "completed_at": "2026-06-22T02:18:19-07:00"
+  },
+  {
+    "id": "task_next_modularization_slice",
+    "title": "Choose the next small Mentat modularization slice",
+    "description": "Continue modularization only as needed, one concern at a time. Recommended candidates are extracting health checks, Hermes/session data access, project/task/attention data helpers, or one frontend view renderer. Keep endpoint contracts stable and do not introduce React/build tooling yet.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "architecture",
+      "modularization",
+      "mentat"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-22T02:18:19-07:00",
+    "updated_at": "2026-06-22T02:18:19-07:00",
     "completed_at": null
   },
   {
     "id": "task_local_assumption_audit",
-    "title": "Audit hardcoded local assumptions and document intentional Brandon-specific defaults",
-    "description": "Identify which Obsidian, drive, and path assumptions are intentionally personal-local versus which should move to config or env so Agent OS stays consciously Brandon-shaped rather than accidentally hardcoded everywhere.",
+    "title": "Build runtime config foundation and audit hardcoded local assumptions",
+    "description": "Add a layered Agent OS runtime config system (shared TOML defaults, local override TOML, env vars, and CLI flags), move key local path assumptions out of code, and document which Brandon-specific defaults remain intentional.",
     "project": "Agent OS",
-    "status": "todo",
-    "priority": "low",
+    "status": "completed",
+    "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
     "source": "manual",
@@ -207,13 +255,14 @@
       "phase-3.5",
       "cleanup",
       "portability",
-      "config"
+      "config",
+      "vps-prep"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T22:04:34-07:00",
-    "updated_at": "2026-06-21T22:04:34-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-22T00:23:04-07:00",
+    "completed_at": "2026-06-22T00:23:04-07:00"
   },
   {
     "id": "task_agent_pulse_heartbeat",
@@ -436,5 +485,28 @@
     "created_at": "2026-06-21T18:00:37-07:00",
     "updated_at": "2026-06-21T22:04:34-07:00",
     "completed_at": "2026-06-21T22:04:34-07:00"
+  },
+  {
+    "id": "task_mentat_full_rename",
+    "title": "Complete full Agent OS to Mentat rename boundary",
+    "description": "Postpone the full repo/module/data/docs rename until the codebase is stable and a compatibility plan is chosen. The current recommendation is to keep the user-facing brand as Mentat now, preserve Agent OS / agent-os internally for compatibility, and do the larger rename as a deliberate later milestone with aliases/migration notes.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3.5",
+      "cleanup",
+      "rename",
+      "mentat",
+      "branding"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-22T02:08:06-07:00",
+    "updated_at": "2026-06-22T02:18:19-07:00",
+    "completed_at": null
   }
 ]

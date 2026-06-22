@@ -15,41 +15,177 @@ import re
 import shutil
 import sqlite3
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+from runtime_config import (
+    AppConfig,
+    DEFAULT_APP_NAME,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    default_hermes_home,
+    default_obsidian_vault,
+    load_app_config,
+    parse_cli_args,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
+
+def apply_runtime_config(config: AppConfig) -> AppConfig:
+    global APP_CONFIG, HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT, STATE_DB, CRON_JOBS, CONFIG_PATH, GOOGLE_TOKEN
+    global CONFIG_DISPLAY_NAME, CONFIG_GREETING_PREFIX, CONFIG_APP_NAME
+
+    APP_CONFIG = config
+    HOST = config.host
+    PORT = config.port
+    DATA_DIR = config.data_dir
+    PUBLIC_DIR = config.public_dir
+    HERMES_HOME = config.hermes_home
+    OBSIDIAN_VAULT = config.obsidian_vault
+    STATE_DB = HERMES_HOME / "state.db"
+    CRON_JOBS = HERMES_HOME / "cron" / "jobs.json"
+    CONFIG_PATH = HERMES_HOME / "config.yaml"
+    GOOGLE_TOKEN = HERMES_HOME / "google_token.json"
+    CONFIG_DISPLAY_NAME = config.display_name
+    CONFIG_GREETING_PREFIX = config.greeting_prefix
+    CONFIG_APP_NAME = config.app_name
+    return config
+
+
+def runtime_config_summary() -> dict:
+    return {
+        "config_files": [str(path) for path in APP_CONFIG.config_files],
+        "server": {"host": HOST, "port": PORT},
+        "paths": {
+            "data_dir": str(DATA_DIR),
+            "public_dir": str(PUBLIC_DIR),
+            "hermes_home": str(HERMES_HOME),
+            "obsidian_vault": str(OBSIDIAN_VAULT),
+        },
+        "dashboard": {
+            "display_name": CONFIG_DISPLAY_NAME,
+            "greeting_prefix": CONFIG_GREETING_PREFIX,
+            "app_name": CONFIG_APP_NAME,
+        },
+    }
+
+
+def managed_server_ports(primary_port: int | None = None) -> list[int]:
+    port = int(primary_port or PORT)
+    return sorted({port, 8888, 8890})
+
+
+def runtime_state_path() -> Path:
+    return DATA_DIR / "runtime" / "server-state.json"
+
+
+def runtime_state_payload() -> dict:
+    return {
+        "pid": os.getpid(),
+        "host": HOST,
+        "port": PORT,
+        "managed_ports": managed_server_ports(PORT),
+        "started_at": now_iso(),
+        "cwd": str(BASE_DIR),
+        "config_files": [str(path) for path in APP_CONFIG.config_files],
+        "launcher_pid": configured_launcher_pid(),
+    }
+
+
+def write_runtime_state() -> Path:
+    path = runtime_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(runtime_state_payload(), indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def clear_runtime_state() -> None:
+    path = runtime_state_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def configured_launcher_pid() -> int | None:
+    raw = (os.environ.get("AGENT_OS_LAUNCHER_PID") or "").strip()
+    if not raw:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if pid > 0 and pid != os.getpid() else None
+
+
+def process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    ctypes.set_last_error(0)
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if handle:
+        kernel32.CloseHandle(handle)
+        return True
+    return ctypes.get_last_error() == 5
+
+
+def start_launcher_watch(http_server: ThreadingHTTPServer) -> int | None:
+    launcher_pid = configured_launcher_pid()
+    if launcher_pid is None:
+        return None
+
+    def watch() -> None:
+        while True:
+            time.sleep(2)
+            if not process_exists(launcher_pid):
+                print(f"Launcher PID {launcher_pid} is gone; stopping Agent OS.")
+                try:
+                    http_server.shutdown()
+                except Exception:
+                    pass
+                break
+
+    threading.Thread(target=watch, daemon=True, name="agent-os-launcher-watch").start()
+    return launcher_pid
+
+
+HOST = DEFAULT_HOST
+PORT = DEFAULT_PORT
 DATA_DIR = BASE_DIR / "data"
 PUBLIC_DIR = BASE_DIR / "public"
-PORT = int(os.environ.get("AGENT_OS_PORT", "8888"))
-
-
-def default_hermes_home() -> Path:
-    env = os.environ.get("HERMES_HOME")
-    if env:
-        return Path(env)
-    if sys.platform.startswith("win"):
-        return Path.home() / "AppData" / "Local" / "hermes"
-    return Path.home() / ".hermes"
-
-
 HERMES_HOME = default_hermes_home()
-OBSIDIAN_VAULT = Path(os.environ.get("OBSIDIAN_VAULT_PATH", "E:/Obsidian Notes"))
+OBSIDIAN_VAULT = default_obsidian_vault()
 STATE_DB = HERMES_HOME / "state.db"
 CRON_JOBS = HERMES_HOME / "cron" / "jobs.json"
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 GOOGLE_TOKEN = HERMES_HOME / "google_token.json"
+CONFIG_DISPLAY_NAME = None
+CONFIG_GREETING_PREFIX = None
+CONFIG_APP_NAME = DEFAULT_APP_NAME
+APP_CONFIG = AppConfig(tuple(), HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT)
 ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json"}
 CALENDAR_CACHE_TTL_SECONDS = 300
 CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
+HEALTH_STATUS_RANK = {"healthy": 0, "degraded": 1, "error": 2}
 
-PROJECT_NOTES = [
-    "Agentic OS Project Home.md",
-    "Agent OS - Research Summary & Prompt Stack.md",
-    "Agent OS - Implementation Spec.md",
-]
+apply_runtime_config(load_app_config())
+
+def note_sort_key(path: Path):
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0
 
 
 def now_iso() -> str:
@@ -74,6 +210,38 @@ def human_bytes(n: int | float | None) -> str | None:
     return f"{n:.1f} PB"
 
 
+def normalize_health_status(status: str | None) -> str:
+    value = str(status or "healthy").strip().lower()
+    return value if value in HEALTH_STATUS_RANK else "healthy"
+
+
+def worst_health_status(*statuses: str | None) -> str:
+    normalized = [normalize_health_status(status) for status in statuses if status is not None]
+    if not normalized:
+        return "healthy"
+    return max(normalized, key=lambda status: HEALTH_STATUS_RANK.get(status, 0))
+
+
+def status_label(status: str | None) -> str:
+    normalized = normalize_health_status(status)
+    return {
+        "healthy": "Healthy",
+        "degraded": "Degraded",
+        "error": "Error",
+    }.get(normalized, "Healthy")
+
+
+def make_health_subsystem(key: str, name: str, status: str, summary: str, **extra):
+    payload = {
+        "key": key,
+        "name": name,
+        "status": normalize_health_status(status),
+        "summary": clean_snippet(summary, 220),
+    }
+    payload.update(extra)
+    return payload
+
+
 def read_json_file(name: str, default):
     path = DATA_DIR / name
     try:
@@ -85,7 +253,7 @@ def read_json_file(name: str, default):
 
 
 def google_credentials(scopes: list[str]):
-    """Return Google OAuth credentials if the local Hermes token exists."""
+
     if not GOOGLE_TOKEN.exists():
         return None, "Google OAuth token not found"
     try:
@@ -704,25 +872,27 @@ def session_detail(session_id: str, target_message_id: str | None = None):
 
 def obsidian_notes():
     notes = []
-    for name in PROJECT_NOTES:
-        path = OBSIDIAN_VAULT / name
-        if not path.exists():
-            notes.append({"name": name, "exists": False, "path": str(path)})
-            continue
+    if not OBSIDIAN_VAULT.exists():
+        return {"vault": str(OBSIDIAN_VAULT), "exists": False, "note_count": 0, "notes": notes}
+
+    markdown_files = sorted(OBSIDIAN_VAULT.rglob("*.md"), key=note_sort_key, reverse=True)
+    for path in markdown_files:
         text = path.read_text(encoding="utf-8", errors="replace")
         excerpt = clean_snippet(re.sub(r"[#>*`\-\[\]()_]", " ", text), 260)
+        relative_path = path.relative_to(OBSIDIAN_VAULT).as_posix()
         notes.append(
             {
-                "name": name,
-                "title": name.removesuffix(".md"),
+                "name": path.name,
+                "title": path.stem,
                 "exists": True,
                 "path": str(path),
+                "relative_path": relative_path,
                 "modified_at": file_mtime_iso(path),
                 "size": human_bytes(path.stat().st_size),
                 "excerpt": excerpt,
             }
         )
-    return {"vault": str(OBSIDIAN_VAULT), "notes": notes}
+    return {"vault": str(OBSIDIAN_VAULT), "exists": True, "note_count": len(notes), "notes": notes}
 
 
 def windows_memory():
@@ -754,32 +924,270 @@ def windows_memory():
     }
 
 
+def disk_details(path: str):
+    drive = Path(path)
+    if not drive.exists():
+        return None
+    usage = shutil.disk_usage(path)
+    used_percent = round(usage.used / usage.total * 100, 1) if usage.total else 0.0
+    return {
+        "total": human_bytes(usage.total),
+        "used": human_bytes(usage.used),
+        "free": human_bytes(usage.free),
+        "used_percent": used_percent,
+    }
+
+
+def disk_status(info: dict | None) -> str:
+    if not info:
+        return "healthy"
+    used_percent = float(info.get("used_percent") or 0)
+    if used_percent >= 95:
+        return "error"
+    if used_percent >= 85:
+        return "degraded"
+    return "healthy"
+
+
+def memory_status(info: dict | None) -> str:
+    if not info:
+        return "healthy"
+    load = float(info.get("load_percent") or 0)
+    if load >= 95:
+        return "error"
+    if load >= 85:
+        return "degraded"
+    return "healthy"
+
+
+def state_db_health():
+    if not STATE_DB.exists():
+        return make_health_subsystem(
+            "state_db",
+            "Hermes state.db",
+            "error",
+            "Hermes state.db is missing.",
+            path=str(STATE_DB),
+            exists=False,
+            size=None,
+            modified_at=None,
+        )
+    try:
+        con = sqlite_connect()
+        if con is None:
+            raise RuntimeError("state.db could not be opened in read-only mode")
+        row = con.execute("select count(*) from sqlite_master").fetchone()
+        con.close()
+        return make_health_subsystem(
+            "state_db",
+            "Hermes state.db",
+            "healthy",
+            f"Readable SQLite store ({row[0]} schema entries).",
+            path=str(STATE_DB),
+            exists=True,
+            size=human_bytes(STATE_DB.stat().st_size),
+            modified_at=file_mtime_iso(STATE_DB),
+        )
+    except Exception as exc:
+        return make_health_subsystem(
+            "state_db",
+            "Hermes state.db",
+            "error",
+            f"Unreadable SQLite store: {exc}",
+            path=str(STATE_DB),
+            exists=True,
+            size=human_bytes(STATE_DB.stat().st_size),
+            modified_at=file_mtime_iso(STATE_DB),
+            error=clean_snippet(str(exc), 220),
+        )
+
+
+def config_health():
+    payload = hermes_config()
+    if not payload.get("exists"):
+        return make_health_subsystem(
+            "config",
+            "Hermes config",
+            "degraded",
+            "Hermes config file not found.",
+            path=payload.get("path"),
+            exists=False,
+            modified_at=None,
+            summary_fields=[],
+        )
+    if payload.get("error"):
+        return make_health_subsystem(
+            "config",
+            "Hermes config",
+            "error",
+            f"Config exists but could not be read: {payload['error']}",
+            path=payload.get("path"),
+            exists=True,
+            modified_at=payload.get("modified_at"),
+            size=payload.get("size"),
+            error=clean_snippet(payload.get("error"), 220),
+            summary_fields=sorted((payload.get("summary") or {}).keys()),
+        )
+    summary_fields = sorted((payload.get("summary") or {}).keys())
+    summary = "Masked config is readable"
+    if summary_fields:
+        summary += f" ({', '.join(summary_fields)} visible in summary)."
+    else:
+        summary += "."
+    return make_health_subsystem(
+        "config",
+        "Hermes config",
+        "healthy",
+        summary,
+        path=payload.get("path"),
+        exists=True,
+        modified_at=payload.get("modified_at"),
+        size=payload.get("size"),
+        summary_fields=summary_fields,
+    )
+
+
+def cron_health():
+    payload = read_cron_jobs()
+    if payload.get("error"):
+        return make_health_subsystem(
+            "cron",
+            "Cron jobs",
+            "error",
+            f"Cron job store exists but could not be read: {payload['error']}",
+            path=payload.get("source"),
+            exists=True,
+            count=0,
+            enabled_count=0,
+            error=clean_snippet(payload.get("error"), 220),
+        )
+    if not payload.get("exists"):
+        return make_health_subsystem(
+            "cron",
+            "Cron jobs",
+            "degraded",
+            "Cron job store not initialized yet.",
+            path=payload.get("source"),
+            exists=False,
+            count=0,
+            enabled_count=0,
+        )
+    return make_health_subsystem(
+        "cron",
+        "Cron jobs",
+        "healthy",
+        f"{payload.get('enabled_count', 0)} enabled of {payload.get('count', 0)} scheduled jobs.",
+        path=payload.get("source"),
+        exists=True,
+        count=payload.get("count", 0),
+        enabled_count=payload.get("enabled_count", 0),
+    )
+
+
+def calendar_health():
+    payload = google_calendar_events(days=7, limit=50)
+    fallback_available = bool((payload.get("summary") or {}).get("fallback_available"))
+    stale = bool((payload.get("summary") or {}).get("stale"))
+    source = payload.get("source") or "unknown"
+    auth = payload.get("auth") or "unknown"
+    error_text = clean_snippet(payload.get("error"), 220) if payload.get("error") else None
+    next_event = (payload.get("summary") or {}).get("next_event") or {}
+
+    if source == "google" and auth == "connected" and not error_text:
+        summary = "Google Calendar is connected and serving live read-only data."
+        if next_event.get("title"):
+            summary = f"Google Calendar connected; next event: {next_event['title']}."
+        status = "healthy"
+    elif fallback_available:
+        status = "degraded"
+        summary = "Using local calendar.json fallback instead of live Google data."
+        if stale:
+            summary = "Using stale local calendar.json fallback; live Google data unavailable."
+        if error_text:
+            summary = f"Calendar fell back to local data: {error_text}"
+    else:
+        status = "error"
+        summary = error_text or "Calendar has no live Google data and no local fallback available."
+
+    return make_health_subsystem(
+        "calendar",
+        "Calendar",
+        status,
+        summary,
+        source=source,
+        auth=auth,
+        read_only=bool(payload.get("read_only")),
+        stale=stale,
+        fallback_available=fallback_available,
+        item_count=(payload.get("summary") or {}).get("count", 0),
+        next_event=next_event,
+        error=error_text,
+        cache=payload.get("cache"),
+    )
+
+
+def host_health(memory: dict | None, disk: dict):
+    memory_state = memory_status(memory)
+    disk_states = [disk_status(info) for info in disk.values() if info]
+    status = worst_health_status(memory_state, *disk_states)
+    highlights = []
+    if memory and memory_state != "healthy":
+        highlights.append(f"memory {memory.get('load_percent')}% used")
+    for path, info in disk.items():
+        if info and disk_status(info) != "healthy":
+            highlights.append(f"{path} {info.get('used_percent')}% used")
+    summary = "Memory and disk usage are within thresholds."
+    if highlights:
+        summary = "Host pressure detected: " + ", ".join(highlights)
+    return make_health_subsystem(
+        "host_resources",
+        "Host resources",
+        status,
+        summary,
+        memory=memory,
+        disk=disk,
+    )
+
+
 def health():
-    disk_e = shutil.disk_usage("E:/") if Path("E:/").exists() else shutil.disk_usage(str(BASE_DIR.anchor or "."))
-    disk_c = shutil.disk_usage("C:/") if Path("C:/").exists() else None
+    disk = {
+        "E:/": disk_details("E:/") or disk_details(str(BASE_DIR.anchor or ".")),
+        "C:/": disk_details("C:/"),
+    }
+    memory = windows_memory()
+    subsystems = [
+        state_db_health(),
+        config_health(),
+        calendar_health(),
+        cron_health(),
+        host_health(memory, disk),
+    ]
+    status = worst_health_status(*(subsystem.get("status") for subsystem in subsystems))
+    degraded_items = [item for item in subsystems if item.get("status") == "degraded"]
+    error_items = [item for item in subsystems if item.get("status") == "error"]
+    if error_items:
+        summary = "; ".join(item.get("summary", item.get("name", "Subsystem error")) for item in error_items[:2])
+    elif degraded_items:
+        summary = "; ".join(item.get("summary", item.get("name", "Subsystem degraded")) for item in degraded_items[:2])
+    else:
+        summary = "All monitored dashboard subsystems are healthy."
+    state_db_item = next((item for item in subsystems if item.get("key") == "state_db"), {})
     return {
         "now": now_iso(),
-        "status": "healthy",
+        "status": status,
+        "status_label": status_label(status),
+        "summary": clean_snippet(summary, 240),
         "hermes_home": str(HERMES_HOME),
-        "state_db_exists": STATE_DB.exists(),
-        "state_db_size": human_bytes(STATE_DB.stat().st_size) if STATE_DB.exists() else None,
-        "memory": windows_memory(),
-        "disk": {
-            "E:/": {
-                "total": human_bytes(disk_e.total),
-                "used": human_bytes(disk_e.used),
-                "free": human_bytes(disk_e.free),
-                "used_percent": round(disk_e.used / disk_e.total * 100, 1),
-            },
-            "C:/": None
-            if disk_c is None
-            else {
-                "total": human_bytes(disk_c.total),
-                "used": human_bytes(disk_c.used),
-                "free": human_bytes(disk_c.free),
-                "used_percent": round(disk_c.used / disk_c.total * 100, 1),
-            },
+        "state_db_exists": bool(state_db_item.get("exists")),
+        "state_db_size": state_db_item.get("size"),
+        "memory": memory,
+        "disk": disk,
+        "status_counts": {
+            "healthy": sum(1 for item in subsystems if item.get("status") == "healthy"),
+            "degraded": len(degraded_items),
+            "error": len(error_items),
         },
+        "subsystems": subsystems,
     }
 
 
@@ -864,12 +1272,23 @@ def overview():
         dashboard = {}
 
     greeting_name = clean_snippet(
-        os.environ.get("AGENT_OS_DISPLAY_NAME")
+        CONFIG_DISPLAY_NAME
         or dashboard.get("display_name")
         or "Operator",
         40,
     ) or "Operator"
-    greeting_prefix = clean_snippet(dashboard.get("greeting_prefix") or "Hello", 16) or "Hello"
+    app_name = clean_snippet(
+        CONFIG_APP_NAME
+        or dashboard.get("app_name")
+        or DEFAULT_APP_NAME,
+        40,
+    ) or DEFAULT_APP_NAME
+    greeting_prefix = clean_snippet(
+        CONFIG_GREETING_PREFIX
+        or dashboard.get("greeting_prefix")
+        or "Hello",
+        16,
+    ) or "Hello"
 
     open_attention = open_attention_items(attention, tasks)
     active_tasks = [t for t in tasks if isinstance(t, dict) and task_status_area(t) != "completed"] if isinstance(tasks, list) else []
@@ -887,6 +1306,7 @@ def overview():
         "identity": {
             "display_name": greeting_name,
             "greeting_prefix": greeting_prefix,
+            "app_name": app_name,
         },
         "cards": {
             "needs_attention": len(open_attention),
@@ -1045,14 +1465,35 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    cli_args = parse_cli_args()
+    apply_runtime_config(load_app_config(cli_args))
+    if cli_args.print_config:
+        print(json.dumps(runtime_config_summary(), indent=2))
+        raise SystemExit(0)
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"Agent OS running at http://localhost:{PORT}")
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    launcher_pid = start_launcher_watch(server)
+    state_path = write_runtime_state()
+    print(f"Mentat listening on {HOST}:{PORT}")
+    if HOST in {"0.0.0.0", "::"}:
+        print(f"Local browser URL: http://localhost:{PORT}")
+    else:
+        print(f"Browser URL: http://{HOST}:{PORT}")
+    print(f"Config files: {[str(path) for path in APP_CONFIG.config_files] or ['built-in defaults only']}")
+    print(f"Data dir: {DATA_DIR}")
+    print(f"Runtime state: {state_path}")
+    if launcher_pid is not None:
+        print(f"Launcher PID watch: {launcher_pid}")
+    print(f"Managed ports: {managed_server_ports(PORT)}")
     print(f"Hermes home: {HERMES_HOME}")
+    print(f"Obsidian vault: {OBSIDIAN_VAULT}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping Agent OS.")
+    finally:
         server.server_close()
+        clear_runtime_state()

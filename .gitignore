@@ -15,6 +15,7 @@ venv/
 *.log
 logs/
 .hermes-tmp.*/
+data/runtime/
 
 # OS/editor noise
 .DS_Store
@@ -29,3 +30,4 @@ secrets.json
 users.json
 
 # Keep project-owned JSON seed data tracked unless intentionally moved to private/local data.
+agent-os.local.toml

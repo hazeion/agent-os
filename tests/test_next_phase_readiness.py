@@ -2,8 +2,11 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+INDEX = (ROOT / "public" / "index.html").read_text(encoding="utf-8")
 APP_JS = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
+CORE_JS = (ROOT / "public" / "core.js").read_text(encoding="utf-8")
 SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
+RUNTIME_CONFIG = (ROOT / "runtime_config.py").read_text(encoding="utf-8")
 REACT_NOTES = (ROOT / "docs" / "react-readiness.md").read_text(encoding="utf-8")
 
 
@@ -22,7 +25,7 @@ class NextPhaseReadinessTests(unittest.TestCase):
 
     def test_dashboard_identity_is_project_owned_not_hardcoded(self):
         self.assertIn('read_json_file("dashboard.json", {})', SERVER)
-        self.assertIn("AGENT_OS_DISPLAY_NAME", SERVER)
+        self.assertIn("AGENT_OS_DISPLAY_NAME", RUNTIME_CONFIG)
         self.assertNotIn('"Brandon"', SERVER)
 
     def test_calendar_integration_stays_read_only_and_uses_seven_day_agenda(self):
@@ -32,7 +35,7 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn('"stale": local_stale', SERVER)
         self.assertNotIn('GOOGLE_TOKEN.write_text', SERVER)
         self.assertIn('Next 7 Days', (ROOT / "public" / "index.html").read_text(encoding="utf-8"))
-        self.assertIn('Read-only agenda; Agent OS never writes calendar events.', APP_JS)
+        self.assertIn('Read-only agenda; Mentat never writes calendar events.', APP_JS)
         self.assertIn('CALENDAR_CACHE_TTL_SECONDS = 300', SERVER)
         self.assertIn('cached_calendar_payload(cache_key)', SERVER)
         self.assertIn('"cache"', SERVER)
@@ -48,6 +51,18 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn('if name not in ALLOWED_DATA_WRITES', SERVER)
         self.assertIn('path.parent != data_root', SERVER)
         self.assertIn('write_json_file("attention.json", attention)', SERVER)
+    def test_core_script_loads_before_app_script(self):
+        self.assertLess(INDEX.index('/core.js?v='), INDEX.index('/app.js?v='))
+
+    def test_app_js_does_not_redefine_extracted_core_helpers(self):
+        self.assertIn('const endpoints = {', CORE_JS)
+        self.assertIn('const state = {', CORE_JS)
+        self.assertIn('function escapeHtml', CORE_JS)
+        self.assertIn('async function api', CORE_JS)
+        self.assertNotIn('const endpoints = {', APP_JS)
+        self.assertNotIn('const state = {', APP_JS)
+        self.assertNotIn('function escapeHtml', APP_JS)
+        self.assertNotIn('async function api', APP_JS)
 
 
 if __name__ == "__main__":

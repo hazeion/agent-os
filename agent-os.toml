@@ -1,0 +1,21 @@
+# Shared Agent OS runtime defaults.
+#
+# Copy this repo, then edit these values or provide overrides with:
+# - agent-os.local.toml (gitignored, machine-specific)
+# - environment variables like AGENT_OS_PORT / HERMES_HOME / OBSIDIAN_VAULT_PATH
+# - CLI flags like --port, --host, --obsidian-vault
+
+[server]
+host = "127.0.0.1"
+port = 8888
+
+[paths]
+data_dir = "data"
+public_dir = "public"
+# hermes_home = "C:/Users/yourname/AppData/Local/hermes"
+# obsidian_vault = "/path/to/Obsidian Vault"
+
+[dashboard]
+app_name = "Mentat"
+# display_name = "Operator"
+greeting_prefix = "Hello"

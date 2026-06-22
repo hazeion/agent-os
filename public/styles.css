@@ -1573,9 +1573,45 @@ h2 {
   padding: 10px 12px;
   margin-top: 0;
 }
-.notes-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.notes-panel {
+  min-height: 0;
+}
+.section-copy {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: .9rem;
+}
+.notes-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.notes-scroll-region {
+  max-height: min(70vh, 980px);
+  overflow-y: auto;
+  padding-right: 6px;
+  align-content: start;
+}
 .note-card { padding: 14px; }
 .settings-list { display: grid; gap: 10px; }
+.health-item {
+  border: 1px solid rgba(255,255,255,.075);
+  border-radius: 14px;
+  background: rgba(255,255,255,.03);
+  padding: 14px;
+}
+.health-item.health-healthy {
+  border-color: rgba(90,247,164,.18);
+  background: linear-gradient(135deg, rgba(90,247,164,.055), rgba(255,255,255,.025));
+}
+.health-item.health-degraded {
+  border-color: rgba(255,209,102,.24);
+  background: linear-gradient(135deg, rgba(255,209,102,.065), rgba(255,255,255,.025));
+}
+.health-item.health-error {
+  border-color: rgba(255,107,138,.26);
+  background: linear-gradient(135deg, rgba(255,107,138,.075), rgba(255,255,255,.02));
+}
 .section-divider {
   height: 1px;
   margin: 18px 0;

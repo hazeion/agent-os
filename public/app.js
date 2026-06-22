@@ -1,230 +1,3 @@
-const REFRESH_MS = 30_000;
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => Array.from(document.querySelectorAll(selector));
-const fmt = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-const timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
-
-const endpoints = {
-  overview: '/api/overview',
-  projects: '/api/projects',
-  tasks: '/api/tasks',
-  attention: '/api/attention',
-  calendar: '/api/calendar',
-  crons: '/api/hermes/crons',
-  sessions: '/api/hermes/sessions',
-  search: '/api/hermes/search',
-  config: '/api/hermes/config',
-  notes: '/api/obsidian-notes',
-  health: '/api/health',
-};
-
-const state = {
-  sessions: [],
-  tasks: [],
-  projects: [],
-  projectsLoaded: false,
-  greetingName: 'Operator',
-  greetingPrefix: 'Hello',
-  sessionFilter: '',
-  taskFilter: '',
-  taskStatusFilter: 'open',
-  projectFilter: '',
-  selectedSessionId: '',
-  activeView: 'today',
-  messageSearchTimer: null,
-  isRefreshing: false,
-  needsRefresh: false,
-  hasBootstrapped: false,
-};
-
-const taskStatusLabels = {
-  open: 'Open',
-  todo: 'Todo',
-  'in progress': 'In Progress',
-  waiting: 'Waiting',
-  'needs attention': 'Needs Attention',
-  completed: 'Completed',
-  all: 'All',
-};
-
-const metricIcons = {
-
-  needs_attention: `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M12 3.4 21 19H3L12 3.4Z" />
-      <path d="M12 8.5v5" />
-      <path d="M12 17.2h.01" />
-    </svg>`,
-  active_tasks: `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M8 6h11" />
-      <path d="M8 12h11" />
-      <path d="M8 18h11" />
-      <path d="m3.8 6 1.1 1.1L7 4.8" />
-      <path d="m3.8 12 1.1 1.1L7 10.8" />
-      <path d="m3.8 18 1.1 1.1L7 16.8" />
-    </svg>`,
-  completed_this_week: `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="m8.2 12.3 2.4 2.4 5.3-5.4" />
-    </svg>`,
-  recent_sessions: `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M6 7.5h10.5a3 3 0 0 1 3 3v2.8a3 3 0 0 1-3 3H12l-4.2 3v-3H6a3 3 0 0 1-3-3v-2.8a3 3 0 0 1 3-3Z" />
-      <path d="M8 11h7" />
-      <path d="M8 13.7h4.7" />
-    </svg>`,
-  scheduled_crons: `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M12 7.5V12l3.2 2" />
-      <path d="M17.7 5.7 19 4.4" />
-      <path d="M5 4.4l1.3 1.3" />
-    </svg>`,
-  active_projects: `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7.5Z" />
-      <path d="M3.8 10h16.4" />
-    </svg>`,
-};
-
-function escapeHtml(value = '') {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
-function safeExternalUrl(value = '') {
-  try {
-    const url = new URL(String(value));
-    return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
-  } catch {
-    return '';
-  }
-}
-
-function escapeRegExp(value = '') {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function queryTerms(query = '') {
-  return Array.from(new Set(String(query).match(/[A-Za-z0-9_]+/g) || []))
-    .filter((term) => term.length >= 2)
-    .slice(0, 8);
-}
-
-function highlightHtml(value = '', query = '') {
-  const terms = queryTerms(query);
-  let html = escapeHtml(value);
-  terms.forEach((term) => {
-    const safeTerm = escapeHtml(term);
-    html = html.replace(new RegExp(`(${escapeRegExp(safeTerm)})`, 'gi'), '<mark>$1</mark>');
-  });
-  return html;
-}
-
-function isMarkdownSpecialLine(line = '') {
-  return /^(#{1,4}\s+|[-*]\s+|\d+\.\s+|>\s*)/.test(line.trim());
-}
-
-function inlineMarkdown(value = '', query = '') {
-  let html = highlightHtml(value, query);
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/(^|\s)\*([^*]+)\*(?=\s|$)/g, '$1<em>$2</em>');
-  html = html.replace(/(^|\s)_([^_]+)_(?=\s|$)/g, '$1<em>$2</em>');
-  return html;
-}
-
-function renderMarkdownBlocks(value = '', query = '') {
-  const lines = String(value).replace(/\r/g, '').split('\n');
-  const html = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const trimmed = line.trim();
-    if (!trimmed) {
-      i += 1;
-      continue;
-    }
-    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
-    if (heading) {
-      const level = Math.min(4, heading[1].length + 3);
-      html.push(`<h${level}>${inlineMarkdown(heading[2], query)}</h${level}>`);
-      i += 1;
-      continue;
-    }
-    if (/^[-*]\s+/.test(trimmed)) {
-      const items = [];
-      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
-        items.push(`<li>${inlineMarkdown(lines[i].trim().replace(/^[-*]\s+/, ''), query)}</li>`);
-        i += 1;
-      }
-      html.push(`<ul>${items.join('')}</ul>`);
-      continue;
-    }
-    if (/^\d+\.\s+/.test(trimmed)) {
-      const items = [];
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
-        items.push(`<li>${inlineMarkdown(lines[i].trim().replace(/^\d+\.\s+/, ''), query)}</li>`);
-        i += 1;
-      }
-      html.push(`<ol>${items.join('')}</ol>`);
-      continue;
-    }
-    if (/^>\s*/.test(trimmed)) {
-      const quotes = [];
-      while (i < lines.length && /^>\s*/.test(lines[i].trim())) {
-        quotes.push(inlineMarkdown(lines[i].trim().replace(/^>\s*/, ''), query));
-        i += 1;
-      }
-      html.push(`<blockquote>${quotes.join('<br>')}</blockquote>`);
-      continue;
-    }
-    const paragraph = [];
-    while (i < lines.length && lines[i].trim() && !isMarkdownSpecialLine(lines[i])) {
-      paragraph.push(lines[i].trim());
-      i += 1;
-    }
-    html.push(`<p>${inlineMarkdown(paragraph.join(' '), query)}</p>`);
-  }
-  return html.join('');
-}
-
-function renderMarkdown(value = '', query = '') {
-  const parts = String(value || '').split('```');
-  return parts.map((part, index) => {
-    if (index % 2 === 0) return renderMarkdownBlocks(part, query);
-    let code = part.replace(/^\s*([A-Za-z0-9_-]+)\n/, '');
-    return `<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`;
-  }).join('');
-}
-
-async function api(path, options = {}) {
-  const res = await fetch(path, { cache: 'no-store', ...options });
-  if (!res.ok) throw new Error(`${path} returned ${res.status}`);
-  return res.json();
-}
-
-async function resolveAttentionItem(id) {
-  return api(`/api/attention/${encodeURIComponent(id)}/resolve`, { method: 'POST' });
-}
-
-async function fetchSessionDetail(id, messageId = '') {
-  const suffix = messageId ? `?message_id=${encodeURIComponent(messageId)}` : '';
-  return api(`${endpoints.sessions}/${encodeURIComponent(id)}${suffix}`);
-}
-
-async function searchMessages(query) {
-  return api(`${endpoints.search}?q=${encodeURIComponent(query)}`);
-}
-
 function humanDate(value) {
   if (!value) return '—';
   const d = new Date(value);
@@ -233,10 +6,14 @@ function humanDate(value) {
 }
 
 function renderGreeting(identity = {}) {
+  state.appName = (identity.app_name || state.appName || 'Mentat').trim();
   state.greetingName = (identity.display_name || state.greetingName || 'Operator').trim();
   state.greetingPrefix = (identity.greeting_prefix || state.greetingPrefix || 'Hello').trim();
   const title = `${state.greetingPrefix} ${state.greetingName}`.trim();
+  const brand = document.querySelector('#brand-name');
   const hero = document.querySelector('.hero-title');
+  if (brand) brand.textContent = state.appName;
+  document.title = `${state.appName} · Mission Control`;
   if (!hero) return;
   hero.textContent = title;
   hero.dataset.text = title;
@@ -814,7 +591,7 @@ function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
       <div>
         <div class="calendar-summary-kicker mono">${source === 'google' ? 'Google Calendar · read-only' : 'Local fallback'}</div>
         <strong>${escapeHtml(statusLine)}</strong>
-        <p>${escapeHtml(payload.read_only ? 'Read-only agenda; Agent OS never writes calendar events.' : 'Calendar feed')}</p>
+        <p>${escapeHtml(payload.read_only ? 'Read-only agenda; Mentat never writes calendar events.' : 'Calendar feed')}</p>
       </div>
       <div class="calendar-summary-stats mono">
         <span><b>${summary.today_count ?? 0}</b> today</span>
@@ -826,7 +603,7 @@ function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
   if (!visible.length) {
     const emptyText = source === 'google'
       ? 'No upcoming Google Calendar events in the next 7 days.'
-      : 'No usable local calendar items available. Google Calendar read-only sync will appear here when connected; otherwise Agent OS falls back to local calendar data.';
+      : 'No usable local calendar items available. Google Calendar read-only sync will appear here when connected; otherwise Mentat falls back to local calendar data.';
     container.innerHTML = `${summaryMarkup}<div class="empty">${emptyText}</div>`;
     return;
   }
@@ -1069,22 +846,62 @@ function renderAgentPulse(payload = {}) {
 
 function renderNotes(payload = {}) {
   const notes = payload.notes || [];
+  const countPill = $('#notes-count-pill');
+  const vaultMeta = $('#notes-vault-meta');
+  if (countPill) countPill.textContent = `${notes.length} notes`;
+  if (vaultMeta) {
+    vaultMeta.textContent = payload.exists === false
+      ? `Vault missing: ${payload.vault || 'Unknown vault path'}`
+      : `${notes.length} markdown note${notes.length === 1 ? '' : 's'} from ${payload.vault || 'Obsidian vault'}`;
+  }
   $('#notes-list').innerHTML = notes.length ? notes.map((note) => `
     <article class="note-card">
       <div class="item-title"><span>${escapeHtml(note.title || note.name)}</span></div>
       <div class="item-desc">${escapeHtml(note.excerpt || '')}</div>
-      <div class="item-meta mono">${note.exists ? `${escapeHtml(note.size || '')} · ${humanDate(note.modified_at)}` : 'Missing from vault'}</div>
+      <div class="item-meta mono">${[
+        note.relative_path,
+        note.size,
+        humanDate(note.modified_at),
+      ].filter(Boolean).map((value) => escapeHtml(value)).join(' · ')}</div>
     </article>
-  `).join('') : `<div class="empty">No Obsidian project notes found.</div>`;
+  `).join('') : `<div class="empty">No Obsidian markdown notes found.</div>`;
+}
+
+function healthTone(status = 'healthy') {
+  if (status === 'error') return 'danger';
+  if (status === 'degraded') return 'warn';
+  return 'success';
 }
 
 function renderHealth(payload = {}) {
   const dot = $('#health-dot');
   const label = $('#health-label');
-  const diskEntries = Object.entries(payload.disk || {}).filter(([, value]) => value && value.free);
-  const [diskLabel, diskInfo] = diskEntries.find(([path]) => path === 'E:/') || diskEntries[0] || [];
-  dot.className = 'dot healthy';
-  label.textContent = `Healthy · DB ${payload.state_db_size || 'n/a'}${diskInfo ? ` · ${diskLabel} ${diskInfo.free} free` : ''}`;
+  const pill = $('#health-status-pill');
+  const summary = $('#health-summary');
+  const status = payload.status || 'healthy';
+  const statusLabel = payload.status_label || (status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : 'Healthy');
+  const dotClass = status === 'healthy' ? 'healthy' : 'degraded';
+  if (dot) dot.className = `dot ${dotClass}`;
+  if (label) label.textContent = `${statusLabel} · ${payload.summary || 'No subsystem summary available.'}`;
+  if (pill) {
+    pill.textContent = statusLabel;
+    pill.className = `pill ${healthTone(status)}`;
+  }
+  if (!summary) return;
+  const subsystems = Array.isArray(payload.subsystems) ? payload.subsystems : [];
+  summary.innerHTML = subsystems.length ? subsystems.map((item) => {
+    const meta = [item.path, item.size, item.modified_at].filter(Boolean).map((value) => escapeHtml(value)).join(' · ');
+    return `
+      <article class="item health-item health-${escapeHtml(item.status || 'healthy')}">
+        <div class="item-title">
+          <span>${escapeHtml(item.name || item.key || 'Subsystem')}</span>
+          <span class="pill ${healthTone(item.status)}">${escapeHtml(item.status || 'healthy')}</span>
+        </div>
+        <div class="item-desc">${escapeHtml(item.summary || 'No details available.')}</div>
+        ${meta ? `<div class="item-meta mono">${meta}</div>` : ''}
+      </article>
+    `;
+  }).join('') : `<div class="empty">No subsystem health checks returned.</div>`;
 }
 
 async function ensureProjectsLoaded() {

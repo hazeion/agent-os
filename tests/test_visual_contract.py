@@ -19,7 +19,7 @@ class VisualContractTests(unittest.TestCase):
         header_block = INDEX[INDEX.index('<header class="command-header">') : INDEX.index('</header>')]
         self.assertIn("brain-brand", brand_block)
         self.assertIn("brain-frame", brand_block)
-        self.assertIn("Digitized Agent OS brain logo", brand_block)
+        self.assertIn("Digitized Mentat brain logo", brand_block)
         self.assertNotIn('class="brain-orb"', header_block)
         self.assertNotIn("15-frame cortex", header_block)
         self.assertNotIn(">AO</div>", brand_block)

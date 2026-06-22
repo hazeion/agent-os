@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Agent OS · Mission Control</title>
-  <link rel="stylesheet" href="/styles.css?v=sidebar-brain-logo-1" />
+  <title>Mentat · Mission Control</title>
+  <link rel="stylesheet" href="/styles.css?v=mentat-modular-1" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
 
   <div class="app-shell">
-    <aside class="sidebar" aria-label="Agent OS navigation">
+    <aside class="sidebar" aria-label="Mentat navigation">
       <div class="brand-block">
-        <div class="brand-mark brain-brand" role="img" aria-label="Digitized Agent OS brain logo">
+        <div class="brand-mark brain-brand" role="img" aria-label="Digitized Mentat brain logo">
           <div class="brain-frame" aria-hidden="true">
             <svg class="brain-model" viewBox="0 0 160 160" focusable="false">
               <defs>
@@ -48,7 +48,7 @@
           </div>
         </div>
         <div>
-          <div class="brand-name">Agent OS</div>
+          <div class="brand-name" id="brand-name">Mentat</div>
           <div class="brand-subtitle">Local Command</div>
         </div>
       </div>
@@ -305,14 +305,15 @@
       </section>
 
       <section class="view" id="view-notes" data-view-panel="notes">
-        <section class="panel">
+        <section class="panel notes-panel">
           <div class="panel-head">
             <div>
               <h2>Obsidian Notes</h2>
+              <p id="notes-vault-meta" class="section-copy">Loading vault notes…</p>
             </div>
-            <span class="pill">vault</span>
+            <span class="pill" id="notes-count-pill">vault</span>
           </div>
-          <div id="notes-list" class="notes-grid"></div>
+          <div id="notes-list" class="notes-grid notes-scroll-region"></div>
         </section>
       </section>
 
@@ -325,9 +326,19 @@
             <span class="pill">read-only</span>
           </div>
           <div class="settings-list">
-            <article class="item"><div class="item-title"><span>Runtime mode</span><span class="pill success">local-only</span></div><div class="item-desc">Agent OS reads Hermes data and writes only project-owned JSON files.</div></article>
+            <article class="item"><div class="item-title"><span>Runtime mode</span><span class="pill success">local-only</span></div><div class="item-desc">Mentat reads Hermes data and writes only project-owned JSON files.</div></article>
             <article class="item"><div class="item-title"><span>Calendar</span><span class="pill">connected / fallback</span></div><div class="item-desc">Google Calendar read-only sync is connected when the Hermes token is available, with local <code>calendar.json</code> used as the fallback.</div></article>
             <article class="item"><div class="item-title"><span>Agent chat</span><span class="pill warn">planned</span></div><div class="item-desc">Direct chat from the dashboard will need a deliberate Hermes gateway/API integration.</div></article>
+          </div>
+          <div class="section-divider"></div>
+          <div class="panel-head compact-head">
+            <div>
+              <h2>Subsystem Health</h2>
+            </div>
+            <span class="pill" id="health-status-pill">starting</span>
+          </div>
+          <div id="health-summary" class="settings-list">
+            <div class="empty">Health checks will appear here after the first refresh.</div>
           </div>
           <div class="section-divider"></div>
           <div class="panel-head compact-head">
@@ -343,6 +354,7 @@
     </main>
   </div>
 
-  <script src="/app.js?v=sidebar-brain-logo-1"></script>
+  <script src="/core.js?v=mentat-modular-1"></script>
+  <script src="/app.js?v=mentat-modular-1"></script>
 </body>
 </html>
