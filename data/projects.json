@@ -8,5 +8,17 @@
     "obsidian_note": "Agentic OS Project Home",
     "created_at": "2026-06-20T22:32:04",
     "updated_at": "2026-06-20T22:32:04"
+  },
+  {
+    "id": "project_dummy_test",
+    "name": "Dummy Test Project",
+    "type": "test",
+    "status": "active",
+    "description": "Temporary dummy project for validating project filtering, task status sorting, and completed-work timelines.",
+    "obsidian_note": null,
+    "source": "dummy",
+    "temporary": true,
+    "created_at": "2026-06-21T15:11:28-07:00",
+    "updated_at": "2026-06-21T15:11:28-07:00"
   }
 ]

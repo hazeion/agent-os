@@ -316,6 +316,7 @@ def search_messages(query: str, limit: int = 20):
                       and length(trim(coalesce(m.content, ''))) > 0
                       and coalesce(s.archived, 0) = 0
                       and m.role in ('user', 'assistant')
+                      and (m.role != 'assistant' or length(trim(coalesce(m.content, ''))) > 0)
                     order by bm25(messages_fts)
                     limit ?
                     """,
@@ -337,6 +338,7 @@ def search_messages(query: str, limit: int = 20):
                   and length(trim(coalesce(m.content, ''))) > 0
                   and coalesce(s.archived, 0) = 0
                   and m.role in ('user', 'assistant')
+                      and (m.role != 'assistant' or length(trim(coalesce(m.content, ''))) > 0)
                 order by m.timestamp desc
                 limit ?
                 """,
@@ -500,6 +502,7 @@ def session_detail(session_id: str, target_message_id: str | None = None):
             where session_id = ?
               and coalesce(active, 1) = 1
               and role in ('user', 'assistant')
+              and (role != 'assistant' or length(trim(coalesce(content, ''))) > 0)
             """,
             (session_id,),
         ).fetchone()[0]
@@ -514,6 +517,7 @@ def session_detail(session_id: str, target_message_id: str | None = None):
                 where session_id = ?
                   and coalesce(active, 1) = 1
                   and role in ('user', 'assistant')
+              and (role != 'assistant' or length(trim(coalesce(content, ''))) > 0)
                   and id <= ?
                 order by id desc
                 limit 160
@@ -527,6 +531,7 @@ def session_detail(session_id: str, target_message_id: str | None = None):
                 where session_id = ?
                   and coalesce(active, 1) = 1
                   and role in ('user', 'assistant')
+              and (role != 'assistant' or length(trim(coalesce(content, ''))) > 0)
                   and id > ?
                 order by id asc
                 limit 220
@@ -543,6 +548,7 @@ def session_detail(session_id: str, target_message_id: str | None = None):
                 where session_id = ?
                   and coalesce(active, 1) = 1
                   and role in ('user', 'assistant')
+              and (role != 'assistant' or length(trim(coalesce(content, ''))) > 0)
                 order by id asc
                 limit 500
                 """,
@@ -557,6 +563,7 @@ def session_detail(session_id: str, target_message_id: str | None = None):
                 where session_id = ?
                   and coalesce(active, 1) = 1
                   and role in ('user', 'assistant')
+              and (role != 'assistant' or length(trim(coalesce(content, ''))) > 0)
                 order by id asc
                 limit 500
                 """,
@@ -683,6 +690,75 @@ def health():
     }
 
 
+def task_status_area(task: dict) -> str:
+    status = str(task.get("status") or "").strip().lower().replace("_", " ")
+    if status == "completed":
+        return "completed"
+    if status == "in progress":
+        return "in progress"
+    if status == "waiting":
+        return "waiting"
+    if status == "needs attention":
+        return "needs attention"
+    return "todo"
+
+
+def task_has_attention_tag(task: dict) -> bool:
+    tags = task.get("tags")
+    if not isinstance(tags, list):
+        return False
+    return any(str(tag).strip().lower().replace("_", " ") == "needs attention" for tag in tags)
+
+
+def task_needs_attention(task: dict) -> bool:
+    if not isinstance(task, dict):
+        return False
+    if task_status_area(task) == "completed":
+        return False
+    return bool(task.get("needs_attention")) or bool(task.get("review_required")) or task_status_area(task) == "needs attention" or task_has_attention_tag(task)
+
+
+def task_attention_items(tasks) -> list[dict]:
+    if not isinstance(tasks, list):
+        return []
+    items = []
+    for task in tasks:
+        if not task_needs_attention(task):
+            continue
+        task_id = str(task.get("id") or task.get("title") or "untitled")
+        priority = str(task.get("priority") or "medium").lower()
+        items.append(
+            {
+                "id": f"task:{task_id}",
+                "task_id": task_id,
+                "title": task.get("title") or "Untitled task",
+                "description": task.get("description") or "Task is tagged as needing attention.",
+                "type": "task_needs_attention",
+                "source": "task",
+                "project": task.get("project") or "General",
+                "severity": "high" if priority == "high" else "medium",
+                "status": "open",
+                "created_at": task.get("updated_at") or task.get("created_at") or now_iso(),
+                "link": task_id,
+                "tags": task.get("tags") if isinstance(task.get("tags"), list) else [],
+            }
+        )
+    return items
+
+
+def open_attention_items(attention=None, tasks=None) -> list[dict]:
+    if attention is None:
+        attention = read_json_file("attention.json", [])
+    if tasks is None:
+        tasks = read_json_file("tasks.json", [])
+    manual = [a for a in attention if isinstance(a, dict) and a.get("status", "open") == "open"] if isinstance(attention, list) else []
+    return manual + task_attention_items(tasks)
+
+
+def attention_payload():
+    return {"attention": open_attention_items()}
+
+
 def overview():
     projects = read_json_file("projects.json", [])
     tasks = read_json_file("tasks.json", [])
@@ -691,7 +767,7 @@ def overview():
     crons = read_cron_jobs()
     sessions = recent_sessions(limit=5)
 
-    open_attention = [a for a in attention if a.get("status", "open") == "open"] if isinstance(attention, list) else []
+    open_attention = open_attention_items(attention, tasks)
     active_tasks = [t for t in tasks if t.get("status") in {"todo", "in_progress", "waiting", "needs_attention"}] if isinstance(tasks, list) else []
     active_projects = [p for p in projects if p.get("status") == "active"] if isinstance(projects, list) else []
     week_ago = datetime.now().astimezone() - timedelta(days=7)
@@ -738,8 +814,8 @@ def resolve_attention_item(attention_id: str):
         return {"error": f"Attention item not found: {attention_id}"}, 404
 
     write_json_file("attention.json", attention)
-    open_items = [item for item in attention if isinstance(item, dict) and item.get("status", "open") == "open"]
-    return {"ok": True, "resolved": resolved_item, "attention": attention, "open_count": len(open_items)}, 200
+    tasks = read_json_file("tasks.json", [])
+    return {"ok": True, "resolved": resolved_item, "attention": attention, "open_count": len(open_attention_items(attention, tasks))}, 200
 
 
 POST_ROUTES = {
@@ -751,7 +827,7 @@ API_ROUTES = {
     "/api/overview": overview,
     "/api/projects": lambda: {"projects": read_json_file("projects.json", [])},
     "/api/tasks": lambda: {"tasks": read_json_file("tasks.json", [])},
-    "/api/attention": lambda: {"attention": read_json_file("attention.json", [])},
+    "/api/attention": attention_payload,
     "/api/calendar": google_calendar_events,
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": read_cron_jobs,

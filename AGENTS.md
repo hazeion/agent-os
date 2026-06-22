@@ -64,19 +64,26 @@ Current dashboard features:
 - `Hello Brandon` header and clean dark futuristic styling.
 - Overview metric cards.
 - Needs Attention panel.
-- Attention items can be resolved from the dashboard.
+- Open items from `data/attention.json` can be resolved from the dashboard; tasks tagged `needs attention` / `needs_attention` or otherwise marked `needs_attention` also surface there as task-derived attention items that jump to the relevant task queue.
 - Google Calendar read-only integration through Hermes-managed OAuth, with local `calendar.json` fallback.
-- Concise task list with status/project pills; tags are intentionally hidden until they become useful/searchable UI.
-- Active project panel.
-- Completed work summary.
+- Projects / Tasks command center with a Project Portfolio selector, Open Task Queue defaulting to actionable work, Project Status panel, and compact Recent Completed Work timeline.
+- Project Portfolio is a fixed-width horizontal card rail with progress bars on project cards; overflow scrolls left/right with rail arrow controls when enough projects exist.
+- Project Status deliberately lists percent complete as text/number only, not a second progress bar, to avoid duplicating the portfolio progress bars.
+- Task list supports a custom dark status dropdown/listbox with a centered SVG chevron; it toggles open/closed when clicked, closes on outside click/Escape, and keeps completed tasks available by filter but excluded from the default open queue.
+- Project cards filter the queue/status/completion timeline and show open/completed counts with progress.
 - Cron monitor.
 - Obsidian notes panel.
 - Health/status indicator.
 
 Near-term project/task direction:
 
+- The next work should finish **Phase 2.5 UI/UX stabilization** before major new integrations: review Today/Projects/Tasks screenshots, polish remaining responsive issues, and remove dummy fixtures when no longer needed.
+- Google Calendar is connected at a read-only source level; the next external-data phase should polish the Calendar/Today agenda experience and fallback/stale states.
+- Future dashboard write-back should start with dashboard-native project/task creation using project-owned endpoints/data files, not Hermes core writes.
+- Agent Pulse 2.0 requires a project-owned heartbeat/write-back model before claiming live active-agent tracking.
+- Email should come after calendar stabilizes, initially read-only and focused on priority/needs-attention surfacing.
 - Keep tasks searchable by title, description, status, and project name from the top search bar.
-- Rework project cards later so clicking a project opens a stylized progress/detail list showing completed steps vs. remaining steps.
+- Dashboard project creation remains a future feature; currently new projects are added by updating `data/projects.json` and related tasks in `data/tasks.json`, usually by asking Hermes to do it safely.
 
 ## Run locally
 
@@ -133,7 +140,7 @@ Expected basics:
 
 ## Attention item behavior
 
-Open attention items live in:
+Open manual attention items live in:
 
 ```text
 data/attention.json
@@ -146,7 +153,9 @@ GET /api/attention
 POST /api/attention/<id>/resolve
 ```
 
-Resolving an item should not delete history. It should update the item:
+`GET /api/attention` also includes task-derived attention items from `data/tasks.json` when an open task has status `needs_attention`, boolean `needs_attention`, `review_required`, or a `needs attention` / `needs_attention` tag. Task-derived attention items are not standalone records in `attention.json`; the UI should jump to the project/task queue instead of trying to resolve them through the attention endpoint.
+
+Resolving a manual item should not delete history. It should update the item:
 
 ```json
 {
@@ -155,7 +164,7 @@ Resolving an item should not delete history. It should update the item:
 }
 ```
 
-Resolved items are hidden from open counts and the Needs Attention panel.
+Resolved manual items are hidden from open counts and the Needs Attention panel.
 
 ## Important rules
 
@@ -216,17 +225,13 @@ Browser cache can make UI changes look broken. Static assets are currently serve
 
 ## Git status/history
 
-This is a local git repo on branch `main`.
-
-Key commits so far:
+This is a local git repo on branch `main` with GitHub remote:
 
 ```text
-5715bdf feat: resolve attention items from dashboard
-260ef0a feat: polish header and remove activity feed
-14724b2 feat: bootstrap local agent os dashboard
+origin https://github.com/hazeion/agent-os.git
 ```
 
-GitHub push is intentionally set aside for now. A token existed but could not create a repo due to GitHub permissions.
+Use normal git flow from `E:/code/agent-os`: verify, commit intended files, then `git push origin main`.
 
 ## Best first steps for a new agent
 

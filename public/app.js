@@ -20,8 +20,11 @@ const endpoints = {
 const state = {
   sessions: [],
   tasks: [],
+  projects: [],
   sessionFilter: '',
   taskFilter: '',
+  taskStatusFilter: 'open',
+  projectFilter: '',
   selectedSessionId: '',
   activeView: 'today',
   messageSearchTimer: null,
@@ -30,7 +33,18 @@ const state = {
   hasBootstrapped: false,
 };
 
+const taskStatusLabels = {
+  open: 'Open',
+  todo: 'Todo',
+  'in progress': 'In Progress',
+  waiting: 'Waiting',
+  'needs attention': 'Needs Attention',
+  completed: 'Completed',
+  all: 'All',
+};
+
 const metricIcons = {
+
   needs_attention: `
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="M12 3.4 21 19H3L12 3.4Z" />
@@ -98,6 +112,84 @@ function highlightHtml(value = '', query = '') {
     html = html.replace(new RegExp(`(${escapeRegExp(safeTerm)})`, 'gi'), '<mark>$1</mark>');
   });
   return html;
+}
+
+function isMarkdownSpecialLine(line = '') {
+  return /^(#{1,4}\s+|[-*]\s+|\d+\.\s+|>\s*)/.test(line.trim());
+}
+
+function inlineMarkdown(value = '', query = '') {
+  let html = highlightHtml(value, query);
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(^|\s)\*([^*]+)\*(?=\s|$)/g, '$1<em>$2</em>');
+  html = html.replace(/(^|\s)_([^_]+)_(?=\s|$)/g, '$1<em>$2</em>');
+  return html;
+}
+
+function renderMarkdownBlocks(value = '', query = '') {
+  const lines = String(value).replace(/\r/g, '').split('\n');
+  const html = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      i += 1;
+      continue;
+    }
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(4, heading[1].length + 3);
+      html.push(`<h${level}>${inlineMarkdown(heading[2], query)}</h${level}>`);
+      i += 1;
+      continue;
+    }
+    if (/^[-*]\s+/.test(trimmed)) {
+      const items = [];
+      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
+        items.push(`<li>${inlineMarkdown(lines[i].trim().replace(/^[-*]\s+/, ''), query)}</li>`);
+        i += 1;
+      }
+      html.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+        items.push(`<li>${inlineMarkdown(lines[i].trim().replace(/^\d+\.\s+/, ''), query)}</li>`);
+        i += 1;
+      }
+      html.push(`<ol>${items.join('')}</ol>`);
+      continue;
+    }
+    if (/^>\s*/.test(trimmed)) {
+      const quotes = [];
+      while (i < lines.length && /^>\s*/.test(lines[i].trim())) {
+        quotes.push(inlineMarkdown(lines[i].trim().replace(/^>\s*/, ''), query));
+        i += 1;
+      }
+      html.push(`<blockquote>${quotes.join('<br>')}</blockquote>`);
+      continue;
+    }
+    const paragraph = [];
+    while (i < lines.length && lines[i].trim() && !isMarkdownSpecialLine(lines[i])) {
+      paragraph.push(lines[i].trim());
+      i += 1;
+    }
+    html.push(`<p>${inlineMarkdown(paragraph.join(' '), query)}</p>`);
+  }
+  return html.join('');
+}
+
+function renderMarkdown(value = '', query = '') {
+  const parts = String(value || '').split('```');
+  return parts.map((part, index) => {
+    if (index % 2 === 0) return renderMarkdownBlocks(part, query);
+    let code = part.replace(/^\s*([A-Za-z0-9_-]+)\n/, '');
+    return `<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`;
+  }).join('');
 }
 
 async function api(path, options = {}) {
@@ -197,33 +289,45 @@ function renderAttention(items = []) {
   panel?.classList.toggle('clear', open.length === 0);
   count.textContent = open.length ? `${open.length} open` : 'clear skies';
   count.className = `pill ${open.length ? 'danger' : 'success'}`;
-  $('#attention-list').innerHTML = open.length ? open.map((item) => `
-    <article class="item">
-      <div class="item-title">
-        <span>${escapeHtml(item.title)}</span>
-        <span class="pill ${item.severity === 'high' ? 'danger' : 'warn'}">${escapeHtml(item.severity || 'medium')}</span>
-      </div>
-      <div class="item-desc">${escapeHtml(item.description || '')}</div>
-      <div class="item-meta mono">${escapeHtml(item.type || 'manual')} · ${escapeHtml(item.project || 'General')} · ${humanDate(item.created_at)}</div>
-      <div class="item-actions">
-        <button class="action-button resolve-attention" type="button" data-attention-id="${escapeHtml(item.id)}">Resolve</button>
-      </div>
-    </article>
-  `).join('') : `<div class="empty clear-skies">No open attention items. Clear skies.</div>`;
+  $('#attention-list').innerHTML = open.length ? open.map((item) => {
+    const isTaskAttention = item.source === 'task' || item.task_id;
+    const severityClass = item.severity === 'high' ? 'danger' : 'warn';
+    return `
+      <article class="item ${isTaskAttention ? 'attention-task-item' : ''}">
+        <div class="item-title">
+          <span>${escapeHtml(item.title)}</span>
+          <span class="pill ${severityClass}">${escapeHtml(item.severity || 'medium')}</span>
+        </div>
+        <div class="item-desc">${escapeHtml(item.description || '')}</div>
+        <div class="item-meta mono">${escapeHtml(item.type || 'manual')} · ${escapeHtml(item.project || 'General')} · ${humanDate(item.created_at)}</div>
+        <div class="item-actions">
+          ${isTaskAttention
+            ? `<button class="action-button open-task-source" type="button" data-project-name="${escapeHtml(item.project || '')}" data-task-id="${escapeHtml(item.task_id || '')}">Open task</button>`
+            : `<button class="action-button resolve-attention" type="button" data-attention-id="${escapeHtml(item.id)}">Resolve</button>`}
+        </div>
+      </article>
+    `;
+  }).join('') : `<div class="empty clear-skies">No open attention items. Clear skies.</div>`;
+}
+
+function hasAttentionTag(task = {}) {
+  const tags = Array.isArray(task.tags) ? task.tags : [];
+  return tags.some((tag) => normalizeFilterValue(tag).replaceAll('_', ' ') === 'needs attention');
 }
 
 function taskArea(task = {}) {
-  if (task.status === 'completed') return 'completed';
-  if (task.status === 'in_progress') return 'in progress';
-  if (task.status === 'waiting') return 'waiting';
-  if (task.status === 'needs_attention' || task.needs_attention || task.review_required) return 'needs attention';
+  const status = normalizeFilterValue(task.status).replaceAll('_', ' ');
+  if (status === 'completed') return 'completed';
+  if (status === 'in progress') return 'in progress';
+  if (status === 'waiting') return 'waiting';
+  if (status === 'needs attention' || task.needs_attention || task.review_required || hasAttentionTag(task)) return 'needs attention';
   return 'todo';
 }
 
 function taskTone(area) {
   if (area === 'completed') return 'success';
   if (area === 'needs attention') return 'danger';
-  if (area === 'waiting') return 'warn';
+  if (area === 'waiting' || area === 'todo') return 'warn';
   return '';
 }
 
@@ -239,23 +343,186 @@ function taskMatches(task, query) {
   return haystack.includes(query.toLowerCase());
 }
 
+function taskProject(task = {}) {
+  return task.project || 'General';
+}
+
+function normalizeFilterValue(value = '') {
+  return String(value).trim().toLowerCase();
+}
+
+function taskMatchesProject(task = {}) {
+  if (!state.projectFilter) return true;
+  const selected = normalizeFilterValue(state.projectFilter);
+  const project = normalizeFilterValue(taskProject(task));
+  const tags = Array.isArray(task.tags) ? task.tags.map(normalizeFilterValue) : [];
+  return project === selected || tags.includes(selected);
+}
+
+function isOpenTask(task = {}) {
+  return taskArea(task) !== 'completed';
+}
+
+function taskMatchesStatus(task = {}) {
+  if (state.taskStatusFilter === 'all') return true;
+  if (state.taskStatusFilter === 'open') return isOpenTask(task);
+  return taskArea(task) === state.taskStatusFilter;
+}
+
+function visibleTasks(tasks = []) {
+  return tasks
+    .filter(taskMatchesProject)
+    .filter(taskMatchesStatus)
+    .filter((task) => taskMatches(task, state.taskFilter));
+}
+
+function projectFilteredTasks(tasks = []) {
+  return tasks.filter(taskMatchesProject);
+}
+
+function completedTimeLabel(task = {}) {
+  return task.completed_at ? `Completed ${humanDate(task.completed_at)}` : 'Completed time unknown';
+}
+
+function filterSummary() {
+  const parts = [];
+  if (state.projectFilter) parts.push(state.projectFilter);
+  if (state.taskStatusFilter === 'open') parts.push('open tasks');
+  else if (state.taskStatusFilter !== 'all') parts.push(state.taskStatusFilter);
+  if (state.taskFilter) parts.push(`search: ${state.taskFilter}`);
+  return parts.length ? parts.join(' · ') : 'all tasks';
+}
+
+function syncTaskStatusControl() {
+  const value = state.taskStatusFilter || 'open';
+  const label = $('#task-status-label');
+  const button = $('#task-status-button');
+  const select = $('#task-status-filter');
+  const menu = $('#task-status-menu');
+
+  if (label) label.textContent = taskStatusLabels[value] || value;
+  if (select && select.value !== value) select.value = value;
+  if (button) button.dataset.value = value;
+  menu?.querySelectorAll('[data-status-value]').forEach((option) => {
+    option.setAttribute('aria-selected', option.dataset.statusValue === value ? 'true' : 'false');
+  });
+}
+
+function setStatusDropdownOpen(open) {
+  const shell = $('#task-status-select-shell');
+  const button = $('#task-status-button');
+  const menu = $('#task-status-menu');
+  if (!shell || !button || !menu) return;
+
+  shell.classList.toggle('is-open', open);
+  button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  menu.hidden = !open;
+}
+
+function applyTaskStatusFilter(value = 'open') {
+  state.taskStatusFilter = taskStatusLabels[value] ? value : 'open';
+  syncTaskStatusControl();
+  renderTaskList(state.tasks);
+  setStatusDropdownOpen(false);
+}
+
+function scrollProjectRail(direction = 1) {
+  const rail = $('#project-list');
+  if (!rail) return;
+  const distance = Math.max(280, Math.round(rail.clientWidth * 0.72));
+  rail.scrollBy({ left: direction * distance, behavior: 'smooth' });
+  window.setTimeout(updateProjectRailButtons, 260);
+}
+
+function updateProjectRailButtons() {
+  const rail = $('#project-list');
+  const left = $('#project-scroll-left');
+  const right = $('#project-scroll-right');
+  if (!rail || !left || !right) return;
+
+  const canScroll = rail.scrollWidth > rail.clientWidth + 4;
+  const atStart = rail.scrollLeft <= 4;
+  const atEnd = rail.scrollLeft + rail.clientWidth >= rail.scrollWidth - 4;
+  left.hidden = !canScroll;
+  right.hidden = !canScroll;
+  left.disabled = !canScroll || atStart;
+  right.disabled = !canScroll || atEnd;
+}
+
 function renderFocusTasks(tasks = []) {
-  const focus = tasks.filter((task) => taskArea(task) !== 'completed').slice(0, 5);
-  $('#focus-task-list').innerHTML = focus.length ? focus.map((task) => `
-    <article class="item">
-      <div class="item-title"><span>${escapeHtml(task.title)}</span><span class="pill ${taskTone(taskArea(task))}">${escapeHtml(taskArea(task))}</span></div>
-      <div class="item-desc">${escapeHtml(task.description || '')}</div>
-      <div class="item-meta mono">${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')}</div>
-    </article>
-  `).join('') : `<div class="empty">No active focus tasks yet.</div>`;
+  const scoped = projectFilteredTasks(tasks);
+  const open = scoped.filter(isOpenTask).sort((a, b) => taskSortScore(a) - taskSortScore(b));
+  const focus = open.slice(0, 4);
+  const focusCount = $('#focus-count-pill');
+  if (focusCount) {
+    focusCount.textContent = `${open.length} open`;
+    focusCount.className = `pill ${open.some((task) => taskArea(task) === 'needs attention') ? 'danger' : open.length ? '' : 'success'}`;
+  }
+
+  const scopeLabel = state.projectFilter || (state.projects.length === 1 ? state.projects[0].name : 'All Projects');
+  const completed = scoped.filter((task) => taskArea(task) === 'completed').length;
+  const inProgress = open.filter((task) => taskArea(task) === 'in progress').length;
+  const needsAttention = open.filter((task) => taskArea(task) === 'needs attention').length;
+  const waiting = open.filter((task) => taskArea(task) === 'waiting').length;
+  const nextTask = open[0];
+  const statusLine = nextTask
+    ? `Next: ${escapeHtml(nextTask.title)} · ${escapeHtml(taskArea(nextTask))}`
+    : 'Queue clear — no open next moves in this scope.';
+
+  const header = `
+    <section class="focus-queue-shell ${open.length ? '' : 'clear'}">
+      <header class="focus-queue-header">
+        <div class="focus-queue-copy">
+          <div class="focus-kicker mono">Current queue</div>
+          <h3>${escapeHtml(scopeLabel)} queue</h3>
+          <p>${statusLine}</p>
+        </div>
+        <div class="focus-queue-actions">
+          <span class="pill ${needsAttention ? 'danger' : open.length ? 'project-pill' : 'success'}">${open.length} open</span>
+          <button class="mini-button focus-open-projects" type="button">Open Projects / Tasks</button>
+        </div>
+        <div class="focus-stat-row" aria-label="Queue status summary">
+          <span><strong>${inProgress}</strong> in progress</span>
+          <span><strong>${needsAttention}</strong> attention</span>
+          <span><strong>${waiting}</strong> waiting</span>
+          <span><strong>${completed}</strong> completed</span>
+        </div>
+      </header>
+      <div class="focus-task-rail">
+  `;
+
+  const taskCards = focus.length ? focus.map((task, index) => {
+    const area = taskArea(task);
+    return `
+      <article class="item focus-task-item">
+        <span class="focus-task-rank mono">${String(index + 1).padStart(2, '0')}</span>
+        <div class="focus-task-body">
+          <div class="item-title"><span>${escapeHtml(task.title)}</span><span class="pill ${taskTone(area)}">${escapeHtml(area)}</span></div>
+          <div class="item-desc">${escapeHtml(task.description || '')}</div>
+          <div class="item-meta mono">${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')}</div>
+        </div>
+      </article>
+    `;
+  }).join('') : `
+      <div class="empty clear-skies">No open next moves in this scope.</div>
+  `;
+
+  $('#focus-task-list').innerHTML = `${header}${taskCards}</div></section>`;
 }
 
 function renderTaskList(tasks = []) {
   state.tasks = tasks;
-  const query = state.taskFilter;
-  const filtered = tasks.filter((task) => taskMatches(task, query));
+  const filterSelect = $('#task-status-filter');
+  if (filterSelect && filterSelect.value !== state.taskStatusFilter) filterSelect.value = state.taskStatusFilter;
+  syncTaskStatusControl();
+
+  const filtered = visibleTasks(tasks);
   const count = $('#task-count');
-  if (count) count.textContent = query ? `${filtered.length} shown` : `${tasks.length} tasks`;
+  if (count) count.textContent = `${filtered.length} shown`;
+  const clearProject = $('#clear-project-filter');
+  const projectLabel = $('#project-filter-label');
+  if (clearProject) clearProject.hidden = !state.projectFilter;
+  if (projectLabel) projectLabel.textContent = state.projectFilter ? `Project: ${state.projectFilter}` : 'All projects';
   $('#task-list').innerHTML = filtered.length ? filtered.map((task) => {
     const area = taskArea(task);
     return `
@@ -263,26 +530,59 @@ function renderTaskList(tasks = []) {
         <div class="task-list-main">
           <div class="item-title"><span>${escapeHtml(task.title)}</span><span class="pill ${taskTone(area)}">${escapeHtml(area)}</span></div>
           <div class="item-desc">${escapeHtml(task.description || '')}</div>
+          <div class="item-meta mono">${area === 'completed' ? escapeHtml(completedTimeLabel(task)) : `${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')}`}</div>
         </div>
         <span class="pill project-pill">${escapeHtml(task.project || 'General')}</span>
       </article>
     `;
-  }).join('') : `<div class="empty">No tasks match this search.</div>`;
+  }).join('') : `<div class="empty">No tasks match ${escapeHtml(filterSummary())}.</div>`;
 
-  const completed = tasks.filter((t) => taskArea(t) === 'completed');
-  const completedMarkup = `
-    <article class="item">
-      <div class="item-title"><span>Completed tasks</span><span class="pill success">${completed.length}</span></div>
-      <div class="item-meta">${completed.length ? completed.map((t) => escapeHtml(t.title)).join(' · ') : 'No completed tasks yet.'}</div>
-    </article>
-    <article class="item">
-      <div class="item-title"><span>Agent/session outputs</span><span class="pill">read-only</span></div>
-      <div class="item-meta">Use Agents / Sessions for the searchable conversation space.</div>
-    </article>
-  `;
-  $('#completed-list').innerHTML = completedMarkup;
+  renderCompletedWork(tasks);
+  renderProjectStatus(state.projects, tasks);
+}
+
+function completedWorkMarkup(completed = [], emptyText = 'No completed tasks yet.', limit = 8) {
+  const visible = completed.slice(0, limit);
+  return visible.length ? `
+    <div class="completed-list-scroll">
+      ${visible.map((task) => `
+        <article class="completed-line">
+          <div class="completed-line-main">
+            <span class="completed-title">${escapeHtml(task.title)}</span>
+            <span class="completed-project">${escapeHtml(task.project || 'General')}</span>
+            <span class="item-meta mono">${escapeHtml(completedTimeLabel(task))}</span>
+          </div>
+        </article>
+      `).join('')}
+      ${completed.length > visible.length ? `<div class="item-meta mono completed-overflow">+${completed.length - visible.length} older completed items hidden in this compact view.</div>` : ''}
+    </div>
+  ` : `<div class="empty">${emptyText}</div>`;
+}
+
+function renderCompletedWork(tasks = []) {
+  const allCompleted = tasks
+    .filter((t) => taskArea(t) === 'completed')
+    .sort((a, b) => (parse_iso_sort(b.completed_at) - parse_iso_sort(a.completed_at)));
+  const scopedCompleted = projectFilteredTasks(tasks)
+    .filter((t) => taskArea(t) === 'completed')
+    .sort((a, b) => (parse_iso_sort(b.completed_at) - parse_iso_sort(a.completed_at)));
+
+  const todayCompleted = $('#completed-list');
+  if (todayCompleted) todayCompleted.innerHTML = completedWorkMarkup(allCompleted, 'No completed tasks yet.', 6);
+
   const projectCompleted = $('#project-completed-list');
-  if (projectCompleted) projectCompleted.innerHTML = completedMarkup;
+  if (projectCompleted) {
+    const scope = state.projectFilter ? ` for ${escapeHtml(state.projectFilter)}` : '';
+    projectCompleted.innerHTML = completedWorkMarkup(scopedCompleted, `No completed work${scope} yet.`, 10);
+  }
+
+  const completedCount = $('#completed-count');
+  if (completedCount) completedCount.textContent = `${scopedCompleted.length} done`;
+}
+
+function parse_iso_sort(value) {
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function projectTone(status = '') {
@@ -293,14 +593,109 @@ function projectTone(status = '') {
   return '';
 }
 
-function renderProjects(projects = []) {
-  $('#project-list').innerHTML = projects.length ? projects.map((project) => `
-    <article class="project-card">
-      <div class="item-title"><span>${escapeHtml(project.name)}</span><span class="pill ${projectTone(project.status)}">${escapeHtml(project.status)}</span></div>
-      <div class="item-desc">${escapeHtml(project.description || '')}</div>
-      <div class="item-meta mono">${escapeHtml(project.type)} · [[${escapeHtml(project.obsidian_note || 'No note')}]]</div>
+function projectStats(projectName = '', tasks = state.tasks) {
+  const scoped = projectName
+    ? tasks.filter((task) => normalizeFilterValue(taskProject(task)) === normalizeFilterValue(projectName))
+    : tasks;
+  const stats = {
+    total: scoped.length,
+    open: scoped.filter(isOpenTask).length,
+    completed: scoped.filter((task) => taskArea(task) === 'completed').length,
+    todo: scoped.filter((task) => taskArea(task) === 'todo').length,
+    inProgress: scoped.filter((task) => taskArea(task) === 'in progress').length,
+    waiting: scoped.filter((task) => taskArea(task) === 'waiting').length,
+    needsAttention: scoped.filter((task) => taskArea(task) === 'needs attention').length,
+  };
+  stats.progress = stats.total ? Math.round((stats.completed / stats.total) * 100) : 0;
+  return { stats, scoped };
+}
+
+function taskSortScore(task = {}) {
+  const area = taskArea(task);
+  const areaScore = {
+    'needs attention': 0,
+    'in progress': 1,
+    todo: 2,
+    waiting: 3,
+    completed: 9,
+  }[area] ?? 5;
+  const priorityScore = { high: 0, medium: 1, low: 2 }[String(task.priority || '').toLowerCase()] ?? 3;
+  return areaScore * 10 + priorityScore;
+}
+
+function renderProjectStatus(projects = state.projects, tasks = state.tasks) {
+  const container = $('#selected-project-status');
+  if (!container) return;
+
+  const selectedProject = state.projectFilter
+    ? projects.find((project) => normalizeFilterValue(project.name) === normalizeFilterValue(state.projectFilter))
+    : null;
+  const { stats, scoped } = projectStats(selectedProject?.name || '', tasks);
+  const nextTask = scoped.filter(isOpenTask).sort((a, b) => taskSortScore(a) - taskSortScore(b))[0];
+  const latestCompleted = scoped
+    .filter((task) => taskArea(task) === 'completed')
+    .sort((a, b) => parse_iso_sort(b.completed_at) - parse_iso_sort(a.completed_at))[0];
+
+  const pill = $('#project-status-pill');
+  if (pill) {
+    pill.textContent = selectedProject ? selectedProject.status || 'selected' : 'overview';
+    pill.className = `pill ${selectedProject ? projectTone(selectedProject.status) : ''}`;
+  }
+
+  const title = selectedProject?.name || 'All Projects';
+  const description = selectedProject?.description || 'Select a project above to focus this page on one project. New project creation is not in the dashboard yet — for now, tell Hermes what project to add and it can write the local JSON safely.';
+  const note = selectedProject?.obsidian_note ? `[[${selectedProject.obsidian_note}]]` : 'No linked note yet';
+  container.innerHTML = `
+    <article class="project-status-summary">
+      <div>
+        <div class="item-title"><span>${escapeHtml(title)}</span></div>
+        <div class="item-desc">${escapeHtml(description)}</div>
+        <div class="project-status-percent mono"><span>Percent complete</span><strong>${stats.progress}%</strong></div>
+        <div class="item-meta mono">${selectedProject ? `${escapeHtml(selectedProject.type || 'project')} · ${escapeHtml(note)}` : `${projects.length} projects · ${tasks.length} total tasks`}</div>
+      </div>
     </article>
-  `).join('') : `<div class="empty">No projects found.</div>`;
+    <div class="project-stat-grid">
+      <article class="stat-mini"><span>${stats.open}</span><small>open</small></article>
+      <article class="stat-mini"><span>${stats.completed}</span><small>completed</small></article>
+      <article class="stat-mini"><span>${stats.inProgress}</span><small>in progress</small></article>
+      <article class="stat-mini"><span>${stats.waiting + stats.needsAttention}</span><small>blocked / waiting</small></article>
+    </div>
+    <article class="project-next-card">
+      <div class="item-title"><span>Next move</span><span class="pill ${nextTask ? taskTone(taskArea(nextTask)) : 'success'}">${nextTask ? escapeHtml(taskArea(nextTask)) : 'clear'}</span></div>
+      <div class="item-desc">${nextTask ? escapeHtml(nextTask.title) : 'No open tasks in this scope.'}</div>
+      <div class="item-meta mono">${nextTask ? `${escapeHtml(nextTask.project || 'General')} · due ${escapeHtml(nextTask.due_date || 'none')}` : 'Nothing pending'}</div>
+    </article>
+    <article class="project-next-card muted-card">
+      <div class="item-title"><span>Latest completed</span></div>
+      <div class="item-desc">${latestCompleted ? escapeHtml(latestCompleted.title) : 'No completed work yet.'}</div>
+      <div class="item-meta mono">${latestCompleted ? escapeHtml(completedTimeLabel(latestCompleted)) : 'Completion history will appear below.'}</div>
+    </article>
+  `;
+}
+
+function renderProjects(projects = []) {
+  state.projects = projects;
+  const projectCount = $('#project-count');
+  if (projectCount) projectCount.textContent = `${projects.length} project${projects.length === 1 ? '' : 's'}`;
+
+  $('#project-list').innerHTML = projects.length ? projects.map((project) => {
+    const name = project.name || 'Untitled project';
+    const active = state.projectFilter === name;
+    const { stats } = projectStats(name, state.tasks);
+    return `
+      <button class="project-card project-card-button ${active ? 'active' : ''}" type="button" data-project-name="${escapeHtml(name)}" aria-pressed="${active ? 'true' : 'false'}">
+        <div class="item-title"><span>${escapeHtml(name)}</span><span class="pill ${projectTone(project.status)}">${escapeHtml(project.status)}</span></div>
+        <div class="item-desc">${escapeHtml(project.description || '')}</div>
+        <div class="project-card-footer">
+          <span class="item-meta mono">${stats.open} open · ${stats.completed} done</span>
+          <span class="pill project-pill">${stats.progress}%</span>
+        </div>
+        <div class="progress-track mini" aria-hidden="true"><span style="width: ${stats.progress}%"></span></div>
+      </button>
+    `;
+  }).join('') : `<div class="empty">No projects found. For now, ask Hermes to add one to <code>data/projects.json</code>.</div>`;
+  requestAnimationFrame(updateProjectRailButtons);
+  renderProjectStatus(projects, state.tasks);
 }
 
 function renderCalendar(payload = {}) {
@@ -474,7 +869,7 @@ function renderSessionDetail(payload = null, context = {}) {
         return `
           <article id="message-${escapeHtml(message.id)}" class="message-card ${escapeHtml(message.role)} ${isTarget ? 'target-message' : ''}" data-message-id="${escapeHtml(message.id)}">
             <div class="message-meta mono">${escapeHtml(message.role)} · msg ${escapeHtml(message.id)} · ${humanDate(message.timestamp)}</div>
-            <div class="message-content">${query ? highlightHtml(message.content || '', query) : escapeHtml(message.content || '')}</div>
+            <div class="message-content markdown-body">${renderMarkdown(message.content || '', query)}</div>
           </article>
         `;
       }).join('') : `<div class="empty">No user/assistant messages found for this session.</div>`}
@@ -568,8 +963,9 @@ async function refresh() {
     const data = Object.fromEntries(entries);
 
     renderCards(data.overview.cards);
-    if (data.projects) renderProjects(data.projects.projects);
+    if (data.projects) state.projects = data.projects.projects || [];
     renderTaskList(data.tasks.tasks);
+    if (data.projects) renderProjects(state.projects);
     renderFocusTasks(data.tasks.tasks);
     renderAttention(data.attention.attention);
     renderCalendar(data.calendar);
@@ -628,6 +1024,11 @@ $('#overview-cards').addEventListener('click', (event) => {
   void jumpToDashboardSection(card.dataset.jumpView, card.dataset.jumpTarget);
 });
 
+$('#focus-task-list').addEventListener('click', (event) => {
+  if (!event.target.closest('.focus-open-projects')) return;
+  void jumpToDashboardSection('projects', '#tasks-panel');
+});
+
 const globalSearch = $('#global-search');
 if (globalSearch) {
   globalSearch.addEventListener('input', (event) => {
@@ -657,6 +1058,88 @@ if (sessionSearch) {
   });
 }
 
+const taskStatusFilter = $('#task-status-filter');
+const taskStatusButton = $('#task-status-button');
+const taskStatusMenu = $('#task-status-menu');
+const taskStatusShell = $('#task-status-select-shell');
+
+if (taskStatusButton && taskStatusMenu && taskStatusShell) {
+  taskStatusButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setStatusDropdownOpen(!taskStatusShell.classList.contains('is-open'));
+  });
+
+  taskStatusMenu.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const option = event.target.closest('[data-status-value]');
+    if (!option) return;
+    applyTaskStatusFilter(option.dataset.statusValue);
+  });
+
+  taskStatusShell.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      setStatusDropdownOpen(false);
+      taskStatusButton.focus();
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setStatusDropdownOpen(true);
+      taskStatusMenu.querySelector('[aria-selected="true"]')?.focus();
+    }
+  });
+
+  taskStatusMenu.addEventListener('keydown', (event) => {
+    const options = Array.from(taskStatusMenu.querySelectorAll('[data-status-value]'));
+    const index = options.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      setStatusDropdownOpen(false);
+      taskStatusButton.focus();
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      options[Math.min(options.length - 1, index + 1)]?.focus();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      options[Math.max(0, index - 1)]?.focus();
+    }
+  });
+
+  document.addEventListener('pointerdown', (event) => {
+    if (!taskStatusShell.contains(event.target)) setStatusDropdownOpen(false);
+  });
+}
+
+if (taskStatusFilter) {
+  taskStatusFilter.addEventListener('change', (event) => {
+    applyTaskStatusFilter(event.target.value);
+  });
+}
+
+$('#project-scroll-left')?.addEventListener('click', () => scrollProjectRail(-1));
+$('#project-scroll-right')?.addEventListener('click', () => scrollProjectRail(1));
+$('#project-list')?.addEventListener('scroll', updateProjectRailButtons, { passive: true });
+window.addEventListener('resize', updateProjectRailButtons);
+
+const clearProjectFilter = $('#clear-project-filter');
+if (clearProjectFilter) {
+  clearProjectFilter.addEventListener('click', () => {
+    state.projectFilter = '';
+    renderTaskList(state.tasks);
+    renderFocusTasks(state.tasks);
+    renderProjects(state.projects);
+  });
+}
+
+$('#project-list').addEventListener('click', async (event) => {
+  const card = event.target.closest('.project-card-button');
+  if (!card) return;
+  state.projectFilter = card.dataset.projectName || '';
+  await setView('projects');
+  renderTaskList(state.tasks);
+  renderFocusTasks(state.tasks);
+  renderProjects(state.projects);
+});
+
 $('#session-list').addEventListener('click', (event) => {
   const card = event.target.closest('.session-card');
   if (!card) return;
@@ -672,6 +1155,20 @@ $('#message-search-results').addEventListener('click', (event) => {
 });
 
 $('#attention-list').addEventListener('click', async (event) => {
+  const taskButton = event.target.closest('.open-task-source');
+  if (taskButton) {
+    state.projectFilter = taskButton.dataset.projectName || '';
+    state.taskStatusFilter = 'open';
+    await setView('projects');
+    renderTaskList(state.tasks);
+    renderFocusTasks(state.tasks);
+    renderProjects(state.projects);
+    const tasksPanel = $('#tasks-panel');
+    tasksPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    flashTarget(tasksPanel);
+    return;
+  }
+
   const button = event.target.closest('.resolve-attention');
   if (!button) return;
 

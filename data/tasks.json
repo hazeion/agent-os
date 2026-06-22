@@ -9,7 +9,10 @@
     "assignee": "Hermes",
     "due_date": null,
     "source": "agent",
-    "tags": ["phase-1", "inventory"],
+    "tags": [
+      "phase-1",
+      "inventory"
+    ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-20T22:32:04",
@@ -26,7 +29,10 @@
     "assignee": "Hermes",
     "due_date": null,
     "source": "agent",
-    "tags": ["phase-2", "dashboard"],
+    "tags": [
+      "phase-2",
+      "dashboard"
+    ],
     "review_required": true,
     "needs_attention": true,
     "created_at": "2026-06-20T22:32:04",
@@ -43,7 +49,12 @@
     "assignee": "Hermes",
     "due_date": null,
     "source": "agent",
-    "tags": ["phase-3", "sessions", "search", "config"],
+    "tags": [
+      "phase-3",
+      "sessions",
+      "search",
+      "config"
+    ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T02:43:09-07:00",
@@ -60,7 +71,12 @@
     "assignee": "Hermes",
     "due_date": null,
     "source": "agent",
-    "tags": ["phase-3", "sessions", "reader", "analytics"],
+    "tags": [
+      "phase-3",
+      "sessions",
+      "reader",
+      "analytics"
+    ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T02:59:43-07:00",
@@ -77,11 +93,17 @@
     "assignee": "Hermes",
     "due_date": null,
     "source": "manual",
-    "tags": ["phase-4", "agents", "heartbeat", "agent-pulse", "write-back"],
+    "tags": [
+      "phase-4",
+      "agents",
+      "heartbeat",
+      "agent-pulse",
+      "write-back"
+    ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T10:30:07-07:00",
-    "updated_at": "2026-06-21T10:30:07-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
     "completed_at": null
   },
   {
@@ -94,10 +116,302 @@
     "assignee": "Hermes",
     "due_date": null,
     "source": "manual",
-    "tags": ["calendar", "google", "oauth", "read-only"],
+    "tags": [
+      "calendar",
+      "google",
+      "oauth",
+      "read-only"
+    ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-20T22:32:04",
     "updated_at": "2026-06-21T11:23:00-07:00",
     "completed_at": "2026-06-21T11:23:00-07:00"
-  }]
+  },
+  {
+    "id": "dummy_test_task_1",
+    "title": "dummy task 1",
+    "description": "Temporary fixture for validating the todo task state in Agent OS.",
+    "project": "Dummy Test Project",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "dummy",
+    "temporary": true,
+    "tags": [
+      "dummy",
+      "test-fixture",
+      "Dummy Test Project"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T15:11:28-07:00",
+    "updated_at": "2026-06-21T15:11:28-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "dummy_test_task_2",
+    "title": "dummy task 2",
+    "description": "Temporary fixture for validating the completed task state in Agent OS.",
+    "project": "Dummy Test Project",
+    "status": "completed",
+    "priority": "low",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "dummy",
+    "temporary": true,
+    "tags": [
+      "dummy",
+      "test-fixture",
+      "Dummy Test Project"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T15:11:28-07:00",
+    "updated_at": "2026-06-21T15:11:28-07:00",
+    "completed_at": "2026-06-21T15:11:28-07:00"
+  },
+  {
+    "id": "dummy_test_task_3",
+    "title": "dummy task 3",
+    "description": "Temporary fixture for validating the needs attention task state in Agent OS.",
+    "project": "Dummy Test Project",
+    "status": "needs_attention",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "dummy",
+    "temporary": true,
+    "tags": [
+      "dummy",
+      "test-fixture",
+      "Dummy Test Project"
+    ],
+    "review_required": true,
+    "needs_attention": true,
+    "created_at": "2026-06-21T15:11:28-07:00",
+    "updated_at": "2026-06-21T15:11:28-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "dummy_test_task_4",
+    "title": "dummy task 4",
+    "description": "Temporary fixture for validating the waiting task state in Agent OS.",
+    "project": "Dummy Test Project",
+    "status": "waiting",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "dummy",
+    "temporary": true,
+    "tags": [
+      "dummy",
+      "test-fixture",
+      "Dummy Test Project",
+      "needs attention"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T15:11:28-07:00",
+    "updated_at": "2026-06-21T15:11:28-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_phase25_ui_stabilization_review",
+    "title": "Finish Phase 2.5 UI/UX stabilization review",
+    "description": "Review Today, Projects, and Tasks desktop/mobile UX after the command-center redesign; refine the connected header/task rail, project portfolio rail, dropdown behavior, screenshots, and any remaining redundancy before larger integrations.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-2.5",
+      "ui",
+      "ux",
+      "stabilization"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_remove_dummy_fixture_data",
+    "title": "Remove Dummy Test Project fixtures after UI validation",
+    "description": "When Brandon is done using the dummy project for visual QA, remove project_dummy_test and dummy_test_task_* fixtures from local JSON so the dashboard returns to real Agent OS data only.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "cleanup",
+      "dummy-data",
+      "phase-2.5"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_calendar_phase_next",
+    "title": "Polish Google Calendar read-only integration",
+    "description": "Turn the connected Google Calendar source into a useful Today/Calendar experience: today and 7-day agenda, fallback/stale states, event grouping, and read-only OAuth boundaries.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3",
+      "calendar",
+      "google",
+      "read-only"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_native_project_task_creation",
+    "title": "Build dashboard-native project and task creation",
+    "description": "Add local-only create/edit flows for projects and tasks backed by project-owned data files, with validation, safe write-back endpoints, and no Hermes core mutation.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-4",
+      "projects",
+      "tasks",
+      "write-back"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_kanban_writeback_future",
+    "title": "Evaluate Kanban or richer task board write-back",
+    "description": "After the grouped list model settles, decide whether to add Kanban or a richer task board backed by project-owned JSON/API instead of Hermes core files.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-4",
+      "kanban",
+      "tasks",
+      "write-back"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_email_pane_future",
+    "title": "Add read-only email pane after calendar stabilizes",
+    "description": "Design a safe email panel for priority messages and needs-attention surfacing after calendar is stable; keep it read-only until Brandon explicitly approves send/delete actions.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-5",
+      "email",
+      "read-only",
+      "needs-attention"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_service_remote_future",
+    "title": "Add Windows startup service docs and safe remote access option",
+    "description": "Document running Agent OS on Windows login and evaluate Tailscale/VPN-only remote access; do not expose port 8888 publicly.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "low",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-5",
+      "windows",
+      "service",
+      "remote-access"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_react_migration_decision",
+    "title": "Reassess React migration only when interactions justify it",
+    "description": "Keep the dashboard vanilla JS during UI stabilization; revisit React if direct editing, modals, routing, live agent roster, or websocket updates make the frontend too interaction-heavy.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "low",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-5",
+      "frontend",
+      "react",
+      "architecture"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_wilson_review_next_expansion",
+    "title": "Run Wilson Milsen review before the next major expansion",
+    "description": "Before adding larger integrations, ask Wilson Milsen for a read-only YAGNI/code review of AGENTS.md, README.md, server.py, frontend files, data JSON, and the current diff; implement only high-impact safe suggestions.",
+    "project": "Agent OS",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "review",
+      "wilson-milsen",
+      "quality",
+      "phase-2.5"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-21T18:00:37-07:00",
+    "updated_at": "2026-06-21T18:00:37-07:00",
+    "completed_at": null
+  }
+]

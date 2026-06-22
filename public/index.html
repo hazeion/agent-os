@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Agent OS · Mission Control</title>
-  <link rel="stylesheet" href="/styles.css?v=phase4-google-calendar-1" />
+  <link rel="stylesheet" href="/styles.css?v=project-command-center-7" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
@@ -78,10 +78,10 @@
           <section class="panel command-card" id="today-active-work-panel">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Focus Stack</div>
-                <h2>Active Work</h2>
+                <div class="eyebrow">Project Focus</div>
+                <h2>Open Queue / Next Moves</h2>
               </div>
-              <span class="pill">tasks</span>
+              <span class="pill" id="focus-count-pill">0 open</span>
             </div>
             <div id="focus-task-list" class="stack"></div>
           </section>
@@ -111,8 +111,8 @@
           <section class="panel command-card span-2" id="today-completed-panel">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Completed Work</div>
-                <h2>This Week</h2>
+                <div class="eyebrow">This Week</div>
+                <h2>Completed Work</h2>
               </div>
               <span class="pill success">separated by type</span>
             </div>
@@ -176,38 +176,95 @@
       </section>
 
       <section class="view" id="view-projects" data-view-panel="projects">
-        <section class="split-layout">
-          <section class="panel" id="tasks-panel">
+        <section class="project-command-grid projects-layout">
+          <section class="panel project-portfolio-panel" id="projects-panel">
             <div class="panel-head">
               <div>
-                <div class="eyebrow">Execution</div>
-                <h2>Tasks</h2>
+                <h2>Project Portfolio</h2>
+                <p class="panel-subtitle">Select a project to focus the queue, status, and completion timeline.</p>
               </div>
-              <span class="pill" id="task-count">0 tasks</span>
+              <span class="pill" id="project-count">0 projects</span>
+            </div>
+            <div class="project-rail-shell">
+              <button class="rail-arrow rail-arrow-left" type="button" id="project-scroll-left" aria-label="Scroll projects left">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 18l-6-6 6-6" /></svg>
+              </button>
+              <div id="project-list" class="project-list project-list-horizontal" tabindex="0" aria-label="Project portfolio"></div>
+              <button class="rail-arrow rail-arrow-right" type="button" id="project-scroll-right" aria-label="Scroll projects right">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6" /></svg>
+              </button>
+            </div>
+          </section>
+
+          <section class="panel task-queue-panel" id="tasks-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Open Task Queue</h2>
+                <p class="panel-subtitle">Actionable work only by default. Completed tasks stay in the timeline below.</p>
+              </div>
+              <div class="panel-controls">
+                <div class="select-shell custom-select" id="task-status-select-shell" aria-label="Filter task queue by status">
+                  <span>View</span>
+                  <div class="select-wrap">
+                    <select id="task-status-filter" class="visually-hidden" tabindex="-1" aria-hidden="true">
+                      <option value="open" selected>Open</option>
+                      <option value="todo">Todo</option>
+                      <option value="in progress">In Progress</option>
+                      <option value="waiting">Waiting</option>
+                      <option value="needs attention">Needs Attention</option>
+                      <option value="completed">Completed</option>
+                      <option value="all">All</option>
+                    </select>
+                    <button class="status-filter-button" type="button" id="task-status-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="task-status-menu">
+                      <span id="task-status-label">Open</span>
+                      <svg class="select-chevron-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                        <path d="M5.5 7.5 10 12l4.5-4.5" />
+                      </svg>
+                    </button>
+                    <div class="status-filter-menu" id="task-status-menu" role="listbox" aria-label="Task status options" hidden>
+                      <button type="button" role="option" data-status-value="open" aria-selected="true">Open</button>
+                      <button type="button" role="option" data-status-value="todo" aria-selected="false">Todo</button>
+                      <button type="button" role="option" data-status-value="in progress" aria-selected="false">In Progress</button>
+                      <button type="button" role="option" data-status-value="waiting" aria-selected="false">Waiting</button>
+                      <button type="button" role="option" data-status-value="needs attention" aria-selected="false">Needs Attention</button>
+                      <button type="button" role="option" data-status-value="completed" aria-selected="false">Completed</button>
+                      <button type="button" role="option" data-status-value="all" aria-selected="false">All</button>
+                    </div>
+                  </div>
+                </div>
+                <span class="pill" id="task-count">0 shown</span>
+              </div>
+            </div>
+            <div class="task-filter-strip">
+              <span class="pill project-pill" id="project-filter-label">All projects</span>
+              <button class="mini-button" type="button" id="clear-project-filter" hidden>Clear project</button>
             </div>
             <div id="task-list" class="task-list"></div>
           </section>
-          <aside class="side-stack">
-            <section class="panel" id="projects-panel">
+
+          <aside class="side-stack project-insight-stack">
+            <section class="panel project-status-panel" id="project-status-panel">
               <div class="panel-head">
                 <div>
-                  <div class="eyebrow">Portfolio</div>
-                  <h2>Projects</h2>
+                  <h2>Project Status</h2>
+                  <p class="panel-subtitle">Progress, blockers, and next move for the selected scope.</p>
                 </div>
+                <span class="pill" id="project-status-pill">overview</span>
               </div>
-              <div id="project-list" class="project-list"></div>
-            </section>
-            <section class="panel" id="completed-work-panel">
-              <div class="panel-head">
-                <div>
-                  <div class="eyebrow">Completed Work</div>
-                  <h2>This Week</h2>
-                </div>
-                <span class="pill success">done</span>
-              </div>
-              <div id="project-completed-list" class="stack"></div>
+              <div id="selected-project-status" class="project-status-content"></div>
             </section>
           </aside>
+
+          <section class="panel completed-work-wide" id="completed-work-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Recent Completed Work</h2>
+                <p class="panel-subtitle">A compact archive instead of duplicating the task queue.</p>
+              </div>
+              <span class="pill success" id="completed-count">0 done</span>
+            </div>
+            <div id="project-completed-list" class="stack"></div>
+          </section>
         </section>
       </section>
 
@@ -266,6 +323,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=phase4-google-calendar-1"></script>
+  <script src="/app.js?v=project-command-center-7"></script>
 </body>
 </html>
