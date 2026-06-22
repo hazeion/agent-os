@@ -182,6 +182,64 @@ function completedTimeLabel(task = {}) {
   return task.completed_at ? `Completed ${humanDate(task.completed_at)}` : 'Completed time unknown';
 }
 
+function taskId(task = {}, index = 0) {
+  return String(task.id || `${normalizeFilterValue(task.title || 'task').replaceAll(' ', '-')}-${index}`);
+}
+
+function taskNextMoveLabel(task = {}, area = taskArea(task)) {
+  if (area === 'completed') return 'Review completion history or reopen only if needed.';
+  if (area === 'needs attention') return 'Resolve the blocker or review-required item first.';
+  if (area === 'in progress') return 'Continue the active work and update status when done.';
+  if (area === 'waiting') return 'Identify the dependency or decision needed to unblock it.';
+  return 'Ready to start or schedule as the next focused work item.';
+}
+
+function selectedTaskFrom(tasks = []) {
+  if (!tasks.length) return null;
+  let selected = tasks.find((task, index) => taskId(task, index) === state.selectedTaskId);
+  if (!selected) {
+    selected = tasks[0];
+    state.selectedTaskId = taskId(selected, 0);
+  }
+  return selected;
+}
+
+function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
+  const container = $('#selected-task-detail');
+  const context = $('#selected-task-context');
+  if (!container) return;
+  const selected = selectedTaskFrom(tasks);
+  if (!selected) {
+    if (context) context.textContent = 'detail rail';
+    container.innerHTML = `<div class="empty">No tasks match ${escapeHtml(filterSummary())}. Adjust the project, status, or search filter to inspect a task.</div>`;
+    return;
+  }
+
+  const area = taskArea(selected);
+  const statusLabel = taskStatusLabels[area] || area;
+  const tags = Array.isArray(selected.tags) ? selected.tags : [];
+  const updated = selected.updated_at || selected.created_at || selected.completed_at;
+  if (context) context.textContent = area === 'completed' ? 'history detail' : 'selected detail';
+  const updatedLabel = updated ? `updated ${humanDate(updated)}` : 'no update timestamp';
+  container.innerHTML = `
+    <article class="task-detail-card">
+      <div class="task-detail-kicker mono">${escapeHtml(selected.project || 'General')} · ${escapeHtml(selected.priority || 'priority n/a')}</div>
+      <h3>${escapeHtml(selected.title || 'Untitled task')}</h3>
+      <div class="task-detail-text">${escapeHtml(selected.description || 'No description yet.')}</div>
+      <div class="task-detail-meta-row mono">
+        <span>${escapeHtml(statusLabel)}</span>
+        <span>due ${escapeHtml(selected.due_date || 'none')}</span>
+        <span>${escapeHtml(selected.assignee || 'unassigned')}</span>
+      </div>
+      <div class="task-next-inline">
+        <span class="mono">Next</span>
+        <strong>${escapeHtml(taskNextMoveLabel(selected, area))}</strong>
+      </div>
+      <div class="task-detail-footer mono">${escapeHtml(updatedLabel)}${selected.source ? ` · ${escapeHtml(selected.source)}` : ''}${tags.length ? ` · tags: ${escapeHtml(tags.join(' · '))}` : ''}</div>
+    </article>
+  `;
+}
+
 function filterSummary() {
   const parts = [];
   if (state.projectFilter) parts.push(state.projectFilter);
@@ -251,11 +309,6 @@ function renderFocusTasks(tasks = []) {
   const scoped = projectFilteredTasks(tasks);
   const open = scoped.filter(isOpenTask).sort((a, b) => taskSortScore(a) - taskSortScore(b));
   const focus = open.slice(0, 4);
-  const focusCount = $('#focus-count-pill');
-  if (focusCount) {
-    focusCount.textContent = `${open.length} open`;
-    focusCount.className = `pill ${open.some((task) => taskArea(task) === 'needs attention') ? 'danger' : open.length ? '' : 'success'}`;
-  }
 
   const scopeLabel = state.projectFilter || (state.projects.length === 1 ? state.projects[0].name : 'All Projects');
   const completed = scoped.filter((task) => taskArea(task) === 'completed').length;
@@ -266,6 +319,7 @@ function renderFocusTasks(tasks = []) {
   const statusLine = nextTask
     ? `Next: ${escapeHtml(nextTask.title)} · ${escapeHtml(taskArea(nextTask))}`
     : 'Queue clear — no open next moves in this scope.';
+  const queueMeta = `${open.length} open · ${completed} done`;
 
   const header = `
     <section class="focus-queue-shell ${open.length ? '' : 'clear'}">
@@ -275,10 +329,7 @@ function renderFocusTasks(tasks = []) {
           <h3>${escapeHtml(scopeLabel)} queue</h3>
           <p>${statusLine}</p>
         </div>
-        <div class="focus-queue-actions">
-          <span class="pill ${needsAttention ? 'danger' : open.length ? 'project-pill' : 'success'}">${open.length} open</span>
-          <button class="mini-button focus-open-projects" type="button">Open Projects / Tasks</button>
-        </div>
+        <div class="focus-queue-head-meta detail-context-label mono">${escapeHtml(queueMeta)}</div>
         <div class="focus-stat-row" aria-label="Queue status summary">
           <span><strong>${inProgress}</strong> in progress</span>
           <span><strong>${needsAttention}</strong> attention</span>
@@ -292,14 +343,14 @@ function renderFocusTasks(tasks = []) {
   const taskCards = focus.length ? focus.map((task, index) => {
     const area = taskArea(task);
     return `
-      <article class="item focus-task-item">
+      <button class="item focus-task-item focus-task-button" type="button" data-focus-task-id="${escapeHtml(String(task.id || ''))}" data-focus-task-title="${escapeHtml(task.title || '')}" data-focus-project-name="${escapeHtml(task.project || '')}">
         <span class="focus-task-rank mono">${String(index + 1).padStart(2, '0')}</span>
         <div class="focus-task-body">
-          <div class="item-title"><span>${escapeHtml(task.title)}</span><span class="pill ${taskTone(area)}">${escapeHtml(area)}</span></div>
+          <div class="item-title"><span>${escapeHtml(task.title)}</span><span class="task-state-text ${taskTone(area)}">${escapeHtml(area)}</span></div>
           <div class="item-desc">${escapeHtml(task.description || '')}</div>
           <div class="item-meta mono">${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')}</div>
         </div>
-      </article>
+      </button>
     `;
   }).join('') : `
       <div class="empty clear-skies">No open next moves in this scope.</div>
@@ -315,26 +366,36 @@ function renderTaskList(tasks = []) {
   syncTaskStatusControl();
 
   const filtered = visibleTasks(tasks);
+  selectedTaskFrom(filtered);
   const count = $('#task-count');
-  if (count) count.textContent = `${filtered.length} shown`;
+  if (count) count.textContent = `${filtered.length} tasks`;
   const clearProject = $('#clear-project-filter');
   const projectLabel = $('#project-filter-label');
   if (clearProject) clearProject.hidden = !state.projectFilter;
-  if (projectLabel) projectLabel.textContent = state.projectFilter ? `Project: ${state.projectFilter}` : 'All projects';
-  $('#task-list').innerHTML = filtered.length ? filtered.map((task) => {
+  if (projectLabel) {
+    projectLabel.hidden = !state.projectFilter;
+    projectLabel.textContent = state.projectFilter || '';
+  }
+
+  $('#task-list').innerHTML = filtered.length ? filtered.map((task, index) => {
     const area = taskArea(task);
+    const id = taskId(task, index);
+    const selected = id === state.selectedTaskId;
+    const meta = area === 'completed'
+      ? escapeHtml(completedTimeLabel(task))
+      : `${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')} · ${escapeHtml(task.priority || 'priority n/a')}`;
     return `
-      <article class="task-list-item">
+      <button class="task-list-item task-list-item-button ${selected ? 'active' : ''}" type="button" data-task-id="${escapeHtml(id)}" aria-pressed="${selected ? 'true' : 'false'}">
         <div class="task-list-main">
-          <div class="item-title"><span>${escapeHtml(task.title)}</span><span class="pill ${taskTone(area)}">${escapeHtml(area)}</span></div>
+          <div class="task-list-title-row"><span>${escapeHtml(task.title)}</span><span class="task-state-text ${taskTone(area)}">${escapeHtml(area)}</span></div>
           <div class="item-desc">${escapeHtml(task.description || '')}</div>
-          <div class="item-meta mono">${area === 'completed' ? escapeHtml(completedTimeLabel(task)) : `${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')}`}</div>
+          <div class="item-meta mono">${meta}</div>
         </div>
-        <span class="pill project-pill">${escapeHtml(task.project || 'General')}</span>
-      </article>
+      </button>
     `;
   }).join('') : `<div class="empty">No tasks match ${escapeHtml(filterSummary())}.</div>`;
 
+  renderSelectedTaskInspector(filtered);
   renderCompletedWork(tasks);
   renderProjectStatus(state.projects, tasks);
 }
@@ -422,7 +483,7 @@ function taskSortScore(task = {}) {
 }
 
 function renderProjectStatus(projects = state.projects, tasks = state.tasks) {
-  const container = $('#selected-project-status');
+  const container = $('#project-portfolio-summary');
   if (!container) return;
 
   const selectedProject = state.projectFilter
@@ -430,43 +491,29 @@ function renderProjectStatus(projects = state.projects, tasks = state.tasks) {
     : null;
   const { stats, scoped } = projectStats(selectedProject?.name || '', tasks);
   const nextTask = scoped.filter(isOpenTask).sort((a, b) => taskSortScore(a) - taskSortScore(b))[0];
-  const latestCompleted = scoped
-    .filter((task) => taskArea(task) === 'completed')
-    .sort((a, b) => parse_iso_sort(b.completed_at) - parse_iso_sort(a.completed_at))[0];
-
-  const pill = $('#project-status-pill');
-  if (pill) {
-    pill.textContent = selectedProject ? selectedProject.status || 'selected' : 'overview';
-    pill.className = `pill ${selectedProject ? projectTone(selectedProject.status) : ''}`;
-  }
-
   const title = selectedProject?.name || 'All Projects';
-  const description = selectedProject?.description || 'Select a project above to focus this page on one project. New project creation is not in the dashboard yet — for now, tell Hermes what project to add and it can write the local JSON safely.';
-  const note = selectedProject?.obsidian_note ? `[[${selectedProject.obsidian_note}]]` : 'No linked note yet';
+  const scopeLabel = selectedProject ? 'selected scope' : 'portfolio summary';
+  const scopeMeta = selectedProject
+    ? `${stats.open} open · ${stats.completed} done · ${stats.inProgress} in progress · ${stats.waiting + stats.needsAttention} blocked / waiting`
+    : `${projects.length} project${projects.length === 1 ? '' : 's'} · ${tasks.length} total tasks · ${stats.open} open · ${stats.completed} done`;
+  const noteMeta = selectedProject?.obsidian_note ? ` · [[${escapeHtml(selectedProject.obsidian_note)}]]` : '';
+  const nextMeta = nextTask
+    ? `${escapeHtml(taskStatusLabels[taskArea(nextTask)] || taskArea(nextTask))} · due ${escapeHtml(nextTask.due_date || 'none')}`
+    : 'Nothing pending right now.';
+
   container.innerHTML = `
-    <article class="project-status-summary">
-      <div>
-        <div class="item-title"><span>${escapeHtml(title)}</span></div>
-        <div class="item-desc">${escapeHtml(description)}</div>
-        <div class="project-status-percent mono"><span>Percent complete</span><strong>${stats.progress}%</strong></div>
-        <div class="item-meta mono">${selectedProject ? `${escapeHtml(selectedProject.type || 'project')} · ${escapeHtml(note)}` : `${projects.length} projects · ${tasks.length} total tasks`}</div>
+    <article class="project-scope-strip">
+      <div class="project-scope-main">
+        <div class="detail-context-label mono">${escapeHtml(scopeLabel)}</div>
+        <div class="item-title"><span>${escapeHtml(title)}</span><span class="project-progress-text mono">${stats.progress}% complete</span></div>
+        <div class="item-meta mono">${escapeHtml(scopeMeta)}${selectedProject ? ` · ${escapeHtml(selectedProject.type || 'project')}` : ''}${noteMeta}</div>
+        <div class="progress-track mini" aria-hidden="true"><span style="width: ${stats.progress}%"></span></div>
       </div>
-    </article>
-    <div class="project-stat-grid">
-      <article class="stat-mini"><span>${stats.open}</span><small>open</small></article>
-      <article class="stat-mini"><span>${stats.completed}</span><small>completed</small></article>
-      <article class="stat-mini"><span>${stats.inProgress}</span><small>in progress</small></article>
-      <article class="stat-mini"><span>${stats.waiting + stats.needsAttention}</span><small>blocked / waiting</small></article>
-    </div>
-    <article class="project-next-card">
-      <div class="item-title"><span>Next move</span><span class="pill ${nextTask ? taskTone(taskArea(nextTask)) : 'success'}">${nextTask ? escapeHtml(taskArea(nextTask)) : 'clear'}</span></div>
-      <div class="item-desc">${nextTask ? escapeHtml(nextTask.title) : 'No open tasks in this scope.'}</div>
-      <div class="item-meta mono">${nextTask ? `${escapeHtml(nextTask.project || 'General')} · due ${escapeHtml(nextTask.due_date || 'none')}` : 'Nothing pending'}</div>
-    </article>
-    <article class="project-next-card muted-card">
-      <div class="item-title"><span>Latest completed</span></div>
-      <div class="item-desc">${latestCompleted ? escapeHtml(latestCompleted.title) : 'No completed work yet.'}</div>
-      <div class="item-meta mono">${latestCompleted ? escapeHtml(completedTimeLabel(latestCompleted)) : 'Completion history will appear below.'}</div>
+      <div class="project-scope-next">
+        <small>Next move</small>
+        <strong>${nextTask ? escapeHtml(nextTask.title) : 'No open tasks in this scope.'}</strong>
+        <span class="item-meta mono">${nextMeta}</span>
+      </div>
     </article>
   `;
 }
@@ -480,13 +527,14 @@ function renderProjects(projects = []) {
     const name = project.name || 'Untitled project';
     const active = state.projectFilter === name;
     const { stats } = projectStats(name, state.tasks);
+    const statusMeta = project.status ? `${project.status} · ` : '';
     return `
       <button class="project-card project-card-button ${active ? 'active' : ''}" type="button" data-project-name="${escapeHtml(name)}" aria-pressed="${active ? 'true' : 'false'}">
-        <div class="item-title"><span>${escapeHtml(name)}</span><span class="pill ${projectTone(project.status)}">${escapeHtml(project.status)}</span></div>
+        <div class="item-title"><span>${escapeHtml(name)}</span></div>
         <div class="item-desc">${escapeHtml(project.description || '')}</div>
         <div class="project-card-footer">
-          <span class="item-meta mono">${stats.open} open · ${stats.completed} done</span>
-          <span class="pill project-pill">${stats.progress}%</span>
+          <span class="item-meta mono">${escapeHtml(statusMeta)}${stats.open} open · ${stats.completed} done</span>
+          <span class="project-progress-text mono">${stats.progress}% complete</span>
         </div>
         <div class="progress-track mini" aria-hidden="true"><span style="width: ${stats.progress}%"></span></div>
       </button>
@@ -1006,9 +1054,33 @@ $('#overview-cards').addEventListener('click', (event) => {
   void jumpToDashboardSection(card.dataset.jumpView, card.dataset.jumpTarget);
 });
 
-$('#focus-task-list').addEventListener('click', (event) => {
-  if (!event.target.closest('.focus-open-projects')) return;
-  void jumpToDashboardSection('projects', '#tasks-panel');
+$('#focus-task-list').addEventListener('click', async (event) => {
+  const taskButton = event.target.closest('.focus-task-button');
+  if (!taskButton) return;
+
+  state.projectFilter = taskButton.dataset.focusProjectName || '';
+  state.taskStatusFilter = 'open';
+  state.taskFilter = '';
+  syncTaskStatusControl();
+  const globalSearch = $('#global-search');
+  if (globalSearch) globalSearch.value = '';
+
+  await setView('projects');
+  const scopedVisible = visibleTasks(state.tasks);
+  const focusTaskId = taskButton.dataset.focusTaskId || '';
+  const focusTitle = normalizeFilterValue(taskButton.dataset.focusTaskTitle || '');
+  const focusProject = normalizeFilterValue(taskButton.dataset.focusProjectName || '');
+  let selected = scopedVisible.find((task) => focusTaskId && String(task.id || '') === focusTaskId);
+  if (!selected) {
+    selected = scopedVisible.find((task) => normalizeFilterValue(task.title || '') === focusTitle && normalizeFilterValue(task.project || '') === focusProject);
+  }
+  if (selected) state.selectedTaskId = taskId(selected, scopedVisible.indexOf(selected));
+
+  renderProjectScopedViews();
+  const tasksPanel = $('#tasks-panel');
+  const detailPanel = $('#selected-task-panel');
+  tasksPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  flashTarget(detailPanel || tasksPanel);
 });
 
 const globalSearch = $('#global-search');
@@ -1128,6 +1200,23 @@ $('#project-list').addEventListener('click', async (event) => {
   renderProjectScopedViews();
 });
 
+$('#task-list')?.addEventListener('click', (event) => {
+  const taskButton = event.target.closest('.task-list-item-button');
+  if (!taskButton) return;
+  state.selectedTaskId = taskButton.dataset.taskId || '';
+  renderTaskList(state.tasks);
+  const detailPanel = $('#selected-task-panel');
+  if (window.matchMedia('(max-width: 1120px)').matches) {
+    detailPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else {
+    flashTarget(detailPanel);
+  }
+});
+
+$('#selected-task-back')?.addEventListener('click', () => {
+  $('#tasks-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
 $('#session-list').addEventListener('click', (event) => {
   const card = event.target.closest('.session-card');
   if (!card) return;
@@ -1175,6 +1264,6 @@ $('#attention-list').addEventListener('click', async (event) => {
   }
 });
 
-setView('today');
+setView('projects');
 refresh();
 setInterval(refresh, REFRESH_MS);

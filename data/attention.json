@@ -1,11 +1,11 @@
 [
   {
     "id": "attn_review_dashboard",
-    "title": "Review first Agent OS dashboard shell",
+    "title": "Review first Mentat dashboard shell",
     "description": "Confirm that the v1 dashboard layout, dark style, and seed data match the intended direction before adding more integrations.",
     "type": "review_required",
     "source": "agent",
-    "project": "Agent OS",
+    "project": "Mentat",
     "severity": "medium",
     "status": "resolved",
     "created_at": "2026-06-20T22:32:04",

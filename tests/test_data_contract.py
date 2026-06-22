@@ -14,9 +14,9 @@ class DataFixtureTests(unittest.TestCase):
         self.assertNotIn("project_dummy", project_blob)
         self.assertNotIn("dummy_test", task_blob)
 
-    def test_only_agent_os_project_remains_active_for_v1(self):
-        self.assertEqual([project["name"] for project in PROJECTS], ["Agent OS"])
-        self.assertEqual({task["project"] for task in TASKS}, {"Agent OS"})
+    def test_only_mentat_project_remains_active_for_v1(self):
+        self.assertEqual([project["name"] for project in PROJECTS], ["Mentat"])
+        self.assertEqual({task["project"] for task in TASKS}, {"Mentat"})
 
 
 if __name__ == "__main__":

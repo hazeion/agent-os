@@ -15,7 +15,7 @@ Reduce monolith risk in the existing Agent OS codebase while preserving the curr
 ## Phase A — safe first slice, complete
 1. Extract runtime configuration concerns out of `server.py` into a small dedicated module.
 2. Extract shared browser constants/utilities/API helpers out of `public/app.js` into `public/core.js`.
-3. Apply the fast user-facing brand rename to **Mentat** without renaming the repo, Python modules, task IDs, or data project key yet.
+3. Apply the fast user-facing brand rename to **Mentat** without renaming the repo, Python modules, or task IDs yet. The data project key/name was later moved to Mentat once Brandon approved that narrower migration.
 4. Run existing Python/JS checks and HTTP smoke tests.
 
 ## Phase B — next server slices
@@ -36,9 +36,10 @@ Reduce monolith risk in the existing Agent OS codebase while preserving the curr
 ## Phase D — full Mentat rename later
 Later, when Brandon approves the larger rename boundary:
 - rename repo/package/module surfaces deliberately,
-- migrate task/project names if desired,
 - update docs and Obsidian note names,
 - consider compatibility aliases for old helper script names.
+
+Task/project data already use Mentat, so the remaining rename scope is mainly repo/package/module/helper compatibility.
 
 ## Current slice success criteria
 - `server.py` loses config-loading responsibility.
@@ -50,4 +51,4 @@ Later, when Brandon approves the larger rename boundary:
 
 ## Recommendation after Phase A
 
-Keep **Mentat** as the visible product name now, but postpone the full internal rename. The next internal rename should be a deliberate migration milestone, not opportunistic cleanup during feature work. Continue modularization only with one small concern-based slice at a time when it directly reduces risk.
+Keep **Mentat** as the visible product name and project/task data name now, but postpone the remaining internal repo/module/helper rename. The next internal rename should be a deliberate migration milestone, not opportunistic cleanup during feature work. Continue modularization only with one small concern-based slice at a time when it directly reduces risk.

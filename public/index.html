@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mentat · Mission Control</title>
-  <link rel="stylesheet" href="/styles.css?v=mentat-modular-1" />
+  <link rel="stylesheet" href="/styles.css?v=mentat-modular-7" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
@@ -56,13 +56,13 @@
       <nav class="nav-groups">
         <section>
           <div class="nav-label">Workspace</div>
-          <button class="nav-item active" type="button" data-view="today"><span>✦</span><span>Today View</span></button>
+          <button class="nav-item" type="button" data-view="today"><span>✦</span><span>Today View</span></button>
           <button class="nav-item" type="button" data-view="agents"><span>◉</span><span>Agents / Sessions</span></button>
           <button class="nav-item" type="button" data-view="calendar"><span>◷</span><span>Calendar</span></button>
         </section>
         <section>
           <div class="nav-label">Focus</div>
-          <button class="nav-item" type="button" data-view="projects"><span>▦</span><span>Projects / Tasks</span></button>
+          <button class="nav-item active" type="button" data-view="projects"><span>▦</span><span>Projects / Tasks</span></button>
           <button class="nav-item" type="button" data-view="notes"><span>☰</span><span>Notes</span></button>
         </section>
         <section>
@@ -94,7 +94,7 @@
 
       <section class="metric-grid" id="overview-cards"></section>
 
-      <section class="view active" id="view-today" data-view-panel="today">
+      <section class="view" id="view-today" data-view-panel="today">
         <section class="today-grid">
           <section class="panel priority-panel command-card" id="attention-panel">
             <div class="panel-head">
@@ -111,7 +111,6 @@
               <div>
                 <h2>Open Queue / Next Moves</h2>
               </div>
-              <span class="pill" id="focus-count-pill">0 open</span>
             </div>
             <div id="focus-task-list" class="stack"></div>
           </section>
@@ -199,7 +198,7 @@
         </section>
       </section>
 
-      <section class="view" id="view-projects" data-view-panel="projects">
+      <section class="view active" id="view-projects" data-view-panel="projects">
         <section class="project-command-grid projects-layout">
           <section class="panel project-portfolio-panel" id="projects-panel">
             <div class="panel-head">
@@ -207,7 +206,7 @@
                 <h2>Project Portfolio</h2>
                 <p class="panel-subtitle">Select a project to focus the queue, status, and completion timeline.</p>
               </div>
-              <span class="pill" id="project-count">0 projects</span>
+              <span class="detail-context-label mono" id="project-count">0 projects</span>
             </div>
             <div class="project-rail-shell">
               <button class="rail-arrow rail-arrow-left" type="button" id="project-scroll-left" aria-label="Scroll projects left">
@@ -218,6 +217,7 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6" /></svg>
               </button>
             </div>
+            <div id="project-portfolio-summary" class="project-portfolio-summary"></div>
           </section>
 
           <section class="panel task-queue-panel" id="tasks-panel">
@@ -256,26 +256,31 @@
                     </div>
                   </div>
                 </div>
-                <span class="pill" id="task-count">0 shown</span>
+                <span class="detail-context-label mono" id="task-count">0 tasks</span>
               </div>
             </div>
             <div class="task-filter-strip">
-              <span class="pill project-pill" id="project-filter-label">All projects</span>
+              <span class="detail-context-label" id="project-filter-label" hidden>All projects</span>
               <button class="mini-button" type="button" id="clear-project-filter" hidden>Clear project</button>
             </div>
             <div id="task-list" class="task-list"></div>
           </section>
 
           <aside class="side-stack project-insight-stack">
-            <section class="panel project-status-panel" id="project-status-panel">
+            <section class="panel selected-task-panel" id="selected-task-panel">
               <div class="panel-head">
                 <div>
-                  <h2>Project Status</h2>
-                  <p class="panel-subtitle">Progress, blockers, and next move for the selected scope.</p>
+                  <h2>Selected Task</h2>
+                  <p class="panel-subtitle">Queue stays primary; full task context stays here.</p>
                 </div>
-                <span class="pill" id="project-status-pill">overview</span>
+                <div class="panel-controls task-detail-controls">
+                  <button class="mini-button task-detail-back" type="button" id="selected-task-back">Back to queue</button>
+                  <span class="detail-context-label mono" id="selected-task-context">detail rail</span>
+                </div>
               </div>
-              <div id="selected-project-status" class="project-status-content"></div>
+              <div id="selected-task-detail" class="task-detail-content">
+                <div class="empty">Select a task from the queue to inspect full context.</div>
+              </div>
             </section>
           </aside>
 
@@ -354,7 +359,7 @@
     </main>
   </div>
 
-  <script src="/core.js?v=mentat-modular-1"></script>
-  <script src="/app.js?v=mentat-modular-1"></script>
+  <script src="/core.js?v=mentat-modular-7"></script>
+  <script src="/app.js?v=mentat-modular-7"></script>
 </body>
 </html>
