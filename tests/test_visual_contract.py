@@ -81,6 +81,22 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("minmax(360px, .72fr)", layout_block)
         self.assertIn("gap: 14px;", layout_block)
 
+    def test_project_portfolio_cards_stay_compact_without_progress_bars(self):
+        render_projects_block = APP_JS[APP_JS.index("function renderProjects") : APP_JS.index("function isDateOnly")]
+        render_scope_block = APP_JS[APP_JS.index("function renderProjectStatus") : APP_JS.index("function renderProjects")]
+        self.assertIn("project-progress-text", render_projects_block)
+        self.assertNotIn("progress-track mini", render_projects_block)
+        self.assertIn("progress-track mini", render_scope_block)
+        self.assertIn('id="project-scroll-left" aria-label="Scroll projects left" hidden', INDEX)
+        self.assertIn('id="project-scroll-right" aria-label="Scroll projects right" hidden', INDEX)
+        self.assertIn(".rail-arrow[hidden]", CSS)
+        self.assertIn("contentWidth > availableWidth + 4", APP_JS)
+
+    def test_selected_task_header_omits_detail_context_label(self):
+        self.assertNotIn('id="selected-task-context"', INDEX)
+        self.assertNotIn("selected detail", APP_JS)
+        self.assertNotIn("history detail", APP_JS)
+
     def test_agent_pulse_now_renders_live_heartbeat_registry(self):
         self.assertIn('id="agent-pulse-panel"', INDEX)
         self.assertIn('id="agent-pulse"', INDEX)

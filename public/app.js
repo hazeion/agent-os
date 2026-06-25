@@ -348,8 +348,8 @@ async function submitTaskEditorForm(form) {
 
 function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
   const container = $('#selected-task-detail');
-  const context = $('#selected-task-context');
   if (!container) return;
+
   const editorActive = state.taskEditorMode === 'create' || state.taskEditorMode === 'edit';
   if (editorActive) {
     const draft = taskEditorSeedTask(tasks);
@@ -426,7 +426,6 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
 
   const selected = selectedTaskFrom(tasks);
   if (!selected) {
-    if (context) context.textContent = 'detail rail';
     container.innerHTML = `<div class="empty">No tasks match ${escapeHtml(filterSummary())}. Adjust the project, status, or search filter to inspect a task.</div>`;
     syncTaskEditorControls(tasks);
     return;
@@ -436,7 +435,6 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
   const statusLabel = taskStatusLabels[area] || area;
   const tags = Array.isArray(selected.tags) ? selected.tags : [];
   const updated = selected.updated_at || selected.created_at || selected.completed_at;
-  if (context) context.textContent = area === 'completed' ? 'history detail' : 'selected detail';
   const updatedLabel = updated ? `updated ${humanDate(updated)}` : 'no update timestamp';
   container.innerHTML = `
     <article class="task-detail-card">
@@ -494,7 +492,15 @@ function updateProjectRailButtons() {
   const right = $('#project-scroll-right');
   if (!rail || !left || !right) return;
 
-  const canScroll = rail.scrollWidth > rail.clientWidth + 4;
+  const items = Array.from(rail.children);
+  const style = window.getComputedStyle(rail);
+  const paddingLeft = parseFloat(style.paddingLeft) || 0;
+  const paddingRight = parseFloat(style.paddingRight) || 0;
+  const contentWidth = items.length
+    ? Math.max(...items.map((item) => item.offsetLeft + item.offsetWidth)) - Math.min(...items.map((item) => item.offsetLeft))
+    : 0;
+  const availableWidth = Math.max(0, rail.clientWidth - paddingLeft - paddingRight);
+  const canScroll = contentWidth > availableWidth + 4;
   const atStart = rail.scrollLeft <= 4;
   const atEnd = rail.scrollLeft + rail.clientWidth >= rail.scrollWidth - 4;
   left.hidden = !canScroll;
@@ -750,7 +756,6 @@ function renderProjects(projects = []) {
           <span class="item-meta mono">${escapeHtml(statusMeta)}${stats.open} open · ${stats.completed} done</span>
           <span class="project-progress-text mono">${stats.progress}% complete</span>
         </div>
-        <div class="progress-track mini" aria-hidden="true"><span style="width: ${stats.progress}%"></span></div>
       </button>
     `;
   }).join('') : `<div class="empty">No projects found. For now, ask Hermes to add one to <code>data/projects.json</code>.</div>`;

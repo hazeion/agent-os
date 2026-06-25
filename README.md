@@ -98,7 +98,7 @@ Current UI stabilization focus:
 - The `Hello <name>` hero title is project-configured from `data/dashboard.json`, styled with JetBrains Mono, and now uses the dashboard's blue/teal/white glow instead of the prior amber dot-matrix treatment.
 - The old right-side Local badge has been replaced by a low-poly/digitized SVG brain mark animated with a deliberately choppy 15-frame stepped spin.
 - Projects / Tasks is a project command center with Project Portfolio, Open Task Queue, Project Status, and Recent Completed Work.
-- Project Portfolio keeps visual progress bars; Project Status lists percent complete as text only.
+- Project Portfolio keeps project cards compact with counts and percent text; the Selected Scope summary keeps the visual progress bar.
 - Project Portfolio cards are fixed-width in a horizontal rail with arrow controls when the rail overflows.
 - The task status filter uses a native dark `<select>` surface for reliable mouse and keyboard behavior while keeping completed tasks available by filter.
 - Runtime configuration now comes from layered TOML/env/CLI sources in `runtime_config.py` so shared defaults and local machine overrides are no longer hardcoded directly in `server.py`.
@@ -142,7 +142,7 @@ python server.py
 
 Projects / Tasks is now a project command center rather than a duplicate task/archive view:
 
-- **Project Portfolio** selects the project scope, uses fixed-width horizontal cards, and keeps the visual progress bar.
+- **Project Portfolio** selects the project scope with compact fixed-width horizontal cards. Portfolio cards show counts and percent text only; the Selected Scope summary retains the progress bar.
 - **Open Task Queue** defaults to actionable work only; completed tasks are available through the native status filter but are not shown by default.
 - **Selected Task** uses the refined-A inspector pattern: the queue stays compact and the selected task's full description, status metadata, tags, and next-move guidance live in a persistent detail rail. On narrow/mobile layouts, the queue stacks above the detail panel and exposes a Back to Queue control instead of duplicating the status pill in the detail header.
 - **Project Status** shows percent complete as text only, plus open/completed counts, blockers/waiting count, next move, and latest completed item.

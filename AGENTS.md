@@ -82,7 +82,7 @@ Current dashboard features:
 - Google Calendar read-only source integration through Hermes OAuth, with local `calendar.json` fallback and grouped Today/Calendar agenda rendering.
 - `docs/react-readiness.md` documents when to move the frontend from vanilla JS to React without prematurely adding a build step.
 - Projects / Tasks command center with a Project Portfolio selector, Open Task Queue defaulting to actionable work, refined-A Selected Task inspector, Project Status panel, and compact Recent Completed Work timeline.
-- Project Portfolio is a fixed-width horizontal card rail with progress bars on project cards; overflow scrolls left/right with rail arrow controls when enough projects exist.
+- Project Portfolio is a fixed-width horizontal card rail; project cards show counts and percent text, while the Selected Scope summary keeps the visual progress bar. Rail arrows should appear only when overflow actually requires horizontal scrolling.
 - The Open Task Queue stays compact for scale; selecting a task opens its full description, status metadata, tags, and next-move guidance in the persistent Selected Task detail rail. Narrow/mobile layouts stack queue then detail and expose Back to Queue without duplicating the task status pill in the detail header.
 - Project Status deliberately lists percent complete as text/number only, not a second progress bar, to avoid duplicating the portfolio progress bars.
 - Task list uses a native dark status `<select>` for reliable mouse and keyboard behavior, keeping completed tasks available by filter but excluded from the default open queue.

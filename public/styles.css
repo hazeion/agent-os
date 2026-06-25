@@ -1894,6 +1894,9 @@ h2 {
   transform: translateY(-50%);
   box-shadow: 0 10px 30px rgba(0,0,0,.32);
 }
+.rail-arrow[hidden] {
+  display: none;
+}
 .rail-arrow:hover:not(:disabled),
 .rail-arrow:focus-visible:not(:disabled) {
   border-color: rgba(110,231,255,.52);

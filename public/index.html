@@ -191,11 +191,11 @@
               <span class="detail-context-label mono" id="project-count">0 projects</span>
             </div>
             <div class="project-rail-shell">
-              <button class="rail-arrow rail-arrow-left" type="button" id="project-scroll-left" aria-label="Scroll projects left">
+              <button class="rail-arrow rail-arrow-left" type="button" id="project-scroll-left" aria-label="Scroll projects left" hidden>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 18l-6-6 6-6" /></svg>
               </button>
               <div id="project-list" class="project-list project-list-horizontal" tabindex="0" aria-label="Project portfolio"></div>
-              <button class="rail-arrow rail-arrow-right" type="button" id="project-scroll-right" aria-label="Scroll projects right">
+              <button class="rail-arrow rail-arrow-right" type="button" id="project-scroll-right" aria-label="Scroll projects right" hidden>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 6l6 6-6 6" /></svg>
               </button>
             </div>
@@ -243,7 +243,6 @@
                   <button class="mini-button" type="button" id="selected-task-edit">Edit Task</button>
                   <button class="mini-button" type="button" id="selected-task-cancel" hidden>Cancel</button>
                   <button class="mini-button task-detail-back" type="button" id="selected-task-back">Back to queue</button>
-                  <span class="detail-context-label mono" id="selected-task-context">detail rail</span>
                 </div>
               </div>
               <div id="selected-task-detail" class="task-detail-content">
