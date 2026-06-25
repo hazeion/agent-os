@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mentat · Mission Control</title>
-  <link rel="stylesheet" href="/styles.css?v=mentat-modular-7" />
+  <link rel="stylesheet" href="/styles.css?v=compact-dark-board-1" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
@@ -56,13 +56,13 @@
       <nav class="nav-groups">
         <section>
           <div class="nav-label">Workspace</div>
-          <button class="nav-item" type="button" data-view="today"><span>✦</span><span>Today View</span></button>
+          <button class="nav-item active" type="button" data-view="today"><span>✦</span><span>Today View</span></button>
           <button class="nav-item" type="button" data-view="agents"><span>◉</span><span>Agents / Sessions</span></button>
           <button class="nav-item" type="button" data-view="calendar"><span>◷</span><span>Calendar</span></button>
         </section>
         <section>
           <div class="nav-label">Focus</div>
-          <button class="nav-item active" type="button" data-view="projects"><span>▦</span><span>Projects / Tasks</span></button>
+          <button class="nav-item" type="button" data-view="projects"><span>▦</span><span>Projects / Tasks</span></button>
           <button class="nav-item" type="button" data-view="notes"><span>☰</span><span>Notes</span></button>
         </section>
         <section>
@@ -94,18 +94,8 @@
 
       <section class="metric-grid" id="overview-cards"></section>
 
-      <section class="view" id="view-today" data-view-panel="today">
+      <section class="view active" id="view-today" data-view-panel="today">
         <section class="today-grid">
-          <section class="panel priority-panel command-card" id="attention-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Needs Attention</h2>
-              </div>
-              <span class="pill danger" id="attention-count">0 open</span>
-            </div>
-            <div id="attention-list" class="stack"></div>
-          </section>
-
           <section class="panel command-card" id="today-active-work-panel">
             <div class="panel-head">
               <div>
@@ -120,7 +110,7 @@
               <div>
                 <h2>Agent Pulse</h2>
               </div>
-              <span class="pill success" id="agent-pulse-pill">observed</span>
+              <span class="pill success" id="agent-pulse-pill">live registry</span>
             </div>
             <div id="agent-pulse" class="agent-pulse"></div>
           </section>
@@ -148,15 +138,22 @@
       </section>
 
       <section class="view" id="view-agents" data-view-panel="agents">
-        <section class="split-layout">
-          <section class="panel" id="conversation-library-panel">
+        <section class="agents-session-layout">
+          <section class="panel agents-session-panel" id="conversation-library-panel">
             <div class="panel-head">
               <div>
-                <h2>Conversation Library</h2>
+                <h2>Agents / Sessions</h2>
+                <p class="panel-subtitle">Pick a Hermes session, then review the structured replay or raw transcript.</p>
               </div>
-              <span class="pill">searchable shell</span>
+              <span class="pill">read-only</span>
             </div>
-            <div class="session-tools">
+            <div class="session-controls-card">
+              <label class="session-select-label" for="session-select">
+                <span class="detail-context-label mono">Session</span>
+                <select id="session-select" class="session-select">
+                  <option value="">Loading recent sessions…</option>
+                </select>
+              </label>
               <label class="search-shell wide-search" aria-label="Search sessions in agents view">
                 <span>⌕</span>
                 <input id="session-search" type="search" placeholder="Search session titles and message contents…" />
@@ -165,40 +162,25 @@
             <div id="message-search-results" class="message-search-results">
               <div class="empty">Type at least two characters to search Hermes message contents with read-only FTS.</div>
             </div>
-            <div class="session-workspace">
-              <div id="session-list" class="session-grid"></div>
-              <section id="session-detail" class="session-detail">
-                <div class="empty">Select a session to read the conversation.</div>
-              </section>
-            </div>
+            <section id="session-detail" class="session-detail session-detail-wide">
+              <div class="empty">Select a session to review the replay or transcript.</div>
+            </section>
           </section>
 
-          <aside class="side-stack">
-            <section class="panel" id="session-analytics-panel">
-              <div class="panel-head">
-                <div>
-                  <h2>Session Analytics</h2>
-                </div>
-                <span class="pill">historical</span>
+          <section class="panel cron-panel-wide" id="cron-monitor-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Cron Monitor</h2>
               </div>
-              <div id="session-stats" class="session-stats-grid"></div>
-              <div class="item-meta mono">Read-only summary from recent Hermes sessions. This is not live heartbeat tracking.</div>
-            </section>
-
-            <section class="panel" id="cron-monitor-panel">
-              <div class="panel-head">
-                <div>
-                  <h2>Cron Monitor</h2>
-                </div>
-                <span class="pill" id="cron-count">0 jobs</span>
-              </div>
-              <div id="cron-list" class="stack"></div>
-            </section>
-          </aside>
+              <span class="pill" id="cron-count">0 jobs</span>
+            </div>
+            <div id="cron-list" class="stack"></div>
+          </section>
         </section>
       </section>
 
-      <section class="view active" id="view-projects" data-view-panel="projects">
+
+      <section class="view" id="view-projects" data-view-panel="projects">
         <section class="project-command-grid projects-layout">
           <section class="panel project-portfolio-panel" id="projects-panel">
             <div class="panel-head">
@@ -227,34 +209,18 @@
                 <p class="panel-subtitle">Actionable work only by default. Completed tasks stay in the timeline below.</p>
               </div>
               <div class="panel-controls">
-                <div class="select-shell custom-select" id="task-status-select-shell" aria-label="Filter task queue by status">
+                <button class="mini-button" type="button" id="create-task-button">Create Task</button>
+                <div class="task-status-filter-shell" aria-label="Filter task queue by status">
                   <span>View</span>
-                  <div class="select-wrap">
-                    <select id="task-status-filter" class="visually-hidden" tabindex="-1" aria-hidden="true">
-                      <option value="open" selected>Open</option>
-                      <option value="todo">Todo</option>
-                      <option value="in progress">In Progress</option>
-                      <option value="waiting">Waiting</option>
-                      <option value="needs attention">Needs Attention</option>
-                      <option value="completed">Completed</option>
-                      <option value="all">All</option>
-                    </select>
-                    <button class="status-filter-button" type="button" id="task-status-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="task-status-menu">
-                      <span id="task-status-label">Open</span>
-                      <svg class="select-chevron-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                        <path d="M5.5 7.5 10 12l4.5-4.5" />
-                      </svg>
-                    </button>
-                    <div class="status-filter-menu" id="task-status-menu" role="listbox" aria-label="Task status options" hidden>
-                      <button type="button" role="option" data-status-value="open" aria-selected="true">Open</button>
-                      <button type="button" role="option" data-status-value="todo" aria-selected="false">Todo</button>
-                      <button type="button" role="option" data-status-value="in progress" aria-selected="false">In Progress</button>
-                      <button type="button" role="option" data-status-value="waiting" aria-selected="false">Waiting</button>
-                      <button type="button" role="option" data-status-value="needs attention" aria-selected="false">Needs Attention</button>
-                      <button type="button" role="option" data-status-value="completed" aria-selected="false">Completed</button>
-                      <button type="button" role="option" data-status-value="all" aria-selected="false">All</button>
-                    </div>
-                  </div>
+                  <select id="task-status-filter" class="status-filter-select" aria-label="Task status options">
+                    <option value="open" selected>Open</option>
+                    <option value="todo">Todo</option>
+                    <option value="in progress">In Progress</option>
+                    <option value="waiting">Waiting</option>
+                    <option value="needs attention">Needs Attention</option>
+                    <option value="completed">Completed</option>
+                    <option value="all">All</option>
+                  </select>
                 </div>
                 <span class="detail-context-label mono" id="task-count">0 tasks</span>
               </div>
@@ -274,6 +240,8 @@
                   <p class="panel-subtitle">Queue stays primary; full task context stays here.</p>
                 </div>
                 <div class="panel-controls task-detail-controls">
+                  <button class="mini-button" type="button" id="selected-task-edit">Edit Task</button>
+                  <button class="mini-button" type="button" id="selected-task-cancel" hidden>Cancel</button>
                   <button class="mini-button task-detail-back" type="button" id="selected-task-back">Back to queue</button>
                   <span class="detail-context-label mono" id="selected-task-context">detail rail</span>
                 </div>
@@ -359,7 +327,7 @@
     </main>
   </div>
 
-  <script src="/core.js?v=mentat-modular-7"></script>
-  <script src="/app.js?v=mentat-modular-7"></script>
+  <script src="/core.js?v=compact-dark-board-1"></script>
+  <script src="/app.js?v=compact-dark-board-1"></script>
 </body>
 </html>

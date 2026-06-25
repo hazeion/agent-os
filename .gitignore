@@ -14,6 +14,7 @@ venv/
 # Local runtime/log output
 *.log
 logs/
+artifacts/
 .hermes-tmp.*/
 data/runtime/
 

@@ -16,6 +16,7 @@ import sqlite3
 import sys
 import threading
 import time
+from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -174,9 +175,14 @@ CONFIG_DISPLAY_NAME = None
 CONFIG_GREETING_PREFIX = None
 CONFIG_APP_NAME = DEFAULT_APP_NAME
 APP_CONFIG = AppConfig(tuple(), HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT)
-ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json"}
+ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json", "agents.json"}
 CALENDAR_CACHE_TTL_SECONDS = 300
 CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
+TASK_STATUS_VALUES = {"todo", "in progress", "waiting", "needs attention", "completed"}
+TASK_PRIORITY_VALUES = {"high", "medium", "low"}
+AGENT_STATUS_VALUES = {"running", "idle", "blocked", "done", "failed"}
+AGENT_ACTIVE_STATUSES = {"running", "idle", "blocked"}
+AGENT_STALE_AFTER_SECONDS = 90
 
 apply_runtime_config(load_app_config())
 
@@ -189,6 +195,281 @@ def note_sort_key(path: Path):
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def compact_text(value, *, max_length: int | None = None) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if max_length and len(text) > max_length:
+        text = text[:max_length].rstrip()
+    return text
+
+
+def task_id_value() -> str:
+    return f"task_{uuid4().hex[:12]}"
+
+
+def task_tags_value(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    tags = []
+    for item in value:
+        tag = compact_text(item, max_length=48)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def task_due_date_value(value):
+    raw = compact_text(value, max_length=32)
+    if not raw:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw
+    return None
+
+
+def project_names() -> set[str]:
+    projects = read_json_file("projects.json", [])
+    if not isinstance(projects, list):
+        return set()
+    return {compact_text(project.get("name"), max_length=120) for project in projects if isinstance(project, dict) and compact_text(project.get("name"), max_length=120)}
+
+
+def validate_task_payload(payload, *, existing: dict | None = None):
+    if not isinstance(payload, dict):
+        return None, "Task payload must be a JSON object"
+
+    title = compact_text(payload.get("title"), max_length=160)
+    if not title:
+        return None, "Task title is required"
+
+    project = compact_text(payload.get("project"), max_length=120)
+    if not project:
+        return None, "Task project is required"
+
+    if project not in project_names():
+        return None, f"Unknown project: {project}"
+
+    status = compact_text(payload.get("status") or "todo", max_length=32).lower().replace("_", " ") or "todo"
+    if status not in TASK_STATUS_VALUES:
+        return None, f"Invalid task status: {status}"
+
+    priority = compact_text(payload.get("priority") or "medium", max_length=16).lower() or "medium"
+    if priority not in TASK_PRIORITY_VALUES:
+        return None, f"Invalid task priority: {priority}"
+
+    due_date = task_due_date_value(payload.get("due_date"))
+    if payload.get("due_date") not in (None, "") and due_date is None:
+        return None, "Task due_date must be YYYY-MM-DD or empty"
+
+    tags = task_tags_value(payload.get("tags"))
+    source = compact_text(payload.get("source") or (existing or {}).get("source") or "dashboard", max_length=32) or "dashboard"
+    assignee = compact_text(payload.get("assignee"), max_length=120) or None
+    description = str(payload.get("description") or "").strip()
+    created_at = existing.get("created_at") if isinstance(existing, dict) else None
+    completed_at = existing.get("completed_at") if isinstance(existing, dict) else None
+    timestamp = now_iso()
+
+    normalized = {
+        "id": compact_text((existing or {}).get("id"), max_length=80) or task_id_value(),
+        "title": title,
+        "description": description,
+        "project": project,
+        "status": status,
+        "priority": priority,
+        "assignee": assignee,
+        "due_date": due_date,
+        "source": source,
+        "tags": tags,
+        "review_required": bool(payload.get("review_required")),
+        "needs_attention": bool(payload.get("needs_attention")),
+        "created_at": created_at or timestamp,
+        "updated_at": timestamp,
+        "completed_at": completed_at,
+    }
+    if status == "completed" and not normalized["completed_at"]:
+        normalized["completed_at"] = timestamp
+    if status != "completed":
+        normalized["completed_at"] = None
+    return normalized, None
+
+
+def agent_id_value(value) -> str:
+    base = compact_text(value, max_length=120).lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", base).strip("_")
+    return f"agent_{slug}" if slug else f"agent_{uuid4().hex[:12]}"
+
+
+def agent_status_value(value) -> str:
+    status = compact_text(value or "idle", max_length=24).lower().replace("_", " ").replace("-", " ")
+    if status == "active":
+        return "running"
+    return status
+
+
+def normalize_agent_payload(payload, *, existing: dict | None = None, agent_id: str | None = None):
+    if not isinstance(payload, dict):
+        return None, "Agent payload must be a JSON object"
+
+    name = compact_text(payload.get("name") or payload.get("agent") or payload.get("title"), max_length=120)
+    if not name:
+        return None, "Agent name is required"
+
+    status = agent_status_value(payload.get("status"))
+    if status not in AGENT_STATUS_VALUES:
+        return None, f"Invalid agent status: {status}"
+
+    current_task = compact_text(payload.get("current_task"), max_length=160)
+    project = compact_text(payload.get("project"), max_length=120)
+    cwd = compact_text(payload.get("cwd"), max_length=240)
+    model = compact_text(payload.get("model"), max_length=120)
+    source = compact_text(payload.get("source") or (existing or {}).get("source") or "dashboard", max_length=32) or "dashboard"
+    latest_output = compact_text(payload.get("latest_output"), max_length=280)
+    related_task_id = compact_text(payload.get("related_task_id"), max_length=80)
+    needs_user_input = bool(payload.get("needs_user_input"))
+    timestamp = datetime.now().astimezone().isoformat(timespec="microseconds")
+
+    created_at = existing.get("created_at") if isinstance(existing, dict) else None
+    started_at = existing.get("started_at") if isinstance(existing, dict) else None
+    resolved_at = existing.get("resolved_at") if isinstance(existing, dict) else None
+    if status in {"done", "failed"} and not resolved_at:
+        resolved_at = timestamp
+    if status not in {"done", "failed"}:
+        resolved_at = None
+
+    normalized = {
+        "id": compact_text(agent_id or (existing or {}).get("id"), max_length=80) or agent_id_value(name),
+        "name": name,
+        "status": status,
+        "current_task": current_task or None,
+        "project": project or None,
+        "cwd": cwd or None,
+        "model": model or None,
+        "source": source,
+        "latest_output": latest_output or None,
+        "needs_user_input": needs_user_input,
+        "related_task_id": related_task_id or None,
+        "created_at": created_at or timestamp,
+        "started_at": started_at or created_at or timestamp,
+        "updated_at": timestamp,
+        "last_heartbeat": timestamp,
+        "resolved_at": resolved_at,
+    }
+    return normalized, None
+
+
+def agent_summary(agents: list[dict]) -> dict:
+    summary = {status: 0 for status in AGENT_STATUS_VALUES}
+    needs_user_input = 0
+    live = 0
+    stale = 0
+    resolved = 0
+    for agent in agents:
+        if not isinstance(agent, dict):
+            continue
+        status = compact_text(agent.get("status"), max_length=24).lower()
+        if status in summary:
+            summary[status] += 1
+        if agent.get("needs_user_input"):
+            needs_user_input += 1
+        freshness = compact_text(agent.get("freshness") or "live", max_length=24).lower()
+        if freshness == "stale":
+            stale += 1
+        elif freshness == "resolved":
+            resolved += 1
+        else:
+            live += 1
+    summary["needs_user_input"] = needs_user_input
+    summary["live"] = live
+    summary["stale"] = stale
+    summary["resolved"] = resolved
+    summary["total"] = sum(summary[status] for status in AGENT_STATUS_VALUES)
+    return summary
+
+
+def agent_record_with_freshness(agent: dict, *, now: datetime | None = None) -> dict:
+    record = dict(agent) if isinstance(agent, dict) else {}
+    status = compact_text(record.get("status") or "idle", max_length=24).lower()
+    now = now or datetime.now().astimezone()
+    last_seen = parse_iso(record.get("last_heartbeat") or record.get("updated_at") or record.get("started_at") or record.get("created_at"))
+    heartbeat_age_seconds = None
+    stale = False
+    freshness = "resolved" if status in {"done", "failed"} else "live"
+
+    if last_seen is not None:
+        heartbeat_age_seconds = max(int((now - last_seen).total_seconds()), 0)
+        stale = status in AGENT_ACTIVE_STATUSES and heartbeat_age_seconds >= AGENT_STALE_AFTER_SECONDS
+    elif status in AGENT_ACTIVE_STATUSES:
+        stale = True
+
+    if stale:
+        freshness = "stale"
+
+    record["heartbeat_age_seconds"] = heartbeat_age_seconds
+    record["stale"] = stale
+    record["freshness"] = freshness
+    return record
+
+
+def agent_guidance() -> dict:
+    base_host = HOST if HOST not in {"0.0.0.0", "::"} else "127.0.0.1"
+    base_url = f"http://{base_host}:{PORT}"
+    return {
+        "base_url": base_url,
+        "stale_after_seconds": AGENT_STALE_AFTER_SECONDS,
+        "examples_command": "python scripts/agent_heartbeat.py examples",
+        "beat_command": f'python scripts/agent_heartbeat.py beat --base-url {base_url} --name "Hermes" --project Mentat --current-task "Working on Mentat"',
+        "run_command": f'python scripts/agent_heartbeat.py run --base-url {base_url} --name "Hermes Worker" --project Mentat --current-task "Implement feature" --interval 15 -- python worker.py',
+    }
+
+
+def agents_payload():
+    agents = read_json_file("agents.json", [])
+    if isinstance(agents, dict) and agents.get("error"):
+        return agents
+    if not isinstance(agents, list):
+        return {"error": "agents.json must contain a list"}
+    now = datetime.now().astimezone()
+    ordered = [agent_record_with_freshness(agent, now=now) for agent in agents if isinstance(agent, dict)]
+    ordered.sort(key=lambda agent: agent.get("last_heartbeat") or agent.get("updated_at") or agent.get("started_at") or "", reverse=True)
+    return {"agents": ordered, "summary": agent_summary(ordered), "guidance": agent_guidance()}
+
+
+def upsert_agent_heartbeat(payload):
+    agents = read_json_file("agents.json", [])
+    if isinstance(agents, dict) and agents.get("error"):
+        return agents, 500
+    if not isinstance(agents, list):
+        return {"error": "agents.json must contain a list"}, 500
+
+    agent_id = compact_text((payload or {}).get("id") or (payload or {}).get("agent_id"), max_length=80)
+    if not agent_id:
+        agent_name = compact_text((payload or {}).get("name") or (payload or {}).get("agent") or (payload or {}).get("title"), max_length=120)
+        agent_id = agent_id_value(agent_name)
+
+    existing_index = None
+    existing_agent = None
+    for index, agent in enumerate(agents):
+        if not isinstance(agent, dict):
+            continue
+        if str(agent.get("id") or "") == agent_id:
+            existing_index = index
+            existing_agent = agent
+            break
+
+    normalized, error = normalize_agent_payload(payload, existing=existing_agent, agent_id=agent_id)
+    if error:
+        return {"error": error}, 400
+
+    if existing_index is None:
+        agents.append(normalized)
+        status = 201
+    else:
+        agents[existing_index] = normalized
+        status = 200
+
+    write_json_file("agents.json", agents)
+    return {"ok": True, "agent": normalized, "agents": agents, "summary": agent_summary(agents)}, status
 
 
 def file_mtime_iso(path: Path) -> str | None:
@@ -652,6 +933,310 @@ def sqlite_connect():
     return sqlite3.connect(uri, uri=True)
 
 
+def safe_json_loads(text: str | None, fallback=None):
+    if not text:
+        return fallback
+    try:
+        return json.loads(text)
+    except Exception:
+        return fallback
+
+
+def tool_action_category(tool_name: str, arguments: dict | None = None) -> str:
+    name = (tool_name or "tool").lower()
+    args = arguments or {}
+    command = str(args.get("command") or "").lower()
+    if name == "terminal" and any(token in command for token in ["test", "unittest", "pytest", "node --check", "py_compile", "curl", "health"]):
+        return "verification"
+    if name in {"terminal", "process"}:
+        return "terminal"
+    if name in {"patch", "write_file", "skill_manage"}:
+        return "file-change"
+    if name in {"read_file", "search_files", "skill_view"}:
+        return "inspection"
+    if name.startswith("browser"):
+        return "browser"
+    if name.startswith("web") or name in {"session_search"}:
+        return "research"
+    if name in {"todo", "memory"}:
+        return "planning"
+    if name in {"image_generate", "vision_analyze"}:
+        return "media"
+    return "tool"
+
+
+def tool_action_detail(tool_name: str, arguments: dict | None = None) -> str:
+    args = arguments or {}
+    name = tool_name or "tool"
+    if name == "terminal":
+        return clean_snippet(args.get("command"), 220) or "Ran a shell command"
+    if name in {"read_file", "write_file", "patch"}:
+        return clean_snippet(args.get("path") or args.get("file_path") or args.get("mode"), 220) or f"Used {name}"
+    if name == "search_files":
+        pattern = args.get("pattern") or ""
+        path = args.get("path") or ""
+        return clean_snippet(f"{pattern} in {path}".strip(), 220) or "Searched project files"
+    if name.startswith("browser"):
+        return clean_snippet(args.get("url") or args.get("question") or args.get("ref"), 220) or "Used the browser"
+    if name.startswith("web"):
+        return clean_snippet(args.get("query") or ", ".join(args.get("urls") or []), 220) or "Used web tools"
+    if name == "todo":
+        todos = args.get("todos") or []
+        return clean_snippet(f"Updated {len(todos)} checklist item(s)", 220) if todos else "Read the active checklist"
+    if name == "skill_view":
+        return clean_snippet(args.get("name"), 220) or "Loaded a skill"
+    return clean_snippet(json.dumps(args, ensure_ascii=False), 220) if args else f"Used {name}"
+
+
+def tool_result_status(content: str | None) -> tuple[str, str]:
+    if not content:
+        return "unknown", "No tool output captured."
+    parsed = safe_json_loads(content, None)
+    if isinstance(parsed, dict):
+        if parsed.get("success") is False or parsed.get("ok") is False:
+            return "error", clean_snippet(parsed.get("error") or parsed.get("message") or content, 220)
+        if parsed.get("exit_code") not in (None, 0):
+            return "error", clean_snippet(parsed.get("error") or parsed.get("output") or content, 220)
+        if parsed.get("error"):
+            return "error", clean_snippet(parsed.get("error"), 220)
+        output = parsed.get("output") or parsed.get("content") or parsed.get("summary") or content
+        return "ok", clean_snippet(output, 220)
+    lowered = content.lower()
+    if any(token in lowered for token in ["traceback", "exception", "returned 500", "exit_code\": 1", "failed", "error:"]):
+        return "error", clean_snippet(content, 220)
+    return "ok", clean_snippet(content, 220)
+
+
+def extract_tool_calls(raw_tool_calls: str | None) -> list[dict]:
+    parsed = safe_json_loads(raw_tool_calls, [])
+    if not isinstance(parsed, list):
+        return []
+    calls = []
+    for call in parsed:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function") or {}
+        name = function.get("name") or call.get("name") or "tool"
+        args = safe_json_loads(function.get("arguments") or call.get("arguments"), {})
+        if not isinstance(args, dict):
+            args = {}
+        call_id = call.get("call_id") or call.get("id") or call.get("tool_call_id")
+        calls.append({"id": call_id, "tool": name, "arguments": args})
+    return calls
+
+
+def infer_run_status(session: sqlite3.Row, final_text: str, blockers: list[dict]) -> str:
+    lowered = (final_text or "").lower()
+    if session["ended_at"] is None:
+        return "unknown"
+    if any(token in lowered for token in ["done", "completed", "verified", "passed", "ok"]):
+        return "completed"
+    if any(token in lowered for token in ["blocked", "could not", "can't complete", "cannot complete"]):
+        return "blocked"
+    if any(token in lowered for token in ["failed", "failure"]):
+        return "failed"
+    if any(token in lowered for token in ["needs review", "review required"]):
+        return "needs_review"
+    if any(token in lowered for token in ["partial", "partially", "not fully"]):
+        return "partial"
+    if blockers:
+        return "needs_review"
+    return "unknown"
+
+
+def infer_related_tasks(text: str, limit: int = 5) -> list[dict]:
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list) or not text:
+        return []
+    haystack = text.lower()
+    related = []
+    for task in tasks:
+        task_id = str(task.get("id") or "")
+        title = str(task.get("title") or "")
+        if task_id and task_id.lower() in haystack:
+            score = 3
+        else:
+            words = [w for w in re.findall(r"[a-z0-9]+", title.lower()) if len(w) > 3]
+            score = sum(1 for word in words if word in haystack)
+        if score >= 2 or (task_id and task_id.lower() in haystack):
+            related.append({
+                "id": task_id,
+                "title": title,
+                "status": task.get("status"),
+                "priority": task.get("priority"),
+                "score": score,
+            })
+    related.sort(key=lambda item: item.get("score", 0), reverse=True)
+    return related[:limit]
+
+
+def build_session_replay(session: sqlite3.Row, rows: list[sqlite3.Row]) -> dict:
+    messages = [dict(row) for row in rows]
+    user_messages = [m for m in messages if m.get("role") == "user" and clean_snippet(m.get("content"), 240)]
+    assistant_messages = [m for m in messages if m.get("role") == "assistant" and clean_snippet(m.get("content"), 240)]
+    first_intent = clean_snippet(user_messages[0].get("content"), 320) if user_messages else "No initiating user message captured."
+    steering = [clean_snippet(m.get("content"), 220) for m in user_messages[1:4]]
+
+    actions_by_call_id: dict[str, dict] = {}
+    actions: list[dict] = []
+    files: dict[str, dict] = {}
+    verification: list[dict] = []
+    all_text_parts = [session["title"] or "", first_intent]
+
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content") or ""
+        if content:
+            all_text_parts.append(content[:1200])
+        if role == "assistant":
+            for call in extract_tool_calls(message.get("tool_calls")):
+                tool = call["tool"]
+                args = call["arguments"]
+                category = tool_action_category(tool, args)
+                action = {
+                    "id": call.get("id") or f"action-{len(actions) + 1}",
+                    "tool": tool,
+                    "category": category,
+                    "title": tool.replace("_", " ").replace(".", " / ").title(),
+                    "detail": tool_action_detail(tool, args),
+                    "timestamp": epoch_to_iso(message.get("timestamp")),
+                    "status": "pending",
+                    "result": "Waiting for result in transcript window.",
+                }
+                actions.append(action)
+                if action["id"]:
+                    actions_by_call_id[action["id"]] = action
+                path = args.get("path") or args.get("file_path")
+                if isinstance(path, str) and path:
+                    mode = "changed" if category == "file-change" else "read"
+                    files[path] = {"path": path, "mode": mode, "tool": tool}
+                if category == "verification":
+                    verification.append(action)
+        elif role == "tool":
+            action = actions_by_call_id.get(message.get("tool_call_id") or "")
+            status, result = tool_result_status(content)
+            if action:
+                action["status"] = status
+                action["result"] = result
+                if action["category"] == "verification" and action not in verification:
+                    verification.append(action)
+
+    for action in actions:
+        if action["status"] == "pending":
+            action["status"] = "unknown"
+
+    blockers = [
+        {
+            "title": action["title"],
+            "detail": action["detail"],
+            "result": action["result"],
+            "timestamp": action["timestamp"],
+        }
+        for action in actions
+        if action.get("status") == "error"
+    ][:8]
+    for message in messages:
+        content = message.get("content") or ""
+        lowered = content.lower()
+        if message.get("role") == "assistant" and any(token in lowered for token in ["blocked", "failed", "traceback", "error:", "could not", "stale server"]):
+            blockers.append({
+                "title": f"{message.get('role', 'message').title()} noted a blocker",
+                "detail": clean_snippet(content, 260),
+                "result": "Mentioned in conversation text.",
+                "timestamp": epoch_to_iso(message.get("timestamp")),
+            })
+            if len(blockers) >= 8:
+                break
+
+    outcome_candidates = [clean_snippet(m.get("content"), 480) for m in assistant_messages]
+    substantive_outcomes = [
+        text for text in outcome_candidates
+        if len(text) > 160 or any(token in text.lower() for token in ["done", "completed", "verified", "passed", "blocked", "failed"])
+    ]
+    final_text = substantive_outcomes[-1] if substantive_outcomes else (outcome_candidates[-1] if outcome_candidates else "No final assistant outcome captured yet.")
+    status = infer_run_status(session, final_text, blockers)
+    related_tasks = infer_related_tasks("\n".join(all_text_parts))
+    action_counts: dict[str, int] = {}
+    for action in actions:
+        action_counts[action["category"]] = action_counts.get(action["category"], 0) + 1
+
+    return {
+        "status": status,
+        "purpose": "review_debugging",
+        "read_only": True,
+        "summary": {
+            "title": session["title"] or "Untitled session",
+            "source": session["source"],
+            "model": session["model"],
+            "started_at": epoch_to_iso(session["started_at"]),
+            "ended_at": epoch_to_iso(session["ended_at"]),
+            "message_count": session["message_count"],
+            "tool_call_count": session["tool_call_count"],
+            "actions_detected": len(actions),
+            "blockers_detected": len(blockers),
+        },
+        "user_intent": {
+            "initial": first_intent,
+            "steering": steering,
+        },
+        "actions": actions[:80],
+        "action_counts": action_counts,
+        "blockers": blockers,
+        "outcome": {
+            "status": status,
+            "summary": final_text,
+        },
+        "files": list(files.values())[:40],
+        "verification": verification[:12],
+        "related_tasks": related_tasks,
+        "suggestions": [
+            "Review inferred status before updating any task state.",
+            "Use this replay as a read-only trace; task write-back can come later behind an explicit action.",
+        ],
+    }
+
+
+def session_replay(session_id: str, _target_message_id: str | None = None):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", session_id or ""):
+        return {"error": "Invalid session id"}, 400
+    if not STATE_DB.exists():
+        return {"error": "Hermes state.db not found", "source": str(STATE_DB)}, 404
+    try:
+        con = sqlite_connect()
+        if con is None:
+            return {"error": "Hermes state.db not available", "source": str(STATE_DB)}, 404
+        con.row_factory = sqlite3.Row
+        session = con.execute(
+            """
+            select id, title, source, model, started_at, ended_at,
+                   message_count, tool_call_count, input_tokens, output_tokens,
+                   estimated_cost_usd
+            from sessions
+            where id = ? and coalesce(archived, 0) = 0
+            """,
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            con.close()
+            return {"error": f"Session not found: {session_id}"}, 404
+        rows = con.execute(
+            """
+            select id, role, content, tool_name, tool_call_id, tool_calls, timestamp, finish_reason
+            from messages
+            where session_id = ?
+              and coalesce(active, 1) = 1
+            order by id asc
+            limit 1000
+            """,
+            (session_id,),
+        ).fetchall()
+        con.close()
+        replay = build_session_replay(session, rows)
+        return {"session_id": session_id, "source": str(STATE_DB), "replay": replay}, 200
+    except Exception as exc:
+        return {"error": str(exc), "source": str(STATE_DB)}, 500
+
+
 def recent_sessions(limit: int = 8):
     if not STATE_DB.exists():
         return {"exists": False, "source": str(STATE_DB), "sessions": []}
@@ -1038,15 +1623,66 @@ def resolve_attention_item(attention_id: str):
     return {"ok": True, "resolved": resolved_item, "attention": attention, "open_count": len(open_attention_items(attention, tasks))}, 200
 
 
-POST_ROUTES = {
-    re.compile(r"^/api/attention/([^/]+)/resolve$"): resolve_attention_item,
-}
+def create_task(payload):
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        return {"error": "tasks.json must contain a list"}, 500
+
+    normalized, error = validate_task_payload(payload)
+    if error:
+        return {"error": error}, 400
+
+    tasks.append(normalized)
+    write_json_file("tasks.json", tasks)
+    return {"ok": True, "task": normalized, "tasks": tasks}, 201
+
+
+def update_task(task_id: str, payload):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
+        return {"error": "Invalid task id"}, 400
+
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        return {"error": "tasks.json must contain a list"}, 500
+
+    for index, task in enumerate(tasks):
+        if not isinstance(task, dict) or str(task.get("id") or "") != task_id:
+            continue
+        normalized, error = validate_task_payload(payload, existing=task)
+        if error:
+            return {"error": error}, 400
+        tasks[index] = normalized
+        write_json_file("tasks.json", tasks)
+        return {"ok": True, "task": normalized, "tasks": tasks}, 200
+
+    return {"error": f"Task not found: {task_id}"}, 404
+
+
+def handle_post_route(path: str, payload=None):
+    for pattern, handler, accepts_payload in POST_ROUTES:
+        match = pattern.match(path)
+        if not match:
+            continue
+        args = [unquote(part) for part in match.groups()]
+        if accepts_payload:
+            return handler(*args, payload)
+        return handler(*args)
+    return {"error": "Not found"}, 404
+
+
+POST_ROUTES = [
+    (re.compile(r"^/api/attention/([^/]+)/resolve$"), resolve_attention_item, False),
+    (re.compile(r"^/api/agents/heartbeat$"), upsert_agent_heartbeat, True),
+    (re.compile(r"^/api/tasks$"), create_task, True),
+    (re.compile(r"^/api/tasks/([^/]+)$"), update_task, True),
+]
 
 
 API_ROUTES = {
     "/api/overview": overview,
     "/api/projects": lambda: {"projects": read_json_file("projects.json", [])},
     "/api/tasks": lambda: {"tasks": read_json_file("tasks.json", [])},
+    "/api/agents": agents_payload,
     "/api/attention": attention_payload,
     "/api/calendar": google_calendar_events,
     "/api/obsidian-notes": obsidian_notes,
@@ -1058,6 +1694,7 @@ API_ROUTES = {
 
 
 GET_ROUTES = {
+    re.compile(r"^/api/hermes/sessions/([^/]+)/replay$"): session_replay,
     re.compile(r"^/api/hermes/sessions/([^/]+)$"): session_detail,
 }
 
@@ -1144,17 +1781,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        for pattern, handler in POST_ROUTES.items():
-            match = pattern.match(parsed.path)
-            if not match:
-                continue
+        payload = None
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
             try:
-                payload, status = handler(*[unquote(part) for part in match.groups()])
-                self.send_json(payload, status=status)
+                raw = self.rfile.read(length)
+                payload = json.loads(raw.decode("utf-8")) if raw else None
+            except json.JSONDecodeError:
+                self.send_json({"error": "Invalid JSON body"}, status=400)
+                return
             except Exception as exc:
-                self.send_json({"error": str(exc)}, status=500)
-            return
-        self.send_json({"error": "Not found"}, status=404)
+                self.send_json({"error": str(exc)}, status=400)
+                return
+        try:
+            payload, status = handle_post_route(parsed.path, payload)
+            self.send_json(payload, status=status)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, status=500)
 
 
 if __name__ == "__main__":

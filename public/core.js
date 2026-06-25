@@ -9,6 +9,7 @@ const endpoints = {
   overview: '/api/overview',
   projects: '/api/projects',
   tasks: '/api/tasks',
+  agents: '/api/agents',
   attention: '/api/attention',
   calendar: '/api/calendar',
   crons: '/api/hermes/crons',
@@ -23,6 +24,7 @@ const state = {
   sessions: [],
   tasks: [],
   projects: [],
+  agents: [],
   projectsLoaded: false,
   greetingName: 'Operator',
   greetingPrefix: 'Hello',
@@ -32,8 +34,14 @@ const state = {
   taskStatusFilter: 'open',
   projectFilter: '',
   selectedTaskId: '',
+  taskEditorMode: 'view',
+  taskEditorTaskId: '',
+  taskEditorDraft: null,
   selectedSessionId: '',
-  activeView: 'projects',
+  selectedSessionDetailTab: 'replay',
+  selectedSessionDetailPayload: null,
+  selectedSessionDetailContext: null,
+  activeView: 'today',
   messageSearchTimer: null,
   isRefreshing: false,
   needsRefresh: false,
@@ -210,17 +218,39 @@ function renderMarkdown(value = '', query = '') {
 
 async function api(path, options = {}) {
   const res = await fetch(path, { cache: 'no-store', ...options });
-  if (!res.ok) throw new Error(`${path} returned ${res.status}`);
-  return res.json();
+  const text = await res.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!res.ok) throw new Error(payload?.error || `${path} returned ${res.status}`);
+  return payload;
+}
+
+async function sendJson(path, payload, { method = 'POST' } = {}) {
+  return api(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload ?? {}),
+  });
 }
 
 async function resolveAttentionItem(id) {
   return api(`/api/attention/${encodeURIComponent(id)}/resolve`, { method: 'POST' });
 }
 
+async function createTask(payload) {
+  return sendJson(endpoints.tasks, payload, { method: 'POST' });
+}
+
+async function saveTaskEdits(id, payload) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}`, payload, { method: 'POST' });
+}
+
 async function fetchSessionDetail(id, messageId = '') {
   const suffix = messageId ? `?message_id=${encodeURIComponent(messageId)}` : '';
   return api(`${endpoints.sessions}/${encodeURIComponent(id)}${suffix}`);
+}
+
+async function fetchSessionReplay(id) {
+  return api(`${endpoints.sessions}/${encodeURIComponent(id)}/replay`);
 }
 
 async function searchMessages(query) {
