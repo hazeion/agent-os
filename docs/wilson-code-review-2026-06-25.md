@@ -94,3 +94,47 @@ Observed verification from this session:
   - `task_appjs_view_modularization_before_chat`
   - `task_server_api_domain_split_before_chat`
   - `task_agent_messaging_v1`
+
+
+## Async Wilson addendum — detailed big-file findings
+
+The background Wilson pass independently returned the same score, **78 / 100**, but identified several sharper implementation risks. These findings supersede the earlier generic cleanup wording where more specific.
+
+### Additional must-fix before score >80
+
+1. **Add server-side write locking for project-owned JSON writes.**
+   - `ThreadingHTTPServer` can handle concurrent requests.
+   - Multiple read-modify-write paths update task/agent JSON through the shared write helper.
+   - Add per-file/thread locking plus unique temp filenames before introducing `agent_messages.json` or more write-back routes.
+
+2. **Collapse the stylesheet to one active design system.**
+   - The compact dark redesign currently overrides a substantial earlier visual layer.
+   - The UI works, but doubled cascade surface increases maintenance cost and parse work.
+   - Keep the approved compact dark look; prune inactive pre-compact CSS and removed-panel selectors.
+
+3. **Prune orphaned UI branches before further modularization.**
+   - `renderAttention()` and attention list wiring remain even though the Today attention panel/list/count are removed.
+   - `renderSessionStats()` remains even though `#session-stats` is absent and the temporary Session Analytics panel was removed.
+   - Remove dead branches before splitting `app.js`; otherwise dead code may be preserved in new modules.
+
+4. **Keep docs current with implementation.**
+   - Stale references to the removed Session Analytics panel and custom dropdown/listbox were found.
+   - Those references have now been corrected in README/AGENTS as part of saving this review.
+
+### Additional performance / maintainability ideas
+
+- Cache derived task/project stats per refresh payload to avoid overlapping work between Today, Projects, and task renderers.
+- Skip DOM rendering for sections whose payload hash/timestamp has not changed.
+- Add cache/limit/pagination to `obsidian_notes()` because the Notes view recursively reads markdown files.
+- Consider mtime-based caching for read-only session detail/replay payloads.
+- Remove small unused imports such as `sys` / `HEALTH_STATUS_RANK` during the next backend cleanup pass after verifying they remain unused.
+
+### Extra tasks created from the addendum
+
+- `task_json_write_lock_project_owned_data`
+- `task_prune_orphaned_attention_session_ui`
+- `task_reconcile_current_docs_after_ui_changes`
+- `task_dashboard_refresh_render_perf`
+- `task_obsidian_and_replay_cache_perf`
+- `task_trim_onboarding_docs_history`
+- `task_remove_unused_server_imports`

@@ -71,7 +71,7 @@ Current dashboard features:
 - Agents/Sessions view shell with a plain-text session dropdown above the detail area, searchable recent Hermes sessions, and a Replay/Transcript tab toggle for selected sessions.
 - Message-level Hermes search from read-only `state.db` FTS, with highlighted results that open a focused conversation window around the matched message.
 - Structured run replay / trace-lite endpoint and UI: `GET /api/hermes/sessions/<id>/replay` parses Hermes `state.db` read-only into run summary, user intent, medium-detail agent actions, error blockers, outcome, code/file summary, verification signals, inferred related tasks, and suggest-first/write-later guidance.
-- Historical Session Analytics side panel based on recent Hermes sessions; this remains separate from live heartbeat tracking.
+- The temporary Historical Session Analytics side panel has been removed; Agents/Sessions now favors structured Replay plus raw Transcript access, while Agent Pulse handles live heartbeat tracking.
 - Agent Pulse 2.0 live registry backed by project-owned `data/agents.json`, `GET /api/agents`, and `POST /api/agents/heartbeat`; it shows running/idle/blocked/done/failed summaries, marks overdue active producers as stale, falls back to the historical session cue when no live agents exist, and surfaces producer guidance/examples. `scripts/agent_heartbeat.py` now provides one-shot heartbeat publishing, command wrapping with running/done/failed updates, and an `examples` mode for ready-to-run producer wiring commands.
 
 - Masked Hermes config/model viewer in Settings.
@@ -85,7 +85,7 @@ Current dashboard features:
 - Project Portfolio is a fixed-width horizontal card rail with progress bars on project cards; overflow scrolls left/right with rail arrow controls when enough projects exist.
 - The Open Task Queue stays compact for scale; selecting a task opens its full description, status metadata, tags, and next-move guidance in the persistent Selected Task detail rail. Narrow/mobile layouts stack queue then detail and expose Back to Queue without duplicating the task status pill in the detail header.
 - Project Status deliberately lists percent complete as text/number only, not a second progress bar, to avoid duplicating the portfolio progress bars.
-- Task list supports a custom dark status dropdown/listbox with a centered SVG chevron; it toggles open/closed when clicked, closes on outside click/Escape, and keeps completed tasks available by filter but excluded from the default open queue.
+- Task list uses a native dark status `<select>` for reliable mouse and keyboard behavior, keeping completed tasks available by filter but excluded from the default open queue.
 - Project cards filter the queue/status/completion timeline and show open/completed counts with progress.
 - Cron monitor.
 - Obsidian notes panel.

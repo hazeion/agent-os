@@ -84,7 +84,7 @@ Implemented Phase 3 / integration pieces:
 - Message-level read-only search over Hermes FTS data
 - Search-term highlighting in results and conversation detail
 - Search result click-through to a focused conversation window around the matched message
-- Historical Session Analytics in Agents / Sessions, clearly labeled as read-only rather than live heartbeat tracking
+- Structured run replay / trace-lite in Agents / Sessions, clearly labeled as read-only toward Hermes core and paired with raw transcript access
 - Masked Hermes config/model viewer in Settings
 - Google Calendar read-only source integration through the Hermes Google OAuth token, with local `calendar.json` fallback, 7-day agenda grouping, Today preview, visible read-only/fallback/stale states, and a short in-memory cache so dashboard polling does not hit Google every 30 seconds
 - Subsystem-aware `/api/health` status that reports real state for Hermes `state.db`, config readability, calendar live/fallback mode, cron store availability, and host resource pressure
@@ -100,7 +100,7 @@ Current UI stabilization focus:
 - Projects / Tasks is a project command center with Project Portfolio, Open Task Queue, Project Status, and Recent Completed Work.
 - Project Portfolio keeps visual progress bars; Project Status lists percent complete as text only.
 - Project Portfolio cards are fixed-width in a horizontal rail with arrow controls when the rail overflows.
-- The task status filter is a custom dark dropdown/listbox with a centered SVG chevron, click-to-toggle behavior, outside-click close, Escape close, and keyboard navigation.
+- The task status filter uses a native dark `<select>` surface for reliable mouse and keyboard behavior while keeping completed tasks available by filter.
 - Runtime configuration now comes from layered TOML/env/CLI sources in `runtime_config.py` so shared defaults and local machine overrides are no longer hardcoded directly in `server.py`.
 - Local server lifecycle is now safer: `run.sh` / `run.bat` perform preflight cleanup, `stop.sh` / `status.sh` wrap the lifecycle helper, and `server.py` writes a runtime state file for restart/shutdown coordination.
 - Runtime state now also records a `launcher_pid` when available so Windows background-launch diagnostics are easier.
@@ -143,7 +143,7 @@ python server.py
 Projects / Tasks is now a project command center rather than a duplicate task/archive view:
 
 - **Project Portfolio** selects the project scope, uses fixed-width horizontal cards, and keeps the visual progress bar.
-- **Open Task Queue** defaults to actionable work only; completed tasks are available through the custom status dropdown but are not shown by default.
+- **Open Task Queue** defaults to actionable work only; completed tasks are available through the native status filter but are not shown by default.
 - **Selected Task** uses the refined-A inspector pattern: the queue stays compact and the selected task's full description, status metadata, tags, and next-move guidance live in a persistent detail rail. On narrow/mobile layouts, the queue stacks above the detail panel and exposes a Back to Queue control instead of duplicating the status pill in the detail header.
 - **Project Status** shows percent complete as text only, plus open/completed counts, blockers/waiting count, next move, and latest completed item.
 - **Recent Completed Work** is a compact timeline/archive below the queue.
