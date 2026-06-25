@@ -57,6 +57,7 @@ public/core.js
 public/app.js
 data/projects.json
 data/tasks.json
+data/agents.json
 data/attention.json
 data/calendar.json
 README.md
@@ -66,16 +67,18 @@ inventory.md
 Current dashboard features:
 
 - Left navigation shell with Today, Agents/Sessions, Calendar, Projects/Tasks, Notes, and Settings destinations.
-- Today View command center as the primary mental model.
-- Agents/Sessions view shell with searchable recent Hermes sessions and click-to-read conversation detail.
+- Today View command center as the primary mental model; Open Queue / Next Moves supports project filtering, left-edge task-state color cues, and direct jumps into Projects / Tasks selected-task detail. The redundant Needs Attention overview card and Today container are removed.
+- Agents/Sessions view shell with a plain-text session dropdown above the detail area, searchable recent Hermes sessions, and a Replay/Transcript tab toggle for selected sessions.
 - Message-level Hermes search from read-only `state.db` FTS, with highlighted results that open a focused conversation window around the matched message.
-- Historical Session Analytics side panel based on recent Hermes sessions; this is explicitly read-only and not live heartbeat tracking.
+- Structured run replay / trace-lite endpoint and UI: `GET /api/hermes/sessions/<id>/replay` parses Hermes `state.db` read-only into run summary, user intent, medium-detail agent actions, error blockers, outcome, code/file summary, verification signals, inferred related tasks, and suggest-first/write-later guidance.
+- Historical Session Analytics side panel based on recent Hermes sessions; this remains separate from live heartbeat tracking.
+- Agent Pulse 2.0 live registry backed by project-owned `data/agents.json`, `GET /api/agents`, and `POST /api/agents/heartbeat`; it shows running/idle/blocked/done/failed summaries, marks overdue active producers as stale, falls back to the historical session cue when no live agents exist, and surfaces producer guidance/examples. `scripts/agent_heartbeat.py` now provides one-shot heartbeat publishing, command wrapping with running/done/failed updates, and an `examples` mode for ready-to-run producer wiring commands.
+
 - Masked Hermes config/model viewer in Settings.
 - Project-configured `Hello <name>` header with JetBrains Mono and blue/teal/white glow styling.
 - Low-poly/digitized SVG brain mark in the top-right header, animated with a deliberately choppy 15-frame stepped spin.
 - Overview metric cards.
-- Needs Attention panel.
-- Open items from `data/attention.json` can be resolved from the dashboard; tasks tagged `needs attention` / `needs_attention` or otherwise marked `needs_attention` also surface there as task-derived attention items that jump to the relevant task queue.
+- Task attention is surfaced in Today View through Open Queue / Next Moves left-edge cues and task-state labels rather than a separate Needs Attention card/container.
 - Google Calendar read-only source integration through Hermes OAuth, with local `calendar.json` fallback and grouped Today/Calendar agenda rendering.
 - `docs/react-readiness.md` documents when to move the frontend from vanilla JS to React without prematurely adding a build step.
 - Projects / Tasks command center with a Project Portfolio selector, Open Task Queue defaulting to actionable work, refined-A Selected Task inspector, Project Status panel, and compact Recent Completed Work timeline.
@@ -95,11 +98,13 @@ Near-term project/task direction:
 - The dummy project/task fixtures have been removed; keep the local data focused on the real Mentat project unless Brandon asks for temporary UI fixtures again.
 - Phase 2.5 UI/UX stabilization review is completed; the current dashboard keeps the stabilized command-center UI while Phase 3 integrations expand.
 - Google Calendar has been polished into a read-only 7-day agenda with a Today preview, grouped events, Google live/local fallback source pills, stale/error fallback metadata, and a 5-minute in-memory Google API cache.
-- Future dashboard write-back should start with dashboard-native project/task creation using project-owned endpoints/data files, not Hermes core writes.
-- Agent Pulse 2.0 requires a project-owned heartbeat/write-back model before claiming live active-agent tracking.
+- Dashboard-native task create/edit is implemented through project-owned endpoints/data files, not Hermes core writes.
+- Dashboard-native project create/edit remains a later write-back slice.
+- Agent Pulse 2.0 now has a project-owned heartbeat/write-back model plus verified producer wiring helpers, API/UI guidance, and stale-heartbeat downgrade before deeper Hermes-native active-agent tracking.
 - Email should come after calendar stabilizes, initially read-only and focused on priority/needs-attention surfacing.
 - Keep tasks searchable by title, description, status, and project name from the top search bar.
 - Dashboard project creation remains a future feature; currently new projects are added by updating `data/projects.json` and related tasks in `data/tasks.json`, usually by asking Hermes to do it safely.
+- Structured run replay / trace-lite is now implemented as the latest Phase 3 continuation. Keep it read-only toward Hermes core: first version parses existing sessions now; later versions can accept agent-written summaries and explicit task-link/write-back actions.
 - The runtime config foundation is now in place: shared repo defaults live in `agent-os.toml`, Brandon's machine-specific overrides can live in gitignored `agent-os.local.toml`, and env/CLI overrides are available for VPS or alternate-local runs later.
 - Local lifecycle cleanup is now in place too: runtime state lives under `data/runtime/server-state.json`, runtime state records `launcher_pid` when available, and the helper should be the first stop before manually killing ports.
 - Important Windows/Hermes nuance: Hermes background-session kill can still leave the real Python listener alive even when the project launch helpers are correct. Treat `./stop.sh` / `python agent_os_lifecycle.py stop` plus `./status.sh` as the trustworthy stop/verify workflow until that upstream process-manager behavior is fixed.

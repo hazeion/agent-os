@@ -290,10 +290,10 @@
   },
   {
     "id": "task_agent_pulse_heartbeat",
-    "title": "Design Agent Pulse 2.0 heartbeat model",
-    "description": "Turn Agent Pulse from the current read-only historical session count into an active Phase 4 heartbeat/status panel backed by project-owned write-back data: running/idle/blocked/done/failed state, current task, last heartbeat, latest output, and needs-user-input flag.",
+    "title": "Build Agent Pulse 2.0 heartbeat registry",
+    "description": "Completed: Agent Pulse now has a project-owned live heartbeat registry with GET /api/agents, POST /api/agents/heartbeat, data/agents.json, running/idle/blocked/done/failed state summaries, latest output/current task metadata, needs-user-input support, and a Today View panel that falls back to historical sessions when no live agents exist.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Hermes",
     "due_date": null,
@@ -304,13 +304,39 @@
       "heartbeat",
       "agent-pulse",
       "write-back",
-      "live-status"
+      "live-status",
+      "completed-slice"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T10:30:07-07:00",
-    "updated_at": "2026-06-22T11:20:31-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-22T19:28:38-07:00",
+    "completed_at": "2026-06-22T19:28:38-07:00"
+  },
+  {
+    "id": "task_agent_pulse_producer_wiring",
+    "title": "Wire live Agent Pulse heartbeat producers",
+    "description": "Completed: Agent Pulse producer wiring is now rolled out through scripts/agent_heartbeat.py with one-shot beat, wrapped run, and examples output for ready-to-run producer commands. GET /api/agents now derives producer freshness, marks overdue active records stale instead of showing them live forever, and the Today View Agent Pulse panel surfaces producer guidance when the registry is empty.",
+    "project": "Mentat",
+    "status": "completed",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "dashboard",
+    "tags": [
+      "phase-3",
+      "agents",
+      "heartbeat",
+      "agent-pulse",
+      "live-status",
+      "producer-wiring",
+      "completed-slice"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-22T21:03:16-07:00",
+    "updated_at": "2026-06-25T14:51:10-07:00",
+    "completed_at": "2026-06-25T14:51:10-07:00"
   },
   {
     "id": "task_google_calendar_later",
@@ -380,10 +406,10 @@
   },
   {
     "id": "task_native_project_task_creation",
-    "title": "Build dashboard-native project and task creation",
-    "description": "Add local-only create/edit flows for projects and tasks backed by project-owned data files, with validation, safe write-back endpoints, and no Hermes core mutation.",
+    "title": "Build dashboard-native task creation and editing",
+    "description": "Completed the first dashboard-native write-back slice: local-only validated task create/edit routes, Create Task from the queue header, Edit Task from the Selected Task inspector, delegated editor wiring, draft-state preservation, and project-owned data writes only. Dashboard-native project create/edit remains a separate later slice.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
@@ -392,20 +418,22 @@
       "phase-4",
       "projects",
       "tasks",
-      "write-back"
+      "write-back",
+      "task-editor",
+      "completed-slice"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-22T11:20:31-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-22T19:28:38-07:00",
+    "completed_at": "2026-06-22T19:28:38-07:00"
   },
   {
     "id": "task_kanban_writeback_future",
     "title": "Evaluate Kanban or richer task board write-back",
-    "description": "After the grouped list model settles, decide whether to add Kanban or a richer task board backed by project-owned JSON/API instead of Hermes core files.",
+    "description": "Completed evaluation for now: defer Kanban until the grouped queue + Selected Task inspector + native task editor + Agent Pulse registry have more real usage. If task volume or workflow friction appears, revisit a richer board as a project-owned API surface rather than Hermes core mutation.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Hermes",
     "due_date": null,
@@ -414,13 +442,15 @@
       "phase-4",
       "kanban",
       "tasks",
-      "write-back"
+      "write-back",
+      "decision",
+      "deferred"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-22T11:20:31-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-22T19:28:38-07:00",
+    "completed_at": "2026-06-22T19:28:38-07:00"
   },
   {
     "id": "task_email_pane_future",
@@ -441,7 +471,7 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-22T11:20:31-07:00",
+    "updated_at": "2026-06-22T20:10:55-07:00",
     "completed_at": null
   },
   {
@@ -536,9 +566,9 @@
   {
     "id": "task_agent_os_landscape_research_20260622",
     "title": "Research next Mentat feature via Agent OS / agent dashboard landscape",
-    "description": "Scheduled one-shot research pass for the next feature on Mentat. Gather 5-10 YouTube and 5-7 top GitHub repos mentioning \"agent OS\" / \"agent dashboard\", include Anthropic agentic dashboard signals, analyze common features, and create a new Obsidian note with highlights, comments/watch-time observations, and a development recommendation. Cron job id: 70be13b9b795",
+    "description": "Completed: created the Obsidian research note “Mentat - Agent OS Landscape Research - 2026-06-22” with YouTube/GitHub/product landscape findings and a recommendation to prioritize Agent Pulse, dashboard-native task intake, and structured run replay before email or a React migration.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": "2026-06-22T06:00:00-07:00",
@@ -549,12 +579,78 @@
       "youtube",
       "github",
       "cron",
+      "mentat",
+      "completed-research"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-22T11:30:00-07:00",
+    "updated_at": "2026-06-22T19:28:38-07:00",
+    "completed_at": "2026-06-22T19:28:38-07:00"
+  },
+  {
+    "id": "task_project_create_edit_future",
+    "title": "Add dashboard-native project creation and editing",
+    "description": "Later write-back slice: add local-only create/edit flows for projects backed by data/projects.json and the existing allowlisted dashboard API/data helpers. Keep task editing stable first and avoid broad architecture changes.",
+    "project": "Mentat",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-4",
+      "projects",
+      "write-back",
       "mentat"
     ],
     "review_required": false,
-    "needs_attention": true,
-    "created_at": "2026-06-22T11:30:00-07:00",
-    "updated_at": "2026-06-22T11:30:00-07:00",
+    "needs_attention": false,
+    "created_at": "2026-06-22T19:28:38-07:00",
+    "updated_at": "2026-06-22T19:28:38-07:00",
     "completed_at": null
+  },
+  {
+    "id": "task_run_replay_trace_view",
+    "title": "Build structured run replay / trace view for sessions",
+    "description": "Completed first useful version: Agents / Sessions now has a Replay/Transcript tab toggle, read-only /api/hermes/sessions/<id>/replay parsing from Hermes state.db, medium-detail run summary, user intent, agent actions, error blockers, outcome, code/file summary, verification, inferred related tasks, and suggest-first/write-later copy. Agent-written summaries and task write-back remain later slices.",
+    "project": "Mentat",
+    "status": "completed",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": null,
+    "source": "manual",
+    "tags": [
+      "phase-3",
+      "sessions",
+      "trace",
+      "run-replay",
+      "mentat",
+      "completed-slice"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-22T19:28:38-07:00",
+    "updated_at": "2026-06-22T19:57:31-07:00",
+    "completed_at": "2026-06-22T19:57:31-07:00"
+  },
+  {
+    "id": "task_4118e4a9aaa1",
+    "title": "Making Test one",
+    "description": "This is a test one!",
+    "project": "Mentat",
+    "status": "completed",
+    "priority": "high",
+    "assignee": "Brandon",
+    "due_date": "2026-06-25",
+    "source": "dashboard",
+    "tags": [
+      "phase"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-22T20:34:53-07:00",
+    "updated_at": "2026-06-25T15:15:02-07:00",
+    "completed_at": "2026-06-25T15:15:02-07:00"
   }
 ]

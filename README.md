@@ -88,10 +88,13 @@ Implemented Phase 3 / integration pieces:
 - Masked Hermes config/model viewer in Settings
 - Google Calendar read-only source integration through the Hermes Google OAuth token, with local `calendar.json` fallback, 7-day agenda grouping, Today preview, visible read-only/fallback/stale states, and a short in-memory cache so dashboard polling does not hit Google every 30 seconds
 - Subsystem-aware `/api/health` status that reports real state for Hermes `state.db`, config readability, calendar live/fallback mode, cron store availability, and host resource pressure
+- Dashboard-native task create/edit write-back through project-owned `POST /api/tasks` and `POST /api/tasks/<id>` routes, surfaced from the Projects / Tasks queue and Selected Task inspector
+- Agent Pulse 2.0 live heartbeat registry through project-owned `data/agents.json`, `GET /api/agents`, and `POST /api/agents/heartbeat`, with historical session fallback when no live agents are registered, stale-heartbeat downgrade when producers stop reporting, and producer guidance/examples surfaced through the API/UI and `scripts/agent_heartbeat.py examples`
+- Structured run replay / trace-lite view in Agents / Sessions: `GET /api/hermes/sessions/<id>/replay` parses Hermes `state.db` read-only into run summary, user intent, agent actions, error blockers, outcome, code/file summary, verification, inferred related tasks, and suggest-first/write-later guidance. The page now uses a plain-text session dropdown above Replay/Transcript instead of a dense session-card column, and the temporary Session Analytics panel has been removed from this view.
 
 Current UI stabilization focus:
 
-- Today View is the primary command center.
+- Today View is the primary command center; Open Queue / Next Moves includes a project selector, left-edge task state indicators, and task-card jumps into the Projects / Tasks selected-task detail. The redundant Needs Attention hero card and Today container have been removed; attention is now represented by task-state color cues in the queue.
 - The `Hello <name>` hero title is project-configured from `data/dashboard.json`, styled with JetBrains Mono, and now uses the dashboard's blue/teal/white glow instead of the prior amber dot-matrix treatment.
 - The old right-side Local badge has been replaced by a low-poly/digitized SVG brain mark animated with a deliberately choppy 15-frame stepped spin.
 - Projects / Tasks is a project command center with Project Portfolio, Open Task Queue, Project Status, and Recent Completed Work.
@@ -102,7 +105,7 @@ Current UI stabilization focus:
 - Local server lifecycle is now safer: `run.sh` / `run.bat` perform preflight cleanup, `stop.sh` / `status.sh` wrap the lifecycle helper, and `server.py` writes a runtime state file for restart/shutdown coordination.
 - Runtime state now also records a `launcher_pid` when available so Windows background-launch diagnostics are easier.
 
-Next likely phase: begin Phase 3 expansion around the next high-value interaction surfaces after calendar stabilization, then move toward dashboard-native project/task write-back. React remains deferred until direct editing, routing, modals/drawers, or live agent heartbeat interactions justify it, and the future VPS move should now mostly build on config/service work rather than hardcoded path cleanup.
+Next likely phase: structured run replay / trace-lite is now in place for Agents / Sessions. The next practical expansion can be either dashboard-native project create/edit or deeper replay evolution with agent-written summaries and explicit task-link/write-back actions. React remains deferred until routing, modals/drawers, heavier editing, websocket-like live roster behavior, or direct agent chat justify it.
 
 React migration is deliberately deferred until interaction complexity justifies it. See `docs/react-readiness.md` for the trigger points and migration path.
 
@@ -145,16 +148,26 @@ Projects / Tasks is now a project command center rather than a duplicate task/ar
 - **Project Status** shows percent complete as text only, plus open/completed counts, blockers/waiting count, next move, and latest completed item.
 - **Recent Completed Work** is a compact timeline/archive below the queue.
 
-For now, new projects/tasks are added by editing `data/projects.json` and `data/tasks.json` — usually by asking Hermes to add them safely. A dashboard-native project/task creation and editing flow is the next likely write-back feature.
+Tasks can now be created and edited from the dashboard through project-owned local API routes. New projects are still added by editing `data/projects.json` — usually by asking Hermes to add them safely — until the separate project create/edit slice is implemented.
+
+## Agent Pulse producers
+
+Agent Pulse has a project-owned heartbeat registry at `GET /api/agents` and `POST /api/agents/heartbeat`, backed by `data/agents.json`. The producer helper in `scripts/agent_heartbeat.py` can either publish one heartbeat or wrap a long-running command:
+
+```bash
+python scripts/agent_heartbeat.py beat --name Hermes --status running --project Mentat --current-task "Working on Mentat"
+python scripts/agent_heartbeat.py run --name "Codex Worker" --project Mentat --current-task "Implement feature" --interval 30 -- python worker.py
+python scripts/agent_heartbeat.py examples
+```
+
+The helper writes only through Mentat's local API and does not mutate Hermes core files. Use stable `--agent-id` values when wrapping recurring agents so each heartbeat updates the same live record. `GET /api/agents` now also derives producer freshness: active records that stop heartbeating are marked stale instead of appearing live forever, and the Today View Agent Pulse panel surfaces example producer commands when the registry is empty.
 
 ## Future roadmap tasks
 
 - Phase 2.5 UI/UX stabilization review and Google Calendar read-only polish are completed; move into the next Phase 3 expansion only after keeping the dashboard verified and local-only.
 - Future-phase TODOs are tracked under the `Mentat` project in `data/tasks.json`:
 
-- Build dashboard-native project and task creation
-- Design Agent Pulse 2.0 heartbeat/write-back model
-- Evaluate Kanban or richer task board write-back
+- Add dashboard-native project creation and editing
 - Add a read-only email pane after calendar stabilizes
 - Add Windows startup service docs and safe remote access option
 - Reassess React migration only when interactions justify it
@@ -162,15 +175,18 @@ For now, new projects/tasks are added by editing `data/projects.json` and `data/
 
 ## Attention items
 
-Open manual items from `data/attention.json` appear in the Needs Attention panel. Click **Resolve** on a manual item after handling it; the dashboard marks it `resolved`, sets `resolved_at`, and hides it from open counts while keeping history in the JSON file.
+Task attention is now surfaced primarily through Today View → Open Queue / Next Moves using left-edge color cues and the task-state label. The old standalone Needs Attention hero card and Today container were removed as redundant.
 
-Open tasks from `data/tasks.json` also appear in Needs Attention when they have status `needs_attention`, boolean `needs_attention`, `review_required`, or a `needs attention` / `needs_attention` tag. These task-derived items use **Open task** to jump to the relevant project queue instead of being resolved as standalone attention records.
+Open tasks from `data/tasks.json` count as attention when they have status `needs_attention`, boolean `needs_attention`, `review_required`, or a `needs attention` / `needs_attention` tag. These items remain task-owned and can be opened through the queue or Projects / Tasks rather than resolved as standalone records.
+
+Manual `data/attention.json` items remain supported at the API/data layer for future surfaces, but they are no longer rendered as a top-level Today container.
 
 ## Main files
 
 ```text
 server.py
 agent_os_lifecycle.py
+scripts/agent_heartbeat.py
 agent-os.toml
 agent-os.local.toml (local-only, gitignored)
 run.bat
