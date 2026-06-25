@@ -144,6 +144,10 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('data-session-detail-tab="replay"', APP_JS)
         self.assertIn('data-session-detail-tab="transcript"', APP_JS)
         self.assertIn('function renderReplayView', APP_JS)
+        self.assertIn('replay-token-card', APP_JS)
+        self.assertIn('summary.usage', APP_JS)
+        self.assertIn('humanNumber(totalTokens)', APP_JS)
+        self.assertIn('humanCost(usage.estimated_cost_usd)', APP_JS)
         self.assertIn('fetchSessionReplay', CORE_JS)
         self.assertIn('/replay', CORE_JS)
         self.assertLess(APP_JS.index('Run Summary'), APP_JS.index('User Intent'))
@@ -156,6 +160,8 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('.session-controls-card', CSS)
         self.assertIn('.session-select', CSS)
         self.assertIn('.replay-summary-grid', CSS)
+        replay_grid_block = CSS[CSS.index('.replay-summary-grid {') : CSS.index('.replay-summary-card,')]
+        self.assertIn('repeat(auto-fit, minmax(128px, 1fr))', replay_grid_block)
         self.assertIn('.trace-section-grid', CSS)
 
 

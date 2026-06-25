@@ -1070,6 +1070,19 @@ def infer_related_tasks(text: str, limit: int = 5) -> list[dict]:
     return related[:limit]
 
 
+def session_usage_summary(session: sqlite3.Row) -> dict:
+    input_tokens = int(session["input_tokens"] or 0)
+    output_tokens = int(session["output_tokens"] or 0)
+    total_tokens = input_tokens + output_tokens
+    estimated_cost = session["estimated_cost_usd"]
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": estimated_cost,
+    }
+
+
 def build_session_replay(session: sqlite3.Row, rows: list[sqlite3.Row]) -> dict:
     messages = [dict(row) for row in rows]
     user_messages = [m for m in messages if m.get("role") == "user" and clean_snippet(m.get("content"), 240)]
@@ -1172,6 +1185,7 @@ def build_session_replay(session: sqlite3.Row, rows: list[sqlite3.Row]) -> dict:
             "ended_at": epoch_to_iso(session["ended_at"]),
             "message_count": session["message_count"],
             "tool_call_count": session["tool_call_count"],
+            "usage": session_usage_summary(session),
             "actions_detected": len(actions),
             "blockers_detected": len(blockers),
         },

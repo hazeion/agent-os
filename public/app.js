@@ -13,6 +13,19 @@ function humanDurationApprox(totalSeconds) {
   return `${Math.round(seconds / 3600)}h`;
 }
 
+function humanNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '0';
+  return Math.round(number).toLocaleString();
+}
+
+function humanCost(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '';
+  return `$${number.toFixed(number > 0 && number < 0.01 ? 4 : 2)} est.`;
+}
+
 function renderGreeting(identity = {}) {
   state.appName = (identity.app_name || state.appName || 'Mentat').trim();
   state.greetingName = (identity.display_name || state.greetingName || 'Operator').trim();
@@ -1076,6 +1089,11 @@ function renderReplayView(replayPayload = {}) {
   const userIntent = replay.user_intent || {};
   const outcome = replay.outcome || {};
   const status = replay.status || outcome.status || 'unknown';
+  const usage = summary.usage || {};
+  const inputTokens = Number(usage.input_tokens || 0);
+  const outputTokens = Number(usage.output_tokens || 0);
+  const totalTokens = Number(usage.total_tokens ?? (inputTokens + outputTokens));
+  const usageMeta = [`${humanNumber(inputTokens)} in`, `${humanNumber(outputTokens)} out`, humanCost(usage.estimated_cost_usd)].filter(Boolean).join(' · ');
   const actionCounts = replay.action_counts || {};
   const countChips = Object.entries(actionCounts).map(([name, count]) => `<span class="pill">${escapeHtml(name)} ${escapeHtml(count)}</span>`).join('');
   const files = (replay.files || []).map((file) => ({
@@ -1095,6 +1113,11 @@ function renderReplayView(replayPayload = {}) {
         <article class="replay-summary-card">
           <span>Status</span>
           <strong class="replay-status replay-status-${escapeHtml(status)}">${escapeHtml(replayStatusLabel(status))}</strong>
+        </article>
+        <article class="replay-summary-card replay-token-card">
+          <span>Tokens</span>
+          <strong>${humanNumber(totalTokens)}</strong>
+          <small class="item-meta mono">${escapeHtml(usageMeta || 'usage n/a')}</small>
         </article>
         <article class="replay-summary-card">
           <span>Actions</span>
