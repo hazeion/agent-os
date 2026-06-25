@@ -100,9 +100,10 @@ Near-term project/task direction:
 - Google Calendar has been polished into a read-only 7-day agenda with a Today preview, grouped events, Google live/local fallback source pills, stale/error fallback metadata, and a 5-minute in-memory Google API cache.
 - Dashboard-native task create/edit is implemented through project-owned endpoints/data files, not Hermes core writes.
 - Dashboard-native project create/edit remains a later write-back slice.
-- Agent Pulse 2.0 now has a project-owned heartbeat/write-back model plus verified producer wiring helpers, API/UI guidance, and stale-heartbeat downgrade before deeper Hermes-native active-agent tracking.
+- Agent Pulse 2.0 now has a project-owned heartbeat/write-back model plus verified producer wiring helpers, API/UI guidance, and stale-heartbeat downgrade before deeper Hermes-native active-agent tracking. If Agent Pulse looks empty, check whether any producer is actually emitting heartbeats; `task_agent_pulse_auto_producer_visibility` tracks clearer default visibility / producer wiring so this does not feel broken.
 - Email should come after calendar stabilizes, initially read-only and focused on priority/needs-attention surfacing.
 - Keep tasks searchable by title, description, status, and project name from the top search bar.
+- Website-to-agent messaging is a planned future feature. Before implementation, read `docs/website-to-agent-messaging-plan.md` and the Obsidian note `[[Mentat - Website-to-Agent Messaging Plan]]`; preserve local-only, project-owned write-back boundaries and do not let browser input directly execute shell commands.
 - Dashboard project creation remains a future feature; currently new projects are added by updating `data/projects.json` and related tasks in `data/tasks.json`, usually by asking Hermes to do it safely.
 - Structured run replay / trace-lite is now implemented as the latest Phase 3 continuation. Keep it read-only toward Hermes core: first version parses existing sessions now; later versions can accept agent-written summaries and explicit task-link/write-back actions.
 - The runtime config foundation is now in place: shared repo defaults live in `agent-os.toml`, Brandon's machine-specific overrides can live in gitignored `agent-os.local.toml`, and env/CLI overrides are available for VPS or alternate-local runs later.

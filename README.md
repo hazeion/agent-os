@@ -89,7 +89,7 @@ Implemented Phase 3 / integration pieces:
 - Google Calendar read-only source integration through the Hermes Google OAuth token, with local `calendar.json` fallback, 7-day agenda grouping, Today preview, visible read-only/fallback/stale states, and a short in-memory cache so dashboard polling does not hit Google every 30 seconds
 - Subsystem-aware `/api/health` status that reports real state for Hermes `state.db`, config readability, calendar live/fallback mode, cron store availability, and host resource pressure
 - Dashboard-native task create/edit write-back through project-owned `POST /api/tasks` and `POST /api/tasks/<id>` routes, surfaced from the Projects / Tasks queue and Selected Task inspector
-- Agent Pulse 2.0 live heartbeat registry through project-owned `data/agents.json`, `GET /api/agents`, and `POST /api/agents/heartbeat`, with historical session fallback when no live agents are registered, stale-heartbeat downgrade when producers stop reporting, and producer guidance/examples surfaced through the API/UI and `scripts/agent_heartbeat.py examples`
+- Agent Pulse 2.0 live heartbeat registry through project-owned `data/agents.json`, `GET /api/agents`, and `POST /api/agents/heartbeat`, with historical session fallback when no live agents are registered, stale-heartbeat downgrade when producers stop reporting, and producer guidance/examples surfaced through the API/UI and `scripts/agent_heartbeat.py examples`. If the panel appears empty, verify whether a producer is emitting heartbeats; follow-up task `task_agent_pulse_auto_producer_visibility` tracks making this clearer and/or wiring default producer visibility.
 - Structured run replay / trace-lite view in Agents / Sessions: `GET /api/hermes/sessions/<id>/replay` parses Hermes `state.db` read-only into run summary, user intent, agent actions, error blockers, outcome, code/file summary, verification, inferred related tasks, and suggest-first/write-later guidance. The page now uses a plain-text session dropdown above Replay/Transcript instead of a dense session-card column, and the temporary Session Analytics panel has been removed from this view.
 
 Current UI stabilization focus:
@@ -105,7 +105,7 @@ Current UI stabilization focus:
 - Local server lifecycle is now safer: `run.sh` / `run.bat` perform preflight cleanup, `stop.sh` / `status.sh` wrap the lifecycle helper, and `server.py` writes a runtime state file for restart/shutdown coordination.
 - Runtime state now also records a `launcher_pid` when available so Windows background-launch diagnostics are easier.
 
-Next likely phase: structured run replay / trace-lite is now in place for Agents / Sessions. The next practical expansion can be either dashboard-native project create/edit or deeper replay evolution with agent-written summaries and explicit task-link/write-back actions. React remains deferred until routing, modals/drawers, heavier editing, websocket-like live roster behavior, or direct agent chat justify it.
+Next likely phase: structured run replay / trace-lite is now in place for Agents / Sessions. Brandon has identified website-to-agent messaging as a desired future feature; use `docs/website-to-agent-messaging-plan.md` and the Obsidian note `[[Mentat - Website-to-Agent Messaging Plan]]` before implementation. The next practical expansion can be website-to-agent messaging, dashboard-native project create/edit, or deeper replay evolution with agent-written summaries and explicit task-link/write-back actions. React remains deferred until routing, modals/drawers, heavier editing, websocket-like live roster behavior, or direct agent chat justify it.
 
 React migration is deliberately deferred until interaction complexity justifies it. See `docs/react-readiness.md` for the trigger points and migration path.
 
@@ -167,11 +167,14 @@ The helper writes only through Mentat's local API and does not mutate Hermes cor
 - Phase 2.5 UI/UX stabilization review and Google Calendar read-only polish are completed; move into the next Phase 3 expansion only after keeping the dashboard verified and local-only.
 - Future-phase TODOs are tracked under the `Mentat` project in `data/tasks.json`:
 
+- Build website-to-agent messaging v1 from `docs/website-to-agent-messaging-plan.md`
+- Add browser smoke tests before heavier agent messaging interactions
+- Organize compact board CSS and split `app.js`/server domains before chat scope grows
 - Add dashboard-native project creation and editing
 - Add a read-only email pane after calendar stabilizes
 - Add Windows startup service docs and safe remote access option
 - Reassess React migration only when interactions justify it
-- Run Wilson Milsen review before the next major expansion
+- Reference `docs/wilson-code-review-2026-06-25.md` for the latest Wilson cleanup recommendations
 
 ## Attention items
 
