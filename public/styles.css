@@ -886,7 +886,7 @@ h2 {
   font: inherit;
   text-align: left;
   display: grid;
-  grid-template-columns: 5px 30px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   gap: 10px;
   align-items: stretch;
   height: 116px;
@@ -898,6 +898,7 @@ h2 {
   background: rgba(255,255,255,.028);
   box-shadow: none;
 }
+
 .focus-task-button:hover,
 .focus-task-button:focus-visible {
   border-color: rgba(110,231,255,.24);
@@ -905,21 +906,12 @@ h2 {
   outline: none;
 }
 .focus-task-indicator {
-  display: block;
-  width: 5px;
-  height: 100%;
-  min-height: 88px;
-  border-radius: 999px;
-  background: rgba(110,231,255,.45);
-  box-shadow: 0 0 16px rgba(110,231,255,.16);
+  display: none;
 }
 .focus-task-attention {
   background: linear-gradient(135deg, rgba(255,107,138,.085), rgba(255,255,255,.024));
 }
-.focus-task-attention .focus-task-indicator {
-  background: var(--danger);
-  box-shadow: 0 0 18px rgba(255,107,138,.32);
-}
+
 .focus-task-due {
   background: linear-gradient(135deg, rgba(255,209,102,.085), rgba(255,255,255,.024));
 }
@@ -1606,7 +1598,6 @@ h2 {
 .task-list-item-button.active {
   border-color: rgba(157,124,255,.48);
   background: linear-gradient(135deg, rgba(157,124,255,.12), rgba(110,231,255,.07));
-  box-shadow: inset 2px 0 0 rgba(157,124,255,.62);
 }
 .task-list-title-row {
   display: flex;
@@ -2135,6 +2126,9 @@ h2 {
 .panel .task-list-item-button.active,
 .panel .session-card.active {
   border-color: transparent;
+}
+
+.panel .session-card.active {
   box-shadow: inset 2px 0 0 rgba(157,124,255,.56);
 }
 .panel .message-card.target-message {
@@ -2643,15 +2637,16 @@ h2,
   overflow: auto;
 }
 .focus-task-item {
-  grid-template-columns: 3px 24px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr);
   gap: 8px;
   height: 78px;
   min-height: 78px;
   max-height: 78px;
   background: var(--card-2);
 }
-.focus-task-indicator { width: 3px; min-height: 58px; border-radius: 0; box-shadow: none; }
+.focus-task-indicator { display: none; }
 .focus-task-rank { width: 22px; height: 22px; border-radius: var(--radius); font-size: .58rem; }
+
 .focus-task-item .item-desc { -webkit-line-clamp: 1; }
 
 .agent-pulse { gap: 8px; max-height: 340px; overflow: auto; }
@@ -2710,8 +2705,10 @@ h2,
 .task-list-title-row { gap: 8px; font-size: .8rem; }
 .task-list-item .item-desc { -webkit-line-clamp: 1; }
 .panel .project-card-button.active,
-.panel .task-list-item-button.active,
 .panel .session-card.active { box-shadow: inset 3px 0 0 var(--accent-2); }
+.panel .task-list-item-button.active {
+  border-color: transparent;
+}
 .task-detail-card { padding: 10px; }
 .task-detail-card h3 { font: 900 .96rem/1.2 var(--mono); }
 .task-detail-text { font-size: .78rem; line-height: 1.45; }
@@ -2785,5 +2782,5 @@ h2,
   .calendar-event { grid-template-columns: 1fr; }
   .focus-task-rail { max-height: none; }
   .focus-task-item { height: auto; min-height: 0; max-height: none; }
-  .focus-task-indicator { width: 100%; height: 3px; min-height: 0; }
+  .focus-task-indicator { display: none; }
 }

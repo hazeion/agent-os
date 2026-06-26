@@ -7,7 +7,7 @@ Local mission-control and personal productivity dashboard for Brandon's Hermes A
 Install the pinned Python runtime dependencies first:
 
 ```bash
-cd /e/code/agent-os
+cd "/path/to/your/agent-os"
 python -m pip install -r requirements.txt
 ```
 
@@ -16,14 +16,14 @@ Mentat currently has **no npm/package.json dependency step**; the frontend is st
 From Git Bash / Hermes terminal, prefer the bash-native helpers:
 
 ```bash
-cd /e/code/agent-os
+cd "/path/to/your/agent-os"
 ./run.sh
 ```
 
 From Windows Explorer / cmd, use the batch launcher:
 
 ```bat
-E:/code/agent-os/run.bat
+run.bat
 ```
 
 Stop or inspect the local server lifecycle when needed:
@@ -36,6 +36,16 @@ Stop or inspect the local server lifecycle when needed:
 Then open the default local URL:
 
 `http://localhost:8888`
+
+### Linux / macOS compatibility
+
+The dashboard core (Python + static frontend) is cross-platform, so users can run it outside Windows *if they set paths for their machine* (`agent-os.local.toml`, `HERMES_HOME`, `OBSIDIAN_VAULT_PATH`, or CLI/env overrides).
+
+- `python server.py ...` works directly and is the most OS-agnostic startup path.
+- `run.bat`, `status.bat`, and `stop.bat` are Windows-only convenience wrappers.
+- The lifecycle helper used by `run.sh`/`status.sh`/`stop.sh` currently relies on Windows process utilities (`netstat -ano`, `taskkill`, PowerShell/WMIC), so Linux/macOS users should avoid the preflight lifecycle path and start the server directly, or adapt the lifecycle layer before relying on auto-cleanup.
+
+Hermes does not need to be Windows-specific, but the dashboard needs access to the Hermes data it is reading.
 
 ## Configuration
 
@@ -89,7 +99,7 @@ Implemented Phase 3 / integration pieces:
 - Google Calendar read-only source integration through the Hermes Google OAuth token, with local `calendar.json` fallback, 7-day agenda grouping, Today preview, visible read-only/fallback/stale states, and a short in-memory cache so dashboard polling does not hit Google every 30 seconds
 - Subsystem-aware `/api/health` status that reports real state for Hermes `state.db`, config readability, calendar live/fallback mode, cron store availability, and host resource pressure
 - Dashboard-native task create/edit write-back through project-owned `POST /api/tasks` and `POST /api/tasks/<id>` routes, surfaced from the Projects / Tasks queue and Selected Task inspector
-- Agent Pulse 2.0 live heartbeat registry through project-owned `data/agents.json`, `GET /api/agents`, and `POST /api/agents/heartbeat`, with historical session fallback when no live agents are registered, stale-heartbeat downgrade when producers stop reporting, and producer guidance/examples surfaced through the API/UI and `scripts/agent_heartbeat.py examples`. If the panel appears empty, verify whether a producer is emitting heartbeats; follow-up task `task_agent_pulse_auto_producer_visibility` tracks making this clearer and/or wiring default producer visibility.
+- Agent Pulse 2.0 live heartbeat registry through project-owned `data/agents.json`, `GET /api/agents`, and `POST /api/agents/heartbeat`, with stale-heartbeat downgrade when producers stop reporting. If no producer is present, active Hermes sessions are surfaced as live listener rows until that session ends; producer guidance/examples are still surfaced through the API/UI and `scripts/agent_heartbeat.py examples`.
 - Structured run replay / trace-lite view in Agents / Sessions: `GET /api/hermes/sessions/<id>/replay` parses Hermes `state.db` read-only into run summary, user intent, agent actions, error blockers, outcome, code/file summary, verification, inferred related tasks, and suggest-first/write-later guidance. The page now uses a plain-text session dropdown above Replay/Transcript instead of a dense session-card column, and the temporary Session Analytics panel has been removed from this view.
 
 Current UI stabilization focus:
@@ -125,7 +135,7 @@ for pid in $(netstat -ano | awk '/127\\.0\\.0\\.1:8888/ && /LISTENING/ {print $N
 Then restart:
 
 ```bash
-cd /e/code/agent-os
+cd "/path/to/your/agent-os"
 python server.py
 ```
 
@@ -134,7 +144,7 @@ python server.py
 - Local-only v1 by default (`127.0.0.1:8888`)
 - Reads Hermes data from `HERMES_HOME`
 - Runtime paths/host/port can be overridden through TOML, environment variables, or CLI flags
-- Dashboard write-back is allowlisted to project-owned JSON files under the configured data directory (default `E:/code/agent-os/data/`)
+- Dashboard write-back is allowlisted to project-owned JSON files under the configured data directory (default `data/`).
 - Uses local JSON files for projects, tasks, attention items, and calendar fallback data
 - Google Calendar uses the Hermes Google OAuth token at `HERMES_HOME/google_token.json` for read-only upcoming events
 
@@ -160,7 +170,7 @@ python scripts/agent_heartbeat.py run --name "Codex Worker" --project Mentat --c
 python scripts/agent_heartbeat.py examples
 ```
 
-The helper writes only through Mentat's local API and does not mutate Hermes core files. Use stable `--agent-id` values when wrapping recurring agents so each heartbeat updates the same live record. `GET /api/agents` now also derives producer freshness: active records that stop heartbeating are marked stale instead of appearing live forever, and the Today View Agent Pulse panel surfaces example producer commands when the registry is empty.
+The helper writes only through Mentat's local API and does not mutate Hermes core files. Use stable `--agent-id` values when wrapping recurring agents so each heartbeat updates the same live record. `GET /api/agents` now also promotes active Hermes session rows into live Agent Pulse; if a producer heartbeat is not present yet, the session itself still appears as live. Active records that stop heartbeating are then marked stale, and the Today View Agent Pulse panel surfaces example producer commands when the registry is empty.
 
 ## Future roadmap tasks
 

@@ -816,9 +816,9 @@
   {
     "id": "task_agent_pulse_auto_producer_visibility",
     "title": "Fix Agent Pulse live visibility without manual heartbeat setup",
-    "description": "Follow-up from Brandon noticing Agent Pulse appears not to work when no producer is emitting heartbeats. API/UI render correctly with a manual heartbeat, but the product needs clearer empty-state guidance and/or default Hermes producer wiring so active agents show up without manual commands. Keep writes project-owned and avoid Hermes core mutation unless a deliberate Hermes integration is approved.",
+    "description": "Follow-up from Brandon noticing Agent Pulse appears not to work when no producer is emitting heartbeats. Active Hermes sessions are now promoted into Agent Pulse automatically, so running agents can be detected without manual heartbeat setup. Keep writes project-owned and avoid Hermes core mutation unless a deliberate Hermes integration is approved.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": null,
@@ -832,10 +832,10 @@
       "bug-follow-up"
     ],
     "review_required": false,
-    "needs_attention": true,
+    "needs_attention": false,
     "created_at": "2026-06-25T23:35:00-07:00",
-    "updated_at": "2026-06-25T23:35:00-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-25T18:31:43-07:00",
+    "completed_at": "2026-06-25T18:31:43-07:00"
   },
   {
     "project": "Mentat",

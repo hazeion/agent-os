@@ -202,8 +202,9 @@ class DashboardBehaviorTests(unittest.TestCase):
         ]
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
+            state_db = root / "state.db"
             self.write_json(root, "agents.json", agents)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
                 payload = server.agents_payload()
 
         self.assertEqual([agent["id"] for agent in payload["agents"]], ["agent_hermes", "agent_helper"])
@@ -218,6 +219,58 @@ class DashboardBehaviorTests(unittest.TestCase):
         self.assertEqual(payload["agents"][1]["freshness"], "stale")
         self.assertGreaterEqual(payload["agents"][1]["heartbeat_age_seconds"], 120)
         self.assertIn("agent_heartbeat.py run", payload["guidance"]["run_command"])
+        self.assertEqual(payload["sessions"], [])
+
+    def test_agents_payload_derives_live_agents_from_active_hermes_sessions(self):
+        now = datetime.now().astimezone().replace(microsecond=0)
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state_db = root / "state.db"
+            con = sqlite3.connect(state_db)
+            con.execute(
+                """
+                create table sessions (
+                    id text primary key, title text, source text, model text,
+                    started_at real, ended_at real, message_count integer,
+                    tool_call_count integer, input_tokens integer, output_tokens integer,
+                    estimated_cost_usd real, archived integer default 0
+                )
+                """
+            )
+            con.execute(
+                "insert into sessions values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "session_active",
+                    "Build Agent Pulse listener",
+                    "hermes",
+                    "gpt-5",
+                    now.timestamp(),
+                    None,
+                    4,
+                    2,
+                    220,
+                    110,
+                    0.0,
+                    0,
+                ),
+            )
+            con.commit()
+            con.close()
+
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
+                payload = server.agents_payload()
+
+        self.assertEqual(payload["summary"]["total"], 1)
+        self.assertEqual(payload["summary"]["running"], 1)
+        self.assertEqual(payload["summary"]["live"], 1)
+        self.assertEqual(payload["summary"]["stale"], 0)
+        self.assertEqual(len(payload["agents"]), 1)
+        self.assertEqual(payload["agents"][0]["id"], "session_session_active")
+        self.assertEqual(payload["agents"][0]["source"], "hermes-session")
+        self.assertEqual(payload["agents"][0]["status"], "running")
+        self.assertFalse(payload["agents"][0]["stale"])
+        self.assertEqual(payload["agents"][0]["session_id"], "session_active")
+        self.assertEqual(payload["sessions"][0]["id"], "session_active")
 
     def test_agent_heartbeat_route_upserts_live_registry_records(self):
         request = {

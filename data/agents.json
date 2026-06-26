@@ -1,1 +1,38 @@
-[]
+[
+  {
+    "id": "agent_hermes",
+    "name": "Hermes",
+    "status": "running",
+    "current_task": "Working on Mentat",
+    "project": "Mentat",
+    "cwd": "E:\\code\\agent-os",
+    "model": null,
+    "source": "heartbeat-script",
+    "latest_output": null,
+    "needs_user_input": false,
+    "related_task_id": null,
+    "created_at": "2026-06-25T18:44:17.413754-07:00",
+    "started_at": "2026-06-25T18:44:17.413754-07:00",
+    "updated_at": "2026-06-25T18:44:17.413754-07:00",
+    "last_heartbeat": "2026-06-25T18:44:17.413754-07:00",
+    "resolved_at": null
+  },
+  {
+    "id": "agent_hermes_worker",
+    "name": "Hermes Worker",
+    "status": "failed",
+    "current_task": "Implement feature",
+    "project": "Mentat",
+    "cwd": "E:\\code\\agent-os",
+    "model": null,
+    "source": "heartbeat-script",
+    "latest_output": "Command exited with code 2: python worker.py",
+    "needs_user_input": false,
+    "related_task_id": null,
+    "created_at": "2026-06-25T18:44:29.858366-07:00",
+    "started_at": "2026-06-25T18:44:29.858366-07:00",
+    "updated_at": "2026-06-25T18:44:44.904079-07:00",
+    "last_heartbeat": "2026-06-25T18:44:44.904079-07:00",
+    "resolved_at": "2026-06-25T18:44:44.904079-07:00"
+  }
+]

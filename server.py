@@ -183,6 +183,8 @@ TASK_PRIORITY_VALUES = {"high", "medium", "low"}
 AGENT_STATUS_VALUES = {"running", "idle", "blocked", "done", "failed"}
 AGENT_ACTIVE_STATUSES = {"running", "idle", "blocked"}
 AGENT_STALE_AFTER_SECONDS = 90
+AGENT_DERIVED_SESSIONS_LIMIT = 12
+AGENT_DERIVED_SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 
 apply_runtime_config(load_app_config())
 
@@ -423,16 +425,120 @@ def agent_guidance() -> dict:
     }
 
 
+def synthesize_live_session_agents(session_payload, *, now: datetime | None = None, limit: int = AGENT_DERIVED_SESSIONS_LIMIT) -> list[dict]:
+    if not isinstance(session_payload, dict):
+        return []
+
+    if not session_payload.get("exists", False):
+        return []
+
+    sessions = session_payload.get("sessions")
+    if not isinstance(sessions, list):
+        return []
+
+    now = now or datetime.now().astimezone()
+    cutoff = now - timedelta(seconds=AGENT_DERIVED_SESSION_MAX_AGE_SECONDS)
+    session_agents: list[dict] = []
+    timestamp = now.isoformat(timespec="microseconds")
+
+    for session in sessions[:limit]:
+        if not isinstance(session, dict):
+            continue
+
+        session_id = compact_text(session.get("id"), max_length=80)
+        if not session_id:
+            continue
+
+        started_at = parse_iso(session.get("started_at"))
+        ended_at = parse_iso(session.get("ended_at"))
+        if ended_at is not None:
+            continue
+
+        if started_at is not None and started_at < cutoff:
+            continue
+
+        title = compact_text(session.get("title"), max_length=120)
+        if not title:
+            title = f"Session {session_id[:8]}"
+
+        started_iso = (started_at or now).isoformat(timespec="microseconds")
+        session_agents.append(
+            {
+                "id": f"session_{session_id}",
+                "name": title,
+                "status": "running",
+                "current_task": compact_text(session.get("title"), max_length=140),
+                "project": compact_text(session.get("source"), max_length=120) or None,
+                "cwd": None,
+                "model": compact_text(session.get("model"), max_length=120),
+                "source": "hermes-session",
+                "latest_output": "No heartbeat yet; session derived from active Hermes sessions.",
+                "needs_user_input": False,
+                "related_task_id": None,
+                "created_at": started_iso,
+                "started_at": started_iso,
+                "updated_at": timestamp,
+                "last_heartbeat": timestamp,
+                "resolved_at": None,
+                "session_id": session_id,
+            }
+        )
+
+    return session_agents
+
+
+def merge_agents_with_session_observations(registered_agents: list[dict], observed_agents: list[dict]) -> list[dict]:
+    existing_ids = {compact_text(agent.get("id"), max_length=80) for agent in registered_agents if isinstance(agent, dict) and compact_text(agent.get("id"), max_length=80)}
+    observed_session_ids = {
+        compact_text(agent.get("session_id"), max_length=80): True
+        for agent in registered_agents
+        if isinstance(agent, dict) and compact_text(agent.get("session_id"), max_length=80)
+    }
+
+    merged = list(registered_agents)
+    for agent in observed_agents:
+        if not isinstance(agent, dict):
+            continue
+
+        agent_id = compact_text(agent.get("id"), max_length=80)
+        session_id = compact_text(agent.get("session_id"), max_length=80)
+
+        if session_id and session_id in observed_session_ids:
+            continue
+        if agent_id in existing_ids:
+            continue
+
+        merged.append(agent)
+
+    return merged
+
+
 def agents_payload():
     agents = read_json_file("agents.json", [])
     if isinstance(agents, dict) and agents.get("error"):
         return agents
     if not isinstance(agents, list):
         return {"error": "agents.json must contain a list"}
+
     now = datetime.now().astimezone()
-    ordered = [agent_record_with_freshness(agent, now=now) for agent in agents if isinstance(agent, dict)]
+    session_payload = recent_sessions(limit=AGENT_DERIVED_SESSIONS_LIMIT)
+    session_agents = synthesize_live_session_agents(session_payload, now=now)
+    merged = merge_agents_with_session_observations([agent for agent in agents if isinstance(agent, dict)], session_agents)
+
+    ordered = [agent_record_with_freshness(agent, now=now) for agent in merged if isinstance(agent, dict)]
     ordered.sort(key=lambda agent: agent.get("last_heartbeat") or agent.get("updated_at") or agent.get("started_at") or "", reverse=True)
-    return {"agents": ordered, "summary": agent_summary(ordered), "guidance": agent_guidance()}
+
+    if isinstance(session_payload, dict) and session_payload.get("sessions") and not isinstance(session_payload.get("sessions"), list):
+        sessions = []
+    else:
+        sessions = session_payload.get("sessions") if isinstance(session_payload, dict) else []
+
+    return {
+        "agents": ordered,
+        "sessions": sessions or [],
+        "summary": agent_summary(ordered),
+        "guidance": agent_guidance(),
+    }
 
 
 def upsert_agent_heartbeat(payload):
