@@ -26,6 +26,8 @@ Thumbs.db
 
 # Future local secrets/auth files
 .env
+agent-os.local.env
+agent-os.local.env.bat
 *.secret
 secrets.json
 users.json
