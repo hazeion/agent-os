@@ -1,246 +1,374 @@
 # Mentat (Agent OS)
 
-Local mission-control and personal productivity dashboard for Brandon's Hermes Agent workflows.
+Mentat is a small local-first dashboard for people who want a more practical way to use AI while managing a real build project.
 
-## Run
+It is built around Hermes-powered workflows and gives you one place to see projects, tasks, agents, sessions, calendar context, notes, and the next things that need attention.
 
-Install the pinned Python runtime dependencies first:
+This project is still a work in progress. It is actively being developed, and some ideas are ahead of the current implementation. The foundation is here, but not every feature is fully realized yet.
+
+## Overview
+
+Mentat is a small Python server with a static frontend.
+
+It is designed to:
+
+- stay local-first
+- read Hermes data without writing to Hermes core files
+- make active work, task flow, and session history easier to follow
+- help people build with AI without dragging in a heavyweight stack
+
+Current stack:
+
+- Python backend
+- static HTML, CSS, and vanilla JavaScript frontend
+- local JSON files for project-owned data
+- optional Hermes-aware setup through the included wizard
+
+There is currently **no npm install step**.
+
+## Requirements
+
+- Python 3
+- Hermes Agent for the Hermes-aware setup flow and read-only integrations
+
+If you only want to launch the local dashboard, Python is enough. If you want the Hermes-aware setup flow, session views, and related integrations, make sure Hermes is installed and configured.
+
+## Current status
+
+Mentat is usable today, but it is still evolving.
+
+- core local dashboard workflows are in place
+- several read-only integrations are working
+- project-owned local data flows are implemented
+- some planned features are still partial, rough around the edges, or not built yet
+
+If you try it now, expect a real working project, not a finished product.
+
+## Current features
+
+Mentat currently includes:
+
+- Today View as the main command center
+- Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
+- Agents / Sessions view with transcript and replay support
+- Hermes session search from `state.db` in read-only mode
+- Agent Pulse live heartbeat registry
+- read-only Google Calendar integration with local fallback
+- Obsidian notes visibility
+- local lifecycle helpers for start, stop, and status
+
+## Quick start
+
+### 1) Clone the repo
 
 ```bash
-cd "/path/to/your/agent-os"
+git clone https://github.com/hazeion/agent-os.git
+cd agent-os
+```
+
+### 2) Install Python dependencies
+
+```bash
 python -m pip install -r requirements.txt
 ```
 
-Before your first run, we recommend the setup wizard so each user gets a local,
-machine-specific bootstrap:
+### 3) Run the setup wizard (recommended)
+
+This creates your machine-specific local config files and tries to detect your Hermes profile.
 
 ```bash
-cd "/path/to/your/agent-os"
 python scripts/mentat_setup.py
 ```
 
-The wizard creates:
+The wizard creates local-only files such as:
 
-- `agent-os.local.toml` — your local runtime overrides
-- `agent-os.local.env` and `agent-os.local.env.bat` — optional local env flag files
+- `agent-os.local.toml`
+- `agent-os.local.env`
+- `agent-os.local.env.bat`
 
-No credentials or tokens are written. Your Hermes profile (`HERMES_HOME`) stays the
-source of secrets.
+It does **not** write credentials or tokens.
 
-Mentat currently has **no npm/package.json dependency step**; the frontend is static HTML/CSS/vanilla JS.
+### 4) Launch Mentat
 
-From Git Bash / Hermes terminal, prefer the bash-native helpers:
+Once the server is running, open:
+
+```text
+http://localhost:8888
+```
+
+## Launch instructions by OS
+
+### Windows
+
+#### Option A: Git Bash / Hermes terminal
 
 ```bash
-cd "/path/to/your/agent-os"
+cd "/path/to/agent-os"
 ./run.sh
 ```
 
-From Windows Explorer / cmd, use the batch launcher:
+#### Option B: Command Prompt / Explorer
 
 ```bat
+cd /d C:\path\to\agent-os
 run.bat
 ```
 
-Stop or inspect the local server lifecycle when needed:
+You can also double-click `run.bat` in Explorer.
+
+#### Stop or check status on Windows
+
+From Git Bash:
 
 ```bash
 ./status.sh
 ./stop.sh
 ```
 
-Then open the default local URL:
+From Command Prompt:
 
-`http://localhost:8888`
-
-### Linux / macOS compatibility
-
-The dashboard core (Python + static frontend) is cross-platform, so users can run it outside Windows *if they set paths for their machine* (`agent-os.local.toml`, `HERMES_HOME`, `OBSIDIAN_VAULT_PATH`, or CLI/env overrides).
-
-- `python server.py ...` works directly and is the most OS-agnostic startup path.
-- `run.bat`, `status.bat`, and `stop.bat` are Windows-only convenience wrappers.
-- The lifecycle helper used by `run.sh`/`status.sh`/`stop.sh` currently relies on Windows process utilities (`netstat -ano`, `taskkill`, PowerShell/WMIC), so Linux/macOS users should avoid the preflight lifecycle path and start the server directly, or adapt the lifecycle layer before relying on auto-cleanup.
-
-Hermes does not need to be Windows-specific, but the dashboard needs access to the Hermes data it is reading.
-
-## Configuration
-
-Mentat now uses a clean layered runtime config:
-
-1. built-in defaults
-2. `agent-os.toml` (shared repo defaults)
-3. `agent-os.local.toml` (gitignored machine-specific overrides)
-4. environment variables
-5. CLI flags
-
-Useful commands:
-
-```bash
-python server.py --print-config
-python server.py --port 8890
-python server.py --host 0.0.0.0 --port 8890
-python agent_os_lifecycle.py status --port 8890
+```bat
+python agent_os_lifecycle.py status
 python agent_os_lifecycle.py stop
 ```
 
-Useful files / overrides:
-
-- `agent-os.toml` — shared local-only defaults checked into the repo
-- `agent-os.local.toml` — local machine overrides such as Brandon's Obsidian vault path
-- `AGENT_OS_CONFIG` — optional extra TOML file to merge after the shared/local files
-- `AGENT_OS_PORT`, `AGENT_OS_HOST`, `AGENT_OS_APP_NAME`, `HERMES_HOME`, `OBSIDIAN_VAULT_PATH` — common env overrides
-- `agent-os.local.env` / `agent-os.local.env.bat` — local env flag exports generated by `scripts/mentat_setup.py`
-
-This keeps the dashboard local-only by default while making later VPS migration a config exercise instead of a code rewrite.
-
-Current modularization / naming status:
-
-- The user-facing dashboard brand is now **Mentat**.
-- The project/task data now use **Mentat** as the project name; repo path, helper names, Python compatibility modules, and some compatibility docs still use `agent-os` / Agent OS until the larger rename is deliberately planned.
-- Runtime config loading lives in `runtime_config.py`; `server.py` now focuses more narrowly on data access, routes, and HTTP serving.
-- Shared browser constants, markdown helpers, and API helpers live in `public/core.js`; `public/app.js` remains the UI orchestrator.
-- See `docs/modularization-plan.md` for the staged split plan.
-
-## Current phase
-
-Agent OS is transitioning out of **Phase 2.5 UI/UX stabilization** with the first important Phase 3 read-only integration polished.
-
-Implemented Phase 3 / integration pieces:
-
-- Clickable read-only session detail from Hermes `state.db`
-- Message-level read-only search over Hermes FTS data
-- Search-term highlighting in results and conversation detail
-- Search result click-through to a focused conversation window around the matched message
-- Structured run replay / trace-lite in Agents / Sessions, clearly labeled as read-only toward Hermes core and paired with raw transcript access
-- Masked Hermes config/model viewer in Settings
-- Google Calendar read-only source integration through the Hermes Google OAuth token, with local `calendar.json` fallback, 7-day agenda grouping, Today preview, visible read-only/fallback/stale states, and a short in-memory cache so dashboard polling does not hit Google every 30 seconds
-- Subsystem-aware `/api/health` status that reports real state for Hermes `state.db`, config readability, calendar live/fallback mode, cron store availability, and host resource pressure
-- Dashboard-native task create/edit write-back through project-owned `POST /api/tasks` and `POST /api/tasks/<id>` routes, surfaced from the Projects / Tasks queue and Selected Task inspector
-- Agent Pulse 2.0 live heartbeat registry through project-owned `data/agents.json`, `GET /api/agents`, and `POST /api/agents/heartbeat`, with stale-heartbeat downgrade when producers stop reporting. If no producer is present, active Hermes sessions are surfaced as live listener rows until that session ends; producer guidance/examples are still surfaced through the API/UI and `scripts/agent_heartbeat.py examples`.
-- Structured run replay / trace-lite view in Agents / Sessions: `GET /api/hermes/sessions/<id>/replay` parses Hermes `state.db` read-only into run summary, user intent, agent actions, error blockers, outcome, code/file summary, verification, inferred related tasks, and suggest-first/write-later guidance. The page now uses a plain-text session dropdown above Replay/Transcript instead of a dense session-card column, and the temporary Session Analytics panel has been removed from this view.
-
-Current UI stabilization focus:
-
-- Today View is the primary command center; Open Queue / Next Moves includes a project selector, left-edge task state indicators, and task-card jumps into the Projects / Tasks selected-task detail. The redundant Needs Attention hero card and Today container have been removed; attention is now represented by task-state color cues in the queue.
-- The `Hello <name>` hero title is project-configured from `data/dashboard.json`, styled with JetBrains Mono, and now uses the dashboard's blue/teal/white glow instead of the prior amber dot-matrix treatment.
-- The old right-side Local badge has been replaced by a low-poly/digitized SVG brain mark animated with a deliberately choppy 15-frame stepped spin.
-- Projects / Tasks is a project command center with Project Portfolio, Open Task Queue, Project Status, and Recent Completed Work.
-- Project Portfolio keeps project cards compact with counts and percent text; the Selected Scope summary keeps the visual progress bar.
-- Project Portfolio cards are fixed-width in a horizontal rail with arrow controls when the rail overflows.
-- The task status filter uses a native dark `<select>` surface for reliable mouse and keyboard behavior while keeping completed tasks available by filter.
-- Runtime configuration now comes from layered TOML/env/CLI sources in `runtime_config.py` so shared defaults and local machine overrides are no longer hardcoded directly in `server.py`.
-- Local server lifecycle is now safer: `run.sh` / `run.bat` perform preflight cleanup, `stop.sh` / `status.sh` wrap the lifecycle helper, and `server.py` writes a runtime state file for restart/shutdown coordination.
-- Runtime state now also records a `launcher_pid` when available so Windows background-launch diagnostics are easier.
-
-Next likely phase: structured run replay / trace-lite is now in place for Agents / Sessions. Brandon has identified website-to-agent messaging as a desired future feature; use `docs/website-to-agent-messaging-plan.md` and the Obsidian note `[[Mentat - Website-to-Agent Messaging Plan]]` before implementation. The next practical expansion can be website-to-agent messaging, dashboard-native project create/edit, or deeper replay evolution with agent-written summaries and explicit task-link/write-back actions. React remains deferred until routing, modals/drawers, heavier editing, websocket-like live roster behavior, or direct agent chat justify it.
-
-React migration is deliberately deferred until interaction complexity justifies it. See `docs/react-readiness.md` for the trigger points and migration path.
-
-## Troubleshooting
-
-### Browser says the connection closed / endpoints fail on port 8888
-
-If a previous Hermes session crashed while the dashboard server was running, stale Python listeners may remain on port 8888. Check and clear them from Git Bash:
+### macOS
 
 ```bash
-netstat -ano | grep ':8888'
-for pid in $(netstat -ano | awk '/127\\.0\\.0\\.1:8888/ && /LISTENING/ {print $NF}' | sort -u); do
-  taskkill //PID "$pid" //F
- done
+cd "/path/to/agent-os"
+python -m pip install -r requirements.txt
+python scripts/mentat_setup.py
+./run.sh
 ```
 
-Then restart:
+To stop or check status:
 
 ```bash
-cd "/path/to/your/agent-os"
+./status.sh
+./stop.sh
+```
+
+If Hermes is not installed yet, install and configure it first, then rerun the setup wizard:
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+hermes setup
+hermes doctor
+```
+
+### Linux
+
+```bash
+cd "/path/to/agent-os"
+python -m pip install -r requirements.txt
+python scripts/mentat_setup.py
+./run.sh
+```
+
+To stop or check status:
+
+```bash
+./status.sh
+./stop.sh
+```
+
+If Hermes is not installed yet, install and configure it first, then rerun the setup wizard:
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+hermes setup
+hermes doctor
+```
+
+## Minimal launch flow
+
+If you do not want to use the setup wizard, you can launch directly:
+
+```bash
 python server.py
 ```
 
-If you used the setup wizard:
+Then open:
+
+```text
+http://localhost:8888
+```
+
+## Useful commands
+
+Print the effective runtime config:
 
 ```bash
-source agent-os.local.env   # bash/git-bash
-python server.py
+python server.py --print-config
 ```
 
-```bat
-call agent-os.local.env.bat
-python server.py
+Run on a different port:
+
+```bash
+python server.py --port 8890
 ```
+
+Bind a different host and port:
+
+```bash
+python server.py --host 0.0.0.0 --port 8890
+```
+
+Check lifecycle state:
+
+```bash
+python agent_os_lifecycle.py status
+```
+
+Stop the managed server:
+
+```bash
+python agent_os_lifecycle.py stop
+```
+
+## Configuration
+
+Mentat uses layered runtime configuration in this order:
+
+1. built-in defaults
+2. `agent-os.toml`
+3. `agent-os.local.toml`
+4. environment variables
+5. CLI flags
+
+Useful overrides:
+
+- `AGENT_OS_PORT`
+- `AGENT_OS_HOST`
+- `AGENT_OS_APP_NAME`
+- `HERMES_HOME`
+- `OBSIDIAN_VAULT_PATH`
+- `AGENT_OS_CONFIG`
+
+Important local config files:
+
+- `agent-os.toml` — shared repo defaults
+- `agent-os.local.toml` — your machine-specific overrides
+- `agent-os.local.env` — optional POSIX env exports
+- `agent-os.local.env.bat` — optional Windows env exports
 
 ## Scope
 
-- Local-only v1 by default (`127.0.0.1:8888`)
+Mentat is intentionally conservative right now.
+
+- Local-only by default on `127.0.0.1:8888`
 - Reads Hermes data from `HERMES_HOME`
-- Runtime paths/host/port can be overridden through TOML, environment variables, or CLI flags
-- Dashboard write-back is allowlisted to project-owned JSON files under the configured data directory (default `data/`).
-- Uses local JSON files for projects, tasks, attention items, and calendar fallback data
-- Google Calendar uses the Hermes Google OAuth token at `HERMES_HOME/google_token.json` for read-only upcoming events
+- Writes only to project-owned local data files
+- Does **not** write to Hermes core files
+- Keeps secrets in Hermes, not in this repo
 
-## Projects / Tasks
+Please do not write to:
 
-Projects / Tasks is now a project command center rather than a duplicate task/archive view:
+- `~/.hermes/state.db`
+- `~/.hermes/cron/jobs.json`
+- `~/.hermes/config.yaml`
+- `~/.hermes/skills/`
 
-- **Project Portfolio** selects the project scope with compact fixed-width horizontal cards. Portfolio cards show counts and percent text only; the Selected Scope summary retains the progress bar.
-- **Open Task Queue** defaults to actionable work only; completed tasks are available through the native status filter but are not shown by default.
-- **Selected Task** uses the refined-A inspector pattern: the queue stays compact and the selected task's full description, status metadata, tags, and next-move guidance live in a persistent detail rail. On narrow/mobile layouts, the queue stacks above the detail panel and exposes a Back to Queue control instead of duplicating the status pill in the detail header.
-- **Project Status** shows percent complete as text only, plus open/completed counts, blockers/waiting count, next move, and latest completed item.
-- **Recent Completed Work** is a compact timeline/archive below the queue.
+## Main project-owned data files
 
-Tasks can now be created and edited from the dashboard through project-owned local API routes. New projects are still added by editing `data/projects.json` — usually by asking Hermes to add them safely — until the separate project create/edit slice is implemented.
-
-## Agent Pulse producers
-
-Agent Pulse has a project-owned heartbeat registry at `GET /api/agents` and `POST /api/agents/heartbeat`, backed by `data/agents.json`. The producer helper in `scripts/agent_heartbeat.py` can either publish one heartbeat or wrap a long-running command:
-
-```bash
-python scripts/agent_heartbeat.py beat --name Hermes --status running --project Mentat --current-task "Working on Mentat"
-python scripts/agent_heartbeat.py run --name "Codex Worker" --project Mentat --current-task "Implement feature" --interval 30 -- python worker.py
-python scripts/agent_heartbeat.py examples
+```text
+data/projects.json
+data/tasks.json
+data/attention.json
+data/calendar.json
+data/agents.json
+data/agent_messages.json
 ```
-
-The helper writes only through Mentat's local API and does not mutate Hermes core files. Use stable `--agent-id` values when wrapping recurring agents so each heartbeat updates the same live record. `GET /api/agents` now also promotes active Hermes session rows into live Agent Pulse; if a producer heartbeat is not present yet, the session itself still appears as live. Active records that stop heartbeating are then marked stale, and the Today View Agent Pulse panel surfaces example producer commands when the registry is empty.
-
-## Future roadmap tasks
-
-- Phase 2.5 UI/UX stabilization review and Google Calendar read-only polish are completed; move into the next Phase 3 expansion only after keeping the dashboard verified and local-only.
-- Future-phase TODOs are tracked under the `Mentat` project in `data/tasks.json`:
-
-- Build website-to-agent messaging v1 from `docs/website-to-agent-messaging-plan.md`
-- Add browser smoke tests before heavier agent messaging interactions
-- Organize compact board CSS and split `app.js`/server domains before chat scope grows
-- Add dashboard-native project creation and editing
-- Add a read-only email pane after calendar stabilizes
-- Add Windows startup service docs and safe remote access option
-- Reassess React migration only when interactions justify it
-- Reference `docs/wilson-code-review-2026-06-25.md` for the latest Wilson cleanup recommendations
-
-## Attention items
-
-Task attention is now surfaced primarily through Today View → Open Queue / Next Moves using left-edge color cues and the task-state label. The old standalone Needs Attention hero card and Today container were removed as redundant.
-
-Open tasks from `data/tasks.json` count as attention when they have status `needs_attention`, boolean `needs_attention`, `review_required`, or a `needs attention` / `needs_attention` tag. These items remain task-owned and can be opened through the queue or Projects / Tasks rather than resolved as standalone records.
-
-Manual `data/attention.json` items remain supported at the API/data layer for future surfaces, but they are no longer rendered as a top-level Today container.
 
 ## Main files
 
 ```text
 server.py
+runtime_config.py
 agent_os_lifecycle.py
-scripts/agent_heartbeat.py
 scripts/mentat_setup.py
-agent-os.toml
-agent-os.local.toml (local-only, gitignored)
+scripts/agent_heartbeat.py
+run.sh
+stop.sh
+status.sh
 run.bat
 stop.bat
 status.bat
 public/index.html
 public/styles.css
+public/core.js
 public/app.js
-data/projects.json
-data/tasks.json
-data/attention.json
-data/calendar.json
+agent-os.toml
+README.md
 inventory.md
 ```
+
+## Troubleshooting
+
+### Port 8888 is stuck or the browser says the connection closed
+
+Sometimes a stale Python listener is left behind after a crash or interrupted session.
+
+On Windows Git Bash:
+
+```bash
+netstat -ano | grep ':8888'
+for pid in $(netstat -ano | awk '/127\\.0\\.0\\.1:8888/ && /LISTENING/ {print $NF}' | sort -u); do
+  taskkill //PID "$pid" //F
+done
+```
+
+Then restart:
+
+```bash
+./run.sh
+```
+
+Or:
+
+```bash
+python server.py
+```
+
+### Hermes was not detected by the setup wizard
+
+Install or finish configuring Hermes first, then rerun:
+
+```bash
+hermes setup
+hermes doctor
+python scripts/mentat_setup.py
+```
+
+On Linux or macOS, if Hermes is not installed yet:
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+hermes setup
+hermes doctor
+```
+
+## Verification
+
+Basic sanity check:
+
+```bash
+python -m py_compile server.py
+python -m unittest discover -s tests -v
+```
+
+You can also confirm the server config before launch:
+
+```bash
+python server.py --print-config
+```
+
+## Project notes
+
+Mentat is the user-facing name.
+
+Some repo paths, helper scripts, and compatibility references still use `agent-os` or Agent OS while the broader rename settles out.
+
+This project is still local-first and intentionally small in scope. The goal is to make it easier for other people to adopt, configure, and use without a lot of setup friction.
+
+Mentat is being developed in the open and is still taking shape. If something feels unfinished, that is probably because it is. The aim right now is to keep the project useful, local-first, and easy to understand while the feature set matures.
