@@ -13,7 +13,6 @@ import mimetypes
 import os
 import re
 import sqlite3
-import sys
 import threading
 import time
 from uuid import uuid4
@@ -22,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
+from json_store import read_json as store_read_json, update_json as store_update_json
 from runtime_config import (
     AppConfig,
     DEFAULT_APP_NAME,
@@ -175,14 +175,20 @@ CONFIG_DISPLAY_NAME = None
 CONFIG_GREETING_PREFIX = None
 CONFIG_APP_NAME = DEFAULT_APP_NAME
 APP_CONFIG = AppConfig(tuple(), HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT)
-ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json", "agents.json"}
+ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json"}
 CALENDAR_CACHE_TTL_SECONDS = 300
 CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
+OBSIDIAN_NOTES_CACHE = {"key": None, "payload": None}
+SESSION_DETAIL_CACHE: dict[tuple, tuple[dict, int]] = {}
+SESSION_REPLAY_CACHE: dict[tuple, tuple[dict, int]] = {}
 TASK_STATUS_VALUES = {"todo", "in progress", "waiting", "needs attention", "completed"}
 TASK_PRIORITY_VALUES = {"high", "medium", "low"}
+PROJECT_STATUS_VALUES = {"active", "paused", "archived"}
+MESSAGE_STATUS_VALUES = {"queued", "acknowledged", "delivered", "failed", "cancelled", "needs user input"}
+MESSAGE_PRIORITY_VALUES = {"normal", "high", "urgent"}
 AGENT_STATUS_VALUES = {"running", "idle", "blocked", "done", "failed"}
 AGENT_ACTIVE_STATUSES = {"running", "idle", "blocked"}
-AGENT_STALE_AFTER_SECONDS = 90
+AGENT_STALE_AFTER_SECONDS = 60
 AGENT_DERIVED_SESSIONS_LIMIT = 12
 AGENT_DERIVED_SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 
@@ -228,6 +234,31 @@ def task_due_date_value(value):
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
         return raw
     return None
+
+
+def slug_id(prefix: str, value: str) -> str:
+    base = compact_text(value, max_length=120).lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", base).strip("_")
+    return f"{prefix}_{slug}" if slug else f"{prefix}_{uuid4().hex[:12]}"
+
+
+def project_id_value(value) -> str:
+    return slug_id("project", value)
+
+
+def message_id_value() -> str:
+    return f"msg_{uuid4().hex[:12]}"
+
+
+def text_list_value(value, *, max_items: int = 12, max_length: int = 80) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items = []
+    for item in value[:max_items]:
+        text = compact_text(item, max_length=max_length)
+        if text and text not in items:
+            items.append(text)
+    return items
 
 
 def project_names() -> set[str]:
@@ -293,6 +324,106 @@ def validate_task_payload(payload, *, existing: dict | None = None):
         normalized["completed_at"] = timestamp
     if status != "completed":
         normalized["completed_at"] = None
+    return normalized, None
+
+
+def validate_project_payload(payload, *, existing: dict | None = None):
+    if not isinstance(payload, dict):
+        return None, "Project payload must be a JSON object"
+
+    name = compact_text(payload.get("name"), max_length=120)
+    if not name:
+        return None, "Project name is required"
+
+    status = compact_text(payload.get("status") or (existing or {}).get("status") or "active", max_length=32).lower().replace("_", " ")
+    if status not in PROJECT_STATUS_VALUES:
+        return None, f"Invalid project status: {status}"
+
+    timestamp = now_iso()
+    normalized = {
+        "id": compact_text((existing or {}).get("id"), max_length=80) or project_id_value(name),
+        "name": name,
+        "type": compact_text(payload.get("type") or (existing or {}).get("type") or "project", max_length=80) or "project",
+        "status": status,
+        "description": str(payload.get("description") or "").strip(),
+        "obsidian_note": compact_text(payload.get("obsidian_note"), max_length=160) or None,
+        "created_at": (existing or {}).get("created_at") or timestamp,
+        "updated_at": timestamp,
+        "legacy_names": text_list_value(payload.get("legacy_names"), max_items=12, max_length=120),
+    }
+    return normalized, None
+
+
+def default_message_project() -> str:
+    names = sorted(project_names())
+    if "Mentat" in names:
+        return "Mentat"
+    return names[0] if names else "General"
+
+
+def message_audit_event(event: str, *, actor: str = "dashboard", note: str | None = None) -> dict:
+    payload = {"at": now_iso(), "actor": compact_text(actor, max_length=80) or "dashboard", "event": event}
+    cleaned_note = compact_text(note, max_length=240)
+    if cleaned_note:
+        payload["note"] = cleaned_note
+    return payload
+
+
+def normalize_message_status(value) -> str:
+    status = compact_text(value or "queued", max_length=32).lower().replace("_", " ").replace("-", " ") or "queued"
+    return status
+
+
+def validate_agent_message_payload(payload, *, existing: dict | None = None):
+    if not isinstance(payload, dict):
+        return None, "Agent message payload must be a JSON object"
+
+    body = str(payload.get("message") or payload.get("body") or "").strip()
+    if not body:
+        return None, "Agent message body is required"
+    if len(body) > 2000:
+        return None, "Agent message body must be 2000 characters or fewer"
+
+    status = normalize_message_status(payload.get("status") or (existing or {}).get("status") or "queued")
+    if status not in MESSAGE_STATUS_VALUES:
+        return None, f"Invalid agent message status: {status}"
+
+    priority = compact_text(payload.get("priority") or (existing or {}).get("priority") or "normal", max_length=16).lower() or "normal"
+    if priority not in MESSAGE_PRIORITY_VALUES:
+        return None, f"Invalid agent message priority: {priority}"
+
+    project = compact_text(payload.get("project") or (existing or {}).get("project") or default_message_project(), max_length=120)
+    recipient = compact_text(payload.get("recipient") or payload.get("agent") or (existing or {}).get("recipient") or "Hermes", max_length=120) or "Hermes"
+    source = compact_text(payload.get("source") or (existing or {}).get("source") or "dashboard", max_length=40) or "dashboard"
+    timestamp = now_iso()
+    audit = list((existing or {}).get("audit") or []) if isinstance((existing or {}).get("audit"), list) else []
+
+    normalized = {
+        "id": compact_text((existing or {}).get("id"), max_length=80) or message_id_value(),
+        "recipient": recipient,
+        "project": project,
+        "message": body,
+        "status": status,
+        "priority": priority,
+        "source": source,
+        "related_task_id": compact_text(payload.get("related_task_id") or (existing or {}).get("related_task_id"), max_length=80) or None,
+        "created_at": (existing or {}).get("created_at") or timestamp,
+        "updated_at": timestamp,
+        "delivered_at": (existing or {}).get("delivered_at"),
+        "resolved_at": (existing or {}).get("resolved_at"),
+        "safety": {
+            "local_only": True,
+            "shell_execution": "forbidden",
+            "writes": "project-owned agent_messages.json only",
+        },
+        "audit": audit,
+    }
+    if status == "delivered" and not normalized["delivered_at"]:
+        normalized["delivered_at"] = timestamp
+    if status in {"delivered", "failed", "cancelled"} and not normalized["resolved_at"]:
+        normalized["resolved_at"] = timestamp
+    if status not in {"delivered", "failed", "cancelled"}:
+        normalized["resolved_at"] = None
     return normalized, None
 
 
@@ -542,40 +673,40 @@ def agents_payload():
 
 
 def upsert_agent_heartbeat(payload):
-    agents = read_json_file("agents.json", [])
-    if isinstance(agents, dict) and agents.get("error"):
-        return agents, 500
-    if not isinstance(agents, list):
-        return {"error": "agents.json must contain a list"}, 500
+    def mutator(agents):
+        if isinstance(agents, dict) and agents.get("error"):
+            return agents, (agents, 500)
+        if not isinstance(agents, list):
+            return agents, ({"error": "agents.json must contain a list"}, 500)
 
-    agent_id = compact_text((payload or {}).get("id") or (payload or {}).get("agent_id"), max_length=80)
-    if not agent_id:
-        agent_name = compact_text((payload or {}).get("name") or (payload or {}).get("agent") or (payload or {}).get("title"), max_length=120)
-        agent_id = agent_id_value(agent_name)
+        agent_id = compact_text((payload or {}).get("id") or (payload or {}).get("agent_id"), max_length=80)
+        if not agent_id:
+            agent_name = compact_text((payload or {}).get("name") or (payload or {}).get("agent") or (payload or {}).get("title"), max_length=120)
+            agent_id = agent_id_value(agent_name)
 
-    existing_index = None
-    existing_agent = None
-    for index, agent in enumerate(agents):
-        if not isinstance(agent, dict):
-            continue
-        if str(agent.get("id") or "") == agent_id:
-            existing_index = index
-            existing_agent = agent
-            break
+        next_agents = [agent for agent in agents if isinstance(agent, dict)]
+        existing_index = None
+        existing_agent = None
+        for index, agent in enumerate(next_agents):
+            if str(agent.get("id") or "") == agent_id:
+                existing_index = index
+                existing_agent = agent
+                break
 
-    normalized, error = normalize_agent_payload(payload, existing=existing_agent, agent_id=agent_id)
-    if error:
-        return {"error": error}, 400
+        normalized, error = normalize_agent_payload(payload, existing=existing_agent, agent_id=agent_id)
+        if error:
+            return agents, ({"error": error}, 400)
 
-    if existing_index is None:
-        agents.append(normalized)
-        status = 201
-    else:
-        agents[existing_index] = normalized
-        status = 200
+        if existing_index is None:
+            next_agents.append(normalized)
+            status = 201
+        else:
+            next_agents[existing_index] = normalized
+            status = 200
 
-    write_json_file("agents.json", agents)
-    return {"ok": True, "agent": normalized, "agents": agents, "summary": agent_summary(agents)}, status
+        return next_agents, ({"ok": True, "agent": normalized, "agents": next_agents, "summary": agent_summary(next_agents)}, status)
+
+    return update_json_file("agents.json", [], mutator)
 
 
 def file_mtime_iso(path: Path) -> str | None:
@@ -597,18 +728,38 @@ def human_bytes(n: int | float | None) -> str | None:
 
 
 
+def dashboard_data_path(name: str) -> Path:
+    """Resolve an allowlisted project-owned data file under DATA_DIR."""
+    if name not in ALLOWED_DATA_WRITES or "/" in name or "\\" in name:
+        raise ValueError(f"Refusing to access non-allowlisted dashboard data file: {name}")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    data_root = DATA_DIR.resolve()
+    path = (DATA_DIR / name).resolve()
+    if path.parent != data_root:
+        raise ValueError(f"Refusing to access outside dashboard data directory: {name}")
+    return path
+
+
 def read_json_file(name: str, default):
     path = DATA_DIR / name
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return store_read_json(path, default)
     except FileNotFoundError:
         return default
     except json.JSONDecodeError as exc:
         return {"error": f"Invalid JSON in {path}: {exc}"}
 
 
-def google_credentials(scopes: list[str]):
+def update_json_file(name: str, default, mutator):
+    """Run a locked project-owned JSON read/modify/write cycle."""
+    path = dashboard_data_path(name)
+    try:
+        return store_update_json(path, default, mutator)
+    except json.JSONDecodeError as exc:
+        return {"error": f"Invalid JSON in {path}: {exc}"}, 500
 
+
+def google_credentials(scopes: list[str]):
     if not GOOGLE_TOKEN.exists():
         return None, "Google OAuth token not found"
     try:
@@ -623,20 +774,6 @@ def google_credentials(scopes: list[str]):
         return creds, None
     except Exception as exc:
         return None, str(exc)
-
-
-def write_json_file(name: str, payload):
-    """Write only explicitly allowlisted dashboard-owned JSON files under data/."""
-    if name not in ALLOWED_DATA_WRITES or "/" in name or "\\" in name:
-        raise ValueError(f"Refusing to write non-allowlisted dashboard data file: {name}")
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    data_root = DATA_DIR.resolve()
-    path = (DATA_DIR / name).resolve()
-    if path.parent != data_root:
-        raise ValueError(f"Refusing to write outside dashboard data directory: {name}")
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.replace(path)
 
 
 def clean_snippet(text: str | None, limit: int = 180) -> str:
@@ -1321,6 +1458,11 @@ def session_replay(session_id: str, _target_message_id: str | None = None):
         return {"error": "Invalid session id"}, 400
     if not STATE_DB.exists():
         return {"error": "Hermes state.db not found", "source": str(STATE_DB)}, 404
+    cache_key = ("replay", str(STATE_DB.resolve()), file_mtime_iso(STATE_DB), session_id)
+    cached = SESSION_REPLAY_CACHE.get(cache_key)
+    if cached:
+        payload, status = cached
+        return json.loads(json.dumps(payload, default=str)), status
     try:
         con = sqlite_connect()
         if con is None:
@@ -1352,7 +1494,9 @@ def session_replay(session_id: str, _target_message_id: str | None = None):
         ).fetchall()
         con.close()
         replay = build_session_replay(session, rows)
-        return {"session_id": session_id, "source": str(STATE_DB), "replay": replay}, 200
+        payload = {"session_id": session_id, "source": str(STATE_DB), "replay": replay}
+        SESSION_REPLAY_CACHE[cache_key] = (json.loads(json.dumps(payload, default=str)), 200)
+        return payload, 200
     except Exception as exc:
         return {"error": str(exc), "source": str(STATE_DB)}, 500
 
@@ -1409,6 +1553,12 @@ def session_detail(session_id: str, target_message_id: str | None = None):
         return {"error": "Invalid target message id"}, 400
     if not STATE_DB.exists():
         return {"error": "Hermes state.db not found", "source": str(STATE_DB)}, 404
+
+    cache_key = ("detail", str(STATE_DB.resolve()), file_mtime_iso(STATE_DB), session_id, str(target_message_id or ""))
+    cached = SESSION_DETAIL_CACHE.get(cache_key)
+    if cached:
+        payload, status = cached
+        return json.loads(json.dumps(payload, default=str)), status
 
     try:
         con = sqlite_connect()
@@ -1505,7 +1655,7 @@ def session_detail(session_id: str, target_message_id: str | None = None):
             ).fetchall()
 
         con.close()
-        return {
+        payload = {
             "session": {
                 "id": session["id"],
                 "title": session["title"] or "Untitled session",
@@ -1538,7 +1688,9 @@ def session_detail(session_id: str, target_message_id: str | None = None):
                 }
                 for row in rows
             ],
-        }, 200
+        }
+        SESSION_DETAIL_CACHE[cache_key] = (json.loads(json.dumps(payload, default=str)), 200)
+        return payload, 200
     except Exception as exc:
         return {"error": str(exc), "source": str(STATE_DB)}, 500
 
@@ -1546,9 +1698,16 @@ def session_detail(session_id: str, target_message_id: str | None = None):
 def obsidian_notes():
     notes = []
     if not OBSIDIAN_VAULT.exists():
-        return {"vault": str(OBSIDIAN_VAULT), "exists": False, "note_count": 0, "notes": notes}
+        return {"vault": str(OBSIDIAN_VAULT), "exists": False, "note_count": 0, "notes": notes, "cache": {"enabled": True, "cached": False}}
 
     markdown_files = sorted(OBSIDIAN_VAULT.rglob("*.md"), key=note_sort_key, reverse=True)
+    signature = tuple((path.relative_to(OBSIDIAN_VAULT).as_posix(), path.stat().st_mtime_ns, path.stat().st_size) for path in markdown_files)
+    cache_key = (str(OBSIDIAN_VAULT.resolve()), signature)
+    if OBSIDIAN_NOTES_CACHE.get("key") == cache_key and OBSIDIAN_NOTES_CACHE.get("payload") is not None:
+        cached = json.loads(json.dumps(OBSIDIAN_NOTES_CACHE["payload"], default=str))
+        cached["cache"] = {"enabled": True, "cached": True, "strategy": "vault file mtime/size signature"}
+        return cached
+
     for path in markdown_files:
         text = path.read_text(encoding="utf-8", errors="replace")
         excerpt = clean_snippet(re.sub(r"[#>*`\-\[\]()_]", " ", text), 260)
@@ -1565,7 +1724,17 @@ def obsidian_notes():
                 "excerpt": excerpt,
             }
         )
-    return {"vault": str(OBSIDIAN_VAULT), "exists": True, "note_count": len(notes), "notes": notes}
+    payload = {
+        "vault": str(OBSIDIAN_VAULT),
+        "exists": True,
+        "note_count": len(notes),
+        "returned_count": len(notes),
+        "notes": notes,
+        "cache": {"enabled": True, "cached": False, "strategy": "vault file mtime/size signature"},
+    }
+    OBSIDIAN_NOTES_CACHE["key"] = cache_key
+    OBSIDIAN_NOTES_CACHE["payload"] = json.loads(json.dumps(payload, default=str))
+    return payload
 
 
 def health_context() -> HealthContext:
@@ -1721,61 +1890,212 @@ def resolve_attention_item(attention_id: str):
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", attention_id or ""):
         return {"error": "Invalid attention item id"}, 400
 
-    attention = read_json_file("attention.json", [])
-    if not isinstance(attention, list):
-        return {"error": "attention.json must contain a list"}, 500
+    def mutator(attention):
+        if not isinstance(attention, list):
+            return attention, ({"error": "attention.json must contain a list"}, 500)
 
-    resolved_item = None
-    for item in attention:
-        if not isinstance(item, dict):
-            continue
-        if item.get("id") == attention_id:
-            item["status"] = "resolved"
-            item["resolved_at"] = now_iso()
-            resolved_item = item
-            break
+        next_attention = [dict(item) if isinstance(item, dict) else item for item in attention]
+        resolved_item = None
+        for item in next_attention:
+            if not isinstance(item, dict):
+                continue
+            if item.get("id") == attention_id:
+                item["status"] = "resolved"
+                item["resolved_at"] = now_iso()
+                resolved_item = item
+                break
 
-    if resolved_item is None:
-        return {"error": f"Attention item not found: {attention_id}"}, 404
+        if resolved_item is None:
+            return attention, ({"error": f"Attention item not found: {attention_id}"}, 404)
 
-    write_json_file("attention.json", attention)
-    tasks = read_json_file("tasks.json", [])
-    return {"ok": True, "resolved": resolved_item, "attention": attention, "open_count": len(open_attention_items(attention, tasks))}, 200
+        tasks = read_json_file("tasks.json", [])
+        return next_attention, ({"ok": True, "resolved": resolved_item, "attention": next_attention, "open_count": len(open_attention_items(next_attention, tasks))}, 200)
+
+    return update_json_file("attention.json", [], mutator)
 
 
 def create_task(payload):
-    tasks = read_json_file("tasks.json", [])
-    if not isinstance(tasks, list):
-        return {"error": "tasks.json must contain a list"}, 500
+    def mutator(tasks):
+        if not isinstance(tasks, list):
+            return tasks, ({"error": "tasks.json must contain a list"}, 500)
+        normalized, error = validate_task_payload(payload)
+        if error:
+            return tasks, ({"error": error}, 400)
+        next_tasks = [task for task in tasks if isinstance(task, dict)]
+        next_tasks.append(normalized)
+        return next_tasks, ({"ok": True, "task": normalized, "tasks": next_tasks}, 201)
 
-    normalized, error = validate_task_payload(payload)
-    if error:
-        return {"error": error}, 400
-
-    tasks.append(normalized)
-    write_json_file("tasks.json", tasks)
-    return {"ok": True, "task": normalized, "tasks": tasks}, 201
+    return update_json_file("tasks.json", [], mutator)
 
 
 def update_task(task_id: str, payload):
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
         return {"error": "Invalid task id"}, 400
 
-    tasks = read_json_file("tasks.json", [])
-    if not isinstance(tasks, list):
-        return {"error": "tasks.json must contain a list"}, 500
+    def mutator(tasks):
+        if not isinstance(tasks, list):
+            return tasks, ({"error": "tasks.json must contain a list"}, 500)
+        next_tasks = [task for task in tasks if isinstance(task, dict)]
+        for index, task in enumerate(next_tasks):
+            if str(task.get("id") or "") != task_id:
+                continue
+            normalized, error = validate_task_payload(payload, existing=task)
+            if error:
+                return tasks, ({"error": error}, 400)
+            next_tasks[index] = normalized
+            return next_tasks, ({"ok": True, "task": normalized, "tasks": next_tasks}, 200)
+        return tasks, ({"error": f"Task not found: {task_id}"}, 404)
 
-    for index, task in enumerate(tasks):
-        if not isinstance(task, dict) or str(task.get("id") or "") != task_id:
-            continue
-        normalized, error = validate_task_payload(payload, existing=task)
+    return update_json_file("tasks.json", [], mutator)
+
+
+def create_project(payload):
+    def mutator(projects):
+        if not isinstance(projects, list):
+            return projects, ({"error": "projects.json must contain a list"}, 500)
+        normalized, error = validate_project_payload(payload)
         if error:
-            return {"error": error}, 400
-        tasks[index] = normalized
-        write_json_file("tasks.json", tasks)
-        return {"ok": True, "task": normalized, "tasks": tasks}, 200
+            return projects, ({"error": error}, 400)
+        next_projects = [project for project in projects if isinstance(project, dict)]
+        name_key = normalized["name"].strip().lower()
+        id_key = normalized["id"]
+        for project in next_projects:
+            if str(project.get("id") or "") == id_key or str(project.get("name") or "").strip().lower() == name_key:
+                return projects, ({"error": f"Project already exists: {normalized['name']}"}, 409)
+        next_projects.append(normalized)
+        return next_projects, ({"ok": True, "project": normalized, "projects": next_projects}, 201)
 
-    return {"error": f"Task not found: {task_id}"}, 404
+    return update_json_file("projects.json", [], mutator)
+
+
+def update_project(project_id: str, payload):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", project_id or ""):
+        return {"error": "Invalid project id"}, 400
+
+    def mutator(projects):
+        if not isinstance(projects, list):
+            return projects, ({"error": "projects.json must contain a list"}, 500)
+        next_projects = [project for project in projects if isinstance(project, dict)]
+        for index, project in enumerate(next_projects):
+            if str(project.get("id") or "") != project_id:
+                continue
+            normalized, error = validate_project_payload(payload, existing=project)
+            if error:
+                return projects, ({"error": error}, 400)
+            normalized["id"] = project_id
+            name_key = normalized["name"].strip().lower()
+            for other in next_projects:
+                if other is project:
+                    continue
+                if str(other.get("name") or "").strip().lower() == name_key:
+                    return projects, ({"error": f"Project already exists: {normalized['name']}"}, 409)
+            next_projects[index] = normalized
+            return next_projects, ({"ok": True, "project": normalized, "projects": next_projects}, 200)
+        return projects, ({"error": f"Project not found: {project_id}"}, 404)
+
+    return update_json_file("projects.json", [], mutator)
+
+
+def agent_message_summary(messages: list[dict]) -> dict:
+    counts = {status: 0 for status in MESSAGE_STATUS_VALUES}
+    pending = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        status = normalize_message_status(message.get("status"))
+        if status in counts:
+            counts[status] += 1
+        if status in {"queued", "needs user input"}:
+            pending += 1
+    counts["pending"] = pending
+    counts["total"] = sum(counts[status] for status in MESSAGE_STATUS_VALUES)
+    return counts
+
+
+def agent_messages_payload():
+    messages = read_json_file("agent_messages.json", [])
+    if isinstance(messages, dict) and messages.get("error"):
+        return messages
+    if not isinstance(messages, list):
+        return {"error": "agent_messages.json must contain a list"}
+    ordered = [message for message in messages if isinstance(message, dict)]
+    ordered.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or "", reverse=True)
+    return {
+        "messages": ordered,
+        "summary": agent_message_summary(ordered),
+        "read_only_agent_execution": True,
+        "safety": {
+            "local_only": True,
+            "browser_to_shell_execution": "forbidden",
+            "writes": "project-owned data/agent_messages.json only",
+        },
+    }
+
+
+def create_agent_message(payload):
+    request = dict(payload or {})
+    request["status"] = "queued"
+
+    def mutator(messages):
+        if not isinstance(messages, list):
+            return messages, ({"error": "agent_messages.json must contain a list"}, 500)
+        normalized, error = validate_agent_message_payload(request)
+        if error:
+            return messages, ({"error": error}, 400)
+        normalized["audit"].append(message_audit_event("queued", actor=normalized.get("source") or "dashboard", note="Queued from dashboard compose surface"))
+        next_messages = [message for message in messages if isinstance(message, dict)]
+        next_messages.append(normalized)
+        return next_messages, ({"ok": True, "message": normalized, "messages": next_messages, "summary": agent_message_summary(next_messages)}, 201)
+
+    return update_json_file("agent_messages.json", [], mutator)
+
+
+def update_agent_message_state(message_id: str, payload):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", message_id or ""):
+        return {"error": "Invalid agent message id"}, 400
+    requested_status = normalize_message_status((payload or {}).get("status"))
+    if requested_status not in MESSAGE_STATUS_VALUES:
+        return {"error": f"Invalid agent message status: {requested_status}"}, 400
+
+    def mutator(messages):
+        if not isinstance(messages, list):
+            return messages, ({"error": "agent_messages.json must contain a list"}, 500)
+        next_messages = [message for message in messages if isinstance(message, dict)]
+        for index, message in enumerate(next_messages):
+            if str(message.get("id") or "") != message_id:
+                continue
+            candidate = {**message, "status": requested_status}
+            normalized, error = validate_agent_message_payload(candidate, existing=message)
+            if error:
+                return messages, ({"error": error}, 400)
+            normalized["audit"].append(
+                message_audit_event(
+                    requested_status,
+                    actor=compact_text((payload or {}).get("actor"), max_length=80) or "agent",
+                    note=(payload or {}).get("note"),
+                )
+            )
+            next_messages[index] = normalized
+            return next_messages, ({"ok": True, "message": normalized, "messages": next_messages, "summary": agent_message_summary(next_messages)}, 200)
+        return messages, ({"error": f"Agent message not found: {message_id}"}, 404)
+
+    return update_json_file("agent_messages.json", [], mutator)
+
+
+def email_payload():
+    items = read_json_file("email.json", [])
+    if isinstance(items, dict) and items.get("error"):
+        return items
+    safe_items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    safe_items.sort(key=lambda item: item.get("received_at") or item.get("date") or "", reverse=True)
+    return {
+        "source": "local",
+        "configured": False,
+        "read_only": True,
+        "count": len(safe_items),
+        "items": safe_items[:25],
+        "guidance": "Read-only email pane is ready for a future Himalaya/Gmail source. No send/delete/archive actions are exposed.",
+    }
 
 
 def handle_post_route(path: str, payload=None):
@@ -1795,6 +2115,10 @@ POST_ROUTES = [
     (re.compile(r"^/api/agents/heartbeat$"), upsert_agent_heartbeat, True),
     (re.compile(r"^/api/tasks$"), create_task, True),
     (re.compile(r"^/api/tasks/([^/]+)$"), update_task, True),
+    (re.compile(r"^/api/projects$"), create_project, True),
+    (re.compile(r"^/api/projects/([^/]+)$"), update_project, True),
+    (re.compile(r"^/api/agent-messages$"), create_agent_message, True),
+    (re.compile(r"^/api/agent-messages/([^/]+)/state$"), update_agent_message_state, True),
 ]
 
 
@@ -1803,8 +2127,10 @@ API_ROUTES = {
     "/api/projects": lambda: {"projects": read_json_file("projects.json", [])},
     "/api/tasks": lambda: {"tasks": read_json_file("tasks.json", [])},
     "/api/agents": agents_payload,
+    "/api/agent-messages": agent_messages_payload,
     "/api/attention": attention_payload,
     "/api/calendar": google_calendar_events,
+    "/api/email": email_payload,
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),

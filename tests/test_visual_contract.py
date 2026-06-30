@@ -97,26 +97,31 @@ class VisualContractTests(unittest.TestCase):
         self.assertNotIn("selected detail", APP_JS)
         self.assertNotIn("history detail", APP_JS)
 
-    def test_agent_pulse_now_renders_live_heartbeat_registry(self):
-        self.assertIn('id="agent-pulse-panel"', INDEX)
-        self.assertIn('id="agent-pulse"', INDEX)
-        self.assertIn('id="agent-pulse-pill"', INDEX)
+    def test_model_usage_pie_replaces_todays_agent_pulse_panel(self):
+        self.assertNotIn('id="calendar-source-pill"', INDEX)
+        self.assertNotIn('id="agent-pulse"', INDEX)
+        self.assertNotIn('id="agent-pulse-pill"', INDEX)
+        self.assertIn('id="model-usage-panel"', INDEX)
+        self.assertIn('id="model-usage"', INDEX)
+        self.assertIn('Model Usage (by Tokens)', INDEX)
+        self.assertNotIn('id="model-usage-pill"', INDEX)
+        self.assertIn('renderModelUsageChart(payload = {})', APP_JS)
+        self.assertIn('conic-gradient', APP_JS)
+        self.assertIn('endpoints.sessions', APP_JS)
         self.assertIn('renderAgentPulse(payload = {})', APP_JS)
-        self.assertIn('endpoints.agents', APP_JS)
-        self.assertIn('Heartbeat stale', APP_JS)
-        self.assertIn('agent-pulse-guidance', APP_JS)
-        self.assertIn('.agent-pulse-summary', CSS)
-        self.assertIn('.agent-pulse-list', CSS)
-        self.assertIn('.agent-pulse-item', CSS)
-        self.assertIn('.agent-pulse-guidance', CSS)
-        self.assertIn('.agent-pulse-command', CSS)
+        self.assertIn('.model-usage-shell', CSS)
+        self.assertIn('.model-pie', CSS)
+        self.assertIn('.model-usage-table', CSS)
+        self.assertIn('.model-usage-table-scroll', CSS)
+        self.assertIn('.model-usage-grid', CSS)
 
     def test_today_next_moves_support_project_filter_and_task_jump(self):
         self.assertIn('id="focus-task-list"', INDEX)
         self.assertNotIn('id="attention-panel"', INDEX)
         self.assertNotIn('id="attention-count"', INDEX)
         self.assertNotIn('id="attention-list"', INDEX)
-        render_cards_block = APP_JS[APP_JS.index('function renderCards') : APP_JS.index('function renderAttention')]
+        render_cards_end = APP_JS.index('function renderFocusTasks')
+        render_cards_block = APP_JS[APP_JS.index('function renderCards') : render_cards_end]
         self.assertNotIn('#attention-panel', render_cards_block)
         self.assertIn('id="today-project-select"', APP_JS)
         self.assertIn('projectOptionsFromTasks', APP_JS)
@@ -163,6 +168,35 @@ class VisualContractTests(unittest.TestCase):
         replay_grid_block = CSS[CSS.index('.replay-summary-grid {') : CSS.index('.replay-summary-card,')]
         self.assertIn('repeat(auto-fit, minmax(128px, 1fr))', replay_grid_block)
         self.assertIn('.trace-section-grid', CSS)
+
+    def test_theme_preinit_applies_saved_theme_before_css(self):
+        head_block = INDEX[INDEX.index('<head>') : INDEX.index('</head>')]
+        self.assertLess(head_block.index("localStorage.getItem(key)"), head_block.index('/styles.css?v=theme-studio-2'))
+        self.assertIn("document.documentElement.dataset.theme = theme", head_block)
+        self.assertIn('/core.js?v=theme-studio-2', INDEX)
+        self.assertIn('/app.js?v=theme-studio-2', INDEX)
+        self.assertNotIn('compact-dark-board-1', INDEX)
+        self.assertIn("applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id)", APP_JS)
+
+    def test_settings_view_exposes_sitewide_theme_selector(self):
+        self.assertIn('id="theme-select"', INDEX)
+        self.assertIn('id="theme-preview-grid"', INDEX)
+        self.assertIn('Theme Studio', INDEX)
+        self.assertIn("THEME_STORAGE_KEY = 'mentat-theme'", APP_JS)
+        self.assertIn('function applyTheme(themeId = state.currentTheme || THEMES[0].id)', APP_JS)
+        self.assertIn("document.documentElement.dataset.theme = theme.id", APP_JS)
+        self.assertIn("localStorage.setItem(THEME_STORAGE_KEY, theme.id)", APP_JS)
+        self.assertIn(":root[data-theme='light']", CSS)
+        self.assertIn(":root[data-theme='catppuccin']", CSS)
+        self.assertIn(":root[data-theme='nord']", CSS)
+        self.assertIn(":root[data-theme='aurora']", CSS)
+        self.assertIn('.theme-preview-grid', CSS)
+        self.assertIn('.theme-swatch.active', CSS)
+        self.assertIn('--header-bg:', CSS)
+        self.assertIn('--panel-bg:', CSS)
+        self.assertIn('background: var(--panel-bg)', CSS)
+        self.assertIn('color: var(--text-secondary)', CSS)
+        self.assertIn('scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track)', CSS)
 
 
 if __name__ == "__main__":

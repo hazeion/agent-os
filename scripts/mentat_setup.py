@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +33,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8888
 DEFAULT_APP_NAME = "Mentat"
 DEFAULT_GREETING_PREFIX = "Hello"
+HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.sh"
 
 
 @dataclass
@@ -45,6 +47,17 @@ class WizardValues:
     app_name: str
     greeting_prefix: str
     display_name: str
+
+
+@dataclass
+class HermesInspection:
+    command: str
+    profile: str
+    detected: bool
+    version: str = ""
+    config_path: str = ""
+    hermes_home: str = ""
+    error: str = ""
 
 
 def default_hermes_home() -> str:
@@ -61,6 +74,75 @@ def default_obsidian_vault() -> str:
     if env:
         return env
     return str(Path.home() / "Documents" / "Obsidian Vault")
+
+
+def hermes_command_parts(command: str) -> list[str]:
+    parts = shlex.split(command)
+    return parts or ["hermes"]
+
+
+def hermes_subcommand(command: str, profile: str, *args: str) -> list[str]:
+    parts = hermes_command_parts(command)
+    if profile:
+        parts.extend(["--profile", profile])
+    parts.extend(args)
+    return parts
+
+
+def run_text_command(command: list[str]) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return False, str(exc)
+    output = (result.stdout or result.stderr or "").strip()
+    return result.returncode == 0, output
+
+
+def detect_hermes(command: str, profile: str = "") -> HermesInspection:
+    version_ok, version_output = run_text_command(hermes_subcommand(command, profile, "--version"))
+    config_ok, config_output = run_text_command(hermes_subcommand(command, profile, "config", "path"))
+
+    inspection = HermesInspection(
+        command=command,
+        profile=profile,
+        detected=version_ok or config_ok,
+        version=version_output.splitlines()[0].strip() if version_ok and version_output else "",
+        config_path=config_output.splitlines()[0].strip() if config_ok and config_output else "",
+        error="" if version_ok or config_ok else (version_output or config_output or "Hermes CLI not found"),
+    )
+
+    if inspection.config_path:
+        config_path = Path(os.path.expanduser(os.path.expandvars(inspection.config_path)))
+        if config_path.name.lower() == "config.yaml":
+            inspection.hermes_home = str(config_path.parent)
+        elif config_path.is_dir():
+            inspection.hermes_home = str(config_path)
+
+    return inspection
+
+
+def print_hermes_guidance(inspection: HermesInspection) -> None:
+    print("Hermes detection:")
+    print(f"  CLI command:     {inspection.command}")
+    print(f"  Profile:         {inspection.profile or '(current default)'}")
+    if inspection.version:
+        print(f"  Version:         {inspection.version}")
+    if inspection.config_path:
+        print(f"  Config path:     {inspection.config_path}")
+    if inspection.hermes_home:
+        print(f"  Hermes home:     {inspection.hermes_home}")
+        print("  Status:          Mentat can target this Hermes profile by default.")
+    elif inspection.detected:
+        print("  Status:          Hermes CLI found, but config path could not be resolved automatically.")
+        print("  Guidance:        Run `hermes setup` (or `hermes doctor`) and rerun this wizard, or pass --hermes-home manually.")
+    else:
+        print(f"  Status:          {inspection.error or 'Hermes CLI not detected.'}")
+        if os.name == "nt":
+            print("  Guidance:        Install/configure Hermes first, then rerun this wizard or pass --hermes-home manually.")
+        else:
+            print(f"  Install Hermes:  curl -fsSL {HERMES_INSTALL_URL} | bash")
+            print("  Then run:        hermes setup")
+    print()
 
 
 def parse_port(raw: str) -> int:
@@ -308,6 +390,21 @@ def write_mode_confirm(path: Path, values: WizardValues, *, interactive: bool, f
     return prompt_bool("Continue", True)
 
 
+def print_next_steps(env_path: Path, env_bat_path: Path, *, wrote_env: bool) -> None:
+    print("\nNext step:")
+    print("  python server.py --print-config")
+    if wrote_env:
+        if os.name == "nt":
+            print(f"  call {env_bat_path}")
+        else:
+            print(f"  source {env_path}")
+    if os.name == "nt":
+        print("  run.bat")
+    else:
+        print("  ./run.sh")
+    print("\nIf Mentat should follow a different Hermes profile than the one detected above, rerun this wizard with --hermes-home or set HERMES_HOME before starting the server.")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Walk a teammate through Mentat local setup")
     parser.add_argument("--repo-root", default=str(REPO_ROOT), help="Path to Mentat repo root")
@@ -317,6 +414,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", default=None, help="Data directory path override")
     parser.add_argument("--public-dir", default=None, help="Public assets directory path override")
     parser.add_argument("--hermes-home", default=None, help="Hermes home path override")
+    parser.add_argument("--hermes-command", default="hermes", help="Hermes CLI command to inspect (default: hermes)")
+    parser.add_argument("--hermes-profile", default="", help="Hermes profile to inspect before choosing HERMES_HOME")
+    parser.add_argument("--skip-hermes-check", action="store_true", help="Skip Hermes CLI inspection and use manual/default HERMES_HOME resolution only")
     parser.add_argument("--obsidian-vault", default=None, help="Obsidian vault path override")
     parser.add_argument("--app-name", default=None, help="Dashboard product name")
     parser.add_argument("--greeting-prefix", default=None, help="Greeting prefix in dashboard identity")
@@ -339,6 +439,11 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(args.repo_root).expanduser().resolve()
     repo_root.mkdir(parents=True, exist_ok=True)
 
+    hermes_inspection = HermesInspection(command=args.hermes_command, profile=args.hermes_profile, detected=False)
+    if not args.skip_hermes_check:
+        hermes_inspection = detect_hermes(args.hermes_command, args.hermes_profile)
+        print_hermes_guidance(hermes_inspection)
+
     toml_path = Path(args.toml).expanduser()
     env_path = Path(args.env).expanduser()
     env_bat_path = Path(args.env_bat).expanduser()
@@ -358,12 +463,13 @@ def main(argv: list[str] | None = None) -> int:
     if defaults:
         print(f"Found existing local config: {toml_path}")
 
+    detected_hermes_home = hermes_inspection.hermes_home if hermes_inspection.hermes_home else default_hermes_home()
     resolved_defaults = {
         "host": str(existing_server.get("host", DEFAULT_HOST)),
         "port": str(existing_server.get("port", DEFAULT_PORT)),
         "data_dir": str(existing_paths.get("data_dir", "data")),
         "public_dir": str(existing_paths.get("public_dir", "public")),
-        "hermes_home": str(existing_paths.get("hermes_home", default_hermes_home())),
+        "hermes_home": str(existing_paths.get("hermes_home", detected_hermes_home)),
         "obsidian_vault": str(existing_paths.get("obsidian_vault", default_obsidian_vault())),
         "app_name": str(existing_dashboard.get("app_name", DEFAULT_APP_NAME)),
         "greeting_prefix": str(existing_dashboard.get("greeting_prefix", DEFAULT_GREETING_PREFIX)),
@@ -397,13 +503,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote env overrides: {env_bat_path}")
 
     print("\nAll local bootstrap files are local-only and should stay out of git.")
-    print("\nNext step:")
-    print("  python server.py --print-config")
-    print("  python server.py")
-    print("or")
-    print(f"  source {env_path}")
-    print(f"  call {env_bat_path}")
-    print("  python server.py")
+    print_next_steps(env_path, env_bat_path, wrote_env=should_write_env)
 
     print("\nCredentials are never written by this wizard; your Hermes OAuth tokens and API keys remain in your Hermes profile.")
     return 0

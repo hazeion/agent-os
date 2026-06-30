@@ -26,6 +26,53 @@ function humanCost(value) {
   return `$${number.toFixed(number > 0 && number < 0.01 ? 4 : 2)} est.`;
 }
 
+const THEME_STORAGE_KEY = 'mentat-theme';
+const THEMES = [
+  { id: 'compact-dark', label: 'Compact Dark', pill: 'compact dark' },
+  { id: 'light', label: 'Light', pill: 'light' },
+  { id: 'catppuccin', label: 'Catppuccin', pill: 'catppuccin' },
+  { id: 'nord', label: 'Nord', pill: 'nord' },
+  { id: 'aurora', label: 'Aurora', pill: 'aurora' },
+];
+
+function themeById(themeId = '') {
+  return THEMES.find((theme) => theme.id === themeId) || THEMES[0];
+}
+
+function applyTheme(themeId = state.currentTheme || THEMES[0].id) {
+  const theme = themeById(themeId);
+  state.currentTheme = theme.id;
+  document.documentElement.dataset.theme = theme.id;
+  const activePill = $('#theme-active-pill');
+  if (activePill) activePill.textContent = theme.pill;
+  const select = $('#theme-select');
+  if (select && select.value !== theme.id) select.value = theme.id;
+  const preview = $('#theme-preview-grid');
+  if (preview) {
+    preview.innerHTML = THEMES.map((item) => `
+      <button class="theme-swatch ${item.id === theme.id ? 'active' : ''}" type="button" data-theme-choice="${escapeHtml(item.id)}" aria-pressed="${item.id === theme.id ? 'true' : 'false'}">
+        <span class="theme-swatch-chip theme-${escapeHtml(item.id)}" aria-hidden="true"></span>
+        <span>${escapeHtml(item.label)}</span>
+      </button>
+    `).join('');
+  }
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme.id);
+    } catch {}
+  }
+}
+
+function initializeTheme() {
+  let saved = '';
+  if (typeof localStorage !== 'undefined') {
+    try {
+      saved = localStorage.getItem(THEME_STORAGE_KEY) || '';
+    } catch {}
+  }
+  applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id);
+}
+
 function renderGreeting(identity = {}) {
   state.appName = (identity.app_name || state.appName || 'Mentat').trim();
   state.greetingName = (identity.display_name || state.greetingName || 'Operator').trim();
@@ -52,6 +99,28 @@ function setView(view, { refreshOnChange = true } = {}) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function stablePayloadHash(value) {
+  const normalize = (item) => {
+    if (Array.isArray(item)) return item.map(normalize);
+    if (item && typeof item === 'object') {
+      return Object.keys(item).sort().reduce((acc, key) => {
+        acc[key] = normalize(item[key]);
+        return acc;
+      }, {});
+    }
+    return item;
+  };
+  return JSON.stringify(normalize(value));
+}
+
+function renderIfChanged(key, payload, renderFn) {
+  const hash = stablePayloadHash(payload);
+  if (state.renderCache[key] === hash) return false;
+  state.renderCache[key] = hash;
+  renderFn(payload);
+  return true;
 }
 
 function flashTarget(target) {
@@ -97,37 +166,6 @@ function renderCards(cards = {}) {
       <span class="metric-arrow" aria-hidden="true">↗</span>
     </button>
   `).join('');
-}
-
-function renderAttention(items = []) {
-  const list = $('#attention-list');
-  const count = $('#attention-count');
-  if (!list || !count) return;
-  const open = items.filter((item) => item.status !== 'resolved');
-  const panel = $('.priority-panel');
-  panel?.classList.toggle('has-attention', open.length > 0);
-  panel?.classList.toggle('clear', open.length === 0);
-  count.textContent = open.length ? `${open.length} open` : 'clear skies';
-  count.className = `pill ${open.length ? 'danger' : 'success'}`;
-  list.innerHTML = open.length ? open.map((item) => {
-    const isTaskAttention = item.source === 'task' || item.task_id;
-    const severityClass = item.severity === 'high' ? 'danger' : 'warn';
-    return `
-      <article class="item ${isTaskAttention ? 'attention-task-item' : ''}">
-        <div class="item-title">
-          <span>${escapeHtml(item.title)}</span>
-          <span class="pill ${severityClass}">${escapeHtml(item.severity || 'medium')}</span>
-        </div>
-        <div class="item-desc">${escapeHtml(item.description || '')}</div>
-        <div class="item-meta mono">${escapeHtml(item.type || 'manual')} · ${escapeHtml(item.project || 'General')} · ${humanDate(item.created_at)}</div>
-        <div class="item-actions">
-          ${isTaskAttention
-            ? `<button class="action-button open-task-source" type="button" data-project-name="${escapeHtml(item.project || '')}" data-task-id="${escapeHtml(item.task_id || '')}">Open task</button>`
-            : `<button class="action-button resolve-attention" type="button" data-attention-id="${escapeHtml(item.id)}">Resolve</button>`}
-        </div>
-      </article>
-    `;
-  }).join('') : `<div class="empty clear-skies">No open attention items. Clear skies.</div>`;
 }
 
 function hasAttentionTag(task = {}) {
@@ -379,7 +417,6 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
     const priorityOptions = ['high', 'medium', 'low']
       .map((value) => `<option value="${escapeHtml(value)}" ${value === (draft?.priority || 'medium') ? 'selected' : ''}>${escapeHtml(value)}</option>`)
       .join('');
-    if (context) context.textContent = mode === 'edit' ? 'editing task' : 'create flow';
     container.innerHTML = `
       <form id="task-editor-form" class="task-detail-card task-editor-form" data-mode="${escapeHtml(mode)}" data-task-id="${escapeHtml(String(draft?.id || ''))}">
         <div class="task-detail-kicker mono">${mode === 'edit' ? 'task edit' : 'new task'} · project-owned write-back</div>
@@ -525,14 +562,10 @@ function updateProjectRailButtons() {
 function renderFocusTasks(tasks = []) {
   const scoped = projectFilteredTasks(tasks);
   const open = scoped.filter(isOpenTask).sort((a, b) => taskSortScore(a) - taskSortScore(b));
-  const completedTasks = scoped
-    .filter((task) => taskArea(task) === 'completed')
-    .sort((a, b) => parse_iso_sort(b.completed_at) - parse_iso_sort(a.completed_at));
-  const focus = [...open, ...completedTasks].slice(0, 8);
+  const focus = open.slice(0, 8);
 
   const projectOptions = projectOptionsFromTasks(tasks);
   const scopeLabel = state.projectFilter || (projectOptions.length === 1 ? projectOptions[0] : 'All Projects');
-  const completed = completedTasks.length;
   const inProgress = open.filter((task) => taskArea(task) === 'in progress').length;
   const needsAttention = open.filter((task) => taskArea(task) === 'needs attention').length;
   const due = open.filter(isDueTask).length;
@@ -540,7 +573,7 @@ function renderFocusTasks(tasks = []) {
   const statusLine = nextTask
     ? `Next: ${escapeHtml(nextTask.title)} · ${escapeHtml(taskArea(nextTask))}`
     : 'Queue clear — no open next moves in this scope.';
-  const queueMeta = `${open.length} open · ${completed} done`;
+  const queueMeta = `${open.length} open`;
   const projectSelect = `
     <label class="today-project-select-label" for="today-project-select">
       <span class="detail-context-label mono">Project</span>
@@ -565,11 +598,11 @@ function renderFocusTasks(tasks = []) {
           <span><strong>${inProgress}</strong> in progress</span>
           <span><strong>${needsAttention}</strong> attention</span>
           <span><strong>${due}</strong> due</span>
-          <span><strong>${completed}</strong> completed</span>
         </div>
       </header>
       <div class="focus-task-rail">
   `;
+
 
   const taskCards = focus.length ? focus.map((task, index) => {
     const area = taskArea(task);
@@ -685,7 +718,11 @@ function projectTone(status = '') {
   return '';
 }
 
-function projectStats(projectName = '', tasks = state.tasks) {
+function tasksStatsKey(tasks = []) {
+  return JSON.stringify(tasks.map((task) => [task.id, task.project, task.status, task.priority, task.needs_attention, task.review_required, task.completed_at, task.updated_at]));
+}
+
+function computeProjectStats(projectName = '', tasks = state.tasks) {
   const scoped = projectName
     ? tasks.filter((task) => normalizeFilterValue(taskProject(task)) === normalizeFilterValue(projectName))
     : tasks;
@@ -700,6 +737,22 @@ function projectStats(projectName = '', tasks = state.tasks) {
   };
   stats.progress = stats.total ? Math.round((stats.completed / stats.total) * 100) : 0;
   return { stats, scoped };
+}
+
+function projectStats(projectName = '', tasks = state.tasks) {
+  const key = tasksStatsKey(tasks);
+  if (state.taskStatsCache.key !== key) {
+    state.taskStatsCache = { key, byProject: new Map(), portfolio: null };
+  }
+  const normalizedProject = normalizeFilterValue(projectName);
+  if (!normalizedProject) {
+    if (!state.taskStatsCache.portfolio) state.taskStatsCache.portfolio = computeProjectStats('', tasks);
+    return state.taskStatsCache.portfolio;
+  }
+  if (!state.taskStatsCache.byProject.has(normalizedProject)) {
+    state.taskStatsCache.byProject.set(normalizedProject, computeProjectStats(projectName, tasks));
+  }
+  return state.taskStatsCache.byProject.get(normalizedProject);
 }
 
 function taskSortScore(task = {}) {
@@ -751,10 +804,95 @@ function renderProjectStatus(projects = state.projects, tasks = state.tasks) {
   `;
 }
 
+function selectedProject() {
+  if (!state.projectFilter) return null;
+  return state.projects.find((project) => normalizeFilterValue(project.name) === normalizeFilterValue(state.projectFilter)) || null;
+}
+
+function projectPayloadFromForm(form) {
+  return {
+    name: form.elements.name?.value || '',
+    type: form.elements.type?.value || 'project',
+    status: form.elements.status?.value || 'active',
+    description: form.elements.description?.value || '',
+    obsidian_note: form.elements.obsidian_note?.value || '',
+    legacy_names: (form.elements.legacy_names?.value || '').split(',').map((value) => value.trim()).filter(Boolean),
+  };
+}
+
+function renderProjectEditor() {
+  const container = $('#project-editor');
+  if (!container) return;
+  if (state.projectEditorMode === 'view') {
+    container.innerHTML = '';
+    return;
+  }
+  const mode = state.projectEditorMode;
+  const existing = mode === 'edit'
+    ? state.projects.find((project) => String(project.id || '') === state.projectEditorProjectId) || selectedProject() || {}
+    : {};
+  const draft = state.projectEditorDraft ? { ...existing, ...state.projectEditorDraft } : existing;
+  container.innerHTML = `
+    <form id="project-editor-form" class="task-editor-form" data-mode="${escapeHtml(mode)}" data-project-id="${escapeHtml(existing.id || '')}">
+      <div class="detail-context-label mono">${mode === 'edit' ? 'Edit project' : 'Create project'} · local JSON write-back</div>
+      <div class="task-editor-grid">
+        <label class="task-editor-field"><span class="task-editor-label">Name</span><input name="name" required maxlength="120" value="${escapeHtml(draft.name || '')}" /></label>
+        <label class="task-editor-field"><span class="task-editor-label">Type</span><input name="type" maxlength="80" value="${escapeHtml(draft.type || 'project')}" /></label>
+        <label class="task-editor-field"><span class="task-editor-label">Status</span><select name="status"><option value="active" ${draft.status === 'active' ? 'selected' : ''}>Active</option><option value="paused" ${draft.status === 'paused' ? 'selected' : ''}>Paused</option><option value="archived" ${draft.status === 'archived' ? 'selected' : ''}>Archived</option></select></label>
+        <label class="task-editor-field"><span class="task-editor-label">Obsidian note</span><input name="obsidian_note" maxlength="160" value="${escapeHtml(draft.obsidian_note || '')}" /></label>
+        <label class="task-editor-field field-span-2"><span class="task-editor-label">Description</span><textarea name="description">${escapeHtml(draft.description || '')}</textarea></label>
+        <label class="task-editor-field field-span-2"><span class="task-editor-label">Legacy names (comma separated)</span><input name="legacy_names" value="${escapeHtml((draft.legacy_names || []).join(', '))}" /></label>
+      </div>
+      <div class="task-editor-actions">
+        <button class="action-button" type="submit">${mode === 'edit' ? 'Save Project' : 'Create Project'}</button>
+        <button class="mini-button" type="button" data-project-editor-cancel>Cancel</button>
+        <span class="task-editor-status" id="project-editor-status">Project-owned write only; no Hermes core mutation.</span>
+      </div>
+    </form>
+  `;
+}
+
+function openProjectEditor(mode = 'create', project = null) {
+  state.projectEditorMode = mode;
+  state.projectEditorProjectId = project?.id || '';
+  state.projectEditorDraft = null;
+  renderProjectEditor();
+  $('#project-editor')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function closeProjectEditor() {
+  state.projectEditorMode = 'view';
+  state.projectEditorProjectId = '';
+  state.projectEditorDraft = null;
+  renderProjectEditor();
+}
+
+async function submitProjectEditorForm(form) {
+  const status = $('#project-editor-status');
+  const payload = projectPayloadFromForm(form);
+  if (status) status.textContent = 'Saving project…';
+  try {
+    const mode = form.dataset.mode || 'create';
+    const result = mode === 'edit'
+      ? await saveProjectEdits(form.dataset.projectId || state.projectEditorProjectId, payload)
+      : await createProject(payload);
+    state.projects = result.projects || state.projects;
+    state.projectsLoaded = true;
+    state.projectFilter = result.project?.name || state.projectFilter;
+    closeProjectEditor();
+    renderProjectScopedViews();
+  } catch (err) {
+    console.error(err);
+    if (status) status.textContent = `Project save failed: ${err.message}`;
+  }
+}
+
 function renderProjects(projects = []) {
   state.projects = projects;
   const projectCount = $('#project-count');
   if (projectCount) projectCount.textContent = `${projects.length} project${projects.length === 1 ? '' : 's'}`;
+  const editProjectButton = $('#edit-project-button');
+  if (editProjectButton) editProjectButton.disabled = !selectedProject();
 
   $('#project-list').innerHTML = projects.length ? projects.map((project) => {
     const name = project.name || 'Untitled project';
@@ -774,6 +912,7 @@ function renderProjects(projects = []) {
   }).join('') : `<div class="empty">No projects found. For now, ask Hermes to add one to <code>data/projects.json</code>.</div>`;
   requestAnimationFrame(updateProjectRailButtons);
   renderProjectStatus(projects, state.tasks);
+  renderProjectEditor();
 }
 
 function isDateOnly(value = '') {
@@ -928,6 +1067,24 @@ function renderCalendar(payload = {}) {
   renderCalendarInto('#calendar-full-list', payload, { limit: Infinity });
 }
 
+function renderEmail(payload = {}) {
+  const container = $('#email-list');
+  const pill = $('#email-source-pill');
+  if (!container) return;
+  const items = payload.items || [];
+  if (pill) {
+    pill.textContent = payload.configured ? 'connected read-only' : 'local placeholder';
+    pill.className = payload.configured ? 'pill success' : 'pill warn';
+  }
+  container.innerHTML = items.length ? items.slice(0, 5).map((item) => `
+    <article class="item">
+      <div class="item-title"><span>${escapeHtml(item.subject || item.title || 'Untitled email')}</span><span class="pill">${escapeHtml(item.priority || 'read-only')}</span></div>
+      <div class="item-desc">${escapeHtml(item.snippet || item.from || '')}</div>
+      <div class="item-meta mono">${escapeHtml(item.from || 'unknown sender')} · ${humanDate(item.received_at || item.date)}</div>
+    </article>
+  `).join('') : `<div class="empty">${escapeHtml(payload.guidance || 'Read-only email pane is ready; connect a source later to surface priority messages.')}</div>`;
+}
+
 function renderCrons(payload = {}) {
   const jobs = payload.jobs || [];
   $('#cron-count').textContent = `${jobs.length} jobs`;
@@ -943,6 +1100,165 @@ function sessionMatches(session, query) {
   if (!query) return true;
   const haystack = `${session.title || ''} ${session.source || ''} ${session.message_count || ''} ${session.tool_call_count || ''}`.toLowerCase();
   return haystack.includes(query.toLowerCase());
+}
+
+function modelLabel(session = {}) {
+  const raw = String(session.model || '').trim();
+  return raw || 'unknown';
+}
+
+function sessionTokenTotal(session = {}) {
+  const usage = session.usage || {};
+  const directTotal = Number(session.total_tokens);
+  if (Number.isFinite(directTotal) && directTotal > 0) return directTotal;
+
+  const usageTotal = Number(usage.total_tokens);
+  if (Number.isFinite(usageTotal) && usageTotal > 0) return usageTotal;
+
+  const directInput = Math.max(0, Number(session.input_tokens) || 0);
+  const directOutput = Math.max(0, Number(session.output_tokens) || 0);
+  const usageInput = Math.max(0, Number(usage.input_tokens) || 0);
+  const usageOutput = Math.max(0, Number(usage.output_tokens) || 0);
+  const directPrompt = Math.max(0, Number(session.prompt_tokens) || 0);
+  const directCompletion = Math.max(0, Number(session.completion_tokens) || 0);
+  const usagePrompt = Math.max(0, Number(usage.prompt_tokens) || 0);
+  const usageCompletion = Math.max(0, Number(usage.completion_tokens) || 0);
+
+  const usageInputs = usageInput + usageOutput;
+  const directInputs = directInput + directOutput;
+  if (directInputs > 0 || usageInputs > 0) return Math.max(directInputs, usageInputs);
+
+  const usagePromptCompletion = usagePrompt + usageCompletion;
+  const directPromptCompletion = directPrompt + directCompletion;
+  if (usagePromptCompletion > 0 || directPromptCompletion > 0) {
+    return Math.max(usagePromptCompletion, directPromptCompletion);
+  }
+
+  return 0;
+}
+
+function renderModelUsageChart(payload = {}) {
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : Array.isArray(payload) ? payload : [];
+  const container = $('#model-usage');
+  if (!container) return;
+
+  const palette = ['#5ff3d9', '#8f7dff', '#3b9cff', '#00d68f', '#ffd166', '#4ad7ff', '#ff5f86', '#7dff84', '#be84ff', '#6fe5d6'];
+  const otherColor = '#7f8594';
+  const topN = 5;
+  const totals = {};
+  let totalTokens = 0;
+
+  for (const session of sessions) {
+    const model = modelLabel(session);
+    const tokens = sessionTokenTotal(session);
+    const normalizedTokens = Math.max(0, Number(tokens) || 0);
+    if (!Number.isFinite(normalizedTokens) || normalizedTokens <= 0) continue;
+    totals[model] = (totals[model] || 0) + normalizedTokens;
+    totalTokens += normalizedTokens;
+  }
+
+  const rows = Object.entries(totals)
+    .map(([model, tokens]) => ({ model, tokens: Number(tokens) }))
+    .filter((row) => Number.isFinite(row.tokens) && row.tokens > 0)
+    .sort((left, right) => {
+      if (Number(right.tokens) !== Number(left.tokens)) {
+        return Number(right.tokens) - Number(left.tokens);
+      }
+      return left.model.localeCompare(right.model);
+    });
+
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty">No recent session token totals available yet.</div>';
+    return;
+  }
+
+  const topModels = rows.slice(0, topN);
+  const otherRows = rows.slice(topN);
+  const othersTokens = otherRows.reduce((sum, row) => sum + row.tokens, 0);
+  const totalForPercent = rows.reduce((sum, row) => sum + row.tokens, 0) || 1;
+
+  const chartRows = [...topModels.map((row, index) => ({
+    ...row,
+    color: palette[index % palette.length],
+  }))];
+  if (othersTokens > 0) {
+    chartRows.push({
+      model: 'other',
+      tokens: othersTokens,
+      color: otherColor,
+    });
+  }
+
+  let cumulative = 0;
+  const chartRowsWithPercent = chartRows.map((row, index) => {
+    const rawPercent = (row.tokens / totalForPercent) * 100;
+    const percent = (index + 1 === chartRows.length)
+      ? 100 - cumulative
+      : Number(rawPercent.toFixed(2));
+    const start = cumulative;
+    const end = cumulative + percent;
+    cumulative = end;
+    return {
+      ...row,
+      percent,
+      start,
+      end,
+    };
+  });
+
+  const topRows = topModels.map((row) => {
+    const share = (row.tokens / totalForPercent) * 100;
+    return {
+      ...row,
+      share,
+    };
+  });
+
+  const gradient = chartRowsWithPercent.map((entry) => `${entry.color} ${entry.start.toFixed(2)}% ${entry.end.toFixed(2)}%`).join(', ');
+
+  const legend = topRows.map((entry, index) => {
+    const tokenText = humanNumber(Math.round(entry.tokens));
+    const shareText = `${entry.share.toFixed(1)}%`;
+    return `
+      <tr>
+        <td><span class="model-usage-dot" style="background:${palette[index % palette.length]}"></span>${escapeHtml(entry.model)}</td>
+        <td class="mono">${tokenText}</td>
+        <td class="mono">${shareText}</td>
+      </tr>`;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="model-usage-grid">
+      <div class="model-usage-chart-wrap">
+        <div class="model-usage-shell">
+          <div class="model-pie" style="background: conic-gradient(${gradient});" aria-hidden="true"></div>
+          <div class="model-pie-meta">
+            <div class="model-pie-total">${humanNumber(Math.round(totalTokens))} tokens</div>
+            <div class="item-meta mono">Last ${sessions.length} recent sessions</div>
+            <div class="item-meta mono">Top ${topRows.length} model${topRows.length === 1 ? '' : 's'} by token share</div>
+          </div>
+        </div>
+        ${othersTokens > 0 ? `<div class="item-meta mono">${humanNumber(Math.round(othersTokens))} tokens in ${otherRows.length} additional model${otherRows.length === 1 ? '' : 's'} (grouped as other)</div>` : ''}
+      </div>
+      <div class="model-usage-table-wrap">
+        <div class="model-usage-table-head detail-context-label mono">Top ${topN} models</div>
+        <div class="model-usage-table-scroll">
+          <table class="model-usage-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Tokens</th>
+                <th>Share</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${legend}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderSessions(payload = {}) {
@@ -967,42 +1283,6 @@ function renderSessions(payload = {}) {
     }).join('')}
   `;
 }
-
-function topEntry(counts = {}) {
-  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0] || ['none', 0];
-}
-
-function renderSessionStats(payload = {}) {
-  const container = $('#session-stats');
-  if (!container) return;
-  const sessions = payload.sessions || [];
-  if (!sessions.length) {
-    container.innerHTML = `<div class="empty">No recent Hermes sessions available yet.</div>`;
-    return;
-  }
-  const sourceCounts = {};
-  const modelCounts = {};
-  let totalMessages = 0;
-  let totalTools = 0;
-  sessions.forEach((session) => {
-    const source = session.source || 'unknown';
-    const model = session.model || 'unknown';
-    sourceCounts[source] = (sourceCounts[source] || 0) + 1;
-    modelCounts[model] = (modelCounts[model] || 0) + 1;
-    totalMessages += Number(session.message_count || 0);
-    totalTools += Number(session.tool_call_count || 0);
-  });
-  const [topSource, topSourceCount] = topEntry(sourceCounts);
-  const [topModel] = topEntry(modelCounts);
-  container.innerHTML = `
-    <article class="stat-mini"><span>${sessions.length}</span><small>recent sessions</small></article>
-    <article class="stat-mini"><span>${escapeHtml(topSource)}</span><small>${topSourceCount} by source</small></article>
-    <article class="stat-mini"><span>${totalTools}</span><small>tool calls</small></article>
-    <article class="stat-mini"><span>${totalMessages}</span><small>messages observed</small></article>
-    <article class="stat-mini wide"><span>${escapeHtml(topModel)}</span><small>dominant model</small></article>
-  `;
-}
-
 function renderMessageSearchResults(payload = {}, query = '') {
   const container = $('#message-search-results');
   if (!container) return;
@@ -1275,26 +1555,203 @@ function agentStatusLabel(status = 'idle') {
   return 'Idle';
 }
 
-function agentStatusTone(status = 'idle') {
-  const normalized = String(status || 'idle').trim().toLowerCase();
+function agentStatusTone(status = '') {
+  const normalized = String(status || '').toLowerCase();
   if (normalized === 'running' || normalized === 'done') return 'success';
   if (normalized === 'blocked' || normalized === 'failed') return 'danger';
   return 'warn';
 }
 
+function messageStatusTone(status = '') {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'delivered') return 'success';
+  if (normalized === 'failed' || normalized === 'cancelled') return 'danger';
+  if (normalized === 'needs user input' || normalized === 'queued') return 'warn';
+  return '';
+}
+
+function agentMessagePayloadFromForm(form) {
+  return {
+    recipient: form.elements.recipient?.value || 'Hermes',
+    project: form.elements.project?.value || state.projectFilter || 'Mentat',
+    priority: form.elements.priority?.value || 'normal',
+    related_task_id: form.elements.related_task_id?.value || '',
+    message: form.elements.message?.value || '',
+  };
+}
+
+function renderAgentMessageCompose() {
+  const container = $('#agent-message-compose');
+  if (!container) return;
+  const projectOptions = projectOptionsFromTasks(state.tasks);
+  const selectedProjectName = state.projectFilter || (projectOptions.includes('Mentat') ? 'Mentat' : projectOptions[0] || 'Mentat');
+  container.innerHTML = `
+    <form id="agent-message-form" class="task-editor-form agent-message-form">
+      <div class="task-editor-grid">
+        <label class="task-editor-field"><span class="task-editor-label">Recipient</span><input name="recipient" maxlength="120" value="Hermes" /></label>
+        <label class="task-editor-field"><span class="task-editor-label">Project</span><select name="project">${projectOptions.map((name) => `<option value="${escapeHtml(name)}" ${name === selectedProjectName ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></label>
+        <label class="task-editor-field"><span class="task-editor-label">Priority</span><select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
+        <label class="task-editor-field"><span class="task-editor-label">Related task ID</span><input name="related_task_id" maxlength="80" placeholder="optional" /></label>
+        <label class="task-editor-field field-span-2"><span class="task-editor-label">Message</span><textarea name="message" required maxlength="2000" placeholder="Queue a safe local-only instruction or question for an agent…"></textarea></label>
+      </div>
+      <div class="task-editor-actions">
+        <button class="action-button" type="submit">Queue Message</button>
+        <span class="task-editor-status" id="agent-message-status">Safety: queued only; browser text cannot execute shell commands.</span>
+      </div>
+    </form>
+  `;
+}
+
+function renderAgentMessages(payload = {}) {
+  const messages = payload.messages || [];
+  state.agentMessages = messages;
+  const count = $('#agent-message-count');
+  const list = $('#agent-message-list');
+  renderAgentMessageCompose();
+  if (count) {
+    const pending = Number(payload.summary?.pending || 0);
+    count.textContent = pending ? `${pending} queued` : `${messages.length} messages`;
+    count.className = pending ? 'pill warn' : 'pill';
+  }
+  if (!list) return;
+  list.innerHTML = messages.length ? messages.slice(0, 8).map((message) => `
+    <article class="item agent-message-item">
+      <div class="item-title"><span>${escapeHtml(message.recipient || 'Agent')}</span><span class="pill ${messageStatusTone(message.status)}">${escapeHtml(message.status || 'queued')}</span></div>
+      <div class="item-desc">${escapeHtml(message.message || '')}</div>
+      <div class="item-meta mono">${escapeHtml(message.project || 'General')} · ${escapeHtml(message.priority || 'normal')} · ${humanDate(message.updated_at || message.created_at)}</div>
+      <div class="item-meta mono">Audit events: ${(message.audit || []).length} · shell execution ${escapeHtml(message.safety?.shell_execution || 'forbidden')}</div>
+    </article>
+  `).join('') : `<div class="empty">No queued agent messages. Compose one above; Mentat stores it in project-owned local JSON only.</div>`;
+}
+
+function agentPulseDismissKey(agent = {}) {
+  const status = String(agent.status || '').toLowerCase();
+  const id = String(agent.id || agent.session_id || '').trim();
+  if (id) return `id:${id}`;
+  const name = String(agent.name || '').trim();
+  const project = String(agent.project || '').trim();
+  const source = String(agent.source || '').trim();
+  return `agent:${name.toLowerCase()}|project:${project.toLowerCase()}|source:${source.toLowerCase()}|status:${status}`;
+}
+
+function isAgentPulseDismissed(agent = {}) {
+  const key = agentPulseDismissKey(agent);
+  if (!key) return false;
+  return state.dismissedAgentPulseIds.has(key);
+}
+
+function dismissAgentPulse(agent = {}) {
+  const key = agentPulseDismissKey(agent);
+  if (!key) return false;
+  const before = state.dismissedAgentPulseIds.size;
+  state.dismissedAgentPulseIds.add(key);
+  const added = state.dismissedAgentPulseIds.size > before;
+  if (added) {
+    persistDismissedAgentPulseIds();
+  }
+  return added;
+}
+
+function filterDismissedAgents(agents = []) {
+  return agents.filter((agent) => !isAgentPulseDismissed(agent));
+}
+
+const AGENT_PULSE_DISMISSED_STORAGE_KEY = 'mentat-agent-pulse-dismissed-v1';
+
+function normalizeDismissedAgentPulseKey(value = '') {
+  return String(value).trim();
+}
+
+function loadDismissedAgentPulseIds() {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const raw = localStorage.getItem(AGENT_PULSE_DISMISSED_STORAGE_KEY);
+    if (!raw) return;
+
+    const parsed = JSON.parse(raw);
+    const ids = new Set();
+
+    if (Array.isArray(parsed)) {
+      parsed.forEach((value) => {
+        const key = normalizeDismissedAgentPulseKey(value);
+        if (key) ids.add(key);
+      });
+    } else if (parsed && typeof parsed === 'object') {
+      Object.entries(parsed).forEach(([key]) => {
+        const normalized = normalizeDismissedAgentPulseKey(key);
+        if (!normalized) return;
+        ids.add(normalized);
+      });
+    }
+
+    state.dismissedAgentPulseIds = ids;
+  } catch (error) {
+    console.warn('Failed to load persisted Agent Pulse dismissals:', error);
+  }
+}
+
+function persistDismissedAgentPulseIds() {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (!state.dismissedAgentPulseIds || !state.dismissedAgentPulseIds.size) {
+      localStorage.removeItem(AGENT_PULSE_DISMISSED_STORAGE_KEY);
+      return;
+    }
+    const now = Date.now();
+    const payload = {};
+    state.dismissedAgentPulseIds.forEach((key) => {
+      payload[key] = now;
+    });
+    localStorage.setItem(AGENT_PULSE_DISMISSED_STORAGE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    console.warn('Failed to persist Agent Pulse dismissals:', error);
+  }
+}
+
+
+async function submitAgentMessageForm(form) {
+  const status = $('#agent-message-status');
+  if (status) status.textContent = 'Queueing message…';
+  try {
+    const result = await sendAgentMessage(agentMessagePayloadFromForm(form));
+    form.reset();
+    renderAgentMessages({ messages: result.messages || [], summary: result.summary || {} });
+    const updatedStatus = $('#agent-message-status');
+    if (updatedStatus) updatedStatus.textContent = 'Message queued locally. An agent must explicitly read/acknowledge it; no shell execution was triggered.';
+  } catch (err) {
+    console.error(err);
+    if (status) status.textContent = `Message queue failed: ${err.message}`;
+  }
+}
+
 function renderAgentPulse(payload = {}) {
-  const agents = Array.isArray(payload.agents) ? payload.agents : [];
+  const rawAgents = Array.isArray(payload.agents) ? payload.agents : [];
+  const agents = filterDismissedAgents(rawAgents);
   const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
   const latestSession = sessions[0];
-  const summary = payload.summary || {};
+  const messageSummary = payload.messageSummary || payload.agent_messages?.summary || {};
   const guidance = payload.guidance || {};
   const container = $('#agent-pulse');
   const pill = $('#agent-pulse-pill');
   if (!container) return;
 
+  const staleAfterSeconds = Number(guidance.stale_after_seconds || AGENT_PULSE_STALE_AFTER_SECONDS) || AGENT_PULSE_STALE_AFTER_SECONDS;
+
   const activeAgents = agents
     .filter((agent) => {
-      return AGENT_PULSE_ACTIVE_STATUSES.has(String(agent.status || 'idle').toLowerCase());
+      const status = String(agent.status || '').toLowerCase();
+      return AGENT_PULSE_ACTIVE_STATUSES.has(status) && !isStaleAgent(agent, staleAfterSeconds);
+    })
+    .sort((left, right) => {
+      const leftTs = parseAgentTimestamp(left, ['last_heartbeat', 'updated_at', 'started_at', 'created_at']) || 0;
+      const rightTs = parseAgentTimestamp(right, ['last_heartbeat', 'updated_at', 'started_at', 'created_at']) || 0;
+      return rightTs - leftTs;
+    });
+
+  const staleRunningAgents = agents
+    .filter((agent) => {
+      const status = String(agent.status || '').toLowerCase();
+      return AGENT_PULSE_ACTIVE_STATUSES.has(status) && isStaleAgent(agent, staleAfterSeconds);
     })
     .sort((left, right) => {
       const leftTs = parseAgentTimestamp(left, ['last_heartbeat', 'updated_at', 'started_at', 'created_at']) || 0;
@@ -1321,31 +1778,67 @@ function renderAgentPulse(payload = {}) {
     const status = String(agent.status || '').toLowerCase();
     return status === 'done' || status === 'failed';
   }).length;
+
+  const visibleSummary = {
+    running: 0,
+    done: 0,
+    failed: 0,
+    needs_user_input: 0,
+    stale: 0,
+  };
+
+  for (const agent of agents) {
+    const status = String(agent.status || '').toLowerCase();
+    if (status === 'running') visibleSummary.running += 1;
+    if (status === 'done') visibleSummary.done += 1;
+    if (status === 'failed') visibleSummary.failed += 1;
+    if (agent.needs_user_input) visibleSummary.needs_user_input += 1;
+  }
+
+  visibleSummary.stale = staleRunningAgents.length;
+
   const hiddenCompleted = Math.max(0, totalCompleted - recentlyCompleted.length);
-  const activeTotal = Number(summary.running || 0) + Number(summary.blocked || 0) + Number(summary.idle || 0);
-  const staleCount = Number(summary.stale || activeAgents.filter((agent) => agent.stale).length) || 0;
+  const activeTotal = activeAgents.length;
+  const staleCount = staleRunningAgents.length;
+  const pendingMessages = Number(messageSummary.pending || 0) || 0;
   const retentionMinutes = Math.round(AGENT_PULSE_COMPLETED_RETENTION_MS / 60000);
+  const doneCount = Number(visibleSummary.done || 0);
+  const failedCount = Number(visibleSummary.failed || 0);
+  const needsInputCount = Number(visibleSummary.needs_user_input || 0);
+  const hiddenDismissedCount = rawAgents.filter((agent) => isAgentPulseDismissed(agent)).length;
+  const hasVisibleRows = activeAgents.length + recentlyCompleted.length;
 
   if (pill) {
-    if (activeTotal || recentlyCompleted.length) {
+    if (pendingMessages) {
+      pill.textContent = `${pendingMessages} pending message${pendingMessages === 1 ? '' : 's'}`;
+      pill.className = 'pill warn';
+    } else if (hasVisibleRows) {
       const labels = [];
-      if (Number(summary.running || 0)) labels.push(`${Number(summary.running || 0)} running`);
-      if (activeTotal) labels.push(`${activeTotal} active`);
-      if (staleCount) labels.push(`${staleCount} stale`);
+      if (activeTotal) labels.push(`${activeTotal} running`);
+      if (doneCount) labels.push(`${doneCount} done`);
+      if (failedCount) labels.push(`${failedCount} failed`);
       if (!labels.length && recentlyCompleted.length) labels.push('recently completed');
-      pill.textContent = labels.length ? labels.join(' · ') : `${retentionMinutes}m completed`;
-      pill.className = `pill ${staleCount ? 'warn' : activeTotal ? 'success' : 'warn'}`;
+      if (!labels.length) labels.push(`${retentionMinutes}m completed`);
+      if (hiddenDismissedCount) labels.push(`${hiddenDismissedCount} dismissed`);
+      pill.textContent = labels.join(' · ');
+      pill.className = activeTotal ? 'pill success' : 'pill warn';
     } else {
-      pill.textContent = 'historical';
+      pill.textContent = staleCount ? 'no active heartbeat (all running entries stale)' : 'historical';
       pill.className = 'pill warn';
     }
   }
 
-  if (!agents.length) {
+  if (!hasVisibleRows) {
     const latestSessionLabel = latestSession
       ? `${escapeHtml(latestSession.title || 'Untitled')} · ${humanDate(latestSession.ended_at || latestSession.started_at)}`
       : 'No session data yet';
-    const staleAfter = Number(guidance.stale_after_seconds || 0) || 90;
+    const staleAfter = staleAfterSeconds;
+    const staleHint = staleCount
+      ? `<div class="item-meta mono">${staleCount} heartbeat entr${staleCount === 1 ? 'y' : 'ies'} older than ${escapeHtml(humanDurationApprox(staleAfter))} are hidden until refreshed.</div>`
+      : '';
+    const dismissedHint = hiddenDismissedCount
+      ? `<div class="item-meta mono">${hiddenDismissedCount} dismissed entr${hiddenDismissedCount === 1 ? 'y' : 'ies'} hidden from the pulse.</div>`
+      : '';
     const exampleBeat = guidance.beat_command
       ? `<div class="agent-pulse-command mono">${escapeHtml(guidance.beat_command)}</div>`
       : '';
@@ -1353,13 +1846,15 @@ function renderAgentPulse(payload = {}) {
       ? `<div class="agent-pulse-command mono">${escapeHtml(guidance.run_command)}</div>`
       : '';
     container.innerHTML = `
-      <div class="agent-pulse-list"><div class="agent-pulse-empty">No agent heartbeat records are currently registered.</div></div>
+      <div class="agent-pulse-list"><div class="agent-pulse-empty">No active agents with a live heartbeat are currently registered.</div></div>
       <div>
         <div class="item-title"><span>Historical session pulse · no live agents registered</span></div>
-        <div class="item-desc">No heartbeat records are registered right now, so Agent Pulse is showing the recent Hermes session cue. Agents can publish project-owned status through /api/agents/heartbeat without touching Hermes core files.</div>
+        <div class="item-desc">No running heartbeats are currently live, so Agent Pulse is showing the recent Hermes session cue. Agents can publish project-owned status through /api/agents/heartbeat without touching Hermes core files.</div>
         <div class="item-meta mono">Latest: ${latestSessionLabel}</div>
+        ${staleHint}
+        ${dismissedHint}
         <div class="agent-pulse-guidance">
-          <div class="item-meta mono">Producer wiring ready · stale downgrade after about ${escapeHtml(humanDurationApprox(staleAfter))}</div>
+          <div class="item-meta mono">Producer wiring ready · stale cutoff is about ${escapeHtml(humanDurationApprox(staleAfter))}</div>
           ${exampleBeat}
           ${exampleRun}
         </div>
@@ -1368,30 +1863,37 @@ function renderAgentPulse(payload = {}) {
     return;
   }
 
-  const statusChips = ['running', 'blocked', 'idle', 'done', 'failed']
-    .map((status) => `<span class="pill ${agentStatusTone(status)}">${summary[status] ?? 0} ${escapeHtml(agentStatusLabel(status).toLowerCase())}</span>`)
-    .concat([
-      `<span class="pill warn">${summary.stale ?? 0} stale</span>`,
-      `<span class="pill accent">${summary.needs_user_input ?? 0} needs input</span>`,
-    ])
-    .join('');
+  const statusChips = [
+    activeTotal ? `${activeTotal} running` : null,
+    doneCount ? `${doneCount} done` : null,
+    failedCount ? `${failedCount} failed` : null,
+    needsInputCount ? `${needsInputCount} needs user input` : null,
+    staleCount ? `${staleCount} stale` : null,
+    pendingMessages ? `${pendingMessages} pending messages` : null,
+    hiddenDismissedCount ? `${hiddenDismissedCount} dismissed` : null,
+  ].filter(Boolean).map((text) => `<span class="pill warn">${escapeHtml(text)}</span>`).join('');
 
   const renderRows = (rows) => rows.map((agent) => {
     const meta = [agent.project, agent.model, agent.source, agent.cwd].filter(Boolean).map((value) => escapeHtml(value)).join(' · ');
     const timestamp = parseAgentTimestamp(agent, ['last_heartbeat', 'updated_at', 'started_at', 'created_at', 'resolved_at']);
     const ageSeconds = timestamp ? Math.max(0, Math.round((Date.now() - timestamp) / 1000)) : null;
+    const dismissKey = agentPulseDismissKey(agent);
     const noteParts = [
       agent.stale ? 'Heartbeat stale' : 'Heartbeat live',
       ageSeconds != null ? `Updated ${humanDurationApprox(ageSeconds)} ago` : 'Update time unknown',
       agent.needs_user_input ? 'Needs user input' : 'No user input needed',
       agent.related_task_id ? `task ${agent.related_task_id}` : '',
     ].filter(Boolean).map(escapeHtml).join(' · ');
+    const agentLabel = escapeHtml(agent.name || agent.id || 'Agent');
 
     return `
       <article class="agent-pulse-item">
         <div class="item-title">
-          <span>${escapeHtml(agent.name || agent.id || 'Agent')}</span>
-          <span class="pill ${agentStatusTone(agent.status)}">${escapeHtml(agentStatusLabel(agent.status))}</span>
+          <span>${agentLabel}</span>
+          <span class="agent-pulse-title-actions">
+            <button class="agent-pulse-dismiss" type="button" data-agent-pulse-key="${escapeHtml(dismissKey)}" aria-label="Dismiss ${agentLabel} from Agent Pulse">×</button>
+            <span class="pill ${agentStatusTone(agent.status)}">${escapeHtml(agentStatusLabel(agent.status))}</span>
+          </span>
           ${agent.stale ? '<span class="pill warn">Stale</span>' : ''}
         </div>
         <div class="item-desc">${escapeHtml(agent.current_task || 'No current task reported.')}</div>
@@ -1426,7 +1928,20 @@ function renderAgentPulse(payload = {}) {
 
 const AGENT_PULSE_COMPLETED_RETENTION_MS = 10 * 60 * 1000;
 const AGENT_PULSE_MAX_RECENT_COMPLETED = 8;
-const AGENT_PULSE_ACTIVE_STATUSES = new Set(['running', 'blocked', 'idle']);
+const AGENT_PULSE_ACTIVE_STATUSES = new Set(['running']);
+const AGENT_PULSE_STALE_AFTER_SECONDS = 60;
+
+function isStaleAgent(agent, staleAfterSeconds = AGENT_PULSE_STALE_AFTER_SECONDS) {
+  if (agent && typeof agent.stale === 'boolean') {
+    return !!agent.stale;
+  }
+
+  const timestamp = parseAgentTimestamp(agent, ['last_heartbeat', 'updated_at', 'started_at', 'created_at']);
+  if (timestamp == null) {
+    return false;
+  }
+  return Math.max(0, Math.round((Date.now() - timestamp) / 1000)) >= staleAfterSeconds;
+}
 
 function parseAgentTimestamp(agent, keys = []) {
   for (const key of keys) {
@@ -1517,16 +2032,19 @@ async function refresh() {
   const requests = {
     overview: api(endpoints.overview),
     tasks: api(endpoints.tasks),
-    attention: api(endpoints.attention),
     health: api(endpoints.health),
   };
 
   if (activeView === 'today' || activeView === 'calendar') requests.calendar = api(endpoints.calendar);
+  if (activeView === 'today') requests.email = api(endpoints.email);
   if (activeView === 'today' || activeView === 'agents') {
     requests.sessions = api(endpoints.sessions);
-    requests.agents = api(endpoints.agents);
+    if (activeView === 'agents') {
+      requests.agents = api(endpoints.agents);
+      requests.agentMessages = api(endpoints.agentMessages);
+    }
   }
-  if (activeView === 'today' || activeView === 'projects') requests.projects = api(endpoints.projects);
+  if (activeView === 'today' || activeView === 'projects' || activeView === 'agents') requests.projects = api(endpoints.projects);
   if (activeView === 'agents') requests.crons = api(endpoints.crons);
   if (activeView === 'notes') requests.notes = api(endpoints.notes);
   if (activeView === 'settings') requests.config = api(endpoints.config);
@@ -1536,7 +2054,7 @@ async function refresh() {
     const data = Object.fromEntries(entries);
 
     renderGreeting(data.overview.identity || {});
-    renderCards(data.overview.cards);
+    renderIfChanged('overview-cards', data.overview.cards, renderCards);
     if (data.projects) {
       state.projects = data.projects.projects || [];
       state.projectsLoaded = true;
@@ -1544,25 +2062,32 @@ async function refresh() {
     if (data.agents) {
       state.agents = data.agents.agents || [];
     }
-    renderTaskList(data.tasks.tasks);
-    if (data.projects) renderProjects(state.projects);
-    renderFocusTasks(data.tasks.tasks);
-    renderAttention(data.attention.attention);
-    if (data.calendar) renderCalendar(data.calendar);
-    if (data.crons) renderCrons(data.crons);
-    if (data.sessions || data.agents) {
-      if (data.sessions) {
-        renderSessions(data.sessions);
-        renderSessionStats(data.sessions);
+    const tasks = data.tasks.tasks || [];
+    state.tasks = tasks;
+    renderIfChanged(`tasks-${state.taskStatusFilter}-${state.taskFilter}-${state.projectFilter}-${state.selectedTaskId}-${state.taskEditorMode}`, tasks, renderTaskList);
+    if (data.projects) renderIfChanged(`projects-${state.projectFilter}-${state.projectEditorMode}`, state.projects, renderProjects);
+    renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
+    renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
+    if (data.calendar) renderIfChanged('calendar', data.calendar, renderCalendar);
+    if (data.email) renderIfChanged('email', data.email, renderEmail);
+    if (data.crons) renderIfChanged('crons', data.crons, renderCrons);
+    if (data.sessions || data.agents || data.agentMessages) {
+      if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
+      if (data.sessions) renderIfChanged('model-usage', data.sessions, renderModelUsageChart);
+      if (data.agentMessages) renderIfChanged(`agent-messages-${state.projectFilter}`, data.agentMessages, renderAgentMessages);
+      if (activeView === 'agents') {
+        const agentPulsePayload = {
+          ...(data.agents || {}),
+          messageSummary: data.agentMessages?.summary || {},
+          sessions: data.sessions?.sessions || data.sessions || [],
+        };
+        state.lastAgentPulsePayload = agentPulsePayload;
+        renderIfChanged('agent-pulse', agentPulsePayload, renderAgentPulse);
       }
-      renderAgentPulse({
-        ...(data.agents || {}),
-        sessions: data.sessions?.sessions || data.sessions || [],
-      });
     }
-    if (data.notes) renderNotes(data.notes);
+    if (data.notes) renderIfChanged('notes', data.notes, renderNotes);
 
-    renderHealth(data.health);
+    renderIfChanged('health', data.health, renderHealth);
     state.hasBootstrapped = true;
     $('#last-updated').textContent = fmt.format(new Date());
   } catch (err) {
@@ -1596,6 +2121,8 @@ function queueMessageSearch(query) {
     }
   }, 250);
 }
+
+initializeTheme();
 
 $('#refresh-rate').textContent = `${REFRESH_MS / 1000}s`;
 
@@ -1697,6 +2224,13 @@ if (taskStatusFilter) {
   });
 }
 
+const themeSelect = $('#theme-select');
+if (themeSelect) {
+  themeSelect.addEventListener('change', (event) => {
+    applyTheme(event.target.value);
+  });
+}
+
 $('#project-scroll-left')?.addEventListener('click', () => scrollProjectRail(-1));
 $('#project-scroll-right')?.addEventListener('click', () => scrollProjectRail(1));
 $('#project-list')?.addEventListener('scroll', updateProjectRailButtons, { passive: true });
@@ -1711,6 +2245,46 @@ if (clearProjectFilter) {
 }
 
 document.addEventListener('click', async (event) => {
+  const pulseDismiss = event.target.closest('.agent-pulse-dismiss');
+  if (pulseDismiss) {
+    const key = pulseDismiss.dataset.agentPulseKey || '';
+    if (key) {
+      const rawKey = key.startsWith('id:') ? key.slice(3) : key;
+      const dismissed = dismissAgentPulse({ id: rawKey });
+      if (dismissed && state.lastAgentPulsePayload) {
+        renderAgentPulse(state.lastAgentPulsePayload);
+      } else if (dismissed && !state.lastAgentPulsePayload) {
+        renderAgentPulse({});
+      }
+    }
+    return;
+  }
+
+  const themeChoice = event.target.closest('[data-theme-choice]');
+  if (themeChoice) {
+    applyTheme(themeChoice.dataset.themeChoice || THEMES[0].id);
+    return;
+  }
+
+  if (event.target.closest('#create-project-button')) {
+    await setView('projects', { refreshOnChange: false });
+    openProjectEditor('create');
+    return;
+  }
+
+  if (event.target.closest('#edit-project-button')) {
+    const project = selectedProject();
+    if (!project) return;
+    await setView('projects', { refreshOnChange: false });
+    openProjectEditor('edit', project);
+    return;
+  }
+
+  if (event.target.closest('[data-project-editor-cancel]')) {
+    closeProjectEditor();
+    return;
+  }
+
   if (event.target.closest('#create-task-button')) {
     await setView('projects', { refreshOnChange: false });
     openTaskEditor('create');
@@ -1747,6 +2321,31 @@ $('#selected-task-detail')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   state.taskEditorDraft = taskPayloadFromForm(form);
   await submitTaskEditorForm(form);
+});
+
+document.addEventListener('input', (event) => {
+  const projectForm = event.target.closest('#project-editor-form');
+  if (projectForm) state.projectEditorDraft = projectPayloadFromForm(projectForm);
+});
+
+document.addEventListener('change', (event) => {
+  const projectForm = event.target.closest('#project-editor-form');
+  if (projectForm) state.projectEditorDraft = projectPayloadFromForm(projectForm);
+});
+
+document.addEventListener('submit', async (event) => {
+  const projectForm = event.target.closest('#project-editor-form');
+  if (projectForm) {
+    event.preventDefault();
+    state.projectEditorDraft = projectPayloadFromForm(projectForm);
+    await submitProjectEditorForm(projectForm);
+    return;
+  }
+  const messageForm = event.target.closest('#agent-message-form');
+  if (messageForm) {
+    event.preventDefault();
+    await submitAgentMessageForm(messageForm);
+  }
 });
 
 $('#project-list').addEventListener('click', async (event) => {
@@ -1801,42 +2400,9 @@ $('#message-search-results').addEventListener('click', (event) => {
   if (sessionId) loadSessionDetail(sessionId, { messageId: result.dataset.messageId, query: result.dataset.query || state.sessionFilter });
 });
 
-const attentionList = $('#attention-list');
-if (attentionList) {
-  attentionList.addEventListener('click', async (event) => {
-    const taskButton = event.target.closest('.open-task-source');
-    if (taskButton) {
-      state.projectFilter = taskButton.dataset.projectName || '';
-      state.taskStatusFilter = 'open';
-      await setView('projects');
-      renderProjectScopedViews();
-      const tasksPanel = $('#tasks-panel');
-      tasksPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      flashTarget(tasksPanel);
-      return;
-    }
 
-    const button = event.target.closest('.resolve-attention');
-    if (!button) return;
 
-    const id = button.dataset.attentionId;
-    if (!id) return;
-
-    button.disabled = true;
-    button.textContent = 'Resolving…';
-    try {
-      await resolveAttentionItem(id);
-      await refresh();
-    } catch (err) {
-      console.error(err);
-      button.disabled = false;
-      button.textContent = 'Resolve';
-      $('#health-dot').className = 'dot degraded';
-      $('#health-label').textContent = `Resolve failed: ${err.message}`;
-    }
-  });
-}
-
+loadDismissedAgentPulseIds();
 setView('today');
 refresh();
 setInterval(refresh, REFRESH_MS);

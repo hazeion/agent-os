@@ -20,8 +20,8 @@ class NextPhaseReadinessTests(unittest.TestCase):
 
     def test_react_readiness_notes_document_no_premature_refactor(self):
         self.assertIn("Do **not** migrate to React yet", REACT_NOTES)
-        self.assertIn("Dashboard-native project/task create/edit forms", REACT_NOTES)
-        self.assertIn("Live Agent Pulse 2.0 heartbeat", REACT_NOTES)
+        self.assertIn("Task/project write-back and agent messages", REACT_NOTES)
+        self.assertIn("Live Agent Pulse heartbeat", REACT_NOTES)
 
     def test_dashboard_identity_is_project_owned_not_hardcoded(self):
         self.assertIn('read_json_file("dashboard.json", {})', SERVER)
@@ -50,7 +50,7 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn('ALLOWED_DATA_WRITES = {', SERVER)
         self.assertIn('if name not in ALLOWED_DATA_WRITES', SERVER)
         self.assertIn('path.parent != data_root', SERVER)
-        self.assertIn('write_json_file("attention.json", attention)', SERVER)
+        self.assertIn('update_json_file("attention.json", [], mutator)', SERVER)
     def test_core_script_loads_before_app_script(self):
         self.assertLess(INDEX.index('/core.js?v='), INDEX.index('/app.js?v='))
 

@@ -134,6 +134,8 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.write_json(root, "attention.json", [])
             self.write_json(root, "dashboard.json", dashboard)
             with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "CONFIG_GREETING_PREFIX", "Hello"
+            ), patch.object(
                 server, "read_cron_jobs", return_value={"count": 2, "jobs": []}
             ), patch.object(server, "recent_sessions", return_value={"sessions": [{}, {}, {}]}):
                 payload = server.overview()

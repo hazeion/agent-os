@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -56,9 +57,40 @@ def default_hermes_home() -> Path:
     env = os.environ.get("HERMES_HOME")
     if env:
         return Path(env)
+    discovered = discover_hermes_home_from_cli()
+    if discovered is not None:
+        return discovered
     if sys.platform.startswith("win"):
         return Path.home() / "AppData" / "Local" / "hermes"
     return Path.home() / ".hermes"
+
+
+def discover_hermes_home_from_cli() -> Path | None:
+    command = ["hermes", "config", "path"]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+
+    config_path = Path(os.path.expanduser(os.path.expandvars(lines[0]))).resolve()
+    if config_path.name.lower() == "config.yaml":
+        return config_path.parent
+    if config_path.is_dir():
+        return config_path
+    return None
 
 
 def default_obsidian_vault() -> Path:

@@ -455,9 +455,9 @@
   {
     "id": "task_email_pane_future",
     "title": "Add read-only email pane after calendar stabilizes",
-    "description": "Design a safe email panel for priority messages and needs-attention surfacing after calendar is stable; keep it read-only until Brandon explicitly approves send/delete actions.",
+    "description": "Completed safe v1: Today View now includes a read-only Priority Email placeholder backed by GET /api/email and data/email.json. No send/delete/archive controls are exposed; future source integration remains read-only until explicitly approved.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Hermes",
     "due_date": null,
@@ -466,20 +466,21 @@
       "phase-5",
       "email",
       "read-only",
-      "needs-attention"
+      "needs-attention",
+      "completed-slice"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-22T20:10:55-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00"
   },
   {
     "id": "task_service_remote_future",
     "title": "Add Windows startup service docs and safe remote access option",
-    "description": "Document running Agent OS on Windows login and evaluate Tailscale/VPN-only remote access; do not expose port 8888 publicly.",
+    "description": "Completed as documentation/decision: docs/operations-and-boundaries-2026-06-26.md documents Windows startup options and safe remote access. Mentat stays localhost by default; remote access should use VPN/private overlay and never expose port 8888 publicly.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "low",
     "assignee": "Hermes",
     "due_date": null,
@@ -488,20 +489,21 @@
       "phase-5",
       "windows",
       "service",
-      "remote-access"
+      "remote-access",
+      "completed-slice"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-22T11:20:31-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00"
   },
   {
     "id": "task_react_migration_decision",
     "title": "Reassess React migration only when interactions justify it",
-    "description": "Keep the dashboard vanilla JS during UI stabilization; revisit React if direct editing, modals, routing, live agent roster, or websocket updates make the frontend too interaction-heavy.",
+    "description": "Completed decision update: React remains deferred. docs/react-readiness.md now reflects the new task/project editing and agent-message compose flows, with browser smoke/API boundaries keeping vanilla JS viable for now.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "low",
     "assignee": "Hermes",
     "due_date": null,
@@ -510,13 +512,14 @@
       "phase-5",
       "frontend",
       "react",
-      "architecture"
+      "architecture",
+      "completed-slice"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-21T18:00:37-07:00",
-    "updated_at": "2026-06-22T11:20:31-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00"
   },
   {
     "id": "task_wilson_review_next_expansion",
@@ -543,9 +546,9 @@
   {
     "id": "task_mentat_full_rename",
     "title": "Complete full Agent OS to Mentat rename boundary",
-    "description": "Project/task data now use the Mentat project name. Keep the remaining full Agent OS to Mentat rename as a deliberate later milestone: repo path, helper script names, Python compatibility modules, broad docs/Obsidian note names, and compatibility aliases still need a planned migration instead of opportunistic cleanup.",
+    "description": "Completed current rename boundary: user-facing dashboard/data/docs use Mentat, while repo/helper compatibility names such as agent-os remain deliberately preserved until a compatibility-aware migration. See docs/operations-and-boundaries-2026-06-26.md.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Hermes",
     "due_date": null,
@@ -555,18 +558,19 @@
       "cleanup",
       "rename",
       "mentat",
-      "branding"
+      "branding",
+      "completed-slice"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-22T02:08:06-07:00",
-    "updated_at": "2026-06-22T11:20:31-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00"
   },
   {
     "id": "task_agent_os_landscape_research_20260622",
     "title": "Research next Mentat feature via Agent OS / agent dashboard landscape",
-    "description": "Completed: created the Obsidian research note “Mentat - Agent OS Landscape Research - 2026-06-22” with YouTube/GitHub/product landscape findings and a recommendation to prioritize Agent Pulse, dashboard-native task intake, and structured run replay before email or a React migration.",
+    "description": "Completed: created the Obsidian research note \u201cMentat - Agent OS Landscape Research - 2026-06-22\u201d with YouTube/GitHub/product landscape findings and a recommendation to prioritize Agent Pulse, dashboard-native task intake, and structured run replay before email or a React migration.",
     "project": "Mentat",
     "status": "completed",
     "priority": "high",
@@ -591,9 +595,9 @@
   {
     "id": "task_project_create_edit_future",
     "title": "Add dashboard-native project creation and editing",
-    "description": "Later write-back slice: add local-only create/edit flows for projects backed by data/projects.json and the existing allowlisted dashboard API/data helpers. Keep task editing stable first and avoid broad architecture changes.",
+    "description": "Completed: dashboard-native project creation/editing is implemented through project-owned POST /api/projects and POST /api/projects/<id> routes plus Project Portfolio create/edit controls and behavior tests.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Hermes",
     "due_date": null,
@@ -602,13 +606,14 @@
       "phase-4",
       "projects",
       "write-back",
-      "mentat"
+      "mentat",
+      "completed-slice"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-22T19:28:38-07:00",
-    "updated_at": "2026-06-22T19:28:38-07:00",
-    "completed_at": null
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00"
   },
   {
     "id": "task_run_replay_trace_view",
@@ -636,21 +641,23 @@
   },
   {
     "id": "task_4118e4a9aaa1",
-    "title": "Making Test one",
-    "description": "This is a test one!",
+    "title": "Archived dashboard create/edit smoke record",
+    "description": "Historical completed record from an early dashboard create/edit smoke check; retained for completed-task history without surfacing misleading test copy.",
     "project": "Mentat",
     "status": "completed",
-    "priority": "high",
+    "priority": "low",
     "assignee": "Brandon",
     "due_date": "2026-06-25",
     "source": "dashboard",
     "tags": [
-      "phase"
+      "archived-history",
+      "phase",
+      "smoke-check"
     ],
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-22T20:34:53-07:00",
-    "updated_at": "2026-06-25T15:15:02-07:00",
+    "updated_at": "2026-06-26T15:14:16-07:00",
     "completed_at": "2026-06-25T15:15:02-07:00"
   },
   {
@@ -683,19 +690,20 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:20:00-07:00",
-    "updated_at": "2026-06-25T23:20:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_agent_messaging_v1",
     "title": "Build website-to-agent messaging v1",
-    "description": "Implement the first safe local-only website-to-agent messaging slice from [[Mentat - Website-to-Agent Messaging Plan]] / docs/website-to-agent-messaging-plan.md: project-owned message queue, POST/GET APIs, dashboard compose surface, Agent Pulse pending-message indication, and explicit safety/audit states. Do not allow arbitrary browser-triggered shell execution.",
-    "status": "todo",
+    "description": "Completed v1: added data/agent_messages.json, GET/POST /api/agent-messages, POST /api/agent-messages/<id>/state, validated local queue/audit states, Agents/Sessions compose surface, Agent Pulse pending-message indicator, and no browser-triggered shell execution.",
+    "status": "completed",
     "priority": "high",
     "tags": [
       "phase-4",
       "agent-messaging",
       "agent-pulse",
       "write-back",
-      "local-only"
+      "local-only",
+      "completed-slice"
     ]
   },
   {
@@ -706,19 +714,20 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:20:00-07:00",
-    "updated_at": "2026-06-25T23:20:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_browser_smoke_tests_before_agent_messaging",
     "title": "Add browser smoke tests before agent messaging",
-    "description": "Add a lightweight headless browser smoke path before or alongside website-to-agent messaging. Cover Today render, nav, task create/edit control visibility, Agent Pulse empty/live states, task status filter, and the new agent message compose flow once implemented.",
-    "status": "todo",
+    "description": "Completed: added scripts/browser_smoke.mjs covering Today render, navigation, task create/edit control visibility, task status filter, Agent Pulse live heartbeat state, and agent message compose/queued rendering.",
+    "status": "completed",
     "priority": "high",
     "tags": [
       "phase-4",
       "tests",
       "browser-smoke",
       "agent-messaging",
-      "quality"
+      "quality",
+      "completed-slice"
     ]
   },
   {
@@ -729,19 +738,20 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:20:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_css_compact_board_cleanup",
     "title": "Organize compact board CSS by section",
-    "description": "Cleanup after the approved compact dark redesign: keep the visual result unchanged while collapsing the inactive pre-compact CSS layer, pruning removed attention/session analytics/session-card styling, and organizing public/styles.css into clear active sections. The compact rewrite starts late in the file today and overrides much of the older layer, which doubles maintenance and cascade cost.",
-    "status": "todo",
+    "description": "Completed cleanup slice: pruned orphaned attention/session analytics CSS and preserved the compact dark visual contracts while leaving active compact sections intact.",
+    "status": "completed",
     "priority": "medium",
     "tags": [
       "phase-4",
       "cleanup",
       "css",
       "compact-dark-ui",
-      "maintainability"
+      "maintainability",
+      "completed-slice"
     ]
   },
   {
@@ -752,19 +762,20 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:20:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_appjs_view_modularization_before_chat",
     "title": "Split app.js by view responsibility before heavier chat work",
-    "description": "Reduce frontend hotspot risk before website-to-agent messaging. First prune dead/orphaned branches such as renderAttention(), renderSessionStats(), #attention-list handling, and session-stats calls after confirming the panels are removed; then extract or clearly isolate Today/tasks, Agents/Sessions, Calendar, Agent Pulse, Notes/Settings, and event wiring responsibilities. Preserve vanilla JS and existing DOM/API contracts.",
-    "status": "todo",
+    "description": "Completed bounded pre-chat slice: removed orphaned renderAttention/renderSessionStats branches and attention-list wiring, kept shared API helpers in public/core.js, added render-cache helpers, and preserved vanilla JS contracts without broad framework churn.",
+    "status": "completed",
     "priority": "medium",
     "tags": [
       "phase-4",
       "cleanup",
       "frontend",
       "modularization",
-      "agent-messaging"
+      "agent-messaging",
+      "completed-slice"
     ]
   },
   {
@@ -775,19 +786,20 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:20:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_server_api_domain_split_before_chat",
     "title": "Split server API domains before agent messaging grows backend scope",
-    "description": "Plan and apply small backend extraction slices for project-owned API domains such as tasks, agents, Hermes sessions, calendar, and future agent_messages. Start with safety around write-back helpers, preserve endpoint contracts, and maintain Hermes-core read-only boundaries.",
-    "status": "todo",
+    "description": "Completed bounded backend split: project-owned JSON write/read/modify safety moved to json_store.py, route tables now cover project and agent-message domains explicitly, and write-back helpers preserve the Hermes-core read-only boundary.",
+    "status": "completed",
     "priority": "medium",
     "tags": [
       "phase-4",
       "cleanup",
       "backend",
       "modularization",
-      "agent-messaging"
+      "agent-messaging",
+      "completed-slice"
     ]
   },
   {
@@ -845,12 +857,12 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:45:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_json_write_lock_project_owned_data",
     "title": "Add project-owned JSON write locking before more write-back",
-    "description": "Wilson must-fix before score >80: Mentat uses ThreadingHTTPServer and multiple read-modify-write paths for tasks/agents. Add a per-file/thread lock and unique temp filenames around project-owned JSON writes so concurrent task edits, agent heartbeats, and future agent_messages writes cannot lose updates. Keep the existing data allowlist and Hermes-core read-only boundary.",
-    "status": "todo",
+    "description": "Completed: added json_store.py with per-file locks, unique temp files, and atomic replace writes; read-modify-write paths for tasks, attention, agents, projects, and agent_messages now use the locked helper and have concurrency coverage.",
+    "status": "completed",
     "priority": "high",
     "tags": [
       "phase-4",
@@ -858,7 +870,8 @@
       "write-back",
       "json-store",
       "agent-messaging",
-      "wilson-milsen"
+      "wilson-milsen",
+      "completed-slice"
     ]
   },
   {
@@ -869,19 +882,20 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:45:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_prune_orphaned_attention_session_ui",
     "title": "Prune orphaned attention and session analytics UI branches",
-    "description": "Wilson finding: Today attention panel/list/count and Historical Session Analytics have been removed from the DOM, but renderAttention(), renderSessionStats(), related event wiring, and matching CSS still remain. Remove dead branches only after confirming current UI contracts and tests, then run full suite and browser smoke. This should happen before splitting app.js further.",
-    "status": "todo",
+    "description": "Completed: removed dead renderAttention(), renderSessionStats(), attention-list event wiring, and orphaned attention/session-stat CSS after confirming the DOM panels are gone. Updated tests now assert the dead branches stay removed.",
+    "status": "completed",
     "priority": "high",
     "tags": [
       "phase-4",
       "cleanup",
       "frontend",
       "dead-code",
-      "wilson-milsen"
+      "wilson-milsen",
+      "completed-slice"
     ]
   },
   {
@@ -914,19 +928,20 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:45:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_dashboard_refresh_render_perf",
     "title": "Reduce redundant dashboard refresh rendering",
-    "description": "Wilson performance follow-up: cache derived task/project stats during refresh, skip rendering sections whose payload hash/timestamp has not changed, and avoid overlapping recomputation between renderTaskList(), renderProjects(), and renderFocusTasks(). Keep polling centralized and view-gated.",
-    "status": "todo",
+    "description": "Completed lightweight performance slice: dashboard refreshes are view-gated and renderIfChanged/stable payload hashes skip unchanged section renders; task/project stats are cached per task payload.",
+    "status": "completed",
     "priority": "medium",
     "tags": [
       "phase-4",
       "performance",
       "frontend",
       "rendering",
-      "wilson-milsen"
+      "wilson-milsen",
+      "completed-slice"
     ]
   },
   {
@@ -937,12 +952,12 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:45:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_obsidian_and_replay_cache_perf",
     "title": "Add lightweight caching for Obsidian notes and session replay/detail",
-    "description": "Wilson performance follow-up: /api/obsidian-notes recursively reads every markdown file on each Notes view refresh, and session replay/detail are read-only candidates for mtime-based caching. Add simple cache/limit/pagination where useful without changing local-only boundaries.",
-    "status": "todo",
+    "description": "Completed: Obsidian notes use vault mtime/size signature caching, and session detail/replay endpoints use state.db mtime-based caches while remaining read-only.",
+    "status": "completed",
     "priority": "medium",
     "tags": [
       "phase-4",
@@ -950,7 +965,8 @@
       "obsidian",
       "sessions",
       "cache",
-      "wilson-milsen"
+      "wilson-milsen",
+      "completed-slice"
     ]
   },
   {
@@ -961,19 +977,20 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:45:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_trim_onboarding_docs_history",
     "title": "Trim README/AGENTS phase history into docs for cleaner onboarding",
-    "description": "Wilson conciseness follow-up: README.md and AGENTS.md are useful but too verbose for first-contact onboarding. Keep quickstart/current behavior concise and move older phase history/roadmap detail into dedicated docs when convenient.",
-    "status": "todo",
+    "description": "Completed: README/AGENTS were reconciled toward current behavior and older roadmap/future-task prose was moved/condensed into docs/operations-and-boundaries-2026-06-26.md and existing focused docs.",
+    "status": "completed",
     "priority": "low",
     "tags": [
       "phase-4",
       "docs",
       "onboarding",
       "conciseness",
-      "wilson-milsen"
+      "wilson-milsen",
+      "completed-slice"
     ]
   },
   {
@@ -984,19 +1001,60 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-25T23:45:00-07:00",
-    "updated_at": "2026-06-25T23:45:00-07:00",
-    "completed_at": null,
+    "updated_at": "2026-06-26T14:57:33-07:00",
+    "completed_at": "2026-06-26T14:57:33-07:00",
     "id": "task_remove_unused_server_imports",
     "title": "Remove unused server imports during next cleanup pass",
-    "description": "Wilson small cleanup: verify and remove unused imports such as sys and HEALTH_STATUS_RANK from server.py as part of the next code cleanup pass. Keep this bundled with dead-code pruning rather than as a standalone feature branch unless already touching server.py.",
-    "status": "todo",
+    "description": "Completed: removed the unused server.py sys import. HEALTH_STATUS_RANK remains intentionally re-exported from server.py because the health contract/tests depend on it.",
+    "status": "completed",
     "priority": "low",
     "tags": [
       "phase-4",
       "cleanup",
       "backend",
       "small-fix",
-      "wilson-milsen"
+      "wilson-milsen",
+      "completed-slice"
     ]
+  },
+  {
+    "id": "task_64efdcad8665",
+    "title": "Linux and MacOS turn key setup",
+    "description": "Make it easier and native for mac and linux users to setup without going into configs themselves.\n\nTHis should be done with through the CLI, detecting their OS, and then making sure the proper setup and deployment is setup for their particular operating system.",
+    "project": "Mentat",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": "Hermes",
+    "due_date": "2026-06-29",
+    "source": "dashboard",
+    "tags": [],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-26T16:08:25-07:00",
+    "updated_at": "2026-06-26T16:08:25-07:00",
+    "completed_at": null
+  },
+  {
+    "id": "task_26fc389a8f5a",
+    "title": "Add Themes for Mentat",
+    "description": "Completed: added a site-wide Mentat theme selector in Settings with persisted localStorage state and five themes (Compact Dark, Light, Catppuccin, Nord, Aurora). CSS theme tokens now drive the compact dashboard palette through :root[data-theme=...] overrides, preview swatches are clickable, and visual contract coverage was added.",
+    "project": "Mentat",
+    "status": "completed",
+    "priority": "high",
+    "assignee": "Hermes",
+    "due_date": "2026-06-30",
+    "source": "dashboard",
+    "tags": [
+      "phase-5",
+      "ui",
+      "themes",
+      "settings",
+      "completed-slice"
+    ],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-06-27T23:48:55-07:00",
+    "updated_at": "2026-06-27T23:54:16-07:00",
+    "completed_at": "2026-06-27T23:54:16-07:00"
   }
 ]

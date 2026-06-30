@@ -10,8 +10,10 @@ const endpoints = {
   projects: '/api/projects',
   tasks: '/api/tasks',
   agents: '/api/agents',
+  agentMessages: '/api/agent-messages',
   attention: '/api/attention',
   calendar: '/api/calendar',
+  email: '/api/email',
   crons: '/api/hermes/crons',
   sessions: '/api/hermes/sessions',
   search: '/api/hermes/search',
@@ -25,6 +27,11 @@ const state = {
   tasks: [],
   projects: [],
   agents: [],
+  agentMessages: [],
+  dismissedAgentPulseIds: new Set(),
+  lastAgentPulsePayload: null,
+  renderCache: {},
+  taskStatsCache: { key: '', byProject: new Map(), portfolio: null },
   projectsLoaded: false,
   greetingName: 'Operator',
   greetingPrefix: 'Hello',
@@ -37,6 +44,9 @@ const state = {
   taskEditorMode: 'view',
   taskEditorTaskId: '',
   taskEditorDraft: null,
+  projectEditorMode: 'view',
+  projectEditorProjectId: '',
+  projectEditorDraft: null,
   selectedSessionId: '',
   selectedSessionDetailTab: 'replay',
   selectedSessionDetailPayload: null,
@@ -46,6 +56,7 @@ const state = {
   isRefreshing: false,
   needsRefresh: false,
   hasBootstrapped: false,
+  currentTheme: 'compact-dark',
 };
 
 const taskStatusLabels = {
@@ -242,6 +253,22 @@ async function createTask(payload) {
 
 async function saveTaskEdits(id, payload) {
   return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}`, payload, { method: 'POST' });
+}
+
+async function createProject(payload) {
+  return sendJson(endpoints.projects, payload, { method: 'POST' });
+}
+
+async function saveProjectEdits(id, payload) {
+  return sendJson(`${endpoints.projects}/${encodeURIComponent(id)}`, payload, { method: 'POST' });
+}
+
+async function sendAgentMessage(payload) {
+  return sendJson(endpoints.agentMessages, payload, { method: 'POST' });
+}
+
+async function setAgentMessageState(id, payload) {
+  return sendJson(`${endpoints.agentMessages}/${encodeURIComponent(id)}/state`, payload, { method: 'POST' });
 }
 
 async function fetchSessionDetail(id, messageId = '') {

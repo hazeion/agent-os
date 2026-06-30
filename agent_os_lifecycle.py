@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -53,14 +57,85 @@ def parse_netstat_listeners(output: str) -> list[Listener]:
 
 
 def netstat_listeners() -> list[Listener]:
-    result = subprocess.run(
-        ["netstat", "-ano", "-p", "tcp"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    return parse_netstat_listeners(result.stdout)
+    if os.name == "nt":
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        return parse_netstat_listeners(result.stdout)
+    return posix_listeners()
+
+
+def parse_lsof_listeners(output: str) -> list[Listener]:
+    listeners: list[Listener] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("COMMAND"):
+            continue
+        parts = raw_line.split()
+        if len(parts) < 3:
+            continue
+        pid_text = parts[1]
+        name_field = parts[-2] if parts[-1] == "(LISTEN)" else parts[-1]
+        if ":" not in name_field:
+            continue
+        try:
+            pid = int(pid_text)
+            port = int(name_field.rsplit(":", 1)[1].rstrip(")"))
+        except ValueError:
+            continue
+        listeners.append(Listener(pid=pid, port=port, local_address=name_field, raw=raw_line.rstrip()))
+    return listeners
+
+
+def posix_listeners() -> list[Listener]:
+    commands = [
+        ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"],
+        ["ss", "-ltnp"],
+    ]
+    for command in commands:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0 and not result.stdout:
+            continue
+        if command[0] == "lsof":
+            return parse_lsof_listeners(result.stdout)
+        return parse_ss_listeners(result.stdout)
+    return []
+
+
+def parse_ss_listeners(output: str) -> list[Listener]:
+    listeners: list[Listener] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("State"):
+            continue
+        parts = raw_line.split()
+        if len(parts) < 6:
+            continue
+        if parts[0].upper() != "LISTEN":
+            continue
+        local_address = parts[3]
+        process_info = " ".join(parts[5:])
+        match = None
+        for pattern in [r"pid=(\d+)", r",pid=(\d+),", r'pid=(\d+)']:
+            match = re.search(pattern, process_info)
+            if match:
+                break
+        if match is None:
+            continue
+        try:
+            pid = int(match.group(1))
+            port = int(local_address.rsplit(":", 1)[1])
+        except ValueError:
+            continue
+        listeners.append(Listener(pid=pid, port=port, local_address=local_address, raw=raw_line.rstrip()))
+    return listeners
 
 
 def read_runtime_state(path: Path) -> dict | None:
@@ -101,6 +176,13 @@ def probe_agent_os(port: int, timeout: float = 0.6) -> bool:
 
 
 def process_commandline(pid: int) -> str:
+    if os.name != "nt":
+        try:
+            result = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, check=False, timeout=10)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return ""
+        return (result.stdout or "").strip()
+
     commands = [
         [
             "powershell.exe",
@@ -113,7 +195,7 @@ def process_commandline(pid: int) -> str:
     for command in commands:
         try:
             result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         output = (result.stdout or "").strip()
         if not output:
@@ -149,15 +231,41 @@ def identify_listener(listener: Listener, state_pid: int | None, probe_cache: di
 
 
 def kill_pid(pid: int) -> tuple[bool, str]:
-    result = subprocess.run(
-        ["taskkill", "/PID", str(pid), "/F"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-    message = (result.stdout or result.stderr or "").strip() or f"taskkill exit code {result.returncode}"
-    return result.returncode == 0, message
+    if os.name == "nt":
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        message = (result.stdout or result.stderr or "").strip() or f"taskkill exit code {result.returncode}"
+        return result.returncode == 0, message
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True, "process already exited"
+    except OSError as exc:
+        return False, str(exc)
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True, "terminated with SIGTERM"
+        except OSError as exc:
+            return False, str(exc)
+        time.sleep(0.1)
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True, "terminated with SIGTERM"
+    except OSError as exc:
+        return False, str(exc)
+    return True, "terminated with SIGKILL"
 
 
 def cleanup_agent_os_listeners(config: server.AppConfig, *, stop_only: bool = False) -> dict:
