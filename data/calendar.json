@@ -1,10 +1,10 @@
 [
   {
-    "id": "cal_placeholder_google",
-    "title": "Local calendar fallback data",
+    "id": "cal_placeholder_local",
+    "title": "Example local calendar fallback",
     "start": null,
     "end": null,
     "type": "placeholder",
-    "description": "Fallback event shown when Google Calendar read-only sync is unavailable. When the Hermes Google token is present, Agent OS should prefer live Google events and only fall back to this local file on auth or API errors."
+    "description": "Example fallback event shown when a live calendar source is not connected."
   }
 ]
