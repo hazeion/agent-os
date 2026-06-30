@@ -43,7 +43,7 @@ class LocalServerLifecycleTests(unittest.TestCase):
                 {
                     "generated_at": "2026-06-22T00:00:00-07:00",
                     "cards": {"active_tasks": 1},
-                    "identity": {"display_name": "Brandon"},
+                    "identity": {"display_name": "Operator"},
                 }
             )
         )

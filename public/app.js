@@ -448,7 +448,7 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
           </label>
           <label class="task-editor-field field-span-2">
             <span class="task-editor-label mono">Assignee</span>
-            <input name="assignee" type="text" maxlength="120" value="${escapeHtml(draft?.assignee || '')}" placeholder="Brandon, Hermes, or another owner" />
+            <input name="assignee" type="text" maxlength="120" value="${escapeHtml(draft?.assignee || '')}" placeholder="Operator, Hermes, or another owner" />
           </label>
           <label class="task-editor-field field-span-2">
             <span class="task-editor-label mono">Tags</span>

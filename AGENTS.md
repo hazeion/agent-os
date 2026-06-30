@@ -68,6 +68,8 @@ Do not modify:
 
 Dashboard write-back should stay limited to project-owned files and allowlisted endpoints, typically under `data/`.
 
+Tracked JSON fixtures under `data/` should remain public-safe seed/example data. Avoid committing personal names, local paths, account identifiers, or real message history there.
+
 ### Local-first only
 
 Keep the app local-only by default. Do not expose the dashboard publicly unless that direction is explicitly approved and implemented safely.

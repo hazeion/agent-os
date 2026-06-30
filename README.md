@@ -280,6 +280,10 @@ data/agents.json
 data/agent_messages.json
 ```
 
+These tracked JSON files are intended to remain **public-safe seed/example data**.
+Do not commit personal names, local filesystem paths, real messages, or private account details into them.
+Use local overrides or untracked runtime files for machine-specific/private content.
+
 ## Main files
 
 ```text

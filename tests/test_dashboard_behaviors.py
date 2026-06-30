@@ -126,7 +126,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             {"id": "project_agent_os", "name": "Agent OS", "status": "active"},
             {"id": "project_archive", "name": "Archive", "status": "paused"},
         ]
-        dashboard = {"display_name": "Brandon", "greeting_prefix": "Hello"}
+        dashboard = {"display_name": "Operator", "greeting_prefix": "Hello"}
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "tasks.json", tasks)
@@ -134,13 +134,14 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.write_json(root, "attention.json", [])
             self.write_json(root, "dashboard.json", dashboard)
             with patch.object(server, "DATA_DIR", root), patch.object(
-                server, "CONFIG_GREETING_PREFIX", "Hello"
+                server, "CONFIG_DISPLAY_NAME", None
+            ), patch.object(server, "CONFIG_GREETING_PREFIX", "Hello"
             ), patch.object(
                 server, "read_cron_jobs", return_value={"count": 2, "jobs": []}
             ), patch.object(server, "recent_sessions", return_value={"sessions": [{}, {}, {}]}):
                 payload = server.overview()
 
-        self.assertEqual(payload["identity"]["display_name"], "Brandon")
+        self.assertEqual(payload["identity"]["display_name"], "Operator")
         self.assertEqual(payload["identity"]["greeting_prefix"], "Hello")
         self.assertEqual(payload["cards"]["needs_attention"], 1)
         self.assertEqual(payload["cards"]["active_tasks"], 2)
@@ -155,7 +156,7 @@ class DashboardBehaviorTests(unittest.TestCase):
                 "id": "project_agent_os",
                 "name": "Agent OS",
                 "status": "active",
-                "obsidian_note": "Agentic OS Project Home",
+                "obsidian_note": "",
             }
         ]
         with TemporaryDirectory() as tmpdir:
@@ -166,7 +167,7 @@ class DashboardBehaviorTests(unittest.TestCase):
 
         self.assertEqual(payload["projects"], projects)
         self.assertEqual(payload["projects"][0]["name"], "Agent OS")
-        self.assertEqual(payload["projects"][0]["obsidian_note"], "Agentic OS Project Home")
+        self.assertEqual(payload["projects"][0]["obsidian_note"], "")
 
     def test_agents_endpoint_returns_live_summary_for_agent_pulse(self):
         now = datetime.now().astimezone().replace(microsecond=0)
@@ -191,7 +192,7 @@ class DashboardBehaviorTests(unittest.TestCase):
                 "id": "agent_helper",
                 "name": "Helper",
                 "status": "blocked",
-                "current_task": "Waiting on Brandon input",
+                "current_task": "Waiting on operator input",
                 "project": "Mentat",
                 "source": "agent",
                 "latest_output": "Need a decision on the next feature slice",
@@ -409,7 +410,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             "project": "Mentat",
             "status": "todo",
             "priority": "high",
-            "assignee": "Brandon",
+            "assignee": "Operator",
             "due_date": "2026-07-01",
             "tags": ["phase-3", " write-back ", ""],
             "review_required": True,
@@ -429,7 +430,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         self.assertEqual(payload["task"]["project"], "Mentat")
         self.assertEqual(payload["task"]["status"], "todo")
         self.assertEqual(payload["task"]["priority"], "high")
-        self.assertEqual(payload["task"]["assignee"], "Brandon")
+        self.assertEqual(payload["task"]["assignee"], "Operator")
         self.assertEqual(payload["task"]["due_date"], "2026-07-01")
         self.assertEqual(payload["task"]["tags"], ["phase-3", "write-back"])
         self.assertTrue(payload["task"]["review_required"])
@@ -471,7 +472,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             "project": "Mentat",
             "status": "completed",
             "priority": "high",
-            "assignee": "Brandon",
+            "assignee": "Operator",
             "due_date": "",
             "tags": ["phase-3", " write-back "],
             "review_required": False,
@@ -491,7 +492,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         self.assertEqual(payload["task"]["title"], "Updated title")
         self.assertEqual(payload["task"]["status"], "completed")
         self.assertEqual(payload["task"]["priority"], "high")
-        self.assertEqual(payload["task"]["assignee"], "Brandon")
+        self.assertEqual(payload["task"]["assignee"], "Operator")
         self.assertIsNone(payload["task"]["due_date"])
         self.assertEqual(payload["task"]["tags"], ["phase-3", "write-back"])
         self.assertFalse(payload["task"]["review_required"])
@@ -552,7 +553,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             "project": "Mentat",
             "status": "in progress",
             "priority": "high",
-            "assignee": "Brandon",
+            "assignee": "Operator",
             "due_date": "2026-07-03",
             "tags": ["api", "edited"],
             "review_required": True,
