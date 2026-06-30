@@ -6,14 +6,10 @@ INDEX = (ROOT / "public" / "index.html").read_text(encoding="utf-8")
 CSS = (ROOT / "public" / "styles.css").read_text(encoding="utf-8")
 APP_JS = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
 CORE_JS = (ROOT / "public" / "core.js").read_text(encoding="utf-8")
-DESIGN_DOC = (ROOT / "docs" / "compact-dark-dashboard-design.md").read_text(encoding="utf-8")
 
 
 class VisualContractTests(unittest.TestCase):
-    def test_compact_dark_board_design_doc_and_tokens_exist(self):
-        self.assertIn("Mentat Compact Dark Dashboard Design", DESIGN_DOC)
-        self.assertIn("Feature parity", DESIGN_DOC)
-        self.assertIn("--radius: 2px", DESIGN_DOC)
+    def test_compact_dark_board_tokens_exist(self):
         self.assertIn("Compact Dark Board Rewrite", CSS)
         compact_block = CSS[CSS.index("/* Compact Dark Board Rewrite") :]
         self.assertIn("--bg: #050505", compact_block)

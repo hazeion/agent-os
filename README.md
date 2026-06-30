@@ -1,4 +1,4 @@
-# Mentat (Agent OS)
+# Mentat
 
 Mentat is a small local-first dashboard for people who want a more practical way to use AI while managing a real build project.
 
@@ -62,8 +62,8 @@ Mentat currently includes:
 ### 1) Clone the repo
 
 ```bash
-git clone https://github.com/hazeion/agent-os.git
-cd agent-os
+git clone https://github.com/hazeion/mentat.git
+cd mentat
 ```
 
 ### 2) Install Python dependencies
@@ -82,9 +82,9 @@ python scripts/mentat_setup.py
 
 The wizard creates local-only files such as:
 
-- `agent-os.local.toml`
-- `agent-os.local.env`
-- `agent-os.local.env.bat`
+- `mentat.local.toml`
+- `mentat.local.env`
+- `mentat.local.env.bat`
 
 It does **not** write credentials or tokens.
 
@@ -103,14 +103,14 @@ http://localhost:8888
 #### Option A: Git Bash / Hermes terminal
 
 ```bash
-cd "/path/to/agent-os"
+cd "/path/to/mentat"
 ./run.sh
 ```
 
 #### Option B: Command Prompt / Explorer
 
 ```bat
-cd /d C:\path\to\agent-os
+cd /d C:\path\to\mentat
 run.bat
 ```
 
@@ -128,14 +128,14 @@ From Git Bash:
 From Command Prompt:
 
 ```bat
-python agent_os_lifecycle.py status
-python agent_os_lifecycle.py stop
+python mentat_lifecycle.py status
+python mentat_lifecycle.py stop
 ```
 
 ### macOS
 
 ```bash
-cd "/path/to/agent-os"
+cd "/path/to/mentat"
 python -m pip install -r requirements.txt
 python scripts/mentat_setup.py
 ./run.sh
@@ -159,7 +159,7 @@ hermes doctor
 ### Linux
 
 ```bash
-cd "/path/to/agent-os"
+cd "/path/to/mentat"
 python -m pip install -r requirements.txt
 python scripts/mentat_setup.py
 ./run.sh
@@ -217,13 +217,13 @@ python server.py --host 0.0.0.0 --port 8890
 Check lifecycle state:
 
 ```bash
-python agent_os_lifecycle.py status
+python mentat_lifecycle.py status
 ```
 
 Stop the managed server:
 
 ```bash
-python agent_os_lifecycle.py stop
+python mentat_lifecycle.py stop
 ```
 
 ## Configuration
@@ -231,26 +231,26 @@ python agent_os_lifecycle.py stop
 Mentat uses layered runtime configuration in this order:
 
 1. built-in defaults
-2. `agent-os.toml`
-3. `agent-os.local.toml`
+2. `mentat.toml`
+3. `mentat.local.toml`
 4. environment variables
 5. CLI flags
 
 Useful overrides:
 
-- `AGENT_OS_PORT`
-- `AGENT_OS_HOST`
-- `AGENT_OS_APP_NAME`
+- `MENTAT_PORT`
+- `MENTAT_HOST`
+- `MENTAT_APP_NAME`
 - `HERMES_HOME`
 - `OBSIDIAN_VAULT_PATH`
-- `AGENT_OS_CONFIG`
+- `MENTAT_CONFIG`
 
 Important local config files:
 
-- `agent-os.toml` — shared repo defaults
-- `agent-os.local.toml` — your machine-specific overrides
-- `agent-os.local.env` — optional POSIX env exports
-- `agent-os.local.env.bat` — optional Windows env exports
+- `mentat.toml` — shared repo defaults
+- `mentat.local.toml` — your machine-specific overrides
+- `mentat.local.env` — optional POSIX env exports
+- `mentat.local.env.bat` — optional Windows env exports
 
 ## Scope
 
@@ -289,7 +289,7 @@ Use local overrides or untracked runtime files for machine-specific/private cont
 ```text
 server.py
 runtime_config.py
-agent_os_lifecycle.py
+mentat_lifecycle.py
 scripts/mentat_setup.py
 scripts/agent_heartbeat.py
 run.sh
@@ -302,7 +302,7 @@ public/index.html
 public/styles.css
 public/core.js
 public/app.js
-agent-os.toml
+mentat.toml
 README.md
 inventory.md
 ```
@@ -369,9 +369,7 @@ python server.py --print-config
 
 ## Project notes
 
-Mentat is the user-facing name.
-
-Some repo paths, helper scripts, and compatibility references still use `agent-os` or Agent OS while the broader rename settles out.
+Mentat is the user-facing name and the repository naming convention.
 
 This project is still local-first and intentionally small in scope. The goal is to make it easier for other people to adopt, configure, and use without a lot of setup friction.
 

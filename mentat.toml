@@ -1,8 +1,8 @@
-# Shared Agent OS runtime defaults.
+# Shared Mentat runtime defaults.
 #
 # Copy this repo, then edit these values or provide overrides with:
-# - agent-os.local.toml (gitignored, machine-specific)
-# - environment variables like AGENT_OS_PORT / HERMES_HOME / OBSIDIAN_VAULT_PATH
+# - mentat.local.toml (gitignored, machine-specific)
+# - environment variables like MENTAT_PORT / HERMES_HOME / OBSIDIAN_VAULT_PATH
 # - CLI flags like --port, --host, --obsidian-vault
 
 [server]

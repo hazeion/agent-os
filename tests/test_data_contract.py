@@ -18,6 +18,20 @@ class DataFixtureTests(unittest.TestCase):
         self.assertEqual([project["name"] for project in PROJECTS], ["Mentat"])
         self.assertEqual({task["project"] for task in TASKS}, {"Mentat"})
 
+    def test_tracked_seed_data_uses_current_public_identity(self):
+        payload = json.dumps({"projects": PROJECTS, "tasks": TASKS})
+        blocked_terms = [
+            "Agent " "OS",
+            "agent" "-os",
+            "agent" "_os",
+            "AGENT" "_OS",
+            "Agent" "OS",
+            "E:/code/",
+            "E:\\code\\",
+        ]
+        for term in blocked_terms:
+            self.assertNotIn(term, payload)
+
 
 if __name__ == "__main__":
     unittest.main()

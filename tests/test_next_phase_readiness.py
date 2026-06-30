@@ -7,7 +7,7 @@ APP_JS = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
 CORE_JS = (ROOT / "public" / "core.js").read_text(encoding="utf-8")
 SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
 RUNTIME_CONFIG = (ROOT / "runtime_config.py").read_text(encoding="utf-8")
-REACT_NOTES = (ROOT / "docs" / "react-readiness.md").read_text(encoding="utf-8")
+README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 class NextPhaseReadinessTests(unittest.TestCase):
@@ -18,14 +18,14 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn("activeView === 'today' || activeView === 'agents'", refresh_block)
         self.assertIn("activeView === 'projects'", refresh_block)
 
-    def test_react_readiness_notes_document_no_premature_refactor(self):
-        self.assertIn("Do **not** migrate to React yet", REACT_NOTES)
-        self.assertIn("Task/project write-back and agent messages", REACT_NOTES)
-        self.assertIn("Live Agent Pulse heartbeat", REACT_NOTES)
+    def test_readme_documents_no_premature_frontend_build_step(self):
+        self.assertIn("static HTML, CSS, and vanilla JavaScript", README)
+        self.assertIn("There is currently **no npm install step**", README)
+        self.assertIn("Agent Pulse live heartbeat registry", README)
 
     def test_dashboard_identity_is_project_owned_not_hardcoded(self):
         self.assertIn('read_json_file("dashboard.json", {})', SERVER)
-        self.assertIn("AGENT_OS_DISPLAY_NAME", RUNTIME_CONFIG)
+        self.assertIn('env_value("DISPLAY_NAME")', RUNTIME_CONFIG)
         self.assertNotIn('"Brandon"', SERVER)
 
     def test_calendar_integration_stays_read_only_and_uses_seven_day_agenda(self):

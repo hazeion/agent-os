@@ -13,13 +13,16 @@ import server
 class RuntimeConfigTests(unittest.TestCase):
     def test_repo_defaults_include_toml_runtime_config(self):
         original_local_config = runtime_config.LOCAL_CONFIG_FILE
+        original_legacy_local_config = runtime_config.LEGACY_LOCAL_CONFIG_FILE
         try:
-            runtime_config.LOCAL_CONFIG_FILE = runtime_config.BASE_DIR / "agent-os.local.test-missing.toml"
+            runtime_config.LOCAL_CONFIG_FILE = runtime_config.BASE_DIR / "mentat.local.test-missing.toml"
+            runtime_config.LEGACY_LOCAL_CONFIG_FILE = runtime_config.BASE_DIR / "mentat.previous-local.test-missing.toml"
             config = server.load_app_config()
         finally:
             runtime_config.LOCAL_CONFIG_FILE = original_local_config
-        self.assertTrue(any(path.name == "agent-os.toml" for path in config.config_files))
-        self.assertFalse(any(path.name == "agent-os.local.toml" for path in config.config_files))
+            runtime_config.LEGACY_LOCAL_CONFIG_FILE = original_legacy_local_config
+        self.assertTrue(any(path.name == "mentat.toml" for path in config.config_files))
+        self.assertFalse(any(path.name == "mentat.local.toml" for path in config.config_files))
         self.assertEqual(config.host, "127.0.0.1")
         self.assertEqual(config.port, 8888)
         self.assertEqual(config.app_name, "Mentat")
@@ -83,9 +86,9 @@ obsidian_vault = "notes"
             )
             original = os.environ.copy()
             try:
-                os.environ["AGENT_OS_CONFIG"] = str(config_path)
-                os.environ["AGENT_OS_HOST"] = "0.0.0.0"
-                os.environ["AGENT_OS_PORT"] = "9001"
+                os.environ["MENTAT_CONFIG"] = str(config_path)
+                os.environ["MENTAT_HOST"] = "0.0.0.0"
+                os.environ["MENTAT_PORT"] = "9001"
                 os.environ["OBSIDIAN_VAULT_PATH"] = str(root / "env-vault")
                 config = server.load_app_config()
             finally:
@@ -95,6 +98,47 @@ obsidian_vault = "notes"
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 9001)
         self.assertEqual(config.obsidian_vault, (root / "env-vault").resolve())
+
+    def test_mentat_environment_overrides_previous_environment_aliases(self):
+        original = os.environ.copy()
+        try:
+            os.environ[runtime_config.env_name("HOST", legacy=True)] = "0.0.0.0"
+            os.environ[runtime_config.env_name("PORT", legacy=True)] = "9001"
+            os.environ["MENTAT_HOST"] = "127.0.0.1"
+            os.environ["MENTAT_PORT"] = "7777"
+            config = server.load_app_config()
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
+        self.assertEqual(config.host, "127.0.0.1")
+        self.assertEqual(config.port, 7777)
+
+    def test_previous_local_config_file_loads_below_mentat_local_config(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            previous_path = root / ("agent" "-os.local.toml")
+            mentat_path = root / "mentat.local.toml"
+            previous_path.write_text("[server]\nhost = \"0.0.0.0\"\nport = 9001\n", encoding="utf-8")
+            mentat_path.write_text("[server]\nport = 7777\n", encoding="utf-8")
+            original_default = runtime_config.DEFAULT_CONFIG_FILE
+            original_local = runtime_config.LOCAL_CONFIG_FILE
+            original_previous_default = runtime_config.LEGACY_DEFAULT_CONFIG_FILE
+            original_previous_local = runtime_config.LEGACY_LOCAL_CONFIG_FILE
+            try:
+                runtime_config.DEFAULT_CONFIG_FILE = root / "mentat.missing.toml"
+                runtime_config.LOCAL_CONFIG_FILE = mentat_path
+                runtime_config.LEGACY_DEFAULT_CONFIG_FILE = root / "previous-shared.missing.toml"
+                runtime_config.LEGACY_LOCAL_CONFIG_FILE = previous_path
+                config = server.load_app_config()
+            finally:
+                runtime_config.DEFAULT_CONFIG_FILE = original_default
+                runtime_config.LOCAL_CONFIG_FILE = original_local
+                runtime_config.LEGACY_DEFAULT_CONFIG_FILE = original_previous_default
+                runtime_config.LEGACY_LOCAL_CONFIG_FILE = original_previous_local
+
+        self.assertEqual(config.host, "0.0.0.0")
+        self.assertEqual(config.port, 7777)
 
     def test_cli_overrides_environment_and_file_values(self):
         with TemporaryDirectory() as tmpdir:
@@ -114,10 +158,10 @@ greeting_prefix = "Hi"
             )
             original = os.environ.copy()
             try:
-                os.environ["AGENT_OS_CONFIG"] = str(config_path)
-                os.environ["AGENT_OS_HOST"] = "0.0.0.0"
-                os.environ["AGENT_OS_PORT"] = "9001"
-                os.environ["AGENT_OS_DISPLAY_NAME"] = "Env Name"
+                os.environ["MENTAT_CONFIG"] = str(config_path)
+                os.environ["MENTAT_HOST"] = "0.0.0.0"
+                os.environ["MENTAT_PORT"] = "9001"
+                os.environ["MENTAT_DISPLAY_NAME"] = "Env Name"
                 cli = server.parse_cli_args(["--host", "127.0.0.1", "--port", "7777", "--display-name", "CLI Name", "--greeting-prefix", "Howdy", "--app-name", "CLI App"])
                 config = server.load_app_config(cli)
             finally:

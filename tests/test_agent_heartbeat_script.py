@@ -18,7 +18,7 @@ class AgentHeartbeatScriptTests(unittest.TestCase):
             status="active",
             current_task="Publish heartbeat",
             project="Mentat",
-            cwd="E:/code/agent-os",
+            cwd="C:/Projects/mentat",
             model="test-model",
             source="heartbeat-script",
             latest_output="Working",

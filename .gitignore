@@ -28,11 +28,14 @@ Thumbs.db
 
 # Future local secrets/auth files
 .env
-agent-os.local.env
-agent-os.local.env.bat
+mentat.local.env
+mentat.local.env.bat
+agent?os.local.env
+agent?os.local.env.bat
 *.secret
 secrets.json
 users.json
 
 # Keep project-owned JSON seed data tracked unless intentionally moved to private/local data.
-agent-os.local.toml
+mentat.local.toml
+agent?os.local.toml

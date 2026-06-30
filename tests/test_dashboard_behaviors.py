@@ -59,7 +59,7 @@ class DashboardBehaviorTests(unittest.TestCase):
                 "id": "task_review_api",
                 "title": "Review API payloads",
                 "description": "Still needs human review",
-                "project": "Agent OS",
+                "project": "Mentat",
                 "status": "todo",
                 "priority": "high",
                 "review_required": True,
@@ -68,7 +68,7 @@ class DashboardBehaviorTests(unittest.TestCase):
                 "id": "task_done",
                 "title": "Already done",
                 "status": "completed",
-                "project": "Agent OS",
+                "project": "Mentat",
             },
         ]
         with TemporaryDirectory() as tmpdir:
@@ -96,14 +96,14 @@ class DashboardBehaviorTests(unittest.TestCase):
                 "id": "task_active",
                 "title": "Active task",
                 "status": "todo",
-                "project": "Agent OS",
+                "project": "Mentat",
                 "created_at": now.isoformat(timespec="seconds"),
             },
             {
                 "id": "task_attention",
                 "title": "Needs attention task",
                 "status": "in progress",
-                "project": "Agent OS",
+                "project": "Mentat",
                 "needs_attention": True,
                 "updated_at": now.isoformat(timespec="seconds"),
             },
@@ -111,19 +111,19 @@ class DashboardBehaviorTests(unittest.TestCase):
                 "id": "task_recent_done",
                 "title": "Recently completed",
                 "status": "completed",
-                "project": "Agent OS",
+                "project": "Mentat",
                 "completed_at": (now - timedelta(days=1)).isoformat(timespec="seconds"),
             },
             {
                 "id": "task_old_done",
                 "title": "Older completed",
                 "status": "completed",
-                "project": "Agent OS",
+                "project": "Mentat",
                 "completed_at": (now - timedelta(days=10)).isoformat(timespec="seconds"),
             },
         ]
         projects = [
-            {"id": "project_agent_os", "name": "Agent OS", "status": "active"},
+            {"id": "project_mentat", "name": "Mentat", "status": "active"},
             {"id": "project_archive", "name": "Archive", "status": "paused"},
         ]
         dashboard = {"display_name": "Operator", "greeting_prefix": "Hello"}
@@ -153,8 +153,8 @@ class DashboardBehaviorTests(unittest.TestCase):
     def test_projects_endpoint_returns_plain_list_for_ui_hydration(self):
         projects = [
             {
-                "id": "project_agent_os",
-                "name": "Agent OS",
+                "id": "project_mentat",
+                "name": "Mentat",
                 "status": "active",
                 "obsidian_note": "",
             }
@@ -166,7 +166,7 @@ class DashboardBehaviorTests(unittest.TestCase):
                 payload = server.API_ROUTES["/api/projects"]()
 
         self.assertEqual(payload["projects"], projects)
-        self.assertEqual(payload["projects"][0]["name"], "Agent OS")
+        self.assertEqual(payload["projects"][0]["name"], "Mentat")
         self.assertEqual(payload["projects"][0]["obsidian_note"], "")
 
     def test_agents_endpoint_returns_live_summary_for_agent_pulse(self):
@@ -178,7 +178,7 @@ class DashboardBehaviorTests(unittest.TestCase):
                 "status": "running",
                 "current_task": "Review dashboard task queue",
                 "project": "Mentat",
-                "cwd": "E:/code/agent-os",
+                "cwd": "C:/Projects/mentat",
                 "model": "gpt-5.4-mini",
                 "source": "dashboard",
                 "latest_output": "Working through task creation and edit",
@@ -281,7 +281,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             "status": "running",
             "current_task": "Implement Agent Pulse 2.0",
             "project": "Mentat",
-            "cwd": "E:/code/agent-os",
+            "cwd": "C:/Projects/mentat",
             "model": "gpt-5.4-mini",
             "source": "dashboard",
             "latest_output": "Streaming a fresh heartbeat",

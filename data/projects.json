@@ -7,9 +7,6 @@
     "description": "Local-first dashboard for projects, tasks, sessions, and agent activity.",
     "obsidian_note": "",
     "created_at": "2026-06-20T22:32:04",
-    "updated_at": "2026-06-29T12:00:00-07:00",
-    "legacy_names": [
-      "Agent OS"
-    ]
+    "updated_at": "2026-06-29T12:00:00-07:00"
   }
 ]

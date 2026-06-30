@@ -21,7 +21,7 @@ All notable changes to Mentat.
 - Ensured attention/task/project/agent payload flows align with new status and persistence handling.
 
 ### Validation
-- `python -m py_compile server.py json_store.py agent_os_lifecycle.py runtime_config.py scripts/mentat_setup.py`
+- `python -m py_compile server.py json_store.py mentat_lifecycle.py runtime_config.py scripts/mentat_setup.py`
 - `node --check public/app.js`
 - `node --check public/core.js`
 - `node --check scripts/browser_smoke.mjs`

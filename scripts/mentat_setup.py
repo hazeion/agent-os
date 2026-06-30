@@ -2,9 +2,9 @@
 """Interactive, local-first setup wizard for Mentat.
 
 This helper writes only local, untracked bootstrap files:
-- `agent-os.local.toml` (machine-specific runtime overrides)
-- `agent-os.local.env` (POSIX shell `source`-ready env overrides)
-- `agent-os.local.env.bat` (Windows batch `call`-ready env overrides)
+- `mentat.local.toml` (machine-specific runtime overrides)
+- `mentat.local.env` (POSIX shell `source`-ready env overrides)
+- `mentat.local.env.bat` (Windows batch `call`-ready env overrides)
 
 It intentionally does not collect or write credentials/tokens.
 Credentials should remain in your existing Hermes profile (`$HERMES_HOME`) and
@@ -25,9 +25,10 @@ import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TOML_PATH = Path("agent-os.local.toml")
-DEFAULT_ENV_PATH = Path("agent-os.local.env")
-DEFAULT_ENV_BAT_PATH = Path("agent-os.local.env.bat")
+DEFAULT_TOML_PATH = Path("mentat.local.toml")
+DEFAULT_ENV_PATH = Path("mentat.local.env")
+DEFAULT_ENV_BAT_PATH = Path("mentat.local.env.bat")
+DEFAULT_PREVIOUS_TOML_PATH = Path("agent" "-os.local.toml")
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8888
@@ -282,23 +283,23 @@ def write_local_toml(path: Path, values: WizardValues) -> None:
 
 def write_env_file(path: Path, bat_path: Path, values: WizardValues) -> None:
     env_map = {
-        "AGENT_OS_HOST": values.host,
-        "AGENT_OS_PORT": str(values.port),
-        "AGENT_OS_DATA_DIR": values.data_dir,
-        "AGENT_OS_PUBLIC_DIR": values.public_dir,
+        "MENTAT_HOST": values.host,
+        "MENTAT_PORT": str(values.port),
+        "MENTAT_DATA_DIR": values.data_dir,
+        "MENTAT_PUBLIC_DIR": values.public_dir,
         "HERMES_HOME": values.hermes_home,
         "OBSIDIAN_VAULT_PATH": values.obsidian_vault,
-        "AGENT_OS_APP_NAME": values.app_name,
-        "AGENT_OS_GREETING_PREFIX": values.greeting_prefix,
+        "MENTAT_APP_NAME": values.app_name,
+        "MENTAT_GREETING_PREFIX": values.greeting_prefix,
     }
     if values.display_name:
-        env_map["AGENT_OS_DISPLAY_NAME"] = values.display_name
+        env_map["MENTAT_DISPLAY_NAME"] = values.display_name
 
     sh_lines = [
         "# Auto-generated Mentat env flags for this machine.",
         "# This file is intentionally git-ignored.",
         "",
-        "# Load with: source ./agent-os.local.env",
+        "# Load with: source ./mentat.local.env",
     ]
     for key, value in env_map.items():
         sh_lines.append(f"export {key}={shlex.quote(value)}")
@@ -308,7 +309,7 @@ def write_env_file(path: Path, bat_path: Path, values: WizardValues) -> None:
         "REM Auto-generated Mentat env flags for this machine.",
         "REM This file is intentionally git-ignored.",
         "",
-        "REM Load with: call agent-os.local.env.bat",
+        "REM Load with: call mentat.local.env.bat",
     ]
     for key, value in env_map.items():
         escaped = str(value).replace('^', '^^').replace('%', '%%').replace('"', '""')
@@ -338,7 +339,7 @@ def current_summary(values: WizardValues) -> str:
 def existing_diff_text(existing: dict, values: WizardValues) -> str:
     lines: list[str] = []
     if not existing:
-        lines.append("No existing agent-os.local.toml found; this will create a new local override file.")
+        lines.append("No existing Mentat local config found; this will create a new local override file.")
         return "\n".join(lines)
 
     existing_server = existing.get("server", {}) if isinstance(existing.get("server"), dict) else {}
@@ -455,13 +456,20 @@ def main(argv: list[str] | None = None) -> int:
     if not env_bat_path.is_absolute():
         env_bat_path = repo_root / env_bat_path
 
+    previous_toml_path = repo_root / DEFAULT_PREVIOUS_TOML_PATH
+    defaults_source_path = toml_path
     defaults = load_existing_local(toml_path)
+    if not defaults and previous_toml_path.exists() and previous_toml_path != toml_path:
+        defaults = load_existing_local(previous_toml_path)
+        if defaults:
+            defaults_source_path = previous_toml_path
+            print(f"Imported defaults from previous local config: {previous_toml_path}")
     existing_server = defaults.get("server", {}) if isinstance(defaults.get("server"), dict) else {}
     existing_paths = defaults.get("paths", {}) if isinstance(defaults.get("paths"), dict) else {}
     existing_dashboard = defaults.get("dashboard", {}) if isinstance(defaults.get("dashboard"), dict) else {}
 
     if defaults:
-        print(f"Found existing local config: {toml_path}")
+        print(f"Found existing local config: {defaults_source_path}")
 
     detected_hermes_home = hermes_inspection.hermes_home if hermes_inspection.hermes_home else default_hermes_home()
     resolved_defaults = {
@@ -495,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.write_env == "never":
         should_write_env = False
     else:
-        should_write_env = prompt_bool("Also write local env flag files (agent-os.local.env and .bat)?", True) if not args.non_interactive else True
+        should_write_env = prompt_bool("Also write local env flag files (mentat.local.env and .bat)?", True) if not args.non_interactive else True
 
     if should_write_env:
         write_env_file(env_path, env_bat_path, values)

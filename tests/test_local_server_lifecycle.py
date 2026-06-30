@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-import agent_os_lifecycle as lifecycle
+import mentat_lifecycle as lifecycle
 import server
 
 
@@ -37,9 +37,9 @@ class LocalServerLifecycleTests(unittest.TestCase):
         listeners = lifecycle.parse_netstat_listeners(output)
         self.assertEqual([(item.port, item.pid) for item in listeners], [(8888, 8808), (8890, 28176)])
 
-    def test_looks_like_agent_os_overview_requires_expected_shape(self):
+    def test_looks_like_mentat_overview_requires_expected_shape(self):
         self.assertTrue(
-            lifecycle.looks_like_agent_os_overview(
+            lifecycle.looks_like_mentat_overview(
                 {
                     "generated_at": "2026-06-22T00:00:00-07:00",
                     "cards": {"active_tasks": 1},
@@ -47,20 +47,20 @@ class LocalServerLifecycleTests(unittest.TestCase):
                 }
             )
         )
-        self.assertFalse(lifecycle.looks_like_agent_os_overview({"cards": {}, "identity": {}}))
+        self.assertFalse(lifecycle.looks_like_mentat_overview({"cards": {}, "identity": {}}))
 
     def test_server_runtime_state_captures_launcher_pid(self):
-        with patch.dict(server.os.environ, {"AGENT_OS_LAUNCHER_PID": "4321"}, clear=False):
+        with patch.dict(server.os.environ, {"MENTAT_LAUNCHER_PID": "4321"}, clear=False):
             payload = server.runtime_state_payload()
         self.assertEqual(payload["launcher_pid"], 4321)
 
     def test_server_configured_launcher_pid_rejects_missing_invalid_or_self(self):
         with patch.dict(server.os.environ, {}, clear=False):
-            server.os.environ.pop("AGENT_OS_LAUNCHER_PID", None)
+            server.os.environ.pop("MENTAT_LAUNCHER_PID", None)
             self.assertIsNone(server.configured_launcher_pid())
-        with patch.dict(server.os.environ, {"AGENT_OS_LAUNCHER_PID": "not-a-number"}, clear=False):
+        with patch.dict(server.os.environ, {"MENTAT_LAUNCHER_PID": "not-a-number"}, clear=False):
             self.assertIsNone(server.configured_launcher_pid())
-        with patch.dict(server.os.environ, {"AGENT_OS_LAUNCHER_PID": str(server.os.getpid())}, clear=False):
+        with patch.dict(server.os.environ, {"MENTAT_LAUNCHER_PID": str(server.os.getpid())}, clear=False):
             self.assertIsNone(server.configured_launcher_pid())
 
     def test_cleanup_kills_listener_tracked_by_runtime_state(self):
@@ -73,10 +73,10 @@ class LocalServerLifecycleTests(unittest.TestCase):
             listener = lifecycle.Listener(pid=4321, port=8888, local_address="127.0.0.1:8888", raw="")
             with patch.object(lifecycle, "netstat_listeners", return_value=[listener]), patch.object(
                 lifecycle, "process_commandline", return_value=""
-            ), patch.object(lifecycle, "probe_agent_os", return_value=False), patch.object(
+            ), patch.object(lifecycle, "probe_mentat", return_value=False), patch.object(
                 lifecycle, "kill_pid", return_value=(True, "terminated")
             ):
-                report = lifecycle.cleanup_agent_os_listeners(config)
+                report = lifecycle.cleanup_mentat_listeners(config)
 
         self.assertTrue(report["ok"])
         self.assertEqual(report["actions"][0]["action"], "killed")
@@ -90,11 +90,11 @@ class LocalServerLifecycleTests(unittest.TestCase):
             listener = lifecycle.Listener(pid=9988, port=8888, local_address="127.0.0.1:8888", raw="")
             with patch.object(lifecycle, "netstat_listeners", return_value=[listener]), patch.object(
                 lifecycle, "process_commandline", return_value=""
-            ), patch.object(lifecycle, "probe_agent_os", return_value=False):
-                report = lifecycle.cleanup_agent_os_listeners(config)
+            ), patch.object(lifecycle, "probe_mentat", return_value=False):
+                report = lifecycle.cleanup_mentat_listeners(config)
 
         self.assertFalse(report["ok"])
-        self.assertEqual(report["actions"][0]["action"], "blocked_non_agent_os")
+        self.assertEqual(report["actions"][0]["action"], "blocked_non_mentat")
         self.assertEqual(report["actions"][0]["pid"], 9988)
 
 

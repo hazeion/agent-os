@@ -15,8 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_FILE = BASE_DIR / "agent-os.toml"
-LOCAL_CONFIG_FILE = BASE_DIR / "agent-os.local.toml"
+DEFAULT_CONFIG_FILE = BASE_DIR / "mentat.toml"
+LOCAL_CONFIG_FILE = BASE_DIR / "mentat.local.toml"
+LEGACY_DEFAULT_CONFIG_FILE = BASE_DIR / ("agent" "-os.toml")
+LEGACY_LOCAL_CONFIG_FILE = BASE_DIR / ("agent" "-os.local.toml")
+ENV_PREFIX = "MENTAT"
+LEGACY_ENV_PREFIX = "AGENT" + "_OS"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8888
 DEFAULT_APP_NAME = "Mentat"
@@ -51,6 +55,15 @@ def first_nonempty(*values) -> str | None:
         if text is not None:
             return text
     return None
+
+
+def env_name(suffix: str, *, legacy: bool = False) -> str:
+    prefix = LEGACY_ENV_PREFIX if legacy else ENV_PREFIX
+    return f"{prefix}_{suffix}"
+
+
+def env_value(suffix: str) -> str | None:
+    return first_nonempty(os.environ.get(env_name(suffix)), os.environ.get(env_name(suffix, legacy=True)))
 
 
 def default_hermes_home() -> Path:
@@ -149,7 +162,7 @@ def normalize_config_document(config: dict, source_path: Path) -> dict:
 
 def parse_cli_args(argv=None):
     parser = argparse.ArgumentParser(description="Run the Mentat dashboard.")
-    parser.add_argument("--config", dest="config_path", help="Extra TOML config file to merge after agent-os.toml and agent-os.local.toml.")
+    parser.add_argument("--config", dest="config_path", help="Extra TOML config file to merge after mentat.toml and mentat.local.toml.")
     parser.add_argument("--host", help="Bind host override.")
     parser.add_argument("--port", help="Bind port override.")
     parser.add_argument("--data-dir", help="Dashboard data directory override.")
@@ -168,7 +181,7 @@ def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
     config_doc: dict = {}
     loaded_files: list[Path] = []
 
-    for candidate in (DEFAULT_CONFIG_FILE, LOCAL_CONFIG_FILE):
+    for candidate in (LEGACY_DEFAULT_CONFIG_FILE, DEFAULT_CONFIG_FILE, LEGACY_LOCAL_CONFIG_FILE, LOCAL_CONFIG_FILE):
         if not candidate.exists():
             continue
         config_doc = deep_merge_dicts(config_doc, normalize_config_document(load_toml_file(candidate), candidate))
@@ -176,7 +189,7 @@ def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
         if resolved not in loaded_files:
             loaded_files.append(resolved)
 
-    extra_config = first_nonempty(getattr(cli_args, "config_path", None), os.environ.get("AGENT_OS_CONFIG"))
+    extra_config = first_nonempty(getattr(cli_args, "config_path", None), env_value("CONFIG"))
     if extra_config:
         extra_path = resolve_path(extra_config, base_dir=Path.cwd())
         if not extra_path.exists():
@@ -190,17 +203,17 @@ def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
     paths_config = config_doc.get("paths") if isinstance(config_doc.get("paths"), dict) else {}
     dashboard_config = config_doc.get("dashboard") if isinstance(config_doc.get("dashboard"), dict) else {}
 
-    host = first_nonempty(getattr(cli_args, "host", None), os.environ.get("AGENT_OS_HOST"), server_config.get("host")) or DEFAULT_HOST
+    host = first_nonempty(getattr(cli_args, "host", None), env_value("HOST"), server_config.get("host")) or DEFAULT_HOST
     port = parse_port(
-        first_nonempty(getattr(cli_args, "port", None), os.environ.get("AGENT_OS_PORT"), server_config.get("port"), DEFAULT_PORT),
+        first_nonempty(getattr(cli_args, "port", None), env_value("PORT"), server_config.get("port"), DEFAULT_PORT),
         source="Mentat port",
     )
     data_dir = resolve_path(
-        first_nonempty(getattr(cli_args, "data_dir", None), os.environ.get("AGENT_OS_DATA_DIR"), paths_config.get("data_dir"), BASE_DIR / "data"),
+        first_nonempty(getattr(cli_args, "data_dir", None), env_value("DATA_DIR"), paths_config.get("data_dir"), BASE_DIR / "data"),
         base_dir=BASE_DIR,
     )
     public_dir = resolve_path(
-        first_nonempty(getattr(cli_args, "public_dir", None), os.environ.get("AGENT_OS_PUBLIC_DIR"), paths_config.get("public_dir"), BASE_DIR / "public"),
+        first_nonempty(getattr(cli_args, "public_dir", None), env_value("PUBLIC_DIR"), paths_config.get("public_dir"), BASE_DIR / "public"),
         base_dir=BASE_DIR,
     )
     hermes_home = resolve_path(
@@ -218,17 +231,17 @@ def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
     )
     display_name = first_nonempty(
         getattr(cli_args, "display_name", None),
-        os.environ.get("AGENT_OS_DISPLAY_NAME"),
+        env_value("DISPLAY_NAME"),
         dashboard_config.get("display_name"),
     )
     greeting_prefix = first_nonempty(
         getattr(cli_args, "greeting_prefix", None),
-        os.environ.get("AGENT_OS_GREETING_PREFIX"),
+        env_value("GREETING_PREFIX"),
         dashboard_config.get("greeting_prefix"),
     )
     app_name = first_nonempty(
         getattr(cli_args, "app_name", None),
-        os.environ.get("AGENT_OS_APP_NAME"),
+        env_value("APP_NAME"),
         dashboard_config.get("app_name"),
         DEFAULT_APP_NAME,
     )

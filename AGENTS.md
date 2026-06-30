@@ -1,4 +1,4 @@
-# Mentat / Agent OS — repository guide
+# Mentat Repository Guide
 
 This file is the quick project guide for contributors and coding agents working in this repository.
 
@@ -14,7 +14,7 @@ Goals:
 - keep the UI practical, lightweight, and easy to understand
 - avoid unnecessary complexity or premature framework/tooling choices
 
-The user-facing product name is **Mentat**. Some repo paths, helper names, and compatibility references still use `agent-os` / Agent OS.
+The user-facing product name and repository naming convention is **Mentat**.
 
 ## Architecture
 
@@ -25,8 +25,8 @@ Core pieces:
 ```text
 server.py
 runtime_config.py
-agent_os_lifecycle.py
-agent-os.toml
+mentat_lifecycle.py
+mentat.toml
 run.sh / stop.sh / status.sh
 run.bat / stop.bat / status.bat
 public/index.html
@@ -116,8 +116,8 @@ Useful commands:
 
 ```bash
 python server.py --print-config
-python agent_os_lifecycle.py status
-python agent_os_lifecycle.py stop
+python mentat_lifecycle.py status
+python mentat_lifecycle.py stop
 ```
 
 ## Verification
@@ -140,6 +140,6 @@ python -m unittest discover -s tests -v
 
 ## Repository notes
 
-- `agent-os.local.toml` and local env files are machine-specific and should stay untracked.
+- `mentat.local.toml` and local env files are machine-specific and should stay untracked.
 - Runtime output, generated artifacts, and scratch data should stay out of the repo.
 - If repo-safe documentation conflicts with machine-local setup, prefer generic repo-safe guidance in tracked files and keep machine-specific notes out of the repository.

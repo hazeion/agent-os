@@ -1,4 +1,4 @@
-# Agent OS runtime dependencies
+# Mentat runtime dependencies
 # Keep this file intentionally small and pinned for reproducible local setup.
 # Standard-library modules are omitted.
 

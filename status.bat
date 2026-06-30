@@ -1,3 +1,3 @@
 @echo off
-cd /d E:\code\agent-os
-python agent_os_lifecycle.py status %*
+cd /d "%~dp0"
+python mentat_lifecycle.py status %*

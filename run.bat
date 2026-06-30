@@ -5,5 +5,5 @@ cd /d "%~dp0"
 set "PYTHON=python"
 if exist "%CD%\.venv\Scripts\python.exe" set "PYTHON=%CD%\.venv\Scripts\python.exe"
 
-"%PYTHON%" agent_os_lifecycle.py preflight %* || exit /b 1
+"%PYTHON%" mentat_lifecycle.py preflight %* || exit /b 1
 "%PYTHON%" server.py %*

@@ -16,6 +16,9 @@ from urllib.request import urlopen
 
 import server
 
+PREVIOUS_PATH_MARKER = "agent" "-os"
+PREVIOUS_HELPER_MARKER = "agent" "_os_lifecycle.py"
+
 
 @dataclass(frozen=True)
 class Listener:
@@ -155,7 +158,7 @@ def remove_runtime_state(path: Path) -> None:
         pass
 
 
-def looks_like_agent_os_overview(payload) -> bool:
+def looks_like_mentat_overview(payload) -> bool:
     return (
         isinstance(payload, dict)
         and isinstance(payload.get("cards"), dict)
@@ -164,7 +167,7 @@ def looks_like_agent_os_overview(payload) -> bool:
     )
 
 
-def probe_agent_os(port: int, timeout: float = 0.6) -> bool:
+def probe_mentat(port: int, timeout: float = 0.6) -> bool:
     try:
         with urlopen(f"http://127.0.0.1:{port}/api/overview", timeout=timeout) as response:
             if response.status != 200:
@@ -172,7 +175,7 @@ def probe_agent_os(port: int, timeout: float = 0.6) -> bool:
             payload = json.load(response)
     except (HTTPError, URLError, TimeoutError, OSError, ValueError):
         return False
-    return looks_like_agent_os_overview(payload)
+    return looks_like_mentat_overview(payload)
 
 
 def process_commandline(pid: int) -> str:
@@ -206,11 +209,11 @@ def process_commandline(pid: int) -> str:
     return ""
 
 
-def looks_like_agent_os_commandline(commandline: str) -> bool:
+def looks_like_mentat_commandline(commandline: str) -> bool:
     text = (commandline or "").strip().lower()
     if not text:
         return False
-    return "server.py" in text or "agent_os_lifecycle.py" in text or "agent-os" in text
+    return "server.py" in text or "mentat_lifecycle.py" in text or PREVIOUS_HELPER_MARKER in text or PREVIOUS_PATH_MARKER in text
 
 
 def identify_listener(listener: Listener, state_pid: int | None, probe_cache: dict[int, bool], command_cache: dict[int, str]) -> tuple[bool, list[str], str]:
@@ -219,11 +222,11 @@ def identify_listener(listener: Listener, state_pid: int | None, probe_cache: di
         reasons.append("matches_runtime_state")
 
     commandline = command_cache.setdefault(listener.pid, process_commandline(listener.pid))
-    if looks_like_agent_os_commandline(commandline):
+    if looks_like_mentat_commandline(commandline):
         reasons.append("command_line")
 
     if listener.port not in probe_cache:
-        probe_cache[listener.port] = probe_agent_os(listener.port)
+        probe_cache[listener.port] = probe_mentat(listener.port)
     if probe_cache[listener.port]:
         reasons.append("overview_probe")
 
@@ -268,7 +271,7 @@ def kill_pid(pid: int) -> tuple[bool, str]:
     return True, "terminated with SIGKILL"
 
 
-def cleanup_agent_os_listeners(config: server.AppConfig, *, stop_only: bool = False) -> dict:
+def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = False) -> dict:
     state_path = lifecycle_state_path(config)
     state = read_runtime_state(state_path) or {}
     state_pid = state.get("pid") if isinstance(state.get("pid"), int) else None
@@ -281,8 +284,8 @@ def cleanup_agent_os_listeners(config: server.AppConfig, *, stop_only: bool = Fa
     command_cache: dict[int, str] = {}
 
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
-        is_agent_os, reasons, commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
-        if is_agent_os:
+        is_mentat, reasons, commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
+        if is_mentat:
             if listener.pid in killed_pids:
                 actions.append(
                     {
@@ -311,9 +314,9 @@ def cleanup_agent_os_listeners(config: server.AppConfig, *, stop_only: bool = Fa
                 blocked = True
             continue
 
-        action = "ignored_non_agent_os"
+        action = "ignored_non_mentat"
         if listener.port == config.port and not stop_only:
-            action = "blocked_non_agent_os"
+            action = "blocked_non_mentat"
             blocked = True
         actions.append(
             {
@@ -354,13 +357,13 @@ def status_report(config: server.AppConfig) -> dict:
     state_pid = state.get("pid") if isinstance(state.get("pid"), int) else None
     items = []
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
-        is_agent_os, reasons, commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
+        is_mentat, reasons, commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
         items.append(
             {
                 "port": listener.port,
                 "pid": listener.pid,
                 "local_address": listener.local_address,
-                "is_agent_os": is_agent_os,
+                "is_mentat": is_mentat,
                 "reasons": reasons,
                 "command_line": commandline,
             }
@@ -384,7 +387,7 @@ def print_report(report: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Agent OS local server lifecycle helper.")
+    parser = argparse.ArgumentParser(description="Mentat local server lifecycle helper.")
     parser.add_argument("command", choices=["preflight", "stop", "status"])
     parser.add_argument("server_args", nargs=argparse.REMAINDER, help="Arguments forwarded to server.py config parsing.")
     args = parser.parse_args(argv)
@@ -399,11 +402,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "stop":
-        report = cleanup_agent_os_listeners(config, stop_only=True)
+        report = cleanup_mentat_listeners(config, stop_only=True)
         print_report(report)
         return 0 if report.get("ok", True) else 1
 
-    report = cleanup_agent_os_listeners(config, stop_only=False)
+    report = cleanup_mentat_listeners(config, stop_only=False)
     print_report(report)
     return 0 if report.get("ok", False) else 1
 

@@ -129,8 +129,30 @@ def memory_status(info: dict | None) -> str:
     return "healthy"
 
 
+def path_size(ctx: HealthContext, path: Path) -> str | None:
+    try:
+        return ctx.human_bytes(path.stat().st_size)
+    except OSError:
+        return None
+
+
 def state_db_health(ctx: HealthContext):
-    if not ctx.state_db.exists():
+    try:
+        state_db_exists = ctx.state_db.exists()
+    except OSError as exc:
+        return make_health_subsystem(
+            ctx,
+            "state_db",
+            "Hermes state.db",
+            "error",
+            f"Hermes state.db is not accessible: {exc}",
+            path=str(ctx.state_db),
+            exists=None,
+            size=None,
+            modified_at=None,
+            error=ctx.clean_snippet(str(exc), 220),
+        )
+    if not state_db_exists:
         return make_health_subsystem(
             ctx,
             "state_db",
@@ -156,7 +178,7 @@ def state_db_health(ctx: HealthContext):
             f"Readable SQLite store ({row[0]} schema entries).",
             path=str(ctx.state_db),
             exists=True,
-            size=ctx.human_bytes(ctx.state_db.stat().st_size),
+            size=path_size(ctx, ctx.state_db),
             modified_at=ctx.file_mtime_iso(ctx.state_db),
         )
     except Exception as exc:
@@ -168,7 +190,7 @@ def state_db_health(ctx: HealthContext):
             f"Unreadable SQLite store: {exc}",
             path=str(ctx.state_db),
             exists=True,
-            size=ctx.human_bytes(ctx.state_db.stat().st_size),
+            size=path_size(ctx, ctx.state_db),
             modified_at=ctx.file_mtime_iso(ctx.state_db),
             error=ctx.clean_snippet(str(exc), 220),
         )

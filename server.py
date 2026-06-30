@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Agent OS local dashboard server.
+"""Mentat local dashboard server.
 
 Read-only toward Hermes core files. Dashboard write-back is limited to
 project-owned data/*.json files.
@@ -29,6 +29,7 @@ from runtime_config import (
     DEFAULT_PORT,
     default_hermes_home,
     default_obsidian_vault,
+    env_value,
     load_app_config,
     parse_cli_args,
 )
@@ -112,7 +113,7 @@ def clear_runtime_state() -> None:
 
 
 def configured_launcher_pid() -> int | None:
-    raw = (os.environ.get("AGENT_OS_LAUNCHER_PID") or "").strip()
+    raw = (env_value("LAUNCHER_PID") or "").strip()
     if not raw:
         return None
     try:
@@ -150,14 +151,14 @@ def start_launcher_watch(http_server: ThreadingHTTPServer) -> int | None:
         while True:
             time.sleep(2)
             if not process_exists(launcher_pid):
-                print(f"Launcher PID {launcher_pid} is gone; stopping Agent OS.")
+                print(f"Launcher PID {launcher_pid} is gone; stopping Mentat.")
                 try:
                     http_server.shutdown()
                 except Exception:
                     pass
                 break
 
-    threading.Thread(target=watch, daemon=True, name="agent-os-launcher-watch").start()
+    threading.Thread(target=watch, daemon=True, name="mentat-launcher-watch").start()
     return launcher_pid
 
 
@@ -191,6 +192,10 @@ AGENT_ACTIVE_STATUSES = {"running", "idle", "blocked"}
 AGENT_STALE_AFTER_SECONDS = 60
 AGENT_DERIVED_SESSIONS_LIMIT = 12
 AGENT_DERIVED_SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
+MENTAT_PROJECT_NAME = "Mentat"
+MENTAT_PROJECT_ID = "project_mentat"
+PREVIOUS_PROJECT_NAME = "Agent " "OS"
+PREVIOUS_PROJECT_ID = "project_" "agent" "_os"
 
 apply_runtime_config(load_app_config())
 
@@ -261,6 +266,40 @@ def text_list_value(value, *, max_items: int = 12, max_length: int = 80) -> list
     return items
 
 
+def project_aliases(project: dict) -> list[str]:
+    aliases = []
+    for key in ("aliases", "legacy_names"):
+        for item in text_list_value(project.get(key), max_items=12, max_length=120):
+            if item not in aliases:
+                aliases.append(item)
+    return aliases
+
+
+def project_name_lookup() -> dict[str, str]:
+    projects = read_json_file("projects.json", [])
+    lookup: dict[str, str] = {}
+    if isinstance(projects, list):
+        for project in projects:
+            if not isinstance(project, dict):
+                continue
+            name = compact_text(project.get("name"), max_length=120)
+            if not name:
+                continue
+            lookup[name.lower()] = name
+            for alias in project_aliases(project):
+                lookup[alias.lower()] = name
+    if MENTAT_PROJECT_NAME.lower() in lookup or not lookup:
+        lookup.setdefault(PREVIOUS_PROJECT_NAME.lower(), MENTAT_PROJECT_NAME)
+    return lookup
+
+
+def canonical_project_name(value: str) -> str:
+    name = compact_text(value, max_length=120)
+    if not name:
+        return ""
+    return project_name_lookup().get(name.lower(), name)
+
+
 def project_names() -> set[str]:
     projects = read_json_file("projects.json", [])
     if not isinstance(projects, list):
@@ -276,7 +315,7 @@ def validate_task_payload(payload, *, existing: dict | None = None):
     if not title:
         return None, "Task title is required"
 
-    project = compact_text(payload.get("project"), max_length=120)
+    project = canonical_project_name(payload.get("project"))
     if not project:
         return None, "Task project is required"
 
@@ -340,6 +379,10 @@ def validate_project_payload(payload, *, existing: dict | None = None):
         return None, f"Invalid project status: {status}"
 
     timestamp = now_iso()
+    aliases = text_list_value(payload.get("aliases"), max_items=12, max_length=120)
+    if not aliases:
+        aliases = text_list_value(payload.get("legacy_names"), max_items=12, max_length=120)
+
     normalized = {
         "id": compact_text((existing or {}).get("id"), max_length=80) or project_id_value(name),
         "name": name,
@@ -349,15 +392,15 @@ def validate_project_payload(payload, *, existing: dict | None = None):
         "obsidian_note": compact_text(payload.get("obsidian_note"), max_length=160) or None,
         "created_at": (existing or {}).get("created_at") or timestamp,
         "updated_at": timestamp,
-        "legacy_names": text_list_value(payload.get("legacy_names"), max_items=12, max_length=120),
+        "aliases": aliases,
     }
     return normalized, None
 
 
 def default_message_project() -> str:
     names = sorted(project_names())
-    if "Mentat" in names:
-        return "Mentat"
+    if MENTAT_PROJECT_NAME in names:
+        return MENTAT_PROJECT_NAME
     return names[0] if names else "General"
 
 
@@ -760,7 +803,11 @@ def update_json_file(name: str, default, mutator):
 
 
 def google_credentials(scopes: list[str]):
-    if not GOOGLE_TOKEN.exists():
+    try:
+        google_token_exists = GOOGLE_TOKEN.exists()
+    except OSError as exc:
+        return None, f"Google OAuth token is not accessible: {exc}"
+    if not google_token_exists:
         return None, "Google OAuth token not found"
     try:
         from google.auth.transport.requests import Request
@@ -990,7 +1037,11 @@ def first_config_value(masked_text: str, key: str) -> str | None:
 
 
 def hermes_config():
-    if not CONFIG_PATH.exists():
+    try:
+        config_exists = CONFIG_PATH.exists()
+    except OSError as exc:
+        return {"exists": None, "path": str(CONFIG_PATH), "summary": {}, "masked_config": "", "error": str(exc)}
+    if not config_exists:
         return {"exists": False, "path": str(CONFIG_PATH), "summary": {}, "masked_config": ""}
     try:
         raw = CONFIG_PATH.read_text(encoding="utf-8", errors="replace")
@@ -1117,7 +1168,18 @@ def search_messages(query: str, limit: int = 20):
 
 
 def read_cron_jobs():
-    if not CRON_JOBS.exists():
+    try:
+        cron_jobs_exists = CRON_JOBS.exists()
+    except OSError as exc:
+        return {
+            "exists": None,
+            "source": str(CRON_JOBS),
+            "error": str(exc),
+            "count": 0,
+            "enabled_count": 0,
+            "jobs": [],
+        }
+    if not cron_jobs_exists:
         return {
             "exists": False,
             "source": str(CRON_JOBS),
@@ -1502,7 +1564,11 @@ def session_replay(session_id: str, _target_message_id: str | None = None):
 
 
 def recent_sessions(limit: int = 8):
-    if not STATE_DB.exists():
+    try:
+        state_db_exists = STATE_DB.exists()
+    except OSError as exc:
+        return {"exists": None, "source": str(STATE_DB), "sessions": [], "error": str(exc)}
+    if not state_db_exists:
         return {"exists": False, "source": str(STATE_DB), "sessions": []}
     try:
         con = sqlite_connect()
@@ -2146,7 +2212,7 @@ GET_ROUTES = {
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AgentOS/0.1"
+    server_version = "Mentat/0.1"
 
     def log_message(self, fmt, *args):
         """Log requests without ever breaking HTTP responses.
@@ -2275,7 +2341,7 @@ if __name__ == "__main__":
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopping Agent OS.")
+        print("\nStopping Mentat.")
     finally:
         server.server_close()
         clear_runtime_state()

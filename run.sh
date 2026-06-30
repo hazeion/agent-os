@@ -9,8 +9,8 @@ elif [ -x "$PWD/.venv/bin/python" ]; then
   PYTHON="$PWD/.venv/bin/python"
 fi
 
-"$PYTHON" agent_os_lifecycle.py preflight "$@"
-export AGENT_OS_LAUNCHER_PID=$$
+"$PYTHON" mentat_lifecycle.py preflight "$@"
+export MENTAT_LAUNCHER_PID=$$
 "$PYTHON" server.py "$@" &
 child_pid=$!
 cleanup() {

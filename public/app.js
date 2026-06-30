@@ -816,7 +816,7 @@ function projectPayloadFromForm(form) {
     status: form.elements.status?.value || 'active',
     description: form.elements.description?.value || '',
     obsidian_note: form.elements.obsidian_note?.value || '',
-    legacy_names: (form.elements.legacy_names?.value || '').split(',').map((value) => value.trim()).filter(Boolean),
+    aliases: (form.elements.aliases?.value || '').split(',').map((value) => value.trim()).filter(Boolean),
   };
 }
 
@@ -841,7 +841,7 @@ function renderProjectEditor() {
         <label class="task-editor-field"><span class="task-editor-label">Status</span><select name="status"><option value="active" ${draft.status === 'active' ? 'selected' : ''}>Active</option><option value="paused" ${draft.status === 'paused' ? 'selected' : ''}>Paused</option><option value="archived" ${draft.status === 'archived' ? 'selected' : ''}>Archived</option></select></label>
         <label class="task-editor-field"><span class="task-editor-label">Obsidian note</span><input name="obsidian_note" maxlength="160" value="${escapeHtml(draft.obsidian_note || '')}" /></label>
         <label class="task-editor-field field-span-2"><span class="task-editor-label">Description</span><textarea name="description">${escapeHtml(draft.description || '')}</textarea></label>
-        <label class="task-editor-field field-span-2"><span class="task-editor-label">Legacy names (comma separated)</span><input name="legacy_names" value="${escapeHtml((draft.legacy_names || []).join(', '))}" /></label>
+        <label class="task-editor-field field-span-2"><span class="task-editor-label">Aliases (comma separated)</span><input name="aliases" value="${escapeHtml((draft.aliases || draft.legacy_names || []).join(', '))}" /></label>
       </div>
       <div class="task-editor-actions">
         <button class="action-button" type="submit">${mode === 'edit' ? 'Save Project' : 'Create Project'}</button>
