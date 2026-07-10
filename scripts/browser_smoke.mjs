@@ -127,8 +127,11 @@ async function main() {
     await waitFor(() => client.eval('document.readyState === "complete"'), 'page load');
     await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'Today View default');
 
-    const todayOk = await client.eval(`Boolean(document.querySelector('#overview-cards .metric-card') && document.querySelector('#focus-task-list') && document.querySelector('#email-panel'))`);
+    const todayOk = await client.eval(`(() => { const stop = document.querySelector('#agent-console-stop'); const model = document.querySelector('#agent-console-model-select'); return Boolean(document.querySelector('#overview-cards .metric-card') && document.querySelector('#focus-task-list') && document.querySelector('#agent-console-panel') && document.querySelector('#agent-console-form') && model?.tagName === 'SELECT' && model.options.length > 0 && document.querySelector('#agent-console-apply-model') && stop?.hidden && getComputedStyle(stop).display === 'none'); })()`);
     if (!todayOk) throw new Error('Today render smoke failed');
+    await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/'; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await waitFor(() => client.eval(`(() => { const menu = document.querySelector('#agent-console-command-menu'); return Boolean(menu && !menu.hidden && menu.textContent.includes('/model')); })()`), 'agent console command completion');
+    await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = ''; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 
     await client.eval(`document.querySelector('[data-view="projects"]').click()`);
     await waitFor(() => client.eval('document.querySelector("#view-projects.active") !== null'), 'Projects view');
@@ -142,20 +145,17 @@ async function main() {
     await client.eval(`document.querySelector('[data-view="agents"]').click()`);
     await waitFor(() => client.eval('document.querySelector("#view-agents.active") !== null'), 'Agents view');
     await waitFor(() => client.eval('document.querySelector("#agent-message-form") !== null'), 'agent message compose');
-    const agentPulseVisible = await client.eval(`Boolean(document.querySelector('#agent-pulse') && document.querySelector('#agent-message-panel'))`);
-    if (!agentPulseVisible) throw new Error('Agent Pulse/message panel smoke failed');
+    const agentsWorkspaceVisible = await client.eval(`Boolean(document.querySelector('#conversation-library-panel') && document.querySelector('#agent-message-panel'))`);
+    if (!agentsWorkspaceVisible) throw new Error('Agents workspace/message panel smoke failed');
 
     const heartbeatStatus = await client.eval(`fetch('/api/agents/heartbeat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: 'browser_smoke_agent', name: 'Browser Smoke Agent', status: 'running', project: 'Mentat', current_task: 'Browser smoke live state' }) }).then((response) => response.status)`);
     if (![200, 201].includes(heartbeatStatus)) throw new Error(`Heartbeat smoke returned HTTP ${heartbeatStatus}`);
-    await client.eval(`document.querySelector('[data-view="agents"]').click()`);
-    await client.eval(`refresh()`);
-    await waitFor(() => client.eval('document.body.textContent.includes("Browser Smoke Agent")'), 'live Agent Pulse heartbeat');
 
     const messageText = `Browser smoke queued message ${Date.now()}`;
     await client.eval(`(() => { const form = document.querySelector('#agent-message-form'); form.querySelector('textarea[name="message"]').value = ${JSON.stringify(messageText)}; form.querySelector('textarea[name="message"]').dispatchEvent(new Event('input', { bubbles: true })); form.requestSubmit(); })()`);
     await waitFor(() => client.eval(`document.body.textContent.includes(${JSON.stringify(messageText)})`), 'queued agent message appears');
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'nav', 'task controls', 'task status filter', 'Agent Pulse live heartbeat', 'agent message compose'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'nav', 'task controls', 'task status filter', 'agent message compose'] }, null, 2));
     await client.ws.close?.();
   } finally {
     if (chrome && !chrome.killed) chrome.kill();

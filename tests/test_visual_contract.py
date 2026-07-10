@@ -111,6 +111,27 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('.model-usage-table-scroll', CSS)
         self.assertIn('.model-usage-grid', CSS)
 
+    def test_today_agent_console_replaces_calendar_and_email_panes(self):
+        today_block = INDEX[INDEX.index('id="view-today"') : INDEX.index('id="view-agents"')]
+        self.assertIn('id="agent-console-panel"', today_block)
+        self.assertIn('id="agent-console-agent"', today_block)
+        self.assertIn('id="agent-console-model-select"', today_block)
+        self.assertIn('id="agent-console-apply-model"', today_block)
+        self.assertIn('id="agent-console-chat"', today_block)
+        self.assertIn('id="agent-console-form"', today_block)
+        self.assertIn('id="agent-console-prompt"', today_block)
+        self.assertNotIn('id="calendar-panel"', today_block)
+        self.assertNotIn('id="email-panel"', today_block)
+        self.assertIn('function renderAgentConsole(payload = {})', APP_JS)
+        self.assertIn('startAgentConsoleRun', CORE_JS)
+        self.assertIn('stopAgentConsoleRun', CORE_JS)
+        self.assertIn('setAgentConsoleModel', CORE_JS)
+        self.assertIn('.agent-console-chat', CSS)
+        self.assertIn('.agent-console-working-mark', CSS)
+        self.assertIn('agent-console-log-row', APP_JS)
+        self.assertIn('agentConsoleCommands', APP_JS)
+        self.assertNotIn('id="agent-console-status-pill"', today_block)
+
     def test_today_next_moves_support_project_filter_and_task_jump(self):
         self.assertIn('id="focus-task-list"', INDEX)
         self.assertNotIn('id="attention-panel"', INDEX)

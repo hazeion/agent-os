@@ -12,7 +12,9 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 from uuid import uuid4
@@ -192,6 +194,15 @@ AGENT_ACTIVE_STATUSES = {"running", "idle", "blocked"}
 AGENT_STALE_AFTER_SECONDS = 60
 AGENT_DERIVED_SESSIONS_LIMIT = 12
 AGENT_DERIVED_SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
+AGENT_CONSOLE_RUN_LIMIT = 24
+AGENT_CONSOLE_PROMPT_LIMIT = 20_000
+MAX_JSON_BODY_BYTES = 256_000
+AGENT_CONSOLE_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+AGENT_MODEL_CATALOG_TTL_SECONDS = 120
+AGENT_MODEL_CATALOG_CACHE = {"key": None, "payload": None, "fetched_at": 0.0}
+AGENT_CONSOLE_RUNS: dict[str, dict] = {}
+AGENT_CONSOLE_PROCESSES: dict[str, subprocess.Popen] = {}
+AGENT_CONSOLE_LOCK = threading.RLock()
 MENTAT_PROJECT_NAME = "Mentat"
 MENTAT_PROJECT_ID = "project_mentat"
 PREVIOUS_PROJECT_NAME = "Agent " "OS"
@@ -2164,6 +2175,459 @@ def email_payload():
     }
 
 
+def hermes_command_path() -> str | None:
+    configured = compact_text(os.environ.get("HERMES_COMMAND"), max_length=1000)
+    if configured:
+        candidate = Path(os.path.expandvars(os.path.expanduser(configured)))
+        if candidate.is_file():
+            return str(candidate)
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+
+    resolved = shutil.which("hermes")
+    if resolved:
+        return resolved
+
+    for candidate in (Path.home() / ".local" / "bin" / "hermes", Path.home() / ".local" / "bin" / "hermes.exe"):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def agent_console_model() -> str:
+    summary = hermes_config().get("summary") or {}
+    return compact_text(summary.get("default_model"), max_length=160) or "configured default"
+
+
+def hermes_python_path() -> str | None:
+    candidates = (
+        HERMES_HOME / "hermes-agent" / "venv" / "bin" / "python3",
+        HERMES_HOME / "hermes-agent" / "venv" / "bin" / "python",
+        HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+HERMES_MODEL_CATALOG_SCRIPT = """
+import json
+import sys
+
+from hermes_cli.inventory import build_models_payload, load_picker_context
+
+ctx = load_picker_context()
+payload = build_models_payload(
+    ctx,
+    explicit_only=True,
+    refresh=sys.argv[1] == "refresh",
+    probe_custom_providers=False,
+    probe_current_custom_provider=True,
+    max_models=None,
+)
+provider = str(ctx.current_provider or "").strip()
+provider_key = provider.lower()
+rows = payload.get("providers") or []
+selected = next(
+    (row for row in rows if str(row.get("slug") or "").strip().lower() == provider_key),
+    next((row for row in rows if row.get("is_current")), None),
+)
+models = []
+if isinstance(selected, dict):
+    for item in selected.get("models") or []:
+        value = str(item or "").strip()
+        if value and value not in models:
+            models.append(value)
+print(json.dumps({
+    "provider": provider,
+    "provider_label": str((selected or {}).get("name") or provider),
+    "models": models,
+    "current_model": str(ctx.current_model or "").strip(),
+    "source": str((selected or {}).get("source") or ""),
+}))
+""".strip()
+
+
+def agent_console_model_catalog(*, refresh: bool = False) -> dict:
+    config = hermes_config()
+    summary = config.get("summary") or {}
+    provider = compact_text(summary.get("provider"), max_length=120)
+    current_model = compact_text(summary.get("default_model"), max_length=160)
+    key = f"{provider}|{current_model}|{config.get('modified_at') or ''}"
+    now = time.monotonic()
+    cached = AGENT_MODEL_CATALOG_CACHE.get("payload")
+    if (
+        not refresh
+        and AGENT_MODEL_CATALOG_CACHE.get("key") == key
+        and isinstance(cached, dict)
+        and now - float(AGENT_MODEL_CATALOG_CACHE.get("fetched_at") or 0) < AGENT_MODEL_CATALOG_TTL_SECONDS
+    ):
+        return dict(cached)
+
+    python_path = hermes_python_path()
+    if not python_path:
+        return {
+            "provider": provider,
+            "provider_label": provider,
+            "models": [],
+            "current_model": current_model,
+            "error": "Hermes runtime was not found for provider model discovery.",
+        }
+    try:
+        result = subprocess.run(
+            [python_path, "-c", HERMES_MODEL_CATALOG_SCRIPT, "refresh" if refresh else "cached"],
+            cwd=str(BASE_DIR),
+            env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+        return {
+            "provider": provider,
+            "provider_label": provider,
+            "models": [],
+            "current_model": current_model,
+            "error": compact_text(exc, max_length=2_000),
+        }
+    if result.returncode != 0:
+        return {
+            "provider": provider,
+            "provider_label": provider,
+            "models": [],
+            "current_model": current_model,
+            "error": clean_agent_output(result.stderr or result.stdout, max_length=2_000) or "Hermes could not load provider models.",
+        }
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    models = []
+    for value in payload.get("models") or []:
+        model = compact_text(value, max_length=160)
+        if model and model not in models:
+            models.append(model)
+    catalog = {
+        "provider": compact_text(payload.get("provider"), max_length=120) or provider,
+        "provider_label": compact_text(payload.get("provider_label"), max_length=160) or provider,
+        "models": models,
+        "current_model": compact_text(payload.get("current_model"), max_length=160) or current_model,
+        "source": compact_text(payload.get("source"), max_length=80),
+        "error": "" if models else "No active models were returned for the current Hermes provider.",
+    }
+    AGENT_MODEL_CATALOG_CACHE.update({"key": key, "payload": catalog, "fetched_at": now})
+    return dict(catalog)
+
+
+def agent_console_event(run: dict, message: str, kind: str = "status") -> None:
+    events = run.setdefault("events", [])
+    events.append({
+        "id": f"event_{uuid4().hex[:10]}",
+        "kind": kind,
+        "message": compact_text(message, max_length=500),
+        "timestamp": now_iso(),
+    })
+    if len(events) > 40:
+        del events[:-40]
+    run["updated_at"] = now_iso()
+
+
+def agent_console_snapshot(run: dict) -> dict:
+    return {
+        key: value
+        for key, value in run.items()
+        if key not in {"process"}
+    }
+
+
+def agent_console_payload():
+    command = hermes_command_path()
+    catalog = agent_console_model_catalog()
+    with AGENT_CONSOLE_LOCK:
+        runs = sorted(AGENT_CONSOLE_RUNS.values(), key=lambda item: item.get("created_at") or "", reverse=True)
+        snapshots = [agent_console_snapshot(run) for run in runs[:12]]
+    return {
+        "agents": [{
+            "id": "hermes",
+            "name": "Hermes",
+            "available": bool(command),
+            "model": catalog.get("current_model") or agent_console_model(),
+        }],
+        "model_catalog": catalog,
+        "runs": snapshots,
+        "active_run_id": next((run["id"] for run in snapshots if run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None),
+        "local_only": True,
+        "error": None if command else "Hermes CLI was not found in the Mentat server environment.",
+    }
+
+
+def agent_console_run_payload(run_id: str, _target_message_id: str | None = None):
+    with AGENT_CONSOLE_LOCK:
+        run = AGENT_CONSOLE_RUNS.get(run_id)
+        if not run:
+            return {"error": "Agent run not found"}, 404
+        return {"run": agent_console_snapshot(run)}, 200
+
+
+def parse_hermes_session_id(stderr: str) -> str | None:
+    matches = re.findall(r"(?im)^\s*session_id:\s*([A-Za-z0-9_.:-]+)\s*$", stderr or "")
+    return matches[-1] if matches else None
+
+
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def clean_agent_output(value: str, *, max_length: int = 200_000) -> str:
+    output = ANSI_ESCAPE_RE.sub("", str(value or "")).replace("\r\n", "\n").strip()
+    if len(output) > max_length:
+        output = output[:max_length].rstrip() + "\n\n[Output truncated by Mentat]"
+    return output
+
+
+def run_hermes_agent(run_id: str, command_path: str) -> None:
+    with AGENT_CONSOLE_LOCK:
+        run = AGENT_CONSOLE_RUNS.get(run_id)
+        if not run:
+            return
+        if run.get("status") == "cancelling":
+            run["status"] = "cancelled"
+            run["completed_at"] = now_iso()
+            run["error"] = "Run stopped by operator."
+            agent_console_event(run, "Run stopped", "cancelled")
+            return
+        run["status"] = "running"
+        run["started_at"] = now_iso()
+        agent_console_event(run, "Starting Hermes CLI")
+        prompt = run["prompt"]
+        session_id = run.get("session_id")
+
+    command = [command_path, "chat", "-q", prompt, "-Q", "--source", "mentat"]
+    if session_id:
+        command.extend(["--resume", session_id])
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(HERMES_HOME)
+    env["PYTHONUNBUFFERED"] = "1"
+    started = time.monotonic()
+    next_update = 2
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(BASE_DIR),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        with AGENT_CONSOLE_LOCK:
+            AGENT_CONSOLE_PROCESSES[run_id] = process
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if current:
+                agent_console_event(current, "Model is working")
+
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed = int(time.monotonic() - started)
+                if elapsed < next_update:
+                    continue
+                with AGENT_CONSOLE_LOCK:
+                    current = AGENT_CONSOLE_RUNS.get(run_id)
+                    if not current:
+                        process.terminate()
+                        return
+                    if current.get("status") == "cancelling":
+                        process.terminate()
+                    elif elapsed >= 45:
+                        agent_console_event(current, f"Hermes is still working ({elapsed}s)")
+                    elif elapsed >= 12:
+                        agent_console_event(current, "Agent is processing the request and may be using tools")
+                next_update = 12 if elapsed < 12 else elapsed + 30
+
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if not current:
+                return
+            current["completed_at"] = now_iso()
+            current["duration_seconds"] = round(time.monotonic() - started, 1)
+            parsed_session_id = parse_hermes_session_id(stderr)
+            if parsed_session_id:
+                current["session_id"] = parsed_session_id
+            response = clean_agent_output(stdout)
+            if current.get("status") == "cancelling":
+                current["status"] = "cancelled"
+                current["error"] = "Run stopped by operator."
+                agent_console_event(current, "Run stopped", "cancelled")
+            elif process.returncode == 0 and response:
+                current["status"] = "completed"
+                current["response"] = response
+                agent_console_event(current, "Response complete", "complete")
+            else:
+                error_text = re.sub(r"(?im)^\s*session_id:.*$", "", clean_agent_output(stderr, max_length=4_000)).strip()
+                current["status"] = "failed"
+                current["error"] = error_text or response or f"Hermes exited with status {process.returncode}."
+                agent_console_event(current, "Hermes run failed", "error")
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if current:
+                current["status"] = "failed"
+                current["completed_at"] = now_iso()
+                current["error"] = compact_text(exc, max_length=2_000)
+                agent_console_event(current, "Hermes could not be started", "error")
+    finally:
+        with AGENT_CONSOLE_LOCK:
+            AGENT_CONSOLE_PROCESSES.pop(run_id, None)
+
+
+def start_agent_console_run(payload):
+    if not isinstance(payload, dict):
+        return {"error": "Agent prompt payload must be a JSON object"}, 400
+    agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "hermes"
+    if agent_id != "hermes":
+        return {"error": f"Unknown agent: {agent_id}"}, 400
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        return {"error": "Prompt is required"}, 400
+    if len(prompt) > AGENT_CONSOLE_PROMPT_LIMIT:
+        return {"error": f"Prompt must be {AGENT_CONSOLE_PROMPT_LIMIT:,} characters or fewer"}, 400
+    session_id = compact_text(payload.get("session_id"), max_length=200)
+    if session_id and not re.fullmatch(r"[A-Za-z0-9_.:-]+", session_id):
+        return {"error": "Invalid Hermes session ID"}, 400
+    command = hermes_command_path()
+    if not command:
+        return {"error": "Hermes CLI was not found in the Mentat server environment."}, 503
+
+    with AGENT_CONSOLE_LOCK:
+        active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+        if active:
+            return {"error": "Hermes is already working on another prompt", "active_run_id": active["id"]}, 409
+        run_id = f"run_{uuid4().hex[:14]}"
+        run = {
+            "id": run_id,
+            "agent_id": "hermes",
+            "agent_name": "Hermes",
+            "model": agent_console_model(),
+            "prompt": prompt,
+            "status": "queued",
+            "session_id": session_id or None,
+            "response": "",
+            "error": "",
+            "events": [],
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+            "started_at": None,
+            "completed_at": None,
+        }
+        agent_console_event(run, "Prompt queued for Hermes", "queued")
+        AGENT_CONSOLE_RUNS[run_id] = run
+        if len(AGENT_CONSOLE_RUNS) > AGENT_CONSOLE_RUN_LIMIT:
+            removable = sorted(
+                (item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES),
+                key=lambda item: item.get("created_at") or "",
+            )
+            for old_run in removable[: len(AGENT_CONSOLE_RUNS) - AGENT_CONSOLE_RUN_LIMIT]:
+                AGENT_CONSOLE_RUNS.pop(old_run["id"], None)
+
+    with AGENT_CONSOLE_LOCK:
+        snapshot = agent_console_snapshot(run)
+    worker = threading.Thread(target=run_hermes_agent, args=(run_id, command), daemon=True, name=f"mentat-{run_id}")
+    worker.start()
+    return {"ok": True, "run": snapshot}, 202
+
+
+def set_agent_console_model(payload):
+    if not isinstance(payload, dict):
+        return {"error": "Model payload must be a JSON object"}, 400
+    model = compact_text(payload.get("model"), max_length=160)
+    if not model:
+        return {"error": "Model is required"}, 400
+    catalog = agent_console_model_catalog()
+    available_models = list(catalog.get("models") or [])
+    if model not in available_models:
+        provider_label = catalog.get("provider_label") or catalog.get("provider") or "current provider"
+        return {"error": f"{model} is not an active model for {provider_label}. Refresh /model and choose from the list."}, 400
+    command = hermes_command_path()
+    if not command:
+        return {"error": "Hermes CLI was not found in the Mentat server environment."}, 503
+
+    with AGENT_CONSOLE_LOCK:
+        active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+        if active:
+            return {"error": "Stop the active Hermes run before changing its default model", "active_run_id": active["id"]}, 409
+
+    try:
+        result = subprocess.run(
+            [command, "config", "set", "model.default", model],
+            cwd=str(BASE_DIR),
+            env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+        return {"error": compact_text(exc, max_length=2_000)}, 500
+
+    if result.returncode != 0:
+        detail = clean_agent_output(result.stderr or result.stdout, max_length=2_000)
+        return {"error": detail or "Hermes could not update the default model."}, 500
+    return {
+        "ok": True,
+        "model": model,
+        "model_catalog": agent_console_model_catalog(refresh=True),
+        "message": "Hermes default model updated.",
+    }, 200
+
+
+def refresh_agent_console_models(_payload=None):
+    return {"ok": True, "model_catalog": agent_console_model_catalog(refresh=True)}, 200
+
+
+def cancel_agent_console_run(run_id: str):
+    with AGENT_CONSOLE_LOCK:
+        run = AGENT_CONSOLE_RUNS.get(run_id)
+        if not run:
+            return {"error": "Agent run not found"}, 404
+        if run.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES:
+            return {"error": "Agent run is no longer active", "run": agent_console_snapshot(run)}, 409
+        run["status"] = "cancelling"
+        agent_console_event(run, "Stopping Hermes", "status")
+        process = AGENT_CONSOLE_PROCESSES.get(run_id)
+        if process and process.poll() is None:
+            process.terminate()
+        return {"ok": True, "run": agent_console_snapshot(run)}, 202
+
+
+def stop_agent_console_processes() -> None:
+    with AGENT_CONSOLE_LOCK:
+        active = list(AGENT_CONSOLE_PROCESSES.items())
+        for run_id, _process in active:
+            run = AGENT_CONSOLE_RUNS.get(run_id)
+            if run and run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES:
+                run["status"] = "cancelling"
+                agent_console_event(run, "Mentat is shutting down", "status")
+    for _run_id, process in active:
+        try:
+            if process.poll() is None:
+                process.terminate()
+        except OSError:
+            pass
+
+
 def handle_post_route(path: str, payload=None):
     for pattern, handler, accepts_payload in POST_ROUTES:
         match = pattern.match(path)
@@ -2185,6 +2649,10 @@ POST_ROUTES = [
     (re.compile(r"^/api/projects/([^/]+)$"), update_project, True),
     (re.compile(r"^/api/agent-messages$"), create_agent_message, True),
     (re.compile(r"^/api/agent-messages/([^/]+)/state$"), update_agent_message_state, True),
+    (re.compile(r"^/api/agent-console/runs$"), start_agent_console_run, True),
+    (re.compile(r"^/api/agent-console/model$"), set_agent_console_model, True),
+    (re.compile(r"^/api/agent-console/models/refresh$"), refresh_agent_console_models, True),
+    (re.compile(r"^/api/agent-console/runs/([^/]+)/cancel$"), cancel_agent_console_run, False),
 ]
 
 
@@ -2197,6 +2665,7 @@ API_ROUTES = {
     "/api/attention": attention_payload,
     "/api/calendar": google_calendar_events,
     "/api/email": email_payload,
+    "/api/agent-console": agent_console_payload,
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),
@@ -2206,6 +2675,7 @@ API_ROUTES = {
 
 
 GET_ROUTES = {
+    re.compile(r"^/api/agent-console/runs/([^/]+)$"): agent_console_run_payload,
     re.compile(r"^/api/hermes/sessions/([^/]+)/replay$"): session_replay,
     re.compile(r"^/api/hermes/sessions/([^/]+)$"): session_detail,
 }
@@ -2236,6 +2706,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def agent_console_request_is_local(self) -> bool:
+        return self.client_address[0] in {"127.0.0.1", "::1"}
+
     def send_static(self, path: str):
         parsed = urlparse(path)
         route_path = parsed.path
@@ -2265,6 +2738,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/agent-console") and not self.agent_console_request_is_local():
+            self.send_json({"error": "Agent console is available only from this computer."}, status=403)
+            return
         if parsed.path == "/api/hermes/search":
             try:
                 query = parse_qs(parsed.query).get("q", [""])[0]
@@ -2293,8 +2769,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/agent-console") and not self.agent_console_request_is_local():
+            self.send_json({"error": "Agent console is available only from this computer."}, status=403)
+            return
         payload = None
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.send_json({"error": "Invalid Content-Length header"}, status=400)
+            return
+        if length < 0 or length > MAX_JSON_BODY_BYTES:
+            self.send_json({"error": f"Request body must be {MAX_JSON_BODY_BYTES:,} bytes or fewer"}, status=413)
+            return
         if length:
             try:
                 raw = self.rfile.read(length)
@@ -2343,5 +2829,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nStopping Mentat.")
     finally:
+        stop_agent_console_processes()
         server.server_close()
         clear_runtime_state()

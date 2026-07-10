@@ -48,7 +48,7 @@ class HealthSignalUpgradeTests(unittest.TestCase):
         self.assertEqual(health_checks.status_label("error"), "Error")
 
     def test_sidebar_and_settings_render_real_health_sections(self):
-        self.assertIn("id=\"health-status-pill\"", INDEX_HTML)
+        self.assertNotIn("id=\"health-status-pill\"", INDEX_HTML)
         self.assertIn("id=\"health-summary\"", INDEX_HTML)
         self.assertIn("function renderHealth(payload = {})", APP_JS)
         self.assertIn("payload.subsystems", APP_JS)

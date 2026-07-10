@@ -22,10 +22,10 @@ class ObsidianNotesViewTests(unittest.TestCase):
         self.assertEqual(payload["note_count"], len(expected))
 
     def test_notes_view_has_scrollable_region_and_count_ui(self):
-        self.assertIn('id="notes-count-pill"', INDEX_HTML)
+        self.assertNotIn('id="notes-count-pill"', INDEX_HTML)
         self.assertIn('id="notes-vault-meta"', INDEX_HTML)
         self.assertIn('class="notes-grid notes-scroll-region"', INDEX_HTML)
-        self.assertIn('countPill.textContent', APP_JS)
+        self.assertIn('const countPill = $(\'#notes-count-pill\')', APP_JS)
         self.assertIn('payload.vault', APP_JS)
         self.assertIn('.notes-scroll-region {', STYLES)
         self.assertIn('overflow-y: auto;', STYLES)

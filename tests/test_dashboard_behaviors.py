@@ -15,6 +15,126 @@ class DashboardBehaviorTests(unittest.TestCase):
     def write_json(self, root: Path, name: str, payload) -> None:
         (root / name).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
+    def test_agent_console_only_accepts_hermes_and_requires_a_prompt(self):
+        invalid_agent, invalid_agent_status = server.start_agent_console_run({"agent_id": "shell", "prompt": "hello"})
+        missing_prompt, missing_prompt_status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "  "})
+
+        self.assertEqual(invalid_agent_status, 400)
+        self.assertIn("Unknown agent", invalid_agent["error"])
+        self.assertEqual(missing_prompt_status, 400)
+        self.assertEqual(missing_prompt["error"], "Prompt is required")
+
+    def test_agent_console_starts_a_managed_hermes_run(self):
+        server.AGENT_CONSOLE_RUNS.clear()
+        try:
+            with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+                server, "agent_console_model", return_value="test/model"
+            ), patch.object(server.threading, "Thread") as worker:
+                payload, status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "Inspect the queue"})
+
+            self.assertEqual(status, 202)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["run"]["agent_id"], "hermes")
+            self.assertEqual(payload["run"]["status"], "queued")
+            self.assertEqual(payload["run"]["prompt"], "Inspect the queue")
+            self.assertNotIn("command", payload["run"])
+            worker.return_value.start.assert_called_once_with()
+        finally:
+            server.AGENT_CONSOLE_RUNS.clear()
+
+    def test_agent_console_runner_captures_response_and_resumable_session(self):
+        class CompletedHermesProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "Hermes response", "\nsession_id: session_test_123\n"
+
+        run_id = "run_test_console"
+        server.AGENT_CONSOLE_RUNS.clear()
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "prompt": "Continue this work",
+            "session_id": "session_previous",
+            "status": "queued",
+            "events": [],
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        try:
+            with patch.object(server.subprocess, "Popen", return_value=CompletedHermesProcess()) as popen:
+                server.run_hermes_agent(run_id, "/tmp/hermes")
+
+            command = popen.call_args.args[0]
+            self.assertEqual(command[:4], ["/tmp/hermes", "chat", "-q", "Continue this work"])
+            self.assertIn("--resume", command)
+            self.assertEqual(command[command.index("--resume") + 1], "session_previous")
+            self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["status"], "completed")
+            self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["response"], "Hermes response")
+            self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["session_id"], "session_test_123")
+        finally:
+            server.AGENT_CONSOLE_RUNS.clear()
+            server.AGENT_CONSOLE_PROCESSES.clear()
+
+    def test_agent_console_model_change_uses_hermes_config_command(self):
+        server.AGENT_CONSOLE_RUNS.clear()
+        try:
+            with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+                server, "agent_console_model_catalog", return_value={
+                    "provider": "openai-codex",
+                    "provider_label": "OpenAI Codex",
+                    "models": ["gpt-5.5", "gpt-5.3-codex-spark"],
+                    "current_model": "gpt-5.5",
+                }
+            ), patch.object(server.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = "updated"
+                run.return_value.stderr = ""
+                payload, status = server.set_agent_console_model({"model": "gpt-5.3-codex-spark"})
+
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["model"], "gpt-5.3-codex-spark")
+            self.assertEqual(run.call_args.args[0], ["/tmp/hermes", "config", "set", "model.default", "gpt-5.3-codex-spark"])
+        finally:
+            server.AGENT_CONSOLE_RUNS.clear()
+
+    def test_agent_console_model_change_rejects_models_outside_current_provider_catalog(self):
+        with patch.object(server, "agent_console_model_catalog", return_value={
+            "provider": "openai-codex",
+            "provider_label": "OpenAI Codex",
+            "models": ["gpt-5.5"],
+            "current_model": "gpt-5.5",
+        }), patch.object(server.subprocess, "run") as run:
+            payload, status = server.set_agent_console_model({"model": "anthropic/claude-sonnet-4"})
+
+        self.assertEqual(status, 400)
+        self.assertIn("not an active model", payload["error"])
+        run.assert_not_called()
+
+    def test_agent_console_model_catalog_uses_hermes_inventory_payload(self):
+        server.AGENT_MODEL_CATALOG_CACHE.update({"key": None, "payload": None, "fetched_at": 0})
+        inventory = {
+            "provider": "openrouter",
+            "provider_label": "OpenRouter",
+            "models": ["openai/gpt-5.5", "anthropic/claude-sonnet-4"],
+            "current_model": "openai/gpt-5.5",
+            "source": "built-in",
+        }
+        try:
+            with patch.object(server, "hermes_python_path", return_value="/tmp/hermes-python"), patch.object(
+                server.subprocess, "run"
+            ) as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = json.dumps(inventory)
+                run.return_value.stderr = ""
+                catalog = server.agent_console_model_catalog(refresh=True)
+
+            self.assertEqual(catalog["provider"], "openrouter")
+            self.assertEqual(catalog["models"], inventory["models"])
+            self.assertEqual(run.call_args.args[0][0], "/tmp/hermes-python")
+            self.assertIn("build_models_payload", run.call_args.args[0][2])
+        finally:
+            server.AGENT_MODEL_CATALOG_CACHE.update({"key": None, "payload": None, "fetched_at": 0})
+
     def test_calendar_fallback_payload_is_read_only_and_event_shaped(self):
         tomorrow = (datetime.now().astimezone() + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
         fallback_events = [

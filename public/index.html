@@ -126,23 +126,46 @@
             <div id="model-usage" class="model-usage"></div>
           </section>
 
-          <section class="panel command-card" id="calendar-panel">
+          <section class="panel command-card span-2" id="agent-console-panel">
             <div class="panel-head">
               <div>
-                <h2>Calendar</h2>
+                <h2>Agent Console</h2>
               </div>
             </div>
-            <div id="calendar-list" class="stack"></div>
-          </section>
-
-          <section class="panel command-card" id="email-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Priority Email</h2>
+            <div class="agent-console">
+              <div class="agent-console-toolbar">
+                <label class="agent-console-select-shell" for="agent-console-agent">
+                  <span class="detail-context-label mono">Agent</span>
+                  <select id="agent-console-agent" class="agent-console-select" aria-label="Agent">
+                    <option value="hermes">Hermes</option>
+                  </select>
+                </label>
+                <label class="agent-console-select-shell" for="agent-console-model-select">
+                  <span class="detail-context-label mono">Model</span>
+                  <select id="agent-console-model-select" class="agent-console-select" aria-label="Hermes model">
+                    <option value="">Loading active models…</option>
+                  </select>
+                </label>
+                <button class="mini-button" type="button" id="agent-console-apply-model">Apply Model</button>
+                <div class="agent-console-identity mono">
+                  <span class="agent-console-presence" id="agent-console-presence" aria-hidden="true"></span>
+                  <span id="agent-console-state">Checking Hermes…</span>
+                </div>
+                <button class="mini-button" type="button" id="agent-console-new-session">New Session</button>
               </div>
-              <span class="pill" id="email-source-pill">read-only</span>
+              <div id="agent-console-chat" class="agent-console-chat" role="log" aria-live="polite" aria-label="Hermes conversation and run status">
+                <div class="agent-console-empty mono">Waiting for Hermes status…</div>
+              </div>
+              <form id="agent-console-form" class="agent-console-form">
+                <div class="agent-console-input-wrap">
+                  <textarea id="agent-console-prompt" name="prompt" rows="1" maxlength="20000" placeholder="Prompt Hermes…" aria-label="Prompt Hermes" required autocomplete="off"></textarea>
+                  <div id="agent-console-command-menu" class="agent-console-command-menu" hidden></div>
+                </div>
+                <button class="action-button agent-console-send" type="submit">Send</button>
+                <button class="mini-button agent-console-stop" type="button" id="agent-console-stop" hidden>Stop</button>
+              </form>
+              <div id="agent-console-form-status" class="agent-console-form-status mono" aria-live="polite"></div>
             </div>
-            <div id="email-list" class="stack"></div>
           </section>
 
           <section class="panel command-card span-2" id="today-completed-panel">
@@ -150,7 +173,6 @@
               <div>
                 <h2>Completed Work</h2>
               </div>
-              <span class="pill success">separated by type</span>
             </div>
             <div id="completed-list" class="stack horizontal-stack"></div>
           </section>
@@ -165,7 +187,6 @@
                 <h2>Agents / Sessions</h2>
                 <p class="panel-subtitle">Pick a Hermes session, then review the structured replay or raw transcript.</p>
               </div>
-              <span class="pill">read-only</span>
             </div>
             <div class="session-controls-card">
               <label class="session-select-label" for="session-select">
@@ -192,7 +213,6 @@
               <div>
                 <h2>Cron Monitor</h2>
               </div>
-              <span class="pill" id="cron-count">0 jobs</span>
             </div>
             <div id="cron-list" class="stack"></div>
           </section>
@@ -203,7 +223,6 @@
                 <h2>Agent Messages</h2>
                 <p class="panel-subtitle">Queue local-only messages for agents without granting browser-triggered shell execution.</p>
               </div>
-              <span class="pill warn" id="agent-message-count">0 queued</span>
             </div>
             <div id="agent-message-compose" class="agent-message-compose"></div>
             <div id="agent-message-list" class="stack"></div>
@@ -294,7 +313,6 @@
                 <h2>Recent Completed Work</h2>
                 <p class="panel-subtitle">A compact archive instead of duplicating the task queue.</p>
               </div>
-              <span class="pill success" id="completed-count">0 done</span>
             </div>
             <div id="project-completed-list" class="stack"></div>
           </section>
@@ -307,7 +325,6 @@
             <div>
               <h2>Next 7 Days</h2>
             </div>
-            <span class="pill" id="calendar-full-source-pill">connected / fallback</span>
           </div>
           <div id="calendar-full-list" class="stack"></div>
         </section>
@@ -320,7 +337,6 @@
               <h2>Obsidian Notes</h2>
               <p id="notes-vault-meta" class="section-copy">Loading vault notes…</p>
             </div>
-            <span class="pill" id="notes-count-pill">vault</span>
           </div>
           <div id="notes-list" class="notes-grid notes-scroll-region"></div>
         </section>
@@ -332,19 +348,17 @@
             <div>
               <h2>Local Runtime</h2>
             </div>
-            <span class="pill">read-only</span>
           </div>
           <div class="settings-list">
-            <article class="item"><div class="item-title"><span>Runtime mode</span><span class="pill success">local-only</span></div><div class="item-desc">Mentat reads Hermes data and writes only project-owned JSON files.</div></article>
-            <article class="item"><div class="item-title"><span>Calendar</span><span class="pill">connected / fallback</span></div><div class="item-desc">Google Calendar read-only sync is connected when the Hermes token is available, with local <code>calendar.json</code> used as the fallback.</div></article>
-            <article class="item"><div class="item-title"><span>Agent chat</span><span class="pill warn">planned</span></div><div class="item-desc">Direct chat from the dashboard will need a deliberate Hermes gateway/API integration.</div></article>
+            <article class="item"><div class="item-title"><span>Runtime mode</span></div><div class="item-desc">Mentat reads Hermes data and writes only project-owned JSON files.</div></article>
+            <article class="item"><div class="item-title"><span>Calendar</span></div><div class="item-desc">Google Calendar read-only sync is connected when the Hermes token is available, with local <code>calendar.json</code> used as the fallback.</div></article>
+            <article class="item"><div class="item-title"><span>Agent console</span></div><div class="item-desc">Front-page prompts run through the installed Hermes CLI on this computer.</div></article>
           </div>
           <div class="section-divider"></div>
           <div class="panel-head compact-head">
             <div>
               <h2>Theme Studio</h2>
             </div>
-            <span class="pill" id="theme-active-pill">compact dark</span>
           </div>
           <div class="theme-controls">
             <label class="theme-select-shell" for="theme-select">
@@ -364,7 +378,6 @@
             <div>
               <h2>Subsystem Health</h2>
             </div>
-            <span class="pill" id="health-status-pill">starting</span>
           </div>
           <div id="health-summary" class="settings-list">
             <div class="empty">Health checks will appear here after the first refresh.</div>
@@ -374,7 +387,6 @@
             <div>
               <h2>Agent / Model Config</h2>
             </div>
-            <span class="pill">masked</span>
           </div>
           <div id="config-summary" class="settings-list"></div>
           <pre id="config-text" class="config-pre">Open Settings to load the masked Hermes config.</pre>

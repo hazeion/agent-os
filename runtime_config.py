@@ -117,7 +117,7 @@ def resolve_path(value: str | Path, *, base_dir: Path) -> Path:
         path = Path(os.path.expandvars(os.path.expanduser(str(value))))
     if not path.is_absolute():
         path = (base_dir / path).resolve()
-    return path
+    return path.resolve()
 
 
 def parse_port(value, *, source: str) -> int:

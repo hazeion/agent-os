@@ -14,6 +14,7 @@ const endpoints = {
   attention: '/api/attention',
   calendar: '/api/calendar',
   email: '/api/email',
+  agentConsole: '/api/agent-console',
   crons: '/api/hermes/crons',
   sessions: '/api/hermes/sessions',
   search: '/api/hermes/search',
@@ -57,6 +58,15 @@ const state = {
   needsRefresh: false,
   hasBootstrapped: false,
   currentTheme: 'compact-dark',
+  agentConsoleRuns: [],
+  agentConsoleAgents: [],
+  agentConsoleModels: [],
+  agentConsoleModelCatalog: {},
+  agentConsoleSelectedModel: '',
+  agentConsoleRunId: '',
+  agentConsoleSessionId: '',
+  agentConsoleStartFresh: false,
+  agentConsolePollTimer: null,
 };
 
 const taskStatusLabels = {
@@ -269,6 +279,22 @@ async function sendAgentMessage(payload) {
 
 async function setAgentMessageState(id, payload) {
   return sendJson(`${endpoints.agentMessages}/${encodeURIComponent(id)}/state`, payload, { method: 'POST' });
+}
+
+async function startAgentConsoleRun(payload) {
+  return sendJson(`${endpoints.agentConsole}/runs`, payload, { method: 'POST' });
+}
+
+async function setAgentConsoleModel(model) {
+  return sendJson(`${endpoints.agentConsole}/model`, { model }, { method: 'POST' });
+}
+
+async function refreshAgentConsoleModels() {
+  return sendJson(`${endpoints.agentConsole}/models/refresh`, {}, { method: 'POST' });
+}
+
+async function stopAgentConsoleRun(id) {
+  return sendJson(`${endpoints.agentConsole}/runs/${encodeURIComponent(id)}/cancel`, {}, { method: 'POST' });
 }
 
 async function fetchSessionDetail(id, messageId = '') {

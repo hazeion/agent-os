@@ -49,6 +49,7 @@ If you try it now, expect a real working project, not a finished product.
 Mentat currently includes:
 
 - Today View as the main command center
+- front-page Hermes prompt console with live run status and resumable follow-ups
 - Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
 - Agents / Sessions view with transcript and replay support
 - Hermes session search from `state.db` in read-only mode

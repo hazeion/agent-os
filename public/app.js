@@ -93,6 +93,7 @@ function setView(view, { refreshOnChange = true } = {}) {
   state.activeView = view;
   $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === view));
   $$('[data-view-panel]').forEach((panel) => panel.classList.toggle('active', panel.dataset.viewPanel === view));
+  if (view !== 'today') scheduleAgentConsolePoll(false);
   if (state.hasBootstrapped && viewChanged && refreshOnChange) return refresh();
   return Promise.resolve();
 }
@@ -1085,10 +1086,200 @@ function renderEmail(payload = {}) {
   `).join('') : `<div class="empty">${escapeHtml(payload.guidance || 'Read-only email pane is ready; connect a source later to surface priority messages.')}</div>`;
 }
 
+const agentConsoleCommands = [
+  { command: '/model', detail: 'Refresh current provider models' },
+  { command: '/new', detail: 'Start a new Hermes session' },
+  { command: '/help', detail: 'Show dashboard commands' },
+];
+
+function agentConsoleRunIsActive(run = {}) {
+  return ['queued', 'running', 'cancelling'].includes(run.status);
+}
+
+function agentConsoleCommandSuggestions(value = '') {
+  const query = String(value || '').trim().toLowerCase();
+  if (!query.startsWith('/')) return [];
+  return agentConsoleCommands.filter((item) => item.command.startsWith(query) || query === '/help');
+}
+
+function renderAgentConsoleCommandMenu() {
+  const prompt = $('#agent-console-prompt');
+  const menu = $('#agent-console-command-menu');
+  if (!prompt || !menu) return;
+  const suggestions = agentConsoleCommandSuggestions(prompt.value);
+  menu.hidden = !suggestions.length;
+  menu.innerHTML = suggestions.map((item) => `
+    <button type="button" class="agent-console-command-option" data-agent-console-command="${escapeHtml(item.command)}">
+      <code>${escapeHtml(item.command)}</code><span>${escapeHtml(item.detail)}</span>
+    </button>
+  `).join('');
+}
+
+function renderAgentConsole(payload = {}) {
+  const chat = $('#agent-console-chat');
+  const agentSelect = $('#agent-console-agent');
+  const modelSelect = $('#agent-console-model-select');
+  const applyModel = $('#agent-console-apply-model');
+  const prompt = $('#agent-console-prompt');
+  const send = $('#agent-console-form .agent-console-send');
+  const stop = $('#agent-console-stop');
+  const newSession = $('#agent-console-new-session');
+  const stateLabel = $('#agent-console-state');
+  const presence = $('#agent-console-presence');
+  if (!chat || !agentSelect) return;
+
+  const agents = Array.isArray(payload.agents) ? payload.agents : state.agentConsoleAgents;
+  const catalog = payload.model_catalog || state.agentConsoleModelCatalog || {};
+  const models = Array.isArray(catalog.models) ? catalog.models : [];
+  const runs = Array.isArray(payload.runs) ? payload.runs : state.agentConsoleRuns;
+  state.agentConsoleAgents = agents;
+  state.agentConsoleModels = models;
+  state.agentConsoleModelCatalog = catalog;
+  state.agentConsoleRuns = runs;
+
+  const selectedAgentId = agentSelect.value || 'hermes';
+  agentSelect.innerHTML = agents.length
+    ? agents.map((agent) => `<option value="${escapeHtml(agent.id)}" ${agent.id === selectedAgentId ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')
+    : '<option value="hermes">Hermes</option>';
+  const selectedAgent = agents.find((agent) => agent.id === agentSelect.value) || agents[0] || { available: false, model: '' };
+  const defaultModel = [state.agentConsoleSelectedModel, selectedAgent.model, catalog.current_model].find((item) => models.includes(item)) || models[0] || '';
+  if (modelSelect) {
+    modelSelect.innerHTML = models.length
+      ? models.map((model) => `<option value="${escapeHtml(model)}" ${model === defaultModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
+      : `<option value="">${escapeHtml(catalog.error || 'No active models available')}</option>`;
+    state.agentConsoleSelectedModel = modelSelect.value;
+  }
+
+  const activeRun = runs.find(agentConsoleRunIsActive);
+  const latestRun = runs[0];
+  if (latestRun?.session_id && !state.agentConsoleStartFresh) state.agentConsoleSessionId = latestRun.session_id;
+  state.agentConsoleRunId = activeRun?.id || '';
+  const available = Boolean(selectedAgent.available);
+  const modelLabel = modelSelect?.value || selectedAgent.model || 'configured model';
+  const providerLabel = catalog.provider_label || catalog.provider || 'Hermes';
+  if (stateLabel) stateLabel.textContent = !available ? 'Hermes CLI unavailable' : activeRun ? `${providerLabel} · ${modelLabel} · working` : `${providerLabel} · ${modelLabel} · ready`;
+  if (presence) presence.className = `agent-console-presence ${activeRun ? 'working' : available ? 'ready' : 'offline'}`;
+  if (prompt) prompt.disabled = !available || Boolean(activeRun);
+  if (send) send.disabled = !available || Boolean(activeRun);
+  if (modelSelect) modelSelect.disabled = !available || Boolean(activeRun) || !models.length;
+  if (applyModel) applyModel.disabled = !available || Boolean(activeRun) || !modelSelect?.value;
+  if (newSession) newSession.disabled = Boolean(activeRun);
+  if (stop) {
+    stop.hidden = !activeRun;
+    stop.disabled = activeRun?.status === 'cancelling';
+  }
+
+  const wasNearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
+  const visibleRuns = [...runs].slice(0, 10).reverse();
+  chat.innerHTML = visibleRuns.length ? visibleRuns.map((run) => {
+    const events = (run.events || []).map((event) => `
+      <div class="agent-console-log-row agent-console-log-status ${escapeHtml(event.kind || 'status')}">
+        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>Hermes</span><span>${escapeHtml(event.message || 'Working')}</span>
+      </div>`).join('');
+    const working = agentConsoleRunIsActive(run) ? `
+      <div class="agent-console-log-row agent-console-working" role="status"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Hermes</span><span>${run.status === 'cancelling' ? 'Stopping' : 'Working'}</span></div>` : '';
+    const response = run.response ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">Hermes</span><div class="message-content markdown-body">${renderMarkdown(run.response)}</div></div>` : '';
+    const error = run.error ? `<div class="agent-console-log-row agent-console-log-error"><span class="mono">${run.status === 'cancelled' ? 'Stopped' : 'Error'}</span><div class="message-content">${escapeHtml(run.error)}</div></div>` : '';
+    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}</div></div><div class="agent-console-events">${events}</div>${working}${response}${error}</section>`;
+  }).join('') : `<div class="agent-console-empty mono">${escapeHtml(payload.error || (available ? 'Hermes ready.' : 'Hermes CLI unavailable.'))}</div>`;
+  if (wasNearBottom || activeRun) chat.scrollTop = chat.scrollHeight;
+  scheduleAgentConsolePoll(Boolean(activeRun));
+}
+
+function scheduleAgentConsolePoll(shouldPoll = true) {
+  clearTimeout(state.agentConsolePollTimer);
+  state.agentConsolePollTimer = null;
+  if (!shouldPoll || state.activeView !== 'today') return;
+  state.agentConsolePollTimer = setTimeout(async () => {
+    try { renderAgentConsole(await api(endpoints.agentConsole)); } catch (err) { $('#agent-console-form-status').textContent = err.message; }
+  }, 1000);
+}
+
+function resizeAgentConsolePrompt() {
+  const prompt = $('#agent-console-prompt');
+  if (!prompt) return;
+  prompt.style.height = 'auto';
+  prompt.style.height = `${Math.min(prompt.scrollHeight, 140)}px`;
+  renderAgentConsoleCommandMenu();
+}
+
+async function refreshAgentConsoleModelCatalog({ focus = false } = {}) {
+  const status = $('#agent-console-form-status');
+  if (status) status.textContent = 'Refreshing active provider models…';
+  try {
+    const payload = await refreshAgentConsoleModels();
+    renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: payload.model_catalog, runs: state.agentConsoleRuns });
+    if (status) status.textContent = '';
+    if (focus) $('#agent-console-model-select')?.focus();
+    return payload.model_catalog;
+  } catch (err) {
+    if (status) status.textContent = err.message;
+    return null;
+  }
+}
+
+async function applyAgentConsoleModel() {
+  const model = $('#agent-console-model-select')?.value || '';
+  const status = $('#agent-console-form-status');
+  if (!model) return;
+  if (status) status.textContent = 'Updating Hermes model…';
+  try {
+    const payload = await setAgentConsoleModel(model);
+    state.agentConsoleSelectedModel = payload.model || model;
+    renderAgentConsole({ agents: state.agentConsoleAgents.map((agent) => ({ ...agent, model: payload.model || model })), model_catalog: payload.model_catalog, runs: state.agentConsoleRuns });
+    if (status) status.textContent = payload.message || 'Hermes default model updated.';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+async function submitAgentConsolePrompt() {
+  const prompt = $('#agent-console-prompt');
+  const status = $('#agent-console-form-status');
+  const value = prompt?.value.trim() || '';
+  if (!value) return;
+  if (value.startsWith('/')) {
+    const [command, ...args] = value.split(/\s+/);
+    const argument = args.join(' ').trim();
+    if (command === '/model') {
+      const catalog = await refreshAgentConsoleModelCatalog({ focus: true });
+      if (argument && catalog?.models?.includes(argument)) {
+        state.agentConsoleSelectedModel = argument;
+        $('#agent-console-model-select').value = argument;
+        if (status) status.textContent = `${argument} selected. Apply Model to update Hermes.`;
+      } else if (argument && status) status.textContent = `${argument} is not available from the current provider.`;
+    } else if (command === '/new') {
+      state.agentConsoleSessionId = '';
+      state.agentConsoleStartFresh = true;
+      if (status) status.textContent = 'New Hermes session ready.';
+    } else if (command === '/help') {
+      if (status) status.textContent = 'Dashboard commands: /model, /new, /help.';
+    } else if (status) status.textContent = `${command} is available in the interactive Hermes CLI, not this dashboard console.`;
+    prompt.value = '';
+    resizeAgentConsolePrompt();
+    $('#agent-console-command-menu').hidden = true;
+    return;
+  }
+  if (status) status.textContent = 'Sending to Hermes…';
+  try {
+    const payload = await startAgentConsoleRun({ agent_id: $('#agent-console-agent')?.value || 'hermes', prompt: value, session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined });
+    state.agentConsoleStartFresh = false;
+    prompt.value = '';
+    resizeAgentConsolePrompt();
+    renderAgentConsole({ agents: state.agentConsoleAgents, runs: [payload.run, ...state.agentConsoleRuns].filter(Boolean) });
+    if (status) status.textContent = '';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
 function renderCrons(payload = {}) {
   const jobs = payload.jobs || [];
-  $('#cron-count').textContent = `${jobs.length} jobs`;
-  $('#cron-list').innerHTML = jobs.length ? jobs.map((job) => `
+  const count = $('#cron-count');
+  const list = $('#cron-list');
+  if (count) count.textContent = `${jobs.length} jobs`;
+  if (!list) return;
+  list.innerHTML = jobs.length ? jobs.map((job) => `
     <article class="item">
       <div class="item-title"><span>${escapeHtml(job.name)}</span><span class="pill ${job.enabled ? 'success' : 'warn'}">${job.enabled ? 'enabled' : 'disabled'}</span></div>
       <div class="item-meta mono">${escapeHtml(job.schedule)} · last ${escapeHtml(job.last_status || 'unknown')}</div>
@@ -2035,8 +2226,8 @@ async function refresh() {
     health: api(endpoints.health),
   };
 
-  if (activeView === 'today' || activeView === 'calendar') requests.calendar = api(endpoints.calendar);
-  if (activeView === 'today') requests.email = api(endpoints.email);
+  if (activeView === 'calendar') requests.calendar = api(endpoints.calendar);
+  if (activeView === 'today') requests.agentConsole = api(endpoints.agentConsole);
   if (activeView === 'today' || activeView === 'agents') {
     requests.sessions = api(endpoints.sessions);
     if (activeView === 'agents') {
@@ -2069,7 +2260,7 @@ async function refresh() {
     renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
     renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
     if (data.calendar) renderIfChanged('calendar', data.calendar, renderCalendar);
-    if (data.email) renderIfChanged('email', data.email, renderEmail);
+    if (data.agentConsole) renderAgentConsole(data.agentConsole);
     if (data.crons) renderIfChanged('crons', data.crons, renderCrons);
     if (data.sessions || data.agents || data.agentMessages) {
       if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
@@ -2230,6 +2421,60 @@ if (themeSelect) {
     applyTheme(event.target.value);
   });
 }
+
+$('#agent-console-form')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  await submitAgentConsolePrompt();
+});
+
+$('#agent-console-prompt')?.addEventListener('input', resizeAgentConsolePrompt);
+$('#agent-console-prompt')?.addEventListener('keydown', (event) => {
+  if (event.key === 'Tab') {
+    const suggestion = agentConsoleCommandSuggestions(event.currentTarget.value)[0];
+    if (suggestion) {
+      event.preventDefault();
+      event.currentTarget.value = `${suggestion.command} `;
+      resizeAgentConsolePrompt();
+      return;
+    }
+  }
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  event.currentTarget.form?.requestSubmit();
+});
+
+$('#agent-console-command-menu')?.addEventListener('click', (event) => {
+  const option = event.target.closest('[data-agent-console-command]');
+  if (!option) return;
+  const prompt = $('#agent-console-prompt');
+  if (!prompt) return;
+  prompt.value = `${option.dataset.agentConsoleCommand || ''} `;
+  resizeAgentConsolePrompt();
+  prompt.focus();
+});
+
+$('#agent-console-model-select')?.addEventListener('change', (event) => {
+  state.agentConsoleSelectedModel = event.target.value || '';
+});
+$('#agent-console-apply-model')?.addEventListener('click', () => void applyAgentConsoleModel());
+$('#agent-console-new-session')?.addEventListener('click', () => {
+  state.agentConsoleSessionId = '';
+  state.agentConsoleStartFresh = true;
+  const status = $('#agent-console-form-status');
+  if (status) status.textContent = 'New Hermes session ready.';
+  $('#agent-console-prompt')?.focus();
+});
+$('#agent-console-stop')?.addEventListener('click', async () => {
+  const status = $('#agent-console-form-status');
+  if (!state.agentConsoleRunId) return;
+  if (status) status.textContent = 'Stopping Hermes…';
+  try {
+    const payload = await stopAgentConsoleRun(state.agentConsoleRunId);
+    renderAgentConsole({ agents: state.agentConsoleAgents, runs: state.agentConsoleRuns.map((run) => run.id === payload.run?.id ? payload.run : run) });
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+});
 
 $('#project-scroll-left')?.addEventListener('click', () => scrollProjectRail(-1));
 $('#project-scroll-right')?.addEventListener('click', () => scrollProjectRail(1));

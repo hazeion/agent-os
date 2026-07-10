@@ -14,7 +14,8 @@ class NextPhaseReadinessTests(unittest.TestCase):
     def test_refresh_uses_view_gated_fetches_for_future_react_refactor(self):
         refresh_block = APP_JS[APP_JS.index("async function refresh") : APP_JS.index("function queueMessageSearch")]
         self.assertIn("const activeView = state.activeView", refresh_block)
-        self.assertIn("activeView === 'today' || activeView === 'calendar'", refresh_block)
+        self.assertIn("activeView === 'calendar'", refresh_block)
+        self.assertIn("activeView === 'today') requests.agentConsole", refresh_block)
         self.assertIn("activeView === 'today' || activeView === 'agents'", refresh_block)
         self.assertIn("activeView === 'projects'", refresh_block)
 
