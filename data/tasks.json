@@ -4,7 +4,7 @@
     "title": "Set up local Mentat dashboard",
     "description": "Example task showing a basic local-first setup step.",
     "project": "Mentat",
-    "status": "todo",
+    "status": "completed",
     "priority": "high",
     "assignee": "Hermes",
     "due_date": "2026-07-01",
@@ -16,15 +16,15 @@
     "review_required": false,
     "needs_attention": false,
     "created_at": "2026-06-29T12:00:00-07:00",
-    "updated_at": "2026-06-29T12:00:00-07:00",
-    "completed_at": null
+    "updated_at": "2026-07-09T22:28:05-07:00",
+    "completed_at": "2026-07-09T22:28:05-07:00"
   },
   {
     "id": "task_seed_review_sessions_view",
     "title": "Review sessions and replay view",
     "description": "Example task representing a feature validation pass in the dashboard.",
     "project": "Mentat",
-    "status": "in progress",
+    "status": "completed",
     "priority": "medium",
     "assignee": "Operator",
     "due_date": "2026-07-03",
@@ -36,8 +36,8 @@
     "review_required": true,
     "needs_attention": true,
     "created_at": "2026-06-29T12:05:00-07:00",
-    "updated_at": "2026-06-29T12:15:00-07:00",
-    "completed_at": null
+    "updated_at": "2026-07-09T22:27:42-07:00",
+    "completed_at": "2026-07-09T22:27:42-07:00"
   },
   {
     "id": "task_seed_document_setup",
