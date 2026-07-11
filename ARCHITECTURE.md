@@ -55,6 +55,16 @@ Events describe Mentat-owned lifecycle transitions only. Mentat does not parse
 unstable native Hermes output into synthetic tool-call events, and it does not
 require a streaming transport for this local-first contract.
 
+Agent Console slash commands come from Mentat's versioned, project-owned safe
+command manifest. Each entry declares its dashboard handler, arguments,
+description, and safety classification. The frontend accepts only the current
+schema and a fixed handler registry. The initial allowlist is `/model`, `/new`,
+and `/help`; this is intentionally distinct from the full Hermes CLI.
+
+Future command sources must be introduced as an explicit capability and emit
+the stable Mentat schema. Mentat does not parse CLI help/output to discover
+commands, and it never provides arbitrary Hermes CLI passthrough.
+
 ## Initial agent-creator scope
 
 The first version may create a fresh profile or clone approved configuration

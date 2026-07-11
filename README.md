@@ -50,6 +50,7 @@ Mentat currently includes:
 
 - Today View as the main command center
 - front-page Hermes prompt console with live run status and resumable follow-ups
+- manifest-driven `/model`, `/new`, and `/help` dashboard commands with no Hermes CLI passthrough
 - profile-aware Agent Console routing with profile-scoped models and sessions
 - capability-gated Hermes profile discovery, confirmed creation and deletion, built-in skill selection, and a persistent Managed Agents list
 - private local Agent Console history across Mentat restarts
@@ -319,6 +320,7 @@ rather than SSE or WebSockets.
 
 ```text
 server.py
+command_manifest.py
 agent_run_history.py
 hermes_profiles.py
 hermes_profile_creation.py

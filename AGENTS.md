@@ -91,6 +91,12 @@ profile refresh verification. Direct skill-content editing, hub installation,
 `SOUL.md` editing, clone-all, rename, provider switching, and arbitrary MCP
 changes remain deferred.
 
+Agent Console slash commands are a separate Mentat allowlist, not a projection
+of the Hermes CLI. Add commands through the versioned command manifest with a
+fixed dashboard handler, argument declarations, description, safety class, and
+tests. Never derive this surface by parsing CLI output or add arbitrary command
+passthrough.
+
 Tracked JSON fixtures under `data/` should remain public-safe seed/example data. Avoid committing personal names, local paths, account identifiers, or real message history there.
 
 ### Local-first only

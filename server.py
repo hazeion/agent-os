@@ -25,6 +25,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
 from agent_run_history import EVENT_RETENTION, EVENT_SCHEMA_VERSION, load_run_summaries, save_run_summaries
+from command_manifest import command_manifest_payload
 from json_store import read_json as store_read_json, update_json as store_update_json
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
 from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
@@ -3094,6 +3095,7 @@ API_ROUTES = {
     "/api/calendar": google_calendar_events,
     "/api/email": email_payload,
     "/api/agent-console": agent_console_payload,
+    "/api/agent-console/commands": command_manifest_payload,
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),

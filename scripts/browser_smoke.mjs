@@ -132,6 +132,10 @@ async function main() {
     if (!structuredEventRendered) throw new Error('Structured Agent Console event render smoke failed');
     await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/'; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await waitFor(() => client.eval(`(() => { const menu = document.querySelector('#agent-console-command-menu'); return Boolean(menu && !menu.hidden && menu.textContent.includes('/model')); })()`), 'agent console command completion');
+    const commandManifestOk = await client.eval(`fetch('/api/agent-console/commands').then((response) => response.json()).then((payload) => payload.schema_version === 1 && payload.source === 'mentat' && payload.capabilities?.['commands.hermes_cli_passthrough'] === false && payload.commands?.map((item) => item.command).join(',') === '/model,/new,/help')`);
+    if (!commandManifestOk) throw new Error('Mentat command manifest contract smoke failed');
+    await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/help'; prompt.form.requestSubmit(); })()`);
+    await waitFor(() => client.eval(`document.querySelector('#agent-console-form-status')?.textContent.includes('/model — Refresh current provider models')`), 'manifest-driven agent console help');
     await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = ''; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 
     await client.eval(`document.querySelector('[data-view="projects"]').click()`);
@@ -176,7 +180,7 @@ async function main() {
     await client.eval(`(() => { const form = document.querySelector('#agent-message-form'); form.querySelector('textarea[name="message"]').value = ${JSON.stringify(messageText)}; form.querySelector('textarea[name="message"]').dispatchEvent(new Event('input', { bubbles: true })); form.requestSubmit(); })()`);
     await waitFor(() => client.eval(`document.body.textContent.includes(${JSON.stringify(messageText)})`), 'queued agent message appears');
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'structured event render', 'nav', 'task controls', 'task status filter', 'managed Hermes profiles', 'profile-aware Console route', 'agent deletion safeguards', 'agent creator skills', 'agent message compose'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'structured event render', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'managed Hermes profiles', 'profile-aware Console route', 'agent deletion safeguards', 'agent creator skills', 'agent message compose'] }, null, 2));
     await client.ws.close?.();
   } finally {
     if (chrome && !chrome.killed) chrome.kill();

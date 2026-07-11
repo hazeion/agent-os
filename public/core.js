@@ -15,6 +15,7 @@ const endpoints = {
   calendar: '/api/calendar',
   email: '/api/email',
   agentConsole: '/api/agent-console',
+  agentConsoleCommands: '/api/agent-console/commands',
   crons: '/api/hermes/crons',
   sessions: '/api/hermes/sessions',
   search: '/api/hermes/search',
@@ -71,6 +72,7 @@ const state = {
   agentConsoleStartFresh: false,
   agentConsolePollTimer: null,
   agentConsoleEventCursors: {},
+  agentConsoleCommandManifest: null,
   agentCreatorProfiles: [],
   agentCreatorSkills: [],
   agentCreatorSelectedSkills: [],
@@ -313,6 +315,10 @@ async function setAgentConsoleModel(model, agentId = '') {
 
 async function refreshAgentConsoleModels(agentId = '') {
   return sendJson(`${endpoints.agentConsole}/models/refresh`, { agent_id: agentId }, { method: 'POST' });
+}
+
+async function fetchAgentConsoleCommandManifest() {
+  return api(endpoints.agentConsoleCommands);
 }
 
 async function fetchHermesProfiles() {

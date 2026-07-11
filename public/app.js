@@ -1086,11 +1086,41 @@ function renderEmail(payload = {}) {
   `).join('') : `<div class="empty">${escapeHtml(payload.guidance || 'Read-only email pane is ready; connect a source later to surface priority messages.')}</div>`;
 }
 
-const agentConsoleCommands = [
-  { command: '/model', detail: 'Refresh current provider models' },
-  { command: '/new', detail: 'Start a new Hermes session' },
-  { command: '/help', detail: 'Show dashboard commands' },
-];
+const agentConsoleCommandHandlers = new Set([
+  'agent_console.refresh_models',
+  'agent_console.new_session',
+  'agent_console.show_help',
+]);
+
+function normalizeAgentConsoleCommandManifest(payload = {}) {
+  if (payload.schema_version !== 1 || payload.source !== 'mentat') return null;
+  if (payload.capabilities?.['commands.manifest.read'] !== true) return null;
+  const commands = Array.isArray(payload.commands) ? payload.commands.filter((item) => (
+    typeof item?.command === 'string'
+    && /^\/[a-z][a-z0-9-]*$/.test(item.command)
+    && agentConsoleCommandHandlers.has(item.handler)
+    && Array.isArray(item.arguments)
+    && item.arguments.every((argument) => (
+      typeof argument?.name === 'string'
+      && typeof argument.required === 'boolean'
+      && typeof argument.description === 'string'
+    ))
+    && typeof item.description === 'string'
+    && ['read_only', 'local_state'].includes(item.safety)
+  )) : [];
+  if (!commands.length || commands.length !== payload.commands?.length) return null;
+  if (new Set(commands.map((item) => item.command)).size !== commands.length) return null;
+  return { ...payload, commands };
+}
+
+function setAgentConsoleCommandManifest(payload = {}) {
+  state.agentConsoleCommandManifest = normalizeAgentConsoleCommandManifest(payload);
+  renderAgentConsoleCommandMenu();
+}
+
+function agentConsoleCommands() {
+  return state.agentConsoleCommandManifest?.commands || [];
+}
 
 function agentConsoleRunIsActive(run = {}) {
   return ['queued', 'running', 'cancelling'].includes(run.status);
@@ -1118,7 +1148,7 @@ function mergeAgentConsoleRunUpdate(current = {}, incoming = {}, events = [], re
 function agentConsoleCommandSuggestions(value = '') {
   const query = String(value || '').trim().toLowerCase();
   if (!query.startsWith('/')) return [];
-  return agentConsoleCommands.filter((item) => item.command.startsWith(query) || query === '/help');
+  return agentConsoleCommands().filter((item) => item.command.startsWith(query) || query === '/help');
 }
 
 function renderAgentConsoleCommandMenu() {
@@ -1129,7 +1159,7 @@ function renderAgentConsoleCommandMenu() {
   menu.hidden = !suggestions.length;
   menu.innerHTML = suggestions.map((item) => `
     <button type="button" class="agent-console-command-option" data-agent-console-command="${escapeHtml(item.command)}">
-      <code>${escapeHtml(item.command)}</code><span>${escapeHtml(item.detail)}</span>
+      <code>${escapeHtml(item.command)}</code><span>${escapeHtml(item.description)}</span>
     </button>
   `).join('');
 }
@@ -1299,20 +1329,27 @@ async function submitAgentConsolePrompt() {
   if (value.startsWith('/')) {
     const [command, ...args] = value.split(/\s+/);
     const argument = args.join(' ').trim();
-    if (command === '/model') {
+    const definition = agentConsoleCommands().find((item) => item.command === command);
+    if (!definition) {
+      if (status) status.textContent = `${command} is not supported by the Mentat dashboard.`;
+    } else if (args.length > definition.arguments.length) {
+      const usage = [definition.command, ...definition.arguments.map((item) => item.required ? `<${item.name}>` : `[${item.name}]`)].join(' ');
+      if (status) status.textContent = `Usage: ${usage}`;
+    } else if (definition.handler === 'agent_console.refresh_models') {
       const catalog = await refreshAgentConsoleModelCatalog({ focus: true });
       if (argument && catalog?.models?.includes(argument)) {
         state.agentConsoleSelectedModel = argument;
         $('#agent-console-model-select').value = argument;
         if (status) status.textContent = `${argument} selected. Apply Model to update Hermes.`;
       } else if (argument && status) status.textContent = `${argument} is not available from the current provider.`;
-    } else if (command === '/new') {
+    } else if (definition.handler === 'agent_console.new_session') {
       state.agentConsoleSessionId = '';
       state.agentConsoleStartFresh = true;
       if (status) status.textContent = 'New Hermes session ready.';
-    } else if (command === '/help') {
-      if (status) status.textContent = 'Dashboard commands: /model, /new, /help.';
-    } else if (status) status.textContent = `${command} is available in the interactive Hermes CLI, not this dashboard console.`;
+    } else if (definition.handler === 'agent_console.show_help') {
+      const help = agentConsoleCommands().map((item) => `${item.command} — ${item.description}`).join('; ');
+      if (status) status.textContent = `Dashboard commands: ${help}.`;
+    }
     prompt.value = '';
     resizeAgentConsolePrompt();
     $('#agent-console-command-menu').hidden = true;
@@ -2601,6 +2638,7 @@ async function refresh() {
 
   if (activeView === 'calendar') requests.calendar = api(endpoints.calendar);
   if (activeView === 'today') requests.agentConsole = api(endpoints.agentConsole);
+  if (activeView === 'today') requests.agentConsoleCommandManifest = fetchAgentConsoleCommandManifest();
   if (activeView === 'today' || activeView === 'agents') {
     requests.sessions = api(endpoints.sessions);
     if (activeView === 'agents') {
@@ -2634,6 +2672,7 @@ async function refresh() {
     renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
     renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
     if (data.calendar) renderIfChanged('calendar', data.calendar, renderCalendar);
+    if (data.agentConsoleCommandManifest) setAgentConsoleCommandManifest(data.agentConsoleCommandManifest);
     if (data.agentConsole) renderAgentConsole(data.agentConsole);
     if (data.crons) renderIfChanged('crons', data.crons, renderCrons);
     if (data.hermesProfiles) renderIfChanged('hermes-profiles', data.hermesProfiles, renderHermesProfiles);

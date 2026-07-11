@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-10
 
 ### Added
+- Added a versioned, project-owned slash-command manifest for `/model`, `/new`,
+  and `/help`, including declared handlers, arguments, descriptions, and safety
+  classifications.
 - Added the capability-gated Hermes profile discovery adapter and local-only
   `/api/hermes/profiles` endpoint.
 - Added preview and confirmed creation endpoints for fresh, no-bundled-skills,
@@ -28,6 +31,9 @@ All notable changes to Mentat.
   bounded persistence, and a cursor-based incremental run endpoint.
 
 ### Changed
+- Agent Console completion, help, and dispatch now use the safe manifest and a
+  fixed frontend handler registry instead of duplicated hard-coded command
+  arrays; arbitrary Hermes CLI passthrough remains unavailable.
 - Reframed Mentat as a local-first, capability-scoped Hermes control plane
   rather than a strictly read-only dashboard.
 - Preserved direct read-only boundaries for Hermes databases, credentials,
@@ -40,8 +46,8 @@ All notable changes to Mentat.
   incremental event polling while retaining the complete run API for compatibility.
 
 ### Validation
-- `python -m unittest discover -s tests -v` (131 tests)
-- `python -m py_compile server.py agent_run_history.py hermes_profiles.py hermes_profile_creation.py hermes_profile_deletion.py hermes_skills.py`
+- `python -m unittest discover -s tests -v` (136 tests)
+- `python -m py_compile server.py agent_run_history.py command_manifest.py hermes_profiles.py hermes_profile_creation.py hermes_profile_deletion.py hermes_skills.py`
 - JavaScript syntax checks for `public/core.js`, `public/app.js`, and
   `scripts/browser_smoke.mjs`
 
