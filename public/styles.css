@@ -1542,6 +1542,30 @@ h2 {
 .managed-agent-name { font-weight: 900; }
 .managed-agent-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .managed-agent-actions { display: flex; justify-content: flex-end; margin-top: auto; }
+.managed-agent-delete { color: var(--danger); border-color: rgba(255,107,122,.35); }
+.agent-delete-dialog {
+  width: min(620px, calc(100vw - 28px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 24px 80px rgba(0,0,0,.55);
+}
+.agent-delete-dialog::backdrop { background: rgba(3,7,12,.78); backdrop-filter: blur(4px); }
+.agent-delete-shell { display: grid; }
+.agent-delete-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.agent-delete-head h2 { margin: 3px 0 0; }
+.agent-delete-review { padding: 20px; }
+.agent-delete-warning { color: var(--danger); font-weight: 800; }
+.danger-button { background: var(--danger); color: #16080a; }
 .agents-session-panel { min-width: 0; }
 .cron-panel-wide { max-width: 100%; }
 .session-controls-card {

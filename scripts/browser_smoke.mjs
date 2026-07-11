@@ -147,6 +147,8 @@ async function main() {
     await waitFor(() => client.eval(`document.querySelectorAll('#managed-agent-list .managed-agent-card').length > 0`), 'managed Hermes profiles');
     const agentsWorkspaceVisible = await client.eval(`Boolean(document.querySelector('#managed-agents-panel') && document.querySelector('#conversation-library-panel') && document.querySelector('#agent-message-panel'))`);
     if (!agentsWorkspaceVisible) throw new Error('Agents workspace/message panel smoke failed');
+    const agentDeletionContract = await client.eval(`(() => { const dialog = document.querySelector('#agent-delete-dialog'); const defaultCard = document.querySelector('[data-hermes-profile-id="default"]'); return Boolean(dialog && defaultCard && !defaultCard.querySelector('[data-delete-hermes-profile]')); })()`);
+    if (!agentDeletionContract) throw new Error('Managed Agent deletion safety contract smoke failed');
 
     const routedProfileId = await client.eval(`(() => { const button = document.querySelector('[data-use-hermes-profile]'); const profileId = button?.dataset.useHermesProfile || ''; button?.click(); return profileId; })()`);
     if (!routedProfileId) throw new Error('Managed Agent did not expose a Console route');
@@ -172,7 +174,7 @@ async function main() {
     await client.eval(`(() => { const form = document.querySelector('#agent-message-form'); form.querySelector('textarea[name="message"]').value = ${JSON.stringify(messageText)}; form.querySelector('textarea[name="message"]').dispatchEvent(new Event('input', { bubbles: true })); form.requestSubmit(); })()`);
     await waitFor(() => client.eval(`document.body.textContent.includes(${JSON.stringify(messageText)})`), 'queued agent message appears');
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'nav', 'task controls', 'task status filter', 'managed Hermes profiles', 'profile-aware Console route', 'agent creator skills', 'agent message compose'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'nav', 'task controls', 'task status filter', 'managed Hermes profiles', 'profile-aware Console route', 'agent deletion safeguards', 'agent creator skills', 'agent message compose'] }, null, 2));
     await client.ws.close?.();
   } finally {
     if (chrome && !chrome.killed) chrome.kill();

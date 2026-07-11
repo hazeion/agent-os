@@ -1756,6 +1756,10 @@ function renderHermesProfiles(payload = {}) {
   const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
   state.hermesProfiles = profiles;
   const activeProfile = payload.active_profile || '';
+  state.hermesProfileCapabilities = payload.capabilities || {};
+  state.activeHermesProfileId = activeProfile;
+  const deletionAvailable = state.hermesProfileCapabilities['profiles.delete'] === true;
+  const consoleBusy = state.agentConsoleRuns.some(agentConsoleRunIsActive);
   if (count) count.textContent = `${profiles.length} profile${profiles.length === 1 ? '' : 's'}`;
   if (payload.status && payload.status !== 'available') {
     const message = payload.error?.message || 'Hermes profile discovery is unavailable.';
@@ -1773,6 +1777,10 @@ function renderHermesProfiles(payload = {}) {
       profile.id === activeProfile ? '<span class="pill">active</span>' : '',
     ].filter(Boolean).join('');
     const runtime = [profile.provider, profile.model].filter(Boolean).join(' · ') || 'Uses Hermes profile configuration';
+    const canDelete = deletionAvailable && !profile.is_default && profile.id !== activeProfile && !consoleBusy;
+    const deleteAction = canDelete
+      ? `<button class="mini-button managed-agent-delete" type="button" data-delete-hermes-profile="${escapeHtml(profile.id)}" aria-label="Delete ${escapeHtml(profile.name || profile.id)}">Delete</button>`
+      : '';
     return `
       <article class="managed-agent-card ${selected ? 'selected' : ''}" role="listitem" data-hermes-profile-id="${escapeHtml(profile.id)}">
         <div class="managed-agent-card-head">
@@ -1785,10 +1793,69 @@ function renderHermesProfiles(payload = {}) {
         <div class="item-meta mono">${escapeHtml(runtime)} · ${Number(profile.skill_count || 0)} skills</div>
         <div class="managed-agent-actions">
           <button class="mini-button" type="button" data-use-hermes-profile="${escapeHtml(profile.id)}">Use in Console</button>
+          ${deleteAction}
         </div>
       </article>
     `;
   }).join('');
+}
+
+function closeAgentDeletion() {
+  $('#agent-delete-dialog')?.close();
+  state.agentDeletionPreview = null;
+  const status = $('#agent-delete-status');
+  if (status) status.textContent = '';
+}
+
+async function openAgentDeletion(profileId) {
+  const dialog = $('#agent-delete-dialog');
+  const review = $('#agent-delete-review');
+  const status = $('#agent-delete-status');
+  const confirm = $('[data-agent-delete-confirm]');
+  if (!dialog || !review) return;
+  state.agentDeletionPreview = null;
+  review.innerHTML = `<div class="empty">Loading the exact Hermes deletion effects…</div>`;
+  if (status) status.textContent = '';
+  if (confirm) confirm.disabled = true;
+  dialog.showModal();
+  try {
+    const preview = await previewHermesProfileDeletion(profileId);
+    state.agentDeletionPreview = preview;
+    const name = preview.profile?.name || preview.normalized?.profile_id || profileId;
+    review.innerHTML = `
+      <article class="agent-creator-review-card agent-creator-warning">
+        <h3>Delete ${escapeHtml(name)}?</h3>
+        <p class="item-desc">This permanently removes the Hermes profile named <strong>${escapeHtml(name)}</strong>.</p>
+        <ul>${(preview.effects || []).map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>
+        ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}
+      </article>`;
+    if (confirm) confirm.disabled = false;
+    if (status) status.textContent = `Confirm deletion of ${name}.`;
+  } catch (err) {
+    review.innerHTML = `<div class="empty" role="alert">Deletion is unavailable: ${escapeHtml(err.message)}</div>`;
+    if (status) status.textContent = '';
+  }
+}
+
+async function submitAgentDeletion() {
+  const preview = state.agentDeletionPreview;
+  const profileId = preview?.normalized?.profile_id;
+  const confirm = $('[data-agent-delete-confirm]');
+  const status = $('#agent-delete-status');
+  if (!profileId || !preview.confirmation_id) return;
+  if (confirm) confirm.disabled = true;
+  if (status) status.textContent = `Deleting ${profileId}…`;
+  try {
+    const result = await deleteHermesProfile(profileId, preview.confirmation_id);
+    const refreshed = result.profiles || await fetchHermesProfiles();
+    renderHermesProfiles(refreshed);
+    if (state.selectedHermesProfileId === profileId) state.selectedHermesProfileId = '';
+    closeAgentDeletion();
+  } catch (err) {
+    // Keep the profile row and confirmation open so the failure is visible and retryable.
+    if (status) status.textContent = `Deletion failed: ${err.message}`;
+    if (confirm) confirm.disabled = false;
+  }
 }
 
 function agentCreatorPayloadFromForm() {
@@ -2759,6 +2826,22 @@ if (clearProjectFilter) {
 }
 
 document.addEventListener('click', async (event) => {
+  const deleteProfile = event.target.closest('[data-delete-hermes-profile]');
+  if (deleteProfile) {
+    await openAgentDeletion(deleteProfile.dataset.deleteHermesProfile || '');
+    return;
+  }
+
+  if (event.target.closest('[data-agent-delete-cancel]')) {
+    closeAgentDeletion();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-delete-confirm]')) {
+    await submitAgentDeletion();
+    return;
+  }
+
   if (event.target.closest('#create-agent-button')) {
     await openAgentCreator();
     return;

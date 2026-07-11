@@ -62,11 +62,22 @@ Approved for the initial creator:
 Skill selection uses a capability-gated Hermes runtime operation. Mentat stores
 skill identifiers only; it does not edit skill contents or copy skill files.
 
+Approved for Managed Agents:
+
+- deletion of a non-default, non-active Hermes profile when Hermes advertises
+  `profiles.delete`;
+- an exact preview and profile-bound confirmation token before deletion;
+- blocking deletion while any Mentat Agent Console run is active;
+- post-operation profile discovery to verify the profile was removed.
+
+Deletion is performed only through Hermes' supported profile API in its own
+runtime. Mentat never deletes profile directories or their contents directly.
+
 Deferred until separately approved:
 
 - direct `SOUL.md` editing;
 - clone-all;
-- profile rename or deletion;
+- profile rename;
 - skill content editing, hub installation, or arbitrary MCP configuration;
 - provider switching;
 - non-loopback access.

@@ -56,6 +56,20 @@ class AgentCreatorUiTests(unittest.TestCase):
         self.assertIn("if (next) next.hidden = step === 'review';", APP_JS)
         self.assertIn(".agent-creator-actions [hidden]", STYLES)
 
+    def test_managed_agents_offer_capability_gated_confirmed_deletion(self):
+        self.assertIn('id="agent-delete-dialog"', INDEX)
+        self.assertIn("state.hermesProfileCapabilities['profiles.delete'] === true", APP_JS)
+        self.assertIn("!profile.is_default", APP_JS)
+        self.assertIn("profile.id !== activeProfile", APP_JS)
+        self.assertIn("state.agentConsoleRuns.some(agentConsoleRunIsActive)", APP_JS)
+        self.assertIn("data-delete-hermes-profile", APP_JS)
+        self.assertIn("async function openAgentDeletion", APP_JS)
+        self.assertIn("async function submitAgentDeletion", APP_JS)
+        self.assertIn("previewHermesProfileDeletion", CORE_JS)
+        self.assertIn("deleteHermesProfile", CORE_JS)
+        self.assertIn("renderHermesProfiles(refreshed)", APP_JS)
+        self.assertIn("Keep the profile row and confirmation open", APP_JS)
+
 
 if __name__ == "__main__":
     unittest.main()

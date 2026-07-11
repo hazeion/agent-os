@@ -77,6 +77,9 @@ const state = {
   agentCreatorStep: 'details',
   hermesProfiles: [],
   selectedHermesProfileId: '',
+  hermesProfileCapabilities: {},
+  activeHermesProfileId: '',
+  agentDeletionPreview: null,
 };
 
 const taskStatusLabels = {
@@ -320,6 +323,17 @@ async function previewHermesProfile(payload) {
 
 async function createHermesProfile(payload) {
   return sendJson(endpoints.hermesProfiles, payload, { method: 'POST' });
+}
+
+async function previewHermesProfileDeletion(profileId) {
+  return sendJson(`${endpoints.hermesProfiles}/${encodeURIComponent(profileId)}/delete/preview`, {}, { method: 'POST' });
+}
+
+async function deleteHermesProfile(profileId, confirmationId) {
+  return sendJson(`${endpoints.hermesProfiles}/${encodeURIComponent(profileId)}/delete`, {
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
 }
 
 async function stopAgentConsoleRun(id) {

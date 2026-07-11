@@ -84,9 +84,12 @@ implement a capability that Hermes exposes through a supported command or API.
 
 The initial profile creator may use fixed Hermes profile operations after the
 user confirms a preview. It may also enable or disable identifiers returned by
-Hermes' built-in skill catalog through the capability-gated adapter. Direct
-skill-content editing, hub installation, `SOUL.md` editing, clone-all, rename,
-deletion, provider switching, and arbitrary MCP changes remain deferred.
+Hermes' built-in skill catalog through the capability-gated adapter. Managed
+Agents may delete a non-default, non-active profile only after a profile-bound
+preview and confirmation, while no Mentat console run is active, followed by
+profile refresh verification. Direct skill-content editing, hub installation,
+`SOUL.md` editing, clone-all, rename, provider switching, and arbitrary MCP
+changes remain deferred.
 
 Tracked JSON fixtures under `data/` should remain public-safe seed/example data. Avoid committing personal names, local paths, account identifiers, or real message history there.
 

@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
 from json_store import read_json as store_read_json, update_json as store_update_json
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
+from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
 from hermes_profiles import discover_hermes_profiles
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from runtime_config import (
@@ -208,6 +209,8 @@ AGENT_CONSOLE_RUNS: dict[str, dict] = {}
 AGENT_CONSOLE_PROCESSES: dict[str, subprocess.Popen] = {}
 AGENT_CONSOLE_LOCK = threading.RLock()
 HERMES_PROFILE_CREATION_LOCK = threading.Lock()
+# Profile creation and deletion share one mutation lock. The existing name is
+# retained for compatibility with the initial creator contract and tests.
 MENTAT_PROJECT_NAME = "Mentat"
 MENTAT_PROJECT_ID = "project_mentat"
 PREVIOUS_PROJECT_NAME = "Agent " "OS"
@@ -2372,6 +2375,94 @@ def create_hermes_profile(payload):
         HERMES_PROFILE_CREATION_LOCK.release()
 
 
+def _active_agent_console_run() -> dict | None:
+    with AGENT_CONSOLE_LOCK:
+        return next(
+            (item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES),
+            None,
+        )
+
+
+def preview_hermes_profile_deletion(profile_id, payload):
+    """Return exact destructive effects only when deletion is currently safe."""
+    active = _active_agent_console_run()
+    if active:
+        return {
+            "error": "Stop the active Hermes run before deleting a profile.",
+            "active_run_id": active["id"],
+        }, 409
+    return preview_profile_deletion(profile_id, payload or {}, hermes_profiles_payload())
+
+
+def delete_confirmed_hermes_profile(profile_id, payload):
+    """Delete one confirmed non-default, non-active profile through Hermes."""
+    if not isinstance(payload, dict):
+        return {"error": "Profile deletion payload must be a JSON object."}, 400
+    if payload.get("confirmed") is not True:
+        return {"error": "Profile deletion requires explicit confirmation."}, 400
+    confirmation_id = compact_text(payload.get("confirmation_id"), max_length=80)
+    if not confirmation_id:
+        return {"error": "Profile deletion requires a confirmation_id from the preview endpoint."}, 400
+    if not HERMES_PROFILE_CREATION_LOCK.acquire(blocking=False):
+        return {"error": "Another Hermes profile change is already in progress."}, 409
+
+    try:
+        active = _active_agent_console_run()
+        if active:
+            return {
+                "error": "Stop the active Hermes run before deleting a profile.",
+                "active_run_id": active["id"],
+            }, 409
+
+        before = hermes_profiles_payload()
+        preview, preview_status = preview_profile_deletion(profile_id, payload, before)
+        if preview_status != 200:
+            return preview, preview_status
+        if confirmation_id != preview.get("confirmation_id"):
+            return {"error": "Profile deletion inputs or profile state changed after preview; preview again."}, 409
+
+        normalized_id = preview["normalized"]["profile_id"]
+        result = delete_hermes_profile(
+            hermes_python_path(),
+            HERMES_HOME,
+            normalized_id,
+            cwd=BASE_DIR,
+        )
+        refreshed = hermes_profiles_payload()
+        remains = next(
+            (item for item in refreshed.get("profiles") or [] if item.get("id") == normalized_id),
+            None,
+        )
+        if remains is None and result.get("status") == "deleted":
+            return {
+                "ok": True,
+                "deleted_profile_id": normalized_id,
+                "profiles": refreshed,
+                "message": f"Hermes profile '{normalized_id}' deleted.",
+            }, 200
+        if remains is None:
+            return {
+                "ok": True,
+                "deleted_profile_id": normalized_id,
+                "profiles": refreshed,
+                "warning": "Hermes did not return a clean result, but refresh verified that the profile was deleted.",
+            }, 200
+        error_code = result.get("error_code") or "runtime_failed"
+        messages = {
+            "runtime_timeout": "Hermes profile deletion timed out and the profile still exists.",
+            "profile_missing": "Hermes could not find the profile, but it remains visible after refresh.",
+            "capability_unavailable": "This Hermes runtime no longer exposes profile deletion.",
+        }
+        return {
+            "error": messages.get(error_code, "Hermes could not delete the profile."),
+            "error_code": error_code,
+            "profile": remains,
+            "profiles": refreshed,
+        }, 504 if error_code == "runtime_timeout" else 500
+    finally:
+        HERMES_PROFILE_CREATION_LOCK.release()
+
+
 HERMES_MODEL_CATALOG_SCRIPT = """
 import json
 import os
@@ -2719,7 +2810,7 @@ def start_agent_console_run(payload):
 
     with AGENT_CONSOLE_LOCK:
         if HERMES_PROFILE_CREATION_LOCK.locked():
-            return {"error": "A Hermes profile is currently being created."}, 409
+            return {"error": "A Hermes profile is currently being changed."}, 409
         active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
         if active:
             return {"error": "Hermes is already working on another prompt", "active_run_id": active["id"]}, 409
@@ -2895,6 +2986,8 @@ POST_ROUTES = [
     (re.compile(r"^/api/agent-console/models/refresh$"), refresh_agent_console_models, True),
     (re.compile(r"^/api/agent-console/runs/([^/]+)/cancel$"), cancel_agent_console_run, False),
     (re.compile(r"^/api/hermes/profiles/preview$"), preview_hermes_profile_creation, True),
+    (re.compile(r"^/api/hermes/profiles/([^/]+)/delete/preview$"), preview_hermes_profile_deletion, True),
+    (re.compile(r"^/api/hermes/profiles/([^/]+)/delete$"), delete_confirmed_hermes_profile, True),
     (re.compile(r"^/api/hermes/profiles$"), create_hermes_profile, True),
 ]
 

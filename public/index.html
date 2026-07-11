@@ -494,6 +494,26 @@
     </form>
   </dialog>
 
+  <dialog id="agent-delete-dialog" class="agent-delete-dialog" aria-labelledby="agent-delete-title">
+    <div class="agent-delete-shell">
+      <header class="agent-delete-head">
+        <div>
+          <div class="eyebrow">Destructive profile operation</div>
+          <h2 id="agent-delete-title">Delete agent</h2>
+        </div>
+        <button class="agent-creator-close" type="button" data-agent-delete-cancel aria-label="Close delete confirmation">×</button>
+      </header>
+      <div id="agent-delete-review" class="agent-delete-review"></div>
+      <footer class="agent-creator-actions">
+        <span id="agent-delete-status" class="task-editor-status mono" role="status" aria-live="polite"></span>
+        <div>
+          <button class="mini-button" type="button" data-agent-delete-cancel>Cancel</button>
+          <button class="action-button danger-button" type="button" data-agent-delete-confirm>Delete agent</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
+
   <script src="/core.js?v=theme-studio-2"></script>
   <script src="/app.js?v=theme-studio-2"></script>
 </body>
