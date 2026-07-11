@@ -22,6 +22,8 @@ All notable changes to Mentat.
   and normalized profile metadata that excludes paths and secrets.
 - Added `ARCHITECTURE.md` to define executable agents as Hermes profiles and
   document Mentat's typed mutation contract.
+- Persisted up to 24 privacy-aware Agent Console run summaries in gitignored
+  `data/runtime` storage with bounded, redacted prompt/response/error excerpts.
 
 ### Changed
 - Reframed Mentat as a local-first, capability-scoped Hermes control plane
@@ -30,10 +32,12 @@ All notable changes to Mentat.
   configuration files, skills, and persona files.
 - Kept Agent Console execution globally single-run while recording the selected
   profile identity and preventing cross-profile session resume.
+- Recovered queued, running, or cancelling console runs as interrupted after
+  restart using locked atomic writes and corruption-safe fallback.
 
 ### Validation
-- `python -m unittest discover -s tests -v` (118 tests)
-- `python -m py_compile server.py hermes_profiles.py hermes_profile_creation.py hermes_profile_deletion.py hermes_skills.py`
+- `python -m unittest discover -s tests -v` (124 tests)
+- `python -m py_compile server.py agent_run_history.py hermes_profiles.py hermes_profile_creation.py hermes_profile_deletion.py hermes_skills.py`
 - JavaScript syntax checks for `public/core.js`, `public/app.js`, and
   `scripts/browser_smoke.mjs`
 

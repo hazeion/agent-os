@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
+from agent_run_history import load_run_summaries, save_run_summaries
 from json_store import read_json as store_read_json, update_json as store_update_json
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
 from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
@@ -211,6 +212,7 @@ AGENT_CONSOLE_LOCK = threading.RLock()
 HERMES_PROFILE_CREATION_LOCK = threading.Lock()
 # Profile creation and deletion share one mutation lock. The existing name is
 # retained for compatibility with the initial creator contract and tests.
+AGENT_CONSOLE_HISTORY_LOADED = False
 MENTAT_PROJECT_NAME = "Mentat"
 MENTAT_PROJECT_ID = "project_mentat"
 PREVIOUS_PROJECT_NAME = "Agent " "OS"
@@ -227,6 +229,41 @@ def note_sort_key(path: Path):
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def agent_console_history_path() -> Path:
+    return DATA_DIR / "runtime" / "agent-console-runs.json"
+
+
+def persist_agent_console_runs() -> bool:
+    """Persist bounded run summaries; callers may already hold the re-entrant lock."""
+    if not AGENT_CONSOLE_HISTORY_LOADED:
+        return True
+    try:
+        with AGENT_CONSOLE_LOCK:
+            save_run_summaries(
+                agent_console_history_path(),
+                list(AGENT_CONSOLE_RUNS.values()),
+                retention=AGENT_CONSOLE_RUN_LIMIT,
+            )
+        return True
+    except OSError as exc:
+        print(f"Agent Console history could not be persisted: {compact_text(exc, max_length=500)}")
+        return False
+
+
+def load_agent_console_runs() -> None:
+    """Restore prior summaries and fail closed to an empty history on corruption."""
+    global AGENT_CONSOLE_HISTORY_LOADED
+    with AGENT_CONSOLE_LOCK:
+        runs, recovered = load_run_summaries(
+            agent_console_history_path(), now=now_iso, retention=AGENT_CONSOLE_RUN_LIMIT
+        )
+        AGENT_CONSOLE_RUNS.clear()
+        AGENT_CONSOLE_RUNS.update((run["id"], run) for run in runs)
+        AGENT_CONSOLE_HISTORY_LOADED = True
+        if recovered:
+            persist_agent_console_runs()
 
 
 def compact_text(value, *, max_length: int | None = None) -> str:
@@ -2694,10 +2731,12 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             run["completed_at"] = now_iso()
             run["error"] = "Run stopped by operator."
             agent_console_event(run, "Run stopped", "cancelled")
+            persist_agent_console_runs()
             return
         run["status"] = "running"
         run["started_at"] = now_iso()
         agent_console_event(run, "Starting Hermes CLI")
+        persist_agent_console_runs()
         prompt = run["prompt"]
         session_id = run.get("session_id")
         profile_id = run.get("agent_id") or "default"
@@ -2727,6 +2766,7 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             current = AGENT_CONSOLE_RUNS.get(run_id)
             if current:
                 agent_console_event(current, "Model is working")
+                persist_agent_console_runs()
 
         while True:
             try:
@@ -2747,6 +2787,7 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
                         agent_console_event(current, f"Hermes is still working ({elapsed}s)")
                     elif elapsed >= 12:
                         agent_console_event(current, "Agent is processing the request and may be using tools")
+                    persist_agent_console_runs()
                 next_update = 12 if elapsed < 12 else elapsed + 30
 
         with AGENT_CONSOLE_LOCK:
@@ -2772,6 +2813,7 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
                 current["status"] = "failed"
                 current["error"] = error_text or response or f"Hermes exited with status {process.returncode}."
                 agent_console_event(current, "Hermes run failed", "error")
+            persist_agent_console_runs()
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         with AGENT_CONSOLE_LOCK:
             current = AGENT_CONSOLE_RUNS.get(run_id)
@@ -2780,6 +2822,7 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
                 current["completed_at"] = now_iso()
                 current["error"] = compact_text(exc, max_length=2_000)
                 agent_console_event(current, "Hermes could not be started", "error")
+                persist_agent_console_runs()
     finally:
         with AGENT_CONSOLE_LOCK:
             AGENT_CONSOLE_PROCESSES.pop(run_id, None)
@@ -2849,10 +2892,11 @@ def start_agent_console_run(payload):
         if len(AGENT_CONSOLE_RUNS) > AGENT_CONSOLE_RUN_LIMIT:
             removable = sorted(
                 (item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES),
-                key=lambda item: item.get("created_at") or "",
+                key=lambda item: (item.get("created_at") or "", item.get("id") or ""),
             )
             for old_run in removable[: len(AGENT_CONSOLE_RUNS) - AGENT_CONSOLE_RUN_LIMIT]:
                 AGENT_CONSOLE_RUNS.pop(old_run["id"], None)
+        persist_agent_console_runs()
 
     with AGENT_CONSOLE_LOCK:
         snapshot = agent_console_snapshot(run)
@@ -2941,6 +2985,7 @@ def cancel_agent_console_run(run_id: str):
         process = AGENT_CONSOLE_PROCESSES.get(run_id)
         if process and process.poll() is None:
             process.terminate()
+        persist_agent_console_runs()
         return {"ok": True, "run": agent_console_snapshot(run)}, 202
 
 
@@ -2952,6 +2997,7 @@ def stop_agent_console_processes() -> None:
             if run and run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES:
                 run["status"] = "cancelling"
                 agent_console_event(run, "Mentat is shutting down", "status")
+        persist_agent_console_runs()
     for _run_id, process in active:
         try:
             if process.poll() is None:
@@ -3155,6 +3201,7 @@ if __name__ == "__main__":
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+    load_agent_console_runs()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     launcher_pid = start_launcher_watch(server)
     state_path = write_runtime_state()

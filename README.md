@@ -52,6 +52,7 @@ Mentat currently includes:
 - front-page Hermes prompt console with live run status and resumable follow-ups
 - profile-aware Agent Console routing with profile-scoped models and sessions
 - capability-gated Hermes profile discovery, confirmed creation and deletion, built-in skill selection, and a persistent Managed Agents list
+- private local Agent Console history across Mentat restarts
 - Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
 - Agents / Sessions view with managed Hermes profiles plus transcript and replay support
 - Hermes session search from `state.db` in read-only mode
@@ -294,10 +295,19 @@ These tracked JSON files are intended to remain **public-safe seed/example data*
 Do not commit personal names, local filesystem paths, real messages, or private account details into them.
 Use local overrides or untracked runtime files for machine-specific/private content.
 
+Agent Console history is stored separately at `data/runtime/agent-console-runs.json`,
+which is gitignored. Mentat keeps at most 24 run summaries there. Each summary has
+run metadata plus a redacted excerpt of the prompt (500 characters), response
+(2,000 characters), and error (1,000 characters); complete prompt and response
+content is not written to this history file. Runs that were active when Mentat
+stopped are shown as interrupted after restart. Missing, corrupt, or unknown
+history formats fall back to an empty history without preventing startup.
+
 ## Main files
 
 ```text
 server.py
+agent_run_history.py
 hermes_profiles.py
 hermes_profile_creation.py
 hermes_profile_deletion.py
