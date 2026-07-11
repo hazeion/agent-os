@@ -20,7 +20,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         missing_prompt, missing_prompt_status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "  "})
 
         self.assertEqual(invalid_agent_status, 400)
-        self.assertIn("Unknown agent", invalid_agent["error"])
+        self.assertIn("Unknown or unavailable Hermes profile", invalid_agent["error"])
         self.assertEqual(missing_prompt_status, 400)
         self.assertEqual(missing_prompt["error"], "Prompt is required")
 
@@ -34,7 +34,7 @@ class DashboardBehaviorTests(unittest.TestCase):
 
             self.assertEqual(status, 202)
             self.assertTrue(payload["ok"])
-            self.assertEqual(payload["run"]["agent_id"], "hermes")
+            self.assertEqual(payload["run"]["agent_id"], "default")
             self.assertEqual(payload["run"]["status"], "queued")
             self.assertEqual(payload["run"]["prompt"], "Inspect the queue")
             self.assertNotIn("command", payload["run"])
@@ -64,7 +64,7 @@ class DashboardBehaviorTests(unittest.TestCase):
                 server.run_hermes_agent(run_id, "/tmp/hermes")
 
             command = popen.call_args.args[0]
-            self.assertEqual(command[:4], ["/tmp/hermes", "chat", "-q", "Continue this work"])
+            self.assertEqual(command[:6], ["/tmp/hermes", "-p", "default", "chat", "-q", "Continue this work"])
             self.assertIn("--resume", command)
             self.assertEqual(command[command.index("--resume") + 1], "session_previous")
             self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["status"], "completed")
@@ -84,7 +84,7 @@ class DashboardBehaviorTests(unittest.TestCase):
                     "models": ["gpt-5.5", "gpt-5.3-codex-spark"],
                     "current_model": "gpt-5.5",
                 }
-            ), patch.object(server.subprocess, "run") as run:
+            ), patch.object(server, "agent_console_profile", return_value={"id": "default", "name": "default"}), patch.object(server.subprocess, "run") as run:
                 run.return_value.returncode = 0
                 run.return_value.stdout = "updated"
                 run.return_value.stderr = ""
@@ -93,7 +93,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["model"], "gpt-5.3-codex-spark")
-            self.assertEqual(run.call_args.args[0], ["/tmp/hermes", "config", "set", "model.default", "gpt-5.3-codex-spark"])
+            self.assertEqual(run.call_args.args[0], ["/tmp/hermes", "-p", "default", "config", "set", "model.default", "gpt-5.3-codex-spark"])
         finally:
             server.AGENT_CONSOLE_RUNS.clear()
 
@@ -103,7 +103,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             "provider_label": "OpenAI Codex",
             "models": ["gpt-5.5"],
             "current_model": "gpt-5.5",
-        }), patch.object(server.subprocess, "run") as run:
+        }), patch.object(server, "agent_console_profile", return_value={"id": "default", "name": "default"}), patch.object(server.subprocess, "run") as run:
             payload, status = server.set_agent_console_model({"model": "anthropic/claude-sonnet-4"})
 
         self.assertEqual(status, 400)
@@ -120,7 +120,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             "source": "built-in",
         }
         try:
-            with patch.object(server, "hermes_python_path", return_value="/tmp/hermes-python"), patch.object(
+            with patch.object(server, "hermes_profiles_payload", return_value={"profiles": [{"id": "default", "provider": "openrouter", "model": "openai/gpt-5.5"}]}), patch.object(server, "hermes_python_path", return_value="/tmp/hermes-python"), patch.object(
                 server.subprocess, "run"
             ) as run:
                 run.return_value.returncode = 0
@@ -132,6 +132,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.assertEqual(catalog["models"], inventory["models"])
             self.assertEqual(run.call_args.args[0][0], "/tmp/hermes-python")
             self.assertIn("build_models_payload", run.call_args.args[0][2])
+            self.assertEqual(run.call_args.args[0][-1], "default")
         finally:
             server.AGENT_MODEL_CATALOG_CACHE.update({"key": None, "payload": None, "fetched_at": 0})
 

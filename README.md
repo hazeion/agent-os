@@ -50,6 +50,7 @@ Mentat currently includes:
 
 - Today View as the main command center
 - front-page Hermes prompt console with live run status and resumable follow-ups
+- profile-aware Agent Console routing with profile-scoped models and sessions
 - capability-gated Hermes profile discovery, confirmed creation, built-in skill selection, and a persistent Managed Agents list
 - Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
 - Agents / Sessions view with managed Hermes profiles plus transcript and replay support

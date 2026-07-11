@@ -43,6 +43,10 @@ Every write-capable Hermes operation must declare:
 Unsupported capabilities and unknown Hermes versions fail closed. Mentat never
 constructs a shell command from browser text and never collects Hermes secrets.
 
+Agent Console execution is globally single-run in v1. Every run records its
+Hermes profile id, launches with a fixed `-p <profile>` selector, and may resume
+only a session already associated with that same profile.
+
 ## Initial agent-creator scope
 
 The first version may create a fresh profile or clone approved configuration

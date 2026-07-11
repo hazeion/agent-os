@@ -13,6 +13,8 @@ All notable changes to Mentat.
   selection using enabled-subset semantics.
 - Added a persistent Managed Agents surface that refreshes and highlights newly
   created Hermes profiles before profile-aware console routing is enabled.
+- Added profile-aware Agent Console selection, fixed `hermes -p <profile>` run
+  routing, profile-scoped model discovery/configuration, and resume isolation.
 - Added a versioned, fail-closed profile payload with Hermes capability flags
   and normalized profile metadata that excludes paths and secrets.
 - Added `ARCHITECTURE.md` to define executable agents as Hermes profiles and
@@ -23,9 +25,11 @@ All notable changes to Mentat.
   rather than a strictly read-only dashboard.
 - Preserved direct read-only boundaries for Hermes databases, credentials,
   configuration files, skills, and persona files.
+- Kept Agent Console execution globally single-run while recording the selected
+  profile identity and preventing cross-profile session resume.
 
 ### Validation
-- `python -m unittest discover -s tests -v` (103 tests)
+- `python -m unittest discover -s tests -v` (108 tests)
 - `python -m py_compile server.py hermes_profiles.py hermes_profile_creation.py hermes_skills.py`
 - JavaScript syntax checks for `public/core.js`, `public/app.js`, and
   `scripts/browser_smoke.mjs`

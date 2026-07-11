@@ -1541,6 +1541,7 @@ h2 {
 }
 .managed-agent-name { font-weight: 900; }
 .managed-agent-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.managed-agent-actions { display: flex; justify-content: flex-end; margin-top: auto; }
 .agents-session-panel { min-width: 0; }
 .cron-panel-wide { max-width: 100%; }
 .session-controls-card {

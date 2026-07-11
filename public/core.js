@@ -65,6 +65,7 @@ const state = {
   agentConsoleModels: [],
   agentConsoleModelCatalog: {},
   agentConsoleSelectedModel: '',
+  agentConsoleSelectedAgentId: '',
   agentConsoleRunId: '',
   agentConsoleSessionId: '',
   agentConsoleStartFresh: false,
@@ -297,12 +298,12 @@ async function startAgentConsoleRun(payload) {
   return sendJson(`${endpoints.agentConsole}/runs`, payload, { method: 'POST' });
 }
 
-async function setAgentConsoleModel(model) {
-  return sendJson(`${endpoints.agentConsole}/model`, { model }, { method: 'POST' });
+async function setAgentConsoleModel(model, agentId = '') {
+  return sendJson(`${endpoints.agentConsole}/model`, { model, agent_id: agentId }, { method: 'POST' });
 }
 
-async function refreshAgentConsoleModels() {
-  return sendJson(`${endpoints.agentConsole}/models/refresh`, {}, { method: 'POST' });
+async function refreshAgentConsoleModels(agentId = '') {
+  return sendJson(`${endpoints.agentConsole}/models/refresh`, { agent_id: agentId }, { method: 'POST' });
 }
 
 async function fetchHermesProfiles() {

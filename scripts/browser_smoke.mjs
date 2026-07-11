@@ -148,6 +148,13 @@ async function main() {
     const agentsWorkspaceVisible = await client.eval(`Boolean(document.querySelector('#managed-agents-panel') && document.querySelector('#conversation-library-panel') && document.querySelector('#agent-message-panel'))`);
     if (!agentsWorkspaceVisible) throw new Error('Agents workspace/message panel smoke failed');
 
+    const routedProfileId = await client.eval(`(() => { const button = document.querySelector('[data-use-hermes-profile]'); const profileId = button?.dataset.useHermesProfile || ''; button?.click(); return profileId; })()`);
+    if (!routedProfileId) throw new Error('Managed Agent did not expose a Console route');
+    await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'profile-aware Console route');
+    await waitFor(() => client.eval(`document.querySelector('#agent-console-agent')?.value === ${JSON.stringify(routedProfileId)}`), 'selected Console profile');
+    await client.eval(`document.querySelector('[data-view="agents"]').click()`);
+    await waitFor(() => client.eval('document.querySelector("#view-agents.active") !== null'), 'Agents view after Console routing');
+
     await client.eval(`document.querySelector('#create-agent-button').click()`);
     await waitFor(() => client.eval(`Boolean(document.querySelector('#agent-creator-dialog')?.open)`), 'agent creator dialog');
     await client.eval(`(() => { const name = document.querySelector('#agent-creator-form [name="name"]'); name.value = 'browser-smoke-agent'; name.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('[data-agent-creator-next]').click(); })()`);
@@ -165,7 +172,7 @@ async function main() {
     await client.eval(`(() => { const form = document.querySelector('#agent-message-form'); form.querySelector('textarea[name="message"]').value = ${JSON.stringify(messageText)}; form.querySelector('textarea[name="message"]').dispatchEvent(new Event('input', { bubbles: true })); form.requestSubmit(); })()`);
     await waitFor(() => client.eval(`document.body.textContent.includes(${JSON.stringify(messageText)})`), 'queued agent message appears');
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'nav', 'task controls', 'task status filter', 'managed Hermes profiles', 'agent creator skills', 'agent message compose'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'nav', 'task controls', 'task status filter', 'managed Hermes profiles', 'profile-aware Console route', 'agent creator skills', 'agent message compose'] }, null, 2));
     await client.ws.close?.();
   } finally {
     if (chrome && !chrome.killed) chrome.kill();

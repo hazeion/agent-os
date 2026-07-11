@@ -2200,7 +2200,21 @@ def hermes_command_path() -> str | None:
     return None
 
 
-def agent_console_model() -> str:
+def agent_console_profile(profile_id: str | None, discovery: dict | None = None) -> dict | None:
+    """Resolve a public profile id without exposing or reading its filesystem path."""
+    normalized = compact_text(profile_id, max_length=64).lower() or "default"
+    if normalized == "hermes":  # Backward-compatible API alias.
+        normalized = "default"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", normalized):
+        return None
+    discovery = discovery or hermes_profiles_payload()
+    return next((profile for profile in discovery.get("profiles") or [] if profile.get("id") == normalized), None)
+
+
+def agent_console_model(profile_id: str = "default", discovery: dict | None = None) -> str:
+    profile = agent_console_profile(profile_id, discovery)
+    if profile and compact_text(profile.get("model"), max_length=160):
+        return compact_text(profile.get("model"), max_length=160)
     summary = hermes_config().get("summary") or {}
     return compact_text(summary.get("default_model"), max_length=160) or "configured default"
 
@@ -2360,7 +2374,13 @@ def create_hermes_profile(payload):
 
 HERMES_MODEL_CATALOG_SCRIPT = """
 import json
+import os
 import sys
+
+from hermes_cli.profiles import resolve_profile_env
+
+profile_id = sys.argv[2]
+os.environ["HERMES_HOME"] = resolve_profile_env(profile_id)
 
 from hermes_cli.inventory import build_models_payload, load_picker_context
 
@@ -2387,6 +2407,7 @@ if isinstance(selected, dict):
         if value and value not in models:
             models.append(value)
 print(json.dumps({
+    "profile_id": profile_id,
     "provider": provider,
     "provider_label": str((selected or {}).get("name") or provider),
     "models": models,
@@ -2396,12 +2417,22 @@ print(json.dumps({
 """.strip()
 
 
-def agent_console_model_catalog(*, refresh: bool = False) -> dict:
-    config = hermes_config()
-    summary = config.get("summary") or {}
-    provider = compact_text(summary.get("provider"), max_length=120)
-    current_model = compact_text(summary.get("default_model"), max_length=160)
-    key = f"{provider}|{current_model}|{config.get('modified_at') or ''}"
+def agent_console_model_catalog(profile_id: str = "default", *, refresh: bool = False) -> dict:
+    discovery = hermes_profiles_payload()
+    profile = agent_console_profile(profile_id, discovery)
+    normalized_profile_id = compact_text(profile.get("id") if profile else profile_id, max_length=64).lower()
+    provider = compact_text(profile.get("provider") if profile else "", max_length=120)
+    current_model = compact_text(profile.get("model") if profile else "", max_length=160)
+    if profile is None:
+        return {
+            "profile_id": normalized_profile_id,
+            "provider": "",
+            "provider_label": "",
+            "models": [],
+            "current_model": "",
+            "error": f"Hermes profile '{normalized_profile_id}' is unavailable.",
+        }
+    key = f"{normalized_profile_id}|{provider}|{current_model}"
     now = time.monotonic()
     cached = AGENT_MODEL_CATALOG_CACHE.get("payload")
     if (
@@ -2415,6 +2446,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
     python_path = hermes_python_path()
     if not python_path:
         return {
+            "profile_id": normalized_profile_id,
             "provider": provider,
             "provider_label": provider,
             "models": [],
@@ -2423,7 +2455,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
         }
     try:
         result = subprocess.run(
-            [python_path, "-c", HERMES_MODEL_CATALOG_SCRIPT, "refresh" if refresh else "cached"],
+            [python_path, "-c", HERMES_MODEL_CATALOG_SCRIPT, "refresh" if refresh else "cached", normalized_profile_id],
             cwd=str(BASE_DIR),
             env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
             capture_output=True,
@@ -2435,6 +2467,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         return {
+            "profile_id": normalized_profile_id,
             "provider": provider,
             "provider_label": provider,
             "models": [],
@@ -2443,6 +2476,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
         }
     if result.returncode != 0:
         return {
+            "profile_id": normalized_profile_id,
             "provider": provider,
             "provider_label": provider,
             "models": [],
@@ -2461,6 +2495,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
         if model and model not in models:
             models.append(model)
     catalog = {
+        "profile_id": normalized_profile_id,
         "provider": compact_text(payload.get("provider"), max_length=120) or provider,
         "provider_label": compact_text(payload.get("provider_label"), max_length=160) or provider,
         "models": models,
@@ -2495,17 +2530,38 @@ def agent_console_snapshot(run: dict) -> dict:
 
 def agent_console_payload():
     command = hermes_command_path()
-    catalog = agent_console_model_catalog()
+    discovery = hermes_profiles_payload()
+    profiles = discovery.get("profiles") or []
+    selected_profile_id = discovery.get("active_profile") or "default"
+    if not any(profile.get("id") == selected_profile_id for profile in profiles):
+        selected_profile_id = profiles[0].get("id") if profiles else "default"
+    catalog = agent_console_model_catalog(selected_profile_id)
     with AGENT_CONSOLE_LOCK:
         runs = sorted(AGENT_CONSOLE_RUNS.values(), key=lambda item: item.get("created_at") or "", reverse=True)
         snapshots = [agent_console_snapshot(run) for run in runs[:12]]
     return {
-        "agents": [{
-            "id": "hermes",
-            "name": "Hermes",
+        "agents": [
+            {
+                "id": profile.get("id"),
+                "name": profile.get("name") or profile.get("id"),
+                "description": profile.get("description") or "",
+                "available": bool(command),
+                "model": profile.get("model") or "configured default",
+                "provider": profile.get("provider") or "",
+                "is_default": bool(profile.get("is_default")),
+            }
+            for profile in profiles
+            if profile.get("id")
+        ] or [{
+            "id": "default",
+            "name": "Hermes · default",
+            "description": "",
             "available": bool(command),
-            "model": catalog.get("current_model") or agent_console_model(),
+            "model": catalog.get("current_model") or agent_console_model("default", discovery),
+            "provider": catalog.get("provider") or "",
+            "is_default": True,
         }],
+        "selected_agent_id": selected_profile_id,
         "model_catalog": catalog,
         "runs": snapshots,
         "active_run_id": next((run["id"] for run in snapshots if run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None),
@@ -2553,8 +2609,9 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
         agent_console_event(run, "Starting Hermes CLI")
         prompt = run["prompt"]
         session_id = run.get("session_id")
+        profile_id = run.get("agent_id") or "default"
 
-    command = [command_path, "chat", "-q", prompt, "-Q", "--source", "mentat"]
+    command = [command_path, "-p", profile_id, "chat", "-q", prompt, "-Q", "--source", "mentat"]
     if session_id:
         command.extend(["--resume", session_id])
 
@@ -2640,9 +2697,14 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
 def start_agent_console_run(payload):
     if not isinstance(payload, dict):
         return {"error": "Agent prompt payload must be a JSON object"}, 400
-    agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "hermes"
-    if agent_id != "hermes":
-        return {"error": f"Unknown agent: {agent_id}"}, 400
+    requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested_agent_id == "hermes":
+        requested_agent_id = "default"
+    discovery = hermes_profiles_payload()
+    profile = agent_console_profile(requested_agent_id, discovery)
+    if profile is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested_agent_id}"}, 400
+    agent_id = profile["id"]
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
         return {"error": "Prompt is required"}, 400
@@ -2661,12 +2723,25 @@ def start_agent_console_run(payload):
         active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
         if active:
             return {"error": "Hermes is already working on another prompt", "active_run_id": active["id"]}, 409
+        if session_id:
+            conflicting_session = next(
+                (
+                    item for item in AGENT_CONSOLE_RUNS.values()
+                    if item.get("session_id") == session_id and item.get("agent_id", "default") != agent_id
+                ),
+                None,
+            )
+            if conflicting_session:
+                return {
+                    "error": "A Hermes session cannot be resumed by a different profile.",
+                    "session_profile_id": conflicting_session.get("agent_id") or "default",
+                }, 409
         run_id = f"run_{uuid4().hex[:14]}"
         run = {
             "id": run_id,
-            "agent_id": "hermes",
-            "agent_name": "Hermes",
-            "model": agent_console_model(),
+            "agent_id": agent_id,
+            "agent_name": profile.get("name") or agent_id,
+            "model": profile.get("model") or agent_console_model(agent_id, discovery),
             "prompt": prompt,
             "status": "queued",
             "session_id": session_id or None,
@@ -2678,7 +2753,7 @@ def start_agent_console_run(payload):
             "started_at": None,
             "completed_at": None,
         }
-        agent_console_event(run, "Prompt queued for Hermes", "queued")
+        agent_console_event(run, f"Prompt queued for {profile.get('name') or agent_id}", "queued")
         AGENT_CONSOLE_RUNS[run_id] = run
         if len(AGENT_CONSOLE_RUNS) > AGENT_CONSOLE_RUN_LIMIT:
             removable = sorted(
@@ -2701,7 +2776,14 @@ def set_agent_console_model(payload):
     model = compact_text(payload.get("model"), max_length=160)
     if not model:
         return {"error": "Model is required"}, 400
-    catalog = agent_console_model_catalog()
+    requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested_agent_id == "hermes":
+        requested_agent_id = "default"
+    profile = agent_console_profile(requested_agent_id)
+    if profile is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested_agent_id}"}, 400
+    agent_id = profile["id"]
+    catalog = agent_console_model_catalog(agent_id)
     available_models = list(catalog.get("models") or [])
     if model not in available_models:
         provider_label = catalog.get("provider_label") or catalog.get("provider") or "current provider"
@@ -2717,7 +2799,7 @@ def set_agent_console_model(payload):
 
     try:
         result = subprocess.run(
-            [command, "config", "set", "model.default", model],
+            [command, "-p", agent_id, "config", "set", "model.default", model],
             cwd=str(BASE_DIR),
             env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
             capture_output=True,
@@ -2735,14 +2817,25 @@ def set_agent_console_model(payload):
         return {"error": detail or "Hermes could not update the default model."}, 500
     return {
         "ok": True,
+        "agent_id": agent_id,
         "model": model,
-        "model_catalog": agent_console_model_catalog(refresh=True),
-        "message": "Hermes default model updated.",
+        "model_catalog": agent_console_model_catalog(agent_id, refresh=True),
+        "message": f"{profile.get('name') or agent_id} default model updated.",
     }, 200
 
 
-def refresh_agent_console_models(_payload=None):
-    return {"ok": True, "model_catalog": agent_console_model_catalog(refresh=True)}, 200
+def refresh_agent_console_models(payload=None):
+    payload = payload if isinstance(payload, dict) else {}
+    requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested_agent_id == "hermes":
+        requested_agent_id = "default"
+    if agent_console_profile(requested_agent_id) is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested_agent_id}"}, 400
+    return {
+        "ok": True,
+        "agent_id": requested_agent_id,
+        "model_catalog": agent_console_model_catalog(requested_agent_id, refresh=True),
+    }, 200
 
 
 def cancel_agent_console_run(run_id: str):

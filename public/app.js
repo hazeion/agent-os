@@ -1137,21 +1137,28 @@ function renderAgentConsole(payload = {}) {
   state.agentConsoleModelCatalog = catalog;
   state.agentConsoleRuns = runs;
 
-  const selectedAgentId = agentSelect.value || 'hermes';
+  const requestedAgentId = state.agentConsoleSelectedAgentId || agentSelect.value || payload.selected_agent_id || 'default';
+  const selectedAgentId = agents.some((agent) => agent.id === requestedAgentId)
+    ? requestedAgentId
+    : agents[0]?.id || 'default';
   agentSelect.innerHTML = agents.length
     ? agents.map((agent) => `<option value="${escapeHtml(agent.id)}" ${agent.id === selectedAgentId ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')
-    : '<option value="hermes">Hermes</option>';
+    : '<option value="default">Hermes · default</option>';
+  state.agentConsoleSelectedAgentId = agentSelect.value || selectedAgentId;
   const selectedAgent = agents.find((agent) => agent.id === agentSelect.value) || agents[0] || { available: false, model: '' };
-  const defaultModel = [state.agentConsoleSelectedModel, selectedAgent.model, catalog.current_model].find((item) => models.includes(item)) || models[0] || '';
+  const catalogMatchesAgent = !catalog.profile_id || catalog.profile_id === selectedAgent.id;
+  const scopedModels = catalogMatchesAgent ? models : [];
+  const defaultModel = [state.agentConsoleSelectedModel, selectedAgent.model, catalog.current_model].find((item) => scopedModels.includes(item)) || scopedModels[0] || '';
   if (modelSelect) {
-    modelSelect.innerHTML = models.length
-      ? models.map((model) => `<option value="${escapeHtml(model)}" ${model === defaultModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
-      : `<option value="">${escapeHtml(catalog.error || 'No active models available')}</option>`;
+    modelSelect.innerHTML = scopedModels.length
+      ? scopedModels.map((model) => `<option value="${escapeHtml(model)}" ${model === defaultModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
+      : `<option value="">${escapeHtml(catalogMatchesAgent ? catalog.error || 'No active models available' : 'Refresh models for this profile')}</option>`;
     state.agentConsoleSelectedModel = modelSelect.value;
   }
 
   const activeRun = runs.find(agentConsoleRunIsActive);
-  const latestRun = runs[0];
+  const selectedRuns = runs.filter((run) => (run.agent_id || 'default') === selectedAgent.id);
+  const latestRun = selectedRuns[0];
   if (latestRun?.session_id && !state.agentConsoleStartFresh) state.agentConsoleSessionId = latestRun.session_id;
   state.agentConsoleRunId = activeRun?.id || '';
   const available = Boolean(selectedAgent.available);
@@ -1161,7 +1168,7 @@ function renderAgentConsole(payload = {}) {
   if (presence) presence.className = `agent-console-presence ${activeRun ? 'working' : available ? 'ready' : 'offline'}`;
   if (prompt) prompt.disabled = !available || Boolean(activeRun);
   if (send) send.disabled = !available || Boolean(activeRun);
-  if (modelSelect) modelSelect.disabled = !available || Boolean(activeRun) || !models.length;
+  if (modelSelect) modelSelect.disabled = !available || Boolean(activeRun) || !scopedModels.length;
   if (applyModel) applyModel.disabled = !available || Boolean(activeRun) || !modelSelect?.value;
   if (newSession) newSession.disabled = Boolean(activeRun);
   if (stop) {
@@ -1170,15 +1177,16 @@ function renderAgentConsole(payload = {}) {
   }
 
   const wasNearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
-  const visibleRuns = [...runs].slice(0, 10).reverse();
+  const visibleRuns = [...selectedRuns].slice(0, 10).reverse();
   chat.innerHTML = visibleRuns.length ? visibleRuns.map((run) => {
+    const runAgentName = run.agent_name || selectedAgent.name || 'Hermes';
     const events = (run.events || []).map((event) => `
       <div class="agent-console-log-row agent-console-log-status ${escapeHtml(event.kind || 'status')}">
-        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>Hermes</span><span>${escapeHtml(event.message || 'Working')}</span>
+        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(event.message || 'Working')}</span>
       </div>`).join('');
     const working = agentConsoleRunIsActive(run) ? `
-      <div class="agent-console-log-row agent-console-working" role="status"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Hermes</span><span>${run.status === 'cancelling' ? 'Stopping' : 'Working'}</span></div>` : '';
-    const response = run.response ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">Hermes</span><div class="message-content markdown-body">${renderMarkdown(run.response)}</div></div>` : '';
+      <div class="agent-console-log-row agent-console-working" role="status"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(runAgentName)}</span><span>${run.status === 'cancelling' ? 'Stopping' : 'Working'}</span></div>` : '';
+    const response = run.response ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${renderMarkdown(run.response)}</div></div>` : '';
     const error = run.error ? `<div class="agent-console-log-row agent-console-log-error"><span class="mono">${run.status === 'cancelled' ? 'Stopped' : 'Error'}</span><div class="message-content">${escapeHtml(run.error)}</div></div>` : '';
     return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}</div></div><div class="agent-console-events">${events}</div>${working}${response}${error}</section>`;
   }).join('') : `<div class="agent-console-empty mono">${escapeHtml(payload.error || (available ? 'Hermes ready.' : 'Hermes CLI unavailable.'))}</div>`;
@@ -1203,11 +1211,11 @@ function resizeAgentConsolePrompt() {
   renderAgentConsoleCommandMenu();
 }
 
-async function refreshAgentConsoleModelCatalog({ focus = false } = {}) {
+async function refreshAgentConsoleModelCatalog({ focus = false, agentId = state.agentConsoleSelectedAgentId } = {}) {
   const status = $('#agent-console-form-status');
   if (status) status.textContent = 'Refreshing active provider models…';
   try {
-    const payload = await refreshAgentConsoleModels();
+    const payload = await refreshAgentConsoleModels(agentId);
     renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: payload.model_catalog, runs: state.agentConsoleRuns });
     if (status) status.textContent = '';
     if (focus) $('#agent-console-model-select')?.focus();
@@ -1224,7 +1232,7 @@ async function applyAgentConsoleModel() {
   if (!model) return;
   if (status) status.textContent = 'Updating Hermes model…';
   try {
-    const payload = await setAgentConsoleModel(model);
+    const payload = await setAgentConsoleModel(model, state.agentConsoleSelectedAgentId);
     state.agentConsoleSelectedModel = payload.model || model;
     renderAgentConsole({ agents: state.agentConsoleAgents.map((agent) => ({ ...agent, model: payload.model || model })), model_catalog: payload.model_catalog, runs: state.agentConsoleRuns });
     if (status) status.textContent = payload.message || 'Hermes default model updated.';
@@ -1262,7 +1270,7 @@ async function submitAgentConsolePrompt() {
   }
   if (status) status.textContent = 'Sending to Hermes…';
   try {
-    const payload = await startAgentConsoleRun({ agent_id: $('#agent-console-agent')?.value || 'hermes', prompt: value, session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined });
+    const payload = await startAgentConsoleRun({ agent_id: $('#agent-console-agent')?.value || state.agentConsoleSelectedAgentId || 'default', prompt: value, session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined });
     state.agentConsoleStartFresh = false;
     prompt.value = '';
     resizeAgentConsolePrompt();
@@ -1775,6 +1783,9 @@ function renderHermesProfiles(payload = {}) {
           <div class="managed-agent-badges">${labels}</div>
         </div>
         <div class="item-meta mono">${escapeHtml(runtime)} · ${Number(profile.skill_count || 0)} skills</div>
+        <div class="managed-agent-actions">
+          <button class="mini-button" type="button" data-use-hermes-profile="${escapeHtml(profile.id)}">Use in Console</button>
+        </div>
       </article>
     `;
   }).join('');
@@ -2700,6 +2711,17 @@ $('#agent-console-command-menu')?.addEventListener('click', (event) => {
   prompt.focus();
 });
 
+$('#agent-console-agent')?.addEventListener('change', async (event) => {
+  state.agentConsoleSelectedAgentId = event.target.value || 'default';
+  state.agentConsoleSelectedModel = '';
+  state.agentConsoleSessionId = '';
+  state.agentConsoleStartFresh = true;
+  renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: {}, runs: state.agentConsoleRuns });
+  await refreshAgentConsoleModelCatalog({ agentId: state.agentConsoleSelectedAgentId });
+  const status = $('#agent-console-form-status');
+  if (status) status.textContent = `New ${state.agentConsoleSelectedAgentId} session ready.`;
+});
+
 $('#agent-console-model-select')?.addEventListener('change', (event) => {
   state.agentConsoleSelectedModel = event.target.value || '';
 });
@@ -2747,6 +2769,18 @@ document.addEventListener('click', async (event) => {
     const panel = $('#managed-agents-panel');
     panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     flashTarget(panel);
+    return;
+  }
+
+  const useProfile = event.target.closest('[data-use-hermes-profile]');
+  if (useProfile) {
+    state.agentConsoleSelectedAgentId = useProfile.dataset.useHermesProfile || 'default';
+    state.agentConsoleSessionId = '';
+    state.agentConsoleStartFresh = true;
+    state.agentConsoleSelectedModel = '';
+    await setView('today');
+    await refreshAgentConsoleModelCatalog({ agentId: state.agentConsoleSelectedAgentId, focus: true });
+    $('#agent-console-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
 
