@@ -116,6 +116,10 @@ Approved for Managed Agents:
 - an exact preview and profile-bound confirmation token before deletion;
 - blocking deletion while any Mentat Agent Console run is active;
 - post-operation profile discovery to verify the profile was removed.
+- profile-scoped provider/model configuration using the same authenticated-only
+  inventory, preview, confirmation, active-run lock, verification, and rollback
+  contract as the Agent Console. This is the configuration path for a fresh
+  profile that does not yet have a provider assigned.
 
 Deletion is performed only through Hermes' supported profile API in its own
 runtime. Mentat never deletes profile directories or their contents directly.

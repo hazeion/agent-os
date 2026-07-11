@@ -2,6 +2,19 @@
 
 All notable changes to Mentat.
 
+## 2026-07-11
+
+### Fixed
+- Added authenticated provider and model controls to the selected Managed Agent
+  detail pane, including fresh profiles created without cloned configuration.
+- Made the Agent Console provider/model toolbar wrap with bounded flexible
+  controls so empty or long provider states cannot overlap the model selector.
+- Corrected the README clone URL and directory name to match this repository.
+
+### Validation
+- `python3 -m unittest discover -s tests -p 'test_*.py'` (142 tests)
+- JavaScript syntax checks for `public/core.js` and `public/app.js`
+
 ## 2026-07-10
 
 ### Added

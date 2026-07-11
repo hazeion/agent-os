@@ -68,6 +68,7 @@ const state = {
   agentConsoleProviderInventory: {},
   agentConsoleSelectedProvider: '',
   agentConsoleProviderPreview: null,
+  agentConsoleProviderPreviewSource: 'console',
   agentConsoleSelectedModel: '',
   agentConsoleSelectedAgentId: '',
   agentConsoleRunId: '',
@@ -86,6 +87,9 @@ const state = {
   hermesProfileCapabilities: {},
   activeHermesProfileId: '',
   agentDeletionPreview: null,
+  managedAgentProviderInventory: {},
+  managedAgentSelectedProvider: '',
+  managedAgentSelectedModel: '',
 };
 
 const taskStatusLabels = {

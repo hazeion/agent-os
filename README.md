@@ -53,7 +53,7 @@ Mentat currently includes:
 - manifest-driven `/model`, `/new`, and `/help` dashboard commands with no Hermes CLI passthrough
 - profile-aware Agent Console routing with profile-scoped models and sessions
 - capability-gated Hermes profile discovery, confirmed creation and deletion, built-in skill selection, and a persistent Managed Agents list
-- confirmed provider switching among providers Hermes reports as already authenticated for the selected profile
+- confirmed provider switching among providers Hermes reports as already authenticated for the selected profile, available from both Managed Agents and the Agent Console
 - private local Agent Console history across Mentat restarts
 - Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
 - Agents / Sessions view with managed Hermes profiles plus transcript and replay support
@@ -68,8 +68,8 @@ Mentat currently includes:
 ### 1) Clone the repo
 
 ```bash
-git clone https://github.com/hazeion/mentat.git
-cd mentat
+git clone https://github.com/hazeion/agent-os.git
+cd agent-os
 ```
 
 ### 2) Install Python dependencies

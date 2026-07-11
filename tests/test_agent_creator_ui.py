@@ -30,6 +30,20 @@ class AgentCreatorUiTests(unittest.TestCase):
         self.assertIn("managed-agent-layout", STYLES)
         self.assertIn("managed-agent-row", STYLES)
 
+    def test_blank_agents_can_choose_an_authenticated_provider(self):
+        self.assertIn('id="managed-agent-provider-select"', APP_JS)
+        self.assertIn('id="managed-agent-model-select"', APP_JS)
+        self.assertIn("async function loadManagedAgentProviderInventory", APP_JS)
+        self.assertIn("async function reviewManagedAgentProvider", APP_JS)
+        self.assertIn("await loadManagedAgentProviderInventory(state.selectedHermesProfileId)", APP_JS)
+        self.assertIn("No provider is assigned", APP_JS)
+        self.assertIn("managed-agent-provider-editor", STYLES)
+
+    def test_provider_and_model_controls_wrap_without_overlap(self):
+        toolbar_rule = STYLES[STYLES.index(".agent-console-toolbar"):STYLES.index(".agent-console-select-shell")]
+        self.assertIn("flex-wrap: wrap", toolbar_rule)
+        self.assertIn("flex: 1 1 210px", STYLES)
+
     def test_skill_picker_supports_default_custom_and_none_modes(self):
         self.assertIn('name="skill_mode" value="default"', INDEX)
         self.assertIn('name="skill_mode" value="custom"', INDEX)

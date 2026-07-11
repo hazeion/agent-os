@@ -581,6 +581,7 @@ h1, h2, h3, p { margin: 0; }
 }
 .agent-console-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: end;
   gap: 10px;
   min-width: 0;
@@ -588,7 +589,9 @@ h1, h2, h3, p { margin: 0; }
 .agent-console-select-shell {
   display: grid;
   gap: 5px;
-  min-width: 180px;
+  flex: 1 1 210px;
+  min-width: min(100%, 180px);
+  max-width: 340px;
 }
 .agent-console-select {
   appearance: none;
@@ -613,6 +616,7 @@ h1, h2, h3, p { margin: 0; }
   gap: 7px;
   min-height: 38px;
   margin-right: auto;
+  flex: 1 1 240px;
   color: var(--muted);
   font-size: .66rem;
 }
@@ -1569,6 +1573,19 @@ h2 {
 .managed-agent-config { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .managed-agent-config > div { display: grid; gap: 5px; min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
 .managed-agent-config strong { overflow-wrap: anywhere; }
+.managed-agent-provider-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--card);
+}
+.managed-agent-provider-editor .agent-console-select-shell { min-width: 0; max-width: none; }
+.managed-agent-provider-editor-status { grid-column: 1 / -1; min-height: 1.3em; margin: 0; }
 .managed-agent-detail-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 18px; }
 .managed-agent-delete { color: var(--danger); border-color: rgba(255,107,122,.35); }
 .managed-agent-delete:disabled { opacity: .45; cursor: not-allowed; }
@@ -3980,5 +3997,7 @@ h2,
   .agent-console-command-option { grid-template-columns: 68px minmax(0, 1fr); }
   .managed-agent-layout { grid-template-columns: minmax(0, 1fr); }
   .managed-agent-config { grid-template-columns: minmax(0, 1fr); }
+  .managed-agent-provider-editor { grid-template-columns: minmax(0, 1fr); }
+  .managed-agent-provider-editor-status { grid-column: auto; }
   .managed-agent-detail-actions { align-items: stretch; flex-direction: column; }
 }
