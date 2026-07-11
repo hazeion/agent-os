@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,13 @@ class HealthSignalUpgradeTests(unittest.TestCase):
             key=lambda item: server.HEALTH_STATUS_RANK[item["status"]],
         )
         self.assertEqual(payload["status"], worst["status"])
+
+    def test_disk_labels_follow_the_host_platform(self):
+        payload = server.health()
+        if sys.platform.startswith("win"):
+            self.assertTrue(set(payload["disk"]).issubset({"C:/", "E:/"}))
+        else:
+            self.assertEqual(set(payload["disk"]), {str(ROOT.anchor or "/")})
 
 
     def test_health_logic_lives_in_dedicated_module(self):

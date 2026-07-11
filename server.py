@@ -9,11 +9,13 @@ remains allowlisted.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import mimetypes
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -24,7 +26,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
-from agent_run_history import EVENT_RETENTION, EVENT_SCHEMA_VERSION, load_run_summaries, save_run_summaries
+from agent_run_history import (
+    EVENT_RETENTION,
+    EVENT_SCHEMA_VERSION,
+    load_run_summaries,
+    save_run_summaries,
+    secure_history_permissions,
+)
 from command_manifest import command_manifest_payload
 from json_store import read_json as store_read_json, update_json as store_update_json
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
@@ -49,6 +57,21 @@ from runtime_config import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+class IPv6ThreadingHTTPServer(ThreadingHTTPServer):
+    """Threading HTTP server with an IPv6 socket for the ::1 loopback."""
+
+    address_family = socket.AF_INET6
+
+
+def server_class_for_host(host: str):
+    return IPv6ThreadingHTTPServer if host.strip().lower() == "::1" else ThreadingHTTPServer
+
+
+def browser_url(host: str, port: int) -> str:
+    display_host = f"[{host}]" if ":" in host else host
+    return f"http://{display_host}:{port}"
 
 def apply_runtime_config(config: AppConfig) -> AppConfig:
     global APP_CONFIG, HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT, STATE_DB, CRON_JOBS, CONFIG_PATH, GOOGLE_TOKEN
@@ -251,6 +274,7 @@ def persist_agent_console_runs() -> bool:
                 agent_console_history_path(),
                 list(AGENT_CONSOLE_RUNS.values()),
                 retention=AGENT_CONSOLE_RUN_LIMIT,
+                data_root=DATA_DIR,
             )
         return True
     except OSError as exc:
@@ -261,14 +285,24 @@ def persist_agent_console_runs() -> bool:
 def load_agent_console_runs() -> None:
     """Restore prior summaries and fail closed to an empty history on corruption."""
     global AGENT_CONSOLE_HISTORY_LOADED
+    history_path = agent_console_history_path()
+    if not secure_history_permissions(history_path, data_root=DATA_DIR):
+        print("Agent Console history permissions could not be restricted on this platform.")
+        with AGENT_CONSOLE_LOCK:
+            AGENT_CONSOLE_RUNS.clear()
+            AGENT_CONSOLE_HISTORY_LOADED = True
+        return
     with AGENT_CONSOLE_LOCK:
         runs, recovered = load_run_summaries(
-            agent_console_history_path(), now=now_iso, retention=AGENT_CONSOLE_RUN_LIMIT
+            history_path, now=now_iso, retention=AGENT_CONSOLE_RUN_LIMIT
         )
         AGENT_CONSOLE_RUNS.clear()
         AGENT_CONSOLE_RUNS.update((run["id"], run) for run in runs)
         AGENT_CONSOLE_HISTORY_LOADED = True
-        if recovered:
+        # Rewrite every retained valid history through the current redactor and
+        # private atomic writer. Corrupt/unsupported files remain untouched but
+        # are still permission-restricted above for safe manual recovery.
+        if runs or recovered:
             persist_agent_console_runs()
 
 
@@ -1064,69 +1098,62 @@ def google_calendar_events(days: int = 7, limit: int = 50):
             )
         payload = calendar_payload(items, "google", "connected", days=days, calendar="primary", fallback_available=fallback_available)
         return store_calendar_cache(cache_key, payload)
-    except Exception as exc:
-        return calendar_payload(fallback, "local", "error", days=days, error=str(exc), fallback_available=fallback_available)
-
-
-SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|credential|auth)", re.I)
-SECRET_VALUE_RE = re.compile(r"(?i)(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})")
-
-
-def mask_config_text(text: str) -> str:
-    """Return config text safe to render in the browser."""
-    masked_lines = []
-    for line in text.splitlines():
-        if SECRET_KEY_RE.search(line):
-            if ":" in line:
-                masked_lines.append(re.sub(r":.*$", ": ***", line))
-            elif "=" in line:
-                masked_lines.append(re.sub(r"=.*$", "=***", line))
-            else:
-                masked_lines.append("***")
-            continue
-        masked_lines.append(SECRET_VALUE_RE.sub("***", line))
-    return "\n".join(masked_lines)
-
-
-def first_config_value(masked_text: str, key: str) -> str | None:
-    match = re.search(rf"^[ \t]*{re.escape(key)}[ \t]*:[ \t]*([^#\n]+)", masked_text, re.M)
-    if not match:
-        return None
-    value = match.group(1).strip().strip("'\"")
-    if value in {"", "***", "{}", "[]"}:
-        return None
-    return value
+    except Exception:
+        return calendar_payload(
+            fallback,
+            "local",
+            "error",
+            days=days,
+            error="Google Calendar could not be refreshed; showing the local fallback.",
+            fallback_available=fallback_available,
+        )
 
 
 def hermes_config():
+    """Return a small public-safe summary without parsing raw credential config."""
     try:
         config_exists = CONFIG_PATH.exists()
-    except OSError as exc:
-        return {"exists": None, "path": str(CONFIG_PATH), "summary": {}, "masked_config": "", "error": str(exc)}
+    except OSError:
+        return {"exists": None, "summary": {}, "masked_config": "", "error": "Hermes configuration could not be inspected."}
     if not config_exists:
-        return {"exists": False, "path": str(CONFIG_PATH), "summary": {}, "masked_config": ""}
+        return {"exists": False, "summary": {}, "masked_config": ""}
     try:
-        raw = CONFIG_PATH.read_text(encoding="utf-8", errors="replace")
-        masked = mask_config_text(raw)
-        lines = masked.splitlines()
-        if len(lines) > 360:
-            masked = "\n".join(lines[:360] + ["# … truncated for dashboard display …"])
-        summary = {
-            "default_model": first_config_value(masked, "default"),
-            "provider": first_config_value(masked, "provider"),
-            "max_turns": first_config_value(masked, "max_turns"),
-            "reasoning_effort": first_config_value(masked, "reasoning_effort"),
-        }
+        discovery = hermes_profiles_payload()
+        if discovery.get("status") != "available":
+            return {
+                "exists": True,
+                "size": human_bytes(CONFIG_PATH.stat().st_size),
+                "modified_at": file_mtime_iso(CONFIG_PATH),
+                "summary": {},
+                "masked_config": "",
+                "error": "Hermes configuration summary is unavailable.",
+            }
+        profiles = discovery.get("profiles") or []
+        default_profile = next(
+            (
+                profile
+                for profile in profiles or []
+                if isinstance(profile, dict) and (profile.get("is_default") or profile.get("id") == "default")
+            ),
+            None,
+        )
+        safe_summary = {}
+        if default_profile:
+            model = compact_text(default_profile.get("model"), max_length=160)
+            provider = compact_text(default_profile.get("provider"), max_length=120)
+            if model:
+                safe_summary["default_model"] = model
+            if provider:
+                safe_summary["provider"] = provider
         return {
             "exists": True,
-            "path": str(CONFIG_PATH),
             "size": human_bytes(CONFIG_PATH.stat().st_size),
             "modified_at": file_mtime_iso(CONFIG_PATH),
-            "summary": {k: v for k, v in summary.items() if v},
-            "masked_config": masked,
+            "summary": safe_summary,
+            "masked_config": json.dumps(safe_summary, indent=2),
         }
-    except Exception as exc:
-        return {"exists": True, "path": str(CONFIG_PATH), "error": str(exc), "summary": {}, "masked_config": ""}
+    except Exception:
+        return {"exists": True, "error": "Hermes configuration summary is unavailable.", "summary": {}, "masked_config": ""}
 
 
 def fts_query(query: str) -> str | None:
@@ -1229,6 +1256,32 @@ def search_messages(query: str, limit: int = 20):
         return {"query": query, "results": [], "count": 0, "source": str(STATE_DB), "error": str(exc)}
 
 
+def cron_schedule_display(job: dict) -> str:
+    display = compact_text(job.get("schedule_display"), max_length=200)
+    if display:
+        return display
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        for key in ("display", "value", "expr", "run_at"):
+            display = compact_text(schedule.get(key), max_length=200)
+            if display:
+                return display
+        kind = compact_text(schedule.get("kind"), max_length=40).lower()
+        seconds = schedule.get("seconds")
+        if kind == "interval" and isinstance(seconds, (int, float)) and seconds > 0:
+            return f"every {seconds:g}s"
+        return kind or "unknown"
+    return compact_text(
+        schedule or job.get("cron") or job.get("interval"),
+        max_length=200,
+    ) or "unknown"
+
+
+def cron_job_revision(job: dict) -> str:
+    canonical = json.dumps(job, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def read_cron_jobs():
     try:
         cron_jobs_exists = CRON_JOBS.exists()
@@ -1277,11 +1330,12 @@ def read_cron_jobs():
             {
                 "id": job.get("id") or job.get("job_id") or f"cron_{idx}",
                 "name": job.get("name") or job.get("title") or "Untitled cron job",
-                "schedule": job.get("schedule") or job.get("cron") or job.get("interval") or "unknown",
+                "schedule": cron_schedule_display(job),
                 "enabled": enabled,
                 "last_run": job.get("last_run") or job.get("lastRunAt") or job.get("last_run_at"),
                 "next_run": job.get("next_run") or job.get("nextRunAt") or job.get("next_run_at"),
                 "last_status": job.get("last_status") or job.get("status") or job.get("lastStatus") or "unknown",
+                "configuration_revision": cron_job_revision(job),
             }
         )
     return {
@@ -1291,6 +1345,46 @@ def read_cron_jobs():
         "enabled_count": sum(1 for j in normalized if j["enabled"]),
         "jobs": normalized,
     }
+
+
+CRON_QUEUE_UNAVAILABLE = (
+    "This Hermes runtime does not expose an atomic queue operation that can "
+    "reject disabled or changed jobs. Cron inventory remains read-only."
+)
+
+
+def cron_jobs_payload():
+    """Expose cron inventory while failing closed on unsupported mutations."""
+    payload = read_cron_jobs()
+    return {
+        **payload,
+        "capabilities": {"crons.queue_enabled": False},
+        "queue_error": CRON_QUEUE_UNAVAILABLE,
+    }
+
+
+def preview_cron_trigger(job_id: str, payload=None):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", job_id or ""):
+        return {"error": "Invalid cron job id"}, 400
+    return {
+        "error": CRON_QUEUE_UNAVAILABLE,
+        "error_code": "atomic_queue_unsupported",
+        "capabilities": {"crons.queue_enabled": False},
+    }, 503
+
+
+def trigger_confirmed_cron(job_id: str, payload):
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        return {"error": "Cron triggering requires explicit confirmation."}, 400
+    if not compact_text(payload.get("confirmation_id"), max_length=80):
+        return {"error": "Cron triggering requires a confirmation_id from preview."}, 400
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", job_id or ""):
+        return {"error": "Invalid cron job id"}, 400
+    return {
+        "error": CRON_QUEUE_UNAVAILABLE,
+        "error_code": "atomic_queue_unsupported",
+        "capabilities": {"crons.queue_enabled": False},
+    }, 503
 
 
 def sqlite_connect():
@@ -1828,7 +1922,17 @@ def obsidian_notes():
     if not OBSIDIAN_VAULT.exists():
         return {"vault": str(OBSIDIAN_VAULT), "exists": False, "note_count": 0, "notes": notes, "cache": {"enabled": True, "cached": False}}
 
-    markdown_files = sorted(OBSIDIAN_VAULT.rglob("*.md"), key=note_sort_key, reverse=True)
+    vault_root = OBSIDIAN_VAULT.resolve()
+    markdown_files = []
+    for candidate in OBSIDIAN_VAULT.rglob("*.md"):
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if candidate.is_symlink() or (resolved != vault_root and vault_root not in resolved.parents):
+            continue
+        markdown_files.append(candidate)
+    markdown_files.sort(key=note_sort_key, reverse=True)
     signature = tuple((path.relative_to(OBSIDIAN_VAULT).as_posix(), path.stat().st_mtime_ns, path.stat().st_size) for path in markdown_files)
     cache_key = (str(OBSIDIAN_VAULT.resolve()), signature)
     if OBSIDIAN_NOTES_CACHE.get("key") == cache_key and OBSIDIAN_NOTES_CACHE.get("payload") is not None:
@@ -2073,6 +2177,74 @@ def update_task(task_id: str, payload):
             next_tasks[index] = normalized
             return next_tasks, ({"ok": True, "task": normalized, "tasks": next_tasks}, 200)
         return tasks, ({"error": f"Task not found: {task_id}"}, 404)
+
+    return update_json_file("tasks.json", [], mutator)
+
+
+def _task_delete_confirmation(task: dict) -> str:
+    bound = json.dumps(task, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "task_delete_" + hashlib.sha256(bound.encode("utf-8")).hexdigest()[:24]
+
+
+def preview_task_deletion(task_id: str, payload=None):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
+        return {"error": "Invalid task id"}, 400
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        return {"error": "tasks.json must contain a list"}, 500
+    matches = [
+        item
+        for item in tasks
+        if isinstance(item, dict) and str(item.get("id") or "") == task_id
+    ]
+    if not matches:
+        return {"error": f"Task not found: {task_id}"}, 404
+    if len(matches) != 1:
+        return {
+            "error": "Task deletion is blocked because the task id is duplicated. Repair tasks.json before retrying."
+        }, 409
+    task = matches[0]
+    return {
+        "ok": True,
+        "requires_confirmation": True,
+        "confirmation_id": _task_delete_confirmation(task),
+        "task": task,
+        "effects": [f"Permanently remove the Mentat task '{task.get('title') or task_id}'."],
+        "warnings": ["This removes project-owned task data and cannot be undone from Mentat."],
+    }, 200
+
+
+def delete_confirmed_task(task_id: str, payload):
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        return {"error": "Task deletion requires explicit confirmation."}, 400
+    confirmation_id = compact_text(payload.get("confirmation_id"), max_length=80)
+    if not confirmation_id:
+        return {"error": "Task deletion requires a confirmation_id from preview."}, 400
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
+        return {"error": "Invalid task id"}, 400
+
+    def mutator(tasks):
+        if not isinstance(tasks, list):
+            return tasks, ({"error": "tasks.json must contain a list"}, 500)
+        matches = [
+            item
+            for item in tasks
+            if isinstance(item, dict) and str(item.get("id") or "") == task_id
+        ]
+        if not matches:
+            return tasks, ({"error": f"Task not found: {task_id}"}, 404)
+        if len(matches) != 1:
+            return tasks, ({
+                "error": "Task deletion is blocked because the task id is duplicated. Repair tasks.json before retrying."
+            }, 409)
+        task = matches[0]
+        if confirmation_id != _task_delete_confirmation(task):
+            return tasks, ({"error": "Task changed after preview; preview deletion again."}, 409)
+        remaining = [
+            item for item in tasks
+            if not (isinstance(item, dict) and str(item.get("id") or "") == task_id)
+        ]
+        return remaining, ({"ok": True, "deleted_task_id": task_id, "task": task, "tasks": remaining}, 200)
 
     return update_json_file("tasks.json", [], mutator)
 
@@ -2472,24 +2644,31 @@ def delete_confirmed_hermes_profile(profile_id, payload):
             cwd=BASE_DIR,
         )
         refreshed = hermes_profiles_payload()
+        refresh_available = refreshed.get("status") == "available"
         remains = next(
             (item for item in refreshed.get("profiles") or [] if item.get("id") == normalized_id),
             None,
         )
-        if remains is None and result.get("status") == "deleted":
+        if refresh_available and remains is None and result.get("status") == "deleted":
             return {
                 "ok": True,
                 "deleted_profile_id": normalized_id,
                 "profiles": refreshed,
                 "message": f"Hermes profile '{normalized_id}' deleted.",
             }, 200
-        if remains is None:
+        if refresh_available and remains is None:
             return {
                 "ok": True,
                 "deleted_profile_id": normalized_id,
                 "profiles": refreshed,
                 "warning": "Hermes did not return a clean result, but refresh verified that the profile was deleted.",
             }, 200
+        if not refresh_available:
+            return {
+                "error": "Hermes profile deletion could not be verified because profile discovery is unavailable. Review the profile in Hermes before retrying.",
+                "error_code": "verification_unavailable",
+                "profiles": refreshed,
+            }, 503
         error_code = result.get("error_code") or "runtime_failed"
         messages = {
             "runtime_timeout": "Hermes profile deletion timed out and the profile still exists.",
@@ -2606,7 +2785,7 @@ def agent_console_model_catalog(profile_id: str = "default", *, refresh: bool = 
             "provider_label": provider,
             "models": [],
             "current_model": current_model,
-            "error": compact_text(exc, max_length=2_000),
+            "error": "Hermes provider model discovery could not be started.",
         }
     if result.returncode != 0:
         return {
@@ -2615,7 +2794,7 @@ def agent_console_model_catalog(profile_id: str = "default", *, refresh: bool = 
             "provider_label": provider,
             "models": [],
             "current_model": current_model,
-            "error": clean_agent_output(result.stderr or result.stdout, max_length=2_000) or "Hermes could not load provider models.",
+            "error": "Hermes could not load provider models.",
         }
     try:
         payload = json.loads(result.stdout)
@@ -2926,17 +3105,22 @@ def start_agent_console_run(payload):
         if active:
             return {"error": "Hermes is already working on another prompt", "active_run_id": active["id"]}, 409
         if session_id:
+            session_runs = [
+                item for item in AGENT_CONSOLE_RUNS.values()
+                if item.get("session_id") == session_id
+            ]
             conflicting_session = next(
-                (
-                    item for item in AGENT_CONSOLE_RUNS.values()
-                    if item.get("session_id") == session_id and item.get("agent_id", "default") != agent_id
-                ),
+                (item for item in session_runs if item.get("agent_id", "default") != agent_id),
                 None,
             )
             if conflicting_session:
                 return {
                     "error": "A Hermes session cannot be resumed by a different profile.",
                     "session_profile_id": conflicting_session.get("agent_id") or "default",
+                }, 409
+            if not session_runs:
+                return {
+                    "error": "This Hermes session is not present in retained Mentat history, so its profile ownership cannot be verified. Start a new session instead."
                 }, 409
         run_id = f"run_{uuid4().hex[:14]}"
         run = {
@@ -2976,60 +3160,6 @@ def start_agent_console_run(payload):
     worker = threading.Thread(target=run_hermes_agent, args=(run_id, command), daemon=True, name=f"mentat-{run_id}")
     worker.start()
     return {"ok": True, "run": snapshot}, 202
-
-
-def set_agent_console_model(payload):
-    if not isinstance(payload, dict):
-        return {"error": "Model payload must be a JSON object"}, 400
-    model = compact_text(payload.get("model"), max_length=160)
-    if not model:
-        return {"error": "Model is required"}, 400
-    requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
-    if requested_agent_id == "hermes":
-        requested_agent_id = "default"
-    profile = agent_console_profile(requested_agent_id)
-    if profile is None:
-        return {"error": f"Unknown or unavailable Hermes profile: {requested_agent_id}"}, 400
-    agent_id = profile["id"]
-    catalog = agent_console_model_catalog(agent_id)
-    available_models = list(catalog.get("models") or [])
-    if model not in available_models:
-        provider_label = catalog.get("provider_label") or catalog.get("provider") or "current provider"
-        return {"error": f"{model} is not an active model for {provider_label}. Refresh /model and choose from the list."}, 400
-    command = hermes_command_path()
-    if not command:
-        return {"error": "Hermes CLI was not found in the Mentat server environment."}, 503
-
-    with AGENT_CONSOLE_LOCK:
-        active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
-        if active:
-            return {"error": "Stop the active Hermes run before changing its default model", "active_run_id": active["id"]}, 409
-
-    try:
-        result = subprocess.run(
-            [command, "-p", agent_id, "config", "set", "model.default", model],
-            cwd=str(BASE_DIR),
-            env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-            check=False,
-        )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
-        return {"error": compact_text(exc, max_length=2_000)}, 500
-
-    if result.returncode != 0:
-        detail = clean_agent_output(result.stderr or result.stdout, max_length=2_000)
-        return {"error": detail or "Hermes could not update the default model."}, 500
-    return {
-        "ok": True,
-        "agent_id": agent_id,
-        "model": model,
-        "model_catalog": agent_console_model_catalog(agent_id, refresh=True),
-        "message": f"{profile.get('name') or agent_id} default model updated.",
-    }, 200
 
 
 def preview_agent_console_provider_switch(payload):
@@ -3185,13 +3315,14 @@ POST_ROUTES = [
     (re.compile(r"^/api/attention/([^/]+)/resolve$"), resolve_attention_item, False),
     (re.compile(r"^/api/agents/heartbeat$"), upsert_agent_heartbeat, True),
     (re.compile(r"^/api/tasks$"), create_task, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delete/preview$"), preview_task_deletion, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delete$"), delete_confirmed_task, True),
     (re.compile(r"^/api/tasks/([^/]+)$"), update_task, True),
     (re.compile(r"^/api/projects$"), create_project, True),
     (re.compile(r"^/api/projects/([^/]+)$"), update_project, True),
     (re.compile(r"^/api/agent-messages$"), create_agent_message, True),
     (re.compile(r"^/api/agent-messages/([^/]+)/state$"), update_agent_message_state, True),
     (re.compile(r"^/api/agent-console/runs$"), start_agent_console_run, True),
-    (re.compile(r"^/api/agent-console/model$"), set_agent_console_model, True),
     (re.compile(r"^/api/agent-console/models/refresh$"), refresh_agent_console_models, True),
     (re.compile(r"^/api/agent-console/provider/preview$"), preview_agent_console_provider_switch, True),
     (re.compile(r"^/api/agent-console/provider$"), switch_agent_console_provider, True),
@@ -3200,6 +3331,8 @@ POST_ROUTES = [
     (re.compile(r"^/api/hermes/profiles/([^/]+)/delete/preview$"), preview_hermes_profile_deletion, True),
     (re.compile(r"^/api/hermes/profiles/([^/]+)/delete$"), delete_confirmed_hermes_profile, True),
     (re.compile(r"^/api/hermes/profiles$"), create_hermes_profile, True),
+    (re.compile(r"^/api/hermes/crons/([^/]+)/trigger/preview$"), preview_cron_trigger, True),
+    (re.compile(r"^/api/hermes/crons/([^/]+)/trigger$"), trigger_confirmed_cron, True),
 ]
 
 
@@ -3215,7 +3348,7 @@ API_ROUTES = {
     "/api/agent-console": agent_console_payload,
     "/api/agent-console/commands": command_manifest_payload,
     "/api/obsidian-notes": obsidian_notes,
-    "/api/hermes/crons": read_cron_jobs,
+    "/api/hermes/crons": cron_jobs_payload,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),
     "/api/hermes/config": hermes_config,
     "/api/hermes/profiles": hermes_profiles_payload,
@@ -3247,17 +3380,98 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def log_internal_error(self, context: str, exc: BaseException) -> None:
+        """Record an unexpected failure without exposing its message to HTTP clients.
+
+        Exception messages can contain provider output or other sensitive values,
+        so diagnostics include the exception type and stack frames only.  That is
+        enough to locate the failing code path while preserving the generic public
+        error boundary.
+        """
+        try:
+            frames = []
+            current = exc.__traceback__
+            while current is not None:
+                code = current.tb_frame.f_code
+                frames.append(f"{code.co_filename}:{current.tb_lineno} in {code.co_name}")
+                current = current.tb_next
+            stack = "\n".join(frames)
+            self.log_error(
+                "%s failed (%s)%s",
+                context,
+                type(exc).__name__,
+                f"\n{stack}" if stack else "",
+            )
+        except Exception:
+            pass
+
     def send_json(self, payload, status=200):
         body = json.dumps(payload, indent=2, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def control_request_is_local(self) -> bool:
         return self.client_address[0] in {"127.0.0.1", "::1"}
+
+    def request_host_origin(self) -> tuple[str, str, int] | None:
+        host_header = str(self.headers.get("Host") or "").strip()
+        if not host_header:
+            return None
+        try:
+            parsed = urlparse(f"//{host_header}")
+            hostname = (parsed.hostname or "").lower()
+            port = parsed.port or 80
+        except ValueError:
+            return None
+        if parsed.username or parsed.password or parsed.path not in {"", "/"}:
+            return None
+        if hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return None
+        bound_port = getattr(self.server, "server_port", port)
+        server_port = bound_port if isinstance(bound_port, int) else port
+        if port != server_port:
+            return None
+        return "http", hostname, port
+
+    def request_host_is_local(self) -> bool:
+        return self.request_host_origin() is not None
+
+    def request_origin_is_local(self) -> bool:
+        fetch_site = str(self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if fetch_site == "cross-site":
+            return False
+        origin = str(self.headers.get("Origin") or "").strip()
+        if not origin:
+            return True
+        if origin.lower() == "null":
+            return False
+        try:
+            parsed = urlparse(origin)
+        except ValueError:
+            return False
+        try:
+            origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            return False
+        if parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            return False
+        expected = self.request_host_origin()
+        return expected is not None and (
+            parsed.scheme.lower(),
+            (parsed.hostname or "").lower(),
+            origin_port,
+        ) == expected
+
+    def local_api_request_is_allowed(self) -> bool:
+        return self.control_request_is_local() and self.request_host_is_local() and self.request_origin_is_local()
 
     def send_static(self, path: str):
         parsed = urlparse(path)
@@ -3280,34 +3494,36 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
         except Exception as exc:
-            self.send_error(500, str(exc))
+            self.log_internal_error("static asset response", exc)
+            self.send_error(500, "Static asset could not be loaded")
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        local_control_path = (
-            parsed.path.startswith("/api/agent-console")
-            or parsed.path.startswith("/api/hermes/profiles")
-            or parsed.path.startswith("/api/hermes/skills")
-        )
-        if local_control_path and not self.control_request_is_local():
-            self.send_json({"error": "Hermes controls are available only from this computer."}, status=403)
+        if parsed.path.startswith("/api/") and not self.local_api_request_is_allowed():
+            self.send_json({"error": "Mentat APIs are available only from this local dashboard origin."}, status=403)
             return
         if parsed.path == "/api/hermes/search":
             try:
                 query = parse_qs(parsed.query).get("q", [""])[0]
                 self.send_json(search_messages(query))
             except Exception as exc:
-                self.send_json({"error": str(exc)}, status=500)
+                self.log_internal_error("Hermes search", exc)
+                self.send_json({"error": "Hermes search is unavailable."}, status=500)
             return
         if parsed.path in API_ROUTES:
             try:
                 self.send_json(API_ROUTES[parsed.path]())
             except Exception as exc:
-                self.send_json({"error": str(exc)}, status=500)
+                self.log_internal_error(f"dashboard route {parsed.path}", exc)
+                self.send_json({"error": "Mentat could not load this dashboard response."}, status=500)
             return
         for pattern, handler in GET_ROUTES.items():
             match = pattern.match(parsed.path)
@@ -3323,19 +3539,15 @@ class Handler(BaseHTTPRequestHandler):
                 payload, status = handler(*[unquote(part) for part in match.groups()], route_query_value)
                 self.send_json(payload, status=status)
             except Exception as exc:
-                self.send_json({"error": str(exc)}, status=500)
+                self.log_internal_error(f"resource route {parsed.path}", exc)
+                self.send_json({"error": "Mentat could not load this requested resource."}, status=500)
             return
         self.send_static(self.path)
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        local_control_path = (
-            parsed.path.startswith("/api/agent-console")
-            or parsed.path.startswith("/api/hermes/profiles")
-            or parsed.path.startswith("/api/hermes/skills")
-        )
-        if local_control_path and not self.control_request_is_local():
-            self.send_json({"error": "Hermes controls are available only from this computer."}, status=403)
+        if not self.local_api_request_is_allowed():
+            self.send_json({"error": "Mentat mutations are available only from this local dashboard origin."}, status=403)
             return
         payload = None
         try:
@@ -3346,6 +3558,9 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0 or length > MAX_JSON_BODY_BYTES:
             self.send_json({"error": f"Request body must be {MAX_JSON_BODY_BYTES:,} bytes or fewer"}, status=413)
             return
+        if length and str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower() != "application/json":
+            self.send_json({"error": "JSON requests require Content-Type: application/json"}, status=415)
+            return
         if length:
             try:
                 raw = self.rfile.read(length)
@@ -3354,13 +3569,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid JSON body"}, status=400)
                 return
             except Exception as exc:
-                self.send_json({"error": str(exc)}, status=400)
+                self.log_internal_error("request body decoding", exc)
+                self.send_json({"error": "Request body could not be decoded."}, status=400)
                 return
         try:
             payload, status = handle_post_route(parsed.path, payload)
             self.send_json(payload, status=status)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, status=500)
+            self.log_internal_error(f"mutation route {parsed.path}", exc)
+            self.send_json({"error": "Mentat could not complete this mutation."}, status=500)
 
 
 if __name__ == "__main__":
@@ -3369,18 +3586,18 @@ if __name__ == "__main__":
     if cli_args.print_config:
         print(json.dumps(runtime_config_summary(), indent=2))
         raise SystemExit(0)
+    if HOST.lower() not in {"127.0.0.1", "::1", "localhost"}:
+        print("Mentat refuses non-loopback binds until authenticated remote access is implemented.")
+        raise SystemExit(2)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
     load_agent_console_runs()
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server = server_class_for_host(HOST)((HOST, PORT), Handler)
     launcher_pid = start_launcher_watch(server)
     state_path = write_runtime_state()
     print(f"Mentat listening on {HOST}:{PORT}")
-    if HOST in {"0.0.0.0", "::"}:
-        print(f"Local browser URL: http://localhost:{PORT}")
-    else:
-        print(f"Browser URL: http://{HOST}:{PORT}")
+    print(f"Browser URL: {browser_url(HOST, PORT)}")
     print(f"Config files: {[str(path) for path in APP_CONFIG.config_files] or ['built-in defaults only']}")
     print(f"Data dir: {DATA_DIR}")
     print(f"Runtime state: {state_path}")

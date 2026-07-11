@@ -33,6 +33,7 @@ class HermesProviderSwitchingTests(unittest.TestCase):
             "current_provider": "openai-codex",
             "current_model": "gpt-5.6-luna",
             "providers": [{"id": "anthropic", "name": "Anthropic", "authenticated": True, "models": ["claude-sonnet"]}],
+            "capabilities": {"providers.switch": True},
         }
         preview, status = switching.preview_provider_switch("builder", "anthropic", "claude-sonnet", inventory)
         changed, _ = switching.preview_provider_switch("reviewer", "anthropic", "claude-sonnet", inventory)
@@ -46,12 +47,33 @@ class HermesProviderSwitchingTests(unittest.TestCase):
             "providers": [
                 {"id": "anthropic", "name": "Anthropic", "authenticated": False, "models": ["claude"]},
                 {"id": "openai-codex", "name": "OpenAI Codex", "authenticated": True, "models": ["gpt"]},
-            ]
+            ],
+            "capabilities": {"providers.switch": True},
         }
         _, unauthenticated = switching.preview_provider_switch("default", "anthropic", "claude", inventory)
         _, unlisted = switching.preview_provider_switch("default", "openai-codex", "other", inventory)
         self.assertEqual(unauthenticated, 400)
         self.assertEqual(unlisted, 400)
+
+    def test_preview_fails_closed_when_runtime_switch_capability_is_unavailable(self):
+        inventory = {
+            "providers": [
+                {
+                    "id": "openai-codex",
+                    "name": "OpenAI Codex",
+                    "authenticated": True,
+                    "models": ["gpt"],
+                }
+            ],
+            "capabilities": {"providers.switch": False},
+        }
+
+        payload, status = switching.preview_provider_switch(
+            "default", "openai-codex", "gpt", inventory
+        )
+
+        self.assertEqual(status, 503)
+        self.assertIn("does not expose", payload["error"])
 
     def test_switch_executes_fixed_hermes_runtime_helper(self):
         calls = []
@@ -68,6 +90,41 @@ class HermesProviderSwitchingTests(unittest.TestCase):
         self.assertEqual(calls[0][0][:2], ["/opt/hermes/python", "-c"])
         self.assertEqual(calls[0][0][-3:], ["builder", "anthropic", "claude-sonnet"])
         self.assertNotIn("shell", calls[0][1])
+
+    def test_runtime_failure_logs_metadata_without_untrusted_stderr_contents(self):
+        private_key_fragment = "-----BEGIN RSA PRIVATE KEY-----\nprivate-material-without-end"
+        secrets = (
+            '{"token":"ordinary-secret-value","api_key":"another-secret"} '
+            "Authorization: Basic dXNlcjpwYXNz "
+            f"token=hidden-value sk-secret-value {private_key_fragment}"
+        )
+
+        def runner(*args, **kwargs):
+            return SimpleNamespace(
+                returncode=2,
+                stdout="",
+                stderr=secrets,
+            )
+
+        with self.assertLogs(switching.LOGGER, level="WARNING") as captured:
+            payload = switching.provider_inventory(
+                "/opt/hermes/python",
+                "/home/user/.hermes",
+                "builder",
+                cwd="/app",
+                runner=runner,
+            )
+
+        rendered = "\n".join(captured.output)
+        self.assertIn("status 2", rendered)
+        self.assertIn(f"stderr suppressed ({len(secrets)} characters)", rendered)
+        self.assertNotIn("ordinary-secret-value", rendered)
+        self.assertNotIn("another-secret", rendered)
+        self.assertNotIn("dXNlcjpwYXNz", rendered)
+        self.assertNotIn("hidden-value", rendered)
+        self.assertNotIn("sk-secret-value", rendered)
+        self.assertNotIn("private-material", rendered)
+        self.assertNotIn("hidden-value", json.dumps(payload))
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ class HermesProfileDiscoveryTests(unittest.TestCase):
                     "provider": "openai-codex",
                     "model": "gpt-5.6-luna",
                     "skill_count": 75,
+                    "enabled_builtin_skill_count": 1,
                     "gateway_running": True,
                     "path": "/private/secret/path",
                     "distribution": {},
@@ -64,6 +65,7 @@ class HermesProfileDiscoveryTests(unittest.TestCase):
         self.assertEqual(payload["status"], "available")
         self.assertTrue(payload["read_only"])
         self.assertEqual(payload["profiles"][0]["id"], "default")
+        self.assertEqual(payload["profiles"][0]["enabled_builtin_skill_count"], 1)
         self.assertNotIn("path", payload["profiles"][0])
         self.assertNotIn("unexpected", payload["capabilities"])
         self.assertEqual(calls[0][0][:2], ["/opt/hermes/python", "-c"])
@@ -136,6 +138,7 @@ class HermesProfileDiscoveryTests(unittest.TestCase):
 
     def test_helper_uses_profile_api_not_human_formatted_cli_output(self):
         self.assertIn("profiles_module.list_profiles()", hermes_profiles.HERMES_PROFILE_DISCOVERY_SCRIPT)
+        self.assertIn("get_disabled_skills(config)", hermes_profiles.HERMES_PROFILE_DISCOVERY_SCRIPT)
         self.assertNotIn("profile list", hermes_profiles.HERMES_PROFILE_DISCOVERY_SCRIPT)
 
 

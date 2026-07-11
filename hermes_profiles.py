@@ -32,6 +32,30 @@ import json
 from hermes_cli import __release_date__, __version__
 from hermes_cli import profiles as profiles_module
 
+try:
+    from hermes_cli.config import load_config
+    from hermes_cli.skills_config import get_disabled_skills
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.skills_sync import _read_manifest
+    builtin_skills = set(_read_manifest())
+except Exception:
+    builtin_skills = None
+
+
+def enabled_builtin_skill_count(profile_name):
+    if builtin_skills is None:
+        return None
+    profile_dir = profiles_module.get_profile_dir(profile_name)
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        config = load_config()
+        disabled = set(get_disabled_skills(config))
+        return len(builtin_skills - disabled)
+    except Exception:
+        return None
+    finally:
+        reset_hermes_home_override(token)
+
 rows = profiles_module.list_profiles()
 capabilities = {
     "profiles.read": callable(getattr(profiles_module, "list_profiles", None)),
@@ -58,6 +82,7 @@ payload = {
             "provider": str(row.provider or ""),
             "model": str(row.model or ""),
             "skill_count": int(row.skill_count or 0),
+            "enabled_builtin_skill_count": enabled_builtin_skill_count(row.name),
             "gateway_running": bool(row.gateway_running),
             "alias": str(row.alias_name or ""),
             "distribution": {
@@ -110,6 +135,14 @@ def _normalize_profile(value) -> dict | None:
         skill_count = max(0, int(value.get("skill_count") or 0))
     except (TypeError, ValueError):
         skill_count = 0
+    try:
+        enabled_builtin_skill_count = (
+            max(0, int(value.get("enabled_builtin_skill_count")))
+            if value.get("enabled_builtin_skill_count") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        enabled_builtin_skill_count = None
     return {
         "id": profile_id,
         "name": _text(value.get("name") or profile_id, 80),
@@ -119,6 +152,7 @@ def _normalize_profile(value) -> dict | None:
         "provider": _text(value.get("provider"), 120),
         "model": _text(value.get("model"), 160),
         "skill_count": skill_count,
+        "enabled_builtin_skill_count": enabled_builtin_skill_count,
         "gateway_running": bool(value.get("gateway_running")),
         "alias": _text(value.get("alias"), 80),
         "distribution": _normalize_distribution(value.get("distribution")),

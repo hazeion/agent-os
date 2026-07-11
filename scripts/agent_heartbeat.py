@@ -167,8 +167,11 @@ def run_with_heartbeat(args: argparse.Namespace) -> int:
                     status=final_status,
                     latest_output=f"Command exited with code {exit_code}: {' '.join(command)}",
                 )
-                final_result = post_heartbeat(args.base_url, final_payload, timeout=args.timeout)
-                print_result(final_status, final_result)
+                try:
+                    final_result = post_heartbeat(args.base_url, final_payload, timeout=args.timeout)
+                    print_result(final_status, final_result)
+                except Exception as exc:
+                    print(f"final heartbeat delivery failed: {exc}", file=sys.stderr)
                 return exit_code
 
             time.sleep(max(args.interval, 1))
@@ -177,15 +180,29 @@ def run_with_heartbeat(args: argparse.Namespace) -> int:
                 status="running",
                 latest_output=f"Command still running with PID {process.pid}: {' '.join(command)}",
             )
-            pulse_result = post_heartbeat(args.base_url, pulse_payload, timeout=args.timeout)
-            print_result("heartbeat", pulse_result)
+            try:
+                pulse_result = post_heartbeat(args.base_url, pulse_payload, timeout=args.timeout)
+                print_result("heartbeat", pulse_result)
+            except Exception as exc:
+                print(f"heartbeat delivery failed; child remains supervised: {exc}", file=sys.stderr)
     except KeyboardInterrupt:
         process.terminate()
         interrupted_payload = build_payload(args, status="blocked", latest_output="Wrapper interrupted; child process terminated")
         interrupted_payload["needs_user_input"] = True
-        interrupted_result = post_heartbeat(args.base_url, interrupted_payload, timeout=args.timeout)
-        print_result("interrupted", interrupted_result)
+        try:
+            interrupted_result = post_heartbeat(args.base_url, interrupted_payload, timeout=args.timeout)
+            print_result("interrupted", interrupted_result)
+        except Exception as exc:
+            print(f"final heartbeat delivery failed: {exc}", file=sys.stderr)
         raise
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
 
 def add_common_agent_args(parser: argparse.ArgumentParser) -> None:

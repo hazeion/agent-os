@@ -101,7 +101,24 @@ credential setup and authentication.
 A provider switch requires an inventory match, exact preview, profile-bound
 confirmation, and no active Agent Console run. Refresh Hermes state afterward
 to verify the change and roll back to the prior provider on verification failure
-when supported; otherwise report a partial failure and fail closed.
+when supported; otherwise report a partial failure and fail closed. Advertise
+switching only when the installed Hermes runtime exposes the supported fixed
+profile-model operation. Do not restore a direct, unconfirmed model-mutation
+route.
+
+Project-owned task deletion requires an exact preview, confirmation bound to
+the current task state, and a locked atomic update. A changed task must be
+previewed again.
+
+Hermes cron inventory is currently read-only. The installed Hermes runtime lacks
+an atomic expected-revision, enabled-only operation for queueing the next
+scheduler tick, so Mentat must advertise no working queue capability and all
+queue controls must fail closed. Safe next-tick queueing requires an upstream
+Hermes compare-and-swap capability; do not approximate it with a read-then-
+trigger sequence or a direct cron-store write. An immediate **Run now** action
+is a separate deferred product choice, not a substitute. Do not create, edit,
+enable, disable, or delete Hermes cron jobs, and never write the cron store
+directly.
 
 Direct skill-content editing, hub installation, `SOUL.md` editing, clone-all,
 rename, credential management, and arbitrary MCP changes remain deferred.
@@ -113,10 +130,15 @@ tests. Never derive this surface by parsing CLI output or add arbitrary command
 passthrough.
 
 Tracked JSON fixtures under `data/` should remain public-safe seed/example data. Avoid committing personal names, local paths, account identifiers, or real message history there.
+Gitignored Agent Console history must remain redacted and private. Use
+owner-only runtime-directory and file permissions where the platform supports
+them.
 
 ### Local-first only
 
-Keep the app local-only by default. Do not expose the dashboard publicly unless that direction is explicitly approved and implemented safely.
+Keep the app bound to loopback only. Non-loopback hosts must be rejected until
+an authenticated remote-access capability is separately approved and
+implemented safely.
 
 See `ARCHITECTURE.md` for the complete capability and mutation contract.
 
@@ -146,10 +168,11 @@ Launch on Windows (cmd / Explorer):
 run.bat
 ```
 
-Launch directly on any OS:
+Launch directly on POSIX from the repository root using an absolute script
+argument so lifecycle cleanup can identify a hung process:
 
 ```bash
-python server.py
+python "$(pwd)/server.py"
 ```
 
 Default local URL:
@@ -179,6 +202,8 @@ python -m unittest discover -s tests -v
 
 - Prefer simple, readable code over clever abstractions.
 - Preserve the clean dark styling direction.
+- Keep Agent Creator progress compact and text-led; do not reintroduce pill
+  containers for its step indicator.
 - Avoid reintroducing removed/redundant dashboard surfaces without a clear product reason.
 - Keep completed work visible when useful; do not assume deletion is the right default.
 - Favor incremental changes over broad rewrites.

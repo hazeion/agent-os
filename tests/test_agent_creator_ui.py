@@ -51,6 +51,7 @@ class AgentCreatorUiTests(unittest.TestCase):
         self.assertIn('id="agent-creator-skill-search"', INDEX)
         self.assertIn("renderAgentCreatorSkills", APP_JS)
         self.assertIn("enabled_builtin_skills", APP_JS)
+        self.assertIn("enabled_builtin_skill_count", APP_JS)
         self.assertIn("agent-creator-skill-list", STYLES)
 
     def test_creator_uses_profile_preview_and_skill_catalog_endpoints(self):
@@ -70,6 +71,22 @@ class AgentCreatorUiTests(unittest.TestCase):
     def test_review_step_hides_redundant_continue_control(self):
         self.assertIn("if (next) next.hidden = step === 'review';", APP_JS)
         self.assertIn(".agent-creator-actions [hidden]", STYLES)
+
+    def test_agent_creation_and_managed_profile_surfaces_do_not_use_pills(self):
+        creator = INDEX[
+            INDEX.index('id="agent-creator-dialog"') : INDEX.index("</dialog>", INDEX.index('id="agent-creator-dialog"'))
+        ]
+        managed_profiles = APP_JS[
+            APP_JS.index("function renderHermesProfiles") : APP_JS.index("function renderAgentCreatorSkills")
+        ]
+        progress = STYLES[
+            STYLES.index(".agent-creator-progress li {") : STYLES.index(".agent-creator-body")
+        ]
+
+        self.assertNotIn('class="pill', creator)
+        self.assertNotIn('class="pill', managed_profiles)
+        self.assertIn("background: transparent", progress)
+        self.assertNotIn("border-radius", progress)
 
     def test_managed_agents_offer_capability_gated_confirmed_deletion(self):
         self.assertIn('id="agent-delete-dialog"', INDEX)

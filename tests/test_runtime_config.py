@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -11,6 +12,12 @@ import server
 
 
 class RuntimeConfigTests(unittest.TestCase):
+    def test_ipv6_loopback_uses_ipv6_server_and_bracketed_browser_url(self):
+        self.assertIs(server.server_class_for_host("::1"), server.IPv6ThreadingHTTPServer)
+        self.assertEqual(server.IPv6ThreadingHTTPServer.address_family, socket.AF_INET6)
+        self.assertEqual(server.browser_url("::1", 8888), "http://[::1]:8888")
+        self.assertIs(server.server_class_for_host("127.0.0.1"), server.ThreadingHTTPServer)
+
     def test_repo_defaults_include_toml_runtime_config(self):
         original_local_config = runtime_config.LOCAL_CONFIG_FILE
         original_legacy_local_config = runtime_config.LEGACY_LOCAL_CONFIG_FILE

@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
 from typing import Callable
+
+LOGGER = logging.getLogger(__name__)
 
 
 HERMES_PROVIDER_INVENTORY_SCRIPT = r"""
@@ -38,6 +41,11 @@ payload = build_models_payload(
     max_models=None,
 )
 providers = []
+try:
+    from hermes_cli.web_server import _write_profile_model
+    switch_supported = callable(_write_profile_model)
+except Exception:
+    switch_supported = False
 for row in payload.get("providers") or []:
     if not isinstance(row, dict) or row.get("authenticated") is not True:
         continue
@@ -61,6 +69,7 @@ print(json.dumps({
     "current_provider": str(ctx.current_provider or "").strip(),
     "current_model": str(ctx.current_model or "").strip(),
     "providers": providers,
+    "switch_supported": switch_supported,
 }))
 """.strip()
 
@@ -109,12 +118,26 @@ def _run_json(
             check=False,
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
-        return {}, str(exc)[:2_000]
+        LOGGER.warning(
+            "Hermes provider runtime operation could not start (%s)",
+            type(exc).__name__,
+        )
+        return {}, "Hermes runtime operation could not be started."
     if result.returncode != 0:
-        return {}, str(result.stderr or result.stdout or "Hermes operation failed.").strip()[:2_000]
+        stderr_length = len(str(getattr(result, "stderr", "") or ""))
+        LOGGER.warning(
+            "Hermes provider runtime operation exited with status %s; stderr suppressed (%s characters)",
+            result.returncode,
+            stderr_length,
+        )
+        return {}, "Hermes runtime operation failed."
     try:
         payload = json.loads(result.stdout)
     except (json.JSONDecodeError, TypeError):
+        LOGGER.warning(
+            "Hermes provider runtime returned invalid JSON (%s stdout characters)",
+            len(str(getattr(result, "stdout", "") or "")),
+        )
         return {}, "Hermes returned an invalid response."
     return (payload, "") if isinstance(payload, dict) else ({}, "Hermes returned an invalid response.")
 
@@ -138,7 +161,14 @@ def provider_inventory(
         runner=runner,
     )
     if error:
-        return {"profile_id": profile_id, "current_provider": "", "current_model": "", "providers": [], "error": error}
+        return {
+            "profile_id": profile_id,
+            "current_provider": "",
+            "current_model": "",
+            "providers": [],
+            "capabilities": {"providers.switch": False},
+            "error": error,
+        }
     providers = []
     for row in payload.get("providers") or []:
         if not isinstance(row, dict) or row.get("authenticated") is not True:
@@ -163,7 +193,7 @@ def provider_inventory(
         "current_provider": str(payload.get("current_provider") or "").strip()[:120],
         "current_model": str(payload.get("current_model") or "").strip()[:160],
         "providers": providers,
-        "capabilities": {"providers.switch": True},
+        "capabilities": {"providers.switch": payload.get("switch_supported") is True},
         "error": "" if providers else "Hermes reported no explicitly configured, authenticated providers for this profile.",
     }
 
@@ -174,6 +204,8 @@ def provider_switch_confirmation(profile_id: str, current_provider: str, current
 
 
 def preview_provider_switch(profile_id: str, provider: str, model: str, inventory: dict) -> tuple[dict, int]:
+    if inventory.get("capabilities", {}).get("providers.switch") is not True:
+        return {"error": "This Hermes runtime does not expose supported provider switching."}, 503
     target = next((row for row in inventory.get("providers") or [] if row.get("id") == provider and row.get("authenticated") is True), None)
     if target is None:
         return {"error": "Choose a provider Hermes reports as explicitly configured and authenticated."}, 400

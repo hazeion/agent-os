@@ -55,9 +55,11 @@ Mentat currently includes:
 - capability-gated Hermes profile discovery, confirmed creation and deletion, built-in skill selection, and a persistent Managed Agents list
 - confirmed provider switching among providers Hermes reports as already authenticated for the selected profile, available from both Managed Agents and the Agent Console
 - private local Agent Console history across Mentat restarts
-- Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
+- Projects / Tasks workspace with an open queue, task inspector, completed work
+  timeline, and previewed task deletion
 - Agents / Sessions view with managed Hermes profiles plus transcript and replay support
 - Hermes session search from `state.db` in read-only mode
+- read-only Hermes cron inventory, with unsupported queue controls failing closed
 - Agent Pulse live heartbeat registry
 - read-only Google Calendar integration with local fallback
 - Obsidian notes visibility
@@ -191,8 +193,11 @@ hermes doctor
 If you do not want to use the setup wizard, you can launch directly:
 
 ```bash
-python server.py
+python "$(pwd)/server.py"
 ```
+
+Use the absolute script path for direct launches so `status.sh` and `stop.sh`
+can still identify Mentat if its HTTP health probe becomes unavailable.
 
 Then open:
 
@@ -211,14 +216,12 @@ python server.py --print-config
 Run on a different port:
 
 ```bash
-python server.py --port 8890
+./run.sh --port 8890
 ```
 
-Bind a different host and port:
-
-```bash
-python server.py --host 0.0.0.0 --port 8890
-```
+Mentat accepts loopback hosts only (`localhost`, `127.0.0.1`, or `::1`). It
+refuses non-loopback binds because the dashboard does not provide remote-access
+authentication. Use `--port` when you need a different local address.
 
 Check lifecycle state:
 
@@ -251,6 +254,9 @@ Useful overrides:
 - `OBSIDIAN_VAULT_PATH`
 - `MENTAT_CONFIG`
 
+`MENTAT_HOST` may select a loopback spelling only. Values such as `0.0.0.0` or
+a LAN address are rejected at startup.
+
 Important local config files:
 
 - `mentat.toml` — shared repo defaults
@@ -263,7 +269,7 @@ Important local config files:
 Mentat is a local-first, capability-scoped Hermes control plane. It can perform
 explicit Hermes operations, but it is not a general editor for Hermes files.
 
-- Local-only by default on `127.0.0.1:8888`
+- Local-only on `127.0.0.1:8888` by default, with non-loopback binds rejected
 - Reads Hermes data from `HERMES_HOME`
 - Writes project-owned local data through allowlisted storage
 - Mutates Hermes only through approved, fixed CLI/API capabilities
@@ -295,6 +301,35 @@ Changing providers requires a preview and profile-bound confirmation, is blocked
 while an Agent Console run is active, and is verified by refreshing Hermes state.
 If verification fails, Mentat attempts to restore the previous provider when the
 Hermes capability supports rollback and otherwise reports a partial failure.
+The switch control is advertised only when the installed Hermes runtime exposes
+the supported profile-model operation; otherwise Mentat leaves provider state
+read-only and fails closed. The former direct Agent Console model-mutation route
+is not supported—provider/model changes use this confirmed provider workflow.
+
+### Project task deletion
+
+Mentat can delete a task from its project-owned `data/tasks.json` store only
+after showing an exact preview and receiving its matching confirmation. The
+confirmation is tied to the complete current task state, so any changed task
+must be previewed again. The locked update is atomic, and deletion cannot
+be undone from Mentat.
+
+### Hermes cron boundary
+
+Mentat currently displays Hermes cron inventory read-only. The installed Hermes
+runtime does not expose an atomic operation that both verifies the expected job
+revision and confirms the job is still enabled while queueing its next scheduler
+tick. The available trigger operation cannot safely provide that guarantee, so
+Mentat does not advertise queueing as available and its queue controls fail
+closed.
+
+Next-tick queueing remains dependent on an upstream Hermes compare-and-swap
+capability. Mentat will not approximate it by editing
+`~/.hermes/cron/jobs.json` or chaining non-atomic operations. An immediate
+**Run now** action would be a separate product feature with its own execution
+and confirmation contract; it remains deferred rather than serving as a
+substitute. Mentat also does not create, edit, enable, disable, or delete Hermes
+cron jobs.
 
 ## Main project-owned data files
 
@@ -319,6 +354,10 @@ content is not written to this history file. Up to 40 bounded, redacted status
 events are retained per run. Runs that were active when Mentat
 stopped are shown as interrupted after restart. Missing, corrupt, or unknown
 history formats fall back to an empty history without preventing startup.
+On platforms that support POSIX permissions, Mentat writes the runtime directory
+for its owner only and the history file with owner read/write permissions. On
+startup, existing valid summaries are re-redacted through the current policy;
+corrupt history is permission-restricted but preserved for manual recovery.
 
 Agent Console events use a stable schema with `schema_version`, `run_id`,
 monotonic `sequence`/`cursor`, `type` (plus the legacy `kind` alias), `timestamp`,
@@ -376,16 +415,10 @@ for pid in $(netstat -ano | awk '/127\\.0\\.0\\.1:8888/ && /LISTENING/ {print $N
 done
 ```
 
-Then restart:
+Then restart through the managed launcher:
 
 ```bash
 ./run.sh
-```
-
-Or:
-
-```bash
-python server.py
 ```
 
 ### Hermes was not detected by the setup wizard

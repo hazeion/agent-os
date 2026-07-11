@@ -68,18 +68,18 @@
       <nav class="nav-groups">
         <section>
           <div class="nav-label">Workspace</div>
-          <button class="nav-item active" type="button" data-view="today"><span>✦</span><span>Today View</span></button>
-          <button class="nav-item" type="button" data-view="agents"><span>◉</span><span>Agents / Sessions</span></button>
-          <button class="nav-item" type="button" data-view="calendar"><span>◷</span><span>Calendar</span></button>
+          <button class="nav-item active" type="button" data-view="today" aria-label="Today View"><span>✦</span><span>Today View</span></button>
+          <button class="nav-item" type="button" data-view="agents" aria-label="Agents / Sessions"><span>◉</span><span>Agents / Sessions</span></button>
+          <button class="nav-item" type="button" data-view="calendar" aria-label="Calendar"><span>◷</span><span>Calendar</span></button>
         </section>
         <section>
           <div class="nav-label">Focus</div>
-          <button class="nav-item" type="button" data-view="projects"><span>▦</span><span>Projects / Tasks</span></button>
-          <button class="nav-item" type="button" data-view="notes"><span>☰</span><span>Notes</span></button>
+          <button class="nav-item" type="button" data-view="projects" aria-label="Projects / Tasks"><span>▦</span><span>Projects / Tasks</span></button>
+          <button class="nav-item" type="button" data-view="notes" aria-label="Notes"><span>☰</span><span>Notes</span></button>
         </section>
         <section>
           <div class="nav-label">System</div>
-          <button class="nav-item" type="button" data-view="settings"><span>⚙</span><span>Settings</span></button>
+          <button class="nav-item" type="button" data-view="settings" aria-label="Settings"><span>⚙</span><span>Settings</span></button>
         </section>
       </nav>
 
@@ -324,6 +324,7 @@
                 </div>
                 <div class="panel-controls task-detail-controls">
                   <button class="mini-button" type="button" id="selected-task-edit">Edit Task</button>
+                  <button class="mini-button danger-button" type="button" id="selected-task-delete">Delete Task</button>
                   <button class="mini-button" type="button" id="selected-task-cancel" hidden>Cancel</button>
                   <button class="mini-button task-detail-back" type="button" id="selected-task-back">Back to queue</button>
                 </div>
@@ -416,7 +417,7 @@
             </div>
           </div>
           <div id="config-summary" class="settings-list"></div>
-          <pre id="config-text" class="config-pre">Open Settings to load the masked Hermes config.</pre>
+          <pre id="config-text" class="config-pre">Open Settings to load the public-safe Hermes configuration summary.</pre>
         </section>
       </section>
     </main>
@@ -540,6 +541,40 @@
         <div>
           <button class="mini-button" type="button" data-provider-switch-cancel>Cancel</button>
           <button class="action-button" type="button" data-provider-switch-confirm>Apply provider &amp; model</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="task-delete-dialog" class="agent-delete-dialog" aria-labelledby="task-delete-title">
+    <div class="agent-delete-shell">
+      <header class="agent-delete-head">
+        <div><div class="eyebrow">Project-owned destructive operation</div><h2 id="task-delete-title">Delete task</h2></div>
+        <button class="agent-creator-close" type="button" data-task-delete-cancel aria-label="Close task deletion">×</button>
+      </header>
+      <div id="task-delete-review" class="agent-delete-review"></div>
+      <footer class="agent-creator-actions">
+        <span id="task-delete-status" class="task-editor-status mono" role="status" aria-live="polite"></span>
+        <div>
+          <button class="mini-button" type="button" data-task-delete-cancel>Cancel</button>
+          <button class="action-button danger-button" type="button" data-task-delete-confirm>Delete task</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="cron-trigger-dialog" class="agent-delete-dialog" aria-labelledby="cron-trigger-title">
+    <div class="agent-delete-shell">
+      <header class="agent-delete-head">
+        <div><div class="eyebrow">Hermes cron operation</div><h2 id="cron-trigger-title">Queue cron job</h2></div>
+        <button class="agent-creator-close" type="button" data-cron-trigger-cancel aria-label="Close cron trigger">×</button>
+      </header>
+      <div id="cron-trigger-review" class="agent-delete-review"></div>
+      <footer class="agent-creator-actions">
+        <span id="cron-trigger-status" class="task-editor-status mono" role="status" aria-live="polite"></span>
+        <div>
+          <button class="mini-button" type="button" data-cron-trigger-cancel>Cancel</button>
+          <button class="action-button" type="button" data-cron-trigger-confirm>Queue run</button>
         </div>
       </footer>
     </div>

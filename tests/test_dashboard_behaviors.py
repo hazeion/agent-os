@@ -74,41 +74,61 @@ class DashboardBehaviorTests(unittest.TestCase):
             server.AGENT_CONSOLE_RUNS.clear()
             server.AGENT_CONSOLE_PROCESSES.clear()
 
-    def test_agent_console_model_change_uses_hermes_config_command(self):
-        server.AGENT_CONSOLE_RUNS.clear()
-        try:
-            with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
-                server, "agent_console_model_catalog", return_value={
-                    "provider": "openai-codex",
-                    "provider_label": "OpenAI Codex",
-                    "models": ["gpt-5.5", "gpt-5.3-codex-spark"],
-                    "current_model": "gpt-5.5",
-                }
-            ), patch.object(server, "agent_console_profile", return_value={"id": "default", "name": "default"}), patch.object(server.subprocess, "run") as run:
-                run.return_value.returncode = 0
-                run.return_value.stdout = "updated"
-                run.return_value.stderr = ""
-                payload, status = server.set_agent_console_model({"model": "gpt-5.3-codex-spark"})
-
-            self.assertEqual(status, 200)
-            self.assertTrue(payload["ok"])
-            self.assertEqual(payload["model"], "gpt-5.3-codex-spark")
-            self.assertEqual(run.call_args.args[0], ["/tmp/hermes", "-p", "default", "config", "set", "model.default", "gpt-5.3-codex-spark"])
-        finally:
-            server.AGENT_CONSOLE_RUNS.clear()
-
-    def test_agent_console_model_change_rejects_models_outside_current_provider_catalog(self):
-        with patch.object(server, "agent_console_model_catalog", return_value={
-            "provider": "openai-codex",
-            "provider_label": "OpenAI Codex",
-            "models": ["gpt-5.5"],
+    def test_agent_console_provider_change_requires_a_bound_preview(self):
+        inventory = {
+            "profile_id": "default",
+            "current_provider": "openai-codex",
             "current_model": "gpt-5.5",
-        }), patch.object(server, "agent_console_profile", return_value={"id": "default", "name": "default"}), patch.object(server.subprocess, "run") as run:
-            payload, status = server.set_agent_console_model({"model": "anthropic/claude-sonnet-4"})
+            "providers": [
+                {
+                    "id": "openrouter",
+                    "name": "OpenRouter",
+                    "authenticated": True,
+                    "models": ["anthropic/claude-sonnet-4"],
+                }
+            ],
+            "capabilities": {"providers.switch": True},
+        }
+        with patch.object(
+            server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
+            payload, status = server.preview_agent_console_provider_switch(
+                {
+                    "agent_id": "default",
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4",
+                }
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["requires_confirmation"])
+        self.assertTrue(payload["confirmation_id"].startswith("provider_switch_"))
+        self.assertEqual(payload["current"], {"provider": "openai-codex", "model": "gpt-5.5"})
+        self.assertEqual(payload["target"]["provider"], "openrouter")
+
+    def test_agent_console_provider_preview_rejects_unlisted_models(self):
+        inventory = {
+            "current_provider": "openai-codex",
+            "current_model": "gpt-5.5",
+            "providers": [
+                {
+                    "id": "openrouter",
+                    "name": "OpenRouter",
+                    "authenticated": True,
+                    "models": ["openai/gpt-5.5"],
+                }
+            ],
+            "capabilities": {"providers.switch": True},
+        }
+        with patch.object(
+            server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
+            payload, status = server.preview_agent_console_provider_switch(
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+            )
 
         self.assertEqual(status, 400)
-        self.assertIn("not an active model", payload["error"])
-        run.assert_not_called()
+        self.assertIn("Choose a model", payload["error"])
 
     def test_agent_console_model_catalog_uses_hermes_inventory_payload(self):
         server.AGENT_MODEL_CATALOG_CACHE.update({"key": None, "payload": None, "fetched_at": 0})

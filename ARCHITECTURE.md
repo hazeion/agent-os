@@ -23,6 +23,7 @@ explicit, supported capabilities implemented by the Hermes adapter.
 | Credentials and authentication files | Never read or write directly |
 | Hermes profiles | Mutate only through approved, fixed Hermes CLI/API operations |
 | Model/provider configuration | Mutate only through validated Hermes operations |
+| Existing Hermes cron jobs | Read-only inventory; queue controls fail closed |
 | Skills and `SOUL.md` | Read-only until a separate capability is approved |
 | Mentat runtime history | Writable, private, and gitignored |
 | Mentat project/task data | Writable through allowlisted project-owned storage |
@@ -43,6 +44,9 @@ Every write-capable Hermes operation must declare:
 Unsupported capabilities and unknown Hermes versions fail closed. Mentat never
 constructs a shell command from browser text and never collects Hermes secrets.
 
+Mentat is an unauthenticated local application and must bind only to a loopback
+host. Non-loopback access is not a deployment option under this contract.
+
 Agent Console execution is globally single-run in v1. Every run records its
 Hermes profile id, launches with a fixed `-p <profile>` selector, and may resume
 only a session already associated with that same profile.
@@ -62,6 +66,8 @@ Hermes remains the sole owner of provider credentials and authentication.
 Mentat does not add, edit, validate, migrate, or delete credentials. Provider
 switching is an approved, fixed Hermes adapter capability with these rules:
 
+- Mentat advertises the switch capability only after probing that the installed
+  Hermes runtime exposes the supported profile-model operation;
 - the requested provider must be present in the profile-scoped authenticated
   inventory returned by Hermes;
 - the current provider is reported separately from the authenticated set;
@@ -75,6 +81,39 @@ switching is an approved, fixed Hermes adapter capability with these rules:
 
 This boundary covers selection among already authenticated providers only.
 Credential setup and reauthentication continue to happen through Hermes.
+There is no direct or unconfirmed Agent Console model-mutation route; all
+provider/model changes enter through this capability contract.
+
+## Project task deletion boundary
+
+Task deletion affects only Mentat's allowlisted project-owned task store. It
+requires an exact preview and matching confirmation bound to the task's complete
+current state. The task is re-read under the project-data lock before
+the atomic update, so a changed or missing task fails closed. This operation
+does not mutate Hermes data and is not reversible from Mentat.
+
+## Hermes cron boundary
+
+Mentat currently exposes Hermes cron inventory as read-only. The installed
+Hermes runtime does not provide an atomic, expected-revision, enabled-only
+operation for moving an existing job to the next scheduler tick. A separate
+read followed by the available trigger operation cannot close that race: a job
+could be changed or disabled between validation and mutation, and the trigger
+may implicitly enable it. Mentat therefore advertises no working queue
+capability and its queue controls fail closed.
+
+Safe next-tick queueing requires an upstream Hermes compare-and-swap operation
+that atomically verifies the complete expected job revision and enabled state
+while scheduling the next tick. If Hermes adds that capability, Mentat may
+integrate it through the normal preview, confirmation, lock, and post-operation
+verification contract. Mentat must not approximate it by writing
+`~/.hermes/cron/jobs.json` or by composing multiple non-atomic operations.
+
+An immediate **Run now** action is a separate product choice with different
+execution, confirmation, progress, and delivery semantics. It remains deferred
+and must not be presented as a substitute for next-tick queueing. Creating,
+editing, enabling, disabling, and deleting cron jobs also remain Hermes-owned
+operations.
 
 Agent Console progress is exposed as versioned, structured Mentat events. Event
 sequence numbers are monotonic within a run and double as polling cursors. The
@@ -123,6 +162,9 @@ Approved for Managed Agents:
 
 Deletion is performed only through Hermes' supported profile API in its own
 runtime. Mentat never deletes profile directories or their contents directly.
+
+The Agent Creator uses a compact step-progress indicator instead of status-pill
+controls; skill choices and review details remain explicit form controls.
 
 Deferred until separately approved:
 
