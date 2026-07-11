@@ -2,6 +2,34 @@
 
 All notable changes to Mentat.
 
+## 2026-07-10
+
+### Added
+- Added the capability-gated Hermes profile discovery adapter and local-only
+  `/api/hermes/profiles` endpoint.
+- Added preview and confirmed creation endpoints for fresh, no-bundled-skills,
+  and config-cloned Hermes profiles using fixed, shell-free CLI arguments.
+- Added built-in Hermes skill catalog discovery and explicit per-profile skill
+  selection using enabled-subset semantics.
+- Added a persistent Managed Agents surface that refreshes and highlights newly
+  created Hermes profiles before profile-aware console routing is enabled.
+- Added a versioned, fail-closed profile payload with Hermes capability flags
+  and normalized profile metadata that excludes paths and secrets.
+- Added `ARCHITECTURE.md` to define executable agents as Hermes profiles and
+  document Mentat's typed mutation contract.
+
+### Changed
+- Reframed Mentat as a local-first, capability-scoped Hermes control plane
+  rather than a strictly read-only dashboard.
+- Preserved direct read-only boundaries for Hermes databases, credentials,
+  configuration files, skills, and persona files.
+
+### Validation
+- `python -m unittest discover -s tests -v` (103 tests)
+- `python -m py_compile server.py hermes_profiles.py hermes_profile_creation.py hermes_skills.py`
+- JavaScript syntax checks for `public/core.js`, `public/app.js`, and
+  `scripts/browser_smoke.mjs`
+
 ## 2026-06-29
 
 ### Added

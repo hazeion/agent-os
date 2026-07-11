@@ -50,8 +50,9 @@ Mentat currently includes:
 
 - Today View as the main command center
 - front-page Hermes prompt console with live run status and resumable follow-ups
+- capability-gated Hermes profile discovery, confirmed creation, built-in skill selection, and a persistent Managed Agents list
 - Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
-- Agents / Sessions view with transcript and replay support
+- Agents / Sessions view with managed Hermes profiles plus transcript and replay support
 - Hermes session search from `state.db` in read-only mode
 - Agent Pulse live heartbeat registry
 - read-only Google Calendar integration with local fallback
@@ -255,12 +256,14 @@ Important local config files:
 
 ## Scope
 
-Mentat is intentionally conservative right now.
+Mentat is a local-first, capability-scoped Hermes control plane. It can perform
+explicit Hermes operations, but it is not a general editor for Hermes files.
 
 - Local-only by default on `127.0.0.1:8888`
 - Reads Hermes data from `HERMES_HOME`
-- Writes only to project-owned local data files
-- Does **not** write to Hermes core files
+- Writes project-owned local data through allowlisted storage
+- Mutates Hermes only through approved, fixed CLI/API capabilities
+- Does **not** directly edit Hermes core files
 - Keeps secrets in Hermes, not in this repo
 
 Please do not write to:
@@ -269,6 +272,11 @@ Please do not write to:
 - `~/.hermes/cron/jobs.json`
 - `~/.hermes/config.yaml`
 - `~/.hermes/skills/`
+
+A named Hermes profile is Mentat's canonical executable agent identity.
+`data/agents.json` remains heartbeat/observation data, not a second profile
+registry. See `ARCHITECTURE.md` for validation, confirmation, locking, rollback,
+and audit requirements for every write-capable Hermes operation.
 
 ## Main project-owned data files
 
@@ -289,6 +297,9 @@ Use local overrides or untracked runtime files for machine-specific/private cont
 
 ```text
 server.py
+hermes_profiles.py
+hermes_profile_creation.py
+hermes_skills.py
 runtime_config.py
 mentat_lifecycle.py
 scripts/mentat_setup.py
@@ -305,6 +316,7 @@ public/core.js
 public/app.js
 mentat.toml
 README.md
+ARCHITECTURE.md
 inventory.md
 ```
 

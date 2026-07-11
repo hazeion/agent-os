@@ -19,6 +19,8 @@ const endpoints = {
   sessions: '/api/hermes/sessions',
   search: '/api/hermes/search',
   config: '/api/hermes/config',
+  hermesProfiles: '/api/hermes/profiles',
+  hermesSkillCatalog: '/api/hermes/skills/catalog',
   notes: '/api/obsidian-notes',
   health: '/api/health',
 };
@@ -67,6 +69,13 @@ const state = {
   agentConsoleSessionId: '',
   agentConsoleStartFresh: false,
   agentConsolePollTimer: null,
+  agentCreatorProfiles: [],
+  agentCreatorSkills: [],
+  agentCreatorSelectedSkills: [],
+  agentCreatorPreview: null,
+  agentCreatorStep: 'details',
+  hermesProfiles: [],
+  selectedHermesProfileId: '',
 };
 
 const taskStatusLabels = {
@@ -241,7 +250,10 @@ async function api(path, options = {}) {
   const res = await fetch(path, { cache: 'no-store', ...options });
   const text = await res.text();
   const payload = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(payload?.error || `${path} returned ${res.status}`);
+  if (!res.ok) {
+    const error = typeof payload?.error === 'string' ? payload.error : payload?.error?.message;
+    throw new Error(error || `${path} returned ${res.status}`);
+  }
   return payload;
 }
 
@@ -291,6 +303,22 @@ async function setAgentConsoleModel(model) {
 
 async function refreshAgentConsoleModels() {
   return sendJson(`${endpoints.agentConsole}/models/refresh`, {}, { method: 'POST' });
+}
+
+async function fetchHermesProfiles() {
+  return api(endpoints.hermesProfiles);
+}
+
+async function fetchHermesSkillCatalog() {
+  return api(endpoints.hermesSkillCatalog);
+}
+
+async function previewHermesProfile(payload) {
+  return sendJson(`${endpoints.hermesProfiles}/preview`, payload, { method: 'POST' });
+}
+
+async function createHermesProfile(payload) {
+  return sendJson(endpoints.hermesProfiles, payload, { method: 'POST' });
 }
 
 async function stopAgentConsoleRun(id) {

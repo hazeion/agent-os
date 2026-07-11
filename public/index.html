@@ -181,10 +181,26 @@
 
       <section class="view" id="view-agents" data-view-panel="agents">
         <section class="agents-session-layout">
+          <section class="panel managed-agents-panel" id="managed-agents-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Managed Agents</h2>
+                <p class="panel-subtitle">Hermes profiles available to Mentat. Console task routing is added in the next profile-aware console step.</p>
+              </div>
+              <div class="panel-controls">
+                <span class="detail-context-label mono" id="managed-agent-count">Loading profiles…</span>
+                <button class="mini-button" type="button" id="create-agent-button">Create Agent</button>
+              </div>
+            </div>
+            <div id="managed-agent-list" class="managed-agent-list" role="list" aria-live="polite">
+              <div class="empty">Loading Hermes profiles…</div>
+            </div>
+          </section>
+
           <section class="panel agents-session-panel" id="conversation-library-panel">
             <div class="panel-head">
               <div>
-                <h2>Agents / Sessions</h2>
+                <h2>Session History</h2>
                 <p class="panel-subtitle">Pick a Hermes session, then review the structured replay or raw transcript.</p>
               </div>
             </div>
@@ -350,7 +366,7 @@
             </div>
           </div>
           <div class="settings-list">
-            <article class="item"><div class="item-title"><span>Runtime mode</span></div><div class="item-desc">Mentat reads Hermes data and writes only project-owned JSON files.</div></article>
+            <article class="item"><div class="item-title"><span>Runtime mode</span></div><div class="item-desc">Mentat uses capability-gated Hermes operations and allowlisted project-owned storage.</div></article>
             <article class="item"><div class="item-title"><span>Calendar</span></div><div class="item-desc">Google Calendar read-only sync is connected when the Hermes token is available, with local <code>calendar.json</code> used as the fallback.</div></article>
             <article class="item"><div class="item-title"><span>Agent console</span></div><div class="item-desc">Front-page prompts run through the installed Hermes CLI on this computer.</div></article>
           </div>
@@ -394,6 +410,89 @@
       </section>
     </main>
   </div>
+
+  <dialog id="agent-creator-dialog" class="agent-creator-dialog" aria-labelledby="agent-creator-title">
+    <form id="agent-creator-form" class="agent-creator-shell">
+      <header class="agent-creator-head">
+        <div>
+          <div class="detail-context-label mono">Hermes profile builder</div>
+          <h2 id="agent-creator-title">Create Agent</h2>
+          <p class="panel-subtitle">Create a Hermes profile through Mentat's capability-gated local API.</p>
+        </div>
+        <button class="agent-creator-close" type="button" data-agent-creator-close aria-label="Close Agent Creator">×</button>
+      </header>
+
+      <ol class="agent-creator-progress" aria-label="Agent creation progress">
+        <li data-agent-creator-progress="details">1 · Details</li>
+        <li data-agent-creator-progress="configuration">2 · Configuration</li>
+        <li data-agent-creator-progress="review">3 · Review</li>
+      </ol>
+
+      <div class="agent-creator-body">
+        <section data-agent-creator-step="details">
+          <div class="task-editor-grid">
+            <label class="task-editor-field field-span-2">
+              <span class="task-editor-label mono">Profile name</span>
+              <input name="name" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" placeholder="research-agent" autocomplete="off" />
+            </label>
+            <label class="task-editor-field field-span-2">
+              <span class="task-editor-label mono">Role / description</span>
+              <textarea name="description" maxlength="500" rows="4" placeholder="What is this agent good at?"></textarea>
+            </label>
+          </div>
+          <div class="agent-creator-note">The profile name is normalized to lowercase by Hermes. Mentat never asks for credentials.</div>
+        </section>
+
+        <section data-agent-creator-step="configuration" hidden>
+          <div class="task-editor-grid">
+            <label class="task-editor-field">
+              <span class="task-editor-label mono">Creation mode</span>
+              <select name="mode">
+                <option value="fresh">Fresh profile</option>
+                <option value="clone_config">Clone configuration</option>
+              </select>
+            </label>
+            <label class="task-editor-field" id="agent-creator-source-field" hidden>
+              <span class="task-editor-label mono">Source profile</span>
+              <select name="source_profile"></select>
+            </label>
+          </div>
+
+          <fieldset class="agent-creator-skill-modes">
+            <legend class="task-editor-label mono">Built-in skills</legend>
+            <label><input type="radio" name="skill_mode" value="default" checked /> <span><strong>Default skills</strong><small>Keep Hermes' bundled skill set enabled.</small></span></label>
+            <label><input type="radio" name="skill_mode" value="custom" /> <span><strong>Customize</strong><small>Add or subtract skills from Hermes' built-in catalog.</small></span></label>
+            <label id="agent-creator-no-skills-option"><input type="radio" name="skill_mode" value="none" /> <span><strong>No bundled skills</strong><small>Create a minimal fresh profile.</small></span></label>
+          </fieldset>
+
+          <div id="agent-creator-skill-picker" class="agent-creator-skill-picker" hidden>
+            <div class="agent-creator-skill-toolbar">
+              <label class="search-shell" aria-label="Filter built-in skills"><span>⌕</span><input id="agent-creator-skill-search" type="search" placeholder="Filter skills…" /></label>
+              <span id="agent-creator-skill-count" class="detail-context-label mono"></span>
+              <button class="mini-button" type="button" data-agent-skills-select-visible>Select visible</button>
+              <button class="mini-button" type="button" data-agent-skills-clear>Clear</button>
+            </div>
+            <div id="agent-creator-skill-list" class="agent-creator-skill-list"></div>
+          </div>
+          <div id="agent-creator-config-note" class="agent-creator-note"></div>
+        </section>
+
+        <section data-agent-creator-step="review" hidden>
+          <div id="agent-creator-review" class="agent-creator-review"></div>
+        </section>
+      </div>
+
+      <footer class="agent-creator-actions">
+        <span id="agent-creator-status" class="task-editor-status mono" aria-live="polite"></span>
+        <div>
+          <button class="mini-button" type="button" data-agent-creator-back hidden>Back</button>
+          <button class="mini-button" type="button" data-agent-creator-close>Cancel</button>
+          <button class="action-button" type="button" data-agent-creator-next>Continue</button>
+          <button class="action-button" type="submit" data-agent-creator-create hidden>Create Agent</button>
+        </div>
+      </footer>
+    </form>
+  </dialog>
 
   <script src="/core.js?v=theme-studio-2"></script>
   <script src="/app.js?v=theme-studio-2"></script>

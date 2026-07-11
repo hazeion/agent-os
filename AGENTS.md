@@ -49,13 +49,25 @@ Current priorities:
 - clean dark UI
 - project/task visibility and actionability
 - read-only Hermes session visibility
-- safe project-owned write paths only
+- capability-scoped Hermes control through fixed, supported interfaces
+- safe project-owned write paths
 
 The project is still a work in progress. Some areas are complete enough to use, while others are still partial or evolving.
 
 ## Boundaries
 
-### Do not write to Hermes core files
+### Hermes capability boundary
+
+Mentat is a local-first, capability-scoped Hermes control plane. A named
+Hermes profile is the canonical executable agent identity; `data/agents.json`
+contains heartbeat observations and must not become a competing registry.
+
+Hermes mutations are allowed only when an approved adapter operation uses a
+fixed Hermes CLI/API call with validation, capability checks, confirmation,
+locking, verification, and secret-free audit behavior. Browser text must never
+be interpolated into shell commands.
+
+### Do not write directly to Hermes core files
 
 Do not modify:
 
@@ -66,13 +78,23 @@ Do not modify:
 
 ### Allowed write surface
 
-Dashboard write-back should stay limited to project-owned files and allowlisted endpoints, typically under `data/`.
+Dashboard write-back may use project-owned allowlisted storage or an explicitly
+approved Hermes adapter capability. Do not directly edit Hermes files to
+implement a capability that Hermes exposes through a supported command or API.
+
+The initial profile creator may use fixed Hermes profile operations after the
+user confirms a preview. It may also enable or disable identifiers returned by
+Hermes' built-in skill catalog through the capability-gated adapter. Direct
+skill-content editing, hub installation, `SOUL.md` editing, clone-all, rename,
+deletion, provider switching, and arbitrary MCP changes remain deferred.
 
 Tracked JSON fixtures under `data/` should remain public-safe seed/example data. Avoid committing personal names, local paths, account identifiers, or real message history there.
 
 ### Local-first only
 
 Keep the app local-only by default. Do not expose the dashboard publicly unless that direction is explicitly approved and implemented safely.
+
+See `ARCHITECTURE.md` for the complete capability and mutation contract.
 
 ## Setup and run
 

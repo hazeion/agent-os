@@ -1737,6 +1737,251 @@ async function loadSessionDetail(sessionId, options = {}) {
   }
 }
 
+function agentCreatorForm() {
+  return $('#agent-creator-form');
+}
+
+function renderHermesProfiles(payload = {}) {
+  const list = $('#managed-agent-list');
+  const count = $('#managed-agent-count');
+  if (!list) return;
+  const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+  state.hermesProfiles = profiles;
+  const activeProfile = payload.active_profile || '';
+  if (count) count.textContent = `${profiles.length} profile${profiles.length === 1 ? '' : 's'}`;
+  if (payload.status && payload.status !== 'available') {
+    const message = payload.error?.message || 'Hermes profile discovery is unavailable.';
+    list.innerHTML = `<div class="empty" role="alert">${escapeHtml(message)}</div>`;
+    return;
+  }
+  if (!profiles.length) {
+    list.innerHTML = '<div class="empty">No Hermes profiles are available yet. Create an agent to add one.</div>';
+    return;
+  }
+  list.innerHTML = profiles.map((profile) => {
+    const selected = profile.id === state.selectedHermesProfileId;
+    const labels = [
+      profile.is_default ? '<span class="pill success">default</span>' : '',
+      profile.id === activeProfile ? '<span class="pill">active</span>' : '',
+    ].filter(Boolean).join('');
+    const runtime = [profile.provider, profile.model].filter(Boolean).join(' · ') || 'Uses Hermes profile configuration';
+    return `
+      <article class="managed-agent-card ${selected ? 'selected' : ''}" role="listitem" data-hermes-profile-id="${escapeHtml(profile.id)}">
+        <div class="managed-agent-card-head">
+          <div>
+            <div class="managed-agent-name">${escapeHtml(profile.name || profile.id)}</div>
+            <div class="item-desc">${escapeHtml(profile.description || 'No role description supplied.')}</div>
+          </div>
+          <div class="managed-agent-badges">${labels}</div>
+        </div>
+        <div class="item-meta mono">${escapeHtml(runtime)} · ${Number(profile.skill_count || 0)} skills</div>
+      </article>
+    `;
+  }).join('');
+}
+
+function agentCreatorPayloadFromForm() {
+  const form = agentCreatorForm();
+  if (!form) return {};
+  const mode = form.elements.mode?.value || 'fresh';
+  const skillMode = form.elements.skill_mode?.value || 'default';
+  return {
+    name: form.elements.name?.value || '',
+    description: form.elements.description?.value || '',
+    mode,
+    source_profile: mode === 'clone_config' ? form.elements.source_profile?.value || '' : '',
+    skill_mode: skillMode,
+    enabled_builtin_skills: skillMode === 'custom' ? [...state.agentCreatorSelectedSkills] : [],
+  };
+}
+
+function agentCreatorVisibleSkills() {
+  const query = ($('#agent-creator-skill-search')?.value || '').trim().toLowerCase();
+  if (!query) return state.agentCreatorSkills;
+  return state.agentCreatorSkills.filter((skill) => (
+    `${skill.name || ''} ${skill.category || ''} ${skill.description || ''}`.toLowerCase().includes(query)
+  ));
+}
+
+function renderAgentCreatorSkills() {
+  const list = $('#agent-creator-skill-list');
+  const count = $('#agent-creator-skill-count');
+  if (!list) return;
+  const selected = new Set(state.agentCreatorSelectedSkills);
+  const visible = agentCreatorVisibleSkills();
+  if (count) count.textContent = `${selected.size} of ${state.agentCreatorSkills.length} enabled`;
+  list.innerHTML = visible.length ? visible.map((skill) => `
+    <label class="agent-creator-skill-item">
+      <input type="checkbox" value="${escapeHtml(skill.id)}" ${selected.has(skill.id) ? 'checked' : ''} />
+      <span>
+        <span class="agent-creator-skill-category">${escapeHtml(skill.category || 'uncategorized')}</span>
+        <strong>${escapeHtml(skill.name || skill.id)}</strong>
+        <small>${escapeHtml(skill.description || 'No description provided by Hermes.')}</small>
+      </span>
+    </label>
+  `).join('') : '<div class="empty">No built-in skills match this filter.</div>';
+}
+
+function syncAgentCreatorConfiguration() {
+  const form = agentCreatorForm();
+  if (!form) return;
+  const mode = form.elements.mode?.value || 'fresh';
+  const skillMode = form.elements.skill_mode?.value || 'default';
+  const sourceField = $('#agent-creator-source-field');
+  const noSkillsOption = $('#agent-creator-no-skills-option');
+  const skillPicker = $('#agent-creator-skill-picker');
+  if (sourceField) sourceField.hidden = mode !== 'clone_config';
+  if (noSkillsOption) noSkillsOption.hidden = mode === 'clone_config';
+  if (mode === 'clone_config' && skillMode === 'none') {
+    const defaultMode = form.querySelector('input[name="skill_mode"][value="default"]');
+    if (defaultMode) defaultMode.checked = true;
+  }
+  const activeSkillMode = form.elements.skill_mode?.value || 'default';
+  if (skillPicker) skillPicker.hidden = activeSkillMode !== 'custom';
+  const note = $('#agent-creator-config-note');
+  if (note) {
+    note.textContent = mode === 'clone_config'
+      ? 'Hermes will copy config, .env, SOUL.md, and skills from the selected profile. A custom skill selection is applied afterward.'
+      : activeSkillMode === 'none'
+        ? 'This fresh profile opts out of bundled skill seeding.'
+        : 'Mentat stores only skill identifiers and never edits skill contents.';
+  }
+  if (activeSkillMode === 'custom') renderAgentCreatorSkills();
+}
+
+function setAgentCreatorStep(step) {
+  state.agentCreatorStep = step;
+  $$('[data-agent-creator-step]').forEach((section) => {
+    section.hidden = section.dataset.agentCreatorStep !== step;
+  });
+  const order = ['details', 'configuration', 'review'];
+  const currentIndex = Math.max(0, order.indexOf(step));
+  $$('[data-agent-creator-progress]').forEach((item) => {
+    const index = order.indexOf(item.dataset.agentCreatorProgress);
+    item.classList.toggle('active', index === currentIndex);
+    item.classList.toggle('complete', index < currentIndex);
+    if (index === currentIndex) item.setAttribute('aria-current', 'step');
+    else item.removeAttribute('aria-current');
+  });
+  const back = $('[data-agent-creator-back]');
+  const next = $('[data-agent-creator-next]');
+  const create = $('[data-agent-creator-create]');
+  if (back) back.hidden = step === 'details';
+  if (next) next.hidden = step === 'review';
+  if (create) create.hidden = step !== 'review';
+  if (step === 'configuration') syncAgentCreatorConfiguration();
+}
+
+function renderAgentCreatorReview(preview) {
+  const review = $('#agent-creator-review');
+  if (!review) return;
+  const normalized = preview.normalized || {};
+  const effects = Array.isArray(preview.effects) ? preview.effects : [];
+  const warnings = Array.isArray(preview.warnings) ? preview.warnings : [];
+  review.innerHTML = `
+    <article class="agent-creator-review-card">
+      <h3>${escapeHtml(normalized.name || 'New profile')}</h3>
+      <div class="item-desc">${escapeHtml(normalized.description || 'No role description supplied.')}</div>
+      <div class="item-meta mono">${escapeHtml(normalized.mode || 'fresh')} · ${escapeHtml(normalized.skill_mode || 'default')} skills${normalized.skill_mode === 'custom' ? ` · ${(normalized.enabled_builtin_skills || []).length} enabled` : ''}</div>
+    </article>
+    <article class="agent-creator-review-card">
+      <h3>Hermes will</h3>
+      <ul>${effects.map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>
+    </article>
+    ${warnings.length ? `<article class="agent-creator-review-card agent-creator-warning"><h3>Review carefully</h3><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul></article>` : ''}
+    <article class="agent-creator-review-card">
+      <h3>Safety boundary</h3>
+      <div class="item-desc">Mentat will execute the fixed, shell-free Hermes profile operation shown by this preview. No wrapper alias, provider change, skill-content edit, or credential read is requested.</div>
+    </article>
+  `;
+}
+
+async function openAgentCreator() {
+  const dialog = $('#agent-creator-dialog');
+  const form = agentCreatorForm();
+  if (!dialog || !form) return;
+  form.reset();
+  state.agentCreatorPreview = null;
+  state.agentCreatorProfiles = [];
+  state.agentCreatorSkills = [];
+  state.agentCreatorSelectedSkills = [];
+  setAgentCreatorStep('details');
+  const createButton = $('[data-agent-creator-create]');
+  if (createButton) createButton.disabled = false;
+  const status = $('#agent-creator-status');
+  if (status) status.textContent = 'Loading Hermes profiles and built-in skills…';
+  dialog.showModal();
+  try {
+    const [profilesPayload, skillsPayload] = await Promise.all([
+      fetchHermesProfiles(),
+      fetchHermesSkillCatalog(),
+    ]);
+    state.agentCreatorProfiles = Array.isArray(profilesPayload.profiles) ? profilesPayload.profiles : [];
+    renderHermesProfiles(profilesPayload);
+    state.agentCreatorSkills = Array.isArray(skillsPayload.skills) ? skillsPayload.skills : [];
+    state.agentCreatorSelectedSkills = state.agentCreatorSkills.map((skill) => skill.id);
+    const source = form.elements.source_profile;
+    if (source) {
+      source.innerHTML = state.agentCreatorProfiles.map((profile) => `
+        <option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name || profile.id)}${profile.is_default ? ' · default' : ''}</option>
+      `).join('');
+    }
+    renderAgentCreatorSkills();
+    if (status) status.textContent = `${state.agentCreatorProfiles.length} profiles · ${state.agentCreatorSkills.length} built-in skills available`;
+  } catch (err) {
+    console.error(err);
+    if (status) status.textContent = `Agent Creator unavailable: ${err.message}`;
+  }
+  form.elements.name?.focus();
+}
+
+async function previewAgentCreator() {
+  const status = $('#agent-creator-status');
+  if (status) status.textContent = 'Validating with Hermes…';
+  const preview = await previewHermesProfile(agentCreatorPayloadFromForm());
+  state.agentCreatorPreview = preview;
+  renderAgentCreatorReview(preview);
+  setAgentCreatorStep('review');
+  const createButton = $('[data-agent-creator-create]');
+  if (createButton) createButton.disabled = false;
+  if (status) status.textContent = 'Review the exact effects, then confirm creation.';
+}
+
+async function submitAgentCreator() {
+  const preview = state.agentCreatorPreview;
+  const status = $('#agent-creator-status');
+  if (!preview?.confirmation_id) return;
+  if (status) status.textContent = 'Creating Hermes profile…';
+  const createButton = $('[data-agent-creator-create]');
+  if (createButton) createButton.disabled = true;
+  try {
+    const result = await createHermesProfile({
+      ...agentCreatorPayloadFromForm(),
+      confirmed: true,
+      confirmation_id: preview.confirmation_id,
+    });
+    state.agentCreatorProfiles = result.profiles?.profiles || state.agentCreatorProfiles;
+    state.selectedHermesProfileId = result.profile?.id || result.profile?.name || '';
+    if (result.profiles) renderHermesProfiles(result.profiles);
+    const review = $('#agent-creator-review');
+    if (review) review.innerHTML = `
+      <article class="agent-creator-review-card agent-creator-success">
+        <h3>${escapeHtml(result.profile?.name || result.profile?.id || 'Agent')} created</h3>
+        <div class="item-desc">The Hermes profile is ready and now appears in Managed Agents.</div>
+        <div class="item-meta mono">${result.skill_selection ? `${result.skill_selection.enabled_builtin_skills?.length || 0} built-in skills enabled` : 'Hermes default skill configuration'}</div>
+        <button class="action-button" type="button" data-agent-creator-view-agents>View managed agents</button>
+      </article>
+    `;
+    $('[data-agent-creator-back]')?.setAttribute('hidden', '');
+    $('[data-agent-creator-create]')?.setAttribute('hidden', '');
+    if (status) status.textContent = result.message || 'Agent created.';
+  } catch (err) {
+    console.error(err);
+    if (status) status.textContent = `Creation failed: ${err.message}`;
+    if (createButton) createButton.disabled = false;
+  }
+}
+
 function agentStatusLabel(status = 'idle') {
   const normalized = String(status || 'idle').trim().toLowerCase();
   if (normalized === 'running') return 'Running';
@@ -2233,6 +2478,7 @@ async function refresh() {
     if (activeView === 'agents') {
       requests.agents = api(endpoints.agents);
       requests.agentMessages = api(endpoints.agentMessages);
+      requests.hermesProfiles = fetchHermesProfiles();
     }
   }
   if (activeView === 'today' || activeView === 'projects' || activeView === 'agents') requests.projects = api(endpoints.projects);
@@ -2262,6 +2508,7 @@ async function refresh() {
     if (data.calendar) renderIfChanged('calendar', data.calendar, renderCalendar);
     if (data.agentConsole) renderAgentConsole(data.agentConsole);
     if (data.crons) renderIfChanged('crons', data.crons, renderCrons);
+    if (data.hermesProfiles) renderIfChanged('hermes-profiles', data.hermesProfiles, renderHermesProfiles);
     if (data.sessions || data.agents || data.agentMessages) {
       if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
       if (data.sessions) renderIfChanged('model-usage', data.sessions, renderModelUsageChart);
@@ -2490,6 +2737,61 @@ if (clearProjectFilter) {
 }
 
 document.addEventListener('click', async (event) => {
+  if (event.target.closest('#create-agent-button')) {
+    await openAgentCreator();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-creator-view-agents]')) {
+    $('#agent-creator-dialog')?.close();
+    const panel = $('#managed-agents-panel');
+    panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    flashTarget(panel);
+    return;
+  }
+
+  if (event.target.closest('[data-agent-creator-close]')) {
+    $('#agent-creator-dialog')?.close();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-creator-back]')) {
+    setAgentCreatorStep(state.agentCreatorStep === 'review' ? 'configuration' : 'details');
+    return;
+  }
+
+  if (event.target.closest('[data-agent-creator-next]')) {
+    const form = agentCreatorForm();
+    if (!form) return;
+    if (state.agentCreatorStep === 'details') {
+      if (!form.elements.name?.reportValidity()) return;
+      setAgentCreatorStep('configuration');
+    } else if (state.agentCreatorStep === 'configuration') {
+      try {
+        await previewAgentCreator();
+      } catch (err) {
+        console.error(err);
+        const status = $('#agent-creator-status');
+        if (status) status.textContent = `Preview failed: ${err.message}`;
+      }
+    }
+    return;
+  }
+
+  if (event.target.closest('[data-agent-skills-select-visible]')) {
+    const selected = new Set(state.agentCreatorSelectedSkills);
+    agentCreatorVisibleSkills().forEach((skill) => selected.add(skill.id));
+    state.agentCreatorSelectedSkills = [...selected].sort();
+    renderAgentCreatorSkills();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-skills-clear]')) {
+    state.agentCreatorSelectedSkills = [];
+    renderAgentCreatorSkills();
+    return;
+  }
+
   const pulseDismiss = event.target.closest('.agent-pulse-dismiss');
   if (pulseDismiss) {
     const key = pulseDismiss.dataset.agentPulseKey || '';
@@ -2569,16 +2871,41 @@ $('#selected-task-detail')?.addEventListener('submit', async (event) => {
 });
 
 document.addEventListener('input', (event) => {
+  if (event.target.closest('#agent-creator-skill-search')) {
+    renderAgentCreatorSkills();
+    return;
+  }
   const projectForm = event.target.closest('#project-editor-form');
   if (projectForm) state.projectEditorDraft = projectPayloadFromForm(projectForm);
 });
 
 document.addEventListener('change', (event) => {
+  const creatorForm = event.target.closest('#agent-creator-form');
+  if (creatorForm) {
+    if (event.target.matches('input[name="skill_mode"], select[name="mode"]')) {
+      syncAgentCreatorConfiguration();
+    }
+    if (event.target.closest('#agent-creator-skill-list input[type="checkbox"]')) {
+      const selected = new Set(state.agentCreatorSelectedSkills);
+      if (event.target.checked) selected.add(event.target.value);
+      else selected.delete(event.target.value);
+      state.agentCreatorSelectedSkills = [...selected].sort();
+      renderAgentCreatorSkills();
+    }
+    state.agentCreatorPreview = null;
+    return;
+  }
   const projectForm = event.target.closest('#project-editor-form');
   if (projectForm) state.projectEditorDraft = projectPayloadFromForm(projectForm);
 });
 
 document.addEventListener('submit', async (event) => {
+  const creatorForm = event.target.closest('#agent-creator-form');
+  if (creatorForm) {
+    event.preventDefault();
+    if (state.agentCreatorStep === 'review') await submitAgentCreator();
+    return;
+  }
   const projectForm = event.target.closest('#project-editor-form');
   if (projectForm) {
     event.preventDefault();

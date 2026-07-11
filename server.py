@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Mentat local dashboard server.
 
-Read-only toward Hermes core files. Dashboard write-back is limited to
-project-owned data/*.json files.
+Hermes state is read directly only for observation. Mutations are limited to
+typed, capability-gated Hermes adapter operations; project-owned write-back
+remains allowlisted.
 """
 
 from __future__ import annotations
@@ -24,6 +25,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
 from json_store import read_json as store_read_json, update_json as store_update_json
+from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
+from hermes_profiles import discover_hermes_profiles
+from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from runtime_config import (
     AppConfig,
     DEFAULT_APP_NAME,
@@ -203,6 +207,7 @@ AGENT_MODEL_CATALOG_CACHE = {"key": None, "payload": None, "fetched_at": 0.0}
 AGENT_CONSOLE_RUNS: dict[str, dict] = {}
 AGENT_CONSOLE_PROCESSES: dict[str, subprocess.Popen] = {}
 AGENT_CONSOLE_LOCK = threading.RLock()
+HERMES_PROFILE_CREATION_LOCK = threading.Lock()
 MENTAT_PROJECT_NAME = "Mentat"
 MENTAT_PROJECT_ID = "project_mentat"
 PREVIOUS_PROJECT_NAME = "Agent " "OS"
@@ -2212,6 +2217,147 @@ def hermes_python_path() -> str | None:
     return None
 
 
+def hermes_profiles_payload() -> dict:
+    """Return normalized profile capabilities without exposing Hermes paths or secrets."""
+    return discover_hermes_profiles(
+        hermes_python_path(),
+        HERMES_HOME,
+        cwd=BASE_DIR,
+    )
+
+
+def hermes_skill_catalog_payload() -> dict:
+    """Return the normalized Hermes built-in skill catalog without skill contents."""
+    return discover_builtin_skills(
+        hermes_python_path(),
+        HERMES_HOME,
+        cwd=BASE_DIR,
+    )
+
+
+def preview_hermes_profile_creation(payload):
+    skill_catalog = (
+        hermes_skill_catalog_payload()
+        if isinstance(payload, dict) and compact_text(payload.get("skill_mode"), max_length=40).lower() == "custom"
+        else None
+    )
+    return preview_profile_creation(
+        payload,
+        hermes_profiles_payload(),
+        skill_catalog,
+    )
+
+
+def create_hermes_profile(payload):
+    """Create one confirmed Hermes profile through fixed CLI arguments."""
+    if not isinstance(payload, dict):
+        return {"error": "Profile creation payload must be a JSON object."}, 400
+    if payload.get("confirmed") is not True:
+        return {"error": "Profile creation requires explicit confirmation."}, 400
+    confirmation_id = compact_text(payload.get("confirmation_id"), max_length=80)
+    if not confirmation_id:
+        return {"error": "Profile creation requires a confirmation_id from the preview endpoint."}, 400
+    if not HERMES_PROFILE_CREATION_LOCK.acquire(blocking=False):
+        return {"error": "Another Hermes profile creation is already in progress."}, 409
+
+    try:
+        with AGENT_CONSOLE_LOCK:
+            active = next(
+                (item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES),
+                None,
+            )
+            if active:
+                return {
+                    "error": "Stop the active Hermes run before creating a profile.",
+                    "active_run_id": active["id"],
+                }, 409
+
+        skill_catalog = (
+            hermes_skill_catalog_payload()
+            if compact_text(payload.get("skill_mode"), max_length=40).lower() == "custom"
+            else None
+        )
+        preview, preview_status = preview_profile_creation(
+            payload,
+            hermes_profiles_payload(),
+            skill_catalog,
+        )
+        if preview_status != 200:
+            return preview, preview_status
+        if confirmation_id != preview.get("confirmation_id"):
+            return {"error": "Profile creation inputs changed after preview; preview them again."}, 409
+
+        command = hermes_command_path()
+        if not command:
+            return {"error": "Hermes CLI was not found in the Mentat server environment."}, 503
+        normalized = preview["normalized"]
+        try:
+            result = subprocess.run(
+                [command, *profile_creation_arguments(normalized)],
+                cwd=str(BASE_DIR),
+                env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "error": "Hermes profile creation timed out. Refresh profiles before retrying.",
+                "partial": True,
+            }, 504
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return {"error": "Hermes profile creation could not be started."}, 500
+
+        skill_selection = None
+        if result.returncode == 0 and normalized.get("skill_mode") == "custom":
+            skill_selection = apply_builtin_skill_selection(
+                hermes_python_path(),
+                HERMES_HOME,
+                normalized["name"],
+                normalized.get("enabled_builtin_skills") or [],
+                cwd=BASE_DIR,
+            )
+
+        refreshed = hermes_profiles_payload()
+        created = next(
+            (item for item in refreshed.get("profiles") or [] if item.get("id") == normalized["name"]),
+            None,
+        )
+        if result.returncode != 0:
+            return {
+                "error": f"Hermes profile creation exited with status {result.returncode}.",
+                "partial": created is not None,
+                "profile": created,
+                "profiles": refreshed,
+            }, 500
+        if skill_selection and skill_selection.get("status") != "applied":
+            return {
+                "error": "Hermes created the profile, but its built-in skill selection could not be applied.",
+                "partial": True,
+                "profile": created,
+                "profiles": refreshed,
+                "skill_selection": skill_selection,
+            }, 500
+        if created is None:
+            return {
+                "error": "Hermes reported success, but the new profile was not found after refresh.",
+                "partial": True,
+                "profiles": refreshed,
+            }, 500
+        return {
+            "ok": True,
+            "profile": created,
+            "profiles": refreshed,
+            "skill_selection": skill_selection,
+            "message": f"Hermes profile '{normalized['name']}' created.",
+        }, 201
+    finally:
+        HERMES_PROFILE_CREATION_LOCK.release()
+
+
 HERMES_MODEL_CATALOG_SCRIPT = """
 import json
 import sys
@@ -2510,6 +2656,8 @@ def start_agent_console_run(payload):
         return {"error": "Hermes CLI was not found in the Mentat server environment."}, 503
 
     with AGENT_CONSOLE_LOCK:
+        if HERMES_PROFILE_CREATION_LOCK.locked():
+            return {"error": "A Hermes profile is currently being created."}, 409
         active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
         if active:
             return {"error": "Hermes is already working on another prompt", "active_run_id": active["id"]}, 409
@@ -2653,6 +2801,8 @@ POST_ROUTES = [
     (re.compile(r"^/api/agent-console/model$"), set_agent_console_model, True),
     (re.compile(r"^/api/agent-console/models/refresh$"), refresh_agent_console_models, True),
     (re.compile(r"^/api/agent-console/runs/([^/]+)/cancel$"), cancel_agent_console_run, False),
+    (re.compile(r"^/api/hermes/profiles/preview$"), preview_hermes_profile_creation, True),
+    (re.compile(r"^/api/hermes/profiles$"), create_hermes_profile, True),
 ]
 
 
@@ -2670,6 +2820,8 @@ API_ROUTES = {
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),
     "/api/hermes/config": hermes_config,
+    "/api/hermes/profiles": hermes_profiles_payload,
+    "/api/hermes/skills/catalog": hermes_skill_catalog_payload,
     "/api/health": health,
 }
 
@@ -2706,7 +2858,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def agent_console_request_is_local(self) -> bool:
+    def control_request_is_local(self) -> bool:
         return self.client_address[0] in {"127.0.0.1", "::1"}
 
     def send_static(self, path: str):
@@ -2738,8 +2890,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/api/agent-console") and not self.agent_console_request_is_local():
-            self.send_json({"error": "Agent console is available only from this computer."}, status=403)
+        local_control_path = (
+            parsed.path.startswith("/api/agent-console")
+            or parsed.path.startswith("/api/hermes/profiles")
+            or parsed.path.startswith("/api/hermes/skills")
+        )
+        if local_control_path and not self.control_request_is_local():
+            self.send_json({"error": "Hermes controls are available only from this computer."}, status=403)
             return
         if parsed.path == "/api/hermes/search":
             try:
@@ -2769,8 +2926,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/api/agent-console") and not self.agent_console_request_is_local():
-            self.send_json({"error": "Agent console is available only from this computer."}, status=403)
+        local_control_path = (
+            parsed.path.startswith("/api/agent-console")
+            or parsed.path.startswith("/api/hermes/profiles")
+            or parsed.path.startswith("/api/hermes/skills")
+        )
+        if local_control_path and not self.control_request_is_local():
+            self.send_json({"error": "Hermes controls are available only from this computer."}, status=403)
             return
         payload = None
         try:
