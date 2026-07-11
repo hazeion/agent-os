@@ -27,7 +27,8 @@ class AgentCreatorUiTests(unittest.TestCase):
         self.assertIn("requests.hermesProfiles = fetchHermesProfiles()", APP_JS)
         self.assertIn("renderHermesProfiles(result.profiles)", APP_JS)
         self.assertIn("data-agent-creator-view-agents", APP_JS)
-        self.assertIn("managed-agent-card", STYLES)
+        self.assertIn("managed-agent-layout", STYLES)
+        self.assertIn("managed-agent-row", STYLES)
 
     def test_skill_picker_supports_default_custom_and_none_modes(self):
         self.assertIn('name="skill_mode" value="default"', INDEX)
@@ -59,8 +60,8 @@ class AgentCreatorUiTests(unittest.TestCase):
     def test_managed_agents_offer_capability_gated_confirmed_deletion(self):
         self.assertIn('id="agent-delete-dialog"', INDEX)
         self.assertIn("state.hermesProfileCapabilities['profiles.delete'] === true", APP_JS)
-        self.assertIn("!profile.is_default", APP_JS)
-        self.assertIn("profile.id !== activeProfile", APP_JS)
+        self.assertIn("!selectedProfile.is_default", APP_JS)
+        self.assertIn("selectedProfile.id !== activeProfile", APP_JS)
         self.assertIn("state.agentConsoleRuns.some(agentConsoleRunIsActive)", APP_JS)
         self.assertIn("data-delete-hermes-profile", APP_JS)
         self.assertIn("async function openAgentDeletion", APP_JS)

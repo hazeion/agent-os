@@ -140,13 +140,19 @@
                     <option value="hermes">Hermes</option>
                   </select>
                 </label>
+                <label class="agent-console-select-shell" for="agent-console-provider-select">
+                  <span class="detail-context-label mono">Provider</span>
+                  <select id="agent-console-provider-select" class="agent-console-select" aria-label="Authenticated Hermes provider">
+                    <option value="">Loading authenticated providers…</option>
+                  </select>
+                </label>
                 <label class="agent-console-select-shell" for="agent-console-model-select">
                   <span class="detail-context-label mono">Model</span>
                   <select id="agent-console-model-select" class="agent-console-select" aria-label="Hermes model">
                     <option value="">Loading active models…</option>
                   </select>
                 </label>
-                <button class="mini-button" type="button" id="agent-console-apply-model">Apply Model</button>
+                <button class="mini-button" type="button" id="agent-console-apply-model">Review Change</button>
                 <div class="agent-console-identity mono">
                   <span class="agent-console-presence" id="agent-console-presence" aria-hidden="true"></span>
                   <span id="agent-console-state">Checking Hermes…</span>
@@ -192,8 +198,13 @@
                 <button class="mini-button" type="button" id="create-agent-button">Create Agent</button>
               </div>
             </div>
-            <div id="managed-agent-list" class="managed-agent-list" role="list" aria-live="polite">
-              <div class="empty">Loading Hermes profiles…</div>
+            <div class="managed-agent-layout">
+              <div id="managed-agent-list" class="managed-agent-list" role="listbox" aria-label="Managed Hermes agents" aria-live="polite">
+                <div class="empty">Loading Hermes profiles…</div>
+              </div>
+              <aside id="managed-agent-detail" class="managed-agent-detail" aria-live="polite">
+                <div class="empty">Select an agent to inspect its configuration.</div>
+              </aside>
             </div>
           </section>
 
@@ -509,6 +520,26 @@
         <div>
           <button class="mini-button" type="button" data-agent-delete-cancel>Cancel</button>
           <button class="action-button danger-button" type="button" data-agent-delete-confirm>Delete agent</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="provider-switch-dialog" class="agent-delete-dialog" aria-labelledby="provider-switch-title">
+    <div class="agent-delete-shell">
+      <header class="agent-delete-head">
+        <div>
+          <div class="eyebrow">Hermes configuration change</div>
+          <h2 id="provider-switch-title">Switch provider</h2>
+        </div>
+        <button class="agent-creator-close" type="button" data-provider-switch-cancel aria-label="Close provider confirmation">×</button>
+      </header>
+      <div id="provider-switch-review" class="agent-delete-review"></div>
+      <footer class="agent-creator-actions">
+        <span id="provider-switch-status" class="task-editor-status mono" role="status" aria-live="polite"></span>
+        <div>
+          <button class="mini-button" type="button" data-provider-switch-cancel>Cancel</button>
+          <button class="action-button" type="button" data-provider-switch-confirm>Apply provider &amp; model</button>
         </div>
       </footer>
     </div>

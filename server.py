@@ -29,6 +29,11 @@ from command_manifest import command_manifest_payload
 from json_store import read_json as store_read_json, update_json as store_update_json
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
 from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
+from hermes_provider_switching import (
+    apply_provider_switch,
+    preview_provider_switch,
+    provider_inventory,
+)
 from hermes_profiles import discover_hermes_profiles
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from runtime_config import (
@@ -2636,6 +2641,25 @@ def agent_console_model_catalog(profile_id: str = "default", *, refresh: bool = 
     return dict(catalog)
 
 
+def agent_console_provider_inventory(profile_id: str = "default", *, refresh: bool = False) -> dict:
+    requested = compact_text(profile_id, max_length=64).lower() or "default"
+    if requested == "hermes":
+        requested = "default"
+    profile = agent_console_profile(requested)
+    if profile is None:
+        return {
+            "profile_id": requested,
+            "current_provider": "",
+            "current_model": "",
+            "providers": [],
+            "capabilities": {"providers.switch": False},
+            "error": f"Hermes profile '{requested}' is unavailable.",
+        }
+    return provider_inventory(
+        hermes_python_path(), HERMES_HOME, requested, cwd=BASE_DIR, refresh=refresh
+    )
+
+
 def agent_console_event(run: dict, message: str, kind: str = "status", data: dict | None = None) -> None:
     events = run.setdefault("events", [])
     sequence_candidates = []
@@ -2683,6 +2707,7 @@ def agent_console_payload():
     if not any(profile.get("id") == selected_profile_id for profile in profiles):
         selected_profile_id = profiles[0].get("id") if profiles else "default"
     catalog = agent_console_model_catalog(selected_profile_id)
+    provider_payload = agent_console_provider_inventory(selected_profile_id)
     with AGENT_CONSOLE_LOCK:
         runs = sorted(AGENT_CONSOLE_RUNS.values(), key=lambda item: item.get("created_at") or "", reverse=True)
         snapshots = [agent_console_snapshot(run) for run in runs[:12]]
@@ -2710,6 +2735,7 @@ def agent_console_payload():
         }],
         "selected_agent_id": selected_profile_id,
         "model_catalog": catalog,
+        "provider_inventory": provider_payload,
         "runs": snapshots,
         "active_run_id": next((run["id"] for run in snapshots if run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None),
         "local_only": True,
@@ -3006,6 +3032,95 @@ def set_agent_console_model(payload):
     }, 200
 
 
+def preview_agent_console_provider_switch(payload):
+    if not isinstance(payload, dict):
+        return {"error": "Provider switch payload must be a JSON object"}, 400
+    requested = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested == "hermes":
+        requested = "default"
+    if agent_console_profile(requested) is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested}"}, 400
+    provider = compact_text(payload.get("provider"), max_length=120)
+    model = compact_text(payload.get("model"), max_length=160)
+    if not provider or not model:
+        return {"error": "Provider and model are required"}, 400
+    with AGENT_CONSOLE_LOCK:
+        active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+        if active:
+            return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
+    inventory = agent_console_provider_inventory(requested, refresh=True)
+    if inventory.get("error") and not inventory.get("providers"):
+        return {"error": inventory["error"]}, 503
+    return preview_provider_switch(requested, provider, model, inventory)
+
+
+def switch_agent_console_provider(payload):
+    if not isinstance(payload, dict):
+        return {"error": "Provider switch payload must be a JSON object"}, 400
+    if payload.get("confirmed") is not True:
+        return {"error": "Provider switching requires explicit confirmation."}, 400
+    confirmation_id = compact_text(payload.get("confirmation_id"), max_length=80)
+    requested = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested == "hermes":
+        requested = "default"
+    provider = compact_text(payload.get("provider"), max_length=120)
+    model = compact_text(payload.get("model"), max_length=160)
+    if not confirmation_id or not provider or not model:
+        return {"error": "Provider, model, and preview confirmation are required."}, 400
+    if agent_console_profile(requested) is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested}"}, 400
+
+    if not HERMES_PROFILE_CREATION_LOCK.acquire(blocking=False):
+        return {"error": "Another Hermes profile change is already in progress."}, 409
+    try:
+        with AGENT_CONSOLE_LOCK:
+            active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+            if active:
+                return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
+        before = agent_console_provider_inventory(requested, refresh=True)
+        preview, preview_status = preview_provider_switch(requested, provider, model, before)
+        if preview_status != 200:
+            return preview, preview_status
+        if confirmation_id != preview.get("confirmation_id"):
+            return {"error": "Provider or profile state changed after preview; preview the change again."}, 409
+
+        _, apply_error = apply_provider_switch(
+            hermes_python_path(), HERMES_HOME, requested, provider, model, cwd=BASE_DIR
+        )
+        if apply_error:
+            return {"error": apply_error or "Hermes could not change the provider."}, 500
+
+        verified = agent_console_provider_inventory(requested, refresh=True)
+        if verified.get("current_provider") == provider and verified.get("current_model") == model:
+            AGENT_MODEL_CATALOG_CACHE.update({"key": None, "payload": None, "fetched_at": 0.0})
+            return {
+                "ok": True,
+                "agent_id": requested,
+                "provider": provider,
+                "model": model,
+                "provider_inventory": verified,
+                "model_catalog": agent_console_model_catalog(requested, refresh=True),
+                "message": "Hermes provider and default model updated and verified.",
+            }, 200
+
+        prior_provider = compact_text(before.get("current_provider"), max_length=120)
+        prior_model = compact_text(before.get("current_model"), max_length=160)
+        rollback_ok = False
+        if prior_provider and prior_model:
+            _, rollback_error = apply_provider_switch(
+                hermes_python_path(), HERMES_HOME, requested, prior_provider, prior_model, cwd=BASE_DIR
+            )
+            if not rollback_error:
+                rolled_back = agent_console_provider_inventory(requested, refresh=True)
+                rollback_ok = rolled_back.get("current_provider") == prior_provider and rolled_back.get("current_model") == prior_model
+        return {
+            "error": "Hermes did not verify the requested provider change; the prior configuration was restored." if rollback_ok else "Hermes did not verify the requested provider change, and Mentat could not verify rollback. Review this profile in Hermes before running it.",
+            "error_code": "verification_failed_rolled_back" if rollback_ok else "verification_failed_rollback_unverified",
+        }, 500
+    finally:
+        HERMES_PROFILE_CREATION_LOCK.release()
+
+
 def refresh_agent_console_models(payload=None):
     payload = payload if isinstance(payload, dict) else {}
     requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
@@ -3017,6 +3132,7 @@ def refresh_agent_console_models(payload=None):
         "ok": True,
         "agent_id": requested_agent_id,
         "model_catalog": agent_console_model_catalog(requested_agent_id, refresh=True),
+        "provider_inventory": agent_console_provider_inventory(requested_agent_id, refresh=True),
     }, 200
 
 
@@ -3077,6 +3193,8 @@ POST_ROUTES = [
     (re.compile(r"^/api/agent-console/runs$"), start_agent_console_run, True),
     (re.compile(r"^/api/agent-console/model$"), set_agent_console_model, True),
     (re.compile(r"^/api/agent-console/models/refresh$"), refresh_agent_console_models, True),
+    (re.compile(r"^/api/agent-console/provider/preview$"), preview_agent_console_provider_switch, True),
+    (re.compile(r"^/api/agent-console/provider$"), switch_agent_console_provider, True),
     (re.compile(r"^/api/agent-console/runs/([^/]+)/cancel$"), cancel_agent_console_run, False),
     (re.compile(r"^/api/hermes/profiles/preview$"), preview_hermes_profile_creation, True),
     (re.compile(r"^/api/hermes/profiles/([^/]+)/delete/preview$"), preview_hermes_profile_deletion, True),

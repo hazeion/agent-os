@@ -1167,6 +1167,7 @@ function renderAgentConsoleCommandMenu() {
 function renderAgentConsole(payload = {}) {
   const chat = $('#agent-console-chat');
   const agentSelect = $('#agent-console-agent');
+  const providerSelect = $('#agent-console-provider-select');
   const modelSelect = $('#agent-console-model-select');
   const applyModel = $('#agent-console-apply-model');
   const prompt = $('#agent-console-prompt');
@@ -1179,11 +1180,12 @@ function renderAgentConsole(payload = {}) {
 
   const agents = Array.isArray(payload.agents) ? payload.agents : state.agentConsoleAgents;
   const catalog = payload.model_catalog || state.agentConsoleModelCatalog || {};
-  const models = Array.isArray(catalog.models) ? catalog.models : [];
+  const providerInventory = payload.provider_inventory || state.agentConsoleProviderInventory || {};
+  const providers = Array.isArray(providerInventory.providers) ? providerInventory.providers : [];
   const runs = Array.isArray(payload.runs) ? payload.runs : state.agentConsoleRuns;
   state.agentConsoleAgents = agents;
-  state.agentConsoleModels = models;
   state.agentConsoleModelCatalog = catalog;
+  state.agentConsoleProviderInventory = providerInventory;
   state.agentConsoleRuns = runs;
   runs.forEach((run) => {
     const cursor = agentConsoleEventCursor(run);
@@ -1201,13 +1203,24 @@ function renderAgentConsole(payload = {}) {
     : '<option value="default">Hermes · default</option>';
   state.agentConsoleSelectedAgentId = agentSelect.value || selectedAgentId;
   const selectedAgent = agents.find((agent) => agent.id === agentSelect.value) || agents[0] || { available: false, model: '' };
-  const catalogMatchesAgent = !catalog.profile_id || catalog.profile_id === selectedAgent.id;
-  const scopedModels = catalogMatchesAgent ? models : [];
-  const defaultModel = [state.agentConsoleSelectedModel, selectedAgent.model, catalog.current_model].find((item) => scopedModels.includes(item)) || scopedModels[0] || '';
+  const inventoryMatchesAgent = !providerInventory.profile_id || providerInventory.profile_id === selectedAgent.id;
+  const scopedProviders = inventoryMatchesAgent ? providers : [];
+  const requestedProvider = state.agentConsoleSelectedProvider || providerInventory.current_provider || selectedAgent.provider || '';
+  const selectedProvider = scopedProviders.find((item) => item.id === requestedProvider) || scopedProviders.find((item) => item.current) || scopedProviders[0];
+  if (providerSelect) {
+    providerSelect.innerHTML = scopedProviders.length
+      ? scopedProviders.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedProvider?.id ? 'selected' : ''}>${escapeHtml(item.name || item.id)}${item.current ? ' · current' : ''}</option>`).join('')
+      : `<option value="">${escapeHtml(inventoryMatchesAgent ? providerInventory.error || 'No authenticated providers available' : 'Refresh providers for this profile')}</option>`;
+    state.agentConsoleSelectedProvider = providerSelect.value;
+  }
+  const scopedModels = Array.isArray(selectedProvider?.models) ? selectedProvider.models : [];
+  state.agentConsoleModels = scopedModels;
+  const currentModelForProvider = selectedProvider?.id === providerInventory.current_provider ? providerInventory.current_model : '';
+  const defaultModel = [state.agentConsoleSelectedModel, currentModelForProvider, selectedAgent.model].find((item) => scopedModels.includes(item)) || scopedModels[0] || '';
   if (modelSelect) {
     modelSelect.innerHTML = scopedModels.length
       ? scopedModels.map((model) => `<option value="${escapeHtml(model)}" ${model === defaultModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
-      : `<option value="">${escapeHtml(catalogMatchesAgent ? catalog.error || 'No active models available' : 'Refresh models for this profile')}</option>`;
+      : `<option value="">${escapeHtml(inventoryMatchesAgent ? providerInventory.error || 'No models available for this provider' : 'Refresh providers for this profile')}</option>`;
     state.agentConsoleSelectedModel = modelSelect.value;
   }
 
@@ -1218,11 +1231,12 @@ function renderAgentConsole(payload = {}) {
   state.agentConsoleRunId = activeRun?.id || '';
   const available = Boolean(selectedAgent.available);
   const modelLabel = modelSelect?.value || selectedAgent.model || 'configured model';
-  const providerLabel = catalog.provider_label || catalog.provider || 'Hermes';
+  const providerLabel = selectedProvider?.name || selectedProvider?.id || catalog.provider_label || catalog.provider || 'Hermes';
   if (stateLabel) stateLabel.textContent = !available ? 'Hermes CLI unavailable' : activeRun ? `${providerLabel} · ${modelLabel} · working` : `${providerLabel} · ${modelLabel} · ready`;
   if (presence) presence.className = `agent-console-presence ${activeRun ? 'working' : available ? 'ready' : 'offline'}`;
   if (prompt) prompt.disabled = !available || Boolean(activeRun);
   if (send) send.disabled = !available || Boolean(activeRun);
+  if (providerSelect) providerSelect.disabled = !available || Boolean(activeRun) || !scopedProviders.length;
   if (modelSelect) modelSelect.disabled = !available || Boolean(activeRun) || !scopedModels.length;
   if (applyModel) applyModel.disabled = !available || Boolean(activeRun) || !modelSelect?.value;
   if (newSession) newSession.disabled = Boolean(activeRun);
@@ -1296,7 +1310,7 @@ async function refreshAgentConsoleModelCatalog({ focus = false, agentId = state.
   if (status) status.textContent = 'Refreshing active provider models…';
   try {
     const payload = await refreshAgentConsoleModels(agentId);
-    renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: payload.model_catalog, runs: state.agentConsoleRuns });
+    renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: payload.model_catalog, provider_inventory: payload.provider_inventory, runs: state.agentConsoleRuns });
     if (status) status.textContent = '';
     if (focus) $('#agent-console-model-select')?.focus();
     return payload.model_catalog;
@@ -1307,15 +1321,51 @@ async function refreshAgentConsoleModelCatalog({ focus = false, agentId = state.
 }
 
 async function applyAgentConsoleModel() {
+  const provider = $('#agent-console-provider-select')?.value || '';
   const model = $('#agent-console-model-select')?.value || '';
   const status = $('#agent-console-form-status');
-  if (!model) return;
-  if (status) status.textContent = 'Updating Hermes model…';
+  if (!provider || !model) return;
+  if (status) status.textContent = 'Preparing provider change preview…';
   try {
-    const payload = await setAgentConsoleModel(model, state.agentConsoleSelectedAgentId);
-    state.agentConsoleSelectedModel = payload.model || model;
-    renderAgentConsole({ agents: state.agentConsoleAgents.map((agent) => ({ ...agent, model: payload.model || model })), model_catalog: payload.model_catalog, runs: state.agentConsoleRuns });
-    if (status) status.textContent = payload.message || 'Hermes default model updated.';
+    const preview = await previewAgentConsoleProvider(provider, model, state.agentConsoleSelectedAgentId);
+    state.agentConsoleProviderPreview = preview;
+    const review = $('#provider-switch-review');
+    if (review) review.innerHTML = `
+      <p>Apply this configuration to <strong>${escapeHtml(preview.profile_id)}</strong>?</p>
+      <div class="agent-delete-effect"><span>Current</span><strong>${escapeHtml(preview.current?.provider || 'None')} · ${escapeHtml(preview.current?.model || 'None')}</strong></div>
+      <div class="agent-delete-effect"><span>New</span><strong>${escapeHtml(preview.target?.provider_name || preview.target?.provider)} · ${escapeHtml(preview.target?.model)}</strong></div>
+      ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}`;
+    $('#provider-switch-dialog')?.showModal();
+    if (status) status.textContent = '';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+async function confirmAgentConsoleProviderSwitch() {
+  const preview = state.agentConsoleProviderPreview;
+  const status = $('#provider-switch-status');
+  if (!preview?.confirmation_id) return;
+  if (status) status.textContent = 'Applying and verifying with Hermes…';
+  try {
+    const payload = await switchAgentConsoleProvider(
+      preview.target.provider,
+      preview.target.model,
+      preview.profile_id,
+      preview.confirmation_id,
+    );
+    state.agentConsoleSelectedProvider = payload.provider;
+    state.agentConsoleSelectedModel = payload.model;
+    state.agentConsoleProviderPreview = null;
+    $('#provider-switch-dialog')?.close();
+    renderAgentConsole({
+      agents: state.agentConsoleAgents.map((agent) => agent.id === payload.agent_id ? { ...agent, provider: payload.provider, model: payload.model } : agent),
+      model_catalog: payload.model_catalog,
+      provider_inventory: payload.provider_inventory,
+      runs: state.agentConsoleRuns,
+    });
+    const formStatus = $('#agent-console-form-status');
+    if (formStatus) formStatus.textContent = payload.message || 'Provider configuration updated.';
   } catch (err) {
     if (status) status.textContent = err.message;
   }
@@ -1838,8 +1888,9 @@ function agentCreatorForm() {
 
 function renderHermesProfiles(payload = {}) {
   const list = $('#managed-agent-list');
+  const detail = $('#managed-agent-detail');
   const count = $('#managed-agent-count');
-  if (!list) return;
+  if (!list || !detail) return;
   const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
   state.hermesProfiles = profiles;
   const activeProfile = payload.active_profile || '';
@@ -1855,36 +1906,60 @@ function renderHermesProfiles(payload = {}) {
   }
   if (!profiles.length) {
     list.innerHTML = '<div class="empty">No Hermes profiles are available yet. Create an agent to add one.</div>';
+    detail.innerHTML = '<div class="empty">Create an agent to inspect and use it here.</div>';
     return;
+  }
+  if (!profiles.some((profile) => profile.id === state.selectedHermesProfileId)) {
+    state.selectedHermesProfileId = profiles.find((profile) => profile.id === state.agentConsoleSelectedAgentId)?.id || activeProfile || profiles[0].id;
   }
   list.innerHTML = profiles.map((profile) => {
     const selected = profile.id === state.selectedHermesProfileId;
     const labels = [
       profile.is_default ? '<span class="pill success">default</span>' : '',
-      profile.id === activeProfile ? '<span class="pill">active</span>' : '',
+      profile.id === activeProfile ? '<span class="pill">Hermes active</span>' : '',
     ].filter(Boolean).join('');
     const runtime = [profile.provider, profile.model].filter(Boolean).join(' · ') || 'Uses Hermes profile configuration';
-    const canDelete = deletionAvailable && !profile.is_default && profile.id !== activeProfile && !consoleBusy;
-    const deleteAction = canDelete
-      ? `<button class="mini-button managed-agent-delete" type="button" data-delete-hermes-profile="${escapeHtml(profile.id)}" aria-label="Delete ${escapeHtml(profile.name || profile.id)}">Delete</button>`
-      : '';
     return `
-      <article class="managed-agent-card ${selected ? 'selected' : ''}" role="listitem" data-hermes-profile-id="${escapeHtml(profile.id)}">
-        <div class="managed-agent-card-head">
-          <div>
-            <div class="managed-agent-name">${escapeHtml(profile.name || profile.id)}</div>
-            <div class="item-desc">${escapeHtml(profile.description || 'No role description supplied.')}</div>
-          </div>
-          <div class="managed-agent-badges">${labels}</div>
-        </div>
-        <div class="item-meta mono">${escapeHtml(runtime)} · ${Number(profile.skill_count || 0)} skills</div>
-        <div class="managed-agent-actions">
-          <button class="mini-button" type="button" data-use-hermes-profile="${escapeHtml(profile.id)}">Use in Console</button>
-          ${deleteAction}
-        </div>
-      </article>
+      <button class="managed-agent-row ${selected ? 'selected' : ''}" type="button" role="option" aria-selected="${selected}" data-select-hermes-profile="${escapeHtml(profile.id)}">
+        <span class="managed-agent-row-mark" aria-hidden="true"></span>
+        <span class="managed-agent-row-copy">
+          <span class="managed-agent-name">${escapeHtml(profile.name || profile.id)}</span>
+          <span class="item-desc">${escapeHtml(profile.description || 'No role description supplied.')}</span>
+          <span class="item-meta mono">${escapeHtml(runtime)}</span>
+        </span>
+        <span class="managed-agent-badges">${labels}</span>
+      </button>
     `;
   }).join('');
+  const selectedProfile = profiles.find((profile) => profile.id === state.selectedHermesProfileId) || profiles[0];
+  const selectedLabels = [
+    '<span class="pill success">selected</span>',
+    selectedProfile.is_default ? '<span class="pill">default</span>' : '',
+    selectedProfile.id === activeProfile ? '<span class="pill">Hermes active</span>' : '',
+  ].filter(Boolean).join('');
+  const canDelete = deletionAvailable && !selectedProfile.is_default && selectedProfile.id !== activeProfile && !consoleBusy;
+  const deleteReason = selectedProfile.is_default
+    ? 'The default Hermes profile cannot be deleted.'
+    : selectedProfile.id === activeProfile
+      ? 'Change the Hermes active profile before deleting this agent.'
+      : consoleBusy ? 'Stop the active Console run before deleting an agent.' : '';
+  detail.innerHTML = `
+    <div class="managed-agent-detail-head">
+      <div><div class="eyebrow">Selected agent</div><h3>${escapeHtml(selectedProfile.name || selectedProfile.id)}</h3></div>
+      <div class="managed-agent-badges">${selectedLabels}</div>
+    </div>
+    <p class="item-desc managed-agent-description">${escapeHtml(selectedProfile.description || 'No role description supplied.')}</p>
+    <div class="managed-agent-config">
+      <div><span class="detail-context-label mono">Provider</span><strong>${escapeHtml(selectedProfile.provider || 'Hermes configured')}</strong></div>
+      <div><span class="detail-context-label mono">Model</span><strong>${escapeHtml(selectedProfile.model || 'Configured default')}</strong></div>
+      <div><span class="detail-context-label mono">Skills</span><strong>${Number(selectedProfile.skill_count || 0)}</strong></div>
+    </div>
+    <div class="managed-agent-detail-actions">
+      <button class="action-button" type="button" data-use-hermes-profile="${escapeHtml(selectedProfile.id)}">Use in Console</button>
+      ${canDelete ? `<button class="mini-button managed-agent-delete" type="button" data-delete-hermes-profile="${escapeHtml(selectedProfile.id)}">Delete agent</button>` : `<button class="mini-button managed-agent-delete" type="button" disabled title="${escapeHtml(deleteReason)}">Delete agent</button>`}
+    </div>
+    ${deleteReason ? `<p class="item-meta mono">${escapeHtml(deleteReason)}</p>` : ''}
+  `;
 }
 
 function closeAgentDeletion() {
@@ -2869,7 +2944,9 @@ $('#agent-console-command-menu')?.addEventListener('click', (event) => {
 
 $('#agent-console-agent')?.addEventListener('change', async (event) => {
   state.agentConsoleSelectedAgentId = event.target.value || 'default';
+  state.agentConsoleSelectedProvider = '';
   state.agentConsoleSelectedModel = '';
+  state.agentConsoleProviderInventory = {};
   state.agentConsoleSessionId = '';
   state.agentConsoleStartFresh = true;
   renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: {}, runs: state.agentConsoleRuns });
@@ -2881,7 +2958,19 @@ $('#agent-console-agent')?.addEventListener('change', async (event) => {
 $('#agent-console-model-select')?.addEventListener('change', (event) => {
   state.agentConsoleSelectedModel = event.target.value || '';
 });
+$('#agent-console-provider-select')?.addEventListener('change', (event) => {
+  state.agentConsoleSelectedProvider = event.target.value || '';
+  state.agentConsoleSelectedModel = '';
+  renderAgentConsole({ agents: state.agentConsoleAgents, provider_inventory: state.agentConsoleProviderInventory, runs: state.agentConsoleRuns });
+});
 $('#agent-console-apply-model')?.addEventListener('click', () => void applyAgentConsoleModel());
+$('[data-provider-switch-confirm]')?.addEventListener('click', () => void confirmAgentConsoleProviderSwitch());
+$$('[data-provider-switch-cancel]').forEach((button) => button.addEventListener('click', () => {
+  state.agentConsoleProviderPreview = null;
+  $('#provider-switch-dialog')?.close();
+  const status = $('#provider-switch-status');
+  if (status) status.textContent = '';
+}));
 $('#agent-console-new-session')?.addEventListener('click', () => {
   state.agentConsoleSessionId = '';
   state.agentConsoleStartFresh = true;
@@ -2915,6 +3004,18 @@ if (clearProjectFilter) {
 }
 
 document.addEventListener('click', async (event) => {
+  const selectProfile = event.target.closest('[data-select-hermes-profile]');
+  if (selectProfile) {
+    state.selectedHermesProfileId = selectProfile.dataset.selectHermesProfile || '';
+    renderHermesProfiles({
+      profiles: state.hermesProfiles,
+      active_profile: state.activeHermesProfileId,
+      capabilities: state.hermesProfileCapabilities,
+      status: 'available',
+    });
+    return;
+  }
+
   const deleteProfile = event.target.closest('[data-delete-hermes-profile]');
   if (deleteProfile) {
     await openAgentDeletion(deleteProfile.dataset.deleteHermesProfile || '');
@@ -2947,6 +3048,8 @@ document.addEventListener('click', async (event) => {
   const useProfile = event.target.closest('[data-use-hermes-profile]');
   if (useProfile) {
     state.agentConsoleSelectedAgentId = useProfile.dataset.useHermesProfile || 'default';
+    state.selectedHermesProfileId = state.agentConsoleSelectedAgentId;
+    state.agentConsoleSelectedProvider = '';
     state.agentConsoleSessionId = '';
     state.agentConsoleStartFresh = true;
     state.agentConsoleSelectedModel = '';

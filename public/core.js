@@ -65,6 +65,9 @@ const state = {
   agentConsoleAgents: [],
   agentConsoleModels: [],
   agentConsoleModelCatalog: {},
+  agentConsoleProviderInventory: {},
+  agentConsoleSelectedProvider: '',
+  agentConsoleProviderPreview: null,
   agentConsoleSelectedModel: '',
   agentConsoleSelectedAgentId: '',
   agentConsoleRunId: '',
@@ -315,6 +318,20 @@ async function setAgentConsoleModel(model, agentId = '') {
 
 async function refreshAgentConsoleModels(agentId = '') {
   return sendJson(`${endpoints.agentConsole}/models/refresh`, { agent_id: agentId }, { method: 'POST' });
+}
+
+async function previewAgentConsoleProvider(provider, model, agentId = '') {
+  return sendJson(`${endpoints.agentConsole}/provider/preview`, { provider, model, agent_id: agentId }, { method: 'POST' });
+}
+
+async function switchAgentConsoleProvider(provider, model, agentId, confirmationId) {
+  return sendJson(`${endpoints.agentConsole}/provider`, {
+    provider,
+    model,
+    agent_id: agentId,
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
 }
 
 async function fetchAgentConsoleCommandManifest() {

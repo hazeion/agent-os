@@ -1517,32 +1517,61 @@ h2 {
   gap: 14px;
 }
 .managed-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.managed-agent-layout {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.managed-agent-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
   gap: 10px;
-}
-.managed-agent-card {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
+  width: 100%;
+  min-height: 76px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 9px;
+  color: var(--text);
+  text-align: left;
   background: var(--card-2);
+  cursor: pointer;
 }
-.managed-agent-card.selected {
+.managed-agent-row:hover,
+.managed-agent-row:focus-visible { border-color: var(--line-strong); background: var(--card); outline: none; }
+.managed-agent-row.selected {
   border-color: rgba(90,247,164,.5);
   box-shadow: inset 3px 0 0 var(--success), 0 0 0 1px rgba(90,247,164,.08);
+  background: rgba(90,247,164,.05);
 }
-.managed-agent-card-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+.managed-agent-row-mark {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--muted-2);
+  border-radius: 50%;
 }
+.managed-agent-row.selected .managed-agent-row-mark { border-color: var(--success); background: var(--success); box-shadow: 0 0 0 3px rgba(90,247,164,.12); }
+.managed-agent-row-copy { display: grid; gap: 3px; min-width: 0; }
+.managed-agent-row-copy .item-desc,
+.managed-agent-row-copy .item-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .managed-agent-name { font-weight: 900; }
 .managed-agent-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.managed-agent-actions { display: flex; justify-content: flex-end; margin-top: auto; }
+.managed-agent-detail { min-height: 100%; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--card-2); }
+.managed-agent-detail-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.managed-agent-detail-head h3 { margin: 3px 0 0; font-size: 1.15rem; }
+.managed-agent-description { margin: 14px 0; }
+.managed-agent-config { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.managed-agent-config > div { display: grid; gap: 5px; min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.managed-agent-config strong { overflow-wrap: anywhere; }
+.managed-agent-detail-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 18px; }
 .managed-agent-delete { color: var(--danger); border-color: rgba(255,107,122,.35); }
+.managed-agent-delete:disabled { opacity: .45; cursor: not-allowed; }
 .agent-delete-dialog {
   width: min(620px, calc(100vw - 28px));
   padding: 0;
@@ -3949,4 +3978,7 @@ h2,
   .agent-console-log-row,
   .agent-console-working { grid-template-columns: 56px 54px minmax(0, 1fr); gap: 7px; padding: 8px; }
   .agent-console-command-option { grid-template-columns: 68px minmax(0, 1fr); }
+  .managed-agent-layout { grid-template-columns: minmax(0, 1fr); }
+  .managed-agent-config { grid-template-columns: minmax(0, 1fr); }
+  .managed-agent-detail-actions { align-items: stretch; flex-direction: column; }
 }
