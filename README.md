@@ -53,6 +53,7 @@ Mentat currently includes:
 - manifest-driven `/model`, `/new`, and `/help` dashboard commands with no Hermes CLI passthrough
 - profile-aware Agent Console routing with profile-scoped models and sessions
 - capability-gated Hermes profile discovery, confirmed creation and deletion, built-in skill selection, and a persistent Managed Agents list
+- confirmed provider switching among providers Hermes reports as already authenticated for the selected profile
 - private local Agent Console history across Mentat restarts
 - Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
 - Agents / Sessions view with managed Hermes profiles plus transcript and replay support
@@ -280,6 +281,20 @@ A named Hermes profile is Mentat's canonical executable agent identity.
 `data/agents.json` remains heartbeat/observation data, not a second profile
 registry. See `ARCHITECTURE.md` for validation, confirmation, locking, rollback,
 and audit requirements for every write-capable Hermes operation.
+
+### Provider inventory and switching
+
+Mentat asks Hermes for provider picker context for the selected profile and
+limits the UI to providers Hermes reports as explicitly configured and
+authenticated. The current provider is distinguished from other authenticated
+choices. Mentat does not inspect, store, or return credential values, credential
+paths, environment-variable names, or tokens; credentials are configured and
+managed only through Hermes.
+
+Changing providers requires a preview and profile-bound confirmation, is blocked
+while an Agent Console run is active, and is verified by refreshing Hermes state.
+If verification fails, Mentat attempts to restore the previous provider when the
+Hermes capability supports rollback and otherwise reports a partial failure.
 
 ## Main project-owned data files
 

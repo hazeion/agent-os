@@ -47,6 +47,35 @@ Agent Console execution is globally single-run in v1. Every run records its
 Hermes profile id, launches with a fixed `-p <profile>` selector, and may resume
 only a session already associated with that same profile.
 
+## Provider switching boundary
+
+Provider discovery and selection are scoped to the selected Hermes profile.
+Mentat obtains picker context from Hermes through `load_picker_context()` and
+builds the selectable inventory with
+`build_models_payload(..., explicit_only=True, picker_hints=True)`. The browser
+may therefore see only providers Hermes reports as explicitly configured and
+authenticated for that profile, plus whether each provider is current. It must
+not receive credential values, credential paths, environment-variable names,
+tokens, or an unfiltered catalog of every provider Hermes supports.
+
+Hermes remains the sole owner of provider credentials and authentication.
+Mentat does not add, edit, validate, migrate, or delete credentials. Provider
+switching is an approved, fixed Hermes adapter capability with these rules:
+
+- the requested provider must be present in the profile-scoped authenticated
+  inventory returned by Hermes;
+- the current provider is reported separately from the authenticated set;
+- Mentat previews the affected profile, current provider, requested provider,
+  and model implications before requiring profile-bound confirmation;
+- switching is blocked while an Agent Console run is active;
+- Mentat refreshes Hermes picker context after the operation to verify the
+  selected provider and models;
+- a failed verification triggers rollback to the previous provider when Hermes
+  supports it, otherwise Mentat reports the partial failure and fails closed.
+
+This boundary covers selection among already authenticated providers only.
+Credential setup and reauthentication continue to happen through Hermes.
+
 Agent Console progress is exposed as versioned, structured Mentat events. Event
 sequence numbers are monotonic within a run and double as polling cursors. The
 browser requests only events newer than its cursor and merges them into its local
@@ -97,7 +126,6 @@ Deferred until separately approved:
 - clone-all;
 - profile rename;
 - skill content editing, hub installation, or arbitrary MCP configuration;
-- provider switching;
 - non-loopback access.
 
 Mentat retains one active dashboard run globally for the first version. This

@@ -31,6 +31,10 @@ All notable changes to Mentat.
   bounded persistence, and a cursor-based incremental run endpoint.
 
 ### Changed
+- Documented the approved profile-scoped provider-switching boundary: only
+  explicitly configured/authenticated Hermes providers are selectable;
+  credentials remain Hermes-owned; switches require preview, confirmation,
+  active-run blocking, post-operation verification, and rollback where supported.
 - Agent Console completion, help, and dispatch now use the safe manifest and a
   fixed frontend handler registry instead of duplicated hard-coded command
   arrays; arbitrary Hermes CLI passthrough remains unavailable.

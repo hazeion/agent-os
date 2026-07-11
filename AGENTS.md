@@ -87,9 +87,24 @@ user confirms a preview. It may also enable or disable identifiers returned by
 Hermes' built-in skill catalog through the capability-gated adapter. Managed
 Agents may delete a non-default, non-active profile only after a profile-bound
 preview and confirmation, while no Mentat console run is active, followed by
-profile refresh verification. Direct skill-content editing, hub installation,
-`SOUL.md` editing, clone-all, rename, provider switching, and arbitrary MCP
-changes remain deferred.
+profile refresh verification.
+
+Provider inventory and switching are profile-scoped. Read picker context from
+Hermes with `load_picker_context()` and request only explicit authenticated
+inventory through `build_models_payload(..., explicit_only=True,
+picker_hints=True)`. Return provider identifiers, current-selection state, and
+safe model metadata only. Never return credential values, paths,
+environment-variable names, or tokens to the browser, and never show the full
+unsupported provider catalog as if it were configured. Hermes exclusively owns
+credential setup and authentication.
+
+A provider switch requires an inventory match, exact preview, profile-bound
+confirmation, and no active Agent Console run. Refresh Hermes state afterward
+to verify the change and roll back to the prior provider on verification failure
+when supported; otherwise report a partial failure and fail closed.
+
+Direct skill-content editing, hub installation, `SOUL.md` editing, clone-all,
+rename, credential management, and arbitrary MCP changes remain deferred.
 
 Agent Console slash commands are a separate Mentat allowlist, not a projection
 of the Hermes CLI. Add commands through the versioned command manifest with a
