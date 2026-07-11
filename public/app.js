@@ -1086,20 +1086,69 @@ function renderEmail(payload = {}) {
   `).join('') : `<div class="empty">${escapeHtml(payload.guidance || 'Read-only email pane is ready; connect a source later to surface priority messages.')}</div>`;
 }
 
-const agentConsoleCommands = [
-  { command: '/model', detail: 'Refresh current provider models' },
-  { command: '/new', detail: 'Start a new Hermes session' },
-  { command: '/help', detail: 'Show dashboard commands' },
-];
+const agentConsoleCommandHandlers = new Set([
+  'agent_console.refresh_models',
+  'agent_console.new_session',
+  'agent_console.show_help',
+]);
+
+function normalizeAgentConsoleCommandManifest(payload = {}) {
+  if (payload.schema_version !== 1 || payload.source !== 'mentat') return null;
+  if (payload.capabilities?.['commands.manifest.read'] !== true) return null;
+  const commands = Array.isArray(payload.commands) ? payload.commands.filter((item) => (
+    typeof item?.command === 'string'
+    && /^\/[a-z][a-z0-9-]*$/.test(item.command)
+    && agentConsoleCommandHandlers.has(item.handler)
+    && Array.isArray(item.arguments)
+    && item.arguments.every((argument) => (
+      typeof argument?.name === 'string'
+      && typeof argument.required === 'boolean'
+      && typeof argument.description === 'string'
+    ))
+    && typeof item.description === 'string'
+    && ['read_only', 'local_state'].includes(item.safety)
+  )) : [];
+  if (!commands.length || commands.length !== payload.commands?.length) return null;
+  if (new Set(commands.map((item) => item.command)).size !== commands.length) return null;
+  return { ...payload, commands };
+}
+
+function setAgentConsoleCommandManifest(payload = {}) {
+  state.agentConsoleCommandManifest = normalizeAgentConsoleCommandManifest(payload);
+  renderAgentConsoleCommandMenu();
+}
+
+function agentConsoleCommands() {
+  return state.agentConsoleCommandManifest?.commands || [];
+}
 
 function agentConsoleRunIsActive(run = {}) {
   return ['queued', 'running', 'cancelling'].includes(run.status);
 }
 
+function agentConsoleEventCursor(run = {}) {
+  const cursors = (run.events || []).map((event) => Number(event.cursor || event.sequence || 0));
+  return Math.max(Number(run.event_cursor || 0), ...cursors, 0);
+}
+
+function mergeAgentConsoleRunUpdate(current = {}, incoming = {}, events = [], reset = false) {
+  const retained = reset ? [] : (current.events || []);
+  const byCursor = new Map();
+  [...retained, ...events].forEach((event) => {
+    const cursor = Number(event.cursor || event.sequence || 0);
+    if (cursor > 0) byCursor.set(cursor, event);
+  });
+  return {
+    ...current,
+    ...incoming,
+    events: [...byCursor.entries()].sort(([left], [right]) => left - right).map(([, event]) => event),
+  };
+}
+
 function agentConsoleCommandSuggestions(value = '') {
   const query = String(value || '').trim().toLowerCase();
   if (!query.startsWith('/')) return [];
-  return agentConsoleCommands.filter((item) => item.command.startsWith(query) || query === '/help');
+  return agentConsoleCommands().filter((item) => item.command.startsWith(query) || query === '/help');
 }
 
 function renderAgentConsoleCommandMenu() {
@@ -1110,7 +1159,7 @@ function renderAgentConsoleCommandMenu() {
   menu.hidden = !suggestions.length;
   menu.innerHTML = suggestions.map((item) => `
     <button type="button" class="agent-console-command-option" data-agent-console-command="${escapeHtml(item.command)}">
-      <code>${escapeHtml(item.command)}</code><span>${escapeHtml(item.detail)}</span>
+      <code>${escapeHtml(item.command)}</code><span>${escapeHtml(item.description)}</span>
     </button>
   `).join('');
 }
@@ -1118,6 +1167,7 @@ function renderAgentConsoleCommandMenu() {
 function renderAgentConsole(payload = {}) {
   const chat = $('#agent-console-chat');
   const agentSelect = $('#agent-console-agent');
+  const providerSelect = $('#agent-console-provider-select');
   const modelSelect = $('#agent-console-model-select');
   const applyModel = $('#agent-console-apply-model');
   const prompt = $('#agent-console-prompt');
@@ -1129,39 +1179,73 @@ function renderAgentConsole(payload = {}) {
   if (!chat || !agentSelect) return;
 
   const agents = Array.isArray(payload.agents) ? payload.agents : state.agentConsoleAgents;
-  const catalog = payload.model_catalog || state.agentConsoleModelCatalog || {};
-  const models = Array.isArray(catalog.models) ? catalog.models : [];
+  const requestedAgentId = state.agentConsoleSelectedAgentId || agentSelect.value || payload.selected_agent_id || 'default';
+  const selectedAgentId = agents.some((agent) => agent.id === requestedAgentId)
+    ? requestedAgentId
+    : agents[0]?.id || 'default';
+  const incomingCatalog = payload.model_catalog;
+  const catalog = incomingCatalog?.profile_id && incomingCatalog.profile_id !== selectedAgentId
+    && state.agentConsoleModelCatalog?.profile_id === selectedAgentId
+    ? state.agentConsoleModelCatalog
+    : incomingCatalog || state.agentConsoleModelCatalog || {};
+  const incomingProviderInventory = payload.provider_inventory;
+  const providerInventory = incomingProviderInventory?.profile_id && incomingProviderInventory.profile_id !== selectedAgentId
+    && state.agentConsoleProviderInventory?.profile_id === selectedAgentId
+    ? state.agentConsoleProviderInventory
+    : incomingProviderInventory || state.agentConsoleProviderInventory || {};
+  const providers = Array.isArray(providerInventory.providers) ? providerInventory.providers : [];
   const runs = Array.isArray(payload.runs) ? payload.runs : state.agentConsoleRuns;
   state.agentConsoleAgents = agents;
-  state.agentConsoleModels = models;
   state.agentConsoleModelCatalog = catalog;
+  state.agentConsoleProviderInventory = providerInventory;
   state.agentConsoleRuns = runs;
+  runs.forEach((run) => {
+    const cursor = agentConsoleEventCursor(run);
+    if (cursor > Number(state.agentConsoleEventCursors[run.id] || 0)) {
+      state.agentConsoleEventCursors[run.id] = cursor;
+    }
+  });
 
-  const selectedAgentId = agentSelect.value || 'hermes';
   agentSelect.innerHTML = agents.length
     ? agents.map((agent) => `<option value="${escapeHtml(agent.id)}" ${agent.id === selectedAgentId ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')
-    : '<option value="hermes">Hermes</option>';
+    : '<option value="default">Hermes · default</option>';
+  state.agentConsoleSelectedAgentId = agentSelect.value || selectedAgentId;
   const selectedAgent = agents.find((agent) => agent.id === agentSelect.value) || agents[0] || { available: false, model: '' };
-  const defaultModel = [state.agentConsoleSelectedModel, selectedAgent.model, catalog.current_model].find((item) => models.includes(item)) || models[0] || '';
+  const inventoryMatchesAgent = !providerInventory.profile_id || providerInventory.profile_id === selectedAgent.id;
+  const scopedProviders = inventoryMatchesAgent ? providers : [];
+  const requestedProvider = state.agentConsoleSelectedProvider || providerInventory.current_provider || selectedAgent.provider || '';
+  const selectedProvider = scopedProviders.find((item) => item.id === requestedProvider) || scopedProviders.find((item) => item.current) || scopedProviders[0];
+  if (providerSelect) {
+    providerSelect.innerHTML = scopedProviders.length
+      ? scopedProviders.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedProvider?.id ? 'selected' : ''}>${escapeHtml(item.name || item.id)}${item.current ? ' · current' : ''}</option>`).join('')
+      : `<option value="">${escapeHtml(inventoryMatchesAgent ? providerInventory.error || 'No authenticated providers available' : 'Refresh providers for this profile')}</option>`;
+    state.agentConsoleSelectedProvider = providerSelect.value;
+  }
+  const scopedModels = Array.isArray(selectedProvider?.models) ? selectedProvider.models : [];
+  state.agentConsoleModels = scopedModels;
+  const currentModelForProvider = selectedProvider?.id === providerInventory.current_provider ? providerInventory.current_model : '';
+  const defaultModel = [state.agentConsoleSelectedModel, currentModelForProvider, selectedAgent.model].find((item) => scopedModels.includes(item)) || scopedModels[0] || '';
   if (modelSelect) {
-    modelSelect.innerHTML = models.length
-      ? models.map((model) => `<option value="${escapeHtml(model)}" ${model === defaultModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
-      : `<option value="">${escapeHtml(catalog.error || 'No active models available')}</option>`;
+    modelSelect.innerHTML = scopedModels.length
+      ? scopedModels.map((model) => `<option value="${escapeHtml(model)}" ${model === defaultModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
+      : `<option value="">${escapeHtml(inventoryMatchesAgent ? providerInventory.error || 'No models available for this provider' : 'Refresh providers for this profile')}</option>`;
     state.agentConsoleSelectedModel = modelSelect.value;
   }
 
   const activeRun = runs.find(agentConsoleRunIsActive);
-  const latestRun = runs[0];
+  const selectedRuns = runs.filter((run) => (run.agent_id || 'default') === selectedAgent.id);
+  const latestRun = selectedRuns[0];
   if (latestRun?.session_id && !state.agentConsoleStartFresh) state.agentConsoleSessionId = latestRun.session_id;
   state.agentConsoleRunId = activeRun?.id || '';
   const available = Boolean(selectedAgent.available);
   const modelLabel = modelSelect?.value || selectedAgent.model || 'configured model';
-  const providerLabel = catalog.provider_label || catalog.provider || 'Hermes';
+  const providerLabel = selectedProvider?.name || selectedProvider?.id || catalog.provider_label || catalog.provider || 'Hermes';
   if (stateLabel) stateLabel.textContent = !available ? 'Hermes CLI unavailable' : activeRun ? `${providerLabel} · ${modelLabel} · working` : `${providerLabel} · ${modelLabel} · ready`;
   if (presence) presence.className = `agent-console-presence ${activeRun ? 'working' : available ? 'ready' : 'offline'}`;
   if (prompt) prompt.disabled = !available || Boolean(activeRun);
   if (send) send.disabled = !available || Boolean(activeRun);
-  if (modelSelect) modelSelect.disabled = !available || Boolean(activeRun) || !models.length;
+  if (providerSelect) providerSelect.disabled = !available || Boolean(activeRun) || !scopedProviders.length;
+  if (modelSelect) modelSelect.disabled = !available || Boolean(activeRun) || !scopedModels.length;
   if (applyModel) applyModel.disabled = !available || Boolean(activeRun) || !modelSelect?.value;
   if (newSession) newSession.disabled = Boolean(activeRun);
   if (stop) {
@@ -1170,17 +1254,22 @@ function renderAgentConsole(payload = {}) {
   }
 
   const wasNearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
-  const visibleRuns = [...runs].slice(0, 10).reverse();
+  const visibleRuns = [...selectedRuns].slice(0, 10).reverse();
   chat.innerHTML = visibleRuns.length ? visibleRuns.map((run) => {
+    const runAgentName = run.agent_name || selectedAgent.name || 'Hermes';
     const events = (run.events || []).map((event) => `
       <div class="agent-console-log-row agent-console-log-status ${escapeHtml(event.kind || 'status')}">
-        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>Hermes</span><span>${escapeHtml(event.message || 'Working')}</span>
+        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(event.display_text || event.message || 'Working')}</span>
       </div>`).join('');
     const working = agentConsoleRunIsActive(run) ? `
-      <div class="agent-console-log-row agent-console-working" role="status"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Hermes</span><span>${run.status === 'cancelling' ? 'Stopping' : 'Working'}</span></div>` : '';
-    const response = run.response ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">Hermes</span><div class="message-content markdown-body">${renderMarkdown(run.response)}</div></div>` : '';
-    const error = run.error ? `<div class="agent-console-log-row agent-console-log-error"><span class="mono">${run.status === 'cancelled' ? 'Stopped' : 'Error'}</span><div class="message-content">${escapeHtml(run.error)}</div></div>` : '';
-    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}</div></div><div class="agent-console-events">${events}</div>${working}${response}${error}</section>`;
+      <div class="agent-console-log-row agent-console-working" role="status"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(runAgentName)}</span><span>${run.status === 'cancelling' ? 'Stopping' : 'Working'}</span></div>` : '';
+    const storedSummaryLabel = run.persisted_summary ? 'Stored summary' : '';
+    const promptExcerpt = run.prompt_truncated || storedSummaryLabel ? `<span class="mono">${run.prompt_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
+    const responseExcerpt = run.response_truncated || storedSummaryLabel ? `<span class="mono">${run.response_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
+    const response = run.response ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${renderMarkdown(run.response)}</div>${responseExcerpt}</div>` : '';
+    const errorExcerpt = run.error_truncated || storedSummaryLabel ? `<span class="mono">${run.error_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
+    const error = run.error ? `<div class="agent-console-log-row agent-console-log-error"><span class="mono">${run.status === 'cancelled' ? 'Stopped' : 'Error'}</span><div class="message-content">${escapeHtml(run.error)}</div>${errorExcerpt}</div>` : '';
+    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${response}${error}</section>`;
   }).join('') : `<div class="agent-console-empty mono">${escapeHtml(payload.error || (available ? 'Hermes ready.' : 'Hermes CLI unavailable.'))}</div>`;
   if (wasNearBottom || activeRun) chat.scrollTop = chat.scrollHeight;
   scheduleAgentConsolePoll(Boolean(activeRun));
@@ -1191,7 +1280,28 @@ function scheduleAgentConsolePoll(shouldPoll = true) {
   state.agentConsolePollTimer = null;
   if (!shouldPoll || state.activeView !== 'today') return;
   state.agentConsolePollTimer = setTimeout(async () => {
-    try { renderAgentConsole(await api(endpoints.agentConsole)); } catch (err) { $('#agent-console-form-status').textContent = err.message; }
+    const activeRun = state.agentConsoleRuns.find(agentConsoleRunIsActive);
+    if (!activeRun) return;
+    const cursor = Number(state.agentConsoleEventCursors[activeRun.id] ?? agentConsoleEventCursor(activeRun));
+    try {
+      const payload = await fetchAgentConsoleRun(activeRun.id, cursor);
+      const updated = mergeAgentConsoleRunUpdate(
+        activeRun,
+        payload.run || {},
+        payload.events || payload.run?.events || [],
+        Boolean(payload.cursor_reset_required),
+      );
+      state.agentConsoleEventCursors[activeRun.id] = Number(payload.next_cursor ?? agentConsoleEventCursor(updated));
+      renderAgentConsole({
+        agents: state.agentConsoleAgents,
+        model_catalog: state.agentConsoleModelCatalog,
+        runs: state.agentConsoleRuns.map((run) => run.id === activeRun.id ? updated : run),
+      });
+    } catch (err) {
+      const status = $('#agent-console-form-status');
+      if (status) status.textContent = err.message;
+      scheduleAgentConsolePoll(true);
+    }
   }, 1000);
 }
 
@@ -1203,12 +1313,12 @@ function resizeAgentConsolePrompt() {
   renderAgentConsoleCommandMenu();
 }
 
-async function refreshAgentConsoleModelCatalog({ focus = false } = {}) {
+async function refreshAgentConsoleModelCatalog({ focus = false, agentId = state.agentConsoleSelectedAgentId } = {}) {
   const status = $('#agent-console-form-status');
   if (status) status.textContent = 'Refreshing active provider models…';
   try {
-    const payload = await refreshAgentConsoleModels();
-    renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: payload.model_catalog, runs: state.agentConsoleRuns });
+    const payload = await refreshAgentConsoleModels(agentId);
+    renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: payload.model_catalog, provider_inventory: payload.provider_inventory, runs: state.agentConsoleRuns });
     if (status) status.textContent = '';
     if (focus) $('#agent-console-model-select')?.focus();
     return payload.model_catalog;
@@ -1219,15 +1329,64 @@ async function refreshAgentConsoleModelCatalog({ focus = false } = {}) {
 }
 
 async function applyAgentConsoleModel() {
+  const provider = $('#agent-console-provider-select')?.value || '';
   const model = $('#agent-console-model-select')?.value || '';
   const status = $('#agent-console-form-status');
-  if (!model) return;
-  if (status) status.textContent = 'Updating Hermes model…';
+  if (!provider || !model) return;
+  if (status) status.textContent = 'Preparing provider change preview…';
   try {
-    const payload = await setAgentConsoleModel(model);
-    state.agentConsoleSelectedModel = payload.model || model;
-    renderAgentConsole({ agents: state.agentConsoleAgents.map((agent) => ({ ...agent, model: payload.model || model })), model_catalog: payload.model_catalog, runs: state.agentConsoleRuns });
-    if (status) status.textContent = payload.message || 'Hermes default model updated.';
+    const preview = await previewAgentConsoleProvider(provider, model, state.agentConsoleSelectedAgentId);
+    state.agentConsoleProviderPreview = preview;
+    state.agentConsoleProviderPreviewSource = 'console';
+    const review = $('#provider-switch-review');
+    if (review) review.innerHTML = `
+      <p>Apply this configuration to <strong>${escapeHtml(preview.profile_id)}</strong>?</p>
+      <div class="agent-delete-effect"><span>Current</span><strong>${escapeHtml(preview.current?.provider || 'None')} · ${escapeHtml(preview.current?.model || 'None')}</strong></div>
+      <div class="agent-delete-effect"><span>New</span><strong>${escapeHtml(preview.target?.provider_name || preview.target?.provider)} · ${escapeHtml(preview.target?.model)}</strong></div>
+      ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}`;
+    $('#provider-switch-dialog')?.showModal();
+    if (status) status.textContent = '';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+async function confirmAgentConsoleProviderSwitch() {
+  const preview = state.agentConsoleProviderPreview;
+  const status = $('#provider-switch-status');
+  if (!preview?.confirmation_id) return;
+  if (status) status.textContent = 'Applying and verifying with Hermes…';
+  try {
+    const payload = await switchAgentConsoleProvider(
+      preview.target.provider,
+      preview.target.model,
+      preview.profile_id,
+      preview.confirmation_id,
+    );
+    state.agentConsoleSelectedProvider = payload.provider;
+    state.agentConsoleSelectedModel = payload.model;
+    state.managedAgentProviderInventory = payload.provider_inventory || state.managedAgentProviderInventory;
+    state.managedAgentSelectedProvider = payload.provider;
+    state.managedAgentSelectedModel = payload.model;
+    state.hermesProfiles = state.hermesProfiles.map((profile) => profile.id === payload.agent_id
+      ? { ...profile, provider: payload.provider, model: payload.model }
+      : profile);
+    state.agentConsoleProviderPreview = null;
+    $('#provider-switch-dialog')?.close();
+    renderAgentConsole({
+      agents: state.agentConsoleAgents.map((agent) => agent.id === payload.agent_id ? { ...agent, provider: payload.provider, model: payload.model } : agent),
+      model_catalog: payload.model_catalog,
+      provider_inventory: payload.provider_inventory,
+      runs: state.agentConsoleRuns,
+    });
+    renderHermesProfiles({
+      profiles: state.hermesProfiles,
+      active_profile: state.activeHermesProfileId,
+      capabilities: state.hermesProfileCapabilities,
+      status: 'available',
+    });
+    const formStatus = $('#agent-console-form-status');
+    if (formStatus) formStatus.textContent = payload.message || 'Provider configuration updated.';
   } catch (err) {
     if (status) status.textContent = err.message;
   }
@@ -1241,20 +1400,27 @@ async function submitAgentConsolePrompt() {
   if (value.startsWith('/')) {
     const [command, ...args] = value.split(/\s+/);
     const argument = args.join(' ').trim();
-    if (command === '/model') {
+    const definition = agentConsoleCommands().find((item) => item.command === command);
+    if (!definition) {
+      if (status) status.textContent = `${command} is not supported by the Mentat dashboard.`;
+    } else if (args.length > definition.arguments.length) {
+      const usage = [definition.command, ...definition.arguments.map((item) => item.required ? `<${item.name}>` : `[${item.name}]`)].join(' ');
+      if (status) status.textContent = `Usage: ${usage}`;
+    } else if (definition.handler === 'agent_console.refresh_models') {
       const catalog = await refreshAgentConsoleModelCatalog({ focus: true });
       if (argument && catalog?.models?.includes(argument)) {
         state.agentConsoleSelectedModel = argument;
         $('#agent-console-model-select').value = argument;
         if (status) status.textContent = `${argument} selected. Apply Model to update Hermes.`;
       } else if (argument && status) status.textContent = `${argument} is not available from the current provider.`;
-    } else if (command === '/new') {
+    } else if (definition.handler === 'agent_console.new_session') {
       state.agentConsoleSessionId = '';
       state.agentConsoleStartFresh = true;
       if (status) status.textContent = 'New Hermes session ready.';
-    } else if (command === '/help') {
-      if (status) status.textContent = 'Dashboard commands: /model, /new, /help.';
-    } else if (status) status.textContent = `${command} is available in the interactive Hermes CLI, not this dashboard console.`;
+    } else if (definition.handler === 'agent_console.show_help') {
+      const help = agentConsoleCommands().map((item) => `${item.command} — ${item.description}`).join('; ');
+      if (status) status.textContent = `Dashboard commands: ${help}.`;
+    }
     prompt.value = '';
     resizeAgentConsolePrompt();
     $('#agent-console-command-menu').hidden = true;
@@ -1262,7 +1428,7 @@ async function submitAgentConsolePrompt() {
   }
   if (status) status.textContent = 'Sending to Hermes…';
   try {
-    const payload = await startAgentConsoleRun({ agent_id: $('#agent-console-agent')?.value || 'hermes', prompt: value, session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined });
+    const payload = await startAgentConsoleRun({ agent_id: $('#agent-console-agent')?.value || state.agentConsoleSelectedAgentId || 'default', prompt: value, session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined });
     state.agentConsoleStartFresh = false;
     prompt.value = '';
     resizeAgentConsolePrompt();
@@ -1734,6 +1900,429 @@ async function loadSessionDetail(sessionId, options = {}) {
   } catch (err) {
     console.error(err);
     if (detail) detail.innerHTML = `<div class="empty">Could not load session: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function agentCreatorForm() {
+  return $('#agent-creator-form');
+}
+
+function renderHermesProfiles(payload = {}) {
+  const list = $('#managed-agent-list');
+  const detail = $('#managed-agent-detail');
+  const count = $('#managed-agent-count');
+  if (!list || !detail) return;
+  const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+  state.hermesProfiles = profiles;
+  const activeProfile = payload.active_profile || '';
+  state.hermesProfileCapabilities = payload.capabilities || {};
+  state.activeHermesProfileId = activeProfile;
+  const deletionAvailable = state.hermesProfileCapabilities['profiles.delete'] === true;
+  const consoleBusy = state.agentConsoleRuns.some(agentConsoleRunIsActive);
+  if (count) count.textContent = `${profiles.length} profile${profiles.length === 1 ? '' : 's'}`;
+  if (payload.status && payload.status !== 'available') {
+    const message = payload.error?.message || 'Hermes profile discovery is unavailable.';
+    list.innerHTML = `<div class="empty" role="alert">${escapeHtml(message)}</div>`;
+    return;
+  }
+  if (!profiles.length) {
+    list.innerHTML = '<div class="empty">No Hermes profiles are available yet. Create an agent to add one.</div>';
+    detail.innerHTML = '<div class="empty">Create an agent to inspect and use it here.</div>';
+    return;
+  }
+  if (!profiles.some((profile) => profile.id === state.selectedHermesProfileId)) {
+    state.selectedHermesProfileId = profiles.find((profile) => profile.id === state.agentConsoleSelectedAgentId)?.id || activeProfile || profiles[0].id;
+  }
+  list.innerHTML = profiles.map((profile) => {
+    const selected = profile.id === state.selectedHermesProfileId;
+    const labels = [
+      profile.is_default ? '<span class="pill success">default</span>' : '',
+      profile.id === activeProfile ? '<span class="pill">Hermes active</span>' : '',
+    ].filter(Boolean).join('');
+    const runtime = [profile.provider, profile.model].filter(Boolean).join(' · ') || 'Uses Hermes profile configuration';
+    return `
+      <button class="managed-agent-row ${selected ? 'selected' : ''}" type="button" role="option" aria-selected="${selected}" data-select-hermes-profile="${escapeHtml(profile.id)}">
+        <span class="managed-agent-row-mark" aria-hidden="true"></span>
+        <span class="managed-agent-row-copy">
+          <span class="managed-agent-name">${escapeHtml(profile.name || profile.id)}</span>
+          <span class="item-desc">${escapeHtml(profile.description || 'No role description supplied.')}</span>
+          <span class="item-meta mono">${escapeHtml(runtime)}</span>
+        </span>
+        <span class="managed-agent-badges">${labels}</span>
+      </button>
+    `;
+  }).join('');
+  const selectedProfile = profiles.find((profile) => profile.id === state.selectedHermesProfileId) || profiles[0];
+  const managedInventory = state.managedAgentProviderInventory?.profile_id === selectedProfile.id
+    ? state.managedAgentProviderInventory
+    : state.agentConsoleProviderInventory?.profile_id === selectedProfile.id
+      ? state.agentConsoleProviderInventory
+      : {};
+  const managedProviders = Array.isArray(managedInventory.providers) ? managedInventory.providers : [];
+  const requestedManagedProvider = state.managedAgentSelectedProvider || managedInventory.current_provider || selectedProfile.provider || '';
+  const managedProvider = managedProviders.find((item) => item.id === requestedManagedProvider)
+    || managedProviders.find((item) => item.current)
+    || managedProviders[0];
+  const managedModels = Array.isArray(managedProvider?.models) ? managedProvider.models : [];
+  const managedCurrentModel = managedProvider?.id === managedInventory.current_provider ? managedInventory.current_model : '';
+  const managedModel = [state.managedAgentSelectedModel, managedCurrentModel, selectedProfile.model]
+    .find((item) => managedModels.includes(item)) || managedModels[0] || '';
+  state.managedAgentSelectedProvider = managedProvider?.id || '';
+  state.managedAgentSelectedModel = managedModel;
+  const selectedLabels = [
+    '<span class="pill success">selected</span>',
+    selectedProfile.is_default ? '<span class="pill">default</span>' : '',
+    selectedProfile.id === activeProfile ? '<span class="pill">Hermes active</span>' : '',
+  ].filter(Boolean).join('');
+  const canDelete = deletionAvailable && !selectedProfile.is_default && selectedProfile.id !== activeProfile && !consoleBusy;
+  const deleteReason = selectedProfile.is_default
+    ? 'The default Hermes profile cannot be deleted.'
+    : selectedProfile.id === activeProfile
+      ? 'Change the Hermes active profile before deleting this agent.'
+      : consoleBusy ? 'Stop the active Console run before deleting an agent.' : '';
+  detail.innerHTML = `
+    <div class="managed-agent-detail-head">
+      <div><div class="eyebrow">Selected agent</div><h3>${escapeHtml(selectedProfile.name || selectedProfile.id)}</h3></div>
+      <div class="managed-agent-badges">${selectedLabels}</div>
+    </div>
+    <p class="item-desc managed-agent-description">${escapeHtml(selectedProfile.description || 'No role description supplied.')}</p>
+    <div class="managed-agent-config">
+      <div><span class="detail-context-label mono">Provider</span><strong>${escapeHtml(selectedProfile.provider || 'Hermes configured')}</strong></div>
+      <div><span class="detail-context-label mono">Model</span><strong>${escapeHtml(selectedProfile.model || 'Configured default')}</strong></div>
+      <div><span class="detail-context-label mono">Skills</span><strong>${Number(selectedProfile.skill_count || 0)}</strong></div>
+    </div>
+    <div class="managed-agent-provider-editor">
+      <label class="agent-console-select-shell" for="managed-agent-provider-select">
+        <span class="detail-context-label mono">Authenticated provider</span>
+        <select id="managed-agent-provider-select" class="agent-console-select" ${managedProviders.length && !consoleBusy ? '' : 'disabled'}>
+          ${managedProviders.length
+            ? managedProviders.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === managedProvider?.id ? 'selected' : ''}>${escapeHtml(item.name || item.id)}${item.current ? ' · current' : ''}</option>`).join('')
+            : `<option value="">${escapeHtml(managedInventory.error || 'Load authenticated providers')}</option>`}
+        </select>
+      </label>
+      <label class="agent-console-select-shell" for="managed-agent-model-select">
+        <span class="detail-context-label mono">Model</span>
+        <select id="managed-agent-model-select" class="agent-console-select" ${managedModels.length && !consoleBusy ? '' : 'disabled'}>
+          ${managedModels.length
+            ? managedModels.map((model) => `<option value="${escapeHtml(model)}" ${model === managedModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
+            : '<option value="">Choose a provider first</option>'}
+        </select>
+      </label>
+      ${managedProviders.length
+        ? `<button class="mini-button" type="button" data-review-managed-agent-provider="${escapeHtml(selectedProfile.id)}" ${managedModel && !consoleBusy ? '' : 'disabled'}>Review Change</button>`
+        : `<button class="mini-button" type="button" data-load-managed-agent-providers="${escapeHtml(selectedProfile.id)}" ${consoleBusy ? 'disabled' : ''}>Load providers</button>`}
+      <p id="managed-agent-provider-status" class="item-meta mono managed-agent-provider-editor-status">${selectedProfile.provider ? 'Choose an authenticated provider and model to change this agent.' : 'No provider is assigned. Choose from providers already authenticated in Hermes.'}</p>
+    </div>
+    <div class="managed-agent-detail-actions">
+      <button class="action-button" type="button" data-use-hermes-profile="${escapeHtml(selectedProfile.id)}">Use in Console</button>
+      ${canDelete ? `<button class="mini-button managed-agent-delete" type="button" data-delete-hermes-profile="${escapeHtml(selectedProfile.id)}">Delete agent</button>` : `<button class="mini-button managed-agent-delete" type="button" disabled title="${escapeHtml(deleteReason)}">Delete agent</button>`}
+    </div>
+    ${deleteReason ? `<p class="item-meta mono">${escapeHtml(deleteReason)}</p>` : ''}
+  `;
+}
+
+async function loadManagedAgentProviderInventory(profileId) {
+  const status = $('#managed-agent-provider-status');
+  if (status) status.textContent = 'Loading authenticated providers from Hermes…';
+  try {
+    const payload = await refreshAgentConsoleModels(profileId);
+    state.managedAgentProviderInventory = payload.provider_inventory || {};
+    state.managedAgentSelectedProvider = state.managedAgentProviderInventory.current_provider
+      || state.managedAgentProviderInventory.providers?.[0]?.id
+      || '';
+    state.managedAgentSelectedModel = state.managedAgentProviderInventory.current_model || '';
+    renderHermesProfiles({
+      profiles: state.hermesProfiles,
+      active_profile: state.activeHermesProfileId,
+      capabilities: state.hermesProfileCapabilities,
+      status: 'available',
+    });
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+async function reviewManagedAgentProvider(profileId) {
+  const provider = $('#managed-agent-provider-select')?.value || '';
+  const model = $('#managed-agent-model-select')?.value || '';
+  const status = $('#managed-agent-provider-status');
+  if (!provider || !model) return;
+  if (status) status.textContent = 'Preparing provider change preview…';
+  try {
+    const preview = await previewAgentConsoleProvider(provider, model, profileId);
+    state.agentConsoleProviderPreview = preview;
+    state.agentConsoleProviderPreviewSource = 'managed';
+    const review = $('#provider-switch-review');
+    if (review) review.innerHTML = `
+      <p>Apply this configuration to <strong>${escapeHtml(preview.profile_id)}</strong>?</p>
+      <div class="agent-delete-effect"><span>Current</span><strong>${escapeHtml(preview.current?.provider || 'None')} · ${escapeHtml(preview.current?.model || 'None')}</strong></div>
+      <div class="agent-delete-effect"><span>New</span><strong>${escapeHtml(preview.target?.provider_name || preview.target?.provider)} · ${escapeHtml(preview.target?.model)}</strong></div>
+      ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}`;
+    $('#provider-switch-dialog')?.showModal();
+    if (status) status.textContent = '';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+function closeAgentDeletion() {
+  $('#agent-delete-dialog')?.close();
+  state.agentDeletionPreview = null;
+  const status = $('#agent-delete-status');
+  if (status) status.textContent = '';
+}
+
+async function openAgentDeletion(profileId) {
+  const dialog = $('#agent-delete-dialog');
+  const review = $('#agent-delete-review');
+  const status = $('#agent-delete-status');
+  const confirm = $('[data-agent-delete-confirm]');
+  if (!dialog || !review) return;
+  state.agentDeletionPreview = null;
+  review.innerHTML = `<div class="empty">Loading the exact Hermes deletion effects…</div>`;
+  if (status) status.textContent = '';
+  if (confirm) confirm.disabled = true;
+  dialog.showModal();
+  try {
+    const preview = await previewHermesProfileDeletion(profileId);
+    state.agentDeletionPreview = preview;
+    const name = preview.profile?.name || preview.normalized?.profile_id || profileId;
+    review.innerHTML = `
+      <article class="agent-creator-review-card agent-creator-warning">
+        <h3>Delete ${escapeHtml(name)}?</h3>
+        <p class="item-desc">This permanently removes the Hermes profile named <strong>${escapeHtml(name)}</strong>.</p>
+        <ul>${(preview.effects || []).map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>
+        ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}
+      </article>`;
+    if (confirm) confirm.disabled = false;
+    if (status) status.textContent = `Confirm deletion of ${name}.`;
+  } catch (err) {
+    review.innerHTML = `<div class="empty" role="alert">Deletion is unavailable: ${escapeHtml(err.message)}</div>`;
+    if (status) status.textContent = '';
+  }
+}
+
+async function submitAgentDeletion() {
+  const preview = state.agentDeletionPreview;
+  const profileId = preview?.normalized?.profile_id;
+  const confirm = $('[data-agent-delete-confirm]');
+  const status = $('#agent-delete-status');
+  if (!profileId || !preview.confirmation_id) return;
+  if (confirm) confirm.disabled = true;
+  if (status) status.textContent = `Deleting ${profileId}…`;
+  try {
+    const result = await deleteHermesProfile(profileId, preview.confirmation_id);
+    const refreshed = result.profiles || await fetchHermesProfiles();
+    renderHermesProfiles(refreshed);
+    if (state.selectedHermesProfileId === profileId) state.selectedHermesProfileId = '';
+    closeAgentDeletion();
+  } catch (err) {
+    // Keep the profile row and confirmation open so the failure is visible and retryable.
+    if (status) status.textContent = `Deletion failed: ${err.message}`;
+    if (confirm) confirm.disabled = false;
+  }
+}
+
+function agentCreatorPayloadFromForm() {
+  const form = agentCreatorForm();
+  if (!form) return {};
+  const mode = form.elements.mode?.value || 'fresh';
+  const skillMode = form.elements.skill_mode?.value || 'default';
+  return {
+    name: form.elements.name?.value || '',
+    description: form.elements.description?.value || '',
+    mode,
+    source_profile: mode === 'clone_config' ? form.elements.source_profile?.value || '' : '',
+    skill_mode: skillMode,
+    enabled_builtin_skills: skillMode === 'custom' ? [...state.agentCreatorSelectedSkills] : [],
+  };
+}
+
+function agentCreatorVisibleSkills() {
+  const query = ($('#agent-creator-skill-search')?.value || '').trim().toLowerCase();
+  if (!query) return state.agentCreatorSkills;
+  return state.agentCreatorSkills.filter((skill) => (
+    `${skill.name || ''} ${skill.category || ''} ${skill.description || ''}`.toLowerCase().includes(query)
+  ));
+}
+
+function renderAgentCreatorSkills() {
+  const list = $('#agent-creator-skill-list');
+  const count = $('#agent-creator-skill-count');
+  if (!list) return;
+  const selected = new Set(state.agentCreatorSelectedSkills);
+  const visible = agentCreatorVisibleSkills();
+  if (count) count.textContent = `${selected.size} of ${state.agentCreatorSkills.length} enabled`;
+  list.innerHTML = visible.length ? visible.map((skill) => `
+    <label class="agent-creator-skill-item">
+      <input type="checkbox" value="${escapeHtml(skill.id)}" ${selected.has(skill.id) ? 'checked' : ''} />
+      <span>
+        <span class="agent-creator-skill-category">${escapeHtml(skill.category || 'uncategorized')}</span>
+        <strong>${escapeHtml(skill.name || skill.id)}</strong>
+        <small>${escapeHtml(skill.description || 'No description provided by Hermes.')}</small>
+      </span>
+    </label>
+  `).join('') : '<div class="empty">No built-in skills match this filter.</div>';
+}
+
+function syncAgentCreatorConfiguration() {
+  const form = agentCreatorForm();
+  if (!form) return;
+  const mode = form.elements.mode?.value || 'fresh';
+  const skillMode = form.elements.skill_mode?.value || 'default';
+  const sourceField = $('#agent-creator-source-field');
+  const noSkillsOption = $('#agent-creator-no-skills-option');
+  const skillPicker = $('#agent-creator-skill-picker');
+  if (sourceField) sourceField.hidden = mode !== 'clone_config';
+  if (noSkillsOption) noSkillsOption.hidden = mode === 'clone_config';
+  if (mode === 'clone_config' && skillMode === 'none') {
+    const defaultMode = form.querySelector('input[name="skill_mode"][value="default"]');
+    if (defaultMode) defaultMode.checked = true;
+  }
+  const activeSkillMode = form.elements.skill_mode?.value || 'default';
+  if (skillPicker) skillPicker.hidden = activeSkillMode !== 'custom';
+  const note = $('#agent-creator-config-note');
+  if (note) {
+    note.textContent = mode === 'clone_config'
+      ? 'Hermes will copy config, .env, SOUL.md, and skills from the selected profile. A custom skill selection is applied afterward.'
+      : activeSkillMode === 'none'
+        ? 'This fresh profile opts out of bundled skill seeding.'
+        : 'Mentat stores only skill identifiers and never edits skill contents.';
+  }
+  if (activeSkillMode === 'custom') renderAgentCreatorSkills();
+}
+
+function setAgentCreatorStep(step) {
+  state.agentCreatorStep = step;
+  $$('[data-agent-creator-step]').forEach((section) => {
+    section.hidden = section.dataset.agentCreatorStep !== step;
+  });
+  const order = ['details', 'configuration', 'review'];
+  const currentIndex = Math.max(0, order.indexOf(step));
+  $$('[data-agent-creator-progress]').forEach((item) => {
+    const index = order.indexOf(item.dataset.agentCreatorProgress);
+    item.classList.toggle('active', index === currentIndex);
+    item.classList.toggle('complete', index < currentIndex);
+    if (index === currentIndex) item.setAttribute('aria-current', 'step');
+    else item.removeAttribute('aria-current');
+  });
+  const back = $('[data-agent-creator-back]');
+  const next = $('[data-agent-creator-next]');
+  const create = $('[data-agent-creator-create]');
+  if (back) back.hidden = step === 'details';
+  if (next) next.hidden = step === 'review';
+  if (create) create.hidden = step !== 'review';
+  if (step === 'configuration') syncAgentCreatorConfiguration();
+}
+
+function renderAgentCreatorReview(preview) {
+  const review = $('#agent-creator-review');
+  if (!review) return;
+  const normalized = preview.normalized || {};
+  const effects = Array.isArray(preview.effects) ? preview.effects : [];
+  const warnings = Array.isArray(preview.warnings) ? preview.warnings : [];
+  review.innerHTML = `
+    <article class="agent-creator-review-card">
+      <h3>${escapeHtml(normalized.name || 'New profile')}</h3>
+      <div class="item-desc">${escapeHtml(normalized.description || 'No role description supplied.')}</div>
+      <div class="item-meta mono">${escapeHtml(normalized.mode || 'fresh')} · ${escapeHtml(normalized.skill_mode || 'default')} skills${normalized.skill_mode === 'custom' ? ` · ${(normalized.enabled_builtin_skills || []).length} enabled` : ''}</div>
+    </article>
+    <article class="agent-creator-review-card">
+      <h3>Hermes will</h3>
+      <ul>${effects.map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>
+    </article>
+    ${warnings.length ? `<article class="agent-creator-review-card agent-creator-warning"><h3>Review carefully</h3><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul></article>` : ''}
+    <article class="agent-creator-review-card">
+      <h3>Safety boundary</h3>
+      <div class="item-desc">Mentat will execute the fixed, shell-free Hermes profile operation shown by this preview. No wrapper alias, provider change, skill-content edit, or credential read is requested.</div>
+    </article>
+  `;
+}
+
+async function openAgentCreator() {
+  const dialog = $('#agent-creator-dialog');
+  const form = agentCreatorForm();
+  if (!dialog || !form) return;
+  form.reset();
+  state.agentCreatorPreview = null;
+  state.agentCreatorProfiles = [];
+  state.agentCreatorSkills = [];
+  state.agentCreatorSelectedSkills = [];
+  setAgentCreatorStep('details');
+  const createButton = $('[data-agent-creator-create]');
+  if (createButton) createButton.disabled = false;
+  const status = $('#agent-creator-status');
+  if (status) status.textContent = 'Loading Hermes profiles and built-in skills…';
+  dialog.showModal();
+  try {
+    const [profilesPayload, skillsPayload] = await Promise.all([
+      fetchHermesProfiles(),
+      fetchHermesSkillCatalog(),
+    ]);
+    state.agentCreatorProfiles = Array.isArray(profilesPayload.profiles) ? profilesPayload.profiles : [];
+    renderHermesProfiles(profilesPayload);
+    state.agentCreatorSkills = Array.isArray(skillsPayload.skills) ? skillsPayload.skills : [];
+    state.agentCreatorSelectedSkills = state.agentCreatorSkills.map((skill) => skill.id);
+    const source = form.elements.source_profile;
+    if (source) {
+      source.innerHTML = state.agentCreatorProfiles.map((profile) => `
+        <option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name || profile.id)}${profile.is_default ? ' · default' : ''}</option>
+      `).join('');
+    }
+    renderAgentCreatorSkills();
+    if (status) status.textContent = `${state.agentCreatorProfiles.length} profiles · ${state.agentCreatorSkills.length} built-in skills available`;
+  } catch (err) {
+    console.error(err);
+    if (status) status.textContent = `Agent Creator unavailable: ${err.message}`;
+  }
+  form.elements.name?.focus();
+}
+
+async function previewAgentCreator() {
+  const status = $('#agent-creator-status');
+  if (status) status.textContent = 'Validating with Hermes…';
+  const preview = await previewHermesProfile(agentCreatorPayloadFromForm());
+  state.agentCreatorPreview = preview;
+  renderAgentCreatorReview(preview);
+  setAgentCreatorStep('review');
+  const createButton = $('[data-agent-creator-create]');
+  if (createButton) createButton.disabled = false;
+  if (status) status.textContent = 'Review the exact effects, then confirm creation.';
+}
+
+async function submitAgentCreator() {
+  const preview = state.agentCreatorPreview;
+  const status = $('#agent-creator-status');
+  if (!preview?.confirmation_id) return;
+  if (status) status.textContent = 'Creating Hermes profile…';
+  const createButton = $('[data-agent-creator-create]');
+  if (createButton) createButton.disabled = true;
+  try {
+    const result = await createHermesProfile({
+      ...agentCreatorPayloadFromForm(),
+      confirmed: true,
+      confirmation_id: preview.confirmation_id,
+    });
+    state.agentCreatorProfiles = result.profiles?.profiles || state.agentCreatorProfiles;
+    state.selectedHermesProfileId = result.profile?.id || result.profile?.name || '';
+    if (result.profiles) renderHermesProfiles(result.profiles);
+    if (state.selectedHermesProfileId) await loadManagedAgentProviderInventory(state.selectedHermesProfileId);
+    const review = $('#agent-creator-review');
+    if (review) review.innerHTML = `
+      <article class="agent-creator-review-card agent-creator-success">
+        <h3>${escapeHtml(result.profile?.name || result.profile?.id || 'Agent')} created</h3>
+        <div class="item-desc">The Hermes profile is ready and now appears in Managed Agents.</div>
+        <div class="item-meta mono">${result.skill_selection ? `${result.skill_selection.enabled_builtin_skills?.length || 0} built-in skills enabled` : 'Hermes default skill configuration'}</div>
+        <button class="action-button" type="button" data-agent-creator-view-agents>View managed agents</button>
+      </article>
+    `;
+    $('[data-agent-creator-back]')?.setAttribute('hidden', '');
+    $('[data-agent-creator-create]')?.setAttribute('hidden', '');
+    if (status) status.textContent = result.message || 'Agent created.';
+  } catch (err) {
+    console.error(err);
+    if (status) status.textContent = `Creation failed: ${err.message}`;
+    if (createButton) createButton.disabled = false;
   }
 }
 
@@ -2228,11 +2817,13 @@ async function refresh() {
 
   if (activeView === 'calendar') requests.calendar = api(endpoints.calendar);
   if (activeView === 'today') requests.agentConsole = api(endpoints.agentConsole);
+  if (activeView === 'today') requests.agentConsoleCommandManifest = fetchAgentConsoleCommandManifest();
   if (activeView === 'today' || activeView === 'agents') {
     requests.sessions = api(endpoints.sessions);
     if (activeView === 'agents') {
       requests.agents = api(endpoints.agents);
       requests.agentMessages = api(endpoints.agentMessages);
+      requests.hermesProfiles = fetchHermesProfiles();
     }
   }
   if (activeView === 'today' || activeView === 'projects' || activeView === 'agents') requests.projects = api(endpoints.projects);
@@ -2260,8 +2851,10 @@ async function refresh() {
     renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
     renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
     if (data.calendar) renderIfChanged('calendar', data.calendar, renderCalendar);
+    if (data.agentConsoleCommandManifest) setAgentConsoleCommandManifest(data.agentConsoleCommandManifest);
     if (data.agentConsole) renderAgentConsole(data.agentConsole);
     if (data.crons) renderIfChanged('crons', data.crons, renderCrons);
+    if (data.hermesProfiles) renderIfChanged('hermes-profiles', data.hermesProfiles, renderHermesProfiles);
     if (data.sessions || data.agents || data.agentMessages) {
       if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
       if (data.sessions) renderIfChanged('model-usage', data.sessions, renderModelUsageChart);
@@ -2453,10 +3046,49 @@ $('#agent-console-command-menu')?.addEventListener('click', (event) => {
   prompt.focus();
 });
 
+$('#agent-console-agent')?.addEventListener('change', async (event) => {
+  state.agentConsoleSelectedAgentId = event.target.value || 'default';
+  state.agentConsoleSelectedProvider = '';
+  state.agentConsoleSelectedModel = '';
+  state.agentConsoleProviderInventory = {};
+  state.agentConsoleSessionId = '';
+  state.agentConsoleStartFresh = true;
+  renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: {}, runs: state.agentConsoleRuns });
+  await refreshAgentConsoleModelCatalog({ agentId: state.agentConsoleSelectedAgentId });
+  const status = $('#agent-console-form-status');
+  if (status) status.textContent = `New ${state.agentConsoleSelectedAgentId} session ready.`;
+});
+
 $('#agent-console-model-select')?.addEventListener('change', (event) => {
   state.agentConsoleSelectedModel = event.target.value || '';
 });
+$('#agent-console-provider-select')?.addEventListener('change', (event) => {
+  state.agentConsoleSelectedProvider = event.target.value || '';
+  state.agentConsoleSelectedModel = '';
+  renderAgentConsole({ agents: state.agentConsoleAgents, provider_inventory: state.agentConsoleProviderInventory, runs: state.agentConsoleRuns });
+});
 $('#agent-console-apply-model')?.addEventListener('click', () => void applyAgentConsoleModel());
+$('[data-provider-switch-confirm]')?.addEventListener('click', () => void confirmAgentConsoleProviderSwitch());
+$$('[data-provider-switch-cancel]').forEach((button) => button.addEventListener('click', () => {
+  state.agentConsoleProviderPreview = null;
+  $('#provider-switch-dialog')?.close();
+  const status = $('#provider-switch-status');
+  if (status) status.textContent = '';
+}));
+document.addEventListener('change', (event) => {
+  if (event.target.matches('#managed-agent-provider-select')) {
+    state.managedAgentSelectedProvider = event.target.value || '';
+    state.managedAgentSelectedModel = '';
+    renderHermesProfiles({
+      profiles: state.hermesProfiles,
+      active_profile: state.activeHermesProfileId,
+      capabilities: state.hermesProfileCapabilities,
+      status: 'available',
+    });
+  } else if (event.target.matches('#managed-agent-model-select')) {
+    state.managedAgentSelectedModel = event.target.value || '';
+  }
+});
 $('#agent-console-new-session')?.addEventListener('click', () => {
   state.agentConsoleSessionId = '';
   state.agentConsoleStartFresh = true;
@@ -2490,6 +3122,119 @@ if (clearProjectFilter) {
 }
 
 document.addEventListener('click', async (event) => {
+  const selectProfile = event.target.closest('[data-select-hermes-profile]');
+  if (selectProfile) {
+    state.selectedHermesProfileId = selectProfile.dataset.selectHermesProfile || '';
+    state.managedAgentProviderInventory = {};
+    state.managedAgentSelectedProvider = '';
+    state.managedAgentSelectedModel = '';
+    renderHermesProfiles({
+      profiles: state.hermesProfiles,
+      active_profile: state.activeHermesProfileId,
+      capabilities: state.hermesProfileCapabilities,
+      status: 'available',
+    });
+    await loadManagedAgentProviderInventory(state.selectedHermesProfileId);
+    return;
+  }
+
+  const loadProviders = event.target.closest('[data-load-managed-agent-providers]');
+  if (loadProviders) {
+    await loadManagedAgentProviderInventory(loadProviders.dataset.loadManagedAgentProviders || state.selectedHermesProfileId);
+    return;
+  }
+
+  const reviewProvider = event.target.closest('[data-review-managed-agent-provider]');
+  if (reviewProvider) {
+    await reviewManagedAgentProvider(reviewProvider.dataset.reviewManagedAgentProvider || state.selectedHermesProfileId);
+    return;
+  }
+
+  const deleteProfile = event.target.closest('[data-delete-hermes-profile]');
+  if (deleteProfile) {
+    await openAgentDeletion(deleteProfile.dataset.deleteHermesProfile || '');
+    return;
+  }
+
+  if (event.target.closest('[data-agent-delete-cancel]')) {
+    closeAgentDeletion();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-delete-confirm]')) {
+    await submitAgentDeletion();
+    return;
+  }
+
+  if (event.target.closest('#create-agent-button')) {
+    await openAgentCreator();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-creator-view-agents]')) {
+    $('#agent-creator-dialog')?.close();
+    const panel = $('#managed-agents-panel');
+    panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    flashTarget(panel);
+    return;
+  }
+
+  const useProfile = event.target.closest('[data-use-hermes-profile]');
+  if (useProfile) {
+    state.agentConsoleSelectedAgentId = useProfile.dataset.useHermesProfile || 'default';
+    state.selectedHermesProfileId = state.agentConsoleSelectedAgentId;
+    state.agentConsoleSelectedProvider = '';
+    state.agentConsoleSessionId = '';
+    state.agentConsoleStartFresh = true;
+    state.agentConsoleSelectedModel = '';
+    await setView('today');
+    await refreshAgentConsoleModelCatalog({ agentId: state.agentConsoleSelectedAgentId, focus: true });
+    $('#agent-console-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+
+  if (event.target.closest('[data-agent-creator-close]')) {
+    $('#agent-creator-dialog')?.close();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-creator-back]')) {
+    setAgentCreatorStep(state.agentCreatorStep === 'review' ? 'configuration' : 'details');
+    return;
+  }
+
+  if (event.target.closest('[data-agent-creator-next]')) {
+    const form = agentCreatorForm();
+    if (!form) return;
+    if (state.agentCreatorStep === 'details') {
+      if (!form.elements.name?.reportValidity()) return;
+      setAgentCreatorStep('configuration');
+    } else if (state.agentCreatorStep === 'configuration') {
+      try {
+        await previewAgentCreator();
+      } catch (err) {
+        console.error(err);
+        const status = $('#agent-creator-status');
+        if (status) status.textContent = `Preview failed: ${err.message}`;
+      }
+    }
+    return;
+  }
+
+  if (event.target.closest('[data-agent-skills-select-visible]')) {
+    const selected = new Set(state.agentCreatorSelectedSkills);
+    agentCreatorVisibleSkills().forEach((skill) => selected.add(skill.id));
+    state.agentCreatorSelectedSkills = [...selected].sort();
+    renderAgentCreatorSkills();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-skills-clear]')) {
+    state.agentCreatorSelectedSkills = [];
+    renderAgentCreatorSkills();
+    return;
+  }
+
   const pulseDismiss = event.target.closest('.agent-pulse-dismiss');
   if (pulseDismiss) {
     const key = pulseDismiss.dataset.agentPulseKey || '';
@@ -2569,16 +3314,41 @@ $('#selected-task-detail')?.addEventListener('submit', async (event) => {
 });
 
 document.addEventListener('input', (event) => {
+  if (event.target.closest('#agent-creator-skill-search')) {
+    renderAgentCreatorSkills();
+    return;
+  }
   const projectForm = event.target.closest('#project-editor-form');
   if (projectForm) state.projectEditorDraft = projectPayloadFromForm(projectForm);
 });
 
 document.addEventListener('change', (event) => {
+  const creatorForm = event.target.closest('#agent-creator-form');
+  if (creatorForm) {
+    if (event.target.matches('input[name="skill_mode"], select[name="mode"]')) {
+      syncAgentCreatorConfiguration();
+    }
+    if (event.target.closest('#agent-creator-skill-list input[type="checkbox"]')) {
+      const selected = new Set(state.agentCreatorSelectedSkills);
+      if (event.target.checked) selected.add(event.target.value);
+      else selected.delete(event.target.value);
+      state.agentCreatorSelectedSkills = [...selected].sort();
+      renderAgentCreatorSkills();
+    }
+    state.agentCreatorPreview = null;
+    return;
+  }
   const projectForm = event.target.closest('#project-editor-form');
   if (projectForm) state.projectEditorDraft = projectPayloadFromForm(projectForm);
 });
 
 document.addEventListener('submit', async (event) => {
+  const creatorForm = event.target.closest('#agent-creator-form');
+  if (creatorForm) {
+    event.preventDefault();
+    if (state.agentCreatorStep === 'review') await submitAgentCreator();
+    return;
+  }
   const projectForm = event.target.closest('#project-editor-form');
   if (projectForm) {
     event.preventDefault();

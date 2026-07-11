@@ -50,8 +50,13 @@ Mentat currently includes:
 
 - Today View as the main command center
 - front-page Hermes prompt console with live run status and resumable follow-ups
+- manifest-driven `/model`, `/new`, and `/help` dashboard commands with no Hermes CLI passthrough
+- profile-aware Agent Console routing with profile-scoped models and sessions
+- capability-gated Hermes profile discovery, confirmed creation and deletion, built-in skill selection, and a persistent Managed Agents list
+- confirmed provider switching among providers Hermes reports as already authenticated for the selected profile, available from both Managed Agents and the Agent Console
+- private local Agent Console history across Mentat restarts
 - Projects / Tasks workspace with an open queue, task inspector, and completed work timeline
-- Agents / Sessions view with transcript and replay support
+- Agents / Sessions view with managed Hermes profiles plus transcript and replay support
 - Hermes session search from `state.db` in read-only mode
 - Agent Pulse live heartbeat registry
 - read-only Google Calendar integration with local fallback
@@ -63,8 +68,8 @@ Mentat currently includes:
 ### 1) Clone the repo
 
 ```bash
-git clone https://github.com/hazeion/mentat.git
-cd mentat
+git clone https://github.com/hazeion/agent-os.git
+cd agent-os
 ```
 
 ### 2) Install Python dependencies
@@ -255,12 +260,14 @@ Important local config files:
 
 ## Scope
 
-Mentat is intentionally conservative right now.
+Mentat is a local-first, capability-scoped Hermes control plane. It can perform
+explicit Hermes operations, but it is not a general editor for Hermes files.
 
 - Local-only by default on `127.0.0.1:8888`
 - Reads Hermes data from `HERMES_HOME`
-- Writes only to project-owned local data files
-- Does **not** write to Hermes core files
+- Writes project-owned local data through allowlisted storage
+- Mutates Hermes only through approved, fixed CLI/API capabilities
+- Does **not** directly edit Hermes core files
 - Keeps secrets in Hermes, not in this repo
 
 Please do not write to:
@@ -269,6 +276,25 @@ Please do not write to:
 - `~/.hermes/cron/jobs.json`
 - `~/.hermes/config.yaml`
 - `~/.hermes/skills/`
+
+A named Hermes profile is Mentat's canonical executable agent identity.
+`data/agents.json` remains heartbeat/observation data, not a second profile
+registry. See `ARCHITECTURE.md` for validation, confirmation, locking, rollback,
+and audit requirements for every write-capable Hermes operation.
+
+### Provider inventory and switching
+
+Mentat asks Hermes for provider picker context for the selected profile and
+limits the UI to providers Hermes reports as explicitly configured and
+authenticated. The current provider is distinguished from other authenticated
+choices. Mentat does not inspect, store, or return credential values, credential
+paths, environment-variable names, or tokens; credentials are configured and
+managed only through Hermes.
+
+Changing providers requires a preview and profile-bound confirmation, is blocked
+while an Agent Console run is active, and is verified by refreshing Hermes state.
+If verification fails, Mentat attempts to restore the previous provider when the
+Hermes capability supports rollback and otherwise reports a partial failure.
 
 ## Main project-owned data files
 
@@ -285,10 +311,36 @@ These tracked JSON files are intended to remain **public-safe seed/example data*
 Do not commit personal names, local filesystem paths, real messages, or private account details into them.
 Use local overrides or untracked runtime files for machine-specific/private content.
 
+Agent Console history is stored separately at `data/runtime/agent-console-runs.json`,
+which is gitignored. Mentat keeps at most 24 run summaries there. Each summary has
+run metadata plus a redacted excerpt of the prompt (500 characters), response
+(2,000 characters), and error (1,000 characters); complete prompt and response
+content is not written to this history file. Up to 40 bounded, redacted status
+events are retained per run. Runs that were active when Mentat
+stopped are shown as interrupted after restart. Missing, corrupt, or unknown
+history formats fall back to an empty history without preventing startup.
+
+Agent Console events use a stable schema with `schema_version`, `run_id`,
+monotonic `sequence`/`cursor`, `type` (plus the legacy `kind` alias), `timestamp`,
+structured `data`, and `display_text` (plus the legacy `message` alias). A GET to
+`/api/agent-console/runs/<run-id>` still returns the complete run for existing
+clients. Supplying `?after=<cursor>` returns only newer retained events, a fresh
+run-state snapshot, and `next_cursor` for lightweight polling. If a cursor predates
+the retained window, `cursor_reset_required` tells the client to rebuild from the
+returned retained events. Mentat does not infer tool calls by parsing unstable
+Hermes CLI output, and this contract intentionally uses ordinary local polling
+rather than SSE or WebSockets.
+
 ## Main files
 
 ```text
 server.py
+command_manifest.py
+agent_run_history.py
+hermes_profiles.py
+hermes_profile_creation.py
+hermes_profile_deletion.py
+hermes_skills.py
 runtime_config.py
 mentat_lifecycle.py
 scripts/mentat_setup.py
@@ -305,6 +357,7 @@ public/core.js
 public/app.js
 mentat.toml
 README.md
+ARCHITECTURE.md
 inventory.md
 ```
 

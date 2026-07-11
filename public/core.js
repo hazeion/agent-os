@@ -15,10 +15,13 @@ const endpoints = {
   calendar: '/api/calendar',
   email: '/api/email',
   agentConsole: '/api/agent-console',
+  agentConsoleCommands: '/api/agent-console/commands',
   crons: '/api/hermes/crons',
   sessions: '/api/hermes/sessions',
   search: '/api/hermes/search',
   config: '/api/hermes/config',
+  hermesProfiles: '/api/hermes/profiles',
+  hermesSkillCatalog: '/api/hermes/skills/catalog',
   notes: '/api/obsidian-notes',
   health: '/api/health',
 };
@@ -62,11 +65,31 @@ const state = {
   agentConsoleAgents: [],
   agentConsoleModels: [],
   agentConsoleModelCatalog: {},
+  agentConsoleProviderInventory: {},
+  agentConsoleSelectedProvider: '',
+  agentConsoleProviderPreview: null,
+  agentConsoleProviderPreviewSource: 'console',
   agentConsoleSelectedModel: '',
+  agentConsoleSelectedAgentId: '',
   agentConsoleRunId: '',
   agentConsoleSessionId: '',
   agentConsoleStartFresh: false,
   agentConsolePollTimer: null,
+  agentConsoleEventCursors: {},
+  agentConsoleCommandManifest: null,
+  agentCreatorProfiles: [],
+  agentCreatorSkills: [],
+  agentCreatorSelectedSkills: [],
+  agentCreatorPreview: null,
+  agentCreatorStep: 'details',
+  hermesProfiles: [],
+  selectedHermesProfileId: '',
+  hermesProfileCapabilities: {},
+  activeHermesProfileId: '',
+  agentDeletionPreview: null,
+  managedAgentProviderInventory: {},
+  managedAgentSelectedProvider: '',
+  managedAgentSelectedModel: '',
 };
 
 const taskStatusLabels = {
@@ -241,7 +264,10 @@ async function api(path, options = {}) {
   const res = await fetch(path, { cache: 'no-store', ...options });
   const text = await res.text();
   const payload = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(payload?.error || `${path} returned ${res.status}`);
+  if (!res.ok) {
+    const error = typeof payload?.error === 'string' ? payload.error : payload?.error?.message;
+    throw new Error(error || `${path} returned ${res.status}`);
+  }
   return payload;
 }
 
@@ -285,12 +311,62 @@ async function startAgentConsoleRun(payload) {
   return sendJson(`${endpoints.agentConsole}/runs`, payload, { method: 'POST' });
 }
 
-async function setAgentConsoleModel(model) {
-  return sendJson(`${endpoints.agentConsole}/model`, { model }, { method: 'POST' });
+async function fetchAgentConsoleRun(runId, afterCursor = null) {
+  const suffix = afterCursor === null ? '' : `?after=${encodeURIComponent(afterCursor)}`;
+  return api(`${endpoints.agentConsole}/runs/${encodeURIComponent(runId)}${suffix}`);
 }
 
-async function refreshAgentConsoleModels() {
-  return sendJson(`${endpoints.agentConsole}/models/refresh`, {}, { method: 'POST' });
+async function setAgentConsoleModel(model, agentId = '') {
+  return sendJson(`${endpoints.agentConsole}/model`, { model, agent_id: agentId }, { method: 'POST' });
+}
+
+async function refreshAgentConsoleModels(agentId = '') {
+  return sendJson(`${endpoints.agentConsole}/models/refresh`, { agent_id: agentId }, { method: 'POST' });
+}
+
+async function previewAgentConsoleProvider(provider, model, agentId = '') {
+  return sendJson(`${endpoints.agentConsole}/provider/preview`, { provider, model, agent_id: agentId }, { method: 'POST' });
+}
+
+async function switchAgentConsoleProvider(provider, model, agentId, confirmationId) {
+  return sendJson(`${endpoints.agentConsole}/provider`, {
+    provider,
+    model,
+    agent_id: agentId,
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
+}
+
+async function fetchAgentConsoleCommandManifest() {
+  return api(endpoints.agentConsoleCommands);
+}
+
+async function fetchHermesProfiles() {
+  return api(endpoints.hermesProfiles);
+}
+
+async function fetchHermesSkillCatalog() {
+  return api(endpoints.hermesSkillCatalog);
+}
+
+async function previewHermesProfile(payload) {
+  return sendJson(`${endpoints.hermesProfiles}/preview`, payload, { method: 'POST' });
+}
+
+async function createHermesProfile(payload) {
+  return sendJson(endpoints.hermesProfiles, payload, { method: 'POST' });
+}
+
+async function previewHermesProfileDeletion(profileId) {
+  return sendJson(`${endpoints.hermesProfiles}/${encodeURIComponent(profileId)}/delete/preview`, {}, { method: 'POST' });
+}
+
+async function deleteHermesProfile(profileId, confirmationId) {
+  return sendJson(`${endpoints.hermesProfiles}/${encodeURIComponent(profileId)}/delete`, {
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
 }
 
 async function stopAgentConsoleRun(id) {

@@ -2,6 +2,77 @@
 
 All notable changes to Mentat.
 
+## 2026-07-11
+
+### Fixed
+- Added authenticated provider and model controls to the selected Managed Agent
+  detail pane, including fresh profiles created without cloned configuration.
+- Made the Agent Console provider/model toolbar wrap with bounded flexible
+  controls so empty or long provider states cannot overlap the model selector.
+- Corrected the README clone URL and directory name to match this repository.
+
+### Validation
+- `python3 -m unittest discover -s tests -p 'test_*.py'` (142 tests)
+- JavaScript syntax checks for `public/core.js` and `public/app.js`
+
+## 2026-07-10
+
+### Added
+- Added a versioned, project-owned slash-command manifest for `/model`, `/new`,
+  and `/help`, including declared handlers, arguments, descriptions, and safety
+  classifications.
+- Added the capability-gated Hermes profile discovery adapter and local-only
+  `/api/hermes/profiles` endpoint.
+- Added preview and confirmed creation endpoints for fresh, no-bundled-skills,
+  and config-cloned Hermes profiles using fixed, shell-free CLI arguments.
+- Added built-in Hermes skill catalog discovery and explicit per-profile skill
+  selection using enabled-subset semantics.
+- Added a persistent Managed Agents surface that refreshes and highlights newly
+  created Hermes profiles before profile-aware console routing is enabled.
+- Added profile-aware Agent Console selection, fixed `hermes -p <profile>` run
+  routing, profile-scoped model discovery/configuration, and resume isolation.
+- Added capability-gated, explicitly confirmed deletion for non-default,
+  non-active Hermes profiles, including active-run blocking and refresh-based
+  verification after Hermes performs the operation.
+- Added a versioned, fail-closed profile payload with Hermes capability flags
+  and normalized profile metadata that excludes paths and secrets.
+- Added `ARCHITECTURE.md` to define executable agents as Hermes profiles and
+  document Mentat's typed mutation contract.
+- Persisted up to 24 privacy-aware Agent Console run summaries in gitignored
+  `data/runtime` storage with bounded, redacted prompt/response/error excerpts.
+- Added versioned structured Agent Console events with monotonic per-run cursors,
+  bounded persistence, and a cursor-based incremental run endpoint.
+- Added profile-scoped provider inventory sourced from Hermes' explicitly
+  configured and authenticated providers, plus confirmed provider/model
+  switching with active-run blocking, post-write verification, and rollback.
+
+### Changed
+- Documented the approved profile-scoped provider-switching boundary: only
+  explicitly configured/authenticated Hermes providers are selectable;
+  credentials remain Hermes-owned; switches require preview, confirmation,
+  active-run blocking, post-operation verification, and rollback where supported.
+- Agent Console completion, help, and dispatch now use the safe manifest and a
+  fixed frontend handler registry instead of duplicated hard-coded command
+  arrays; arbitrary Hermes CLI passthrough remains unavailable.
+- Reframed Mentat as a local-first, capability-scoped Hermes control plane
+  rather than a strictly read-only dashboard.
+- Preserved direct read-only boundaries for Hermes databases, credentials,
+  configuration files, skills, and persona files.
+- Kept Agent Console execution globally single-run while recording the selected
+  profile identity and preventing cross-profile session resume.
+- Recovered queued, running, or cancelling console runs as interrupted after
+  restart using locked atomic writes and corruption-safe fallback.
+- Switched active Agent Console refreshes from complete dashboard polling to
+  incremental event polling while retaining the complete run API for compatibility.
+- Replaced auto-resizing Managed Agent cards with a stable vertical
+  master/detail selector and synchronized the selected agent with Console routing.
+
+### Validation
+- `python -m unittest discover -s tests -v` (140 tests)
+- `python -m py_compile server.py agent_run_history.py command_manifest.py hermes_profiles.py hermes_profile_creation.py hermes_profile_deletion.py hermes_provider_switching.py hermes_skills.py`
+- JavaScript syntax checks for `public/core.js`, `public/app.js`, and
+  `scripts/browser_smoke.mjs`
+
 ## 2026-06-29
 
 ### Added

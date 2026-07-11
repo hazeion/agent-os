@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Mentat local dashboard server.
 
-Read-only toward Hermes core files. Dashboard write-back is limited to
-project-owned data/*.json files.
+Hermes state is read directly only for observation. Mutations are limited to
+typed, capability-gated Hermes adapter operations; project-owned write-back
+remains allowlisted.
 """
 
 from __future__ import annotations
@@ -23,7 +24,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
+from agent_run_history import EVENT_RETENTION, EVENT_SCHEMA_VERSION, load_run_summaries, save_run_summaries
+from command_manifest import command_manifest_payload
 from json_store import read_json as store_read_json, update_json as store_update_json
+from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
+from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
+from hermes_provider_switching import (
+    apply_provider_switch,
+    preview_provider_switch,
+    provider_inventory,
+)
+from hermes_profiles import discover_hermes_profiles
+from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from runtime_config import (
     AppConfig,
     DEFAULT_APP_NAME,
@@ -203,6 +215,10 @@ AGENT_MODEL_CATALOG_CACHE = {"key": None, "payload": None, "fetched_at": 0.0}
 AGENT_CONSOLE_RUNS: dict[str, dict] = {}
 AGENT_CONSOLE_PROCESSES: dict[str, subprocess.Popen] = {}
 AGENT_CONSOLE_LOCK = threading.RLock()
+HERMES_PROFILE_CREATION_LOCK = threading.Lock()
+# Profile creation and deletion share one mutation lock. The existing name is
+# retained for compatibility with the initial creator contract and tests.
+AGENT_CONSOLE_HISTORY_LOADED = False
 MENTAT_PROJECT_NAME = "Mentat"
 MENTAT_PROJECT_ID = "project_mentat"
 PREVIOUS_PROJECT_NAME = "Agent " "OS"
@@ -219,6 +235,41 @@ def note_sort_key(path: Path):
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def agent_console_history_path() -> Path:
+    return DATA_DIR / "runtime" / "agent-console-runs.json"
+
+
+def persist_agent_console_runs() -> bool:
+    """Persist bounded run summaries; callers may already hold the re-entrant lock."""
+    if not AGENT_CONSOLE_HISTORY_LOADED:
+        return True
+    try:
+        with AGENT_CONSOLE_LOCK:
+            save_run_summaries(
+                agent_console_history_path(),
+                list(AGENT_CONSOLE_RUNS.values()),
+                retention=AGENT_CONSOLE_RUN_LIMIT,
+            )
+        return True
+    except OSError as exc:
+        print(f"Agent Console history could not be persisted: {compact_text(exc, max_length=500)}")
+        return False
+
+
+def load_agent_console_runs() -> None:
+    """Restore prior summaries and fail closed to an empty history on corruption."""
+    global AGENT_CONSOLE_HISTORY_LOADED
+    with AGENT_CONSOLE_LOCK:
+        runs, recovered = load_run_summaries(
+            agent_console_history_path(), now=now_iso, retention=AGENT_CONSOLE_RUN_LIMIT
+        )
+        AGENT_CONSOLE_RUNS.clear()
+        AGENT_CONSOLE_RUNS.update((run["id"], run) for run in runs)
+        AGENT_CONSOLE_HISTORY_LOADED = True
+        if recovered:
+            persist_agent_console_runs()
 
 
 def compact_text(value, *, max_length: int | None = None) -> str:
@@ -2195,7 +2246,21 @@ def hermes_command_path() -> str | None:
     return None
 
 
-def agent_console_model() -> str:
+def agent_console_profile(profile_id: str | None, discovery: dict | None = None) -> dict | None:
+    """Resolve a public profile id without exposing or reading its filesystem path."""
+    normalized = compact_text(profile_id, max_length=64).lower() or "default"
+    if normalized == "hermes":  # Backward-compatible API alias.
+        normalized = "default"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", normalized):
+        return None
+    discovery = discovery or hermes_profiles_payload()
+    return next((profile for profile in discovery.get("profiles") or [] if profile.get("id") == normalized), None)
+
+
+def agent_console_model(profile_id: str = "default", discovery: dict | None = None) -> str:
+    profile = agent_console_profile(profile_id, discovery)
+    if profile and compact_text(profile.get("model"), max_length=160):
+        return compact_text(profile.get("model"), max_length=160)
     summary = hermes_config().get("summary") or {}
     return compact_text(summary.get("default_model"), max_length=160) or "configured default"
 
@@ -2212,9 +2277,244 @@ def hermes_python_path() -> str | None:
     return None
 
 
+def hermes_profiles_payload() -> dict:
+    """Return normalized profile capabilities without exposing Hermes paths or secrets."""
+    return discover_hermes_profiles(
+        hermes_python_path(),
+        HERMES_HOME,
+        cwd=BASE_DIR,
+    )
+
+
+def hermes_skill_catalog_payload() -> dict:
+    """Return the normalized Hermes built-in skill catalog without skill contents."""
+    return discover_builtin_skills(
+        hermes_python_path(),
+        HERMES_HOME,
+        cwd=BASE_DIR,
+    )
+
+
+def preview_hermes_profile_creation(payload):
+    skill_catalog = (
+        hermes_skill_catalog_payload()
+        if isinstance(payload, dict) and compact_text(payload.get("skill_mode"), max_length=40).lower() == "custom"
+        else None
+    )
+    return preview_profile_creation(
+        payload,
+        hermes_profiles_payload(),
+        skill_catalog,
+    )
+
+
+def create_hermes_profile(payload):
+    """Create one confirmed Hermes profile through fixed CLI arguments."""
+    if not isinstance(payload, dict):
+        return {"error": "Profile creation payload must be a JSON object."}, 400
+    if payload.get("confirmed") is not True:
+        return {"error": "Profile creation requires explicit confirmation."}, 400
+    confirmation_id = compact_text(payload.get("confirmation_id"), max_length=80)
+    if not confirmation_id:
+        return {"error": "Profile creation requires a confirmation_id from the preview endpoint."}, 400
+    if not HERMES_PROFILE_CREATION_LOCK.acquire(blocking=False):
+        return {"error": "Another Hermes profile creation is already in progress."}, 409
+
+    try:
+        with AGENT_CONSOLE_LOCK:
+            active = next(
+                (item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES),
+                None,
+            )
+            if active:
+                return {
+                    "error": "Stop the active Hermes run before creating a profile.",
+                    "active_run_id": active["id"],
+                }, 409
+
+        skill_catalog = (
+            hermes_skill_catalog_payload()
+            if compact_text(payload.get("skill_mode"), max_length=40).lower() == "custom"
+            else None
+        )
+        preview, preview_status = preview_profile_creation(
+            payload,
+            hermes_profiles_payload(),
+            skill_catalog,
+        )
+        if preview_status != 200:
+            return preview, preview_status
+        if confirmation_id != preview.get("confirmation_id"):
+            return {"error": "Profile creation inputs changed after preview; preview them again."}, 409
+
+        command = hermes_command_path()
+        if not command:
+            return {"error": "Hermes CLI was not found in the Mentat server environment."}, 503
+        normalized = preview["normalized"]
+        try:
+            result = subprocess.run(
+                [command, *profile_creation_arguments(normalized)],
+                cwd=str(BASE_DIR),
+                env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "error": "Hermes profile creation timed out. Refresh profiles before retrying.",
+                "partial": True,
+            }, 504
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return {"error": "Hermes profile creation could not be started."}, 500
+
+        skill_selection = None
+        if result.returncode == 0 and normalized.get("skill_mode") == "custom":
+            skill_selection = apply_builtin_skill_selection(
+                hermes_python_path(),
+                HERMES_HOME,
+                normalized["name"],
+                normalized.get("enabled_builtin_skills") or [],
+                cwd=BASE_DIR,
+            )
+
+        refreshed = hermes_profiles_payload()
+        created = next(
+            (item for item in refreshed.get("profiles") or [] if item.get("id") == normalized["name"]),
+            None,
+        )
+        if result.returncode != 0:
+            return {
+                "error": f"Hermes profile creation exited with status {result.returncode}.",
+                "partial": created is not None,
+                "profile": created,
+                "profiles": refreshed,
+            }, 500
+        if skill_selection and skill_selection.get("status") != "applied":
+            return {
+                "error": "Hermes created the profile, but its built-in skill selection could not be applied.",
+                "partial": True,
+                "profile": created,
+                "profiles": refreshed,
+                "skill_selection": skill_selection,
+            }, 500
+        if created is None:
+            return {
+                "error": "Hermes reported success, but the new profile was not found after refresh.",
+                "partial": True,
+                "profiles": refreshed,
+            }, 500
+        return {
+            "ok": True,
+            "profile": created,
+            "profiles": refreshed,
+            "skill_selection": skill_selection,
+            "message": f"Hermes profile '{normalized['name']}' created.",
+        }, 201
+    finally:
+        HERMES_PROFILE_CREATION_LOCK.release()
+
+
+def _active_agent_console_run() -> dict | None:
+    with AGENT_CONSOLE_LOCK:
+        return next(
+            (item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES),
+            None,
+        )
+
+
+def preview_hermes_profile_deletion(profile_id, payload):
+    """Return exact destructive effects only when deletion is currently safe."""
+    active = _active_agent_console_run()
+    if active:
+        return {
+            "error": "Stop the active Hermes run before deleting a profile.",
+            "active_run_id": active["id"],
+        }, 409
+    return preview_profile_deletion(profile_id, payload or {}, hermes_profiles_payload())
+
+
+def delete_confirmed_hermes_profile(profile_id, payload):
+    """Delete one confirmed non-default, non-active profile through Hermes."""
+    if not isinstance(payload, dict):
+        return {"error": "Profile deletion payload must be a JSON object."}, 400
+    if payload.get("confirmed") is not True:
+        return {"error": "Profile deletion requires explicit confirmation."}, 400
+    confirmation_id = compact_text(payload.get("confirmation_id"), max_length=80)
+    if not confirmation_id:
+        return {"error": "Profile deletion requires a confirmation_id from the preview endpoint."}, 400
+    if not HERMES_PROFILE_CREATION_LOCK.acquire(blocking=False):
+        return {"error": "Another Hermes profile change is already in progress."}, 409
+
+    try:
+        active = _active_agent_console_run()
+        if active:
+            return {
+                "error": "Stop the active Hermes run before deleting a profile.",
+                "active_run_id": active["id"],
+            }, 409
+
+        before = hermes_profiles_payload()
+        preview, preview_status = preview_profile_deletion(profile_id, payload, before)
+        if preview_status != 200:
+            return preview, preview_status
+        if confirmation_id != preview.get("confirmation_id"):
+            return {"error": "Profile deletion inputs or profile state changed after preview; preview again."}, 409
+
+        normalized_id = preview["normalized"]["profile_id"]
+        result = delete_hermes_profile(
+            hermes_python_path(),
+            HERMES_HOME,
+            normalized_id,
+            cwd=BASE_DIR,
+        )
+        refreshed = hermes_profiles_payload()
+        remains = next(
+            (item for item in refreshed.get("profiles") or [] if item.get("id") == normalized_id),
+            None,
+        )
+        if remains is None and result.get("status") == "deleted":
+            return {
+                "ok": True,
+                "deleted_profile_id": normalized_id,
+                "profiles": refreshed,
+                "message": f"Hermes profile '{normalized_id}' deleted.",
+            }, 200
+        if remains is None:
+            return {
+                "ok": True,
+                "deleted_profile_id": normalized_id,
+                "profiles": refreshed,
+                "warning": "Hermes did not return a clean result, but refresh verified that the profile was deleted.",
+            }, 200
+        error_code = result.get("error_code") or "runtime_failed"
+        messages = {
+            "runtime_timeout": "Hermes profile deletion timed out and the profile still exists.",
+            "profile_missing": "Hermes could not find the profile, but it remains visible after refresh.",
+            "capability_unavailable": "This Hermes runtime no longer exposes profile deletion.",
+        }
+        return {
+            "error": messages.get(error_code, "Hermes could not delete the profile."),
+            "error_code": error_code,
+            "profile": remains,
+            "profiles": refreshed,
+        }, 504 if error_code == "runtime_timeout" else 500
+    finally:
+        HERMES_PROFILE_CREATION_LOCK.release()
+
+
 HERMES_MODEL_CATALOG_SCRIPT = """
 import json
+import os
 import sys
+
+from hermes_cli.profiles import resolve_profile_env
+
+profile_id = sys.argv[2]
+os.environ["HERMES_HOME"] = resolve_profile_env(profile_id)
 
 from hermes_cli.inventory import build_models_payload, load_picker_context
 
@@ -2241,6 +2541,7 @@ if isinstance(selected, dict):
         if value and value not in models:
             models.append(value)
 print(json.dumps({
+    "profile_id": profile_id,
     "provider": provider,
     "provider_label": str((selected or {}).get("name") or provider),
     "models": models,
@@ -2250,12 +2551,22 @@ print(json.dumps({
 """.strip()
 
 
-def agent_console_model_catalog(*, refresh: bool = False) -> dict:
-    config = hermes_config()
-    summary = config.get("summary") or {}
-    provider = compact_text(summary.get("provider"), max_length=120)
-    current_model = compact_text(summary.get("default_model"), max_length=160)
-    key = f"{provider}|{current_model}|{config.get('modified_at') or ''}"
+def agent_console_model_catalog(profile_id: str = "default", *, refresh: bool = False) -> dict:
+    discovery = hermes_profiles_payload()
+    profile = agent_console_profile(profile_id, discovery)
+    normalized_profile_id = compact_text(profile.get("id") if profile else profile_id, max_length=64).lower()
+    provider = compact_text(profile.get("provider") if profile else "", max_length=120)
+    current_model = compact_text(profile.get("model") if profile else "", max_length=160)
+    if profile is None:
+        return {
+            "profile_id": normalized_profile_id,
+            "provider": "",
+            "provider_label": "",
+            "models": [],
+            "current_model": "",
+            "error": f"Hermes profile '{normalized_profile_id}' is unavailable.",
+        }
+    key = f"{normalized_profile_id}|{provider}|{current_model}"
     now = time.monotonic()
     cached = AGENT_MODEL_CATALOG_CACHE.get("payload")
     if (
@@ -2269,6 +2580,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
     python_path = hermes_python_path()
     if not python_path:
         return {
+            "profile_id": normalized_profile_id,
             "provider": provider,
             "provider_label": provider,
             "models": [],
@@ -2277,7 +2589,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
         }
     try:
         result = subprocess.run(
-            [python_path, "-c", HERMES_MODEL_CATALOG_SCRIPT, "refresh" if refresh else "cached"],
+            [python_path, "-c", HERMES_MODEL_CATALOG_SCRIPT, "refresh" if refresh else "cached", normalized_profile_id],
             cwd=str(BASE_DIR),
             env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
             capture_output=True,
@@ -2289,6 +2601,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         return {
+            "profile_id": normalized_profile_id,
             "provider": provider,
             "provider_label": provider,
             "models": [],
@@ -2297,6 +2610,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
         }
     if result.returncode != 0:
         return {
+            "profile_id": normalized_profile_id,
             "provider": provider,
             "provider_label": provider,
             "models": [],
@@ -2315,6 +2629,7 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
         if model and model not in models:
             models.append(model)
     catalog = {
+        "profile_id": normalized_profile_id,
         "provider": compact_text(payload.get("provider"), max_length=120) or provider,
         "provider_label": compact_text(payload.get("provider_label"), max_length=160) or provider,
         "models": models,
@@ -2326,16 +2641,53 @@ def agent_console_model_catalog(*, refresh: bool = False) -> dict:
     return dict(catalog)
 
 
-def agent_console_event(run: dict, message: str, kind: str = "status") -> None:
+def agent_console_provider_inventory(profile_id: str = "default", *, refresh: bool = False) -> dict:
+    requested = compact_text(profile_id, max_length=64).lower() or "default"
+    if requested == "hermes":
+        requested = "default"
+    profile = agent_console_profile(requested)
+    if profile is None:
+        return {
+            "profile_id": requested,
+            "current_provider": "",
+            "current_model": "",
+            "providers": [],
+            "capabilities": {"providers.switch": False},
+            "error": f"Hermes profile '{requested}' is unavailable.",
+        }
+    return provider_inventory(
+        hermes_python_path(), HERMES_HOME, requested, cwd=BASE_DIR, refresh=refresh
+    )
+
+
+def agent_console_event(run: dict, message: str, kind: str = "status", data: dict | None = None) -> None:
     events = run.setdefault("events", [])
+    sequence_candidates = []
+    for value in [run.get("event_cursor")] + [
+        item.get("sequence") or item.get("cursor") for item in events if isinstance(item, dict)
+    ]:
+        try:
+            sequence_candidates.append(max(0, int(value or 0)))
+        except (TypeError, ValueError):
+            continue
+    sequence = max(sequence_candidates or [0]) + 1
+    display_text = compact_text(message, max_length=500) or "Agent run updated"
     events.append({
+        "schema_version": EVENT_SCHEMA_VERSION,
         "id": f"event_{uuid4().hex[:10]}",
+        "run_id": str(run.get("id") or ""),
+        "sequence": sequence,
+        "cursor": sequence,
+        "type": kind,
         "kind": kind,
-        "message": compact_text(message, max_length=500),
+        "data": dict(data) if isinstance(data, dict) else {},
+        "display_text": display_text,
+        "message": display_text,
         "timestamp": now_iso(),
     })
-    if len(events) > 40:
-        del events[:-40]
+    if len(events) > EVENT_RETENTION:
+        del events[:-EVENT_RETENTION]
+    run["event_cursor"] = sequence
     run["updated_at"] = now_iso()
 
 
@@ -2349,18 +2701,41 @@ def agent_console_snapshot(run: dict) -> dict:
 
 def agent_console_payload():
     command = hermes_command_path()
-    catalog = agent_console_model_catalog()
+    discovery = hermes_profiles_payload()
+    profiles = discovery.get("profiles") or []
+    selected_profile_id = discovery.get("active_profile") or "default"
+    if not any(profile.get("id") == selected_profile_id for profile in profiles):
+        selected_profile_id = profiles[0].get("id") if profiles else "default"
+    catalog = agent_console_model_catalog(selected_profile_id)
+    provider_payload = agent_console_provider_inventory(selected_profile_id)
     with AGENT_CONSOLE_LOCK:
         runs = sorted(AGENT_CONSOLE_RUNS.values(), key=lambda item: item.get("created_at") or "", reverse=True)
         snapshots = [agent_console_snapshot(run) for run in runs[:12]]
     return {
-        "agents": [{
-            "id": "hermes",
-            "name": "Hermes",
+        "agents": [
+            {
+                "id": profile.get("id"),
+                "name": profile.get("name") or profile.get("id"),
+                "description": profile.get("description") or "",
+                "available": bool(command),
+                "model": profile.get("model") or "configured default",
+                "provider": profile.get("provider") or "",
+                "is_default": bool(profile.get("is_default")),
+            }
+            for profile in profiles
+            if profile.get("id")
+        ] or [{
+            "id": "default",
+            "name": "Hermes · default",
+            "description": "",
             "available": bool(command),
-            "model": catalog.get("current_model") or agent_console_model(),
+            "model": catalog.get("current_model") or agent_console_model("default", discovery),
+            "provider": catalog.get("provider") or "",
+            "is_default": True,
         }],
+        "selected_agent_id": selected_profile_id,
         "model_catalog": catalog,
+        "provider_inventory": provider_payload,
         "runs": snapshots,
         "active_run_id": next((run["id"] for run in snapshots if run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None),
         "local_only": True,
@@ -2368,12 +2743,35 @@ def agent_console_payload():
     }
 
 
-def agent_console_run_payload(run_id: str, _target_message_id: str | None = None):
+def agent_console_run_payload(run_id: str, after_cursor: str | None = None):
     with AGENT_CONSOLE_LOCK:
         run = AGENT_CONSOLE_RUNS.get(run_id)
         if not run:
             return {"error": "Agent run not found"}, 404
-        return {"run": agent_console_snapshot(run)}, 200
+        snapshot = agent_console_snapshot(run)
+        if after_cursor is None:
+            # Existing clients keep receiving the complete run representation.
+            return {"run": snapshot}, 200
+        if not re.fullmatch(r"\d{1,10}", str(after_cursor)):
+            return {"error": "Event cursor must be a non-negative integer"}, 400
+        cursor = int(after_cursor)
+        retained = [item for item in snapshot.get("events", []) if isinstance(item, dict)]
+        current_cursor = int(snapshot.get("event_cursor") or (retained[-1].get("cursor") if retained else 0) or 0)
+        if cursor > current_cursor:
+            return {"error": "Event cursor is ahead of this run", "current_cursor": current_cursor}, 409
+        events = [item for item in retained if int(item.get("cursor") or 0) > cursor]
+        oldest_cursor = int(retained[0].get("cursor") or 0) if retained else current_cursor
+        cursor_reset_required = bool(retained and cursor < oldest_cursor - 1)
+        snapshot["events"] = events
+        return {
+            "schema_version": EVENT_SCHEMA_VERSION,
+            "run_id": run_id,
+            "after_cursor": cursor,
+            "next_cursor": current_cursor,
+            "cursor_reset_required": cursor_reset_required,
+            "events": events,
+            "run": snapshot,
+        }, 200
 
 
 def parse_hermes_session_id(stderr: str) -> str | None:
@@ -2400,15 +2798,18 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             run["status"] = "cancelled"
             run["completed_at"] = now_iso()
             run["error"] = "Run stopped by operator."
-            agent_console_event(run, "Run stopped", "cancelled")
+            agent_console_event(run, "Run stopped", "cancelled", {"reason": "operator_cancelled"})
+            persist_agent_console_runs()
             return
         run["status"] = "running"
         run["started_at"] = now_iso()
-        agent_console_event(run, "Starting Hermes CLI")
+        agent_console_event(run, "Starting Hermes CLI", "status", {"phase": "launch"})
+        persist_agent_console_runs()
         prompt = run["prompt"]
         session_id = run.get("session_id")
+        profile_id = run.get("agent_id") or "default"
 
-    command = [command_path, "chat", "-q", prompt, "-Q", "--source", "mentat"]
+    command = [command_path, "-p", profile_id, "chat", "-q", prompt, "-Q", "--source", "mentat"]
     if session_id:
         command.extend(["--resume", session_id])
 
@@ -2432,7 +2833,8 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             AGENT_CONSOLE_PROCESSES[run_id] = process
             current = AGENT_CONSOLE_RUNS.get(run_id)
             if current:
-                agent_console_event(current, "Model is working")
+                agent_console_event(current, "Model is working", "status", {"phase": "inference"})
+                persist_agent_console_runs()
 
         while True:
             try:
@@ -2450,9 +2852,10 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
                     if current.get("status") == "cancelling":
                         process.terminate()
                     elif elapsed >= 45:
-                        agent_console_event(current, f"Hermes is still working ({elapsed}s)")
+                        agent_console_event(current, f"Hermes is still working ({elapsed}s)", "status", {"elapsed_seconds": elapsed})
                     elif elapsed >= 12:
-                        agent_console_event(current, "Agent is processing the request and may be using tools")
+                        agent_console_event(current, "Agent is processing the request and may be using tools", "status", {"elapsed_seconds": elapsed})
+                    persist_agent_console_runs()
                 next_update = 12 if elapsed < 12 else elapsed + 30
 
         with AGENT_CONSOLE_LOCK:
@@ -2468,16 +2871,17 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             if current.get("status") == "cancelling":
                 current["status"] = "cancelled"
                 current["error"] = "Run stopped by operator."
-                agent_console_event(current, "Run stopped", "cancelled")
+                agent_console_event(current, "Run stopped", "cancelled", {"reason": "operator_cancelled"})
             elif process.returncode == 0 and response:
                 current["status"] = "completed"
                 current["response"] = response
-                agent_console_event(current, "Response complete", "complete")
+                agent_console_event(current, "Response complete", "complete", {"duration_seconds": current["duration_seconds"]})
             else:
                 error_text = re.sub(r"(?im)^\s*session_id:.*$", "", clean_agent_output(stderr, max_length=4_000)).strip()
                 current["status"] = "failed"
                 current["error"] = error_text or response or f"Hermes exited with status {process.returncode}."
-                agent_console_event(current, "Hermes run failed", "error")
+                agent_console_event(current, "Hermes run failed", "error", {"return_code": process.returncode})
+            persist_agent_console_runs()
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         with AGENT_CONSOLE_LOCK:
             current = AGENT_CONSOLE_RUNS.get(run_id)
@@ -2485,7 +2889,8 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
                 current["status"] = "failed"
                 current["completed_at"] = now_iso()
                 current["error"] = compact_text(exc, max_length=2_000)
-                agent_console_event(current, "Hermes could not be started", "error")
+                agent_console_event(current, "Hermes could not be started", "error", {"phase": "launch"})
+                persist_agent_console_runs()
     finally:
         with AGENT_CONSOLE_LOCK:
             AGENT_CONSOLE_PROCESSES.pop(run_id, None)
@@ -2494,9 +2899,14 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
 def start_agent_console_run(payload):
     if not isinstance(payload, dict):
         return {"error": "Agent prompt payload must be a JSON object"}, 400
-    agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "hermes"
-    if agent_id != "hermes":
-        return {"error": f"Unknown agent: {agent_id}"}, 400
+    requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested_agent_id == "hermes":
+        requested_agent_id = "default"
+    discovery = hermes_profiles_payload()
+    profile = agent_console_profile(requested_agent_id, discovery)
+    if profile is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested_agent_id}"}, 400
+    agent_id = profile["id"]
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt:
         return {"error": "Prompt is required"}, 400
@@ -2510,15 +2920,30 @@ def start_agent_console_run(payload):
         return {"error": "Hermes CLI was not found in the Mentat server environment."}, 503
 
     with AGENT_CONSOLE_LOCK:
+        if HERMES_PROFILE_CREATION_LOCK.locked():
+            return {"error": "A Hermes profile is currently being changed."}, 409
         active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
         if active:
             return {"error": "Hermes is already working on another prompt", "active_run_id": active["id"]}, 409
+        if session_id:
+            conflicting_session = next(
+                (
+                    item for item in AGENT_CONSOLE_RUNS.values()
+                    if item.get("session_id") == session_id and item.get("agent_id", "default") != agent_id
+                ),
+                None,
+            )
+            if conflicting_session:
+                return {
+                    "error": "A Hermes session cannot be resumed by a different profile.",
+                    "session_profile_id": conflicting_session.get("agent_id") or "default",
+                }, 409
         run_id = f"run_{uuid4().hex[:14]}"
         run = {
             "id": run_id,
-            "agent_id": "hermes",
-            "agent_name": "Hermes",
-            "model": agent_console_model(),
+            "agent_id": agent_id,
+            "agent_name": profile.get("name") or agent_id,
+            "model": profile.get("model") or agent_console_model(agent_id, discovery),
             "prompt": prompt,
             "status": "queued",
             "session_id": session_id or None,
@@ -2530,15 +2955,21 @@ def start_agent_console_run(payload):
             "started_at": None,
             "completed_at": None,
         }
-        agent_console_event(run, "Prompt queued for Hermes", "queued")
+        agent_console_event(
+            run,
+            f"Prompt queued for {profile.get('name') or agent_id}",
+            "queued",
+            {"agent_id": agent_id},
+        )
         AGENT_CONSOLE_RUNS[run_id] = run
         if len(AGENT_CONSOLE_RUNS) > AGENT_CONSOLE_RUN_LIMIT:
             removable = sorted(
                 (item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES),
-                key=lambda item: item.get("created_at") or "",
+                key=lambda item: (item.get("created_at") or "", item.get("id") or ""),
             )
             for old_run in removable[: len(AGENT_CONSOLE_RUNS) - AGENT_CONSOLE_RUN_LIMIT]:
                 AGENT_CONSOLE_RUNS.pop(old_run["id"], None)
+        persist_agent_console_runs()
 
     with AGENT_CONSOLE_LOCK:
         snapshot = agent_console_snapshot(run)
@@ -2553,7 +2984,14 @@ def set_agent_console_model(payload):
     model = compact_text(payload.get("model"), max_length=160)
     if not model:
         return {"error": "Model is required"}, 400
-    catalog = agent_console_model_catalog()
+    requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested_agent_id == "hermes":
+        requested_agent_id = "default"
+    profile = agent_console_profile(requested_agent_id)
+    if profile is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested_agent_id}"}, 400
+    agent_id = profile["id"]
+    catalog = agent_console_model_catalog(agent_id)
     available_models = list(catalog.get("models") or [])
     if model not in available_models:
         provider_label = catalog.get("provider_label") or catalog.get("provider") or "current provider"
@@ -2569,7 +3007,7 @@ def set_agent_console_model(payload):
 
     try:
         result = subprocess.run(
-            [command, "config", "set", "model.default", model],
+            [command, "-p", agent_id, "config", "set", "model.default", model],
             cwd=str(BASE_DIR),
             env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
             capture_output=True,
@@ -2587,14 +3025,115 @@ def set_agent_console_model(payload):
         return {"error": detail or "Hermes could not update the default model."}, 500
     return {
         "ok": True,
+        "agent_id": agent_id,
         "model": model,
-        "model_catalog": agent_console_model_catalog(refresh=True),
-        "message": "Hermes default model updated.",
+        "model_catalog": agent_console_model_catalog(agent_id, refresh=True),
+        "message": f"{profile.get('name') or agent_id} default model updated.",
     }, 200
 
 
-def refresh_agent_console_models(_payload=None):
-    return {"ok": True, "model_catalog": agent_console_model_catalog(refresh=True)}, 200
+def preview_agent_console_provider_switch(payload):
+    if not isinstance(payload, dict):
+        return {"error": "Provider switch payload must be a JSON object"}, 400
+    requested = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested == "hermes":
+        requested = "default"
+    if agent_console_profile(requested) is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested}"}, 400
+    provider = compact_text(payload.get("provider"), max_length=120)
+    model = compact_text(payload.get("model"), max_length=160)
+    if not provider or not model:
+        return {"error": "Provider and model are required"}, 400
+    with AGENT_CONSOLE_LOCK:
+        active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+        if active:
+            return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
+    inventory = agent_console_provider_inventory(requested, refresh=True)
+    if inventory.get("error") and not inventory.get("providers"):
+        return {"error": inventory["error"]}, 503
+    return preview_provider_switch(requested, provider, model, inventory)
+
+
+def switch_agent_console_provider(payload):
+    if not isinstance(payload, dict):
+        return {"error": "Provider switch payload must be a JSON object"}, 400
+    if payload.get("confirmed") is not True:
+        return {"error": "Provider switching requires explicit confirmation."}, 400
+    confirmation_id = compact_text(payload.get("confirmation_id"), max_length=80)
+    requested = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested == "hermes":
+        requested = "default"
+    provider = compact_text(payload.get("provider"), max_length=120)
+    model = compact_text(payload.get("model"), max_length=160)
+    if not confirmation_id or not provider or not model:
+        return {"error": "Provider, model, and preview confirmation are required."}, 400
+    if agent_console_profile(requested) is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested}"}, 400
+
+    if not HERMES_PROFILE_CREATION_LOCK.acquire(blocking=False):
+        return {"error": "Another Hermes profile change is already in progress."}, 409
+    try:
+        with AGENT_CONSOLE_LOCK:
+            active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+            if active:
+                return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
+        before = agent_console_provider_inventory(requested, refresh=True)
+        preview, preview_status = preview_provider_switch(requested, provider, model, before)
+        if preview_status != 200:
+            return preview, preview_status
+        if confirmation_id != preview.get("confirmation_id"):
+            return {"error": "Provider or profile state changed after preview; preview the change again."}, 409
+
+        _, apply_error = apply_provider_switch(
+            hermes_python_path(), HERMES_HOME, requested, provider, model, cwd=BASE_DIR
+        )
+        if apply_error:
+            return {"error": apply_error or "Hermes could not change the provider."}, 500
+
+        verified = agent_console_provider_inventory(requested, refresh=True)
+        if verified.get("current_provider") == provider and verified.get("current_model") == model:
+            AGENT_MODEL_CATALOG_CACHE.update({"key": None, "payload": None, "fetched_at": 0.0})
+            return {
+                "ok": True,
+                "agent_id": requested,
+                "provider": provider,
+                "model": model,
+                "provider_inventory": verified,
+                "model_catalog": agent_console_model_catalog(requested, refresh=True),
+                "message": "Hermes provider and default model updated and verified.",
+            }, 200
+
+        prior_provider = compact_text(before.get("current_provider"), max_length=120)
+        prior_model = compact_text(before.get("current_model"), max_length=160)
+        rollback_ok = False
+        if prior_provider and prior_model:
+            _, rollback_error = apply_provider_switch(
+                hermes_python_path(), HERMES_HOME, requested, prior_provider, prior_model, cwd=BASE_DIR
+            )
+            if not rollback_error:
+                rolled_back = agent_console_provider_inventory(requested, refresh=True)
+                rollback_ok = rolled_back.get("current_provider") == prior_provider and rolled_back.get("current_model") == prior_model
+        return {
+            "error": "Hermes did not verify the requested provider change; the prior configuration was restored." if rollback_ok else "Hermes did not verify the requested provider change, and Mentat could not verify rollback. Review this profile in Hermes before running it.",
+            "error_code": "verification_failed_rolled_back" if rollback_ok else "verification_failed_rollback_unverified",
+        }, 500
+    finally:
+        HERMES_PROFILE_CREATION_LOCK.release()
+
+
+def refresh_agent_console_models(payload=None):
+    payload = payload if isinstance(payload, dict) else {}
+    requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
+    if requested_agent_id == "hermes":
+        requested_agent_id = "default"
+    if agent_console_profile(requested_agent_id) is None:
+        return {"error": f"Unknown or unavailable Hermes profile: {requested_agent_id}"}, 400
+    return {
+        "ok": True,
+        "agent_id": requested_agent_id,
+        "model_catalog": agent_console_model_catalog(requested_agent_id, refresh=True),
+        "provider_inventory": agent_console_provider_inventory(requested_agent_id, refresh=True),
+    }, 200
 
 
 def cancel_agent_console_run(run_id: str):
@@ -2605,10 +3144,11 @@ def cancel_agent_console_run(run_id: str):
         if run.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES:
             return {"error": "Agent run is no longer active", "run": agent_console_snapshot(run)}, 409
         run["status"] = "cancelling"
-        agent_console_event(run, "Stopping Hermes", "status")
+        agent_console_event(run, "Stopping Hermes", "status", {"phase": "cancelling"})
         process = AGENT_CONSOLE_PROCESSES.get(run_id)
         if process and process.poll() is None:
             process.terminate()
+        persist_agent_console_runs()
         return {"ok": True, "run": agent_console_snapshot(run)}, 202
 
 
@@ -2619,7 +3159,8 @@ def stop_agent_console_processes() -> None:
             run = AGENT_CONSOLE_RUNS.get(run_id)
             if run and run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES:
                 run["status"] = "cancelling"
-                agent_console_event(run, "Mentat is shutting down", "status")
+                agent_console_event(run, "Mentat is shutting down", "status", {"phase": "shutdown"})
+        persist_agent_console_runs()
     for _run_id, process in active:
         try:
             if process.poll() is None:
@@ -2652,7 +3193,13 @@ POST_ROUTES = [
     (re.compile(r"^/api/agent-console/runs$"), start_agent_console_run, True),
     (re.compile(r"^/api/agent-console/model$"), set_agent_console_model, True),
     (re.compile(r"^/api/agent-console/models/refresh$"), refresh_agent_console_models, True),
+    (re.compile(r"^/api/agent-console/provider/preview$"), preview_agent_console_provider_switch, True),
+    (re.compile(r"^/api/agent-console/provider$"), switch_agent_console_provider, True),
     (re.compile(r"^/api/agent-console/runs/([^/]+)/cancel$"), cancel_agent_console_run, False),
+    (re.compile(r"^/api/hermes/profiles/preview$"), preview_hermes_profile_creation, True),
+    (re.compile(r"^/api/hermes/profiles/([^/]+)/delete/preview$"), preview_hermes_profile_deletion, True),
+    (re.compile(r"^/api/hermes/profiles/([^/]+)/delete$"), delete_confirmed_hermes_profile, True),
+    (re.compile(r"^/api/hermes/profiles$"), create_hermes_profile, True),
 ]
 
 
@@ -2666,10 +3213,13 @@ API_ROUTES = {
     "/api/calendar": google_calendar_events,
     "/api/email": email_payload,
     "/api/agent-console": agent_console_payload,
+    "/api/agent-console/commands": command_manifest_payload,
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": read_cron_jobs,
     "/api/hermes/sessions": lambda: recent_sessions(limit=12),
     "/api/hermes/config": hermes_config,
+    "/api/hermes/profiles": hermes_profiles_payload,
+    "/api/hermes/skills/catalog": hermes_skill_catalog_payload,
     "/api/health": health,
 }
 
@@ -2706,7 +3256,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def agent_console_request_is_local(self) -> bool:
+    def control_request_is_local(self) -> bool:
         return self.client_address[0] in {"127.0.0.1", "::1"}
 
     def send_static(self, path: str):
@@ -2738,8 +3288,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/api/agent-console") and not self.agent_console_request_is_local():
-            self.send_json({"error": "Agent console is available only from this computer."}, status=403)
+        local_control_path = (
+            parsed.path.startswith("/api/agent-console")
+            or parsed.path.startswith("/api/hermes/profiles")
+            or parsed.path.startswith("/api/hermes/skills")
+        )
+        if local_control_path and not self.control_request_is_local():
+            self.send_json({"error": "Hermes controls are available only from this computer."}, status=403)
             return
         if parsed.path == "/api/hermes/search":
             try:
@@ -2759,8 +3314,13 @@ class Handler(BaseHTTPRequestHandler):
             if not match:
                 continue
             try:
-                message_id = parse_qs(parsed.query).get("message_id", [None])[0]
-                payload, status = handler(*[unquote(part) for part in match.groups()], message_id)
+                query = parse_qs(parsed.query)
+                route_query_value = (
+                    query.get("after", [None])[0]
+                    if parsed.path.startswith("/api/agent-console/runs/")
+                    else query.get("message_id", [None])[0]
+                )
+                payload, status = handler(*[unquote(part) for part in match.groups()], route_query_value)
                 self.send_json(payload, status=status)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=500)
@@ -2769,8 +3329,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/api/agent-console") and not self.agent_console_request_is_local():
-            self.send_json({"error": "Agent console is available only from this computer."}, status=403)
+        local_control_path = (
+            parsed.path.startswith("/api/agent-console")
+            or parsed.path.startswith("/api/hermes/profiles")
+            or parsed.path.startswith("/api/hermes/skills")
+        )
+        if local_control_path and not self.control_request_is_local():
+            self.send_json({"error": "Hermes controls are available only from this computer."}, status=403)
             return
         payload = None
         try:
@@ -2807,6 +3372,7 @@ if __name__ == "__main__":
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+    load_agent_console_runs()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     launcher_pid = start_launcher_watch(server)
     state_path = write_runtime_state()

@@ -127,10 +127,15 @@ async function main() {
     await waitFor(() => client.eval('document.readyState === "complete"'), 'page load');
     await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'Today View default');
 
-    const todayOk = await client.eval(`(() => { const stop = document.querySelector('#agent-console-stop'); const model = document.querySelector('#agent-console-model-select'); return Boolean(document.querySelector('#overview-cards .metric-card') && document.querySelector('#focus-task-list') && document.querySelector('#agent-console-panel') && document.querySelector('#agent-console-form') && model?.tagName === 'SELECT' && model.options.length > 0 && document.querySelector('#agent-console-apply-model') && stop?.hidden && getComputedStyle(stop).display === 'none'); })()`);
-    if (!todayOk) throw new Error('Today render smoke failed');
+    await waitFor(() => client.eval(`(() => { const stop = document.querySelector('#agent-console-stop'); const model = document.querySelector('#agent-console-model-select'); return Boolean(document.querySelector('#overview-cards .metric-card') && document.querySelector('#focus-task-list') && document.querySelector('#agent-console-panel') && document.querySelector('#agent-console-form') && model?.tagName === 'SELECT' && model.options.length > 0 && document.querySelector('#agent-console-apply-model') && stop?.hidden && getComputedStyle(stop).display === 'none'); })()`), 'Today render');
+    const structuredEventRendered = await client.eval(`(() => { renderAgentConsole({ agents: [{ id: 'event-smoke', name: 'Event Smoke', available: true, model: 'test/model' }], model_catalog: { profile_id: 'event-smoke', models: ['test/model'], current_model: 'test/model' }, runs: [{ id: 'run_event_smoke', agent_id: 'event-smoke', agent_name: 'Event Smoke', status: 'completed', prompt: 'Check events', response: 'Done', created_at: new Date().toISOString(), event_cursor: 1, events: [{ schema_version: 1, run_id: 'run_event_smoke', sequence: 1, cursor: 1, type: 'complete', kind: 'complete', timestamp: new Date().toISOString(), data: {}, display_text: 'Structured event rendered' }] }] }); return document.querySelector('#agent-console-chat')?.textContent.includes('Structured event rendered'); })()`);
+    if (!structuredEventRendered) throw new Error('Structured Agent Console event render smoke failed');
     await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/'; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await waitFor(() => client.eval(`(() => { const menu = document.querySelector('#agent-console-command-menu'); return Boolean(menu && !menu.hidden && menu.textContent.includes('/model')); })()`), 'agent console command completion');
+    const commandManifestOk = await client.eval(`fetch('/api/agent-console/commands').then((response) => response.json()).then((payload) => payload.schema_version === 1 && payload.source === 'mentat' && payload.capabilities?.['commands.hermes_cli_passthrough'] === false && payload.commands?.map((item) => item.command).join(',') === '/model,/new,/help')`);
+    if (!commandManifestOk) throw new Error('Mentat command manifest contract smoke failed');
+    await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/help'; prompt.form.requestSubmit(); })()`);
+    await waitFor(() => client.eval(`document.querySelector('#agent-console-form-status')?.textContent.includes('/model — Refresh current provider models')`), 'manifest-driven agent console help');
     await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = ''; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 
     await client.eval(`document.querySelector('[data-view="projects"]').click()`);
@@ -145,8 +150,28 @@ async function main() {
     await client.eval(`document.querySelector('[data-view="agents"]').click()`);
     await waitFor(() => client.eval('document.querySelector("#view-agents.active") !== null'), 'Agents view');
     await waitFor(() => client.eval('document.querySelector("#agent-message-form") !== null'), 'agent message compose');
-    const agentsWorkspaceVisible = await client.eval(`Boolean(document.querySelector('#conversation-library-panel') && document.querySelector('#agent-message-panel'))`);
+    await waitFor(() => client.eval(`document.querySelectorAll('#managed-agent-list .managed-agent-card').length > 0`), 'managed Hermes profiles');
+    const agentsWorkspaceVisible = await client.eval(`Boolean(document.querySelector('#managed-agents-panel') && document.querySelector('#conversation-library-panel') && document.querySelector('#agent-message-panel'))`);
     if (!agentsWorkspaceVisible) throw new Error('Agents workspace/message panel smoke failed');
+    const agentDeletionContract = await client.eval(`(() => { const dialog = document.querySelector('#agent-delete-dialog'); const defaultCard = document.querySelector('[data-hermes-profile-id="default"]'); return Boolean(dialog && defaultCard && !defaultCard.querySelector('[data-delete-hermes-profile]')); })()`);
+    if (!agentDeletionContract) throw new Error('Managed Agent deletion safety contract smoke failed');
+
+    const routedProfileId = await client.eval(`(() => { const button = document.querySelector('[data-use-hermes-profile]'); const profileId = button?.dataset.useHermesProfile || ''; button?.click(); return profileId; })()`);
+    if (!routedProfileId) throw new Error('Managed Agent did not expose a Console route');
+    await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'profile-aware Console route');
+    await waitFor(() => client.eval(`document.querySelector('#agent-console-agent')?.value === ${JSON.stringify(routedProfileId)}`), 'selected Console profile');
+    await client.eval(`document.querySelector('[data-view="agents"]').click()`);
+    await waitFor(() => client.eval('document.querySelector("#view-agents.active") !== null'), 'Agents view after Console routing');
+
+    await client.eval(`document.querySelector('#create-agent-button').click()`);
+    await waitFor(() => client.eval(`Boolean(document.querySelector('#agent-creator-dialog')?.open)`), 'agent creator dialog');
+    await client.eval(`(() => { const name = document.querySelector('#agent-creator-form [name="name"]'); name.value = 'browser-smoke-agent'; name.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('[data-agent-creator-next]').click(); })()`);
+    await waitFor(() => client.eval(`!document.querySelector('[data-agent-creator-step="configuration"]')?.hidden`), 'agent creator configuration');
+    await client.eval(`document.querySelector('input[name="skill_mode"][value="custom"]').click()`);
+    await waitFor(() => client.eval(`document.querySelectorAll('#agent-creator-skill-list input[type="checkbox"]').length > 0`), 'Hermes built-in skill catalog');
+    const agentCreatorOk = await client.eval(`(() => { const dialog = document.querySelector('#agent-creator-dialog'); const count = document.querySelectorAll('#agent-creator-skill-list input[type="checkbox"]').length; const status = document.querySelector('#agent-creator-status')?.textContent || ''; return Boolean(dialog?.open && count > 0 && status.includes('built-in skills available')); })()`);
+    if (!agentCreatorOk) throw new Error('Agent Creator skill selection smoke failed');
+    await client.eval(`document.querySelector('[data-agent-creator-close]').click()`);
 
     const heartbeatStatus = await client.eval(`fetch('/api/agents/heartbeat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: 'browser_smoke_agent', name: 'Browser Smoke Agent', status: 'running', project: 'Mentat', current_task: 'Browser smoke live state' }) }).then((response) => response.status)`);
     if (![200, 201].includes(heartbeatStatus)) throw new Error(`Heartbeat smoke returned HTTP ${heartbeatStatus}`);
@@ -155,7 +180,7 @@ async function main() {
     await client.eval(`(() => { const form = document.querySelector('#agent-message-form'); form.querySelector('textarea[name="message"]').value = ${JSON.stringify(messageText)}; form.querySelector('textarea[name="message"]').dispatchEvent(new Event('input', { bubbles: true })); form.requestSubmit(); })()`);
     await waitFor(() => client.eval(`document.body.textContent.includes(${JSON.stringify(messageText)})`), 'queued agent message appears');
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'nav', 'task controls', 'task status filter', 'agent message compose'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'structured event render', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'managed Hermes profiles', 'profile-aware Console route', 'agent deletion safeguards', 'agent creator skills', 'agent message compose'] }, null, 2));
     await client.ws.close?.();
   } finally {
     if (chrome && !chrome.killed) chrome.kill();
