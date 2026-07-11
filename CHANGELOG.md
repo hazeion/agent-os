@@ -29,6 +29,9 @@ All notable changes to Mentat.
   `data/runtime` storage with bounded, redacted prompt/response/error excerpts.
 - Added versioned structured Agent Console events with monotonic per-run cursors,
   bounded persistence, and a cursor-based incremental run endpoint.
+- Added profile-scoped provider inventory sourced from Hermes' explicitly
+  configured and authenticated providers, plus confirmed provider/model
+  switching with active-run blocking, post-write verification, and rollback.
 
 ### Changed
 - Documented the approved profile-scoped provider-switching boundary: only
@@ -48,10 +51,12 @@ All notable changes to Mentat.
   restart using locked atomic writes and corruption-safe fallback.
 - Switched active Agent Console refreshes from complete dashboard polling to
   incremental event polling while retaining the complete run API for compatibility.
+- Replaced auto-resizing Managed Agent cards with a stable vertical
+  master/detail selector and synchronized the selected agent with Console routing.
 
 ### Validation
-- `python -m unittest discover -s tests -v` (136 tests)
-- `python -m py_compile server.py agent_run_history.py command_manifest.py hermes_profiles.py hermes_profile_creation.py hermes_profile_deletion.py hermes_skills.py`
+- `python -m unittest discover -s tests -v` (140 tests)
+- `python -m py_compile server.py agent_run_history.py command_manifest.py hermes_profiles.py hermes_profile_creation.py hermes_profile_deletion.py hermes_provider_switching.py hermes_skills.py`
 - JavaScript syntax checks for `public/core.js`, `public/app.js`, and
   `scripts/browser_smoke.mjs`
 
