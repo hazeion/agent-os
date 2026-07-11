@@ -46,7 +46,7 @@ class AgentRunHistoryTests(unittest.TestCase):
             payload = json.loads(raw)
             stored = payload["runs"][0]
 
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], agent_run_history.SCHEMA_VERSION)
         self.assertNotIn("very-secret-value", raw)
         self.assertNotIn("hidden-token", raw)
         self.assertNotIn("prompt\"", raw)

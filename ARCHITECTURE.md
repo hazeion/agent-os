@@ -47,6 +47,14 @@ Agent Console execution is globally single-run in v1. Every run records its
 Hermes profile id, launches with a fixed `-p <profile>` selector, and may resume
 only a session already associated with that same profile.
 
+Agent Console progress is exposed as versioned, structured Mentat events. Event
+sequence numbers are monotonic within a run and double as polling cursors. The
+browser requests only events newer than its cursor and merges them into its local
+run view; the full-run response remains available for compatibility and recovery.
+Events describe Mentat-owned lifecycle transitions only. Mentat does not parse
+unstable native Hermes output into synthetic tool-call events, and it does not
+require a streaming transport for this local-first contract.
+
 ## Initial agent-creator scope
 
 The first version may create a fresh profile or clone approved configuration

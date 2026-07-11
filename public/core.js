@@ -70,6 +70,7 @@ const state = {
   agentConsoleSessionId: '',
   agentConsoleStartFresh: false,
   agentConsolePollTimer: null,
+  agentConsoleEventCursors: {},
   agentCreatorProfiles: [],
   agentCreatorSkills: [],
   agentCreatorSelectedSkills: [],
@@ -299,6 +300,11 @@ async function setAgentMessageState(id, payload) {
 
 async function startAgentConsoleRun(payload) {
   return sendJson(`${endpoints.agentConsole}/runs`, payload, { method: 'POST' });
+}
+
+async function fetchAgentConsoleRun(runId, afterCursor = null) {
+  const suffix = afterCursor === null ? '' : `?after=${encodeURIComponent(afterCursor)}`;
+  return api(`${endpoints.agentConsole}/runs/${encodeURIComponent(runId)}${suffix}`);
 }
 
 async function setAgentConsoleModel(model, agentId = '') {

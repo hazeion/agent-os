@@ -299,9 +299,21 @@ Agent Console history is stored separately at `data/runtime/agent-console-runs.j
 which is gitignored. Mentat keeps at most 24 run summaries there. Each summary has
 run metadata plus a redacted excerpt of the prompt (500 characters), response
 (2,000 characters), and error (1,000 characters); complete prompt and response
-content is not written to this history file. Runs that were active when Mentat
+content is not written to this history file. Up to 40 bounded, redacted status
+events are retained per run. Runs that were active when Mentat
 stopped are shown as interrupted after restart. Missing, corrupt, or unknown
 history formats fall back to an empty history without preventing startup.
+
+Agent Console events use a stable schema with `schema_version`, `run_id`,
+monotonic `sequence`/`cursor`, `type` (plus the legacy `kind` alias), `timestamp`,
+structured `data`, and `display_text` (plus the legacy `message` alias). A GET to
+`/api/agent-console/runs/<run-id>` still returns the complete run for existing
+clients. Supplying `?after=<cursor>` returns only newer retained events, a fresh
+run-state snapshot, and `next_cursor` for lightweight polling. If a cursor predates
+the retained window, `cursor_reset_required` tells the client to rebuild from the
+returned retained events. Mentat does not infer tool calls by parsing unstable
+Hermes CLI output, and this contract intentionally uses ordinary local polling
+rather than SSE or WebSockets.
 
 ## Main files
 

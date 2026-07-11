@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
-from agent_run_history import load_run_summaries, save_run_summaries
+from agent_run_history import EVENT_RETENTION, EVENT_SCHEMA_VERSION, load_run_summaries, save_run_summaries
 from json_store import read_json as store_read_json, update_json as store_update_json
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
 from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
@@ -2635,16 +2635,34 @@ def agent_console_model_catalog(profile_id: str = "default", *, refresh: bool = 
     return dict(catalog)
 
 
-def agent_console_event(run: dict, message: str, kind: str = "status") -> None:
+def agent_console_event(run: dict, message: str, kind: str = "status", data: dict | None = None) -> None:
     events = run.setdefault("events", [])
+    sequence_candidates = []
+    for value in [run.get("event_cursor")] + [
+        item.get("sequence") or item.get("cursor") for item in events if isinstance(item, dict)
+    ]:
+        try:
+            sequence_candidates.append(max(0, int(value or 0)))
+        except (TypeError, ValueError):
+            continue
+    sequence = max(sequence_candidates or [0]) + 1
+    display_text = compact_text(message, max_length=500) or "Agent run updated"
     events.append({
+        "schema_version": EVENT_SCHEMA_VERSION,
         "id": f"event_{uuid4().hex[:10]}",
+        "run_id": str(run.get("id") or ""),
+        "sequence": sequence,
+        "cursor": sequence,
+        "type": kind,
         "kind": kind,
-        "message": compact_text(message, max_length=500),
+        "data": dict(data) if isinstance(data, dict) else {},
+        "display_text": display_text,
+        "message": display_text,
         "timestamp": now_iso(),
     })
-    if len(events) > 40:
-        del events[:-40]
+    if len(events) > EVENT_RETENTION:
+        del events[:-EVENT_RETENTION]
+    run["event_cursor"] = sequence
     run["updated_at"] = now_iso()
 
 
@@ -2698,12 +2716,35 @@ def agent_console_payload():
     }
 
 
-def agent_console_run_payload(run_id: str, _target_message_id: str | None = None):
+def agent_console_run_payload(run_id: str, after_cursor: str | None = None):
     with AGENT_CONSOLE_LOCK:
         run = AGENT_CONSOLE_RUNS.get(run_id)
         if not run:
             return {"error": "Agent run not found"}, 404
-        return {"run": agent_console_snapshot(run)}, 200
+        snapshot = agent_console_snapshot(run)
+        if after_cursor is None:
+            # Existing clients keep receiving the complete run representation.
+            return {"run": snapshot}, 200
+        if not re.fullmatch(r"\d{1,10}", str(after_cursor)):
+            return {"error": "Event cursor must be a non-negative integer"}, 400
+        cursor = int(after_cursor)
+        retained = [item for item in snapshot.get("events", []) if isinstance(item, dict)]
+        current_cursor = int(snapshot.get("event_cursor") or (retained[-1].get("cursor") if retained else 0) or 0)
+        if cursor > current_cursor:
+            return {"error": "Event cursor is ahead of this run", "current_cursor": current_cursor}, 409
+        events = [item for item in retained if int(item.get("cursor") or 0) > cursor]
+        oldest_cursor = int(retained[0].get("cursor") or 0) if retained else current_cursor
+        cursor_reset_required = bool(retained and cursor < oldest_cursor - 1)
+        snapshot["events"] = events
+        return {
+            "schema_version": EVENT_SCHEMA_VERSION,
+            "run_id": run_id,
+            "after_cursor": cursor,
+            "next_cursor": current_cursor,
+            "cursor_reset_required": cursor_reset_required,
+            "events": events,
+            "run": snapshot,
+        }, 200
 
 
 def parse_hermes_session_id(stderr: str) -> str | None:
@@ -2730,12 +2771,12 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             run["status"] = "cancelled"
             run["completed_at"] = now_iso()
             run["error"] = "Run stopped by operator."
-            agent_console_event(run, "Run stopped", "cancelled")
+            agent_console_event(run, "Run stopped", "cancelled", {"reason": "operator_cancelled"})
             persist_agent_console_runs()
             return
         run["status"] = "running"
         run["started_at"] = now_iso()
-        agent_console_event(run, "Starting Hermes CLI")
+        agent_console_event(run, "Starting Hermes CLI", "status", {"phase": "launch"})
         persist_agent_console_runs()
         prompt = run["prompt"]
         session_id = run.get("session_id")
@@ -2765,7 +2806,7 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             AGENT_CONSOLE_PROCESSES[run_id] = process
             current = AGENT_CONSOLE_RUNS.get(run_id)
             if current:
-                agent_console_event(current, "Model is working")
+                agent_console_event(current, "Model is working", "status", {"phase": "inference"})
                 persist_agent_console_runs()
 
         while True:
@@ -2784,9 +2825,9 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
                     if current.get("status") == "cancelling":
                         process.terminate()
                     elif elapsed >= 45:
-                        agent_console_event(current, f"Hermes is still working ({elapsed}s)")
+                        agent_console_event(current, f"Hermes is still working ({elapsed}s)", "status", {"elapsed_seconds": elapsed})
                     elif elapsed >= 12:
-                        agent_console_event(current, "Agent is processing the request and may be using tools")
+                        agent_console_event(current, "Agent is processing the request and may be using tools", "status", {"elapsed_seconds": elapsed})
                     persist_agent_console_runs()
                 next_update = 12 if elapsed < 12 else elapsed + 30
 
@@ -2803,16 +2844,16 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             if current.get("status") == "cancelling":
                 current["status"] = "cancelled"
                 current["error"] = "Run stopped by operator."
-                agent_console_event(current, "Run stopped", "cancelled")
+                agent_console_event(current, "Run stopped", "cancelled", {"reason": "operator_cancelled"})
             elif process.returncode == 0 and response:
                 current["status"] = "completed"
                 current["response"] = response
-                agent_console_event(current, "Response complete", "complete")
+                agent_console_event(current, "Response complete", "complete", {"duration_seconds": current["duration_seconds"]})
             else:
                 error_text = re.sub(r"(?im)^\s*session_id:.*$", "", clean_agent_output(stderr, max_length=4_000)).strip()
                 current["status"] = "failed"
                 current["error"] = error_text or response or f"Hermes exited with status {process.returncode}."
-                agent_console_event(current, "Hermes run failed", "error")
+                agent_console_event(current, "Hermes run failed", "error", {"return_code": process.returncode})
             persist_agent_console_runs()
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         with AGENT_CONSOLE_LOCK:
@@ -2821,7 +2862,7 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
                 current["status"] = "failed"
                 current["completed_at"] = now_iso()
                 current["error"] = compact_text(exc, max_length=2_000)
-                agent_console_event(current, "Hermes could not be started", "error")
+                agent_console_event(current, "Hermes could not be started", "error", {"phase": "launch"})
                 persist_agent_console_runs()
     finally:
         with AGENT_CONSOLE_LOCK:
@@ -2887,7 +2928,12 @@ def start_agent_console_run(payload):
             "started_at": None,
             "completed_at": None,
         }
-        agent_console_event(run, f"Prompt queued for {profile.get('name') or agent_id}", "queued")
+        agent_console_event(
+            run,
+            f"Prompt queued for {profile.get('name') or agent_id}",
+            "queued",
+            {"agent_id": agent_id},
+        )
         AGENT_CONSOLE_RUNS[run_id] = run
         if len(AGENT_CONSOLE_RUNS) > AGENT_CONSOLE_RUN_LIMIT:
             removable = sorted(
@@ -2981,7 +3027,7 @@ def cancel_agent_console_run(run_id: str):
         if run.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES:
             return {"error": "Agent run is no longer active", "run": agent_console_snapshot(run)}, 409
         run["status"] = "cancelling"
-        agent_console_event(run, "Stopping Hermes", "status")
+        agent_console_event(run, "Stopping Hermes", "status", {"phase": "cancelling"})
         process = AGENT_CONSOLE_PROCESSES.get(run_id)
         if process and process.poll() is None:
             process.terminate()
@@ -2996,7 +3042,7 @@ def stop_agent_console_processes() -> None:
             run = AGENT_CONSOLE_RUNS.get(run_id)
             if run and run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES:
                 run["status"] = "cancelling"
-                agent_console_event(run, "Mentat is shutting down", "status")
+                agent_console_event(run, "Mentat is shutting down", "status", {"phase": "shutdown"})
         persist_agent_console_runs()
     for _run_id, process in active:
         try:
@@ -3148,8 +3194,13 @@ class Handler(BaseHTTPRequestHandler):
             if not match:
                 continue
             try:
-                message_id = parse_qs(parsed.query).get("message_id", [None])[0]
-                payload, status = handler(*[unquote(part) for part in match.groups()], message_id)
+                query = parse_qs(parsed.query)
+                route_query_value = (
+                    query.get("after", [None])[0]
+                    if parsed.path.startswith("/api/agent-console/runs/")
+                    else query.get("message_id", [None])[0]
+                )
+                payload, status = handler(*[unquote(part) for part in match.groups()], route_query_value)
                 self.send_json(payload, status=status)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=500)

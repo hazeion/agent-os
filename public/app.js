@@ -1096,6 +1096,25 @@ function agentConsoleRunIsActive(run = {}) {
   return ['queued', 'running', 'cancelling'].includes(run.status);
 }
 
+function agentConsoleEventCursor(run = {}) {
+  const cursors = (run.events || []).map((event) => Number(event.cursor || event.sequence || 0));
+  return Math.max(Number(run.event_cursor || 0), ...cursors, 0);
+}
+
+function mergeAgentConsoleRunUpdate(current = {}, incoming = {}, events = [], reset = false) {
+  const retained = reset ? [] : (current.events || []);
+  const byCursor = new Map();
+  [...retained, ...events].forEach((event) => {
+    const cursor = Number(event.cursor || event.sequence || 0);
+    if (cursor > 0) byCursor.set(cursor, event);
+  });
+  return {
+    ...current,
+    ...incoming,
+    events: [...byCursor.entries()].sort(([left], [right]) => left - right).map(([, event]) => event),
+  };
+}
+
 function agentConsoleCommandSuggestions(value = '') {
   const query = String(value || '').trim().toLowerCase();
   if (!query.startsWith('/')) return [];
@@ -1136,6 +1155,12 @@ function renderAgentConsole(payload = {}) {
   state.agentConsoleModels = models;
   state.agentConsoleModelCatalog = catalog;
   state.agentConsoleRuns = runs;
+  runs.forEach((run) => {
+    const cursor = agentConsoleEventCursor(run);
+    if (cursor > Number(state.agentConsoleEventCursors[run.id] || 0)) {
+      state.agentConsoleEventCursors[run.id] = cursor;
+    }
+  });
 
   const requestedAgentId = state.agentConsoleSelectedAgentId || agentSelect.value || payload.selected_agent_id || 'default';
   const selectedAgentId = agents.some((agent) => agent.id === requestedAgentId)
@@ -1182,7 +1207,7 @@ function renderAgentConsole(payload = {}) {
     const runAgentName = run.agent_name || selectedAgent.name || 'Hermes';
     const events = (run.events || []).map((event) => `
       <div class="agent-console-log-row agent-console-log-status ${escapeHtml(event.kind || 'status')}">
-        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(event.message || 'Working')}</span>
+        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(event.display_text || event.message || 'Working')}</span>
       </div>`).join('');
     const working = agentConsoleRunIsActive(run) ? `
       <div class="agent-console-log-row agent-console-working" role="status"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(runAgentName)}</span><span>${run.status === 'cancelling' ? 'Stopping' : 'Working'}</span></div>` : '';
@@ -1203,7 +1228,28 @@ function scheduleAgentConsolePoll(shouldPoll = true) {
   state.agentConsolePollTimer = null;
   if (!shouldPoll || state.activeView !== 'today') return;
   state.agentConsolePollTimer = setTimeout(async () => {
-    try { renderAgentConsole(await api(endpoints.agentConsole)); } catch (err) { $('#agent-console-form-status').textContent = err.message; }
+    const activeRun = state.agentConsoleRuns.find(agentConsoleRunIsActive);
+    if (!activeRun) return;
+    const cursor = Number(state.agentConsoleEventCursors[activeRun.id] ?? agentConsoleEventCursor(activeRun));
+    try {
+      const payload = await fetchAgentConsoleRun(activeRun.id, cursor);
+      const updated = mergeAgentConsoleRunUpdate(
+        activeRun,
+        payload.run || {},
+        payload.events || payload.run?.events || [],
+        Boolean(payload.cursor_reset_required),
+      );
+      state.agentConsoleEventCursors[activeRun.id] = Number(payload.next_cursor ?? agentConsoleEventCursor(updated));
+      renderAgentConsole({
+        agents: state.agentConsoleAgents,
+        model_catalog: state.agentConsoleModelCatalog,
+        runs: state.agentConsoleRuns.map((run) => run.id === activeRun.id ? updated : run),
+      });
+    } catch (err) {
+      const status = $('#agent-console-form-status');
+      if (status) status.textContent = err.message;
+      scheduleAgentConsolePoll(true);
+    }
   }, 1000);
 }
 
