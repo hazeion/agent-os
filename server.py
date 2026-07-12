@@ -2418,6 +2418,25 @@ def hermes_command_path() -> str | None:
     return None
 
 
+def hermes_shared_tirith_bin_dir() -> Path | None:
+    """Return the shared Hermes binary directory only when Tirith is usable.
+
+    Named Hermes profiles have isolated ``HERMES_HOME`` directories, while
+    Hermes documents ``~/.hermes/bin`` as host-shared storage for installed
+    binaries such as Tirith.  Adding this directory to a Console child
+    process's PATH lets the profile retain its normal default ``tirith``
+    configuration without leaking a local path to the browser or overriding an
+    explicitly configured scanner path.
+    """
+    shared_bin = HERMES_HOME / "bin"
+    binary_name = "tirith.exe" if os.name == "nt" else "tirith"
+    scanner = shared_bin / binary_name
+    try:
+        return shared_bin if scanner.is_file() and os.access(scanner, os.X_OK) else None
+    except OSError:
+        return None
+
+
 def agent_console_profile(profile_id: str | None, discovery: dict | None = None) -> dict | None:
     """Resolve a public profile id without exposing or reading its filesystem path."""
     normalized = compact_text(profile_id, max_length=64).lower() or "default"
@@ -2995,6 +3014,12 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
     env = os.environ.copy()
     env["HERMES_HOME"] = str(HERMES_HOME)
     env["PYTHONUNBUFFERED"] = "1"
+    shared_tirith_bin = hermes_shared_tirith_bin_dir()
+    if shared_tirith_bin is not None:
+        current_path = env.get("PATH") or ""
+        path_entries = current_path.split(os.pathsep) if current_path else []
+        if str(shared_tirith_bin) not in path_entries:
+            env["PATH"] = os.pathsep.join([str(shared_tirith_bin), *path_entries])
     started = time.monotonic()
     next_update = 2
     try:

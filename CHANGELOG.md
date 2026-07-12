@@ -9,6 +9,9 @@ All notable changes to Mentat.
   rejection and locked atomic persistence.
 
 ### Fixed
+- Made Agent Console child processes inherit Hermes' shared binary directory so
+  named profiles can discover an installed Tirith scanner without disabling
+  security scanning or exposing local paths to the dashboard.
 - Added authenticated provider and model controls to the selected Managed Agent
   detail pane, including fresh profiles created without cloned configuration.
 - Made Managed Agents report enabled built-in skills instead of the total
@@ -46,7 +49,7 @@ All notable changes to Mentat.
   Windows drive names on macOS and Linux.
 
 ### Validation
-- `python3 -m unittest discover -s tests -p 'test_*.py'` (195 tests)
+- `python3 -m unittest discover -s tests -p 'test_*.py'` (196 tests)
 - JavaScript syntax checks for `public/core.js` and `public/app.js`
 
 ## 2026-07-10

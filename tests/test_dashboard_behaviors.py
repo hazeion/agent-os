@@ -74,6 +74,41 @@ class DashboardBehaviorTests(unittest.TestCase):
             server.AGENT_CONSOLE_RUNS.clear()
             server.AGENT_CONSOLE_PROCESSES.clear()
 
+    def test_agent_console_inherits_the_shared_tirith_binary_directory(self):
+        class CompletedHermesProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "Hermes response", ""
+
+        run_id = "run_tirith_path"
+        server.AGENT_CONSOLE_RUNS.clear()
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "randy",
+            "prompt": "Check the environment",
+            "status": "queued",
+            "events": [],
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        with TemporaryDirectory() as tmpdir:
+            hermes_home = Path(tmpdir)
+            shared_bin = hermes_home / "bin"
+            shared_bin.mkdir()
+            scanner = shared_bin / ("tirith.exe" if server.os.name == "nt" else "tirith")
+            scanner.write_text("scanner fixture", encoding="utf-8")
+            scanner.chmod(0o700)
+            with patch.object(server, "HERMES_HOME", hermes_home), patch.object(
+                server.subprocess, "Popen", return_value=CompletedHermesProcess()
+            ) as popen:
+                server.run_hermes_agent(run_id, "/tmp/hermes")
+
+        child_env = popen.call_args.kwargs["env"]
+        self.assertEqual(child_env["PATH"].split(server.os.pathsep)[0], str(shared_bin))
+        self.assertEqual(child_env["HERMES_HOME"], str(hermes_home))
+        server.AGENT_CONSOLE_RUNS.clear()
+        server.AGENT_CONSOLE_PROCESSES.clear()
+
     def test_agent_console_provider_change_requires_a_bound_preview(self):
         inventory = {
             "profile_id": "default",
