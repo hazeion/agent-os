@@ -11,6 +11,7 @@ const endpoints = {
   tasks: '/api/tasks',
   agents: '/api/agents',
   agentMessages: '/api/agent-messages',
+  agentActivity: '/api/agent-activity',
   attention: '/api/attention',
   calendar: '/api/calendar',
   email: '/api/email',
@@ -22,8 +23,10 @@ const endpoints = {
   config: '/api/hermes/config',
   hermesProfiles: '/api/hermes/profiles',
   hermesSkillCatalog: '/api/hermes/skills/catalog',
+  hermesKanbanCapabilities: '/api/hermes/kanban/capabilities',
   notes: '/api/obsidian-notes',
   health: '/api/health',
+  unifiedSearch: '/api/search',
 };
 
 const state = {
@@ -96,6 +99,20 @@ const state = {
   managedAgentProviderInventory: {},
   managedAgentSelectedProvider: '',
   managedAgentSelectedModel: '',
+  hermesKanbanCapabilities: null,
+  agentActivity: { groups: {}, counts: {} },
+  taskDelegationPreview: null,
+  taskDelegationTaskId: '',
+  taskDelegationRequestToken: 0,
+  delegationActionPreview: null,
+  delegationActionRequestToken: 0,
+  globalSearchResults: [],
+  globalSearchSelectedIndex: -1,
+  globalSearchRequestToken: 0,
+  globalSearchTimer: null,
+  notesPayload: { notes: [], vault_name: '' },
+  notesFilter: '',
+  notesSearchTimer: null,
 };
 
 const taskStatusLabels = {
@@ -105,6 +122,10 @@ const taskStatusLabels = {
   waiting: 'Waiting',
   'needs attention': 'Needs Attention',
   completed: 'Completed',
+  today: 'Today',
+  review: 'Review',
+  someday: 'Someday',
+  blocked: 'Blocked',
   all: 'All',
 };
 
@@ -308,6 +329,68 @@ async function deleteTask(id, confirmationId) {
   }, { method: 'POST' });
 }
 
+async function fetchHermesKanbanCapabilities() {
+  return api(endpoints.hermesKanbanCapabilities);
+}
+
+async function previewTaskDelegation(id, payload) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delegation/preview`, payload, { method: 'POST' });
+}
+
+async function delegateTask(id, payload, confirmationId) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delegation`, {
+    ...payload,
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
+}
+
+async function refreshTaskDelegation(id) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delegation/refresh`, {}, { method: 'POST' });
+}
+
+async function reorderTodayTask(id, direction) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/today-order`, { direction }, { method: 'POST' });
+}
+
+async function createTaskFromCalendarEvent(eventId, project) {
+  return sendJson(`/api/calendar/events/${encodeURIComponent(eventId)}/task`, { project }, { method: 'POST' });
+}
+
+async function linkTaskToCalendarEvent(taskId, eventId) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(taskId)}/calendar-link`, { event_id: eventId }, { method: 'POST' });
+}
+
+async function unlinkTaskFromCalendarEvent(taskId, eventId) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(taskId)}/calendar-unlink`, { event_id: eventId }, { method: 'POST' });
+}
+
+async function fetchObsidianNotes(query = '') {
+  const suffix = query ? `?q=${encodeURIComponent(query)}` : '';
+  return api(`${endpoints.notes}${suffix}`);
+}
+
+async function attachNoteToTask(taskId, relativePath) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(taskId)}/notes`, { relative_path: relativePath }, { method: 'POST' });
+}
+
+async function detachNoteFromTask(taskId, relativePath) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(taskId)}/notes/remove`, { relative_path: relativePath }, { method: 'POST' });
+}
+
+async function previewTaskDelegationAction(id, action, note = '') {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delegation/action/preview`, { action, note }, { method: 'POST' });
+}
+
+async function runTaskDelegationAction(id, action, note, confirmationId) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delegation/action`, {
+    action,
+    note,
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
+}
+
 async function previewCronTrigger(id) {
   return sendJson(`${endpoints.crons}/${encodeURIComponent(id)}/trigger/preview`, {}, { method: 'POST' });
 }
@@ -408,4 +491,8 @@ async function fetchSessionReplay(id) {
 
 async function searchMessages(query) {
   return api(`${endpoints.search}?q=${encodeURIComponent(query)}`);
+}
+
+async function searchDashboard(query) {
+  return api(`${endpoints.unifiedSearch}?q=${encodeURIComponent(query)}`);
 }

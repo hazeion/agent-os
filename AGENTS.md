@@ -24,6 +24,8 @@ Core pieces:
 
 ```text
 server.py
+hermes_kanban.py
+task_planning.py
 runtime_config.py
 mentat_lifecycle.py
 mentat.toml
@@ -48,6 +50,8 @@ Current priorities:
 - local-only dashboard experience
 - clean dark UI
 - project/task visibility and actionability
+- day planning, review, and personal task-management depth
+- durable task delegation through Hermes' supported Kanban adapter
 - read-only Hermes session visibility
 - capability-scoped Hermes control through fixed, supported interfaces
 - safe project-owned write paths
@@ -109,6 +113,36 @@ route.
 Project-owned task deletion requires an exact preview, confirmation bound to
 the current task state, and a locked atomic update. A changed task must be
 previewed again.
+
+Project-owned personal tasks are the planning source of truth. Optional planning
+fields may cover Today selection/order, estimates, scheduled blocks, browser
+reminders, subtasks, dependencies, recurrence, calendar links, note links,
+planning state, and safe delegation references. Validate these fields through
+`task_planning.py`; reject missing/self/cyclic dependencies and unsafe note
+paths, and create recurring successors only through the locked task update.
+
+Hermes Kanban is the only approved durable delegation mutation path. Use the
+fixed, shell-free operations in `hermes_kanban.py`; never edit Hermes Kanban
+storage, turn Agent Messages into an execution queue, or treat Agent Console as
+a durable scheduler. Delegation creation and remote follow-up actions require a
+capability match, exact task-and-intent preview, matching confirmation, the
+Kanban mutation lock, a project-owned in-flight reservation, and operation-
+specific post-operation read-back verification. Action confirmations must bind
+the refreshed live Hermes task/run state as well as the current Mentat task.
+Changed input, unsupported capabilities, and unverified results fail closed. A
+Hermes-accepted operation that cannot be verified must be reported as a partial
+failure without claiming completion. Store only normalized, secret-free
+references and bounded audit text in the Mentat task.
+
+Google Calendar stays read-only. Creating or linking a task from a verified
+calendar event may write Mentat task metadata only. Obsidian note attachments
+must be vault-relative validated Markdown paths; attached content used for a
+delegation preview must remain bounded, and Mentat must not edit the note.
+
+Grouped dashboard search is navigation-only and may cover tasks, projects,
+session metadata, notes, and cached/local calendar events. Typing must not change
+views; navigate only after an explicit result selection. Browser notification
+permission must be requested only from an explicit user action.
 
 Hermes cron inventory is currently read-only. The installed Hermes runtime lacks
 an atomic expected-revision, enabled-only operation for queueing the next

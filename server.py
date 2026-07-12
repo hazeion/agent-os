@@ -9,6 +9,7 @@ remains allowlisted.
 from __future__ import annotations
 
 import ctypes
+from copy import deepcopy
 import hashlib
 import json
 import mimetypes
@@ -21,10 +22,12 @@ import subprocess
 import threading
 import time
 from uuid import uuid4
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from calendar import monthrange
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
 from agent_run_history import (
     EVENT_RETENTION,
@@ -44,6 +47,8 @@ from hermes_provider_switching import (
 )
 from hermes_profiles import discover_hermes_profiles
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
+from hermes_kanban import HermesKanbanAdapter, sanitize_public_text
+from task_planning import TASK_PLANNING_FIELDS, validate_task_planning
 from runtime_config import (
     AppConfig,
     DEFAULT_APP_NAME,
@@ -233,6 +238,7 @@ AGENT_CONSOLE_RUN_LIMIT = 24
 AGENT_CONSOLE_PROMPT_LIMIT = 20_000
 MAX_JSON_BODY_BYTES = 256_000
 AGENT_CONSOLE_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+HERMES_KANBAN_LOCK = threading.RLock()
 AGENT_MODEL_CATALOG_TTL_SECONDS = 120
 AGENT_MODEL_CATALOG_CACHE = {"key": None, "payload": None, "fetched_at": 0.0}
 AGENT_CONSOLE_RUNS: dict[str, dict] = {}
@@ -407,38 +413,40 @@ def validate_task_payload(payload, *, existing: dict | None = None):
     if not isinstance(payload, dict):
         return None, "Task payload must be a JSON object"
 
-    title = compact_text(payload.get("title"), max_length=160)
+    title = compact_text(payload.get("title") if "title" in payload else (existing or {}).get("title"), max_length=160)
     if not title:
         return None, "Task title is required"
 
-    project = canonical_project_name(payload.get("project"))
+    project = canonical_project_name(payload.get("project") if "project" in payload else (existing or {}).get("project"))
     if not project:
         return None, "Task project is required"
 
     if project not in project_names():
         return None, f"Unknown project: {project}"
 
-    status = compact_text(payload.get("status") or "todo", max_length=32).lower().replace("_", " ") or "todo"
+    status = compact_text(payload.get("status") or (existing or {}).get("status") or "todo", max_length=32).lower().replace("_", " ") or "todo"
     if status not in TASK_STATUS_VALUES:
         return None, f"Invalid task status: {status}"
 
-    priority = compact_text(payload.get("priority") or "medium", max_length=16).lower() or "medium"
+    priority = compact_text(payload.get("priority") or (existing or {}).get("priority") or "medium", max_length=16).lower() or "medium"
     if priority not in TASK_PRIORITY_VALUES:
         return None, f"Invalid task priority: {priority}"
 
-    due_date = task_due_date_value(payload.get("due_date"))
-    if payload.get("due_date") not in (None, "") and due_date is None:
+    due_input = payload.get("due_date") if "due_date" in payload else (existing or {}).get("due_date")
+    due_date = task_due_date_value(due_input)
+    if due_input not in (None, "") and due_date is None:
         return None, "Task due_date must be YYYY-MM-DD or empty"
 
-    tags = task_tags_value(payload.get("tags"))
+    tags = task_tags_value(payload.get("tags") if "tags" in payload else (existing or {}).get("tags"))
     source = compact_text(payload.get("source") or (existing or {}).get("source") or "dashboard", max_length=32) or "dashboard"
-    assignee = compact_text(payload.get("assignee"), max_length=120) or None
-    description = str(payload.get("description") or "").strip()
+    assignee = compact_text(payload.get("assignee") if "assignee" in payload else (existing or {}).get("assignee"), max_length=120) or None
+    description = str(payload.get("description") if "description" in payload else (existing or {}).get("description") or "").strip()
     created_at = existing.get("created_at") if isinstance(existing, dict) else None
     completed_at = existing.get("completed_at") if isinstance(existing, dict) else None
     timestamp = now_iso()
 
-    normalized = {
+    normalized = dict(existing) if isinstance(existing, dict) else {}
+    normalized.update({
         "id": compact_text((existing or {}).get("id"), max_length=80) or task_id_value(),
         "title": title,
         "description": description,
@@ -449,17 +457,190 @@ def validate_task_payload(payload, *, existing: dict | None = None):
         "due_date": due_date,
         "source": source,
         "tags": tags,
-        "review_required": bool(payload.get("review_required")),
-        "needs_attention": bool(payload.get("needs_attention")),
+        "review_required": bool(payload.get("review_required") if "review_required" in payload else (existing or {}).get("review_required")),
+        "needs_attention": bool(payload.get("needs_attention") if "needs_attention" in payload else (existing or {}).get("needs_attention")),
         "created_at": created_at or timestamp,
         "updated_at": timestamp,
         "completed_at": completed_at,
-    }
+    })
+    planning_source = {}
+    for field in TASK_PLANNING_FIELDS:
+        normalized.pop(field, None)
+        if field in payload:
+            if payload[field] is not None:
+                planning_source[field] = payload[field]
+        elif isinstance(existing, dict) and field in existing:
+            planning_source[field] = existing[field]
+    planned_task, planning_error = validate_task_planning({**normalized, **planning_source})
+    if planning_error:
+        return None, planning_error
+    normalized = planned_task
     if status == "completed" and not normalized["completed_at"]:
         normalized["completed_at"] = timestamp
     if status != "completed":
         normalized["completed_at"] = None
     return normalized, None
+
+
+def validate_task_dependencies(candidate: dict, tasks: list[dict]) -> str | None:
+    """Validate the candidate's dependency references and reachable graph."""
+    task_id = compact_text(candidate.get("id"), max_length=80)
+    by_id = {
+        compact_text(item.get("id"), max_length=80): item
+        for item in tasks
+        if isinstance(item, dict) and compact_text(item.get("id"), max_length=80)
+    }
+    by_id[task_id] = candidate
+    dependencies = candidate.get("depends_on") or []
+    missing = [dependency for dependency in dependencies if dependency not in by_id]
+    if missing:
+        return f"Unknown task dependency: {missing[0]}"
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(current_id: str) -> bool:
+        if current_id in visiting:
+            return True
+        if current_id in visited:
+            return False
+        visiting.add(current_id)
+        current = by_id.get(current_id) or {}
+        for dependency in current.get("depends_on") or []:
+            if dependency in by_id and visit(dependency):
+                return True
+        visiting.remove(current_id)
+        visited.add(current_id)
+        return False
+
+    return "Task dependencies cannot contain a cycle" if visit(task_id) else None
+
+
+def next_recurrence_date(current: date, recurrence: dict) -> date:
+    frequency = recurrence.get("frequency")
+    interval = int(recurrence.get("interval") or 1)
+    if frequency == "daily":
+        return current + timedelta(days=interval)
+    if frequency == "weekly":
+        weekdays = recurrence.get("weekdays") or []
+        if weekdays:
+            weekday_indexes = [
+                ("mon", "tue", "wed", "thu", "fri", "sat", "sun").index(day)
+                for day in weekdays
+            ]
+            later_this_week = [weekday for weekday in weekday_indexes if weekday > current.weekday()]
+            if later_this_week:
+                return current + timedelta(days=min(later_this_week) - current.weekday())
+            next_active_week = current - timedelta(days=current.weekday()) + timedelta(weeks=interval)
+            return next_active_week + timedelta(days=min(weekday_indexes))
+        return current + timedelta(weeks=interval)
+    if frequency in {"monthly", "yearly"}:
+        month_offset = interval if frequency == "monthly" else interval * 12
+        month_index = current.year * 12 + current.month - 1 + month_offset
+        year, month_zero = divmod(month_index, 12)
+        month = month_zero + 1
+        return date(year, month, min(current.day, monthrange(year, month)[1]))
+    return current
+
+
+def shift_recurring_datetime(value: str, day_shift: timedelta, timezone_name: str | None = None) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timezone_name:
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = None
+        if zone is not None:
+            local = parsed.astimezone(zone)
+            shifted_date = local.date() + day_shift
+            shifted = datetime.combine(shifted_date, local.timetz().replace(tzinfo=None), tzinfo=zone)
+            return shifted.isoformat()
+    return (parsed + day_shift).isoformat()
+
+
+def recurring_task_instance(completed: dict) -> dict | None:
+    recurrence = completed.get("recurrence")
+    if not isinstance(recurrence, dict):
+        return None
+    anchor_raw = completed.get("due_date") or now_iso()[:10]
+    try:
+        anchor = date.fromisoformat(anchor_raw)
+    except (TypeError, ValueError):
+        anchor = date.today()
+    next_date = next_recurrence_date(anchor, recurrence)
+    remaining_count = recurrence.get("count")
+    if isinstance(remaining_count, int) and remaining_count <= 1:
+        return None
+    ends_on = recurrence.get("ends_on")
+    if ends_on and next_date > date.fromisoformat(ends_on):
+        return None
+    timestamp = now_iso()
+    next_task = deepcopy(completed)
+    series_id = completed.get("recurrence_parent_id") or completed.get("id")
+    next_task.update(
+        {
+            "id": task_id_value(),
+            "status": "todo",
+            "due_date": next_date.isoformat(),
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "completed_at": None,
+            "recurrence_parent_id": series_id,
+            "planned_for_today": False,
+            "planning_state": "inbox",
+            "needs_attention": False,
+        }
+    )
+    next_task.pop("delegation", None)
+    next_task.pop("manual_rank", None)
+    if isinstance(remaining_count, int):
+        next_task["recurrence"] = {**recurrence, "count": remaining_count - 1}
+
+    day_shift = next_date - anchor
+    scheduled_block = next_task.get("scheduled_block")
+    if isinstance(scheduled_block, dict):
+        shifted_block = dict(scheduled_block)
+        for key in ("start", "end"):
+            value = scheduled_block.get(key)
+            if isinstance(value, str):
+                try:
+                    shifted_block[key] = shift_recurring_datetime(value, day_shift, scheduled_block.get("timezone"))
+                except ValueError:
+                    pass
+        next_task["scheduled_block"] = shifted_block
+    next_task["reminders"] = [
+        {
+            key: (
+                shift_recurring_datetime(value, day_shift, reminder.get("timezone"))
+                if key == "at" and isinstance(value, str)
+                else value
+            )
+            for key, value in reminder.items()
+            if key != "notified_at"
+        }
+        for reminder in next_task.get("reminders") or []
+        if isinstance(reminder, dict)
+    ]
+    for subtask in next_task.get("subtasks") or []:
+        if isinstance(subtask, dict):
+            subtask["completed"] = False
+    return next_task
+
+
+def append_recurring_instance_once(tasks: list[dict], completed: dict) -> None:
+    occurrence = recurring_task_instance(completed)
+    if occurrence is None:
+        return
+    series_id = occurrence.get("recurrence_parent_id")
+    due_date = occurrence.get("due_date")
+    if any(
+        isinstance(task, dict)
+        and task.get("recurrence_parent_id") == series_id
+        and task.get("due_date") == due_date
+        for task in tasks
+    ):
+        return
+    tasks.append(occurrence)
 
 
 def validate_project_payload(payload, *, existing: dict | None = None):
@@ -479,7 +660,8 @@ def validate_project_payload(payload, *, existing: dict | None = None):
     if not aliases:
         aliases = text_list_value(payload.get("legacy_names"), max_items=12, max_length=120)
 
-    normalized = {
+    normalized = dict(existing) if isinstance(existing, dict) else {}
+    normalized.update({
         "id": compact_text((existing or {}).get("id"), max_length=80) or project_id_value(name),
         "name": name,
         "type": compact_text(payload.get("type") or (existing or {}).get("type") or "project", max_length=80) or "project",
@@ -489,7 +671,7 @@ def validate_project_payload(payload, *, existing: dict | None = None):
         "created_at": (existing or {}).get("created_at") or timestamp,
         "updated_at": timestamp,
         "aliases": aliases,
-    }
+    })
     return normalized, None
 
 
@@ -893,6 +1075,9 @@ def update_json_file(name: str, default, mutator):
     """Run a locked project-owned JSON read/modify/write cycle."""
     path = dashboard_data_path(name)
     try:
+        if name == "tasks.json":
+            with HERMES_KANBAN_LOCK:
+                return store_update_json(path, default, mutator)
         return store_update_json(path, default, mutator)
     except json.JSONDecodeError as exc:
         return {"error": f"Invalid JSON in {path}: {exc}"}, 500
@@ -1920,7 +2105,7 @@ def session_detail(session_id: str, target_message_id: str | None = None):
 def obsidian_notes():
     notes = []
     if not OBSIDIAN_VAULT.exists():
-        return {"vault": str(OBSIDIAN_VAULT), "exists": False, "note_count": 0, "notes": notes, "cache": {"enabled": True, "cached": False}}
+        return {"vault_name": OBSIDIAN_VAULT.name, "exists": False, "note_count": 0, "notes": notes, "cache": {"enabled": True, "cached": False}}
 
     vault_root = OBSIDIAN_VAULT.resolve()
     markdown_files = []
@@ -1949,7 +2134,6 @@ def obsidian_notes():
                 "name": path.name,
                 "title": path.stem,
                 "exists": True,
-                "path": str(path),
                 "relative_path": relative_path,
                 "modified_at": file_mtime_iso(path),
                 "size": human_bytes(path.stat().st_size),
@@ -1957,7 +2141,7 @@ def obsidian_notes():
             }
         )
     payload = {
-        "vault": str(OBSIDIAN_VAULT),
+        "vault_name": OBSIDIAN_VAULT.name,
         "exists": True,
         "note_count": len(notes),
         "returned_count": len(notes),
@@ -2154,6 +2338,9 @@ def create_task(payload):
         if error:
             return tasks, ({"error": error}, 400)
         next_tasks = [task for task in tasks if isinstance(task, dict)]
+        dependency_error = validate_task_dependencies(normalized, next_tasks)
+        if dependency_error:
+            return tasks, ({"error": dependency_error}, 400)
         next_tasks.append(normalized)
         return next_tasks, ({"ok": True, "task": normalized, "tasks": next_tasks}, 201)
 
@@ -2171,12 +2358,55 @@ def update_task(task_id: str, payload):
         for index, task in enumerate(next_tasks):
             if str(task.get("id") or "") != task_id:
                 continue
+            pending = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
+            if pending.get("reservation_id") and not pending.get("kanban_task_id"):
+                return tasks, ({"error": "Task changes are temporarily locked while delegation is being created."}, 409)
             normalized, error = validate_task_payload(payload, existing=task)
             if error:
                 return tasks, ({"error": error}, 400)
             next_tasks[index] = normalized
+            dependency_error = validate_task_dependencies(normalized, next_tasks)
+            if dependency_error:
+                return tasks, ({"error": dependency_error}, 400)
+            if task.get("status") != "completed" and normalized.get("status") == "completed":
+                append_recurring_instance_once(next_tasks, normalized)
             return next_tasks, ({"ok": True, "task": normalized, "tasks": next_tasks}, 200)
         return tasks, ({"error": f"Task not found: {task_id}"}, 404)
+
+    return update_json_file("tasks.json", [], mutator)
+
+
+def reorder_today_task(task_id: str, payload):
+    direction = compact_text((payload or {}).get("direction"), max_length=8).lower() if isinstance(payload, dict) else ""
+    if direction not in {"up", "down"}:
+        return {"error": "Direction must be up or down."}, 400
+
+    def mutator(tasks):
+        if not isinstance(tasks, list):
+            return tasks, ({"error": "tasks.json must contain a list"}, 500)
+        next_tasks = [dict(task) for task in tasks if isinstance(task, dict)]
+        planned = sorted(
+            [task for task in next_tasks if task.get("planned_for_today") and task.get("status") != "completed"],
+            key=lambda task: (
+                int(task["manual_rank"]) if task.get("manual_rank") is not None else 1000000,
+                str(task.get("created_at") or ""),
+            ),
+        )
+        current_index = next((index for index, task in enumerate(planned) if str(task.get("id") or "") == task_id), None)
+        if current_index is None:
+            return tasks, ({"error": "Task is not in today's plan."}, 409)
+        target_index = current_index - 1 if direction == "up" else current_index + 1
+        if target_index < 0 or target_index >= len(planned):
+            return tasks, ({"ok": True, "task": planned[current_index], "tasks": next_tasks}, 200)
+        planned[current_index], planned[target_index] = planned[target_index], planned[current_index]
+        timestamp = now_iso()
+        existing_ranks = [int(task["manual_rank"]) for task in planned if task.get("manual_rank") is not None]
+        base_rank = min(existing_ranks) if existing_ranks else 0
+        for offset, task in enumerate(planned):
+            task["manual_rank"] = base_rank + offset
+            task["updated_at"] = timestamp
+        moved = next(task for task in planned if str(task.get("id") or "") == task_id)
+        return next_tasks, ({"ok": True, "task": moved, "tasks": next_tasks}, 200)
 
     return update_json_file("tasks.json", [], mutator)
 
@@ -2184,6 +2414,14 @@ def update_task(task_id: str, payload):
 def _task_delete_confirmation(task: dict) -> str:
     bound = json.dumps(task, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "task_delete_" + hashlib.sha256(bound.encode("utf-8")).hexdigest()[:24]
+
+
+def task_dependent_ids(task_id: str, tasks: list[dict]) -> list[str]:
+    return [
+        str(item.get("id"))
+        for item in tasks
+        if isinstance(item, dict) and task_id in (item.get("depends_on") or []) and item.get("id")
+    ]
 
 
 def preview_task_deletion(task_id: str, payload=None):
@@ -2204,6 +2442,15 @@ def preview_task_deletion(task_id: str, payload=None):
             "error": "Task deletion is blocked because the task id is duplicated. Repair tasks.json before retrying."
         }, 409
     task = matches[0]
+    pending = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
+    if pending.get("reservation_id") and not pending.get("kanban_task_id"):
+        return {"error": "Task deletion is temporarily locked while delegation is being created."}, 409
+    dependents = task_dependent_ids(task_id, tasks)
+    if dependents:
+        return {
+            "error": "Task deletion is blocked because other tasks depend on it.",
+            "dependent_task_ids": dependents,
+        }, 409
     return {
         "ok": True,
         "requires_confirmation": True,
@@ -2238,6 +2485,15 @@ def delete_confirmed_task(task_id: str, payload):
                 "error": "Task deletion is blocked because the task id is duplicated. Repair tasks.json before retrying."
             }, 409)
         task = matches[0]
+        pending = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
+        if pending.get("reservation_id") and not pending.get("kanban_task_id"):
+            return tasks, ({"error": "Task deletion is temporarily locked while delegation is being created."}, 409)
+        dependents = task_dependent_ids(task_id, tasks)
+        if dependents:
+            return tasks, ({
+                "error": "Task deletion is blocked because other tasks depend on it.",
+                "dependent_task_ids": dependents,
+            }, 409)
         if confirmation_id != _task_delete_confirmation(task):
             return tasks, ({"error": "Task changed after preview; preview deletion again."}, 409)
         remaining = [
@@ -2247,6 +2503,789 @@ def delete_confirmed_task(task_id: str, payload):
         return remaining, ({"ok": True, "deleted_task_id": task_id, "task": task, "tasks": remaining}, 200)
 
     return update_json_file("tasks.json", [], mutator)
+
+
+def kanban_adapter() -> HermesKanbanAdapter:
+    return HermesKanbanAdapter(hermes_command_path())
+
+
+def task_record(task_id: str) -> dict | None:
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        return None
+    matches = [
+        task for task in tasks
+        if isinstance(task, dict) and str(task.get("id") or "") == task_id
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def kanban_capabilities_payload() -> dict:
+    adapter = kanban_adapter()
+    capabilities = adapter.detect_capabilities()
+    boards = adapter.list_boards() if capabilities.get("capabilities", {}).get("boards.read") else {"ok": False, "boards": []}
+    return {
+        **capabilities,
+        "boards": boards.get("boards", []) if boards.get("ok") else [],
+    }
+
+
+def kanban_status_to_delegation_state(status: str, outcome: str | None = None) -> str:
+    normalized = compact_text(status, max_length=40).lower()
+    normalized_outcome = compact_text(outcome, max_length=40).lower()
+    if normalized_outcome in {"crashed", "spawn_failed", "failed", "timed_out"}:
+        return "failed"
+    if normalized_outcome in {"cancelled", "reclaimed"}:
+        return "cancelled"
+    if normalized in {"running"}:
+        return "running"
+    if normalized in {"blocked"}:
+        return "needs_input"
+    if normalized in {"review", "done"}:
+        return "ready_for_review"
+    if normalized in {"archived"}:
+        return "completed"
+    return "queued"
+
+
+def kanban_outcome_value(value) -> str | None:
+    outcome = compact_text(value, max_length=40).lower()
+    if outcome in {"success", "done", "completed"}:
+        return "completed"
+    if outcome in {"crashed", "spawn_failed", "failed"}:
+        return "failed"
+    if outcome in {"blocked", "cancelled", "timed_out", "reclaimed"}:
+        return outcome
+    return None
+
+
+def delegation_audit_event(event: str, note: str | None = None) -> dict:
+    item = {"at": now_iso(), "actor": "dashboard", "event": event}
+    cleaned_note = compact_text(note, max_length=500)
+    if cleaned_note:
+        item["note"] = cleaned_note
+    return item
+
+
+def synchronized_delegation(existing: dict, remote: dict) -> dict:
+    remote_task = remote.get("task") if isinstance(remote.get("task"), dict) else {}
+    runs = remote.get("runs") if isinstance(remote.get("runs"), list) else []
+    latest_run = runs[-1] if runs else {}
+    outcome = kanban_outcome_value(latest_run.get("outcome"))
+    summary = compact_text(remote.get("latest_summary") or latest_run.get("summary") or remote_task.get("result"), max_length=4000)
+    comments = remote.get("comments") if isinstance(remote.get("comments"), list) else []
+    latest_question = ""
+    if remote_task.get("status") == "blocked" and comments:
+        latest_question = compact_text(comments[-1].get("body"), max_length=2000)
+    timestamp = now_iso()
+    result = dict(existing)
+    result.update(
+        {
+            "kanban_task_id": remote_task.get("id") or existing.get("kanban_task_id"),
+            "run_id": str(latest_run.get("id")) if latest_run.get("id") is not None else existing.get("run_id"),
+            "session_id": remote_task.get("session_id") or existing.get("session_id"),
+            "state": kanban_status_to_delegation_state(remote_task.get("status"), latest_run.get("outcome")),
+            "sync_state": "synced",
+            "review_state": existing.get("review_state") or "pending",
+            "summary": summary,
+            "latest_question": latest_question,
+            "last_synced_at": timestamp,
+            "updated_at": timestamp,
+            "attempts": max(len(runs), int(existing.get("attempts") or 0)),
+        }
+    )
+    if outcome:
+        result["last_outcome"] = outcome
+    return result
+
+
+def remote_delegation_revision(remote: dict) -> dict:
+    task = remote.get("task") if isinstance(remote.get("task"), dict) else {}
+    runs = remote.get("runs") if isinstance(remote.get("runs"), list) else []
+    latest_run = runs[-1] if runs else {}
+    return {
+        "task_id": task.get("id"),
+        "status": task.get("status"),
+        "run_id": str(latest_run.get("id")) if latest_run.get("id") is not None else None,
+        "run_status": latest_run.get("status"),
+        "outcome": latest_run.get("outcome"),
+        "completed_at": task.get("completed_at"),
+    }
+
+
+def persist_task_delegation(
+    task_id: str,
+    delegation: dict,
+    *,
+    task_updates: dict | None = None,
+    expected_reservation_id: str | None = None,
+):
+    def mutator(tasks):
+        if not isinstance(tasks, list):
+            return tasks, (None, "tasks.json must contain a list")
+        next_tasks = [dict(task) for task in tasks if isinstance(task, dict)]
+        for index, task in enumerate(next_tasks):
+            if str(task.get("id") or "") != task_id:
+                continue
+            if expected_reservation_id:
+                current_delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
+                if current_delegation.get("reservation_id") != expected_reservation_id:
+                    return tasks, (None, "Task delegation reservation changed before persistence.")
+            candidate = {**task, **(task_updates or {}), "delegation": delegation, "updated_at": now_iso()}
+            normalized, error = validate_task_planning(candidate)
+            if error:
+                return tasks, (None, error)
+            next_tasks[index] = normalized
+            if task.get("status") != "completed" and normalized.get("status") == "completed":
+                append_recurring_instance_once(next_tasks, normalized)
+            return next_tasks, (normalized, None)
+        return tasks, (None, f"Task not found: {task_id}")
+
+    return update_json_file("tasks.json", [], mutator)
+
+
+def reserve_task_delegation(task_id: str, expected_task: dict, reservation: dict):
+    def mutator(tasks):
+        if not isinstance(tasks, list):
+            return tasks, (None, "tasks.json must contain a list")
+        next_tasks = [dict(task) for task in tasks if isinstance(task, dict)]
+        for index, task in enumerate(next_tasks):
+            if str(task.get("id") or "") != task_id:
+                continue
+            if task != expected_task:
+                return tasks, (None, "Task changed after preview; preview delegation again.")
+            if task.get("delegation"):
+                return tasks, (None, "Task already has linked or pending Hermes work.")
+            by_id = {str(item.get("id")): item for item in next_tasks if item.get("id")}
+            incomplete = [
+                dependency_id
+                for dependency_id in task.get("depends_on") or []
+                if not (
+                    by_id.get(str(dependency_id))
+                    and (
+                        compact_text(by_id[str(dependency_id)].get("status"), max_length=32).lower() == "completed"
+                        or by_id[str(dependency_id)].get("planning_state") == "done"
+                    )
+                )
+            ]
+            if incomplete:
+                return tasks, (None, "Task dependencies changed before delegation; preview again.")
+            candidate = {**task, "delegation": reservation, "updated_at": now_iso()}
+            normalized, error = validate_task_planning(candidate)
+            if error:
+                return tasks, (None, error)
+            next_tasks[index] = normalized
+            return next_tasks, (normalized, None)
+        return tasks, (None, f"Task not found: {task_id}")
+
+    return update_json_file("tasks.json", [], mutator)
+
+
+def clear_task_delegation_reservation(task_id: str, reservation_id: str):
+    def mutator(tasks):
+        if not isinstance(tasks, list):
+            return tasks, False
+        next_tasks = [dict(task) for task in tasks if isinstance(task, dict)]
+        for index, task in enumerate(next_tasks):
+            delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
+            if str(task.get("id") or "") == task_id and delegation.get("reservation_id") == reservation_id:
+                task.pop("delegation", None)
+                task["updated_at"] = now_iso()
+                next_tasks[index] = task
+                return next_tasks, True
+        return tasks, False
+
+    return update_json_file("tasks.json", [], mutator)
+
+
+def delegation_confirmation(prefix: str, task: dict, intent: dict) -> str:
+    bound = json.dumps({"task": task, "intent": intent}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return f"{prefix}_" + hashlib.sha256(bound.encode("utf-8")).hexdigest()[:24]
+
+
+def preview_task_delegation(task_id: str, payload):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
+        return {"error": "Invalid task id"}, 400
+    if not isinstance(payload, dict):
+        return {"error": "Delegation payload must be a JSON object"}, 400
+    task = task_record(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}, 404
+    if task.get("delegation"):
+        return {"error": "Task already has linked or pending Hermes work."}, 409
+    all_tasks = read_json_file("tasks.json", [])
+    by_id = {
+        str(item.get("id")): item
+        for item in all_tasks
+        if isinstance(item, dict) and item.get("id")
+    } if isinstance(all_tasks, list) else {}
+    dependency_snapshot = []
+    for dependency_id in task.get("depends_on") or []:
+        dependency = by_id.get(str(dependency_id))
+        completed = bool(
+            dependency
+            and (
+                compact_text(dependency.get("status"), max_length=32).lower() == "completed"
+                or dependency.get("planning_state") == "done"
+            )
+        )
+        dependency_snapshot.append({"id": dependency_id, "completed": completed})
+    incomplete = [item["id"] for item in dependency_snapshot if not item["completed"]]
+    if incomplete:
+        return {
+            "error": "Complete this task's dependencies before delegating it.",
+            "dependency_task_ids": incomplete,
+        }, 409
+    profile_id = compact_text(payload.get("profile_id"), max_length=80)
+    board_id = compact_text(payload.get("board_id") or "default", max_length=64).lower()
+    workspace = compact_text(payload.get("workspace") or "scratch", max_length=20).lower()
+    instructions = str(payload.get("instructions") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", profile_id):
+        return {"error": "Choose a valid Hermes profile."}, 400
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", board_id):
+        return {"error": "Choose a valid Hermes Kanban board."}, 400
+    if workspace not in {"scratch", "worktree"}:
+        return {"error": "Workspace must be scratch or worktree."}, 400
+    if len(instructions) > 8000:
+        return {"error": "Delegation instructions must be 8000 characters or fewer."}, 400
+    adapter = kanban_adapter()
+    capabilities = adapter.detect_capabilities()
+    if not capabilities.get("capabilities", {}).get("tasks.create"):
+        return {"error": "Hermes Kanban task creation is unavailable.", "capabilities": capabilities}, 409
+    boards = adapter.list_boards()
+    if not boards.get("ok"):
+        return {"error": "Hermes Kanban boards are unavailable; delegation cannot be verified."}, 409
+    if board_id not in {item.get("id") for item in boards.get("boards", [])}:
+        return {"error": f"Unknown Hermes Kanban board: {board_id}"}, 400
+    profile_inventory = hermes_profiles_payload()
+    if profile_inventory.get("status") != "available":
+        return {"error": "Hermes profiles are unavailable; delegation cannot be verified."}, 409
+    profiles = profile_inventory.get("profiles", [])
+    if profile_id not in {str(item.get("id") or "") for item in profiles if isinstance(item, dict)}:
+        return {"error": f"Unknown Hermes profile: {profile_id}"}, 400
+    context = "\n".join(
+        part for part in [
+            f"Mentat project: {task.get('project') or 'General'}",
+            f"Task: {task.get('title') or task_id}",
+            str(task.get("description") or "").strip(),
+            f"Due: {task.get('due_date')}" if task.get("due_date") else "",
+            instructions,
+        ] if part
+    )
+    note_context = task_note_context(task)
+    if note_context:
+        context = f"{context}\n\n{note_context}"
+    context = sanitize_public_text(context, 20_000)
+    intent = {
+        "profile_id": profile_id,
+        "board_id": board_id,
+        "workspace": workspace,
+        "instructions": instructions,
+        "context": context,
+        "dependencies": dependency_snapshot,
+    }
+    return {
+        "ok": True,
+        "requires_confirmation": True,
+        "confirmation_id": delegation_confirmation("task_delegate", task, intent),
+        "task": task,
+        "target": {"profile_id": profile_id, "board_id": board_id, "workspace": workspace},
+        "context": context,
+        "effects": [
+            f"Create one Hermes Kanban task on '{board_id}'.",
+            f"Assign it to Hermes profile '{profile_id}'.",
+            "Store only safe task, run, session, and review references in Mentat task data.",
+        ],
+        "warnings": ["Hermes owns execution. Mentat will not edit Hermes Kanban files directly."],
+    }, 200
+
+
+def delegate_confirmed_task(task_id: str, payload):
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        return {"error": "Delegation requires explicit confirmation."}, 400
+    preview, status = preview_task_delegation(task_id, payload)
+    if status != 200:
+        return preview, status
+    if compact_text(payload.get("confirmation_id"), max_length=80) != preview.get("confirmation_id"):
+        return {"error": "Task or delegation details changed after preview; preview again."}, 409
+    task = preview["task"]
+    intent = {
+        "profile_id": preview["target"]["profile_id"],
+        "board_id": preview["target"]["board_id"],
+        "workspace": preview["target"]["workspace"],
+        "context": preview["context"],
+    }
+    adapter = kanban_adapter()
+    with HERMES_KANBAN_LOCK:
+        timestamp = now_iso()
+        reservation_id = preview["confirmation_id"]
+        reservation = {
+            "profile_id": intent["profile_id"],
+            "board_id": intent["board_id"],
+            "state": "queued",
+            "sync_state": "pending",
+            "review_state": "pending",
+            "reservation_id": reservation_id,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "attempts": 0,
+            "audit": [delegation_audit_event("delegation_reserved")],
+        }
+        _, reservation_error = reserve_task_delegation(task_id, task, reservation)
+        if reservation_error:
+            return {"error": reservation_error}, 409
+        created = adapter.create_task(
+            intent["board_id"],
+            title=task.get("title") or task_id,
+            body=intent["context"],
+            assignee=intent["profile_id"],
+            priority={"high": 10, "medium": 0, "low": -10}.get(task.get("priority"), 0),
+            workspace=intent["workspace"],
+            idempotency_key=f"mentat-{task_id}-{reservation_id[-12:]}",
+        )
+        if not created.get("ok"):
+            if not created.get("partial"):
+                clear_task_delegation_reservation(task_id, reservation_id)
+            return {"error": created.get("error", {}).get("message") or "Hermes Kanban delegation failed.", "details": created}, 502
+        remote_id = created.get("task", {}).get("id")
+        verified = adapter.get_task(intent["board_id"], remote_id)
+        if not verified.get("ok"):
+            return {
+                "error": "Hermes created the task but Mentat could not verify it. Review Hermes Kanban before retrying.",
+                "partial": True,
+                "kanban_task_id": remote_id,
+            }, 502
+        remote_task = verified.get("task") or {}
+        if any((
+            remote_task.get("title") != (task.get("title") or task_id),
+            remote_task.get("body") != intent["context"],
+            remote_task.get("assignee") != intent["profile_id"],
+            remote_task.get("workspace_kind") != intent["workspace"],
+        )):
+            return {
+                "error": "Hermes returned an existing task that does not match the confirmed delegation.",
+                "partial": True,
+                "kanban_task_id": remote_id,
+            }, 409
+        delegation = synchronized_delegation(
+            {
+                "profile_id": intent["profile_id"],
+                "board_id": intent["board_id"],
+                "kanban_task_id": remote_id,
+                "state": "queued",
+                "sync_state": "pending",
+                "review_state": "pending",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "attempts": 0,
+                "audit": [delegation_audit_event("delegated")],
+            },
+            verified,
+        )
+        delegation.pop("reservation_id", None)
+        saved, save_error = persist_task_delegation(
+            task_id,
+            delegation,
+            task_updates={"assignee": intent["profile_id"], "planning_state": "waiting"},
+            expected_reservation_id=reservation_id,
+        )
+        if save_error:
+            return {"error": "Hermes accepted the delegation but Mentat could not persist its link.", "partial": True, "kanban_task_id": remote_id}, 500
+    return {"ok": True, "task": saved, "delegation": saved.get("delegation"), "remote": verified}, 201
+
+
+def refresh_task_delegation(task_id: str, payload=None):
+    task = task_record(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}, 404
+    delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else None
+    if not delegation or not delegation.get("kanban_task_id"):
+        return {"error": "Task has no Hermes delegation."}, 409
+    remote = kanban_adapter().get_task(delegation.get("board_id") or "default", delegation["kanban_task_id"])
+    if not remote.get("ok"):
+        failed = dict(delegation)
+        failed.update({"sync_state": "error", "updated_at": now_iso()})
+        saved, _ = persist_task_delegation(task_id, failed)
+        return {"error": remote.get("error", {}).get("message") or "Hermes delegation refresh failed.", "task": saved}, 502
+    synchronized = synchronized_delegation(delegation, remote)
+    updates = {}
+    if synchronized.get("state") == "ready_for_review":
+        updates = {"planning_state": "review", "review_required": True, "needs_attention": True}
+    elif synchronized.get("state") == "needs_input":
+        updates = {"planning_state": "blocked", "needs_attention": True}
+    elif synchronized.get("state") in {"queued", "running"}:
+        updates = {"planning_state": "waiting"}
+    saved, error = persist_task_delegation(task_id, synchronized, task_updates=updates)
+    if error:
+        return {"error": error}, 500
+    return {"ok": True, "task": saved, "delegation": synchronized, "remote": remote}, 200
+
+
+DELEGATION_ACTIONS = {"accept", "reply", "retry", "stop", "request_revision", "mark_blocked"}
+DELEGATION_ACTION_CAPABILITIES = {
+    "reply": ("tasks.reply",),
+    "retry": ("tasks.retry",),
+    "stop": ("tasks.terminate",),
+    "request_revision": ("tasks.comment", "tasks.create"),
+    "mark_blocked": ("tasks.block",),
+}
+DELEGATION_ACTION_STATES = {
+    "accept": {"ready_for_review"},
+    "reply": {"needs_input", "blocked"},
+    "retry": {"needs_input", "blocked", "failed", "cancelled"},
+    "stop": {"running"},
+    "request_revision": {"ready_for_review"},
+    "mark_blocked": {"queued", "running", "needs_input", "blocked", "failed"},
+}
+
+
+def preview_delegation_action(task_id: str, payload):
+    if not isinstance(payload, dict):
+        return {"error": "Action payload must be a JSON object"}, 400
+    task = task_record(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}, 404
+    delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else None
+    if not delegation:
+        return {"error": "Task has no Hermes delegation."}, 409
+    adapter = kanban_adapter()
+    remote = adapter.get_task(delegation.get("board_id") or "default", delegation.get("kanban_task_id"))
+    if not remote.get("ok"):
+        return {"error": "Hermes delegation state is unavailable; refresh before acting."}, 409
+    delegation = synchronized_delegation(delegation, remote)
+    task = {**task, "delegation": delegation}
+    remote_revision = remote_delegation_revision(remote)
+    action = compact_text(payload.get("action"), max_length=40).lower()
+    note = str(payload.get("note") or "").strip()
+    if action not in DELEGATION_ACTIONS:
+        return {"error": "Unsupported delegation action."}, 400
+    state = compact_text(delegation.get("state"), max_length=40).lower() or "queued"
+    if state not in DELEGATION_ACTION_STATES[action]:
+        return {"error": f"The {action.replace('_', ' ')} action is unavailable while delegated work is {state}."}, 409
+    if action in {"reply", "request_revision", "mark_blocked"} and not note:
+        return {"error": "This action requires a note."}, 400
+    if len(note) > 8000:
+        return {"error": "Action note must be 8000 characters or fewer."}, 400
+    required_capabilities = DELEGATION_ACTION_CAPABILITIES.get(action, ())
+    if required_capabilities:
+        capabilities = adapter.detect_capabilities().get("capabilities", {})
+        missing = [capability for capability in required_capabilities if not capabilities.get(capability)]
+        if missing:
+            return {"error": "This Hermes runtime does not support the requested delegation action."}, 409
+    intent = {"action": action, "note": note, "delegation": delegation, "remote_revision": remote_revision}
+    labels = {
+        "accept": "Accept the result and complete the Mentat task.",
+        "reply": "Append a task-level reply in Hermes Kanban.",
+        "retry": "Ask Hermes to retry the blocked or scheduled task.",
+        "stop": "Reclaim the running Hermes task and return it to the queue.",
+        "request_revision": "Record feedback and create a new Hermes revision attempt.",
+        "mark_blocked": "Mark the Hermes and Mentat task blocked on this note.",
+    }
+    return {
+        "ok": True,
+        "requires_confirmation": True,
+        "confirmation_id": delegation_confirmation("delegation_action", task, intent),
+        "task": task,
+        "action": action,
+        "note": note,
+        "remote_revision": remote_revision,
+        "effects": [labels[action]],
+    }, 200
+
+
+def execute_confirmed_delegation_action(task_id: str, payload):
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        return {"error": "Delegation actions require explicit confirmation."}, 400
+    preview, status = preview_delegation_action(task_id, payload)
+    if status != 200:
+        return preview, status
+    if compact_text(payload.get("confirmation_id"), max_length=80) != preview.get("confirmation_id"):
+        return {"error": "Task or delegation changed after preview; preview again."}, 409
+    task = preview["task"]
+    delegation = dict(task["delegation"])
+    action = preview["action"]
+    note = preview["note"]
+    board = delegation.get("board_id") or "default"
+    remote_id = delegation.get("kanban_task_id")
+    adapter = kanban_adapter()
+    task_updates = {}
+    with HERMES_KANBAN_LOCK:
+        current_task = task_record(task_id)
+        expected_local = {key: value for key, value in task.items() if key != "delegation"}
+        current_local = {key: value for key, value in (current_task or {}).items() if key != "delegation"}
+        current_delegation = (current_task or {}).get("delegation") if isinstance((current_task or {}).get("delegation"), dict) else {}
+        if current_local != expected_local or current_delegation.get("kanban_task_id") != remote_id:
+            return {"error": "Mentat task or delegation changed after preview; preview the action again."}, 409
+        latest_remote = adapter.get_task(board, remote_id)
+        if not latest_remote.get("ok"):
+            return {"error": "Hermes delegation state became unavailable; preview again."}, 409
+        if remote_delegation_revision(latest_remote) != preview.get("remote_revision"):
+            return {"error": "Hermes task or run state changed after preview; preview the action again."}, 409
+        if action == "accept":
+            delegation.update({"state": "completed", "review_state": "accepted", "updated_at": now_iso()})
+            task_updates = {"status": "completed", "planning_state": "done", "needs_attention": False, "review_required": False, "completed_at": now_iso()}
+        else:
+            if action == "reply":
+                result = adapter.reply_task(board, remote_id, note)
+            elif action == "retry":
+                result = adapter.retry_task(board, remote_id)
+            elif action == "stop":
+                result = adapter.terminate_task(board, remote_id)
+            elif action == "mark_blocked":
+                result = adapter.block_task(board, remote_id, note)
+                task_updates = {"planning_state": "blocked", "needs_attention": True}
+            else:
+                commented = adapter.comment_task(board, remote_id, f"Revision requested from Mentat: {note}")
+                if not commented.get("ok"):
+                    result = commented
+                else:
+                    revision = int(delegation.get("attempts") or 0) + 1
+                    result = adapter.create_task(
+                        board,
+                        title=f"Revision: {task.get('title') or task_id}",
+                        body=f"Revise the prior result for Mentat task {task_id}.\n\nFeedback:\n{note}",
+                        assignee=delegation.get("profile_id"),
+                        workspace="scratch",
+                        idempotency_key=f"mentat-{task_id}-revision-{revision}",
+                    )
+                    if result.get("ok"):
+                        delegation["kanban_task_id"] = result["task"]["id"]
+                        remote_id = result["task"]["id"]
+                        task_updates = {"status": "in progress", "planning_state": "waiting", "needs_attention": False, "review_required": True}
+            if not result.get("ok"):
+                partial = action == "request_revision" and 'commented' in locals() and commented.get("ok")
+                return {
+                    "error": result.get("error", {}).get("message") or "Hermes delegation action failed.",
+                    "details": result,
+                    **({"partial": True} if partial else {}),
+                }, 502
+            remote = adapter.get_task(board, remote_id)
+            if not remote.get("ok"):
+                return {
+                    "error": "Hermes accepted the action but Mentat could not verify it.",
+                    "partial": True,
+                    "kanban_task_id": remote_id,
+                }, 502
+            delegation = synchronized_delegation(delegation, remote)
+            if action == "request_revision":
+                delegation["review_state"] = "revision_requested"
+            elif action in {"retry", "reply"}:
+                delegation["review_state"] = "pending"
+        audit = list(delegation.get("audit") or [])
+        audit.append(delegation_audit_event(action, note))
+        delegation["audit"] = audit[-100:]
+        saved, error = persist_task_delegation(task_id, delegation, task_updates=task_updates)
+        if error:
+            if action == "accept":
+                return {"error": error}, 500
+            return {
+                "error": "Hermes accepted the action but Mentat could not persist the refreshed link.",
+                "partial": True,
+                "kanban_task_id": remote_id,
+            }, 500
+    return {"ok": True, "task": saved, "delegation": saved.get("delegation")}, 200
+
+
+def agent_activity_payload() -> dict:
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        tasks = []
+    groups = {key: [] for key in ("needs_input", "ready_for_review", "running", "failed", "recently_completed")}
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else None
+        if not delegation:
+            continue
+        state = delegation.get("state") or "queued"
+        group = {
+            "needs_input": "needs_input",
+            "blocked": "needs_input",
+            "ready_for_review": "ready_for_review",
+            "running": "running",
+            "queued": "running",
+            "failed": "failed",
+            "completed": "recently_completed",
+            "cancelled": "failed",
+        }.get(state)
+        if not group:
+            continue
+        groups[group].append(
+            {
+                "task_id": task.get("id"),
+                "title": task.get("title"),
+                "project": task.get("project"),
+                "profile_id": delegation.get("profile_id"),
+                "board_id": delegation.get("board_id"),
+                "kanban_task_id": delegation.get("kanban_task_id"),
+                "run_id": delegation.get("run_id"),
+                "session_id": delegation.get("session_id"),
+                "state": state,
+                "review_state": delegation.get("review_state"),
+                "summary": delegation.get("summary"),
+                "question": delegation.get("latest_question"),
+                "updated_at": delegation.get("updated_at") or task.get("updated_at"),
+            }
+        )
+    for items in groups.values():
+        items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return {"generated_at": now_iso(), "groups": groups, "counts": {key: len(value) for key, value in groups.items()}}
+
+
+def calendar_event_by_id(event_id: str) -> dict | None:
+    payload = google_calendar_events(days=30, limit=200)
+    items = payload.get("items") if isinstance(payload, dict) else []
+    matches = [item for item in items or [] if isinstance(item, dict) and str(item.get("id") or "") == event_id]
+    return matches[0] if len(matches) == 1 else None
+
+
+def create_task_from_calendar_event(event_id: str, payload):
+    event = calendar_event_by_id(event_id)
+    if event is None:
+        return {"error": "Calendar event is unavailable or changed; refresh Calendar and try again."}, 409
+    project = canonical_project_name((payload or {}).get("project")) if isinstance(payload, dict) else ""
+    if not project:
+        return {"error": "Choose a project for the new task."}, 400
+    start = compact_text(event.get("start"), max_length=40)
+    end = compact_text(event.get("end"), max_length=40)
+    due_date = start[:10] if re.match(r"\d{4}-\d{2}-\d{2}", start) else None
+    task_payload = {
+        "title": compact_text(event.get("title") or "Calendar task", max_length=160),
+        "description": compact_text(event.get("description"), max_length=4000),
+        "project": project,
+        "status": "todo",
+        "priority": "medium",
+        "due_date": due_date,
+        "planned_for_today": due_date == date.today().isoformat(),
+        "planning_state": "planned" if due_date == date.today().isoformat() else "inbox",
+        "calendar_links": [{"calendar_id": "primary", "event_id": event_id, "label": event.get("title") or "Calendar event"}],
+    }
+    if "T" in start and "T" in end:
+        task_payload["scheduled_block"] = {"start": start, "end": end}
+    return create_task(task_payload)
+
+
+def link_task_calendar_event(task_id: str, payload):
+    event_id = compact_text((payload or {}).get("event_id"), max_length=160) if isinstance(payload, dict) else ""
+    event = calendar_event_by_id(event_id)
+    if event is None:
+        return {"error": "Calendar event is unavailable or changed; refresh Calendar and try again."}, 409
+    task = task_record(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}, 404
+    links = list(task.get("calendar_links") or [])
+    link = {"calendar_id": "primary", "event_id": event_id, "label": event.get("title") or "Calendar event"}
+    if not any(item.get("calendar_id") == "primary" and item.get("event_id") == event_id for item in links if isinstance(item, dict)):
+        links.append(link)
+    updates = {"calendar_links": links}
+    start = compact_text(event.get("start"), max_length=40)
+    end = compact_text(event.get("end"), max_length=40)
+    if "T" in start and "T" in end:
+        updates["scheduled_block"] = {"start": start, "end": end}
+    return update_task(task_id, updates)
+
+
+def unlink_task_calendar_event(task_id: str, payload):
+    event_id = compact_text((payload or {}).get("event_id"), max_length=160) if isinstance(payload, dict) else ""
+    task = task_record(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}, 404
+    links = [item for item in task.get("calendar_links") or [] if not (isinstance(item, dict) and item.get("event_id") == event_id)]
+    return update_task(task_id, {"calendar_links": links})
+
+
+def unified_search(query: str) -> dict:
+    term = compact_text(query, max_length=120)
+    if len(term) < 2:
+        return {"query": term, "groups": {key: [] for key in ("tasks", "projects", "sessions", "notes", "calendar")}}
+    needle = term.casefold()
+
+    def contains(*values) -> bool:
+        return any(needle in str(value or "").casefold() for value in values)
+
+    tasks = read_json_file("tasks.json", [])
+    projects = read_json_file("projects.json", [])
+    session_payload = recent_sessions(limit=50)
+    notes_payload = obsidian_notes()
+    cached_calendar = CALENDAR_CACHE.get("payload")
+    calendar_items = cached_calendar.get("items", []) if isinstance(cached_calendar, dict) else read_json_file("calendar.json", [])
+    groups = {
+        "tasks": [
+            {"kind": "task", "id": item.get("id"), "label": item.get("title") or "Untitled task", "excerpt": item.get("description") or item.get("project") or "", "view": "projects", "project": item.get("project")}
+            for item in tasks if isinstance(item, dict) and contains(item.get("title"), item.get("description"), item.get("project"), " ".join(item.get("tags") or []))
+        ][:8],
+        "projects": [
+            {"kind": "project", "id": item.get("id"), "label": item.get("name") or "Untitled project", "excerpt": item.get("description") or "", "view": "projects", "project": item.get("name")}
+            for item in projects if isinstance(item, dict) and contains(item.get("name"), item.get("description"), " ".join(item.get("aliases") or []))
+        ][:6],
+        "sessions": [
+            {"kind": "session", "id": item.get("id"), "label": item.get("title") or "Untitled session", "excerpt": item.get("source") or item.get("model") or "", "view": "agents"}
+            for item in session_payload.get("sessions", []) if isinstance(item, dict) and contains(item.get("title"), item.get("source"), item.get("model"))
+        ][:8],
+        "notes": [
+            {"kind": "note", "id": item.get("relative_path"), "label": item.get("title") or item.get("name") or "Untitled note", "excerpt": item.get("excerpt") or "", "view": "notes"}
+            for item in notes_payload.get("notes", []) if isinstance(item, dict) and contains(item.get("title"), item.get("name"), item.get("excerpt"), item.get("relative_path"))
+        ][:8],
+        "calendar": [
+            {"kind": "calendar", "id": item.get("id"), "label": item.get("title") or "Untitled event", "excerpt": item.get("start") or item.get("location") or "", "view": "calendar"}
+            for item in calendar_items if isinstance(item, dict) and contains(item.get("title"), item.get("description"), item.get("location"))
+        ][:8],
+    }
+    return {"query": term, "groups": groups}
+
+
+def safe_obsidian_note(relative_path: str) -> Path | None:
+    raw = compact_text(relative_path, max_length=500)
+    if not raw or raw.startswith(("/", "~", "\\")) or "\\" in raw or ".." in Path(raw).parts:
+        return None
+    candidate = OBSIDIAN_VAULT / raw
+    try:
+        root = OBSIDIAN_VAULT.resolve()
+        resolved = candidate.resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        return None
+    if candidate.is_symlink() or resolved.suffix.lower() != ".md" or root not in resolved.parents:
+        return None
+    return resolved
+
+
+def attach_task_note(task_id: str, payload):
+    relative_path = compact_text((payload or {}).get("relative_path"), max_length=500) if isinstance(payload, dict) else ""
+    note = safe_obsidian_note(relative_path)
+    if note is None:
+        return {"error": "Choose a valid Markdown note from the configured Obsidian vault."}, 400
+    task = task_record(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}, 404
+    links = list(task.get("note_links") or [])
+    if not any(item.get("path") == relative_path for item in links if isinstance(item, dict)):
+        links.append({"path": relative_path, "title": note.stem})
+    return update_task(task_id, {"note_links": links})
+
+
+def detach_task_note(task_id: str, payload):
+    relative_path = compact_text((payload or {}).get("relative_path"), max_length=500) if isinstance(payload, dict) else ""
+    task = task_record(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}, 404
+    links = [item for item in task.get("note_links") or [] if not (isinstance(item, dict) and item.get("path") == relative_path)]
+    return update_task(task_id, {"note_links": links})
+
+
+def task_note_context(task: dict, *, total_limit: int = 6000) -> str:
+    excerpts = []
+    remaining = total_limit
+    for item in task.get("note_links") or []:
+        if not isinstance(item, dict) or remaining <= 0:
+            break
+        path = safe_obsidian_note(item.get("path"))
+        if path is None:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        excerpt = sanitize_public_text(text, remaining)
+        excerpts.append(f"Attached note: {item.get('path')}\n{excerpt}")
+        remaining -= len(excerpt)
+    return "\n\n".join(excerpts)
 
 
 def create_project(payload):
@@ -3342,6 +4381,17 @@ POST_ROUTES = [
     (re.compile(r"^/api/tasks$"), create_task, True),
     (re.compile(r"^/api/tasks/([^/]+)/delete/preview$"), preview_task_deletion, True),
     (re.compile(r"^/api/tasks/([^/]+)/delete$"), delete_confirmed_task, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delegation/preview$"), preview_task_delegation, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delegation$"), delegate_confirmed_task, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delegation/refresh$"), refresh_task_delegation, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delegation/action/preview$"), preview_delegation_action, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delegation/action$"), execute_confirmed_delegation_action, True),
+    (re.compile(r"^/api/tasks/([^/]+)/today-order$"), reorder_today_task, True),
+    (re.compile(r"^/api/tasks/([^/]+)/calendar-link$"), link_task_calendar_event, True),
+    (re.compile(r"^/api/tasks/([^/]+)/calendar-unlink$"), unlink_task_calendar_event, True),
+    (re.compile(r"^/api/calendar/events/([^/]+)/task$"), create_task_from_calendar_event, True),
+    (re.compile(r"^/api/tasks/([^/]+)/notes$"), attach_task_note, True),
+    (re.compile(r"^/api/tasks/([^/]+)/notes/remove$"), detach_task_note, True),
     (re.compile(r"^/api/tasks/([^/]+)$"), update_task, True),
     (re.compile(r"^/api/projects$"), create_project, True),
     (re.compile(r"^/api/projects/([^/]+)$"), update_project, True),
@@ -3367,6 +4417,7 @@ API_ROUTES = {
     "/api/tasks": lambda: {"tasks": read_json_file("tasks.json", [])},
     "/api/agents": agents_payload,
     "/api/agent-messages": agent_messages_payload,
+    "/api/agent-activity": agent_activity_payload,
     "/api/attention": attention_payload,
     "/api/calendar": google_calendar_events,
     "/api/email": email_payload,
@@ -3378,6 +4429,7 @@ API_ROUTES = {
     "/api/hermes/config": hermes_config,
     "/api/hermes/profiles": hermes_profiles_payload,
     "/api/hermes/skills/catalog": hermes_skill_catalog_payload,
+    "/api/hermes/kanban/capabilities": kanban_capabilities_payload,
     "/api/health": health,
 }
 
@@ -3542,6 +4594,30 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.log_internal_error("Hermes search", exc)
                 self.send_json({"error": "Hermes search is unavailable."}, status=500)
+            return
+        if parsed.path == "/api/search":
+            try:
+                query = parse_qs(parsed.query).get("q", [""])[0]
+                self.send_json(unified_search(query))
+            except Exception as exc:
+                self.log_internal_error("unified dashboard search", exc)
+                self.send_json({"error": "Dashboard search is unavailable."}, status=500)
+            return
+        if parsed.path == "/api/obsidian-notes":
+            try:
+                payload = obsidian_notes()
+                query = compact_text(parse_qs(parsed.query).get("q", [""])[0], max_length=120).casefold()
+                if query:
+                    payload = dict(payload)
+                    payload["notes"] = [
+                        note for note in payload.get("notes", [])
+                        if query in " ".join(str(note.get(key) or "") for key in ("title", "name", "relative_path", "excerpt")).casefold()
+                    ]
+                    payload["returned_count"] = len(payload["notes"])
+                self.send_json(payload)
+            except Exception as exc:
+                self.log_internal_error("Obsidian notes", exc)
+                self.send_json({"error": "Obsidian notes are unavailable."}, status=500)
             return
         if parsed.path in API_ROUTES:
             try:

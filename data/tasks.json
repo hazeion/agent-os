@@ -58,5 +58,31 @@
     "created_at": "2026-06-28T09:00:00-07:00",
     "updated_at": "2026-06-28T10:30:00-07:00",
     "completed_at": "2026-06-28T10:30:00-07:00"
+  },
+  {
+    "id": "task_3596ab750b7d",
+    "title": "Example local calendar fallback",
+    "description": "Example fallback event shown when a live calendar source is not connected.",
+    "project": "Mentat",
+    "status": "todo",
+    "priority": "medium",
+    "assignee": null,
+    "due_date": null,
+    "source": "dashboard",
+    "tags": [],
+    "review_required": false,
+    "needs_attention": false,
+    "created_at": "2026-07-12T13:19:30-07:00",
+    "updated_at": "2026-07-12T13:19:30-07:00",
+    "completed_at": null,
+    "planned_for_today": false,
+    "planning_state": "inbox",
+    "calendar_links": [
+      {
+        "calendar_id": "primary",
+        "event_id": "cal_placeholder_local",
+        "label": "Example local calendar fallback"
+      }
+    ]
   }
 ]

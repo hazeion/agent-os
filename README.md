@@ -48,7 +48,9 @@ If you try it now, expect a real working project, not a finished product.
 
 Mentat currently includes:
 
-- Today View as the main command center
+- Today View as the main command center, with quick capture, deliberate daily
+  planning, manual ordering, time estimates, reminders, calendar context, and
+  agent work that needs attention or review
 - front-page Hermes prompt console with live run status and resumable follow-ups
 - manifest-driven `/model`, `/new`, and `/help` dashboard commands with no Hermes CLI passthrough
 - profile-aware Agent Console routing with profile-scoped models and sessions
@@ -56,13 +58,26 @@ Mentat currently includes:
 - confirmed provider switching among providers Hermes reports as already authenticated for the selected profile, available from both Managed Agents and the Agent Console
 - private local Agent Console history across Mentat restarts
 - Projects / Tasks workspace with an open queue, task inspector, completed work
-  timeline, and previewed task deletion
+  timeline, previewed task deletion, subtasks, dependencies, recurrence,
+  scheduled blocks, saved decision views, calendar links, and note attachments
+- capability-gated delegation of a Mentat task to a named Hermes profile through
+  Hermes' supported Kanban interface, with preview, confirmation, verification,
+  progress refresh, blocking questions, retries, revision requests, and result
+  acceptance
+- Agent Activity / Review inbox for linked work that is running, blocked, ready
+  for review, failed, or recently completed
 - Agents / Sessions view with managed Hermes profiles plus transcript and replay support
 - Hermes session search from `state.db` in read-only mode
 - read-only Hermes cron inventory, with unsupported queue controls failing closed
 - Agent Pulse live heartbeat registry
-- read-only Google Calendar integration with local fallback
-- Obsidian notes visibility
+- read-only Google Calendar integration with local fallback, plus Mentat-owned
+  task creation and task links from calendar events
+- searchable Obsidian notes with safe vault-relative task attachments and an
+  explicit Open in Obsidian action
+- grouped global search across tasks, projects, sessions, notes, and calendar
+  events; selecting a result performs navigation
+- post-creation and Managed Agent actions to test profile identity or begin
+  assigning the agent's first task
 - local lifecycle helpers for start, stop, and status
 
 ## Quick start
@@ -314,6 +329,61 @@ confirmation is tied to the complete current task state, so any changed task
 must be previewed again. The locked update is atomic, and deletion cannot
 be undone from Mentat.
 
+### Personal planning and durable agent work
+
+Mentat tasks in `data/tasks.json` are the source of truth for personal planning.
+In addition to their project, status, priority, and due date, they can carry a
+daily-plan flag and rank, an estimate and scheduled block, browser reminders,
+subtasks, dependencies, recurrence, calendar links, Obsidian note links, and a
+safe reference to delegated Hermes work. These fields remain project-owned;
+Mentat does not turn Hermes session or heartbeat data into a competing task
+registry.
+
+The Today view brings the planning fields together with quick capture, the next
+calendar events, due reminders, Agent Activity, review decisions, and recent
+completion context. Built-in task views cover Today, Waiting, Review, Blocked,
+Someday, and completed work. Browser notification permission is requested only
+after the operator chooses **Enable Reminders**; reminders remain visible in the
+dashboard when browser notifications are unavailable or not granted.
+
+Completing a recurring task may create its next Mentat-owned occurrence. Task
+dependencies are validated against existing task identifiers, and self-links,
+missing dependencies, and dependency cycles are rejected. Google Calendar
+remains read-only: creating a task from an event or linking an event writes only
+to Mentat's task store and never changes the Google event.
+
+Obsidian attachments are stored as validated vault-relative Markdown paths.
+Delegation previews may include bounded context from attached notes, but Mentat
+does not edit the notes or expose an arbitrary local-file operation. Opening a
+note is an explicit browser action using Obsidian's application link.
+
+### Hermes Kanban delegation boundary
+
+Hermes' supported Kanban CLI is Mentat's only durable agent-delegation mutation
+path. Mentat does not edit Hermes Kanban storage, use `agent_messages.json` as an
+execution queue, or treat Agent Console prompts as a durable task scheduler.
+
+Before showing delegation controls, Mentat probes the installed Hermes runtime
+for the required Kanban capabilities. A delegation preview is bound to the
+complete current Mentat task and the requested board, profile, workspace mode,
+instructions, and attached-note context. Confirmation is rejected if any bound
+input changes. Under the Kanban mutation lock, Mentat then invokes only the
+adapter's fixed, validated command, reads the resulting Hermes task back, and
+persists safe task/run/session/review references only after verification.
+
+Unsupported commands and missing capabilities fail closed. If Hermes reports
+that it created or changed work but Mentat cannot verify the result, Mentat
+reports a partial failure and directs the operator to inspect Hermes before
+retrying. Follow-up mutations such as replies, retries, stop/reclaim, revision
+requests, and blocking decisions use the same preview and confirmation
+contract, followed by a Hermes refresh when a remote mutation occurs. Accepting
+a reviewed result is a Mentat-owned decision that completes the personal task
+without introducing an extra Hermes mutation.
+
+Agent Activity groups only task-linked delegation state into needs-input,
+running, ready-for-review, failed, and recently-completed queues. It is an
+operator review surface, not a replacement for Hermes' task or run history.
+
 ### Hermes cron boundary
 
 Mentat currently displays Hermes cron inventory read-only. The installed Hermes
@@ -380,6 +450,8 @@ hermes_profiles.py
 hermes_profile_creation.py
 hermes_profile_deletion.py
 hermes_skills.py
+hermes_kanban.py
+task_planning.py
 runtime_config.py
 mentat_lifecycle.py
 scripts/mentat_setup.py

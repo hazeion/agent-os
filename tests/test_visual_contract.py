@@ -180,6 +180,15 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('Code / File Summary', APP_JS)
         self.assertIn('Suggest first, write later', APP_JS)
         self.assertIn('.session-detail-tabs', CSS)
+
+    def test_session_history_contains_long_replays_in_its_own_scroller(self):
+        self.assertIn('#conversation-library-panel {', CSS)
+        self.assertIn('#conversation-library-panel .session-detail {', CSS)
+        self.assertNotIn('#model-usage-panel {\n  grid-area: model;', CSS)
+        self.assertIn('max-height: min(72vh, 900px);', CSS)
+        self.assertIn('overscroll-behavior: contain;', CSS)
+        session_rule = CSS[CSS.index('#conversation-library-panel .session-detail {'):]
+        self.assertIn('overflow: auto;', session_rule.split('}', 1)[0])
         self.assertIn('.session-controls-card', CSS)
         self.assertIn('.session-select', CSS)
         self.assertIn('.replay-summary-grid', CSS)

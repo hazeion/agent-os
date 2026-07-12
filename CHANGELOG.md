@@ -2,6 +2,52 @@
 
 All notable changes to Mentat.
 
+## 2026-07-12
+
+### Added
+- Added project-owned personal planning fields and Today workflows for quick
+  capture, deliberate selection and manual ordering, time estimates, scheduled
+  blocks, browser reminders, subtasks, dependencies, recurrence, and built-in
+  Today/Waiting/Review/Blocked/Someday decision views.
+- Added the capability-gated Hermes Kanban adapter as the durable task-delegation
+  path, including exact preview and confirmation binding, fixed shell-free
+  operations, post-operation read-back verification, partial-failure reporting,
+  task-linked run/session state, and review actions.
+- Added Agent Activity and review queues for needs-input, running,
+  ready-for-review, failed, and recently-completed delegated work.
+- Added Mentat-owned task creation and linkage from verified calendar events
+  while preserving read-only Google Calendar access.
+- Added searchable Obsidian notes, explicit Open in Obsidian links, validated
+  vault-relative task attachments, and bounded attached-note delegation context.
+- Added grouped global search across tasks, projects, sessions, notes, and
+  calendar events without navigating while the operator types.
+- Added Agent Creator and Managed Agent onboarding actions to test profile
+  identity in Console or start assigning the profile's first task.
+
+### Changed
+- Made Mentat tasks the source of truth for personal day planning while keeping
+  Hermes profiles canonical for executable agent identity and Hermes Kanban
+  canonical for delegated execution state.
+- Kept Agent Messages as a safe project-owned communication queue and Agent
+  Console as an interactive single-run surface; neither is presented as durable
+  task execution.
+- Kept Google Calendar and Hermes session/database access read-only. Calendar
+  links, reminders, note attachments, and review state write only to Mentat's
+  allowlisted project-owned task data.
+
+### Safety
+- Delegation and remote follow-up mutations fail closed when Hermes Kanban is
+  unavailable or unsupported, when the bound task/intent changes, or when
+  Hermes state cannot be verified after mutation.
+- Delegation creation uses an atomic local reservation, live action previews
+  bind the current Hermes task/run state, and adapter mutations verify their
+  requested postcondition before reporting success.
+- Dependency cycles, missing/self dependencies, unsafe vault paths, malformed
+  planning metadata, and implicit notification permission requests are rejected.
+- Recurring tasks deduplicate reopened completions, preserve completed checklist
+  history, honor occurrence counts, and keep local wall-clock blocks stable
+  across daylight-saving changes.
+
 ## 2026-07-11
 
 ### Added

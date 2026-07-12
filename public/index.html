@@ -97,10 +97,13 @@
           <p>Day-centered command surface for attention, active work, agents, sessions, notes, and calendar context.</p>
         </div>
         <div class="header-actions">
-          <label class="search-shell" aria-label="Search sessions and tasks">
-            <span>⌕</span>
-            <input id="global-search" type="search" placeholder="Search sessions and tasks…" />
-          </label>
+          <div class="global-search-wrap">
+            <label class="search-shell" aria-label="Search dashboard">
+              <span>⌕</span>
+              <input id="global-search" type="search" placeholder="Search tasks, sessions, notes…" role="combobox" aria-autocomplete="list" aria-controls="global-search-results" aria-expanded="false" />
+            </label>
+            <div id="global-search-results" class="global-search-results" role="listbox" aria-label="Dashboard search results" hidden></div>
+          </div>
         </div>
       </header>
 
@@ -113,17 +116,37 @@
               <div>
                 <h2>Open Queue / Next Moves</h2>
               </div>
+              <button class="mini-button" type="button" id="enable-reminders-button">Enable Reminders</button>
             </div>
+            <form id="quick-capture-form" class="quick-capture-form">
+              <input id="quick-capture-title" name="title" type="text" maxlength="160" required placeholder="Quickly add a task for today…" aria-label="Quickly add a task for today" />
+              <select id="quick-capture-project" name="project" aria-label="Quick capture project"></select>
+              <button class="action-button" type="submit">Add</button>
+            </form>
+            <div id="quick-capture-status" class="task-editor-status mono" role="status"></div>
+            <div id="reminder-list" class="reminder-list"></div>
             <div id="focus-task-list" class="stack"></div>
           </section>
 
-          <section class="panel command-card model-usage-panel" id="model-usage-panel">
+          <section class="panel command-card" id="today-calendar-panel">
             <div class="panel-head">
               <div>
-                <h2>Model Usage (by Tokens)</h2>
+                <h2>Today &amp; Next Events</h2>
+                <p class="panel-subtitle">Calendar context remains read-only; task planning stays in Mentat.</p>
               </div>
             </div>
-            <div id="model-usage" class="model-usage"></div>
+            <div id="calendar-list" class="stack"></div>
+          </section>
+
+          <section class="panel command-card span-2 agent-activity-panel" id="agent-activity-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Agent Activity &amp; Review</h2>
+                <p class="panel-subtitle">Running work, questions that need you, and results ready for review.</p>
+              </div>
+              <span id="agent-activity-summary" class="detail-context-label mono">Loading activity…</span>
+            </div>
+            <div id="agent-activity-list" class="agent-activity-list" role="status" aria-live="polite"></div>
           </section>
 
           <section class="panel command-card span-2" id="agent-console-panel">
@@ -206,6 +229,11 @@
                 <div class="empty">Select an agent to inspect its configuration.</div>
               </aside>
             </div>
+          </section>
+
+          <section class="panel model-usage-panel" id="model-usage-panel">
+            <div class="panel-head"><div><h2>Model Usage (by Tokens)</h2><p class="panel-subtitle">Operational telemetry for recent Hermes sessions.</p></div></div>
+            <div id="model-usage" class="model-usage"></div>
           </section>
 
           <section class="panel agents-session-panel" id="conversation-library-panel">
@@ -297,9 +325,13 @@
                   <span>View</span>
                   <select id="task-status-filter" class="status-filter-select" aria-label="Task status options">
                     <option value="open" selected>Open</option>
+                    <option value="today">Today</option>
+                    <option value="review">Review</option>
+                    <option value="waiting">Waiting</option>
+                    <option value="blocked">Blocked</option>
+                    <option value="someday">Someday</option>
                     <option value="todo">Todo</option>
                     <option value="in progress">In Progress</option>
-                    <option value="waiting">Waiting</option>
                     <option value="needs attention">Needs Attention</option>
                     <option value="completed">Completed</option>
                     <option value="all">All</option>
@@ -323,6 +355,7 @@
                   <p class="panel-subtitle">Queue stays primary; full task context stays here.</p>
                 </div>
                 <div class="panel-controls task-detail-controls">
+                  <button class="action-button" type="button" id="selected-task-delegate">Delegate to Agent</button>
                   <button class="mini-button" type="button" id="selected-task-edit">Edit Task</button>
                   <button class="mini-button danger-button" type="button" id="selected-task-delete">Delete Task</button>
                   <button class="mini-button" type="button" id="selected-task-cancel" hidden>Cancel</button>
@@ -364,6 +397,10 @@
             <div>
               <h2>Obsidian Notes</h2>
               <p id="notes-vault-meta" class="section-copy">Loading vault notes…</p>
+            </div>
+            <div class="panel-controls">
+              <label class="search-shell" aria-label="Search Obsidian notes"><span>⌕</span><input id="notes-search" type="search" placeholder="Search notes…" /></label>
+              <span id="notes-count" class="detail-context-label mono">0 notes</span>
             </div>
           </div>
           <div id="notes-list" class="notes-grid notes-scroll-region"></div>
@@ -558,6 +595,65 @@
         <div>
           <button class="mini-button" type="button" data-task-delete-cancel>Cancel</button>
           <button class="action-button danger-button" type="button" data-task-delete-confirm>Delete task</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="task-delegation-dialog" class="agent-creator-dialog" aria-labelledby="task-delegation-title">
+    <form id="task-delegation-form" class="agent-creator-shell">
+      <header class="agent-creator-head">
+        <div>
+          <div class="detail-context-label mono">Hermes Kanban delegation</div>
+          <h2 id="task-delegation-title">Delegate Task</h2>
+          <p class="panel-subtitle">Review the exact context and execution target before Mentat creates the Hermes task.</p>
+        </div>
+        <button class="agent-creator-close" type="button" data-task-delegation-cancel aria-label="Close task delegation">×</button>
+      </header>
+      <div class="agent-creator-body">
+        <div class="task-editor-grid" id="task-delegation-fields">
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Agent</span>
+            <select name="profile_id" required></select>
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Hermes board</span>
+            <select name="board_id" required><option value="default">Default</option></select>
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Workspace</span>
+            <select name="workspace"><option value="scratch">Scratch</option><option value="worktree">Git worktree</option></select>
+          </label>
+          <label class="task-editor-field field-span-2">
+            <span class="task-editor-label mono">Additional instructions</span>
+            <textarea name="instructions" rows="4" maxlength="8000" placeholder="Optional constraints, expected output, or review criteria."></textarea>
+          </label>
+        </div>
+        <div id="task-delegation-review" class="agent-creator-review"></div>
+      </div>
+      <footer class="agent-creator-actions">
+        <span id="task-delegation-status" class="task-editor-status mono" role="status" aria-live="polite"></span>
+        <div>
+          <button class="mini-button" type="button" data-task-delegation-cancel>Cancel</button>
+          <button class="mini-button" type="button" data-task-delegation-preview>Review Delegation</button>
+          <button class="action-button" type="submit" data-task-delegation-confirm disabled>Delegate Task</button>
+        </div>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="delegation-action-dialog" class="agent-delete-dialog" aria-labelledby="delegation-action-title">
+    <div class="agent-delete-shell">
+      <header class="agent-delete-head">
+        <div><div class="eyebrow">Linked agent work</div><h2 id="delegation-action-title">Review Agent Work</h2></div>
+        <button class="agent-creator-close" type="button" data-delegation-action-cancel aria-label="Close agent action review">×</button>
+      </header>
+      <div id="delegation-action-review" class="agent-delete-review"></div>
+      <footer class="agent-creator-actions">
+        <span id="delegation-action-status" class="task-editor-status mono" role="status" aria-live="polite"></span>
+        <div>
+          <button class="mini-button" type="button" data-delegation-action-cancel>Cancel</button>
+          <button class="action-button" type="button" data-delegation-action-confirm>Confirm Action</button>
         </div>
       </footer>
     </div>

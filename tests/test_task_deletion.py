@@ -116,6 +116,19 @@ class TaskDeletionTests(unittest.TestCase):
         self.assertIn("duplicated", payload["error"])
         self.assertEqual(stored, duplicate_tasks)
 
+    def test_deletion_is_blocked_while_other_tasks_depend_on_target(self):
+        tasks = [
+            {"id": "task-parent", "title": "Parent"},
+            {"id": "task-child", "title": "Child", "depends_on": ["task-parent"]},
+        ]
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_tasks(root, tasks)
+            with patch.object(server, "DATA_DIR", root):
+                payload, status = server.preview_task_deletion("task-parent")
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["dependent_task_ids"], ["task-child"])
+
     def test_routes_expose_preview_and_confirmed_delete_only_as_post(self):
         routes = {pattern.pattern: handler.__name__ for pattern, handler, _ in server.POST_ROUTES}
         self.assertEqual(

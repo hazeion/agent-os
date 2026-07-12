@@ -41,11 +41,16 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn('cached_calendar_payload(cache_key)', SERVER)
         self.assertIn('"cache"', SERVER)
 
-    def test_project_search_hydrates_project_data_without_full_refresh(self):
-        self.assertIn('async function ensureProjectsLoaded()', APP_JS)
-        self.assertIn('await ensureProjectsLoaded()', APP_JS)
-        self.assertIn("await setView('projects', { refreshOnChange: false })", APP_JS)
-        self.assertIn('state.projectsLoaded = true', APP_JS)
+    def test_grouped_search_navigates_only_after_an_explicit_selection(self):
+        self.assertIn('function renderGlobalSearchResults', APP_JS)
+        self.assertIn('const payload = await searchDashboard(query)', APP_JS)
+        self.assertIn('async function navigateGlobalSearchResult(result)', APP_JS)
+        self.assertIn("await setView('projects')", APP_JS)
+        input_block = APP_JS[
+            APP_JS.index("globalSearch.addEventListener('input'") :
+            APP_JS.index("globalSearch.addEventListener('keydown'")
+        ]
+        self.assertNotIn('setView(', input_block)
 
     def test_dashboard_json_writes_are_allowlisted_to_data_files(self):
         self.assertIn('ALLOWED_DATA_WRITES = {', SERVER)

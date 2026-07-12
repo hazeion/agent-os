@@ -225,6 +225,11 @@ function isOpenTask(task = {}) {
 function taskMatchesStatus(task = {}) {
   if (state.taskStatusFilter === 'all') return true;
   if (state.taskStatusFilter === 'open') return isOpenTask(task);
+  if (state.taskStatusFilter === 'today') return isOpenTask(task) && Boolean(task.planned_for_today);
+  if (state.taskStatusFilter === 'review') return task.planning_state === 'review' || task.delegation?.state === 'ready_for_review';
+  if (state.taskStatusFilter === 'someday') return task.planning_state === 'someday';
+  if (state.taskStatusFilter === 'blocked') return task.planning_state === 'blocked' || task.delegation?.state === 'needs_input' || taskArea(task) === 'needs attention';
+  if (state.taskStatusFilter === 'waiting') return task.planning_state === 'waiting' || ['queued', 'running'].includes(task.delegation?.state) || taskArea(task) === 'waiting';
   return taskArea(task) === state.taskStatusFilter;
 }
 
@@ -308,6 +313,13 @@ function taskEditorSeedTask(tasks = visibleTasks(state.tasks)) {
     description: '',
     review_required: false,
     needs_attention: false,
+    planned_for_today: false,
+    manual_rank: 100,
+    estimated_minutes: 30,
+    planning_state: 'inbox',
+    subtasks: [],
+    depends_on: [],
+    reminders: [],
   };
   return draft ? { ...base, ...draft } : base;
 }
@@ -317,6 +329,29 @@ function parseTaskTagsInput(value = '') {
     .split(',')
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function localDateTimeInputValue(value = '') {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function isoDateTimeInputValue(value = '') {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function parseSubtasksInput(value = '', existing = []) {
+  const prior = new Map((existing || []).map((item) => [String(item.title || '').trim().toLowerCase(), item]));
+  return String(value).split('\n').map((title) => title.trim()).filter(Boolean).slice(0, 200).map((title, index) => {
+    const matched = prior.get(title.toLowerCase());
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 60) || `item_${index + 1}`;
+    return { id: matched?.id || `subtask_${index + 1}_${slug}`, title, completed: Boolean(matched?.completed), rank: index };
+  });
 }
 
 function openTaskEditor(mode = 'create', task = selectedTaskFrom(visibleTasks(state.tasks))) {
@@ -346,6 +381,7 @@ function closeTaskEditor() {
 function syncTaskEditorControls(tasks = visibleTasks(state.tasks)) {
   const editButton = $('#selected-task-edit');
   const deleteButton = $('#selected-task-delete');
+  const delegateButton = $('#selected-task-delegate');
   const cancelButton = $('#selected-task-cancel');
   const editorActive = state.taskEditorMode === 'create' || state.taskEditorMode === 'edit';
   const selected = selectedTaskFrom(tasks);
@@ -357,11 +393,22 @@ function syncTaskEditorControls(tasks = visibleTasks(state.tasks)) {
     deleteButton.hidden = editorActive;
     deleteButton.disabled = !selected;
   }
+  if (delegateButton) {
+    delegateButton.hidden = editorActive;
+    delegateButton.disabled = !selected;
+    delegateButton.textContent = selected?.delegation ? 'Agent Work' : 'Delegate to Agent';
+  }
   if (cancelButton) cancelButton.hidden = !editorActive;
 }
 
 function taskPayloadFromForm(form) {
   const formData = new FormData(form);
+  const scheduledStart = isoDateTimeInputValue(formData.get('scheduled_start'));
+  const scheduledEnd = isoDateTimeInputValue(formData.get('scheduled_end'));
+  const reminderAt = isoDateTimeInputValue(formData.get('reminder_at'));
+  const recurrenceFrequency = String(formData.get('recurrence_frequency') || '').trim();
+  const existing = state.tasks.find((task) => String(task.id || '') === String(form.dataset.taskId || '')) || {};
+  const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   return {
     title: String(formData.get('title') || '').trim(),
     description: String(formData.get('description') || '').trim(),
@@ -373,6 +420,15 @@ function taskPayloadFromForm(form) {
     tags: parseTaskTagsInput(formData.get('tags') || ''),
     review_required: formData.get('review_required') === 'on',
     needs_attention: formData.get('needs_attention') === 'on',
+    planned_for_today: formData.get('planned_for_today') === 'on',
+    manual_rank: Number(formData.get('manual_rank') || 100),
+    estimated_minutes: Number(formData.get('estimated_minutes') || 30),
+    planning_state: String(formData.get('planning_state') || 'inbox'),
+    scheduled_block: scheduledStart && scheduledEnd ? { start: scheduledStart, end: scheduledEnd, timezone: localTimezone } : null,
+    recurrence: recurrenceFrequency ? { frequency: recurrenceFrequency, interval: Number(formData.get('recurrence_interval') || 1) } : null,
+    reminders: reminderAt ? [{ id: 'primary', at: reminderAt, channel: 'browser', enabled: true, timezone: localTimezone }] : [],
+    subtasks: parseSubtasksInput(formData.get('subtasks') || '', existing.subtasks),
+    depends_on: parseTaskTagsInput(formData.get('depends_on') || ''),
   };
 }
 
@@ -456,6 +512,206 @@ async function submitTaskDeletion() {
   }
 }
 
+function closeTaskDelegation() {
+  state.taskDelegationRequestToken += 1;
+  state.taskDelegationPreview = null;
+  state.taskDelegationTaskId = '';
+  $('#task-delegation-dialog')?.close();
+}
+
+function taskDelegationFormPayload() {
+  const form = $('#task-delegation-form');
+  const data = new FormData(form);
+  return {
+    profile_id: String(data.get('profile_id') || '').trim(),
+    board_id: String(data.get('board_id') || 'default').trim(),
+    workspace: String(data.get('workspace') || 'scratch').trim(),
+    instructions: String(data.get('instructions') || '').trim(),
+  };
+}
+
+async function openTaskDelegation(task) {
+  const dialog = $('#task-delegation-dialog');
+  const form = $('#task-delegation-form');
+  const status = $('#task-delegation-status');
+  if (!dialog || !form || !task?.id) return;
+  state.taskDelegationTaskId = String(task.id);
+  state.taskDelegationPreview = null;
+  $('#task-delegation-review').innerHTML = `<div class="empty">Choose an agent and review the exact delegation.</div>`;
+  $('[data-task-delegation-confirm]').disabled = true;
+  if (status) status.textContent = 'Loading Hermes profiles and Kanban boards…';
+  dialog.showModal();
+  try {
+    const [profilesPayload, kanban] = await Promise.all([
+      fetchHermesProfiles(),
+      fetchHermesKanbanCapabilities(),
+    ]);
+    state.hermesProfiles = Array.isArray(profilesPayload.profiles) ? profilesPayload.profiles : [];
+    state.hermesKanbanCapabilities = kanban;
+    const profileSelect = form.elements.profile_id;
+    const boardSelect = form.elements.board_id;
+    profileSelect.innerHTML = state.hermesProfiles.length
+      ? state.hermesProfiles.map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name || profile.id)}</option>`).join('')
+      : '<option value="">No Hermes profiles available</option>';
+    boardSelect.innerHTML = Array.isArray(kanban.boards) && kanban.boards.length
+      ? kanban.boards.map((board) => `<option value="${escapeHtml(board.id)}">${escapeHtml(board.name || board.id)}</option>`).join('')
+      : '<option value="default">Default</option>';
+    if (task.delegation?.profile_id) profileSelect.value = task.delegation.profile_id;
+    if (task.delegation?.board_id) boardSelect.value = task.delegation.board_id;
+    if (status) status.textContent = kanban.status === 'available'
+      ? 'Hermes Kanban is available. Review is required before delegation.'
+      : 'Hermes Kanban is unavailable in this Hermes installation.';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+async function reviewTaskDelegation() {
+  const taskId = state.taskDelegationTaskId;
+  const status = $('#task-delegation-status');
+  const review = $('#task-delegation-review');
+  const confirm = $('[data-task-delegation-confirm]');
+  if (!taskId || !review) return;
+  const requestToken = ++state.taskDelegationRequestToken;
+  state.taskDelegationPreview = null;
+  confirm.disabled = true;
+  if (status) status.textContent = 'Preparing exact delegation preview…';
+  try {
+    const preview = await previewTaskDelegation(taskId, taskDelegationFormPayload());
+    if (requestToken !== state.taskDelegationRequestToken) return;
+    state.taskDelegationPreview = preview;
+    review.innerHTML = `
+      <article class="agent-creator-review-card">
+        <h3>${escapeHtml(preview.task?.title || 'Task')}</h3>
+        <div class="task-detail-meta-row mono"><span>${escapeHtml(preview.target?.profile_id || '')}</span><span>${escapeHtml(preview.target?.board_id || '')}</span><span>${escapeHtml(preview.target?.workspace || '')}</span></div>
+        <pre class="delegation-context-preview">${escapeHtml(preview.context || '')}</pre>
+        <ul>${(preview.effects || []).map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>
+        ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}
+      </article>`;
+    confirm.disabled = false;
+    if (status) status.textContent = 'Review the exact effects, then confirm.';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+async function submitTaskDelegation() {
+  const preview = state.taskDelegationPreview;
+  const status = $('#task-delegation-status');
+  if (!preview?.confirmation_id || !state.taskDelegationTaskId) return;
+  if (status) status.textContent = 'Delegating through Hermes Kanban…';
+  try {
+    const result = await delegateTask(state.taskDelegationTaskId, taskDelegationFormPayload(), preview.confirmation_id);
+    closeTaskDelegation();
+    state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks.map((task) => task.id === result.task?.id ? result.task : task);
+    await refresh();
+    renderProjectScopedViews();
+    flashTarget($('#selected-task-panel'));
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+function closeDelegationAction() {
+  state.delegationActionRequestToken += 1;
+  state.delegationActionPreview = null;
+  $('#delegation-action-dialog')?.close();
+}
+
+async function openDelegationAction(action) {
+  const selected = selectedTaskFrom(visibleTasks(state.tasks));
+  const dialog = $('#delegation-action-dialog');
+  const review = $('#delegation-action-review');
+  const status = $('#delegation-action-status');
+  if (!selected?.id || !dialog || !review) return;
+  const needsNote = ['reply', 'request_revision', 'mark_blocked'].includes(action);
+  const labels = { accept: 'Accept Result', reply: 'Reply to Agent', retry: 'Retry Work', stop: 'Stop Work', request_revision: 'Request Revision', mark_blocked: 'Mark Blocked' };
+  $('#delegation-action-title').textContent = labels[action] || 'Review Agent Work';
+  review.innerHTML = `
+    <article class="agent-creator-review-card">
+      <h3>${escapeHtml(selected.title || 'Task')}</h3>
+      <p>${escapeHtml(selected.delegation?.summary || selected.delegation?.latest_question || 'Review this linked agent action.')}</p>
+      ${needsNote ? `<label class="task-editor-field"><span class="task-editor-label mono">Your note</span><textarea id="delegation-action-note" rows="4" maxlength="8000" required></textarea></label>` : ''}
+      <div id="delegation-action-effects"></div>
+    </article>`;
+  state.delegationActionPreview = { taskId: selected.id, action, confirmation_id: '' };
+  if (status) status.textContent = needsNote ? 'Add a note, then confirm the exact action.' : 'Preparing action preview…';
+  dialog.showModal();
+  if (!needsNote) await reviewDelegationAction();
+}
+
+async function reviewDelegationAction() {
+  const draft = state.delegationActionPreview;
+  const note = $('#delegation-action-note')?.value.trim() || '';
+  const status = $('#delegation-action-status');
+  if (!draft?.taskId || !draft.action) return null;
+  const requestToken = ++state.delegationActionRequestToken;
+  try {
+    const preview = await previewTaskDelegationAction(draft.taskId, draft.action, note);
+    if (requestToken !== state.delegationActionRequestToken) return null;
+    state.delegationActionPreview = preview;
+    $('#delegation-action-effects').innerHTML = `<ul>${(preview.effects || []).map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>`;
+    if (status) status.textContent = 'Exact action ready for confirmation.';
+    return preview;
+  } catch (err) {
+    if (status) status.textContent = err.message;
+    return null;
+  }
+}
+
+async function submitDelegationAction() {
+  let preview = state.delegationActionPreview;
+  if (!preview?.confirmation_id) preview = await reviewDelegationAction();
+  if (!preview?.confirmation_id) return;
+  const status = $('#delegation-action-status');
+  try {
+    const result = await runTaskDelegationAction(preview.task.id, preview.action, preview.note || '', preview.confirmation_id);
+    closeDelegationAction();
+    state.tasks = state.tasks.map((task) => task.id === result.task?.id ? result.task : task);
+    await refresh();
+    renderProjectScopedViews();
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+async function refreshSelectedTaskDelegation(taskId) {
+  try {
+    const result = await refreshTaskDelegation(taskId);
+    state.tasks = state.tasks.map((task) => task.id === result.task?.id ? result.task : task);
+    renderProjectScopedViews();
+    renderAgentActivity(await api(endpoints.agentActivity));
+  } catch (err) {
+    $('#health-label').textContent = `Agent work refresh failed: ${err.message}`;
+  }
+}
+
+function renderAgentActivity(payload = {}) {
+  state.agentActivity = payload;
+  const groups = payload.groups || {};
+  const order = [
+    ['needs_input', 'Needs your input'],
+    ['ready_for_review', 'Ready for review'],
+    ['running', 'Running'],
+    ['failed', 'Failed'],
+    ['recently_completed', 'Recently completed'],
+  ];
+  const total = order.reduce((sum, [key]) => sum + (groups[key]?.length || 0), 0);
+  const summary = $('#agent-activity-summary');
+  if (summary) summary.textContent = `${total} linked item${total === 1 ? '' : 's'}`;
+  const list = $('#agent-activity-list');
+  if (!list) return;
+  list.innerHTML = total ? order.map(([key, label]) => {
+    const items = groups[key] || [];
+    if (!items.length) return '';
+    return `<section class="agent-activity-group"><h3>${escapeHtml(label)} <span class="mono">${items.length}</span></h3>${items.map((item) => `
+      <button class="agent-activity-item" type="button" data-activity-task-id="${escapeHtml(item.task_id || '')}" data-activity-project="${escapeHtml(item.project || '')}">
+        <span><strong>${escapeHtml(item.title || 'Untitled task')}</strong><small>${escapeHtml(item.project || 'General')} · ${escapeHtml(item.profile_id || 'agent')}</small></span>
+        <span class="task-state-text ${escapeHtml(item.state || '')}">${escapeHtml(item.state || '')}</span>
+      </button>`).join('')}</section>`;
+  }).join('') : '<div class="empty">No linked agent work yet. Delegate a task to begin.</div>';
+}
+
 function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
   const container = $('#selected-task-detail');
   if (!container) return;
@@ -475,6 +731,9 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
       .join('');
     const priorityOptions = ['high', 'medium', 'low']
       .map((value) => `<option value="${escapeHtml(value)}" ${value === (draft?.priority || 'medium') ? 'selected' : ''}>${escapeHtml(value)}</option>`)
+      .join('');
+    const planningOptions = ['inbox', 'planned', 'in_progress', 'waiting', 'review', 'someday', 'blocked', 'done']
+      .map((value) => `<option value="${escapeHtml(value)}" ${value === (draft?.planning_state || 'inbox') ? 'selected' : ''}>${escapeHtml(value.replaceAll('_', ' '))}</option>`)
       .join('');
     container.innerHTML = `
       <form id="task-editor-form" class="task-detail-card task-editor-form" data-mode="${escapeHtml(mode)}" data-task-id="${escapeHtml(String(draft?.id || ''))}">
@@ -505,6 +764,45 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
             <span class="task-editor-label mono">Due date</span>
             <input name="due_date" type="date" value="${escapeHtml(draft?.due_date || '')}" />
           </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Planning state</span>
+            <select name="planning_state">${planningOptions}</select>
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Estimate (minutes)</span>
+            <input name="estimated_minutes" type="number" min="1" max="10080" value="${escapeHtml(String(draft?.estimated_minutes || 30))}" />
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Today order</span>
+            <input name="manual_rank" type="number" min="0" max="1000000" value="${escapeHtml(String(draft?.manual_rank ?? 100))}" />
+          </label>
+          <label class="task-editor-toggle">
+            <input name="planned_for_today" type="checkbox" ${draft?.planned_for_today ? 'checked' : ''} />
+            <span>Plan for today</span>
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Time block starts</span>
+            <input name="scheduled_start" type="datetime-local" value="${escapeHtml(localDateTimeInputValue(draft?.scheduled_block?.start))}" />
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Time block ends</span>
+            <input name="scheduled_end" type="datetime-local" value="${escapeHtml(localDateTimeInputValue(draft?.scheduled_block?.end))}" />
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Reminder</span>
+            <input name="reminder_at" type="datetime-local" value="${escapeHtml(localDateTimeInputValue(draft?.reminders?.[0]?.at))}" />
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Repeats</span>
+            <select name="recurrence_frequency">
+              <option value="">Does not repeat</option>
+              ${['daily', 'weekly', 'monthly', 'yearly'].map((value) => `<option value="${value}" ${draft?.recurrence?.frequency === value ? 'selected' : ''}>${value}</option>`).join('')}
+            </select>
+          </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Repeat every</span>
+            <input name="recurrence_interval" type="number" min="1" max="365" value="${escapeHtml(String(draft?.recurrence?.interval || 1))}" />
+          </label>
           <label class="task-editor-field field-span-2">
             <span class="task-editor-label mono">Assignee</span>
             <input name="assignee" type="text" maxlength="120" value="${escapeHtml(draft?.assignee || '')}" placeholder="Operator, Hermes, or another owner" />
@@ -512,6 +810,14 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
           <label class="task-editor-field field-span-2">
             <span class="task-editor-label mono">Tags</span>
             <input name="tags" type="text" value="${escapeHtml(Array.isArray(draft?.tags) ? draft.tags.join(', ') : '')}" placeholder="phase-3, write-back" />
+          </label>
+          <label class="task-editor-field field-span-2">
+            <span class="task-editor-label mono">Checklist (one item per line)</span>
+            <textarea name="subtasks" rows="4" placeholder="First step&#10;Second step">${escapeHtml((draft?.subtasks || []).map((item) => item.title || '').join('\n'))}</textarea>
+          </label>
+          <label class="task-editor-field field-span-2">
+            <span class="task-editor-label mono">Depends on task IDs</span>
+            <input name="depends_on" type="text" value="${escapeHtml((draft?.depends_on || []).join(', '))}" placeholder="task_abc, task_xyz" />
           </label>
           <label class="task-editor-toggle">
             <input name="review_required" type="checkbox" ${draft?.review_required ? 'checked' : ''} />
@@ -545,6 +851,39 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
   const tags = Array.isArray(selected.tags) ? selected.tags : [];
   const updated = selected.updated_at || selected.created_at || selected.completed_at;
   const updatedLabel = updated ? `updated ${humanDate(updated)}` : 'no update timestamp';
+  const delegation = selected.delegation && typeof selected.delegation === 'object' ? selected.delegation : null;
+  const delegationActions = delegation ? `
+    <div class="task-delegation-actions">
+      <button class="mini-button" type="button" data-delegation-refresh="${escapeHtml(String(selected.id || ''))}">Refresh</button>
+      ${delegation.state === 'ready_for_review' ? `<button class="action-button" type="button" data-delegation-action="accept">Accept Result</button><button class="mini-button" type="button" data-delegation-action="request_revision">Request Revision</button>` : ''}
+      ${delegation.state === 'needs_input' ? `<button class="action-button" type="button" data-delegation-action="reply">Reply</button><button class="mini-button" type="button" data-delegation-action="retry">Retry</button>` : ''}
+      ${delegation.state === 'running' ? `<button class="mini-button danger-button" type="button" data-delegation-action="stop">Stop</button>` : ''}
+      ${['queued', 'running', 'failed'].includes(delegation.state) ? `<button class="mini-button" type="button" data-delegation-action="mark_blocked">Mark Blocked</button>` : ''}
+      ${['failed', 'cancelled'].includes(delegation.state) ? `<button class="action-button" type="button" data-delegation-action="retry">Retry Work</button>` : ''}
+    </div>` : '';
+  const delegationCard = delegation ? `
+    <section class="task-delegation-card task-delegation-${escapeHtml(delegation.state || 'queued')}">
+      <div class="task-detail-kicker mono">Agent work · ${escapeHtml(delegation.state || 'queued')}</div>
+      <div class="task-detail-meta-row mono"><span>${escapeHtml(delegation.profile_id || 'agent')}</span><span>${escapeHtml(delegation.board_id || 'default')}</span><span>${Number(delegation.attempts || 0)} attempt${Number(delegation.attempts || 0) === 1 ? '' : 's'}</span></div>
+      ${delegation.latest_question ? `<div class="task-agent-question"><strong>Agent needs your input</strong><p>${escapeHtml(delegation.latest_question)}</p></div>` : ''}
+      ${delegation.summary ? `<div class="task-agent-summary"><strong>Latest result</strong><p>${escapeHtml(delegation.summary)}</p></div>` : ''}
+      ${delegationActions}
+    </section>` : '';
+  const checklist = Array.isArray(selected.subtasks) && selected.subtasks.length ? `
+    <section class="task-checklist">
+      <strong>Checklist</strong>
+      ${selected.subtasks.map((item) => `<label><input type="checkbox" data-subtask-toggle="${escapeHtml(item.id)}" ${item.completed ? 'checked' : ''} /><span>${escapeHtml(item.title || '')}</span></label>`).join('')}
+    </section>` : '';
+  const planningMeta = [
+    selected.planned_for_today ? 'planned today' : '',
+    selected.estimated_minutes ? `${selected.estimated_minutes} min` : '',
+    selected.scheduled_block?.start ? `starts ${humanDate(selected.scheduled_block.start)}` : '',
+    selected.recurrence?.frequency ? `repeats ${selected.recurrence.frequency}` : '',
+    selected.depends_on?.length ? `depends on ${selected.depends_on.length}` : '',
+  ].filter(Boolean).join(' · ');
+  const planningActions = selected.planned_for_today ? `<div class="task-delegation-actions"><button class="mini-button" type="button" data-today-move="up">Move Earlier</button><button class="mini-button" type="button" data-today-move="down">Move Later</button></div>` : '';
+  const noteLinks = Array.isArray(selected.note_links) && selected.note_links.length ? `
+    <section class="task-checklist"><strong>Context notes</strong>${selected.note_links.map((note) => `<div class="task-note-link"><span>${escapeHtml(note.title || note.path)}</span><button class="mini-button" type="button" data-detach-note="${escapeHtml(note.path || '')}">Detach</button></div>`).join('')}<button class="mini-button" type="button" data-view-task-notes>Browse Notes</button></section>` : '';
   container.innerHTML = `
     <article class="task-detail-card">
       <div class="task-detail-kicker mono">${escapeHtml(selected.project || 'General')} · ${escapeHtml(selected.priority || 'priority n/a')}</div>
@@ -559,7 +898,12 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
         <span class="mono">Next</span>
         <strong>${escapeHtml(taskNextMoveLabel(selected, area))}</strong>
       </div>
+      ${planningMeta ? `<div class="task-detail-footer mono">${escapeHtml(planningMeta)}</div>` : ''}
+      ${planningActions}
+      ${checklist}
+      ${noteLinks}
       <div class="task-detail-footer mono">${escapeHtml(updatedLabel)}${selected.source ? ` · ${escapeHtml(selected.source)}` : ''}${tags.length ? ` · tags: ${escapeHtml(tags.join(' · '))}` : ''}</div>
+      ${delegationCard}
     </article>
   `;
   syncTaskEditorControls(tasks);
@@ -620,17 +964,33 @@ function updateProjectRailButtons() {
 
 function renderFocusTasks(tasks = []) {
   const scoped = projectFilteredTasks(tasks);
-  const open = scoped.filter(isOpenTask).sort((a, b) => taskSortScore(a) - taskSortScore(b));
+  const open = scoped.filter(isOpenTask).sort((a, b) => {
+    const aPlanned = Boolean(a.planned_for_today);
+    const bPlanned = Boolean(b.planned_for_today);
+    if (aPlanned !== bPlanned) return aPlanned ? -1 : 1;
+    if (aPlanned && bPlanned && Number(a.manual_rank || 0) !== Number(b.manual_rank || 0)) {
+      return Number(a.manual_rank || 0) - Number(b.manual_rank || 0);
+    }
+    return taskSortScore(a) - taskSortScore(b);
+  });
   const focus = open.slice(0, 8);
 
   const projectOptions = projectOptionsFromTasks(tasks);
+  const quickProject = $('#quick-capture-project');
+  if (quickProject) {
+    const previous = quickProject.value;
+    quickProject.innerHTML = projectOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+    if (projectOptions.includes(previous)) quickProject.value = previous;
+    else if (state.projectFilter && projectOptions.includes(state.projectFilter)) quickProject.value = state.projectFilter;
+  }
   const scopeLabel = state.projectFilter || (projectOptions.length === 1 ? projectOptions[0] : 'All Projects');
   const inProgress = open.filter((task) => taskArea(task) === 'in progress').length;
   const needsAttention = open.filter((task) => taskArea(task) === 'needs attention').length;
   const due = open.filter(isDueTask).length;
   const nextTask = open[0];
+  const plannedCount = open.filter((task) => task.planned_for_today).length;
   const statusLine = nextTask
-    ? `Next: ${escapeHtml(nextTask.title)} · ${escapeHtml(taskArea(nextTask))}`
+    ? `Next: ${escapeHtml(nextTask.title)} · ${escapeHtml(taskArea(nextTask))}${plannedCount ? ` · ${plannedCount} deliberately planned` : ''}`
     : 'Queue clear — no open next moves in this scope.';
   const queueMeta = `${open.length} open`;
   const projectSelect = `
@@ -669,11 +1029,11 @@ function renderFocusTasks(tasks = []) {
     return `
       <button class="item focus-task-item focus-task-button focus-task-${escapeHtml(indicator.key)}" type="button" data-focus-task-id="${escapeHtml(String(task.id || ''))}" data-focus-task-title="${escapeHtml(task.title || '')}" data-focus-project-name="${escapeHtml(task.project || '')}" data-focus-task-area="${escapeHtml(area)}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')} in Projects / Tasks">
         <span class="focus-task-indicator" aria-label="${escapeHtml(indicator.label)}"></span>
-        <span class="focus-task-rank mono">${String(index + 1).padStart(2, '0')}</span>
+        <span class="focus-task-rank mono">${task.planned_for_today ? String(index + 1).padStart(2, '0') : '··'}</span>
         <div class="focus-task-body">
           <div class="item-title"><span>${escapeHtml(task.title)}</span><span class="task-state-text ${taskTone(area)}">${escapeHtml(indicator.label)}</span></div>
           <div class="item-desc">${escapeHtml(task.description || '')}</div>
-          <div class="item-meta mono">${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')} · ${escapeHtml(taskArea(task))}</div>
+          <div class="item-meta mono">${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')} · ${escapeHtml(taskArea(task))}${task.estimated_minutes ? ` · ${Number(task.estimated_minutes)} min` : ''}</div>
         </div>
       </button>
     `;
@@ -682,6 +1042,30 @@ function renderFocusTasks(tasks = []) {
   `;
 
   $('#focus-task-list').innerHTML = `${header}${taskCards}</div></section>`;
+}
+
+function dueTaskReminders(tasks = state.tasks) {
+  const now = Date.now();
+  return tasks.flatMap((task) => (task.reminders || []).filter((reminder) => reminder.enabled !== false && Date.parse(reminder.at) <= now).map((reminder) => ({ task, reminder })));
+}
+
+function reminderStorageKey(task, reminder) {
+  return `mentat-reminder:${task.id}:${reminder.id}:${reminder.at}`;
+}
+
+function renderAndNotifyReminders(tasks = state.tasks) {
+  const due = dueTaskReminders(tasks);
+  const list = $('#reminder-list');
+  if (list) list.innerHTML = due.length ? `<section class="reminder-inbox"><strong>Reminders</strong>${due.map(({ task, reminder }) => `<button type="button" class="mini-button" data-reminder-task="${escapeHtml(task.id || '')}" data-reminder-project="${escapeHtml(task.project || '')}">${escapeHtml(task.title || 'Task')} · ${escapeHtml(humanDate(reminder.at))}</button>`).join('')}</section>` : '';
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  due.forEach(({ task, reminder }) => {
+    const key = reminderStorageKey(task, reminder);
+    try {
+      if (localStorage.getItem(key)) return;
+      new Notification(task.title || 'Mentat reminder', { body: task.description || `Due in ${task.project || 'Mentat'}` });
+      localStorage.setItem(key, new Date().toISOString());
+    } catch {}
+  });
 }
 
 function renderTaskList(tasks = []) {
@@ -1053,6 +1437,10 @@ function calendarEventLink(item = {}) {
   return href ? ` · <a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">Open in Google</a>` : '';
 }
 
+function taskLinkedToCalendarEvent(eventId = '') {
+  return state.tasks.find((task) => (task.calendar_links || []).some((link) => link.event_id === eventId));
+}
+
 function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
   const container = $(selector);
   if (!container) return;
@@ -1090,16 +1478,21 @@ function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
     <section class="calendar-day-group">
       <div class="calendar-day-heading mono"><span>${escapeHtml(label)}</span><small>${groupItems.length} item${groupItems.length === 1 ? '' : 's'}</small></div>
       <div class="calendar-day-list">
-        ${groupItems.map((item) => `
+        ${groupItems.map((item) => {
+          const linkedTask = taskLinkedToCalendarEvent(item.id || '');
+          return `
           <article class="item calendar-event ${source === 'google' ? 'google-event' : 'local-event'}">
             <div class="calendar-event-time mono">${escapeHtml(calendarTimeLabel(item))}</div>
             <div class="calendar-event-body">
               <div class="item-title"><span>${escapeHtml(item.title || 'Untitled event')}</span><span class="pill">${escapeHtml(item.type || 'event')}</span></div>
               <div class="item-desc">${escapeHtml(item.description || item.location || '')}</div>
               <div class="item-meta mono">${escapeHtml(item.location || source)}${calendarEventLink(item)}</div>
+              <div class="calendar-task-actions">
+                ${linkedTask ? `<button class="mini-button" type="button" data-calendar-linked-task="${escapeHtml(linkedTask.id || '')}">Open linked task</button>` : `<button class="mini-button" type="button" data-calendar-create-task="${escapeHtml(item.id || '')}" aria-label="Create task from ${escapeHtml(item.title || 'calendar event')}">Create task</button><button class="mini-button" type="button" data-calendar-link-task="${escapeHtml(item.id || '')}" aria-label="Link selected task to ${escapeHtml(item.title || 'calendar event')}">Link selected task</button>`}
+              </div>
             </div>
           </article>
-        `).join('')}
+        `; }).join('')}
       </div>
     </section>
   `).join('');
@@ -1650,6 +2043,29 @@ async function useHermesProfileInConsole(profileId = 'default') {
   }
 }
 
+async function testHermesProfile(profileId) {
+  const ready = await useHermesProfileInConsole(profileId);
+  if (!ready) return;
+  const prompt = $('#agent-console-prompt');
+  if (!prompt) return;
+  prompt.value = `Identity check: state your agent/profile name and briefly describe your role. Your selected Hermes profile id is ${profileId}.`;
+  resizeAgentConsolePrompt();
+  await submitAgentConsolePrompt();
+}
+
+async function assignFirstTaskToProfile(profileId) {
+  await setView('projects', { refreshOnChange: false });
+  openTaskEditor('create');
+  state.taskEditorDraft = {
+    ...taskEditorSeedTask(),
+    assignee: profileId,
+    planned_for_today: true,
+    planning_state: 'planned',
+  };
+  renderTaskList(state.tasks);
+  $('#selected-task-detail input[name="title"]')?.focus();
+}
+
 function sessionMatches(session, query) {
   if (!query) return true;
   const haystack = `${session.title || ''} ${session.source || ''} ${session.message_count || ''} ${session.tool_call_count || ''}`.toLowerCase();
@@ -2188,6 +2604,7 @@ function renderHermesProfiles(payload = {}) {
     : selectedProfile.id === activeProfile
       ? 'Change the Hermes active profile before deleting this agent.'
       : consoleBusy ? 'Stop the active Console run before deleting an agent.' : '';
+  const hasAssignedTask = state.tasks.some((task) => task.delegation?.profile_id === selectedProfile.id);
   detail.innerHTML = `
     <div class="managed-agent-detail-head">
       <div><div class="eyebrow">Selected agent</div><h3>${escapeHtml(selectedProfile.name || selectedProfile.id)}</h3></div>
@@ -2199,7 +2616,16 @@ function renderHermesProfiles(payload = {}) {
       <div><span class="detail-context-label mono">Model</span><strong>${escapeHtml(selectedProfile.model || 'Configured default')}</strong></div>
       <div><span class="detail-context-label mono">${displayedSkillLabel}</span><strong>${displayedSkillCount}</strong></div>
     </div>
-    <div class="managed-agent-provider-editor">
+    <div class="agent-onboarding-checklist" aria-label="Agent readiness checklist">
+      <span class="${selectedProfile.id ? 'ready' : ''}">Profile created</span>
+      <span class="${selectedProfile.provider ? 'ready' : ''}">Provider selected</span>
+      <span class="${selectedProfile.model ? 'ready' : ''}">Model available</span>
+      <span class="${displayedSkillCount >= 0 ? 'ready' : ''}">Skills inspected</span>
+      <span class="${hasAssignedTask ? 'ready' : ''}">First task assigned</span>
+    </div>
+    <details class="managed-agent-advanced">
+      <summary>Advanced provider &amp; model settings</summary>
+      <div class="managed-agent-provider-editor">
       <label class="agent-console-select-shell" for="managed-agent-provider-select">
         <span class="detail-context-label mono">Authenticated provider</span>
         <select id="managed-agent-provider-select" class="agent-console-select" ${managedProviders.length && managedSwitchAvailable && !consoleBusy ? '' : 'disabled'}>
@@ -2220,9 +2646,12 @@ function renderHermesProfiles(payload = {}) {
         ? `<button class="mini-button" type="button" data-review-managed-agent-provider="${escapeHtml(selectedProfile.id)}" ${managedModel && managedSwitchAvailable && !consoleBusy ? '' : 'disabled'}>Review Change</button>`
         : `<button class="mini-button" type="button" data-load-managed-agent-providers="${escapeHtml(selectedProfile.id)}" ${consoleBusy ? 'disabled' : ''}>Load providers</button>`}
       <p id="managed-agent-provider-status" class="item-meta mono managed-agent-provider-editor-status">${managedSwitchCapabilityKnown && !managedSwitchAvailable ? 'This Hermes runtime does not expose supported provider switching.' : selectedProfile.provider ? 'Choose an authenticated provider and model to change this agent.' : managedProviders.length ? 'No provider is assigned. Choose from providers already authenticated in Hermes.' : 'No provider is assigned. Load providers already authenticated in Hermes.'}</p>
-    </div>
+      </div>
+    </details>
     <div class="managed-agent-detail-actions">
       <button class="action-button" type="button" data-use-hermes-profile="${escapeHtml(selectedProfile.id)}">Use in Console</button>
+      <button class="mini-button" type="button" data-test-hermes-profile="${escapeHtml(selectedProfile.id)}">Test Agent</button>
+      <button class="mini-button" type="button" data-assign-first-task="${escapeHtml(selectedProfile.id)}">Assign First Task</button>
       ${canDelete ? `<button class="mini-button managed-agent-delete" type="button" data-delete-hermes-profile="${escapeHtml(selectedProfile.id)}">Delete agent</button>` : `<button class="mini-button managed-agent-delete" type="button" disabled title="${escapeHtml(deleteReason)}">Delete agent</button>`}
     </div>
     ${deleteReason ? `<p class="item-meta mono">${escapeHtml(deleteReason)}</p>` : ''}
@@ -2527,7 +2956,11 @@ async function submitAgentCreator() {
         <h3>${escapeHtml(result.profile?.name || result.profile?.id || 'Agent')} created</h3>
         <div class="item-desc">The Hermes profile is ready and now appears in Managed Agents.</div>
         <div class="item-meta mono">${result.skill_selection ? `${result.skill_selection.enabled_builtin_skills?.length || 0} built-in skills enabled` : 'Hermes default skill configuration'}</div>
-        <button class="action-button" type="button" data-agent-creator-view-agents>View managed agents</button>
+        <div class="task-delegation-actions">
+          <button class="action-button" type="button" data-agent-creator-test="${escapeHtml(state.selectedHermesProfileId)}">Test Agent</button>
+          <button class="mini-button" type="button" data-agent-creator-assign-first-task="${escapeHtml(state.selectedHermesProfileId)}">Assign First Task</button>
+          <button class="mini-button" type="button" data-agent-creator-view-agents>View managed agents</button>
+        </div>
       </article>
     `;
     $('[data-agent-creator-back]')?.setAttribute('hidden', '');
@@ -2949,13 +3382,14 @@ function parseAgentTimestamp(agent, keys = []) {
 
 function renderNotes(payload = {}) {
   const notes = payload.notes || [];
-  const countPill = $('#notes-count-pill');
+  state.notesPayload = payload;
+  const countPill = $('#notes-count');
   const vaultMeta = $('#notes-vault-meta');
   if (countPill) countPill.textContent = `${notes.length} notes`;
   if (vaultMeta) {
     vaultMeta.textContent = payload.exists === false
-      ? `Vault missing: ${payload.vault || 'Unknown vault path'}`
-      : `${notes.length} markdown note${notes.length === 1 ? '' : 's'} from ${payload.vault || 'Obsidian vault'}`;
+      ? 'Configured Obsidian vault is unavailable.'
+      : `${notes.length} markdown note${notes.length === 1 ? '' : 's'} from ${payload.vault_name || 'Obsidian vault'}`;
   }
   $('#notes-list').innerHTML = notes.length ? notes.map((note) => `
     <article class="note-card">
@@ -2966,6 +3400,10 @@ function renderNotes(payload = {}) {
         note.size,
         humanDate(note.modified_at),
       ].filter(Boolean).map((value) => escapeHtml(value)).join(' · ')}</div>
+      <div class="calendar-task-actions">
+        <a class="mini-button" href="obsidian://open?vault=${encodeURIComponent(payload.vault_name || '')}&file=${encodeURIComponent(String(note.relative_path || '').replace(/\.md$/i, ''))}" aria-label="Open ${escapeHtml(note.title || note.name)} in Obsidian">Open in Obsidian</a>
+        <button class="mini-button" type="button" data-attach-note="${escapeHtml(note.relative_path || '')}" aria-label="Attach ${escapeHtml(note.title || note.name)} to selected task">Attach to selected task</button>
+      </div>
     </article>
   `).join('') : `<div class="empty">No Obsidian markdown notes found.</div>`;
 }
@@ -3032,8 +3470,9 @@ async function refresh() {
     health: api(endpoints.health),
   };
 
-  if (activeView === 'calendar') requests.calendar = api(endpoints.calendar);
+  if (activeView === 'calendar' || activeView === 'today') requests.calendar = api(endpoints.calendar);
   if (activeView === 'today') requests.agentConsole = api(endpoints.agentConsole);
+  if (activeView === 'today' || activeView === 'agents') requests.agentActivity = api(endpoints.agentActivity);
   if (activeView === 'today') requests.agentConsoleCommandManifest = fetchAgentConsoleCommandManifest();
   if (activeView === 'today' || activeView === 'agents') {
     requests.sessions = api(endpoints.sessions);
@@ -3063,6 +3502,7 @@ async function refresh() {
     }
     const tasks = data.tasks.tasks || [];
     state.tasks = tasks;
+    renderAndNotifyReminders(tasks);
     renderIfChanged(`tasks-${state.taskStatusFilter}-${state.taskFilter}-${state.projectFilter}-${state.selectedTaskId}-${state.taskEditorMode}`, tasks, renderTaskList);
     if (data.projects) renderIfChanged(`projects-${state.projectFilter}-${state.projectEditorMode}`, state.projects, renderProjects);
     renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
@@ -3070,6 +3510,7 @@ async function refresh() {
     if (data.calendar) renderIfChanged('calendar', data.calendar, renderCalendar);
     if (data.agentConsoleCommandManifest) setAgentConsoleCommandManifest(data.agentConsoleCommandManifest);
     if (data.agentConsole) renderAgentConsole(data.agentConsole);
+    if (data.agentActivity) renderIfChanged('agent-activity', data.agentActivity, renderAgentActivity);
     if (data.crons) renderIfChanged('crons', data.crons, renderCrons);
     if (data.hermesProfiles) renderIfChanged('hermes-profiles', data.hermesProfiles, renderHermesProfiles);
     if (data.sessions || data.agents || data.agentMessages) {
@@ -3124,6 +3565,73 @@ function queueMessageSearch(query) {
   }, 250);
 }
 
+function renderGlobalSearchResults(payload = {}) {
+  const container = $('#global-search-results');
+  const input = $('#global-search');
+  if (!container || !input) return;
+  const groups = payload.groups || {};
+  const groupOrder = [['tasks', 'Tasks'], ['projects', 'Projects'], ['sessions', 'Sessions'], ['notes', 'Notes'], ['calendar', 'Calendar']];
+  const flat = [];
+  const markup = groupOrder.map(([key, label]) => {
+    const items = Array.isArray(groups[key]) ? groups[key] : [];
+    if (!items.length) return '';
+    return `<section class="global-search-group"><h3>${label}</h3>${items.map((item) => {
+      const index = flat.length;
+      flat.push(item);
+      return `<button id="global-search-result-${index}" class="global-search-result" type="button" role="option" data-global-search-index="${index}" aria-selected="false"><strong>${escapeHtml(item.label || '')}</strong><small>${escapeHtml(item.excerpt || '')}</small></button>`;
+    }).join('')}</section>`;
+  }).join('');
+  state.globalSearchResults = flat;
+  state.globalSearchSelectedIndex = -1;
+  container.innerHTML = markup || '<div class="empty">No matching dashboard items.</div>';
+  container.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  input.removeAttribute('aria-activedescendant');
+}
+
+function closeGlobalSearch() {
+  const container = $('#global-search-results');
+  const input = $('#global-search');
+  if (container) container.hidden = true;
+  if (input) {
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  }
+  state.globalSearchSelectedIndex = -1;
+}
+
+function selectGlobalSearchIndex(index) {
+  if (!state.globalSearchResults.length) return;
+  const bounded = Math.max(0, Math.min(index, state.globalSearchResults.length - 1));
+  state.globalSearchSelectedIndex = bounded;
+  $$('.global-search-result').forEach((item, itemIndex) => item.setAttribute('aria-selected', itemIndex === bounded ? 'true' : 'false'));
+  $('#global-search')?.setAttribute('aria-activedescendant', `global-search-result-${bounded}`);
+}
+
+async function navigateGlobalSearchResult(result) {
+  if (!result) return;
+  closeGlobalSearch();
+  if (result.kind === 'task') {
+    state.projectFilter = result.project || '';
+    state.taskStatusFilter = 'all';
+    state.taskFilter = '';
+    state.selectedTaskId = result.id || '';
+    await setView('projects');
+    renderProjectScopedViews();
+    flashTarget($('#selected-task-panel'));
+  } else if (result.kind === 'project') {
+    state.projectFilter = result.project || result.label || '';
+    await setView('projects');
+    renderProjectScopedViews();
+  } else if (result.kind === 'session') {
+    state.selectedSessionId = result.id || '';
+    await setView('agents');
+    renderSessions({ sessions: state.sessions });
+  } else {
+    await setView(result.view || (result.kind === 'note' ? 'notes' : 'calendar'));
+  }
+}
+
 initializeTheme();
 
 $('#refresh-rate').textContent = `${REFRESH_MS / 1000}s`;
@@ -3138,6 +3646,45 @@ $('#overview-cards').addEventListener('click', (event) => {
   const card = event.target.closest('.metric-card-button');
   if (!card) return;
   void jumpToDashboardSection(card.dataset.jumpView, card.dataset.jumpTarget);
+});
+
+$('#quick-capture-form')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const title = String(new FormData(form).get('title') || '').trim();
+  const project = String(new FormData(form).get('project') || state.projects[0]?.name || '').trim();
+  const status = $('#quick-capture-status');
+  if (!title || !project) return;
+  if (status) status.textContent = 'Adding to today…';
+  try {
+    const result = await createTask({
+      title,
+      project,
+      status: 'todo',
+      priority: 'medium',
+      planned_for_today: true,
+      manual_rank: state.tasks.filter((task) => task.planned_for_today && isOpenTask(task)).length + 1,
+      estimated_minutes: 30,
+      planning_state: 'planned',
+    });
+    form.reset();
+    state.tasks = Array.isArray(result.tasks) ? result.tasks : [...state.tasks, result.task];
+    renderProjectScopedViews();
+    if (status) status.textContent = 'Added to today.';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+});
+
+$('#enable-reminders-button')?.addEventListener('click', async () => {
+  const button = $('#enable-reminders-button');
+  if (typeof Notification === 'undefined') {
+    button.textContent = 'Browser Notifications Unavailable';
+    return;
+  }
+  const permission = await Notification.requestPermission();
+  button.textContent = permission === 'granted' ? 'Reminders Enabled' : 'Use In-App Reminders';
+  renderAndNotifyReminders(state.tasks);
 });
 
 $('#focus-task-list').addEventListener('change', (event) => {
@@ -3182,33 +3729,61 @@ $('#focus-task-list').addEventListener('click', async (event) => {
 
 const globalSearch = $('#global-search');
 if (globalSearch) {
-  globalSearch.addEventListener('input', async (event) => {
+  globalSearch.addEventListener('input', (event) => {
     const query = event.target.value.trim();
-    state.sessionFilter = query;
-    state.taskFilter = query;
-    const sessionSearch = $('#session-search');
-    if (sessionSearch && sessionSearch.value !== event.target.value) sessionSearch.value = event.target.value;
-    renderSessions({ sessions: state.sessions });
-    renderTaskList(state.tasks);
-    if (query) {
-      const taskHits = state.tasks.filter((task) => taskMatches(task, query));
-      if (taskHits.length) {
-        try {
-          await ensureProjectsLoaded();
-        } catch (err) {
-          console.error(err);
-        }
-        await setView('projects', { refreshOnChange: false });
-        renderProjectScopedViews();
-      } else {
-        void setView('agents', { refreshOnChange: false });
-        queueMessageSearch(query);
+    clearTimeout(state.globalSearchTimer);
+    state.globalSearchRequestToken += 1;
+    if (query.length < 2) {
+      closeGlobalSearch();
+      return;
+    }
+    const requestToken = state.globalSearchRequestToken;
+    state.globalSearchTimer = window.setTimeout(async () => {
+      try {
+        const payload = await searchDashboard(query);
+        if (requestToken === state.globalSearchRequestToken) renderGlobalSearchResults(payload);
+      } catch (err) {
+        if (requestToken === state.globalSearchRequestToken) renderGlobalSearchResults({ groups: {} });
       }
-    } else {
-      renderMessageSearchResults({}, '');
+    }, 180);
+  });
+  globalSearch.addEventListener('keydown', async (event) => {
+    if (event.key === 'Escape') {
+      closeGlobalSearch();
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      const start = state.globalSearchSelectedIndex < 0 ? (delta > 0 ? 0 : state.globalSearchResults.length - 1) : state.globalSearchSelectedIndex + delta;
+      selectGlobalSearchIndex(start);
+      return;
+    }
+    if (event.key === 'Enter' && state.globalSearchSelectedIndex >= 0) {
+      event.preventDefault();
+      await navigateGlobalSearchResult(state.globalSearchResults[state.globalSearchSelectedIndex]);
     }
   });
 }
+
+$('#global-search-results')?.addEventListener('click', async (event) => {
+  const result = event.target.closest('[data-global-search-index]');
+  if (!result) return;
+  await navigateGlobalSearchResult(state.globalSearchResults[Number(result.dataset.globalSearchIndex)]);
+});
+
+$('#notes-search')?.addEventListener('input', (event) => {
+  const query = event.target.value.trim();
+  state.notesFilter = query;
+  clearTimeout(state.notesSearchTimer);
+  state.notesSearchTimer = window.setTimeout(async () => {
+    try {
+      renderNotes(await fetchObsidianNotes(query));
+    } catch (err) {
+      $('#notes-vault-meta').textContent = err.message;
+    }
+  }, 180);
+});
 
 const sessionSearch = $('#session-search');
 if (sessionSearch) {
@@ -3361,6 +3936,22 @@ document.addEventListener('click', async (event) => {
     await submitTaskDeletion();
     return;
   }
+  if (event.target.closest('[data-task-delegation-cancel]')) {
+    closeTaskDelegation();
+    return;
+  }
+  if (event.target.closest('[data-task-delegation-preview]')) {
+    await reviewTaskDelegation();
+    return;
+  }
+  if (event.target.closest('[data-delegation-action-cancel]')) {
+    closeDelegationAction();
+    return;
+  }
+  if (event.target.closest('[data-delegation-action-confirm]')) {
+    await submitDelegationAction();
+    return;
+  }
   const selectProfile = event.target.closest('[data-select-hermes-profile]');
   if (selectProfile) {
     state.selectedHermesProfileId = selectProfile.dataset.selectHermesProfile || '';
@@ -3415,6 +4006,20 @@ document.addEventListener('click', async (event) => {
     const panel = $('#managed-agents-panel');
     panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     flashTarget(panel);
+    return;
+  }
+
+  const testProfile = event.target.closest('[data-test-hermes-profile], [data-agent-creator-test]');
+  if (testProfile) {
+    $('#agent-creator-dialog')?.close();
+    await testHermesProfile(testProfile.dataset.testHermesProfile || testProfile.dataset.agentCreatorTest || state.selectedHermesProfileId);
+    return;
+  }
+
+  const assignProfile = event.target.closest('[data-assign-first-task], [data-agent-creator-assign-first-task]');
+  if (assignProfile) {
+    $('#agent-creator-dialog')?.close();
+    await assignFirstTaskToProfile(assignProfile.dataset.assignFirstTask || assignProfile.dataset.agentCreatorAssignFirstTask || state.selectedHermesProfileId);
     return;
   }
 
@@ -3487,6 +4092,93 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  const attachNote = event.target.closest('[data-attach-note]');
+  if (attachNote) {
+    const selected = state.tasks.find((task) => String(task.id || '') === state.selectedTaskId);
+    if (!selected?.id) {
+      $('#health-label').textContent = 'Select a task in Projects / Tasks before attaching a note.';
+      return;
+    }
+    try {
+      const result = await attachNoteToTask(selected.id, attachNote.dataset.attachNote || '');
+      state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks.map((task) => task.id === result.task?.id ? result.task : task);
+      $('#health-label').textContent = `Attached note to ${selected.title}.`;
+      renderProjectScopedViews();
+    } catch (err) {
+      $('#health-label').textContent = `Note attachment failed: ${err.message}`;
+    }
+    return;
+  }
+
+  const detachNote = event.target.closest('[data-detach-note]');
+  if (detachNote) {
+    const selected = selectedTaskFrom(visibleTasks(state.tasks));
+    if (!selected?.id) return;
+    try {
+      const result = await detachNoteFromTask(selected.id, detachNote.dataset.detachNote || '');
+      state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks.map((task) => task.id === result.task?.id ? result.task : task);
+      renderProjectScopedViews();
+    } catch (err) {
+      $('#health-label').textContent = `Note detach failed: ${err.message}`;
+    }
+    return;
+  }
+
+  if (event.target.closest('[data-view-task-notes]')) {
+    await setView('notes');
+    return;
+  }
+
+  const createFromCalendar = event.target.closest('[data-calendar-create-task]');
+  if (createFromCalendar) {
+    const project = state.projectFilter || state.projects[0]?.name || '';
+    if (!project) {
+      $('#health-label').textContent = 'Create a Mentat project before turning calendar events into tasks.';
+      return;
+    }
+    try {
+      const result = await createTaskFromCalendarEvent(createFromCalendar.dataset.calendarCreateTask || '', project);
+      state.tasks = Array.isArray(result.tasks) ? result.tasks : [...state.tasks, result.task];
+      state.selectedTaskId = result.task?.id || '';
+      state.projectFilter = result.task?.project || project;
+      await setView('projects');
+      renderProjectScopedViews();
+    } catch (err) {
+      $('#health-label').textContent = `Calendar task failed: ${err.message}`;
+    }
+    return;
+  }
+
+  const linkCalendar = event.target.closest('[data-calendar-link-task]');
+  if (linkCalendar) {
+    const selected = state.tasks.find((task) => String(task.id || '') === state.selectedTaskId);
+    if (!selected?.id) {
+      $('#health-label').textContent = 'Select a task in Projects / Tasks before linking a calendar event.';
+      return;
+    }
+    try {
+      const result = await linkTaskToCalendarEvent(selected.id, linkCalendar.dataset.calendarLinkTask || '');
+      state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks.map((task) => task.id === result.task?.id ? result.task : task);
+      $('#health-label').textContent = `Linked calendar event to ${selected.title}.`;
+      renderProjectScopedViews();
+    } catch (err) {
+      $('#health-label').textContent = `Calendar link failed: ${err.message}`;
+    }
+    return;
+  }
+
+  const linkedCalendarTask = event.target.closest('[data-calendar-linked-task]');
+  if (linkedCalendarTask) {
+    const task = state.tasks.find((item) => String(item.id || '') === linkedCalendarTask.dataset.calendarLinkedTask);
+    if (!task) return;
+    state.selectedTaskId = task.id;
+    state.projectFilter = task.project || '';
+    state.taskStatusFilter = 'all';
+    await setView('projects');
+    renderProjectScopedViews();
+    return;
+  }
+
   if (event.target.closest('#create-project-button')) {
     await setView('projects', { refreshOnChange: false });
     openProjectEditor('create');
@@ -3525,9 +4217,78 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  if (event.target.closest('#selected-task-delegate')) {
+    const selected = selectedTaskFrom(visibleTasks(state.tasks));
+    if (selected) await openTaskDelegation(selected);
+    return;
+  }
+
+  const refreshDelegation = event.target.closest('[data-delegation-refresh]');
+  if (refreshDelegation) {
+    await refreshSelectedTaskDelegation(refreshDelegation.dataset.delegationRefresh || '');
+    return;
+  }
+
+  const delegationAction = event.target.closest('[data-delegation-action]');
+  if (delegationAction) {
+    await openDelegationAction(delegationAction.dataset.delegationAction || '');
+    return;
+  }
+
+  const todayMove = event.target.closest('[data-today-move]');
+  if (todayMove) {
+    const selected = selectedTaskFrom(visibleTasks(state.tasks));
+    if (!selected?.id) return;
+    try {
+      const result = await reorderTodayTask(selected.id, todayMove.dataset.todayMove || '');
+      state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks;
+      renderProjectScopedViews();
+      $('#health-label').textContent = `Moved ${selected.title} ${todayMove.dataset.todayMove === 'up' ? 'earlier' : 'later'} in today’s plan.`;
+    } catch (err) {
+      $('#health-label').textContent = `Today order failed: ${err.message}`;
+    }
+    return;
+  }
+
+  const activityTask = event.target.closest('[data-activity-task-id]');
+  if (activityTask) {
+    state.projectFilter = activityTask.dataset.activityProject || '';
+    state.taskStatusFilter = 'all';
+    state.selectedTaskId = activityTask.dataset.activityTaskId || '';
+    await setView('projects');
+    renderProjectScopedViews();
+    flashTarget($('#selected-task-panel'));
+    return;
+  }
+
+  const reminderTask = event.target.closest('[data-reminder-task]');
+  if (reminderTask) {
+    state.selectedTaskId = reminderTask.dataset.reminderTask || '';
+    state.projectFilter = reminderTask.dataset.reminderProject || '';
+    state.taskStatusFilter = 'all';
+    await setView('projects');
+    renderProjectScopedViews();
+    return;
+  }
+
   if (event.target.closest('#selected-task-cancel') || event.target.closest('[data-task-editor-cancel]')) {
     closeTaskEditor();
   }
+});
+
+$('#task-delegation-form')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  await submitTaskDelegation();
+});
+
+$('#task-delegation-fields')?.addEventListener('input', () => {
+  state.taskDelegationPreview = null;
+  $('[data-task-delegation-confirm]').disabled = true;
+});
+
+$('#task-delegation-fields')?.addEventListener('change', () => {
+  state.taskDelegationPreview = null;
+  $('[data-task-delegation-confirm]').disabled = true;
 });
 
 $('#selected-task-detail')?.addEventListener('input', (event) => {
@@ -3536,7 +4297,22 @@ $('#selected-task-detail')?.addEventListener('input', (event) => {
   state.taskEditorDraft = taskPayloadFromForm(form);
 });
 
-$('#selected-task-detail')?.addEventListener('change', (event) => {
+$('#selected-task-detail')?.addEventListener('change', async (event) => {
+  const subtaskToggle = event.target.closest('[data-subtask-toggle]');
+  if (subtaskToggle) {
+    const selected = selectedTaskFrom(visibleTasks(state.tasks));
+    if (!selected?.id) return;
+    const subtasks = (selected.subtasks || []).map((item) => item.id === subtaskToggle.dataset.subtaskToggle ? { ...item, completed: subtaskToggle.checked } : item);
+    try {
+      const result = await saveTaskEdits(selected.id, { subtasks });
+      state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks.map((task) => task.id === result.task?.id ? result.task : task);
+      renderProjectScopedViews();
+    } catch (err) {
+      subtaskToggle.checked = !subtaskToggle.checked;
+      $('#health-label').textContent = `Checklist update failed: ${err.message}`;
+    }
+    return;
+  }
   const form = event.target.closest('#task-editor-form');
   if (!form) return;
   state.taskEditorDraft = taskPayloadFromForm(form);

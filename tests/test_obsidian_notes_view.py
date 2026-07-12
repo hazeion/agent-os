@@ -14,7 +14,7 @@ class ObsidianNotesViewTests(unittest.TestCase):
     def test_obsidian_notes_endpoint_returns_all_markdown_notes(self):
         payload = server.obsidian_notes()
         self.assertTrue(payload["exists"])
-        vault = Path(payload["vault"])
+        vault = server.OBSIDIAN_VAULT
         expected = sorted(
             [
                 p.relative_to(vault).as_posix()
@@ -27,13 +27,17 @@ class ObsidianNotesViewTests(unittest.TestCase):
         actual = [note["relative_path"] for note in payload["notes"]]
         self.assertEqual(sorted(actual, reverse=True), expected)
         self.assertEqual(payload["note_count"], len(expected))
+        self.assertNotIn("vault", payload)
+        self.assertTrue(all("path" not in note for note in payload["notes"]))
 
     def test_notes_view_has_scrollable_region_and_count_ui(self):
-        self.assertNotIn('id="notes-count-pill"', INDEX_HTML)
+        self.assertIn('id="notes-count"', INDEX_HTML)
+        self.assertIn('id="notes-search"', INDEX_HTML)
         self.assertIn('id="notes-vault-meta"', INDEX_HTML)
         self.assertIn('class="notes-grid notes-scroll-region"', INDEX_HTML)
-        self.assertIn('const countPill = $(\'#notes-count-pill\')', APP_JS)
-        self.assertIn('payload.vault', APP_JS)
+        self.assertIn('const countPill = $(\'#notes-count\')', APP_JS)
+        self.assertIn('payload.vault_name', APP_JS)
+        self.assertIn('data-attach-note', APP_JS)
         self.assertIn('.notes-scroll-region {', STYLES)
         self.assertIn('overflow-y: auto;', STYLES)
 
