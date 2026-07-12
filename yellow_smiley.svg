@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Yellow smiley face</title>
+  <desc id="desc">A simple yellow smiley face with black eyes and a friendly smile on a transparent background.</desc>
+  <circle cx="512" cy="512" r="430" fill="#FFD93D" stroke="#F4B400" stroke-width="28"/>
+  <ellipse cx="360" cy="390" rx="54" ry="72" fill="#222222"/>
+  <ellipse cx="664" cy="390" rx="54" ry="72" fill="#222222"/>
+  <path d="M300 585 C360 725 664 725 724 585" fill="none" stroke="#222222" stroke-width="52" stroke-linecap="round"/>
+  <circle cx="360" cy="365" r="16" fill="#FFFFFF" opacity="0.45"/>
+  <circle cx="664" cy="365" r="16" fill="#FFFFFF" opacity="0.45"/>
+</svg>
