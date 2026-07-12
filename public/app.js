@@ -1,7 +1,7 @@
 function humanDate(value) {
   if (!value) return '—';
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
+  if (Number.isNaN(d.getTime())) return 'Invalid date';
   return fmt.format(d);
 }
 
@@ -345,12 +345,17 @@ function closeTaskEditor() {
 
 function syncTaskEditorControls(tasks = visibleTasks(state.tasks)) {
   const editButton = $('#selected-task-edit');
+  const deleteButton = $('#selected-task-delete');
   const cancelButton = $('#selected-task-cancel');
   const editorActive = state.taskEditorMode === 'create' || state.taskEditorMode === 'edit';
   const selected = selectedTaskFrom(tasks);
   if (editButton) {
     editButton.hidden = editorActive;
     editButton.disabled = !selected;
+  }
+  if (deleteButton) {
+    deleteButton.hidden = editorActive;
+    deleteButton.disabled = !selected;
   }
   if (cancelButton) cancelButton.hidden = !editorActive;
 }
@@ -395,6 +400,59 @@ async function submitTaskEditorForm(form) {
     if (status) status.textContent = err.message;
     $('#health-dot').className = 'dot degraded';
     $('#health-label').textContent = `Task save failed: ${err.message}`;
+  }
+}
+
+function closeTaskDeletion() {
+  state.taskDeletionRequestToken += 1;
+  state.taskDeletionPreview = null;
+  $('#task-delete-dialog')?.close();
+  const status = $('#task-delete-status');
+  if (status) status.textContent = '';
+}
+
+async function openTaskDeletion(taskId) {
+  const dialog = $('#task-delete-dialog');
+  const review = $('#task-delete-review');
+  const status = $('#task-delete-status');
+  const confirm = $('[data-task-delete-confirm]');
+  if (!dialog || !review || !taskId) return;
+  const requestToken = ++state.taskDeletionRequestToken;
+  state.taskDeletionPreview = null;
+  review.innerHTML = '<div class="empty">Loading the exact task deletion effect…</div>';
+  if (status) status.textContent = '';
+  if (confirm) confirm.disabled = true;
+  dialog.showModal();
+  try {
+    const preview = await previewTaskDeletion(taskId);
+    if (requestToken !== state.taskDeletionRequestToken || !dialog.open) return;
+    state.taskDeletionPreview = preview;
+    review.innerHTML = `
+      <article class="agent-creator-review-card agent-creator-warning">
+        <h3>Delete ${escapeHtml(preview.task?.title || taskId)}?</h3>
+        <ul>${(preview.effects || []).map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>
+        ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}
+      </article>`;
+    if (confirm) confirm.disabled = false;
+  } catch (err) {
+    if (requestToken === state.taskDeletionRequestToken && status) status.textContent = err.message;
+  }
+}
+
+async function submitTaskDeletion() {
+  const preview = state.taskDeletionPreview;
+  const status = $('#task-delete-status');
+  if (!preview?.confirmation_id || !preview.task?.id) return;
+  if (status) status.textContent = 'Deleting task…';
+  try {
+    const result = await deleteTask(preview.task.id, preview.confirmation_id);
+    state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks.filter((task) => task.id !== preview.task.id);
+    state.selectedTaskId = '';
+    closeTaskDeletion();
+    await refresh();
+    renderProjectScopedViews();
+  } catch (err) {
+    if (status) status.textContent = err.message;
   }
 }
 
@@ -1213,6 +1271,10 @@ function renderAgentConsole(payload = {}) {
   const selectedAgent = agents.find((agent) => agent.id === agentSelect.value) || agents[0] || { available: false, model: '' };
   const inventoryMatchesAgent = !providerInventory.profile_id || providerInventory.profile_id === selectedAgent.id;
   const scopedProviders = inventoryMatchesAgent ? providers : [];
+  const providerSwitchAvailable = providerInventory.capabilities?.['providers.switch'] === true;
+  const providerSwitchUnavailable = inventoryMatchesAgent
+    && Object.prototype.hasOwnProperty.call(providerInventory.capabilities || {}, 'providers.switch')
+    && !providerSwitchAvailable;
   const requestedProvider = state.agentConsoleSelectedProvider || providerInventory.current_provider || selectedAgent.provider || '';
   const selectedProvider = scopedProviders.find((item) => item.id === requestedProvider) || scopedProviders.find((item) => item.current) || scopedProviders[0];
   if (providerSelect) {
@@ -1240,13 +1302,25 @@ function renderAgentConsole(payload = {}) {
   const available = Boolean(selectedAgent.available);
   const modelLabel = modelSelect?.value || selectedAgent.model || 'configured model';
   const providerLabel = selectedProvider?.name || selectedProvider?.id || catalog.provider_label || catalog.provider || 'Hermes';
-  if (stateLabel) stateLabel.textContent = !available ? 'Hermes CLI unavailable' : activeRun ? `${providerLabel} · ${modelLabel} · working` : `${providerLabel} · ${modelLabel} · ready`;
+  const providerCapabilityLabel = providerSwitchUnavailable ? ' · provider switching unsupported by this Hermes runtime' : '';
+  if (stateLabel) {
+    stateLabel.textContent = !available
+      ? `Hermes CLI unavailable${providerCapabilityLabel}`
+      : activeRun
+        ? `${providerLabel} · ${modelLabel} · working${providerCapabilityLabel}`
+        : `${providerLabel} · ${modelLabel} · ready${providerCapabilityLabel}`;
+    stateLabel.title = providerSwitchUnavailable
+      ? available
+        ? 'This Hermes runtime does not expose supported provider switching. Agent execution remains available with the current provider and model.'
+        : 'This Hermes runtime does not expose supported provider switching.'
+      : '';
+  }
   if (presence) presence.className = `agent-console-presence ${activeRun ? 'working' : available ? 'ready' : 'offline'}`;
   if (prompt) prompt.disabled = !available || Boolean(activeRun);
   if (send) send.disabled = !available || Boolean(activeRun);
-  if (providerSelect) providerSelect.disabled = !available || Boolean(activeRun) || !scopedProviders.length;
-  if (modelSelect) modelSelect.disabled = !available || Boolean(activeRun) || !scopedModels.length;
-  if (applyModel) applyModel.disabled = !available || Boolean(activeRun) || !modelSelect?.value;
+  if (providerSelect) providerSelect.disabled = !available || !providerSwitchAvailable || Boolean(activeRun) || !scopedProviders.length;
+  if (modelSelect) modelSelect.disabled = !available || !providerSwitchAvailable || Boolean(activeRun) || !scopedModels.length;
+  if (applyModel) applyModel.disabled = !available || !providerSwitchAvailable || Boolean(activeRun) || !modelSelect?.value;
   if (newSession) newSession.disabled = Boolean(activeRun);
   if (stop) {
     stop.hidden = !activeRun;
@@ -1409,9 +1483,14 @@ async function submitAgentConsolePrompt() {
     } else if (definition.handler === 'agent_console.refresh_models') {
       const catalog = await refreshAgentConsoleModelCatalog({ focus: true });
       if (argument && catalog?.models?.includes(argument)) {
-        state.agentConsoleSelectedModel = argument;
-        $('#agent-console-model-select').value = argument;
-        if (status) status.textContent = `${argument} selected. Apply Model to update Hermes.`;
+        const providerSwitchAvailable = state.agentConsoleProviderInventory.capabilities?.['providers.switch'] === true;
+        if (providerSwitchAvailable) {
+          state.agentConsoleSelectedModel = argument;
+          $('#agent-console-model-select').value = argument;
+          if (status) status.textContent = `${argument} selected. Choose Review Change to preview and confirm the Hermes update.`;
+        } else if (status) {
+          status.textContent = `${argument} is available, but this Hermes runtime does not expose supported provider/model switching.`;
+        }
       } else if (argument && status) status.textContent = `${argument} is not available from the current provider.`;
     } else if (definition.handler === 'agent_console.new_session') {
       state.agentConsoleSessionId = '';
@@ -1445,12 +1524,130 @@ function renderCrons(payload = {}) {
   const list = $('#cron-list');
   if (count) count.textContent = `${jobs.length} jobs`;
   if (!list) return;
-  list.innerHTML = jobs.length ? jobs.map((job) => `
-    <article class="item">
-      <div class="item-title"><span>${escapeHtml(job.name)}</span><span class="pill ${job.enabled ? 'success' : 'warn'}">${job.enabled ? 'enabled' : 'disabled'}</span></div>
-      <div class="item-meta mono">${escapeHtml(job.schedule)} · last ${escapeHtml(job.last_status || 'unknown')}</div>
-    </article>
-  `).join('') : `<div class="empty">No scheduled Hermes cron jobs found yet.</div>`;
+  const queueAvailable = payload.capabilities?.['crons.queue_enabled'] === true;
+  const queueUnavailableReason = payload.queue_error
+    || 'Queueing is unavailable because this Hermes runtime does not expose a safe atomic cron queue operation.';
+  const capabilityNotice = queueAvailable
+    ? ''
+    : `<div class="empty" role="status">${escapeHtml(queueUnavailableReason)}</div>`;
+  const consoleBusy = state.agentConsoleRuns.some(agentConsoleRunIsActive);
+  const jobCards = jobs.length ? jobs.map((job) => {
+    const triggerBlocked = !queueAvailable || consoleBusy || !job.enabled;
+    const triggerReason = !queueAvailable
+      ? queueUnavailableReason
+      : consoleBusy
+        ? 'Stop the active Agent Console run first'
+        : !job.enabled
+          ? 'Enable this job in Hermes before queueing a run'
+          : '';
+    const nextRun = job.next_run ? ` · next ${humanDate(job.next_run)}` : '';
+    const queueFeedback = state.cronTriggerFeedback?.jobId === job.id
+      ? `<div class="item-meta mono" role="status">${escapeHtml(state.cronTriggerFeedback.message)}</div>`
+      : '';
+    return `
+      <article class="item">
+        <div class="item-title"><span>${escapeHtml(job.name)}</span><span class="pill ${job.enabled ? 'success' : 'warn'}">${job.enabled ? 'enabled' : 'disabled'}</span></div>
+        <div class="item-meta mono">${escapeHtml(job.schedule || 'unknown')} · last ${escapeHtml(job.last_status || 'unknown')}${escapeHtml(nextRun)}</div>
+        ${queueFeedback}
+        <div class="item-actions"><button class="mini-button" type="button" data-trigger-cron="${escapeHtml(job.id)}" ${triggerBlocked ? `disabled title="${escapeHtml(triggerReason)}"` : ''}>Queue run</button></div>
+      </article>`;
+  }).join('') : `<div class="empty">No scheduled Hermes cron jobs found yet.</div>`;
+  list.innerHTML = `${capabilityNotice}${jobCards}`;
+}
+
+function closeCronTrigger() {
+  state.cronTriggerRequestToken += 1;
+  state.cronTriggerPreview = null;
+  $('#cron-trigger-dialog')?.close();
+  const status = $('#cron-trigger-status');
+  if (status) status.textContent = '';
+}
+
+async function openCronTrigger(jobId) {
+  const dialog = $('#cron-trigger-dialog');
+  const review = $('#cron-trigger-review');
+  const status = $('#cron-trigger-status');
+  const confirm = $('[data-cron-trigger-confirm]');
+  if (!dialog || !review || !jobId) return;
+  const requestToken = ++state.cronTriggerRequestToken;
+  state.cronTriggerPreview = null;
+  review.innerHTML = '<div class="empty">Loading the exact Hermes cron effect…</div>';
+  if (confirm) confirm.disabled = true;
+  if (status) status.textContent = '';
+  dialog.showModal();
+  try {
+    const preview = await previewCronTrigger(jobId);
+    if (requestToken !== state.cronTriggerRequestToken || !dialog.open) return;
+    state.cronTriggerPreview = preview;
+    review.innerHTML = `
+      <article class="agent-creator-review-card agent-creator-warning">
+        <h3>Queue ${escapeHtml(preview.job?.name || jobId)} to run?</h3>
+        <ul>${(preview.effects || []).map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>
+        ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}
+      </article>`;
+    if (confirm) confirm.disabled = false;
+  } catch (err) {
+    if (requestToken === state.cronTriggerRequestToken && status) status.textContent = err.message;
+  }
+}
+
+async function submitCronTrigger() {
+  const preview = state.cronTriggerPreview;
+  const status = $('#cron-trigger-status');
+  if (!preview?.confirmation_id || !preview.job?.id) return;
+  if (status) status.textContent = 'Queueing Hermes cron run…';
+  try {
+    const result = await triggerCron(preview.job.id, preview.confirmation_id);
+    const nextRun = result.job?.next_run ? ` Next run: ${humanDate(result.job.next_run)}.` : '';
+    state.cronTriggerFeedback = {
+      jobId: preview.job.id,
+      message: `${result.message || `${preview.job.name || preview.job.id} queued in Hermes.`}${nextRun}`,
+    };
+    closeCronTrigger();
+    renderCrons(result.crons || {});
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
+async function useHermesProfileInConsole(profileId = 'default') {
+  const requestedProfileId = profileId || 'default';
+  state.agentConsoleSelectedAgentId = requestedProfileId;
+  state.selectedHermesProfileId = requestedProfileId;
+  state.agentConsoleSelectedProvider = '';
+  state.agentConsoleSessionId = '';
+  state.agentConsoleStartFresh = true;
+  state.agentConsoleSelectedModel = '';
+  const panel = $('#agent-console-panel');
+  try {
+    await setView('today');
+    const consolePayload = await api(endpoints.agentConsole);
+    const requestedAgent = (consolePayload.agents || []).find((agent) => agent.id === requestedProfileId);
+    if (!requestedAgent) {
+      throw new Error(`Hermes profile ${requestedProfileId} is no longer available.`);
+    }
+    state.agentConsoleSelectedAgentId = requestedProfileId;
+    renderAgentConsole(consolePayload);
+    if (state.agentConsoleSelectedAgentId !== requestedProfileId) {
+      throw new Error(`Hermes profile ${requestedProfileId} could not be selected.`);
+    }
+    const catalog = await refreshAgentConsoleModelCatalog({
+      agentId: requestedProfileId,
+      focus: true,
+    });
+    if (!catalog) {
+      const detail = $('#agent-console-form-status')?.textContent.trim();
+      throw new Error(detail || 'Provider and model details could not be loaded.');
+    }
+    panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return true;
+  } catch (err) {
+    const status = $('#agent-console-form-status');
+    const detail = err instanceof Error ? err.message : 'The profile could not be loaded.';
+    if (status) status.textContent = `Could not open ${requestedProfileId} in Agent Console: ${detail}`;
+    panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return false;
+  }
 }
 
 function sessionMatches(session, query) {
@@ -1671,24 +1868,24 @@ function renderConfig(payload = {}) {
   const summary = $('#config-summary');
   const text = $('#config-text');
   if (!summary || !text) return;
-  if (!payload.exists) {
-    summary.innerHTML = `<div class="empty">Hermes config not found at ${escapeHtml(payload.path || 'unknown path')}.</div>`;
-    text.textContent = '';
-    return;
-  }
   if (payload.error) {
     summary.innerHTML = `<div class="empty">Could not load Hermes config: ${escapeHtml(payload.error)}</div>`;
     text.textContent = '';
     return;
   }
+  if (!payload.exists) {
+    summary.innerHTML = `<div class="empty">Hermes config was not found.</div>`;
+    text.textContent = '';
+    return;
+  }
   const rows = Object.entries(payload.summary || {});
   summary.innerHTML = `
-    <article class="item"><div class="item-title"><span>Config file</span><span class="pill">${escapeHtml(payload.size || 'n/a')}</span></div><div class="item-desc mono">${escapeHtml(payload.path || '')}</div><div class="item-meta mono">Modified ${humanDate(payload.modified_at)}</div></article>
+    <article class="item"><div class="item-title"><span>Configuration summary</span><span class="pill">${escapeHtml(payload.size || 'n/a')}</span></div><div class="item-meta mono">Modified ${humanDate(payload.modified_at)}</div></article>
     ${rows.length ? rows.map(([key, value]) => `
       <article class="item"><div class="item-title"><span>${escapeHtml(key.replaceAll('_', ' '))}</span><span class="pill">config</span></div><div class="item-desc mono">${escapeHtml(value)}</div></article>
-    `).join('') : `<div class="empty">No simple model/provider summary fields found. Use the masked config below.</div>`}
+    `).join('') : `<div class="empty">No allowlisted model/provider summary fields were found.</div>`}
   `;
-  text.textContent = payload.masked_config || '# Empty masked config';
+  text.textContent = payload.masked_config || '{}';
 }
 
 function replayStatusTone(status = 'unknown') {
@@ -1936,9 +2133,9 @@ function renderHermesProfiles(payload = {}) {
   list.innerHTML = profiles.map((profile) => {
     const selected = profile.id === state.selectedHermesProfileId;
     const labels = [
-      profile.is_default ? '<span class="pill success">default</span>' : '',
-      profile.id === activeProfile ? '<span class="pill">Hermes active</span>' : '',
-    ].filter(Boolean).join('');
+      profile.is_default ? 'Default' : '',
+      profile.id === activeProfile ? 'Hermes active' : '',
+    ].filter(Boolean).join(' · ');
     const runtime = [profile.provider, profile.model].filter(Boolean).join(' · ') || 'Uses Hermes profile configuration';
     return `
       <button class="managed-agent-row ${selected ? 'selected' : ''}" type="button" role="option" aria-selected="${selected}" data-select-hermes-profile="${escapeHtml(profile.id)}">
@@ -1948,7 +2145,7 @@ function renderHermesProfiles(payload = {}) {
           <span class="item-desc">${escapeHtml(profile.description || 'No role description supplied.')}</span>
           <span class="item-meta mono">${escapeHtml(runtime)}</span>
         </span>
-        <span class="managed-agent-badges">${labels}</span>
+        ${labels ? `<span class="managed-agent-state mono">${escapeHtml(labels)}</span>` : ''}
       </button>
     `;
   }).join('');
@@ -1959,6 +2156,11 @@ function renderHermesProfiles(payload = {}) {
       ? state.agentConsoleProviderInventory
       : {};
   const managedProviders = Array.isArray(managedInventory.providers) ? managedInventory.providers : [];
+  const managedSwitchCapabilityKnown = Object.prototype.hasOwnProperty.call(
+    managedInventory.capabilities || {},
+    'providers.switch',
+  );
+  const managedSwitchAvailable = managedInventory.capabilities?.['providers.switch'] === true;
   const requestedManagedProvider = state.managedAgentSelectedProvider || managedInventory.current_provider || selectedProfile.provider || '';
   const managedProvider = managedProviders.find((item) => item.id === requestedManagedProvider)
     || managedProviders.find((item) => item.current)
@@ -1967,13 +2169,19 @@ function renderHermesProfiles(payload = {}) {
   const managedCurrentModel = managedProvider?.id === managedInventory.current_provider ? managedInventory.current_model : '';
   const managedModel = [state.managedAgentSelectedModel, managedCurrentModel, selectedProfile.model]
     .find((item) => managedModels.includes(item)) || managedModels[0] || '';
+  const hasEnabledBuiltinSkillCount = selectedProfile.enabled_builtin_skill_count !== null
+    && selectedProfile.enabled_builtin_skill_count !== undefined;
+  const displayedSkillCount = hasEnabledBuiltinSkillCount
+    ? Number(selectedProfile.enabled_builtin_skill_count || 0)
+    : Number(selectedProfile.skill_count || 0);
+  const displayedSkillLabel = hasEnabledBuiltinSkillCount ? 'Enabled built-ins' : 'Installed skills';
   state.managedAgentSelectedProvider = managedProvider?.id || '';
   state.managedAgentSelectedModel = managedModel;
   const selectedLabels = [
-    '<span class="pill success">selected</span>',
-    selectedProfile.is_default ? '<span class="pill">default</span>' : '',
-    selectedProfile.id === activeProfile ? '<span class="pill">Hermes active</span>' : '',
-  ].filter(Boolean).join('');
+    'Selected',
+    selectedProfile.is_default ? 'Default' : '',
+    selectedProfile.id === activeProfile ? 'Hermes active' : '',
+  ].filter(Boolean).join(' · ');
   const canDelete = deletionAvailable && !selectedProfile.is_default && selectedProfile.id !== activeProfile && !consoleBusy;
   const deleteReason = selectedProfile.is_default
     ? 'The default Hermes profile cannot be deleted.'
@@ -1983,18 +2191,18 @@ function renderHermesProfiles(payload = {}) {
   detail.innerHTML = `
     <div class="managed-agent-detail-head">
       <div><div class="eyebrow">Selected agent</div><h3>${escapeHtml(selectedProfile.name || selectedProfile.id)}</h3></div>
-      <div class="managed-agent-badges">${selectedLabels}</div>
+      <div class="managed-agent-state mono">${escapeHtml(selectedLabels)}</div>
     </div>
     <p class="item-desc managed-agent-description">${escapeHtml(selectedProfile.description || 'No role description supplied.')}</p>
     <div class="managed-agent-config">
       <div><span class="detail-context-label mono">Provider</span><strong>${escapeHtml(selectedProfile.provider || 'Hermes configured')}</strong></div>
       <div><span class="detail-context-label mono">Model</span><strong>${escapeHtml(selectedProfile.model || 'Configured default')}</strong></div>
-      <div><span class="detail-context-label mono">Skills</span><strong>${Number(selectedProfile.skill_count || 0)}</strong></div>
+      <div><span class="detail-context-label mono">${displayedSkillLabel}</span><strong>${displayedSkillCount}</strong></div>
     </div>
     <div class="managed-agent-provider-editor">
       <label class="agent-console-select-shell" for="managed-agent-provider-select">
         <span class="detail-context-label mono">Authenticated provider</span>
-        <select id="managed-agent-provider-select" class="agent-console-select" ${managedProviders.length && !consoleBusy ? '' : 'disabled'}>
+        <select id="managed-agent-provider-select" class="agent-console-select" ${managedProviders.length && managedSwitchAvailable && !consoleBusy ? '' : 'disabled'}>
           ${managedProviders.length
             ? managedProviders.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === managedProvider?.id ? 'selected' : ''}>${escapeHtml(item.name || item.id)}${item.current ? ' · current' : ''}</option>`).join('')
             : `<option value="">${escapeHtml(managedInventory.error || 'Load authenticated providers')}</option>`}
@@ -2002,16 +2210,16 @@ function renderHermesProfiles(payload = {}) {
       </label>
       <label class="agent-console-select-shell" for="managed-agent-model-select">
         <span class="detail-context-label mono">Model</span>
-        <select id="managed-agent-model-select" class="agent-console-select" ${managedModels.length && !consoleBusy ? '' : 'disabled'}>
+        <select id="managed-agent-model-select" class="agent-console-select" ${managedModels.length && managedSwitchAvailable && !consoleBusy ? '' : 'disabled'}>
           ${managedModels.length
             ? managedModels.map((model) => `<option value="${escapeHtml(model)}" ${model === managedModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
             : '<option value="">Choose a provider first</option>'}
         </select>
       </label>
       ${managedProviders.length
-        ? `<button class="mini-button" type="button" data-review-managed-agent-provider="${escapeHtml(selectedProfile.id)}" ${managedModel && !consoleBusy ? '' : 'disabled'}>Review Change</button>`
+        ? `<button class="mini-button" type="button" data-review-managed-agent-provider="${escapeHtml(selectedProfile.id)}" ${managedModel && managedSwitchAvailable && !consoleBusy ? '' : 'disabled'}>Review Change</button>`
         : `<button class="mini-button" type="button" data-load-managed-agent-providers="${escapeHtml(selectedProfile.id)}" ${consoleBusy ? 'disabled' : ''}>Load providers</button>`}
-      <p id="managed-agent-provider-status" class="item-meta mono managed-agent-provider-editor-status">${selectedProfile.provider ? 'Choose an authenticated provider and model to change this agent.' : 'No provider is assigned. Choose from providers already authenticated in Hermes.'}</p>
+      <p id="managed-agent-provider-status" class="item-meta mono managed-agent-provider-editor-status">${managedSwitchCapabilityKnown && !managedSwitchAvailable ? 'This Hermes runtime does not expose supported provider switching.' : selectedProfile.provider ? 'Choose an authenticated provider and model to change this agent.' : managedProviders.length ? 'No provider is assigned. Choose from providers already authenticated in Hermes.' : 'No provider is assigned. Load providers already authenticated in Hermes.'}</p>
     </div>
     <div class="managed-agent-detail-actions">
       <button class="action-button" type="button" data-use-hermes-profile="${escapeHtml(selectedProfile.id)}">Use in Console</button>
@@ -2066,6 +2274,7 @@ async function reviewManagedAgentProvider(profileId) {
 }
 
 function closeAgentDeletion() {
+  state.agentDeletionRequestToken += 1;
   $('#agent-delete-dialog')?.close();
   state.agentDeletionPreview = null;
   const status = $('#agent-delete-status');
@@ -2078,6 +2287,7 @@ async function openAgentDeletion(profileId) {
   const status = $('#agent-delete-status');
   const confirm = $('[data-agent-delete-confirm]');
   if (!dialog || !review) return;
+  const requestToken = ++state.agentDeletionRequestToken;
   state.agentDeletionPreview = null;
   review.innerHTML = `<div class="empty">Loading the exact Hermes deletion effects…</div>`;
   if (status) status.textContent = '';
@@ -2085,6 +2295,7 @@ async function openAgentDeletion(profileId) {
   dialog.showModal();
   try {
     const preview = await previewHermesProfileDeletion(profileId);
+    if (requestToken !== state.agentDeletionRequestToken || !dialog.open) return;
     state.agentDeletionPreview = preview;
     const name = preview.profile?.name || preview.normalized?.profile_id || profileId;
     review.innerHTML = `
@@ -2097,7 +2308,10 @@ async function openAgentDeletion(profileId) {
     if (confirm) confirm.disabled = false;
     if (status) status.textContent = `Confirm deletion of ${name}.`;
   } catch (err) {
+    if (requestToken !== state.agentDeletionRequestToken || !dialog.open) return;
+    state.agentDeletionPreview = null;
     review.innerHTML = `<div class="empty" role="alert">Deletion is unavailable: ${escapeHtml(err.message)}</div>`;
+    if (confirm) confirm.disabled = true;
     if (status) status.textContent = '';
   }
 }
@@ -2771,7 +2985,10 @@ function renderHealth(payload = {}) {
   const statusLabel = payload.status_label || (status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : 'Healthy');
   const dotClass = status === 'healthy' ? 'healthy' : 'degraded';
   if (dot) dot.className = `dot ${dotClass}`;
-  if (label) label.textContent = `${statusLabel} · ${payload.summary || 'No subsystem summary available.'}`;
+  if (label) {
+    label.textContent = `${statusLabel} · ${payload.summary || 'No subsystem summary available.'}`;
+    label.title = label.textContent;
+  }
   if (pill) {
     pill.textContent = statusLabel;
     pill.className = `pill ${healthTone(status)}`;
@@ -2870,6 +3087,7 @@ async function refresh() {
       }
     }
     if (data.notes) renderIfChanged('notes', data.notes, renderNotes);
+    if (data.config) renderIfChanged('config', data.config, renderConfig);
 
     renderIfChanged('health', data.health, renderHealth);
     state.hasBootstrapped = true;
@@ -3122,6 +3340,27 @@ if (clearProjectFilter) {
 }
 
 document.addEventListener('click', async (event) => {
+  const triggerCronButton = event.target.closest('[data-trigger-cron]');
+  if (triggerCronButton) {
+    await openCronTrigger(triggerCronButton.dataset.triggerCron || '');
+    return;
+  }
+  if (event.target.closest('[data-cron-trigger-cancel]')) {
+    closeCronTrigger();
+    return;
+  }
+  if (event.target.closest('[data-cron-trigger-confirm]')) {
+    await submitCronTrigger();
+    return;
+  }
+  if (event.target.closest('[data-task-delete-cancel]')) {
+    closeTaskDeletion();
+    return;
+  }
+  if (event.target.closest('[data-task-delete-confirm]')) {
+    await submitTaskDeletion();
+    return;
+  }
   const selectProfile = event.target.closest('[data-select-hermes-profile]');
   if (selectProfile) {
     state.selectedHermesProfileId = selectProfile.dataset.selectHermesProfile || '';
@@ -3181,15 +3420,7 @@ document.addEventListener('click', async (event) => {
 
   const useProfile = event.target.closest('[data-use-hermes-profile]');
   if (useProfile) {
-    state.agentConsoleSelectedAgentId = useProfile.dataset.useHermesProfile || 'default';
-    state.selectedHermesProfileId = state.agentConsoleSelectedAgentId;
-    state.agentConsoleSelectedProvider = '';
-    state.agentConsoleSessionId = '';
-    state.agentConsoleStartFresh = true;
-    state.agentConsoleSelectedModel = '';
-    await setView('today');
-    await refreshAgentConsoleModelCatalog({ agentId: state.agentConsoleSelectedAgentId, focus: true });
-    $('#agent-console-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    await useHermesProfileInConsole(useProfile.dataset.useHermesProfile || 'default');
     return;
   }
 
@@ -3285,6 +3516,12 @@ document.addEventListener('click', async (event) => {
     const selected = selectedTaskFrom(visibleTasks(state.tasks));
     if (!selected) return;
     openTaskEditor('edit', selected);
+    return;
+  }
+
+  if (event.target.closest('#selected-task-delete')) {
+    const selected = selectedTaskFrom(visibleTasks(state.tasks));
+    if (selected?.id) await openTaskDeletion(selected.id);
     return;
   }
 

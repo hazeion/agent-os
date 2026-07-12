@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+cd "$SCRIPT_DIR"
 
 PYTHON="python3"
 if [ -x "$PWD/.venv/Scripts/python.exe" ]; then
@@ -9,9 +10,9 @@ elif [ -x "$PWD/.venv/bin/python" ]; then
   PYTHON="$PWD/.venv/bin/python"
 fi
 
-"$PYTHON" mentat_lifecycle.py preflight "$@"
+"$PYTHON" "$SCRIPT_DIR/mentat_lifecycle.py" preflight "$@"
 export MENTAT_LAUNCHER_PID=$$
-"$PYTHON" server.py "$@" &
+"$PYTHON" "$SCRIPT_DIR/server.py" "$@" &
 child_pid=$!
 cleanup() {
   if kill -0 "$child_pid" 2>/dev/null; then

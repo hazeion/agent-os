@@ -225,7 +225,7 @@ def config_health(ctx: HealthContext):
             summary_fields=sorted((payload.get("summary") or {}).keys()),
         )
     summary_fields = sorted((payload.get("summary") or {}).keys())
-    summary = "Masked config is readable"
+    summary = "Public-safe config summary is readable"
     if summary_fields:
         summary += f" ({', '.join(summary_fields)} visible in summary)."
     else:
@@ -352,10 +352,18 @@ def host_health(ctx: HealthContext, memory: dict | None, disk: dict):
 
 
 def health(ctx: HealthContext):
-    disk = {
-        "E:/": disk_details("E:/", ctx) or disk_details(str(ctx.base_dir.anchor or "."), ctx),
-        "C:/": disk_details("C:/", ctx),
-    }
+    if sys.platform.startswith("win"):
+        disk = {
+            path: details
+            for path in ("C:/", "E:/")
+            if (details := disk_details(path, ctx)) is not None
+        }
+        if not disk:
+            root = str(ctx.base_dir.anchor or ".")
+            disk[root] = disk_details(root, ctx)
+    else:
+        root = str(ctx.base_dir.anchor or "/")
+        disk = {root: disk_details(root, ctx)}
     memory = windows_memory(ctx)
     subsystems = [
         state_db_health(ctx),

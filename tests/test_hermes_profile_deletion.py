@@ -162,6 +162,28 @@ class ProfileDeletionServerTests(unittest.TestCase):
         self.assertEqual(payload["profile"]["id"], "builder")
         self.assertNotIn("stderr", json.dumps(payload))
 
+    def test_delete_does_not_report_success_when_refresh_is_unavailable(self):
+        request = self.confirmed()
+        before = discovery("default", "builder")
+        unavailable = {
+            "status": "unavailable",
+            "profiles": [],
+            "capabilities": {"profiles.read": False, "profiles.delete": False},
+            "error": {"code": "runtime_unavailable", "message": "offline"},
+        }
+        with patch.object(
+            server, "hermes_profiles_payload", side_effect=[before, unavailable]
+        ), patch.object(
+            server,
+            "delete_hermes_profile",
+            return_value={"status": "deleted", "profile_id": "builder"},
+        ):
+            payload, status = server.delete_confirmed_hermes_profile("builder", request)
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error_code"], "verification_unavailable")
+        self.assertNotIn("deleted_profile_id", payload)
+
     def test_routes_are_local_control_post_handlers(self):
         routes = {pattern.pattern: handler.__name__ for pattern, handler, _ in server.POST_ROUTES}
         self.assertEqual(

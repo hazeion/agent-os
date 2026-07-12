@@ -29,6 +29,8 @@ const endpoints = {
 const state = {
   sessions: [],
   tasks: [],
+  taskDeletionPreview: null,
+  taskDeletionRequestToken: 0,
   projects: [],
   agents: [],
   agentMessages: [],
@@ -87,6 +89,10 @@ const state = {
   hermesProfileCapabilities: {},
   activeHermesProfileId: '',
   agentDeletionPreview: null,
+  agentDeletionRequestToken: 0,
+  cronTriggerPreview: null,
+  cronTriggerRequestToken: 0,
+  cronTriggerFeedback: null,
   managedAgentProviderInventory: {},
   managedAgentSelectedProvider: '',
   managedAgentSelectedModel: '',
@@ -291,6 +297,28 @@ async function saveTaskEdits(id, payload) {
   return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}`, payload, { method: 'POST' });
 }
 
+async function previewTaskDeletion(id) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delete/preview`, {}, { method: 'POST' });
+}
+
+async function deleteTask(id, confirmationId) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delete`, {
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
+}
+
+async function previewCronTrigger(id) {
+  return sendJson(`${endpoints.crons}/${encodeURIComponent(id)}/trigger/preview`, {}, { method: 'POST' });
+}
+
+async function triggerCron(id, confirmationId) {
+  return sendJson(`${endpoints.crons}/${encodeURIComponent(id)}/trigger`, {
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
+}
+
 async function createProject(payload) {
   return sendJson(endpoints.projects, payload, { method: 'POST' });
 }
@@ -314,10 +342,6 @@ async function startAgentConsoleRun(payload) {
 async function fetchAgentConsoleRun(runId, afterCursor = null) {
   const suffix = afterCursor === null ? '' : `?after=${encodeURIComponent(afterCursor)}`;
   return api(`${endpoints.agentConsole}/runs/${encodeURIComponent(runId)}${suffix}`);
-}
-
-async function setAgentConsoleModel(model, agentId = '') {
-  return sendJson(`${endpoints.agentConsole}/model`, { model, agent_id: agentId }, { method: 'POST' });
 }
 
 async function refreshAgentConsoleModels(agentId = '') {

@@ -74,41 +74,96 @@ class DashboardBehaviorTests(unittest.TestCase):
             server.AGENT_CONSOLE_RUNS.clear()
             server.AGENT_CONSOLE_PROCESSES.clear()
 
-    def test_agent_console_model_change_uses_hermes_config_command(self):
+    def test_agent_console_inherits_the_shared_tirith_binary_directory(self):
+        class CompletedHermesProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "Hermes response", ""
+
+        run_id = "run_tirith_path"
         server.AGENT_CONSOLE_RUNS.clear()
-        try:
-            with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
-                server, "agent_console_model_catalog", return_value={
-                    "provider": "openai-codex",
-                    "provider_label": "OpenAI Codex",
-                    "models": ["gpt-5.5", "gpt-5.3-codex-spark"],
-                    "current_model": "gpt-5.5",
-                }
-            ), patch.object(server, "agent_console_profile", return_value={"id": "default", "name": "default"}), patch.object(server.subprocess, "run") as run:
-                run.return_value.returncode = 0
-                run.return_value.stdout = "updated"
-                run.return_value.stderr = ""
-                payload, status = server.set_agent_console_model({"model": "gpt-5.3-codex-spark"})
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "randy",
+            "prompt": "Check the environment",
+            "status": "queued",
+            "events": [],
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        with TemporaryDirectory() as tmpdir:
+            hermes_home = Path(tmpdir)
+            shared_bin = hermes_home / "bin"
+            shared_bin.mkdir()
+            scanner = shared_bin / ("tirith.exe" if server.os.name == "nt" else "tirith")
+            scanner.write_text("scanner fixture", encoding="utf-8")
+            scanner.chmod(0o700)
+            with patch.object(server, "HERMES_HOME", hermes_home), patch.object(
+                server.subprocess, "Popen", return_value=CompletedHermesProcess()
+            ) as popen:
+                server.run_hermes_agent(run_id, "/tmp/hermes")
 
-            self.assertEqual(status, 200)
-            self.assertTrue(payload["ok"])
-            self.assertEqual(payload["model"], "gpt-5.3-codex-spark")
-            self.assertEqual(run.call_args.args[0], ["/tmp/hermes", "-p", "default", "config", "set", "model.default", "gpt-5.3-codex-spark"])
-        finally:
-            server.AGENT_CONSOLE_RUNS.clear()
+        child_env = popen.call_args.kwargs["env"]
+        self.assertEqual(child_env["PATH"].split(server.os.pathsep)[0], str(shared_bin))
+        self.assertEqual(child_env["HERMES_HOME"], str(hermes_home))
+        server.AGENT_CONSOLE_RUNS.clear()
+        server.AGENT_CONSOLE_PROCESSES.clear()
 
-    def test_agent_console_model_change_rejects_models_outside_current_provider_catalog(self):
-        with patch.object(server, "agent_console_model_catalog", return_value={
-            "provider": "openai-codex",
-            "provider_label": "OpenAI Codex",
-            "models": ["gpt-5.5"],
+    def test_agent_console_provider_change_requires_a_bound_preview(self):
+        inventory = {
+            "profile_id": "default",
+            "current_provider": "openai-codex",
             "current_model": "gpt-5.5",
-        }), patch.object(server, "agent_console_profile", return_value={"id": "default", "name": "default"}), patch.object(server.subprocess, "run") as run:
-            payload, status = server.set_agent_console_model({"model": "anthropic/claude-sonnet-4"})
+            "providers": [
+                {
+                    "id": "openrouter",
+                    "name": "OpenRouter",
+                    "authenticated": True,
+                    "models": ["anthropic/claude-sonnet-4"],
+                }
+            ],
+            "capabilities": {"providers.switch": True},
+        }
+        with patch.object(
+            server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
+            payload, status = server.preview_agent_console_provider_switch(
+                {
+                    "agent_id": "default",
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4",
+                }
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["requires_confirmation"])
+        self.assertTrue(payload["confirmation_id"].startswith("provider_switch_"))
+        self.assertEqual(payload["current"], {"provider": "openai-codex", "model": "gpt-5.5"})
+        self.assertEqual(payload["target"]["provider"], "openrouter")
+
+    def test_agent_console_provider_preview_rejects_unlisted_models(self):
+        inventory = {
+            "current_provider": "openai-codex",
+            "current_model": "gpt-5.5",
+            "providers": [
+                {
+                    "id": "openrouter",
+                    "name": "OpenRouter",
+                    "authenticated": True,
+                    "models": ["openai/gpt-5.5"],
+                }
+            ],
+            "capabilities": {"providers.switch": True},
+        }
+        with patch.object(
+            server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
+            payload, status = server.preview_agent_console_provider_switch(
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+            )
 
         self.assertEqual(status, 400)
-        self.assertIn("not an active model", payload["error"])
-        run.assert_not_called()
+        self.assertIn("Choose a model", payload["error"])
 
     def test_agent_console_model_catalog_uses_hermes_inventory_payload(self):
         server.AGENT_MODEL_CATALOG_CACHE.update({"key": None, "payload": None, "fetched_at": 0})

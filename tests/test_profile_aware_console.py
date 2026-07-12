@@ -101,36 +101,102 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         self.assertIn("different profile", payload["error"])
         self.assertEqual(payload["session_profile_id"], "default")
 
-    def test_named_profile_model_update_is_profile_scoped(self):
-        catalog = {
+    def test_start_rejects_unknown_session_and_allows_retained_profile_owned_session(self):
+        server.AGENT_CONSOLE_RUNS["run_owned"] = {
+            "id": "run_owned",
+            "agent_id": "randy",
+            "agent_name": "randy",
+            "status": "completed",
+            "session_id": "session_randy_owned",
+            "created_at": "2026-07-11T12:00:00-07:00",
+        }
+        with patch.object(
+            server, "hermes_profiles_payload", return_value=profile_discovery()
+        ), patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+            server.threading, "Thread"
+        ) as worker:
+            unknown, unknown_status = server.start_agent_console_run(
+                {
+                    "agent_id": "randy",
+                    "prompt": "Continue unknown",
+                    "session_id": "session_not_retained",
+                }
+            )
+            owned, owned_status = server.start_agent_console_run(
+                {
+                    "agent_id": "randy",
+                    "prompt": "Continue owned",
+                    "session_id": "session_randy_owned",
+                }
+            )
+
+        self.assertEqual(unknown_status, 409)
+        self.assertIn("retained", unknown["error"].lower())
+        self.assertEqual(owned_status, 202)
+        self.assertEqual(owned["run"]["session_id"], "session_randy_owned")
+        worker.return_value.start.assert_called_once_with()
+
+    def test_confirmed_provider_update_is_profile_scoped_and_verified(self):
+        before = {
             "profile_id": "randy",
             "provider": "openrouter",
-            "provider_label": "OpenRouter",
-            "models": ["openai/gpt-5.5"],
+            "current_provider": "openrouter",
             "current_model": "openai/gpt-5.5",
+            "providers": [
+                {
+                    "id": "anthropic",
+                    "name": "Anthropic",
+                    "authenticated": True,
+                    "models": ["claude-sonnet-4"],
+                }
+            ],
+            "capabilities": {"providers.switch": True},
         }
-        with patch.object(server, "agent_console_profile", return_value={"id": "randy", "name": "randy"}), patch.object(
-            server, "agent_console_model_catalog", return_value=catalog
-        ), patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
-            server.subprocess, "run"
-        ) as run:
-            run.return_value.returncode = 0
-            run.return_value.stdout = "updated"
-            run.return_value.stderr = ""
-            payload, status = server.set_agent_console_model({"agent_id": "randy", "model": "openai/gpt-5.5"})
+        verified = {
+            **before,
+            "current_provider": "anthropic",
+            "current_model": "claude-sonnet-4",
+        }
+        with patch.object(
+            server, "agent_console_profile", return_value={"id": "randy", "name": "randy"}
+        ), patch.object(
+            server, "agent_console_provider_inventory", side_effect=[before, verified]
+        ), patch.object(
+            server, "apply_provider_switch", return_value=({"ok": True}, "")
+        ) as apply, patch.object(
+            server, "agent_console_model_catalog", return_value={"profile_id": "randy"}
+        ):
+            preview, preview_status = server.preview_provider_switch(
+                "randy", "anthropic", "claude-sonnet-4", before
+            )
+            self.assertEqual(preview_status, 200)
+            payload, status = server.switch_agent_console_provider({
+                "agent_id": "randy",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4",
+                "confirmed": True,
+                "confirmation_id": preview["confirmation_id"],
+            })
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["agent_id"], "randy")
-        self.assertEqual(
-            run.call_args.args[0],
-            ["/tmp/hermes", "-p", "randy", "config", "set", "model.default", "openai/gpt-5.5"],
+        self.assertEqual(payload["provider"], "anthropic")
+        apply.assert_called_once_with(
+            server.hermes_python_path(),
+            server.HERMES_HOME,
+            "randy",
+            "anthropic",
+            "claude-sonnet-4",
+            cwd=server.BASE_DIR,
         )
 
     def test_frontend_routes_managed_profile_to_console(self):
         self.assertIn("data-use-hermes-profile", APP_JS)
         self.assertIn("state.agentConsoleSelectedAgentId", APP_JS)
+        self.assertIn("const consolePayload = await api(endpoints.agentConsole)", APP_JS)
         self.assertIn("async function refreshAgentConsoleModels(agentId", CORE_JS)
-        self.assertIn("setAgentConsoleModel(model, agentId", CORE_JS)
+        self.assertIn("async function previewAgentConsoleProvider(provider, model, agentId", CORE_JS)
+        self.assertIn("async function switchAgentConsoleProvider(provider, model, agentId", CORE_JS)
 
 
 if __name__ == "__main__":

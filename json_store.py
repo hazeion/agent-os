@@ -42,7 +42,7 @@ def read_json(path: Path, default: T) -> T | Any:
         return default
 
 
-def write_json_atomic(path: Path, payload: Any) -> None:
+def write_json_atomic(path: Path, payload: Any, *, mode: int | None = None) -> None:
     """Atomically write JSON with a unique temp filename beside the target.
 
     Windows can transiently deny ``os.replace``/``Path.replace`` while another
@@ -51,12 +51,18 @@ def write_json_atomic(path: Path, payload: Any) -> None:
     error so high-frequency dashboard writes do not fail spuriously.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is not None:
+        path.parent.chmod(0o700)
     tmp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if mode is not None:
+        tmp.chmod(mode)
     delays = (0.01, 0.025, 0.05, 0.1)
     for attempt in range(len(delays) + 1):
         try:
             tmp.replace(path)
+            if mode is not None:
+                path.chmod(mode)
             return
         except PermissionError:
             if attempt == len(delays):

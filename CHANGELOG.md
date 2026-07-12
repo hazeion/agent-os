@@ -4,15 +4,52 @@ All notable changes to Mentat.
 
 ## 2026-07-11
 
+### Added
+- Added previewed, confirmed deletion for project-owned tasks with stale-preview
+  rejection and locked atomic persistence.
+
 ### Fixed
+- Made Agent Console child processes inherit Hermes' shared binary directory so
+  named profiles can discover an installed Tirith scanner without disabling
+  security scanning or exposing local paths to the dashboard.
 - Added authenticated provider and model controls to the selected Managed Agent
   detail pane, including fresh profiles created without cloned configuration.
+- Made Managed Agents report enabled built-in skills instead of the total
+  installed catalog, and refresh newly created profiles before Console use.
 - Made the Agent Console provider/model toolbar wrap with bounded flexible
   controls so empty or long provider states cannot overlap the model selector.
+- Kept long subsystem-health summaries inside the top navigation with an
+  ellipsis and full hover text.
+- Made the Settings view render its fetched public-safe Hermes configuration
+  summary instead of leaving the initial placeholder visible.
+- Preserved descriptive navigation labels for assistive technology when the
+  compact layout hides visible sidebar text.
 - Corrected the README clone URL and directory name to match this repository.
+- Removed pill containers from Agent Creator progress and Managed Agent state
+  presentation while retaining clear text status.
+
+### Changed
+- Kept Hermes cron inventory read-only and made queue controls fail closed after
+  confirming that the installed runtime lacks the atomic expected-revision,
+  enabled-only operation required for safe next-tick queueing. Immediate
+  **Run now** remains a separate deferred product choice.
+- Enforced loopback-only server binds and removed non-loopback launch guidance.
+- Made provider switching fail closed unless the installed Hermes runtime
+  exposes the supported profile-model operation, and removed the legacy direct
+  Agent Console model-mutation route.
+- Hardened gitignored Agent Console history with owner-only POSIX directory and
+  file permissions in addition to bounded redaction, including startup
+  migration of existing valid summaries and permission hardening for corrupt
+  history.
+- Hardened the local HTTP boundary with exact Host/Origin matching, JSON content
+  checks, anti-framing headers, and generic public runtime errors.
+- Hardened lifecycle cleanup so stale runtime PIDs cannot authorize terminating
+  an unrelated listener.
+- Made host-resource health reporting use native filesystem labels instead of
+  Windows drive names on macOS and Linux.
 
 ### Validation
-- `python3 -m unittest discover -s tests -p 'test_*.py'` (142 tests)
+- `python3 -m unittest discover -s tests -p 'test_*.py'` (196 tests)
 - JavaScript syntax checks for `public/core.js` and `public/app.js`
 
 ## 2026-07-10

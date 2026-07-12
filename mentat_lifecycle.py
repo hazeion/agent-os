@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -16,8 +17,11 @@ from urllib.request import urlopen
 
 import server
 
-PREVIOUS_PATH_MARKER = "agent" "-os"
-PREVIOUS_HELPER_MARKER = "agent" "_os_lifecycle.py"
+BASE_DIR = Path(__file__).resolve().parent
+MENTAT_COMMAND_PATHS = {
+    str((BASE_DIR / "server.py").resolve()).lower().replace("\\", "/"),
+    str((BASE_DIR / "mentat_lifecycle.py").resolve()).lower().replace("\\", "/"),
+}
 
 
 @dataclass(frozen=True)
@@ -167,9 +171,38 @@ def looks_like_mentat_overview(payload) -> bool:
     )
 
 
-def probe_mentat(port: int, timeout: float = 0.6) -> bool:
+def normalized_listener_host(local_address: str, port: int | None = None) -> str:
+    """Return the address portion of an OS listener endpoint.
+
+    Listener tools disagree about whether IPv6 addresses are bracketed, so
+    normalize them before probing and before using them as cache keys.
+    """
+    endpoint = str(local_address or "").strip()
+    if endpoint.startswith("[") and "]" in endpoint:
+        host = endpoint[1 : endpoint.index("]")]
+    else:
+        host = endpoint
+        candidate_host, separator, port_text = endpoint.rpartition(":")
+        parsed_port = port_text.rstrip(")")
+        if separator and parsed_port.isdigit() and (port is None or int(parsed_port) == port):
+            host = candidate_host
+
+    host = host.strip().strip("[]").lower()
+    if host in {"*", "0.0.0.0"}:
+        return "127.0.0.1"
+    if host == "::":
+        return "::1"
     try:
-        with urlopen(f"http://127.0.0.1:{port}/api/overview", timeout=timeout) as response:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return host
+
+
+def probe_mentat(local_address: str, port: int, timeout: float = 0.6) -> bool:
+    host = normalized_listener_host(local_address, port)
+    display_host = f"[{host.replace('%', '%25')}]" if ":" in host else host
+    try:
+        with urlopen(f"http://{display_host}:{port}/api/overview", timeout=timeout) as response:
             if response.status != 200:
                 return False
             payload = json.load(response)
@@ -210,27 +243,42 @@ def process_commandline(pid: int) -> str:
 
 
 def looks_like_mentat_commandline(commandline: str) -> bool:
-    text = (commandline or "").strip().lower()
+    text = (commandline or "").strip().lower().replace("\\", "/")
     if not text:
         return False
-    return "server.py" in text or "mentat_lifecycle.py" in text or PREVIOUS_HELPER_MARKER in text or PREVIOUS_PATH_MARKER in text
+    return any(
+        re.search(rf"(?:^|\s)[\"']?{re.escape(path)}[\"']?(?:$|\s)", text) is not None
+        for path in MENTAT_COMMAND_PATHS
+    )
 
 
-def identify_listener(listener: Listener, state_pid: int | None, probe_cache: dict[int, bool], command_cache: dict[int, str]) -> tuple[bool, list[str], str]:
+def identify_listener(
+    listener: Listener,
+    state_pid: int | None,
+    probe_cache: dict[tuple[str, int], bool],
+    command_cache: dict[int, str],
+) -> tuple[bool, list[str], str]:
     reasons: list[str] = []
     if state_pid is not None and listener.pid == state_pid:
         reasons.append("matches_runtime_state")
 
     commandline = command_cache.setdefault(listener.pid, process_commandline(listener.pid))
-    if looks_like_mentat_commandline(commandline):
+    command_matches = looks_like_mentat_commandline(commandline)
+    if command_matches:
         reasons.append("command_line")
 
-    if listener.port not in probe_cache:
-        probe_cache[listener.port] = probe_mentat(listener.port)
-    if probe_cache[listener.port]:
+    probe_host = normalized_listener_host(listener.local_address, listener.port)
+    probe_key = (probe_host, listener.port)
+    if probe_key not in probe_cache:
+        probe_cache[probe_key] = probe_mentat(probe_host, listener.port)
+    probe_matches = probe_cache[probe_key]
+    if probe_matches:
         reasons.append("overview_probe")
 
-    return bool(reasons), reasons, commandline
+    # Runtime state is only a hint: PIDs can be reused after Mentat exits. Never
+    # terminate a listener unless the live process or HTTP response independently
+    # identifies it as Mentat.
+    return command_matches or probe_matches, reasons, commandline
 
 
 def kill_pid(pid: int) -> tuple[bool, str]:
@@ -280,7 +328,7 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
     actions: list[dict] = []
     killed_pids: set[int] = set()
     blocked = False
-    probe_cache: dict[int, bool] = {}
+    probe_cache: dict[tuple[str, int], bool] = {}
     command_cache: dict[int, str] = {}
 
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
@@ -351,7 +399,7 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
 def status_report(config: server.AppConfig) -> dict:
     state_path = lifecycle_state_path(config)
     listeners = [listener for listener in netstat_listeners() if listener.port in managed_ports(config.port)]
-    probe_cache: dict[int, bool] = {}
+    probe_cache: dict[tuple[str, int], bool] = {}
     command_cache: dict[int, str] = {}
     state = read_runtime_state(state_path) or {}
     state_pid = state.get("pid") if isinstance(state.get("pid"), int) else None
@@ -377,9 +425,17 @@ def status_report(config: server.AppConfig) -> dict:
     }
 
 
-def load_runtime_config(server_args: list[str]) -> server.AppConfig:
+def load_runtime_request(server_args: list[str]) -> tuple[argparse.Namespace, server.AppConfig]:
     cli_args = server.parse_cli_args(server_args)
-    return server.load_app_config(cli_args)
+    return cli_args, server.load_app_config(cli_args)
+
+
+def load_runtime_config(server_args: list[str]) -> server.AppConfig:
+    return load_runtime_request(server_args)[1]
+
+
+def loopback_host_is_supported(host: str) -> bool:
+    return str(host or "").strip().lower() in {"127.0.0.1", "::1", "localhost"}
 
 
 def print_report(report: dict) -> None:
@@ -395,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     server_args = list(args.server_args or [])
     if server_args and server_args[0] == "--":
         server_args = server_args[1:]
-    config = load_runtime_config(server_args)
+    server_cli_args, config = load_runtime_request(server_args)
 
     if args.command == "status":
         print_report(status_report(config))
@@ -405,6 +461,20 @@ def main(argv: list[str] | None = None) -> int:
         report = cleanup_mentat_listeners(config, stop_only=True)
         print_report(report)
         return 0 if report.get("ok", True) else 1
+
+    # Keep the server's print-only mode side-effect free. The server prints the
+    # effective config and exits before its bind-host validation.
+    if server_cli_args.print_config:
+        return 0
+    if not loopback_host_is_supported(config.host):
+        print_report(
+            {
+                "ok": False,
+                "error": "Mentat refuses non-loopback binds until authenticated remote access is implemented.",
+                "host": config.host,
+            }
+        )
+        return 2
 
     report = cleanup_mentat_listeners(config, stop_only=False)
     print_report(report)
