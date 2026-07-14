@@ -9,6 +9,23 @@ CORE_JS = (ROOT / "public" / "core.js").read_text(encoding="utf-8")
 
 
 class VisualContractTests(unittest.TestCase):
+    def test_dashboard_action_groups_use_edge_alignment_without_button_distribution(self):
+        panel_controls = CSS[CSS.index(".panel-controls {") : CSS.index(".task-status-filter-shell")]
+        item_actions = CSS[CSS.index(".item-actions {") : CSS.index(".action-button")]
+        editor_start = CSS.rindex("\n.task-editor-actions {\n  align-items:") + 1
+        editor_actions = CSS[editor_start : CSS.index(".agent-message-form .task-editor-actions", editor_start)]
+        calendar_actions = CSS[
+            CSS.index(".calendar-task-actions {") : CSS.index(".global-search-wrap")
+        ]
+
+        self.assertIn("justify-content: flex-end", panel_controls)
+        self.assertIn("justify-content: flex-end", item_actions)
+        self.assertIn("justify-content: flex-start", editor_actions)
+        self.assertIn("justify-content: flex-start", calendar_actions)
+        self.assertNotIn("justify-content: space-between", editor_actions)
+        self.assertIn("flex-wrap: wrap", item_actions)
+        self.assertIn("flex-wrap: wrap", calendar_actions)
+
     def test_compact_dark_board_tokens_exist(self):
         self.assertIn("Compact Dark Board Rewrite", CSS)
         compact_block = CSS[CSS.index("/* Compact Dark Board Rewrite") :]

@@ -86,7 +86,7 @@ class AgentRunEventTests(unittest.TestCase):
         self.assertTrue(stale["cursor_reset_required"])
         self.assertEqual(len(stale["events"]), agent_run_history.EVENT_RETENTION)
 
-    def test_v1_history_migrates_and_v2_round_trip_preserves_events(self):
+    def test_legacy_history_migrates_and_v3_round_trip_preserves_events(self):
         legacy = {
             "schema_version": 1,
             "runs": [{
@@ -115,7 +115,7 @@ class AgentRunEventTests(unittest.TestCase):
         self.assertFalse(recovered)
         self.assertEqual(runs[0]["events"][0]["sequence"], 1)
         self.assertEqual(runs[0]["events"][0]["run_id"], "run_legacy")
-        self.assertEqual(stored["schema_version"], 2)
+        self.assertEqual(stored["schema_version"], 3)
         self.assertNotIn("secret-value", stored_text)
         self.assertEqual(stored["runs"][0]["event_cursor"], 1)
 

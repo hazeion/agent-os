@@ -17,6 +17,9 @@ const endpoints = {
   email: '/api/email',
   agentConsole: '/api/agent-console',
   agentConsoleCommands: '/api/agent-console/commands',
+  agentConsoleAttachments: '/api/agent-console/attachments',
+  agentConsoleWorkspaceFiles: '/api/agent-console/workspace-files',
+  agentConsoleWorkspaceAttachments: '/api/agent-console/workspace-attachments',
   crons: '/api/hermes/crons',
   sessions: '/api/hermes/sessions',
   search: '/api/hermes/search',
@@ -82,6 +85,11 @@ const state = {
   agentConsolePollTimer: null,
   agentConsoleEventCursors: {},
   agentConsoleCommandManifest: null,
+  agentConsoleAttachments: [],
+  agentConsoleAttachmentsUploading: false,
+  agentConsoleAttachmentError: '',
+  agentConsoleWorkspaceSearchTimer: null,
+  agentConsoleWorkspaceRequestToken: 0,
   agentCreatorProfiles: [],
   agentCreatorSkills: [],
   agentCreatorSelectedSkills: [],
@@ -91,6 +99,9 @@ const state = {
   selectedHermesProfileId: '',
   hermesProfileCapabilities: {},
   activeHermesProfileId: '',
+  managedAgentIdentities: {},
+  managedAgentIdentityPreview: null,
+  managedAgentIdentityRequestToken: 0,
   agentDeletionPreview: null,
   agentDeletionRequestToken: 0,
   cronTriggerPreview: null,
@@ -216,7 +227,9 @@ function isMarkdownSpecialLine(line = '') {
 function inlineMarkdown(value = '', query = '') {
   let html = highlightHtml(value, query);
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, label, url) => (
+    `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+  ));
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/(^|\s)\*([^*]+)\*(?=\s|$)/g, '$1<em>$2</em>');
   html = html.replace(/(^|\s)_([^_]+)_(?=\s|$)/g, '$1<em>$2</em>');
@@ -282,8 +295,12 @@ function renderMarkdown(value = '', query = '') {
   const parts = String(value || '').split('```');
   return parts.map((part, index) => {
     if (index % 2 === 0) return renderMarkdownBlocks(part, query);
-    let code = part.replace(/^\s*([A-Za-z0-9_-]+)\n/, '');
-    return `<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`;
+    const normalized = part.replace(/\r/g, '');
+    const firstLineBreak = normalized.indexOf('\n');
+    const rawLanguage = firstLineBreak >= 0 ? normalized.slice(0, firstLineBreak).trim() : '';
+    const language = /^[A-Za-z0-9_+#.-]{1,32}$/.test(rawLanguage) ? rawLanguage : '';
+    const code = language ? normalized.slice(firstLineBreak + 1) : normalized.replace(/^\n/, '');
+    return `<figure class="markdown-code-block"><figcaption><span class="mono">${escapeHtml(language || 'plain text')}</span><button type="button" class="markdown-code-copy" data-copy-code aria-label="Copy ${escapeHtml(language || 'plain text')} code">Copy</button></figcaption><pre><code>${escapeHtml(code.trimEnd())}</code></pre></figure>`;
   }).join('');
 }
 
@@ -422,6 +439,40 @@ async function startAgentConsoleRun(payload) {
   return sendJson(`${endpoints.agentConsole}/runs`, payload, { method: 'POST' });
 }
 
+async function uploadAgentConsoleAttachment(file) {
+  if (!(file instanceof File)) throw new Error('Choose a file to attach.');
+  return api(endpoints.agentConsoleAttachments, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+      'X-Mentat-Filename': encodeURIComponent(file.name || 'attachment'),
+    },
+    body: file,
+  });
+}
+
+async function uploadAgentConsoleAttachments(files = [], onUploaded = null) {
+  const attachments = [];
+  for (const file of Array.from(files)) {
+    const payload = await uploadAgentConsoleAttachment(file);
+    const attachment = payload.attachment || payload;
+    attachments.push(attachment);
+    if (typeof onUploaded === 'function') onUploaded(attachment);
+  }
+  return attachments;
+}
+
+async function fetchAgentConsoleWorkspaceFiles(query = '') {
+  return api(`${endpoints.agentConsoleWorkspaceFiles}?q=${encodeURIComponent(String(query || '').slice(0, 200))}`);
+}
+
+async function createAgentConsoleWorkspaceAttachment(rootId, relativePath) {
+  return sendJson(endpoints.agentConsoleWorkspaceAttachments, {
+    root_id: rootId,
+    relative_path: relativePath,
+  }, { method: 'POST' });
+}
+
 async function fetchAgentConsoleRun(runId, afterCursor = null) {
   const suffix = afterCursor === null ? '' : `?after=${encodeURIComponent(afterCursor)}`;
   return api(`${endpoints.agentConsole}/runs/${encodeURIComponent(runId)}${suffix}`);
@@ -463,6 +514,24 @@ async function previewHermesProfile(payload) {
 
 async function createHermesProfile(payload) {
   return sendJson(endpoints.hermesProfiles, payload, { method: 'POST' });
+}
+
+async function fetchHermesProfileIdentity(profileId) {
+  return api(`${endpoints.hermesProfiles}/${encodeURIComponent(profileId)}/identity`);
+}
+
+async function previewHermesProfileIdentity(profileId, role) {
+  return sendJson(`${endpoints.hermesProfiles}/${encodeURIComponent(profileId)}/identity/preview`, {
+    role,
+  }, { method: 'POST' });
+}
+
+async function updateHermesProfileIdentity(profileId, role, confirmationId) {
+  return sendJson(`${endpoints.hermesProfiles}/${encodeURIComponent(profileId)}/identity`, {
+    role,
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
 }
 
 async function previewHermesProfileDeletion(profileId) {

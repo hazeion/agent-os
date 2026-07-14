@@ -187,7 +187,32 @@
               </div>
               <form id="agent-console-form" class="agent-console-form">
                 <div class="agent-console-input-wrap">
-                  <textarea id="agent-console-prompt" name="prompt" rows="1" maxlength="20000" placeholder="Prompt Hermes…" aria-label="Prompt Hermes" required autocomplete="off"></textarea>
+                  <div id="agent-console-attachment-tray" class="agent-console-attachment-tray" aria-live="polite" hidden></div>
+                  <div class="agent-console-composer-row">
+                    <button class="agent-console-attach" type="button" id="agent-console-attach" aria-label="Attach files" aria-expanded="false" aria-controls="agent-console-attachment-menu" title="Attach files">+</button>
+                    <textarea id="agent-console-prompt" name="prompt" rows="1" maxlength="20000" placeholder="Prompt Hermes…" aria-label="Prompt Hermes" autocomplete="off"></textarea>
+                  </div>
+                  <div id="agent-console-attachment-menu" class="agent-console-attachment-menu" hidden>
+                    <div id="agent-console-attachment-choices">
+                      <button type="button" data-agent-console-upload>Upload image or text file</button>
+                      <button type="button" data-agent-console-workspace>Choose from workspace</button>
+                      <span class="mono">Images, text, and source code</span>
+                    </div>
+                    <section id="agent-console-workspace-picker" class="agent-console-workspace-picker" aria-label="Choose a workspace file" hidden>
+                      <div class="agent-console-workspace-head">
+                        <strong>Workspace files</strong>
+                        <button type="button" data-agent-console-workspace-back aria-label="Back to attachment choices">×</button>
+                      </div>
+                      <div class="agent-console-workspace-search" role="search">
+                        <input id="agent-console-workspace-query" type="search" maxlength="200" placeholder="Search relative paths…" aria-label="Search workspace files" autocomplete="off" />
+                        <button type="button" data-agent-console-workspace-search>Search</button>
+                      </div>
+                      <div id="agent-console-workspace-results" class="agent-console-workspace-results" role="listbox" aria-live="polite">
+                        <div class="agent-console-workspace-state mono">Search configured workspace roots.</div>
+                      </div>
+                    </section>
+                  </div>
+                  <input id="agent-console-file-input" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,text/plain,text/markdown,text/csv,application/json,application/xml,text/xml,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.zsh,.toml,.yaml,.yml,.sql,.rs,.go,.java,.c,.h,.cpp,.hpp,.rb,.php" tabindex="-1" hidden />
                   <div id="agent-console-command-menu" class="agent-console-command-menu" hidden></div>
                 </div>
                 <button class="action-button agent-console-send" type="submit">Send</button>
@@ -541,6 +566,26 @@
         </div>
       </footer>
     </form>
+  </dialog>
+
+  <dialog id="agent-identity-dialog" class="agent-delete-dialog" aria-labelledby="agent-identity-title">
+    <div class="agent-delete-shell">
+      <header class="agent-delete-head">
+        <div>
+          <div class="eyebrow">Hermes runtime identity</div>
+          <h2 id="agent-identity-title">Synchronize agent identity</h2>
+        </div>
+        <button class="agent-creator-close" type="button" data-agent-identity-cancel aria-label="Close identity confirmation">×</button>
+      </header>
+      <div id="agent-identity-review" class="agent-delete-review"></div>
+      <footer class="agent-creator-actions">
+        <span id="agent-identity-status" class="task-editor-status mono" role="status" aria-live="polite"></span>
+        <div>
+          <button class="mini-button" type="button" data-agent-identity-cancel>Cancel</button>
+          <button class="action-button" type="button" data-agent-identity-confirm>Synchronize identity</button>
+        </div>
+      </footer>
+    </div>
   </dialog>
 
   <dialog id="agent-delete-dialog" class="agent-delete-dialog" aria-labelledby="agent-delete-title">

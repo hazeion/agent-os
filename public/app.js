@@ -1615,6 +1615,294 @@ function renderAgentConsoleCommandMenu() {
   `).join('');
 }
 
+function safeAgentConsoleContentUrl(value = '') {
+  try {
+    const url = new URL(String(value || ''), window.location.origin);
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== window.location.origin) return '';
+    if (!/^\/api\/agent-console\/attachments\/attachment_[a-f0-9]{32}\/content$/.test(url.pathname)) return '';
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return '';
+  }
+}
+
+function agentConsoleAttachmentSize(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const AGENT_CONSOLE_INLINE_IMAGE_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+]);
+
+function agentConsoleAttachmentCards(attachments = [], { removable = false } = {}) {
+  return attachments.map((attachment) => {
+    const id = String(attachment?.id || '');
+    const name = String(attachment?.name || 'Attachment');
+    const kind = String(attachment?.kind || 'file');
+    const mimeType = String(attachment?.mime_type || '');
+    const contentUrl = safeAgentConsoleContentUrl(attachment?.content_url);
+    const isImage = kind === 'image' || mimeType.startsWith('image/');
+    const canEmbedImage = isImage && AGENT_CONSOLE_INLINE_IMAGE_TYPES.has(mimeType.toLowerCase());
+    const preview = canEmbedImage && contentUrl
+      ? `<img src="${escapeHtml(contentUrl)}" alt="" loading="lazy" />`
+      : `<span class="agent-console-attachment-icon mono" aria-hidden="true">${isImage ? 'IMG' : 'FILE'}</span>`;
+    const size = agentConsoleAttachmentSize(attachment?.byte_size);
+    const attachmentState = removable ? [size, 'Attached'].filter(Boolean).join(' · ') : size || (isImage ? 'Image' : 'File');
+    const remove = removable && id
+      ? `<button type="button" class="agent-console-attachment-remove" data-remove-agent-console-attachment="${escapeHtml(id)}" aria-label="Remove ${escapeHtml(name)}" title="Remove attachment">×</button>`
+      : '';
+    const download = contentUrl && !removable
+      ? `<a class="agent-console-attachment-download mono" href="${escapeHtml(contentUrl)}" download="${escapeHtml(name)}" aria-label="Download ${escapeHtml(name)}">Download</a>`
+      : '';
+    return `<div class="agent-console-attachment-card" data-agent-console-attachment-id="${escapeHtml(id)}">${preview}<span class="agent-console-attachment-copy"><strong>${escapeHtml(name)}</strong><small class="mono">${escapeHtml(attachmentState)}</small></span>${download}${remove}</div>`;
+  }).join('');
+}
+
+function agentConsoleArtifactCards(artifacts = []) {
+  if (!artifacts.length) return '';
+  const cards = artifacts.map((artifact) => {
+    const name = String(artifact?.name || 'Generated file');
+    const kind = String(artifact?.kind || 'file');
+    const mimeType = String(artifact?.mime_type || '').toLowerCase();
+    const contentUrl = safeAgentConsoleContentUrl(artifact?.content_url);
+    const canEmbedImage = kind === 'image' && AGENT_CONSOLE_INLINE_IMAGE_TYPES.has(mimeType) && contentUrl;
+    const preview = canEmbedImage
+      ? `<img src="${escapeHtml(contentUrl)}" alt="${escapeHtml(name)}" loading="lazy" />`
+      : `<span class="agent-console-artifact-icon mono" aria-hidden="true">${kind === 'code' ? 'CODE' : kind === 'image' ? 'IMG' : 'FILE'}</span>`;
+    const size = agentConsoleAttachmentSize(artifact?.byte_size);
+    const download = contentUrl
+      ? `<a class="mini-button agent-console-artifact-download" href="${escapeHtml(contentUrl)}" download="${escapeHtml(name)}">Download</a>`
+      : '<span class="mono agent-console-artifact-unavailable">Unavailable</span>';
+    return `<article class="agent-console-artifact-card ${canEmbedImage ? 'image' : ''}">${preview}<div class="agent-console-artifact-copy"><strong>${escapeHtml(name)}</strong><span class="mono">${escapeHtml([kind, size].filter(Boolean).join(' · '))}</span></div>${download}</article>`;
+  }).join('');
+  return `<section class="agent-console-artifacts" aria-label="Generated files"><h4 class="mono">Generated files</h4><div class="agent-console-artifact-grid">${cards}</div></section>`;
+}
+
+async function copyRenderedCode(button) {
+  const code = button.closest('.markdown-code-block')?.querySelector('code')?.textContent || '';
+  if (!code) return;
+  const originalLabel = button.textContent;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+    await navigator.clipboard.writeText(code);
+    button.textContent = 'Copied';
+  } catch {
+    button.textContent = 'Copy failed';
+  }
+  window.setTimeout(() => {
+    if (button.isConnected) button.textContent = originalLabel;
+  }, 1600);
+}
+
+function renderAgentConsoleAttachmentTray() {
+  const tray = $('#agent-console-attachment-tray');
+  if (!tray) return;
+  const attachmentCount = state.agentConsoleAttachments.length;
+  const uploadError = String(state.agentConsoleAttachmentError || '');
+  tray.hidden = !attachmentCount && !state.agentConsoleAttachmentsUploading && !uploadError;
+  if (tray.hidden) {
+    tray.innerHTML = '';
+    return;
+  }
+  const summary = state.agentConsoleAttachmentsUploading
+    ? 'Uploading…'
+    : attachmentCount
+      ? `${attachmentCount} ready for next prompt`
+      : 'Upload failed';
+  const items = attachmentCount || state.agentConsoleAttachmentsUploading
+    ? `<div class="agent-console-attachment-items">${agentConsoleAttachmentCards(state.agentConsoleAttachments, { removable: true })}${state.agentConsoleAttachmentsUploading ? '<div class="agent-console-attachment-card uploading mono" role="status">Uploading…</div>' : ''}</div>`
+    : '';
+  const error = uploadError
+    ? `<div class="agent-console-attachment-error" role="alert"><span aria-hidden="true">!</span><strong>${escapeHtml(uploadError)}</strong><button type="button" data-dismiss-agent-console-attachment-error aria-label="Dismiss attachment error">×</button></div>`
+    : '';
+  tray.innerHTML = `<div class="agent-console-attachment-tray-head"><strong>Prompt attachments</strong><span class="mono">${escapeHtml(summary)}</span></div>${items}${error}`;
+}
+
+function agentConsoleUploadErrorMessage(error) {
+  const message = String(error?.message || error || 'Attachment upload failed.');
+  if (message.includes('256,000 bytes or fewer')) {
+    return 'Upload failed because Mentat is running an older server build. Restart Mentat and try again.';
+  }
+  return `Upload failed: ${message}`;
+}
+
+function setAgentConsoleAttachmentMenu(open) {
+  const menu = $('#agent-console-attachment-menu');
+  const trigger = $('#agent-console-attach');
+  if (menu) menu.hidden = !open;
+  if (trigger) trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (!open) closeAgentConsoleWorkspacePicker();
+}
+
+function safeAgentConsoleWorkspaceChoice(rootId, relativePath) {
+  const normalizedRootId = String(rootId || '').trim();
+  const normalizedPath = String(relativePath || '').trim();
+  const parts = normalizedPath.split('/');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(normalizedRootId)) return null;
+  if (
+    !normalizedPath
+    || normalizedPath.length > 500
+    || normalizedPath.includes('\0')
+    || normalizedPath.startsWith('/')
+    || normalizedPath.includes('\\')
+    || /^[A-Za-z]:/.test(normalizedPath)
+    || parts.some((part) => !part || part === '.' || part === '..')
+  ) return null;
+  return { root_id: normalizedRootId, relative_path: normalizedPath };
+}
+
+function closeAgentConsoleWorkspacePicker() {
+  clearTimeout(state.agentConsoleWorkspaceSearchTimer);
+  state.agentConsoleWorkspaceSearchTimer = null;
+  state.agentConsoleWorkspaceRequestToken += 1;
+  const choices = $('#agent-console-attachment-choices');
+  const picker = $('#agent-console-workspace-picker');
+  if (choices) choices.hidden = false;
+  if (picker) picker.hidden = true;
+}
+
+function renderAgentConsoleWorkspaceResults(payload = {}, status = 'ready') {
+  const results = $('#agent-console-workspace-results');
+  if (!results) return;
+  if (status === 'loading') {
+    results.innerHTML = '<div class="agent-console-workspace-state mono" role="status">Loading workspace files…</div>';
+    return;
+  }
+  if (status === 'error') {
+    results.innerHTML = `<div class="agent-console-workspace-state error mono" role="alert">${escapeHtml(payload.error || 'Workspace files are unavailable.')}</div>`;
+    return;
+  }
+  const rawFiles = Array.isArray(payload.files) ? payload.files : Array.isArray(payload.results) ? payload.results : [];
+  const files = rawFiles.map((file) => {
+    const choice = safeAgentConsoleWorkspaceChoice(file?.root_id, file?.relative_path ?? file?.path);
+    return choice ? {
+      ...choice,
+      kind: String(file?.kind || 'file'),
+      byte_size: Number(file?.byte_size || 0),
+    } : null;
+  }).filter(Boolean).slice(0, 40);
+  if (!files.length) {
+    results.innerHTML = '<div class="agent-console-workspace-state mono">No matching workspace files.</div>';
+    return;
+  }
+  results.innerHTML = files.map((file) => `
+    <button type="button" class="agent-console-workspace-result" role="option" data-agent-console-workspace-root="${escapeHtml(file.root_id)}" data-agent-console-workspace-path="${escapeHtml(file.relative_path)}">
+      <strong>${escapeHtml(file.relative_path)}</strong>
+      <span class="mono">${escapeHtml([file.kind || 'file', agentConsoleAttachmentSize(file.byte_size)].filter(Boolean).join(' · '))}</span>
+    </button>
+  `).join('');
+}
+
+async function searchAgentConsoleWorkspaceFiles(query = '') {
+  const requestToken = ++state.agentConsoleWorkspaceRequestToken;
+  renderAgentConsoleWorkspaceResults({}, 'loading');
+  try {
+    const payload = await fetchAgentConsoleWorkspaceFiles(query);
+    if (requestToken !== state.agentConsoleWorkspaceRequestToken) return;
+    renderAgentConsoleWorkspaceResults(payload);
+  } catch (err) {
+    if (requestToken !== state.agentConsoleWorkspaceRequestToken) return;
+    renderAgentConsoleWorkspaceResults({ error: err.message }, 'error');
+  }
+}
+
+function queueAgentConsoleWorkspaceSearch() {
+  clearTimeout(state.agentConsoleWorkspaceSearchTimer);
+  state.agentConsoleWorkspaceSearchTimer = setTimeout(() => {
+    void searchAgentConsoleWorkspaceFiles($('#agent-console-workspace-query')?.value || '');
+  }, 180);
+}
+
+function openAgentConsoleWorkspacePicker() {
+  const choices = $('#agent-console-attachment-choices');
+  const picker = $('#agent-console-workspace-picker');
+  if (choices) choices.hidden = true;
+  if (picker) picker.hidden = false;
+  const query = $('#agent-console-workspace-query');
+  if (query) query.value = '';
+  void searchAgentConsoleWorkspaceFiles('');
+  query?.focus();
+}
+
+async function addAgentConsoleWorkspaceFile(rootId, relativePath) {
+  const status = $('#agent-console-form-status');
+  const choice = safeAgentConsoleWorkspaceChoice(rootId, relativePath);
+  if (!choice || state.agentConsoleAttachmentsUploading) {
+    if (status && !choice) status.textContent = 'Mentat rejected an unsafe workspace file selection.';
+    return;
+  }
+  state.agentConsoleAttachmentError = '';
+  state.agentConsoleAttachmentsUploading = true;
+  renderAgentConsoleWorkspaceResults({}, 'loading');
+  try {
+    const payload = await createAgentConsoleWorkspaceAttachment(choice.root_id, choice.relative_path);
+    const attachment = payload.attachment || payload;
+    if (!attachment?.id) throw new Error('Mentat returned an invalid workspace attachment.');
+    if (!state.agentConsoleAttachments.some((item) => item.id === attachment.id)) {
+      state.agentConsoleAttachments.push(attachment);
+    }
+    renderAgentConsoleAttachmentTray();
+    setAgentConsoleAttachmentMenu(false);
+    if (status) status.textContent = `${choice.relative_path} attached as a private snapshot.`;
+    $('#agent-console-prompt')?.focus();
+  } catch (err) {
+    state.agentConsoleAttachmentError = agentConsoleUploadErrorMessage(err);
+    renderAgentConsoleWorkspaceResults({ error: err.message }, 'error');
+    if (status) status.textContent = state.agentConsoleAttachmentError;
+  } finally {
+    state.agentConsoleAttachmentsUploading = false;
+    renderAgentConsoleAttachmentTray();
+    const activeRun = state.agentConsoleRuns.some(agentConsoleRunIsActive);
+    const selectedAgent = state.agentConsoleAgents.find((agent) => agent.id === state.agentConsoleSelectedAgentId);
+    const attach = $('#agent-console-attach');
+    const send = $('#agent-console-form .agent-console-send');
+    if (attach) attach.disabled = !selectedAgent?.available || activeRun;
+    if (send) send.disabled = !selectedAgent?.available || activeRun;
+  }
+}
+
+async function addAgentConsoleFiles(files = []) {
+  const status = $('#agent-console-form-status');
+  if (!files.length || state.agentConsoleAttachmentsUploading) return;
+  state.agentConsoleAttachmentError = '';
+  state.agentConsoleAttachmentsUploading = true;
+  const attach = $('#agent-console-attach');
+  const send = $('#agent-console-form .agent-console-send');
+  if (attach) attach.disabled = true;
+  if (send) send.disabled = true;
+  renderAgentConsoleAttachmentTray();
+  if (status) status.textContent = `Uploading ${files.length} attachment${files.length === 1 ? '' : 's'}…`;
+  try {
+    const knownIds = new Set(state.agentConsoleAttachments.map((item) => item.id));
+    const uploaded = await uploadAgentConsoleAttachments(files, (item) => {
+      if (!item?.id || knownIds.has(item.id)) return;
+      knownIds.add(item.id);
+      state.agentConsoleAttachments.push(item);
+      renderAgentConsoleAttachmentTray();
+    });
+    if (status) status.textContent = `${uploaded.length} attachment${uploaded.length === 1 ? '' : 's'} ready.`;
+  } catch (err) {
+    state.agentConsoleAttachmentError = agentConsoleUploadErrorMessage(err);
+    if (status) status.textContent = state.agentConsoleAttachmentError;
+  } finally {
+    state.agentConsoleAttachmentsUploading = false;
+    const input = $('#agent-console-file-input');
+    if (input) input.value = '';
+    renderAgentConsoleAttachmentTray();
+    const activeRun = state.agentConsoleRuns.some(agentConsoleRunIsActive);
+    const selectedAgent = state.agentConsoleAgents.find((agent) => agent.id === state.agentConsoleSelectedAgentId);
+    if (attach) attach.disabled = !selectedAgent?.available || activeRun;
+    if (send) send.disabled = !selectedAgent?.available || activeRun;
+  }
+}
+
 function renderAgentConsole(payload = {}) {
   const chat = $('#agent-console-chat');
   const agentSelect = $('#agent-console-agent');
@@ -1711,6 +1999,8 @@ function renderAgentConsole(payload = {}) {
   if (presence) presence.className = `agent-console-presence ${activeRun ? 'working' : available ? 'ready' : 'offline'}`;
   if (prompt) prompt.disabled = !available || Boolean(activeRun);
   if (send) send.disabled = !available || Boolean(activeRun);
+  const attach = $('#agent-console-attach');
+  if (attach) attach.disabled = !available || Boolean(activeRun) || state.agentConsoleAttachmentsUploading;
   if (providerSelect) providerSelect.disabled = !available || !providerSwitchAvailable || Boolean(activeRun) || !scopedProviders.length;
   if (modelSelect) modelSelect.disabled = !available || !providerSwitchAvailable || Boolean(activeRun) || !scopedModels.length;
   if (applyModel) applyModel.disabled = !available || !providerSwitchAvailable || Boolean(activeRun) || !modelSelect?.value;
@@ -1733,10 +2023,16 @@ function renderAgentConsole(payload = {}) {
     const storedSummaryLabel = run.persisted_summary ? 'Stored summary' : '';
     const promptExcerpt = run.prompt_truncated || storedSummaryLabel ? `<span class="mono">${run.prompt_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const responseExcerpt = run.response_truncated || storedSummaryLabel ? `<span class="mono">${run.response_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
-    const response = run.response ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${renderMarkdown(run.response)}</div>${responseExcerpt}</div>` : '';
+    const outputArtifacts = Array.isArray(run.artifacts) ? run.artifacts : Array.isArray(run.output_artifacts) ? run.output_artifacts : [];
+    const artifactCards = agentConsoleArtifactCards(outputArtifacts);
+    const response = run.response || artifactCards ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${run.response ? renderMarkdown(run.response) : ''}${artifactCards}</div>${responseExcerpt}</div>` : '';
     const errorExcerpt = run.error_truncated || storedSummaryLabel ? `<span class="mono">${run.error_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const error = run.error ? `<div class="agent-console-log-row agent-console-log-error"><span class="mono">${run.status === 'cancelled' ? 'Stopped' : 'Error'}</span><div class="message-content">${escapeHtml(run.error)}</div>${errorExcerpt}</div>` : '';
-    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${response}${error}</section>`;
+    const inputAttachments = Array.isArray(run.attachments) ? run.attachments : Array.isArray(run.input_attachments) ? run.input_attachments : [];
+    const attachmentCards = inputAttachments.length
+      ? `<section class="agent-console-run-attachment-context" aria-label="Files used as prompt context"><span class="mono">Used as prompt context · ${inputAttachments.length} file${inputAttachments.length === 1 ? '' : 's'}</span><div class="agent-console-run-attachments">${agentConsoleAttachmentCards(inputAttachments)}</div></section>`
+      : '';
+    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}${attachmentCards}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${response}${error}</section>`;
   }).join('') : `<div class="agent-console-empty mono">${escapeHtml(payload.error || (available ? 'Hermes ready.' : 'Hermes CLI unavailable.'))}</div>`;
   if (wasNearBottom || activeRun) chat.scrollTop = chat.scrollHeight;
   scheduleAgentConsolePoll(Boolean(activeRun));
@@ -1863,7 +2159,11 @@ async function submitAgentConsolePrompt() {
   const prompt = $('#agent-console-prompt');
   const status = $('#agent-console-form-status');
   const value = prompt?.value.trim() || '';
-  if (!value) return;
+  if (state.agentConsoleAttachmentsUploading) {
+    if (status) status.textContent = 'Wait for attachments to finish uploading.';
+    return;
+  }
+  if (!value && !state.agentConsoleAttachments.length) return;
   if (value.startsWith('/')) {
     const [command, ...args] = value.split(/\s+/);
     const argument = args.join(' ').trim();
@@ -1900,10 +2200,18 @@ async function submitAgentConsolePrompt() {
   }
   if (status) status.textContent = 'Sending to Hermes…';
   try {
-    const payload = await startAgentConsoleRun({ agent_id: $('#agent-console-agent')?.value || state.agentConsoleSelectedAgentId || 'default', prompt: value, session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined });
+    const payload = await startAgentConsoleRun({
+      agent_id: $('#agent-console-agent')?.value || state.agentConsoleSelectedAgentId || 'default',
+      prompt: value,
+      session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined,
+      attachment_ids: state.agentConsoleAttachments.map((attachment) => attachment.id),
+    });
     state.agentConsoleStartFresh = false;
+    state.agentConsoleAttachments = [];
+    state.agentConsoleAttachmentError = '';
     prompt.value = '';
     resizeAgentConsolePrompt();
+    renderAgentConsoleAttachmentTray();
     renderAgentConsole({ agents: state.agentConsoleAgents, runs: [payload.run, ...state.agentConsoleRuns].filter(Boolean) });
     if (status) status.textContent = '';
   } catch (err) {
@@ -2048,7 +2356,7 @@ async function testHermesProfile(profileId) {
   if (!ready) return;
   const prompt = $('#agent-console-prompt');
   if (!prompt) return;
-  prompt.value = `Identity check: state your agent/profile name and briefly describe your role. Your selected Hermes profile id is ${profileId}.`;
+  prompt.value = 'Identity check: without relying on this message for the answer, state your name and briefly describe your role.';
   resizeAgentConsolePrompt();
   await submitAgentConsolePrompt();
 }
@@ -2531,6 +2839,8 @@ function renderHermesProfiles(payload = {}) {
   state.hermesProfileCapabilities = payload.capabilities || {};
   state.activeHermesProfileId = activeProfile;
   const deletionAvailable = state.hermesProfileCapabilities['profiles.delete'] === true;
+  const identityReadAvailable = state.hermesProfileCapabilities['profiles.identity.read'] === true;
+  const identityWriteAvailable = state.hermesProfileCapabilities['profiles.identity.write'] === true;
   const consoleBusy = state.agentConsoleRuns.some(agentConsoleRunIsActive);
   if (count) count.textContent = `${profiles.length} profile${profiles.length === 1 ? '' : 's'}`;
   if (payload.status && payload.status !== 'available') {
@@ -2566,6 +2876,23 @@ function renderHermesProfiles(payload = {}) {
     `;
   }).join('');
   const selectedProfile = profiles.find((profile) => profile.id === state.selectedHermesProfileId) || profiles[0];
+  const identity = state.managedAgentIdentities[selectedProfile.id];
+  const identityStatus = identity?.status || (identityReadAvailable ? 'unchecked' : 'unsupported');
+  const identityReady = identityStatus === 'synced'
+    && identity?.name === selectedProfile.id
+    && String(identity?.role || '') === String(selectedProfile.description || '');
+  const identityBlocked = ['conflict', 'unsafe'].includes(identityStatus);
+  const identityStatusText = identityStatus === 'synced'
+    ? 'Runtime name and role are synchronized with Hermes.'
+    : identityStatus === 'missing'
+      ? 'No Mentat-managed runtime identity exists yet. Review and confirm to add one.'
+      : identityStatus === 'drifted'
+        ? 'The runtime identity and Hermes routing role have drifted. Review and confirm to synchronize them.'
+        : identityStatus === 'conflict' || identityStatus === 'unsafe'
+          ? 'Identity editing is blocked because Hermes reported malformed or unsafe identity state.'
+          : identityStatus === 'unsupported'
+            ? 'This Hermes runtime does not support managed identity synchronization.'
+            : 'Checking the Hermes runtime identity…';
   const managedInventory = state.managedAgentProviderInventory?.profile_id === selectedProfile.id
     ? state.managedAgentProviderInventory
     : state.agentConsoleProviderInventory?.profile_id === selectedProfile.id
@@ -2611,6 +2938,20 @@ function renderHermesProfiles(payload = {}) {
       <div class="managed-agent-state mono">${escapeHtml(selectedLabels)}</div>
     </div>
     <p class="item-desc managed-agent-description">${escapeHtml(selectedProfile.description || 'No role description supplied.')}</p>
+    <section class="managed-agent-identity-editor" aria-label="Agent runtime identity">
+      <div class="managed-agent-identity-head">
+        <div><span class="detail-context-label mono">Runtime identity</span><strong>${escapeHtml(identityReady ? 'Synchronized' : identityStatus.replaceAll('_', ' '))}</strong></div>
+        <span class="managed-agent-identity-state mono">${escapeHtml(selectedProfile.id)}</span>
+      </div>
+      <label class="task-editor-field" for="managed-agent-role">
+        <span class="task-editor-label mono">Role / description</span>
+        <textarea id="managed-agent-role" maxlength="500" rows="3" ${identityWriteAvailable && !identityBlocked && !consoleBusy ? '' : 'disabled'}>${escapeHtml(selectedProfile.description || '')}</textarea>
+      </label>
+      <div class="managed-agent-identity-actions">
+        <p id="managed-agent-identity-status" class="item-meta mono">${escapeHtml(identityStatusText)}</p>
+        <button class="mini-button" type="button" data-review-agent-identity="${escapeHtml(selectedProfile.id)}" ${identityWriteAvailable && !identityBlocked && !consoleBusy && identityStatus !== 'unchecked' ? '' : 'disabled'}>${identityReady ? 'Review identity change' : 'Set runtime identity'}</button>
+      </div>
+    </section>
     <div class="managed-agent-config">
       <div><span class="detail-context-label mono">Provider</span><strong>${escapeHtml(selectedProfile.provider || 'Hermes configured')}</strong></div>
       <div><span class="detail-context-label mono">Model</span><strong>${escapeHtml(selectedProfile.model || 'Configured default')}</strong></div>
@@ -2618,6 +2959,7 @@ function renderHermesProfiles(payload = {}) {
     </div>
     <div class="agent-onboarding-checklist" aria-label="Agent readiness checklist">
       <span class="${selectedProfile.id ? 'ready' : ''}">Profile created</span>
+      <span class="${identityReady ? 'ready' : ''}">Identity synchronized</span>
       <span class="${selectedProfile.provider ? 'ready' : ''}">Provider selected</span>
       <span class="${selectedProfile.model ? 'ready' : ''}">Model available</span>
       <span class="${displayedSkillCount >= 0 ? 'ready' : ''}">Skills inspected</span>
@@ -2656,6 +2998,96 @@ function renderHermesProfiles(payload = {}) {
     </div>
     ${deleteReason ? `<p class="item-meta mono">${escapeHtml(deleteReason)}</p>` : ''}
   `;
+  if (!identity && identityReadAvailable) void loadManagedAgentIdentity(selectedProfile.id);
+}
+
+function rerenderHermesProfiles() {
+  renderHermesProfiles({
+    profiles: state.hermesProfiles,
+    active_profile: state.activeHermesProfileId,
+    capabilities: state.hermesProfileCapabilities,
+    status: 'available',
+  });
+}
+
+async function loadManagedAgentIdentity(profileId, { force = false } = {}) {
+  if (!profileId || (!force && state.managedAgentIdentities[profileId])) return state.managedAgentIdentities[profileId];
+  state.managedAgentIdentities[profileId] = { status: 'loading', profile_id: profileId };
+  try {
+    const identity = await fetchHermesProfileIdentity(profileId);
+    state.managedAgentIdentities[profileId] = identity;
+  } catch (err) {
+    state.managedAgentIdentities[profileId] = {
+      status: 'unsafe',
+      profile_id: profileId,
+      can_write: false,
+      error: { code: 'identity_load_failed' },
+    };
+  }
+  if (state.selectedHermesProfileId === profileId) rerenderHermesProfiles();
+  return state.managedAgentIdentities[profileId];
+}
+
+function closeAgentIdentityDialog() {
+  state.managedAgentIdentityRequestToken += 1;
+  state.managedAgentIdentityPreview = null;
+  $('#agent-identity-dialog')?.close();
+  const status = $('#agent-identity-status');
+  if (status) status.textContent = '';
+}
+
+async function openAgentIdentityReview(profileId) {
+  const dialog = $('#agent-identity-dialog');
+  const review = $('#agent-identity-review');
+  const status = $('#agent-identity-status');
+  const confirm = $('[data-agent-identity-confirm]');
+  const role = $('#managed-agent-role')?.value || '';
+  if (!dialog || !review || !profileId) return;
+  const requestToken = ++state.managedAgentIdentityRequestToken;
+  state.managedAgentIdentityPreview = null;
+  review.innerHTML = '<div class="empty">Loading the exact Hermes identity effects…</div>';
+  if (status) status.textContent = '';
+  if (confirm) confirm.disabled = true;
+  dialog.showModal();
+  try {
+    const preview = await previewHermesProfileIdentity(profileId, role);
+    if (requestToken !== state.managedAgentIdentityRequestToken || !dialog.open) return;
+    state.managedAgentIdentityPreview = preview;
+    review.innerHTML = `
+      <article class="agent-creator-review-card">
+        <h3>${escapeHtml(preview.normalized?.name || profileId)}</h3>
+        <p class="item-desc">${escapeHtml(preview.normalized?.role || 'No specialized role assigned.')}</p>
+        <ul>${(preview.effects || []).map((effect) => `<li>${escapeHtml(effect)}</li>`).join('')}</ul>
+        ${(preview.warnings || []).map((warning) => `<p class="agent-delete-warning">${escapeHtml(warning)}</p>`).join('')}
+      </article>`;
+    if (confirm) confirm.disabled = false;
+    if (status) status.textContent = 'Review the exact managed identity change, then confirm.';
+  } catch (err) {
+    if (requestToken !== state.managedAgentIdentityRequestToken || !dialog.open) return;
+    review.innerHTML = `<div class="empty" role="alert">Identity update is unavailable: ${escapeHtml(err.message)}</div>`;
+    if (confirm) confirm.disabled = true;
+  }
+}
+
+async function submitAgentIdentityUpdate() {
+  const preview = state.managedAgentIdentityPreview;
+  const profileId = preview?.normalized?.profile_id;
+  const role = preview?.normalized?.role || '';
+  const status = $('#agent-identity-status');
+  const confirm = $('[data-agent-identity-confirm]');
+  if (!profileId || !preview?.confirmation_id) return;
+  if (confirm) confirm.disabled = true;
+  if (status) status.textContent = `Synchronizing ${profileId}…`;
+  try {
+    const result = await updateHermesProfileIdentity(profileId, role, preview.confirmation_id);
+    state.managedAgentIdentities[profileId] = result.identity;
+    if (result.profiles?.profiles) state.hermesProfiles = result.profiles.profiles;
+    closeAgentIdentityDialog();
+    rerenderHermesProfiles();
+  } catch (err) {
+    if (status) status.textContent = `Identity update failed: ${err.message}`;
+    if (confirm) confirm.disabled = false;
+  }
 }
 
 async function loadManagedAgentProviderInventory(profileId) {
@@ -2948,13 +3380,16 @@ async function submitAgentCreator() {
     });
     state.agentCreatorProfiles = result.profiles?.profiles || state.agentCreatorProfiles;
     state.selectedHermesProfileId = result.profile?.id || result.profile?.name || '';
+    if (state.selectedHermesProfileId && result.identity) {
+      state.managedAgentIdentities[state.selectedHermesProfileId] = result.identity;
+    }
     if (result.profiles) renderHermesProfiles(result.profiles);
     if (state.selectedHermesProfileId) await loadManagedAgentProviderInventory(state.selectedHermesProfileId);
     const review = $('#agent-creator-review');
     if (review) review.innerHTML = `
       <article class="agent-creator-review-card agent-creator-success">
         <h3>${escapeHtml(result.profile?.name || result.profile?.id || 'Agent')} created</h3>
-        <div class="item-desc">The Hermes profile is ready and now appears in Managed Agents.</div>
+        <div class="item-desc">The Hermes profile and its runtime name/role are synchronized and now appear in Managed Agents.</div>
         <div class="item-meta mono">${result.skill_selection ? `${result.skill_selection.enabled_builtin_skills?.length || 0} built-in skills enabled` : 'Hermes default skill configuration'}</div>
         <div class="task-delegation-actions">
           <button class="action-button" type="button" data-agent-creator-test="${escapeHtml(state.selectedHermesProfileId)}">Test Agent</button>
@@ -3839,6 +4274,76 @@ $('#agent-console-command-menu')?.addEventListener('click', (event) => {
   prompt.focus();
 });
 
+$('#agent-console-attach')?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  const menu = $('#agent-console-attachment-menu');
+  setAgentConsoleAttachmentMenu(Boolean(menu?.hidden));
+});
+
+$('#agent-console-attachment-menu')?.addEventListener('click', (event) => {
+  const upload = event.target.closest('[data-agent-console-upload]');
+  if (upload) {
+    setAgentConsoleAttachmentMenu(false);
+    $('#agent-console-file-input')?.click();
+    return;
+  }
+  if (event.target.closest('[data-agent-console-workspace]')) {
+    openAgentConsoleWorkspacePicker();
+    return;
+  }
+  if (event.target.closest('[data-agent-console-workspace-back]')) {
+    closeAgentConsoleWorkspacePicker();
+    return;
+  }
+  if (event.target.closest('[data-agent-console-workspace-search]')) {
+    clearTimeout(state.agentConsoleWorkspaceSearchTimer);
+    void searchAgentConsoleWorkspaceFiles($('#agent-console-workspace-query')?.value || '');
+    return;
+  }
+  const workspaceFile = event.target.closest('[data-agent-console-workspace-path]');
+  if (workspaceFile) {
+    void addAgentConsoleWorkspaceFile(
+      workspaceFile.dataset.agentConsoleWorkspaceRoot || '',
+      workspaceFile.dataset.agentConsoleWorkspacePath || '',
+    );
+  }
+});
+
+$('#agent-console-workspace-query')?.addEventListener('input', queueAgentConsoleWorkspaceSearch);
+$('#agent-console-workspace-query')?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.isComposing) return;
+  event.preventDefault();
+  clearTimeout(state.agentConsoleWorkspaceSearchTimer);
+  void searchAgentConsoleWorkspaceFiles(event.currentTarget.value || '');
+});
+
+$('#agent-console-file-input')?.addEventListener('change', (event) => {
+  void addAgentConsoleFiles(Array.from(event.target.files || []));
+});
+
+$('#agent-console-attachment-tray')?.addEventListener('click', (event) => {
+  const dismissError = event.target.closest('[data-dismiss-agent-console-attachment-error]');
+  if (dismissError) {
+    state.agentConsoleAttachmentError = '';
+    renderAgentConsoleAttachmentTray();
+    return;
+  }
+  const remove = event.target.closest('[data-remove-agent-console-attachment]');
+  if (!remove) return;
+  const id = remove.dataset.removeAgentConsoleAttachment || '';
+  state.agentConsoleAttachments = state.agentConsoleAttachments.filter((attachment) => attachment.id !== id);
+  renderAgentConsoleAttachmentTray();
+});
+
+document.addEventListener('click', (event) => {
+  const copy = event.target.closest('[data-copy-code]');
+  if (copy) void copyRenderedCode(copy);
+});
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('#agent-console-attachment-menu, #agent-console-attach')) setAgentConsoleAttachmentMenu(false);
+});
+
 $('#agent-console-agent')?.addEventListener('change', async (event) => {
   state.agentConsoleSelectedAgentId = event.target.value || 'default';
   state.agentConsoleSelectedProvider = '';
@@ -3964,7 +4469,10 @@ document.addEventListener('click', async (event) => {
       capabilities: state.hermesProfileCapabilities,
       status: 'available',
     });
-    await loadManagedAgentProviderInventory(state.selectedHermesProfileId);
+    await Promise.all([
+      loadManagedAgentProviderInventory(state.selectedHermesProfileId),
+      loadManagedAgentIdentity(state.selectedHermesProfileId),
+    ]);
     return;
   }
 
@@ -3977,6 +4485,22 @@ document.addEventListener('click', async (event) => {
   const reviewProvider = event.target.closest('[data-review-managed-agent-provider]');
   if (reviewProvider) {
     await reviewManagedAgentProvider(reviewProvider.dataset.reviewManagedAgentProvider || state.selectedHermesProfileId);
+    return;
+  }
+
+  const reviewIdentity = event.target.closest('[data-review-agent-identity]');
+  if (reviewIdentity) {
+    await openAgentIdentityReview(reviewIdentity.dataset.reviewAgentIdentity || state.selectedHermesProfileId);
+    return;
+  }
+
+  if (event.target.closest('[data-agent-identity-cancel]')) {
+    closeAgentIdentityDialog();
+    return;
+  }
+
+  if (event.target.closest('[data-agent-identity-confirm]')) {
+    await submitAgentIdentityUpdate();
     return;
   }
 

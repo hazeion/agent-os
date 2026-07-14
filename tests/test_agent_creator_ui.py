@@ -30,6 +30,38 @@ class AgentCreatorUiTests(unittest.TestCase):
         self.assertIn("managed-agent-layout", STYLES)
         self.assertIn("managed-agent-row", STYLES)
 
+    def test_panel_action_buttons_stay_in_compact_edge_aligned_groups(self):
+        managed_actions = STYLES[
+            STYLES.index(".managed-agent-detail-actions {") : STYLES.index(".managed-agent-delete")
+        ]
+        creator_actions = STYLES[
+            STYLES.index(".agent-creator-actions > div {") : STYLES.index("@media (max-width: 760px)", STYLES.index(".agent-creator-actions > div {"))
+        ]
+
+        self.assertIn("justify-content: flex-start", managed_actions)
+        self.assertIn("flex-wrap: wrap", managed_actions)
+        self.assertNotIn("justify-content: space-between", managed_actions)
+        self.assertIn("justify-content: flex-end", creator_actions)
+        self.assertIn("margin-left: auto", creator_actions)
+
+    def test_managed_agents_can_preview_and_confirm_runtime_identity(self):
+        self.assertIn('id="agent-identity-dialog"', INDEX)
+        self.assertIn("managedAgentIdentities", CORE_JS)
+        self.assertIn("fetchHermesProfileIdentity", CORE_JS)
+        self.assertIn("previewHermesProfileIdentity", CORE_JS)
+        self.assertIn("updateHermesProfileIdentity", CORE_JS)
+        self.assertIn("async function loadManagedAgentIdentity", APP_JS)
+        self.assertIn("async function openAgentIdentityReview", APP_JS)
+        self.assertIn("async function submitAgentIdentityUpdate", APP_JS)
+        self.assertIn("Identity synchronized", APP_JS)
+        self.assertIn("managed-agent-identity-editor", STYLES)
+
+    def test_identity_check_does_not_supply_the_expected_profile_id(self):
+        start = APP_JS.index("async function testHermesProfile")
+        block = APP_JS[start:APP_JS.index("async function assignFirstTaskToProfile", start)]
+        self.assertIn("without relying on this message", block)
+        self.assertNotIn("selected Hermes profile id", block)
+
     def test_blank_agents_can_choose_an_authenticated_provider(self):
         self.assertIn('id="managed-agent-provider-select"', APP_JS)
         self.assertIn('id="managed-agent-model-select"', APP_JS)

@@ -24,8 +24,9 @@ explicit, supported capabilities implemented by the Hermes adapter.
 | Hermes profiles | Mutate only through approved, fixed Hermes CLI/API operations |
 | Model/provider configuration | Mutate only through validated Hermes operations |
 | Existing Hermes cron jobs | Read-only inventory; queue controls fail closed |
-| Skills and `SOUL.md` | Read-only until a separate capability is approved |
+| Skills and general `SOUL.md` content | Read-only; only the versioned Mentat identity block is writable |
 | Mentat runtime history | Writable, private, and gitignored |
+| Mentat attachment database and blobs | Writable, private, gitignored, and project-owned |
 | Mentat project/task data | Writable through allowlisted project-owned storage |
 | Hermes Kanban tasks and runs | Mutate only through the supported, capability-gated Kanban adapter |
 | Arbitrary Hermes files | Never write directly |
@@ -51,6 +52,66 @@ host. Non-loopback access is not a deployment option under this contract.
 Agent Console execution is globally single-run in v1. Every run records its
 Hermes profile id, launches with a fixed `-p <profile>` selector, and may resume
 only a session already associated with that same profile.
+
+## Agent Console file boundary
+
+Console files are Mentat-owned runtime data, never Hermes core data. SQLite at
+`data/runtime/mentat.sqlite3` stores attachment, blob, and run-reference
+metadata; bytes use private content-addressed blob files below the same
+gitignored runtime root. The browser sees only opaque attachment ids, bounded
+display metadata, and fixed same-origin content routes. It never receives blob
+hashes, storage keys, trusted server paths, or arbitrary file-serving URLs.
+
+Uploads and workspace snapshots must pass extension, MIME/magic, UTF-8, size,
+secret-name/content, regular-file, containment, and symlink checks. Text is
+served as `text/plain` with `nosniff`. Inline display is restricted to validated
+PNG, JPEG, GIF, and WebP content. SVG, HTML execution, PDF embedding, archives,
+executables, path traversal, and remote/data/file URLs are outside this
+capability.
+
+Content-addressed blob filenames are intentionally extensionless. They must not
+be passed directly to Hermes image arguments because Hermes validates supported
+image suffixes. Mentat creates a bounded, private, run-scoped input snapshot
+with the server-validated extension, uses that path only for the fixed Hermes
+adapter call, and deletes the snapshot when execution ends. Browser responses
+and retained history never expose this path.
+
+Workspace selection searches only explicit configured roots and returns
+relative paths. The current root is the Mentat repository; VCS, hidden,
+dependency, build, runtime, secret, archive, executable, and symlinked paths are
+excluded. Selection creates a private no-follow snapshot before storage, so a
+later workspace edit cannot change prompt context already attached to a run.
+
+Assistant-created artifacts are accepted only from a private per-run export
+directory named in trusted server-generated execution context. Mentat does not
+parse paths from assistant prose. After execution, it scans that directory with
+bounded allowlists, snapshots acceptable files without following symlinks,
+binds stored outputs to retained history, and cleans successfully registered
+exports. Failed registration preserves the export for retry.
+
+Staged files expire after two hours. Unreferenced files use a one-hour grace;
+active and retained run references prevent collection. Startup reconciliation
+and a bounded periodic collector repair interrupted states, release references
+for history that no longer exists, and retry failed deletions with backoff.
+
+## Profile identity boundary
+
+The Hermes profile id remains the canonical executable name. Hermes profile
+metadata remains the routing-role source used by Kanban, while a versioned
+Mentat-managed block at the top of the profile's `SOUL.md` makes the same name
+and role available to the running agent's system prompt. Mentat does not create
+a second identity registry and never returns the remaining soul content to the
+browser.
+
+Identity inspection and writes run inside the Hermes runtime and resolve the
+profile only through Hermes' profile API. A write is allowed only when the
+runtime exposes the required profile-resolution and metadata operations. The
+adapter rejects symlinked soul files, multiple or malformed managed blocks,
+reserved marker text, unknown profiles, stale revisions, and active Console
+runs. Every change requires an exact preview and profile-bound confirmation,
+uses an atomic same-directory soul replacement, synchronizes the Hermes routing
+description, refreshes both surfaces for verification, and attempts rollback on
+failure. Content outside the managed block is preserved and remains read-only.
 
 ## Personal task and planning model
 
@@ -242,6 +303,8 @@ Approved for Managed Agents:
   inventory, preview, confirmation, active-run lock, verification, and rollback
   contract as the Agent Console. This is the configuration path for a fresh
   profile that does not yet have a provider assigned.
+- profile identity inspection and confirmed synchronization of the immutable
+  profile name and routing role into the versioned managed `SOUL.md` block.
 
 Deletion is performed only through Hermes' supported profile API in its own
 runtime. Mentat never deletes profile directories or their contents directly.
@@ -257,7 +320,7 @@ these onboarding actions do not weaken that boundary.
 
 Deferred until separately approved:
 
-- direct `SOUL.md` editing;
+- general `SOUL.md` editing outside the managed identity block;
 - clone-all;
 - profile rename;
 - skill content editing, hub installation, or arbitrary MCP configuration;

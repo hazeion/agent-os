@@ -40,6 +40,14 @@ class TaskDelegationUiTests(unittest.TestCase):
         self.assertIn("endpoints.agentActivity", APP)
         self.assertIn(".agent-activity-list", CSS)
 
+    def test_delegation_actions_form_a_compact_left_aligned_group(self):
+        actions = CSS[
+            CSS.index(".task-delegation-actions {") : CSS.index(".delegation-context-preview")
+        ]
+        self.assertIn("justify-content: flex-start", actions)
+        self.assertIn("flex-wrap: wrap", actions)
+        self.assertNotIn("justify-content: space-between", actions)
+
 
 if __name__ == "__main__":
     unittest.main()

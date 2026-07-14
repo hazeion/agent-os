@@ -25,6 +25,7 @@ Core pieces:
 ```text
 server.py
 hermes_kanban.py
+hermes_profile_identity.py
 task_planning.py
 runtime_config.py
 mentat_lifecycle.py
@@ -154,14 +155,36 @@ is a separate deferred product choice, not a substitute. Do not create, edit,
 enable, disable, or delete Hermes cron jobs, and never write the cron store
 directly.
 
-Direct skill-content editing, hub installation, `SOUL.md` editing, clone-all,
-rename, credential management, and arbitrary MCP changes remain deferred.
+Mentat may synchronize only its versioned, profile-bound identity block at the
+top of `SOUL.md`, together with Hermes' supported profile description metadata.
+This requires an exact preview, confirmation bound to the current soul revision,
+the shared profile mutation lock, no active Console run, atomic replacement,
+post-write verification, and rollback on failure. Never return other soul
+content to the browser. Direct skill-content editing, hub installation, general
+`SOUL.md` editing outside that block, clone-all, rename, credential management,
+and arbitrary MCP changes remain deferred.
 
 Agent Console slash commands are a separate Mentat allowlist, not a projection
 of the Hermes CLI. Add commands through the versioned command manifest with a
 fixed dashboard handler, argument declarations, description, safety class, and
 tests. Never derive this surface by parsing CLI output or add arbitrary command
 passthrough.
+
+Agent Console attachments and generated artifacts belong only in gitignored
+`data/runtime` storage. Use the project-owned SQLite metadata and
+content-addressed blob boundary; never store file bytes in tracked JSON or
+return local paths, hashes, storage keys, or arbitrary file URLs to the browser.
+Uploads and workspace choices must remain type/size/content validated,
+symlink-safe, and snapshot-based. Workspace search is restricted to configured
+roots and relative paths. Assistant artifacts may be discovered only inside the
+run-owned export directory from trusted server context; never parse or open a
+path merely because model prose mentions it. Preserve staged expiry,
+reference-aware grace, active-run protection, bounded garbage collection, and
+startup reconciliation when extending this surface.
+
+Do not pass extensionless content-addressed blob paths directly to Hermes image
+arguments. Materialize a private run-scoped input snapshot with the validated
+image extension, keep that path server-only, and clean it after execution.
 
 Tracked JSON fixtures under `data/` should remain public-safe seed/example data. Avoid committing personal names, local paths, account identifiers, or real message history there.
 Gitignored Agent Console history must remain redacted and private. Use
@@ -236,6 +259,13 @@ python -m unittest discover -s tests -v
 
 - Prefer simple, readable code over clever abstractions.
 - Preserve the clean dark styling direction.
+- Keep sibling action buttons in compact groups aligned to one edge of their
+  panel or section. Do not use `space-between` to distribute individual buttons
+  across the available width. A panel heading may separate its title/content
+  from one compact control group on the opposite edge.
+- On narrow layouts, wrap compact button groups before considering full-width
+  or stretched controls. Use stretched actions only when the interaction has an
+  explicit mobile reason for one dominant full-width action.
 - Keep Agent Creator progress compact and text-led; do not reintroduce pill
   containers for its step indicator.
 - Avoid reintroducing removed/redundant dashboard surfaces without a clear product reason.

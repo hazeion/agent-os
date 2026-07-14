@@ -20,7 +20,12 @@ def discovery(*profile_ids):
     return {
         "schema_version": 1,
         "status": "available",
-        "capabilities": {"profiles.read": True, "profiles.create": True},
+        "capabilities": {
+            "profiles.read": True,
+            "profiles.create": True,
+            "profiles.identity.read": True,
+            "profiles.identity.write": True,
+        },
         "profiles": [
             {"id": profile_id, "name": profile_id, "is_default": profile_id == "default"}
             for profile_id in profile_ids
@@ -34,6 +39,32 @@ def skill_catalog(*skill_ids):
         "status": "available",
         "capabilities": {"skills.catalog.read": True, "skills.selection.write": True},
         "skills": [{"id": skill_id, "name": skill_id} for skill_id in skill_ids],
+    }
+
+
+def identity_before(profile_id="builder"):
+    return {
+        "schema_version": 1,
+        "profile_id": profile_id,
+        "status": "missing",
+        "revision": "a" * 64,
+        "name": "",
+        "role": "",
+        "role_description": "",
+        "error": None,
+    }
+
+
+def identity_after(profile_id="builder", role="Builds Mentat features."):
+    return {
+        "schema_version": 1,
+        "profile_id": profile_id,
+        "status": "synced",
+        "revision": "b" * 64,
+        "name": profile_id,
+        "role": role,
+        "role_description": role,
+        "error": None,
     }
 
 
@@ -181,7 +212,9 @@ class HermesProfileCreationServerTests(unittest.TestCase):
         after = discovery("default", "builder")
         with patch.object(server, "hermes_profiles_payload", side_effect=[before, after]), patch.object(
             server, "hermes_command_path", return_value="/opt/hermes/bin/hermes"
-        ), patch.object(server.subprocess, "run", return_value=CompletedResult()) as run:
+        ), patch.object(server.subprocess, "run", return_value=CompletedResult()) as run, patch.object(
+            server, "inspect_profile_identity", return_value=identity_before()
+        ), patch.object(server, "apply_profile_identity", return_value=identity_after()):
             payload, status = server.create_hermes_profile(request)
 
         self.assertEqual(status, 201)
@@ -222,7 +255,10 @@ class HermesProfileCreationServerTests(unittest.TestCase):
         ), patch.object(server, "hermes_command_path", return_value="/opt/hermes/bin/hermes"), patch.object(
             server.subprocess, "run", return_value=CompletedResult()
         ), patch.object(server, "apply_builtin_skill_selection", return_value=applied) as apply_selection:
-            payload, create_status = server.create_hermes_profile(confirmed)
+            with patch.object(server, "inspect_profile_identity", return_value=identity_before()), patch.object(
+                server, "apply_profile_identity", return_value=identity_after()
+            ):
+                payload, create_status = server.create_hermes_profile(confirmed)
 
         self.assertEqual(create_status, 201)
         self.assertEqual(payload["skill_selection"], applied)

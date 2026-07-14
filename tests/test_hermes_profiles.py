@@ -27,6 +27,8 @@ class HermesProfileDiscoveryTests(unittest.TestCase):
                 "profiles.read": True,
                 "profiles.create": True,
                 "profiles.describe": True,
+                "profiles.identity.read": True,
+                "profiles.identity.write": True,
                 "profiles.rename": True,
                 "profiles.delete": True,
                 "unexpected": True,

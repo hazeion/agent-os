@@ -12,8 +12,8 @@ from typing import Any, Callable
 
 from json_store import lock_for, write_json_atomic
 
-SCHEMA_VERSION = 2
-LEGACY_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
+LEGACY_SCHEMA_VERSIONS = {1, 2}
 EVENT_SCHEMA_VERSION = 1
 DEFAULT_RETENTION = 24
 EVENT_RETENTION = 40
@@ -22,6 +22,7 @@ RESPONSE_EXCERPT_LIMIT = 2_000
 ERROR_EXCERPT_LIMIT = 1_000
 EVENT_TEXT_LIMIT = 500
 ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+ATTACHMENT_LIMIT = 25
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+"),
@@ -123,6 +124,63 @@ def normalize_events(run_id: str, raw_events: Any) -> list[dict]:
     return normalized
 
 
+def normalize_attachments(raw_attachments: Any) -> list[dict]:
+    """Keep only path-free attachment metadata suitable for retained history."""
+    if not isinstance(raw_attachments, list):
+        return []
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for item in raw_attachments[:ATTACHMENT_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        attachment_id = str(item.get("id") or "")
+        if not re.fullmatch(r"attachment_[a-f0-9]{32}", attachment_id) or attachment_id in seen:
+            continue
+        kind = str(item.get("kind") or "")
+        if kind not in {"image", "text"}:
+            continue
+        mime_type = str(item.get("mime_type") or "")[:160]
+        if not mime_type or any(character in mime_type for character in "\r\n"):
+            continue
+        try:
+            byte_size = max(0, int(item.get("byte_size") or 0))
+        except (TypeError, ValueError):
+            continue
+        name = Path(str(item.get("name") or "attachment")).name[:255] or "attachment"
+        normalized.append({
+            "id": attachment_id,
+            "name": name,
+            "mime_type": mime_type,
+            "kind": kind,
+            "byte_size": byte_size,
+            "state": str(item.get("state") or "attached")[:32],
+            "created_at": item.get("created_at"),
+            "expires_at": item.get("expires_at"),
+            "content_url": f"/api/agent-console/attachments/{attachment_id}/content",
+        })
+        seen.add(attachment_id)
+    return normalized
+
+
+def normalize_artifacts(raw_artifacts: Any) -> list[dict]:
+    """Normalize retained generated files, including the display-only code kind."""
+    normalized: list[dict] = []
+    if not isinstance(raw_artifacts, list):
+        return normalized
+    for item in raw_artifacts[:ATTACHMENT_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        storage_kind = "text" if item.get("kind") == "code" else item.get("kind")
+        safe = normalize_attachments([{**item, "kind": storage_kind}])
+        if not safe:
+            continue
+        artifact = safe[0]
+        if item.get("kind") == "code":
+            artifact["kind"] = "code"
+        normalized.append(artifact)
+    return normalized
+
+
 def summarize_run(run: dict) -> dict:
     prompt, prompt_truncated = bounded_excerpt(run.get("prompt"), PROMPT_EXCERPT_LIMIT)
     response, response_truncated = bounded_excerpt(run.get("response"), RESPONSE_EXCERPT_LIMIT)
@@ -148,6 +206,8 @@ def summarize_run(run: dict) -> dict:
         "error_truncated": bool(run.get("error_truncated")) or error_truncated,
         "events": events,
         "event_cursor": events[-1]["cursor"] if events else 0,
+        "attachments": normalize_attachments(run.get("attachments")),
+        "artifacts": normalize_artifacts(run.get("artifacts")),
     }
 
 
@@ -270,6 +330,8 @@ def _hydrate(summary: dict) -> dict | None:
         "error_truncated": bool(summary.get("error_truncated")),
         "events": events,
         "event_cursor": events[-1]["cursor"] if events else 0,
+        "attachments": normalize_attachments(summary.get("attachments")),
+        "artifacts": normalize_artifacts(summary.get("artifacts")),
         "created_at": summary.get("created_at"),
         "updated_at": summary.get("updated_at"),
         "started_at": summary.get("started_at"),
@@ -294,10 +356,9 @@ def load_run_summaries(
             payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
         return [], False
-    if not isinstance(payload, dict) or payload.get("schema_version") not in {
-        LEGACY_SCHEMA_VERSION,
-        SCHEMA_VERSION,
-    }:
+    if not isinstance(payload, dict) or payload.get("schema_version") not in (
+        LEGACY_SCHEMA_VERSIONS | {SCHEMA_VERSION}
+    ):
         return [], False
     raw_runs = payload.get("runs")
     if not isinstance(raw_runs, list):

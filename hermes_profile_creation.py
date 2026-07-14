@@ -89,6 +89,12 @@ def preview_profile_creation(payload, discovery: dict, skill_catalog: dict | Non
             code="capability_unavailable",
             status=503,
         )
+    if not capabilities.get("profiles.identity.write"):
+        return _error(
+            "This Hermes runtime cannot synchronize the new profile's runtime identity.",
+            code="identity_capability_unavailable",
+            status=503,
+        )
 
     name = _text(payload.get("name"), 80).lower()
     if not name:
@@ -196,6 +202,7 @@ def preview_profile_creation(payload, discovery: dict, skill_catalog: dict | Non
         effects.append(
             f"Ask Hermes to clone config, .env, SOUL.md, skills, and supported identity files from '{source_profile}'."
         )
+        effects.append("Place the new profile's managed name and role above inherited SOUL.md content.")
         warnings.append("The source profile's credentials file is copied by Hermes without Mentat reading its contents.")
     elif skill_mode == "default":
         effects.append("Ask Hermes to seed its bundled skills into the fresh profile.")
@@ -208,6 +215,7 @@ def preview_profile_creation(payload, discovery: dict, skill_catalog: dict | Non
         )
     if description:
         effects.append("Store the supplied profile description through Hermes.")
+    effects.append("Synchronize the profile name and role into Mentat's versioned SOUL.md identity block.")
 
     return {
         "schema_version": PROFILE_CREATION_SCHEMA_VERSION,

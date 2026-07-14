@@ -2,6 +2,46 @@
 
 All notable changes to Mentat.
 
+## 2026-07-13
+
+### Added
+- Added private SQLite-backed Agent Console attachment metadata with
+  content-addressed blob storage, image/text/source uploads, retained input
+  cards, and same-origin content serving.
+- Added escaped fenced-code rendering with language labels and copy controls,
+  safe raster previews, and download-style cards for non-embedded files.
+- Added restricted repository workspace search and private file snapshots, plus
+  trusted per-run export directories and discovery of assistant-created files.
+- Added capability-gated Hermes runtime identity inspection and confirmed
+  synchronization of each profile's canonical name and routing role into a
+  versioned Mentat-managed block at the top of `SOUL.md`.
+- Added Managed Agent identity readiness, role editing, exact previews, safe
+  backfill for existing profiles, post-write verification, and identity checks
+  that do not disclose the expected answer in the test prompt.
+
+### Fixed
+- Kept successful Console attachments visibly staged for the next prompt,
+  preserved upload failures in an accessible composer alert, and labeled sent
+  files as prompt context in the conversation.
+- Materialized validated images as private extension-bearing per-run inputs so
+  Hermes accepts content-addressed blobs whose canonical storage name has no
+  suffix; transient input copies are removed when execution ends.
+
+### Safety
+- Attachment responses omit hashes, storage keys, and filesystem paths; reject
+  traversal, symlinks, secrets, SVG, archives, executables, mismatched content,
+  and oversized files; and serve text as non-sniffable plain text.
+- Staged expiry, retained-run references, one-hour orphan grace, bounded
+  periodic collection, deletion backoff, and startup reconciliation protect
+  active files while cleaning abandoned blobs and crash leftovers.
+- Workspace and artifact ingestion use private no-follow snapshots and explicit
+  roots/export directories. Mentat never opens a path parsed from model prose.
+- Identity writes resolve profiles through Hermes, preserve all soul content
+  outside the managed block, reject symlinks and malformed/multiple blocks,
+  bind confirmations to the current soul revision, block active Console runs,
+  use atomic replacement, and attempt rollback on metadata or verification
+  failure. No general soul editor or soul-content browser API was added.
+
 ## 2026-07-12
 
 ### Added

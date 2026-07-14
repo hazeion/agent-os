@@ -22,6 +22,7 @@ Current stack:
 - Python backend
 - static HTML, CSS, and vanilla JavaScript frontend
 - local JSON files for project-owned data
+- private SQLite metadata plus content-addressed blobs for Console files
 - optional Hermes-aware setup through the included wizard
 
 There is currently **no npm install step**.
@@ -44,6 +45,16 @@ Mentat is usable today, but it is still evolving.
 
 If you try it now, expect a real working project, not a finished product.
 
+### Deferred frontend direction
+
+Mentat should eventually render its major dashboard surfaces independently as
+their data arrives, with explicit loading, ready, empty, and error states rather
+than waiting for the complete dashboard payload before showing useful content.
+This could be implemented incrementally in the current frontend or become one
+reason to adopt a small component framework such as React later. It is a future
+performance and interaction goal, not part of the current attachment/database
+work and not, by itself, a reason for an immediate framework migration.
+
 ## Current features
 
 Mentat currently includes:
@@ -52,9 +63,11 @@ Mentat currently includes:
   planning, manual ordering, time estimates, reminders, calendar context, and
   agent work that needs attention or review
 - front-page Hermes prompt console with live run status and resumable follow-ups
+- Agent Console image, text, and source attachments; safe fenced-code rendering;
+  generated-file cards; and restricted project-workspace file snapshots
 - manifest-driven `/model`, `/new`, and `/help` dashboard commands with no Hermes CLI passthrough
 - profile-aware Agent Console routing with profile-scoped models and sessions
-- capability-gated Hermes profile discovery, confirmed creation and deletion, built-in skill selection, and a persistent Managed Agents list
+- capability-gated Hermes profile discovery, confirmed creation and deletion, built-in skill selection, persistent runtime name/role synchronization, and a Managed Agents list
 - confirmed provider switching among providers Hermes reports as already authenticated for the selected profile, available from both Managed Agents and the Agent Console
 - private local Agent Console history across Mentat restarts
 - Projects / Tasks workspace with an open queue, task inspector, completed work
@@ -429,6 +442,40 @@ for its owner only and the history file with owner read/write permissions. On
 startup, existing valid summaries are re-redacted through the current policy;
 corrupt history is permission-restricted but preserved for manual recovery.
 
+Agent Console file metadata is stored in the gitignored
+`data/runtime/mentat.sqlite3` database. File bytes live beside it in private,
+SHA-256 content-addressed blob storage; duplicate bytes share a blob while each
+attachment keeps its own opaque identity and display metadata. Browser responses
+never include blob keys, hashes, or local filesystem paths. Uploads accept
+validated UTF-8 text/source files and PNG, JPEG, GIF, or WebP images. Archives,
+executables, SVG, secrets, path traversal, and mismatched file content fail
+closed. Text is always served as plain text with `nosniff`; only validated raster
+images may render inline.
+
+The Console composer keeps accepted files in a persistent **Prompt
+attachments** tray until the turn is sent or the user removes them. Submitted
+turns label retained inputs as files used for prompt context, and upload
+failures remain visible in the composer instead of collapsing with the upload
+indicator. For Hermes image execution, Mentat creates a private per-run copy
+with the validated image extension, passes that fixed path to Hermes, and
+removes the transient copy after the run.
+
+Unsubmitted uploads expire after two hours. Removing or releasing the last run
+reference begins a one-hour deletion grace. Active and retained runs protect
+their input and generated files; evicting a run releases both. A bounded cleanup
+pass runs at startup and every 30 minutes, retries failed deletes with backoff,
+and reconciles interrupted uploads, missing blobs, crash-orphaned references,
+and old untracked blob files.
+
+Every Console run receives a private, run-owned export directory through a fixed
+server-generated execution context. After Hermes exits, Mentat scans only that
+directory, snapshots allowed files without following symlinks, stores them as
+run output attachments, and removes successfully registered exports. Workspace
+selection is limited to configured project roots (the Mentat repository today),
+returns relative paths only, excludes VCS/runtime/hidden/secret/executable paths,
+and snapshots the selected file into blob storage before it becomes prompt
+context. Mentat never treats a path mentioned in model prose as an artifact.
+
 Agent Console events use a stable schema with `schema_version`, `run_id`,
 monotonic `sequence`/`cursor`, `type` (plus the legacy `kind` alias), `timestamp`,
 structured `data`, and `display_text` (plus the legacy `message` alias). A GET to
@@ -449,6 +496,7 @@ agent_run_history.py
 hermes_profiles.py
 hermes_profile_creation.py
 hermes_profile_deletion.py
+hermes_profile_identity.py
 hermes_skills.py
 hermes_kanban.py
 task_planning.py

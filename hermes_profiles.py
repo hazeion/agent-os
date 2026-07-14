@@ -21,6 +21,8 @@ CAPABILITY_KEYS = (
     "profiles.read",
     "profiles.create",
     "profiles.describe",
+    "profiles.identity.read",
+    "profiles.identity.write",
     "profiles.rename",
     "profiles.delete",
 )
@@ -61,6 +63,12 @@ capabilities = {
     "profiles.read": callable(getattr(profiles_module, "list_profiles", None)),
     "profiles.create": callable(getattr(profiles_module, "create_profile", None)),
     "profiles.describe": callable(getattr(profiles_module, "write_profile_meta", None)),
+    "profiles.identity.read": all(callable(getattr(profiles_module, name, None)) for name in (
+        "profile_exists", "get_profile_dir", "read_profile_meta",
+    )),
+    "profiles.identity.write": all(callable(getattr(profiles_module, name, None)) for name in (
+        "profile_exists", "get_profile_dir", "read_profile_meta", "write_profile_meta",
+    )),
     "profiles.rename": callable(getattr(profiles_module, "rename_profile", None)),
     "profiles.delete": callable(getattr(profiles_module, "delete_profile", None)),
 }
