@@ -2,6 +2,31 @@
 
 All notable changes to Mentat.
 
+## 2026-07-14
+
+### Added
+- Added reusable Context Packs for combining standard instructions, validated
+  Obsidian notes, and safe workspace-file references. Packs can stage current
+  private snapshots for Agent Console or resolve bounded text into an exact
+  Hermes Kanban delegation preview.
+- Added five dark editor-inspired themes—Tokyo Night, Gruvbox Dark, Dracula,
+  One Dark, and Solarized Dark—and five light themes—GitHub Light, Gruvbox
+  Light, Solarized Light, Catppuccin Latte, and Rosé Pine Dawn.
+- Grouped Theme Studio choices into dark and light sections while preserving
+  instant site-wide selection and saved-theme preloading.
+
+### Changed
+- Retired the redundant Agent Messages dashboard surface and its frontend
+  polling while preserving existing project-owned message data and compatibility
+  endpoints for a migration window.
+- Renamed the original Light choice to Soft Light and moved it to a calmer
+  gray-blue surface palette with less pure-white glare.
+
+### Fixed
+- Fixed light-theme button and description contrast across dashboard surfaces.
+- Replaced the generic calendar fallback and event fills with palette-aware
+  surfaces derived from each active theme.
+
 ## 2026-07-13
 
 ### Added

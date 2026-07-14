@@ -28,11 +28,21 @@ function humanCost(value) {
 
 const THEME_STORAGE_KEY = 'mentat-theme';
 const THEMES = [
-  { id: 'compact-dark', label: 'Compact Dark', pill: 'compact dark' },
-  { id: 'light', label: 'Light', pill: 'light' },
-  { id: 'catppuccin', label: 'Catppuccin', pill: 'catppuccin' },
-  { id: 'nord', label: 'Nord', pill: 'nord' },
-  { id: 'aurora', label: 'Aurora', pill: 'aurora' },
+  { id: 'compact-dark', label: 'Compact Dark', pill: 'compact dark', mode: 'dark' },
+  { id: 'catppuccin', label: 'Catppuccin Mocha', pill: 'catppuccin mocha', mode: 'dark' },
+  { id: 'nord', label: 'Nord', pill: 'nord', mode: 'dark' },
+  { id: 'aurora', label: 'Aurora', pill: 'aurora', mode: 'dark' },
+  { id: 'tokyo-night', label: 'Tokyo Night', pill: 'tokyo night', mode: 'dark' },
+  { id: 'gruvbox-dark', label: 'Gruvbox Dark', pill: 'gruvbox dark', mode: 'dark' },
+  { id: 'dracula', label: 'Dracula', pill: 'dracula', mode: 'dark' },
+  { id: 'one-dark', label: 'One Dark', pill: 'one dark', mode: 'dark' },
+  { id: 'solarized-dark', label: 'Solarized Dark', pill: 'solarized dark', mode: 'dark' },
+  { id: 'light', label: 'Soft Light', pill: 'soft light', mode: 'light' },
+  { id: 'github-light', label: 'GitHub Light', pill: 'github light', mode: 'light' },
+  { id: 'gruvbox-light', label: 'Gruvbox Light', pill: 'gruvbox light', mode: 'light' },
+  { id: 'solarized-light', label: 'Solarized Light', pill: 'solarized light', mode: 'light' },
+  { id: 'catppuccin-latte', label: 'Catppuccin Latte', pill: 'catppuccin latte', mode: 'light' },
+  { id: 'rose-pine-dawn', label: 'Rosé Pine Dawn', pill: 'rosé pine dawn', mode: 'light' },
 ];
 
 function themeById(themeId = '') {
@@ -49,11 +59,21 @@ function applyTheme(themeId = state.currentTheme || THEMES[0].id) {
   if (select && select.value !== theme.id) select.value = theme.id;
   const preview = $('#theme-preview-grid');
   if (preview) {
-    preview.innerHTML = THEMES.map((item) => `
-      <button class="theme-swatch ${item.id === theme.id ? 'active' : ''}" type="button" data-theme-choice="${escapeHtml(item.id)}" aria-pressed="${item.id === theme.id ? 'true' : 'false'}">
-        <span class="theme-swatch-chip theme-${escapeHtml(item.id)}" aria-hidden="true"></span>
-        <span>${escapeHtml(item.label)}</span>
-      </button>
+    preview.innerHTML = [
+      { mode: 'dark', label: 'Dark themes' },
+      { mode: 'light', label: 'Light themes' },
+    ].map((group) => `
+      <section class="theme-preview-group" aria-labelledby="theme-${group.mode}-label">
+        <div id="theme-${group.mode}-label" class="theme-preview-group-title mono">${group.label}</div>
+        <div class="theme-preview-list">
+          ${THEMES.filter((item) => item.mode === group.mode).map((item) => `
+            <button class="theme-swatch ${item.id === theme.id ? 'active' : ''}" type="button" data-theme-choice="${escapeHtml(item.id)}" aria-pressed="${item.id === theme.id ? 'true' : 'false'}">
+              <span class="theme-swatch-chip theme-${escapeHtml(item.id)}" aria-hidden="true"></span>
+              <span>${escapeHtml(item.label)}</span>
+            </button>
+          `).join('')}
+        </div>
+      </section>
     `).join('');
   }
   if (typeof localStorage !== 'undefined') {
@@ -526,6 +546,7 @@ function taskDelegationFormPayload() {
     profile_id: String(data.get('profile_id') || '').trim(),
     board_id: String(data.get('board_id') || 'default').trim(),
     workspace: String(data.get('workspace') || 'scratch').trim(),
+    context_pack_id: String(data.get('context_pack_id') || '').trim(),
     instructions: String(data.get('instructions') || '').trim(),
   };
 }
@@ -542,20 +563,24 @@ async function openTaskDelegation(task) {
   if (status) status.textContent = 'Loading Hermes profiles and Kanban boards…';
   dialog.showModal();
   try {
-    const [profilesPayload, kanban] = await Promise.all([
+    const [profilesPayload, kanban, contextPacksPayload] = await Promise.all([
       fetchHermesProfiles(),
       fetchHermesKanbanCapabilities(),
+      fetchContextPacks(),
     ]);
     state.hermesProfiles = Array.isArray(profilesPayload.profiles) ? profilesPayload.profiles : [];
     state.hermesKanbanCapabilities = kanban;
     const profileSelect = form.elements.profile_id;
     const boardSelect = form.elements.board_id;
+    const contextPackSelect = form.elements.context_pack_id;
     profileSelect.innerHTML = state.hermesProfiles.length
       ? state.hermesProfiles.map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name || profile.id)}</option>`).join('')
       : '<option value="">No Hermes profiles available</option>';
     boardSelect.innerHTML = Array.isArray(kanban.boards) && kanban.boards.length
       ? kanban.boards.map((board) => `<option value="${escapeHtml(board.id)}">${escapeHtml(board.name || board.id)}</option>`).join('')
       : '<option value="default">Default</option>';
+    state.contextPacks = Array.isArray(contextPacksPayload.context_packs) ? contextPacksPayload.context_packs : [];
+    contextPackSelect.innerHTML = '<option value="">No context pack</option>' + state.contextPacks.map((pack) => `<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.name)}</option>`).join('');
     if (task.delegation?.profile_id) profileSelect.value = task.delegation.profile_id;
     if (task.delegation?.board_id) boardSelect.value = task.delegation.board_id;
     if (status) status.textContent = kanban.status === 'available'
@@ -1764,8 +1789,10 @@ function closeAgentConsoleWorkspacePicker() {
   state.agentConsoleWorkspaceRequestToken += 1;
   const choices = $('#agent-console-attachment-choices');
   const picker = $('#agent-console-workspace-picker');
+  const contextPicker = $('#agent-console-context-pack-picker');
   if (choices) choices.hidden = false;
   if (picker) picker.hidden = true;
+  if (contextPicker) contextPicker.hidden = true;
 }
 
 function renderAgentConsoleWorkspaceResults(payload = {}, status = 'ready') {
@@ -3424,68 +3451,6 @@ function agentStatusTone(status = '') {
   return 'warn';
 }
 
-function messageStatusTone(status = '') {
-  const normalized = String(status || '').toLowerCase();
-  if (normalized === 'delivered') return 'success';
-  if (normalized === 'failed' || normalized === 'cancelled') return 'danger';
-  if (normalized === 'needs user input' || normalized === 'queued') return 'warn';
-  return '';
-}
-
-function agentMessagePayloadFromForm(form) {
-  return {
-    recipient: form.elements.recipient?.value || 'Hermes',
-    project: form.elements.project?.value || state.projectFilter || 'Mentat',
-    priority: form.elements.priority?.value || 'normal',
-    related_task_id: form.elements.related_task_id?.value || '',
-    message: form.elements.message?.value || '',
-  };
-}
-
-function renderAgentMessageCompose() {
-  const container = $('#agent-message-compose');
-  if (!container) return;
-  const projectOptions = projectOptionsFromTasks(state.tasks);
-  const selectedProjectName = state.projectFilter || (projectOptions.includes('Mentat') ? 'Mentat' : projectOptions[0] || 'Mentat');
-  container.innerHTML = `
-    <form id="agent-message-form" class="task-editor-form agent-message-form">
-      <div class="task-editor-grid">
-        <label class="task-editor-field"><span class="task-editor-label">Recipient</span><input name="recipient" maxlength="120" value="Hermes" /></label>
-        <label class="task-editor-field"><span class="task-editor-label">Project</span><select name="project">${projectOptions.map((name) => `<option value="${escapeHtml(name)}" ${name === selectedProjectName ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></label>
-        <label class="task-editor-field"><span class="task-editor-label">Priority</span><select name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
-        <label class="task-editor-field"><span class="task-editor-label">Related task ID</span><input name="related_task_id" maxlength="80" placeholder="optional" /></label>
-        <label class="task-editor-field field-span-2"><span class="task-editor-label">Message</span><textarea name="message" required maxlength="2000" placeholder="Queue a safe local-only instruction or question for an agent…"></textarea></label>
-      </div>
-      <div class="task-editor-actions">
-        <button class="action-button" type="submit">Queue Message</button>
-        <span class="task-editor-status" id="agent-message-status">Safety: queued only; browser text cannot execute shell commands.</span>
-      </div>
-    </form>
-  `;
-}
-
-function renderAgentMessages(payload = {}) {
-  const messages = payload.messages || [];
-  state.agentMessages = messages;
-  const count = $('#agent-message-count');
-  const list = $('#agent-message-list');
-  renderAgentMessageCompose();
-  if (count) {
-    const pending = Number(payload.summary?.pending || 0);
-    count.textContent = pending ? `${pending} queued` : `${messages.length} messages`;
-    count.className = pending ? 'pill warn' : 'pill';
-  }
-  if (!list) return;
-  list.innerHTML = messages.length ? messages.slice(0, 8).map((message) => `
-    <article class="item agent-message-item">
-      <div class="item-title"><span>${escapeHtml(message.recipient || 'Agent')}</span><span class="pill ${messageStatusTone(message.status)}">${escapeHtml(message.status || 'queued')}</span></div>
-      <div class="item-desc">${escapeHtml(message.message || '')}</div>
-      <div class="item-meta mono">${escapeHtml(message.project || 'General')} · ${escapeHtml(message.priority || 'normal')} · ${humanDate(message.updated_at || message.created_at)}</div>
-      <div class="item-meta mono">Audit events: ${(message.audit || []).length} · shell execution ${escapeHtml(message.safety?.shell_execution || 'forbidden')}</div>
-    </article>
-  `).join('') : `<div class="empty">No queued agent messages. Compose one above; Mentat stores it in project-owned local JSON only.</div>`;
-}
-
 function agentPulseDismissKey(agent = {}) {
   const status = String(agent.status || '').toLowerCase();
   const id = String(agent.id || agent.session_id || '').trim();
@@ -3571,27 +3536,11 @@ function persistDismissedAgentPulseIds() {
 }
 
 
-async function submitAgentMessageForm(form) {
-  const status = $('#agent-message-status');
-  if (status) status.textContent = 'Queueing message…';
-  try {
-    const result = await sendAgentMessage(agentMessagePayloadFromForm(form));
-    form.reset();
-    renderAgentMessages({ messages: result.messages || [], summary: result.summary || {} });
-    const updatedStatus = $('#agent-message-status');
-    if (updatedStatus) updatedStatus.textContent = 'Message queued locally. An agent must explicitly read/acknowledge it; no shell execution was triggered.';
-  } catch (err) {
-    console.error(err);
-    if (status) status.textContent = `Message queue failed: ${err.message}`;
-  }
-}
-
 function renderAgentPulse(payload = {}) {
   const rawAgents = Array.isArray(payload.agents) ? payload.agents : [];
   const agents = filterDismissedAgents(rawAgents);
   const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
   const latestSession = sessions[0];
-  const messageSummary = payload.messageSummary || payload.agent_messages?.summary || {};
   const guidance = payload.guidance || {};
   const container = $('#agent-pulse');
   const pill = $('#agent-pulse-pill');
@@ -3662,7 +3611,6 @@ function renderAgentPulse(payload = {}) {
   const hiddenCompleted = Math.max(0, totalCompleted - recentlyCompleted.length);
   const activeTotal = activeAgents.length;
   const staleCount = staleRunningAgents.length;
-  const pendingMessages = Number(messageSummary.pending || 0) || 0;
   const retentionMinutes = Math.round(AGENT_PULSE_COMPLETED_RETENTION_MS / 60000);
   const doneCount = Number(visibleSummary.done || 0);
   const failedCount = Number(visibleSummary.failed || 0);
@@ -3671,10 +3619,7 @@ function renderAgentPulse(payload = {}) {
   const hasVisibleRows = activeAgents.length + recentlyCompleted.length;
 
   if (pill) {
-    if (pendingMessages) {
-      pill.textContent = `${pendingMessages} pending message${pendingMessages === 1 ? '' : 's'}`;
-      pill.className = 'pill warn';
-    } else if (hasVisibleRows) {
+    if (hasVisibleRows) {
       const labels = [];
       if (activeTotal) labels.push(`${activeTotal} running`);
       if (doneCount) labels.push(`${doneCount} done`);
@@ -3731,7 +3676,6 @@ function renderAgentPulse(payload = {}) {
     failedCount ? `${failedCount} failed` : null,
     needsInputCount ? `${needsInputCount} needs user input` : null,
     staleCount ? `${staleCount} stale` : null,
-    pendingMessages ? `${pendingMessages} pending messages` : null,
     hiddenDismissedCount ? `${hiddenDismissedCount} dismissed` : null,
   ].filter(Boolean).map((text) => `<span class="pill warn">${escapeHtml(text)}</span>`).join('');
 
@@ -3843,6 +3787,126 @@ function renderNotes(payload = {}) {
   `).join('') : `<div class="empty">No Obsidian markdown notes found.</div>`;
 }
 
+function renderContextPacks(payload = {}) {
+  const packs = Array.isArray(payload.context_packs) ? payload.context_packs : [];
+  state.contextPacks = packs;
+  const list = $('#context-pack-list');
+  if (list) list.innerHTML = packs.length ? packs.map((pack) => `
+    <article class="item context-pack-card">
+      <div class="item-title"><span>${escapeHtml(pack.name || 'Context pack')}</span><span class="detail-context-label mono">${(pack.note_paths || []).length} notes · ${(pack.workspace_files || []).length} files</span></div>
+      <div class="item-desc">${escapeHtml(pack.description || pack.instructions || 'Reusable agent context')}</div>
+      <div class="item-actions"><button class="mini-button" type="button" data-use-context-pack="${escapeHtml(pack.id)}">Use in Console</button><button class="mini-button" type="button" data-edit-context-pack="${escapeHtml(pack.id)}">Edit</button></div>
+    </article>`).join('') : '<div class="empty">No context packs yet. Create one to reuse the same notes, files, and instructions.</div>';
+  renderAgentConsoleContextPackPicker();
+}
+
+function renderAgentConsoleContextPackPicker() {
+  const results = $('#agent-console-context-pack-results');
+  if (!results) return;
+  results.innerHTML = state.contextPacks.length ? state.contextPacks.map((pack) => `
+    <button type="button" class="agent-console-workspace-result" role="option" data-apply-context-pack="${escapeHtml(pack.id)}"><strong>${escapeHtml(pack.name)}</strong><span class="mono">${(pack.note_paths || []).length + (pack.workspace_files || []).length} attachments</span></button>
+  `).join('') : '<div class="agent-console-workspace-state mono">Create a context pack from the Notes view first.</div>';
+}
+
+function openAgentConsoleContextPackPicker() {
+  $('#agent-console-attachment-choices').hidden = true;
+  $('#agent-console-workspace-picker').hidden = true;
+  $('#agent-console-context-pack-picker').hidden = false;
+  renderAgentConsoleContextPackPicker();
+}
+
+async function applyContextPackToConsole(packId) {
+  const status = $('#agent-console-form-status');
+  if (state.agentConsoleAttachmentsUploading) return;
+  const pack = state.contextPacks.find((item) => item.id === packId);
+  if (!pack) return;
+  if (state.agentConsoleAttachments.length + (pack.note_paths || []).length + (pack.workspace_files || []).length > 8) {
+    if (status) status.textContent = 'Remove attachments before applying this context pack; Console accepts 8 total.';
+    return;
+  }
+  state.agentConsoleAttachmentsUploading = true;
+  renderAgentConsoleAttachmentTray();
+  try {
+    const payload = await stageContextPack(packId);
+    for (const attachment of payload.attachments || []) {
+      if (!state.agentConsoleAttachments.some((item) => item.id === attachment.id)) state.agentConsoleAttachments.push(attachment);
+    }
+    const prompt = $('#agent-console-prompt');
+    const instructions = String(payload.instructions || '').trim();
+    if (prompt && instructions) prompt.value = [instructions, prompt.value.trim()].filter(Boolean).join('\n\n');
+    setAgentConsoleAttachmentMenu(false);
+    if (status) status.textContent = `${pack.name} staged with current private snapshots.`;
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  } finally {
+    state.agentConsoleAttachmentsUploading = false;
+    renderAgentConsoleAttachmentTray();
+  }
+}
+
+function renderContextPackEditor() {
+  const form = $('#context-pack-form');
+  if (!form || !state.contextPackDraft) return;
+  const draft = state.contextPackDraft;
+  form.elements.name.value = draft.name || '';
+  form.elements.description.value = draft.description || '';
+  form.elements.instructions.value = draft.instructions || '';
+  $('#context-pack-title').textContent = state.editingContextPackId ? 'Edit Context Pack' : 'Create Context Pack';
+  $('[data-context-pack-delete]').hidden = !state.editingContextPackId;
+  const selectedNotes = new Set(draft.note_paths || []);
+  $('#context-pack-note-options').innerHTML = (state.notesPayload.notes || []).map((note) => `<label class="context-pack-option"><input type="checkbox" value="${escapeHtml(note.relative_path)}" ${selectedNotes.has(note.relative_path) ? 'checked' : ''}/><span><strong>${escapeHtml(note.title || note.name)}</strong><small class="mono">${escapeHtml(note.relative_path)}</small></span></label>`).join('') || '<div class="empty">No Obsidian notes available.</div>';
+  renderContextPackWorkspaceSelected();
+}
+
+function renderContextPackWorkspaceSelected() {
+  const selected = $('#context-pack-workspace-selected');
+  if (!selected || !state.contextPackDraft) return;
+  selected.innerHTML = (state.contextPackDraft.workspace_files || []).map((file) => `<span class="context-pack-chip"><span>${escapeHtml(file.relative_path)}</span><button type="button" data-remove-context-pack-file="${escapeHtml(file.relative_path)}" aria-label="Remove ${escapeHtml(file.relative_path)}">×</button></span>`).join('') || '<span class="section-copy">No workspace files selected.</span>';
+}
+
+async function openContextPackEditor(packId = '') {
+  if (!state.notesPayload.notes?.length) state.notesPayload = await fetchObsidianNotes();
+  const pack = state.contextPacks.find((item) => item.id === packId);
+  state.editingContextPackId = pack?.id || '';
+  state.contextPackDraft = pack ? JSON.parse(JSON.stringify(pack)) : { name: '', description: '', instructions: '', note_paths: [], workspace_files: [] };
+  renderContextPackEditor();
+  $('#context-pack-dialog')?.showModal();
+}
+
+async function searchContextPackWorkspace() {
+  const results = $('#context-pack-workspace-results');
+  if (!results) return;
+  results.innerHTML = '<div class="agent-console-workspace-state mono">Searching…</div>';
+  try {
+    const payload = await fetchAgentConsoleWorkspaceFiles($('#context-pack-workspace-query')?.value || '');
+    const selected = new Set((state.contextPackDraft?.workspace_files || []).map((item) => item.relative_path));
+    const files = (payload.files || []).filter((file) => file.kind !== 'image');
+    results.innerHTML = files.length ? files.map((file) => `<button type="button" class="agent-console-workspace-result" data-add-context-pack-root="${escapeHtml(file.root_id)}" data-add-context-pack-file="${escapeHtml(file.relative_path || file.path)}" ${selected.has(file.relative_path || file.path) ? 'disabled' : ''}><strong>${escapeHtml(file.relative_path || file.path)}</strong><span class="mono">${escapeHtml(file.kind || 'file')}</span></button>`).join('') : '<div class="agent-console-workspace-state mono">No matching text files.</div>';
+  } catch (err) {
+    results.innerHTML = `<div class="agent-console-workspace-state error mono">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function submitContextPackEditor() {
+  const form = $('#context-pack-form');
+  const status = $('#context-pack-status');
+  if (!form || !state.contextPackDraft) return;
+  const payload = {
+    name: form.elements.name.value,
+    description: form.elements.description.value,
+    instructions: form.elements.instructions.value,
+    note_paths: $$('#context-pack-note-options input:checked').map((input) => input.value),
+    workspace_files: state.contextPackDraft.workspace_files || [],
+  };
+  try {
+    const result = state.editingContextPackId ? await saveContextPack(state.editingContextPackId, payload) : await createContextPack(payload);
+    renderContextPacks(result);
+    $('#context-pack-dialog')?.close();
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+}
+
 function healthTone(status = 'healthy') {
   if (status === 'error') return 'danger';
   if (status === 'degraded') return 'warn';
@@ -3913,13 +3977,13 @@ async function refresh() {
     requests.sessions = api(endpoints.sessions);
     if (activeView === 'agents') {
       requests.agents = api(endpoints.agents);
-      requests.agentMessages = api(endpoints.agentMessages);
       requests.hermesProfiles = fetchHermesProfiles();
     }
   }
   if (activeView === 'today' || activeView === 'projects' || activeView === 'agents') requests.projects = api(endpoints.projects);
   if (activeView === 'agents') requests.crons = api(endpoints.crons);
   if (activeView === 'notes') requests.notes = api(endpoints.notes);
+  if (activeView === 'today' || activeView === 'notes') requests.contextPacks = fetchContextPacks();
   if (activeView === 'settings') requests.config = api(endpoints.config);
 
   try {
@@ -3948,14 +4012,12 @@ async function refresh() {
     if (data.agentActivity) renderIfChanged('agent-activity', data.agentActivity, renderAgentActivity);
     if (data.crons) renderIfChanged('crons', data.crons, renderCrons);
     if (data.hermesProfiles) renderIfChanged('hermes-profiles', data.hermesProfiles, renderHermesProfiles);
-    if (data.sessions || data.agents || data.agentMessages) {
+    if (data.sessions || data.agents) {
       if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
       if (data.sessions) renderIfChanged('model-usage', data.sessions, renderModelUsageChart);
-      if (data.agentMessages) renderIfChanged(`agent-messages-${state.projectFilter}`, data.agentMessages, renderAgentMessages);
       if (activeView === 'agents') {
         const agentPulsePayload = {
           ...(data.agents || {}),
-          messageSummary: data.agentMessages?.summary || {},
           sessions: data.sessions?.sessions || data.sessions || [],
         };
         state.lastAgentPulsePayload = agentPulsePayload;
@@ -3963,6 +4025,7 @@ async function refresh() {
       }
     }
     if (data.notes) renderIfChanged('notes', data.notes, renderNotes);
+    if (data.contextPacks) renderContextPacks(data.contextPacks);
     if (data.config) renderIfChanged('config', data.config, renderConfig);
 
     renderIfChanged('health', data.health, renderHealth);
@@ -4289,6 +4352,19 @@ $('#agent-console-attachment-menu')?.addEventListener('click', (event) => {
   }
   if (event.target.closest('[data-agent-console-workspace]')) {
     openAgentConsoleWorkspacePicker();
+    return;
+  }
+  if (event.target.closest('[data-agent-console-context-packs]')) {
+    openAgentConsoleContextPackPicker();
+    return;
+  }
+  if (event.target.closest('[data-agent-console-context-pack-back]')) {
+    closeAgentConsoleWorkspacePicker();
+    return;
+  }
+  const contextPack = event.target.closest('[data-apply-context-pack]');
+  if (contextPack) {
+    void applyContextPackToConsole(contextPack.dataset.applyContextPack || '');
     return;
   }
   if (event.target.closest('[data-agent-console-workspace-back]')) {
@@ -4805,6 +4881,56 @@ $('#task-delegation-form')?.addEventListener('submit', async (event) => {
   await submitTaskDelegation();
 });
 
+$('#create-context-pack')?.addEventListener('click', () => void openContextPackEditor());
+$('#context-pack-form')?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  void submitContextPackEditor();
+});
+$$('[data-context-pack-cancel]').forEach((button) => button.addEventListener('click', () => $('#context-pack-dialog')?.close()));
+$('[data-context-pack-workspace-search]')?.addEventListener('click', () => void searchContextPackWorkspace());
+$('#context-pack-workspace-query')?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  void searchContextPackWorkspace();
+});
+$('#context-pack-workspace-results')?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-add-context-pack-file]');
+  if (!button || !state.contextPackDraft) return;
+  const choice = safeAgentConsoleWorkspaceChoice(button.dataset.addContextPackRoot, button.dataset.addContextPackFile);
+  if (!choice) return;
+  state.contextPackDraft.workspace_files ||= [];
+  if (!state.contextPackDraft.workspace_files.some((item) => item.root_id === choice.root_id && item.relative_path === choice.relative_path)) state.contextPackDraft.workspace_files.push(choice);
+  renderContextPackWorkspaceSelected();
+  void searchContextPackWorkspace();
+});
+$('#context-pack-workspace-selected')?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-remove-context-pack-file]');
+  if (!button || !state.contextPackDraft) return;
+  state.contextPackDraft.workspace_files = (state.contextPackDraft.workspace_files || []).filter((item) => item.relative_path !== button.dataset.removeContextPackFile);
+  renderContextPackWorkspaceSelected();
+});
+$('[data-context-pack-delete]')?.addEventListener('click', async () => {
+  const pack = state.contextPacks.find((item) => item.id === state.editingContextPackId);
+  if (!pack || !window.confirm(`Delete context pack “${pack.name}”?`)) return;
+  try {
+    const result = await removeContextPack(pack.id, pack.updated_at);
+    renderContextPacks(result);
+    $('#context-pack-dialog')?.close();
+  } catch (err) {
+    $('#context-pack-status').textContent = err.message;
+  }
+});
+
+$('#context-pack-list')?.addEventListener('click', async (event) => {
+  const edit = event.target.closest('[data-edit-context-pack]');
+  if (edit) return void openContextPackEditor(edit.dataset.editContextPack || '');
+  const use = event.target.closest('[data-use-context-pack]');
+  if (use) {
+    await setView('today');
+    await applyContextPackToConsole(use.dataset.useContextPack || '');
+  }
+});
+
 $('#task-delegation-fields')?.addEventListener('input', () => {
   state.taskDelegationPreview = null;
   $('[data-task-delegation-confirm]').disabled = true;
@@ -4892,11 +5018,6 @@ document.addEventListener('submit', async (event) => {
     state.projectEditorDraft = projectPayloadFromForm(projectForm);
     await submitProjectEditorForm(projectForm);
     return;
-  }
-  const messageForm = event.target.closest('#agent-message-form');
-  if (messageForm) {
-    event.preventDefault();
-    await submitAgentMessageForm(messageForm);
   }
 });
 

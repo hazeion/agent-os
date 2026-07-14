@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/mentat-logo.png" alt="Mentat" width="320" />
+</p>
+
 # Mentat
 
 Mentat is a local-first dashboard for planning work and getting things done with
@@ -15,11 +19,14 @@ today, but still actively evolving.
   together.
 - Attach images, text, code, or safe workspace files to a Console prompt, then
   view code, previews, and generated artifacts in the conversation.
+- Reuse Context Packs that combine standard instructions, Obsidian notes, and
+  safe workspace files for Console prompts or reviewed delegation context.
 - Delegate durable tasks through Hermes Kanban and review results, questions,
   retries, and revisions from Mentat.
 - Browse read-only Hermes sessions and cron inventory.
 - Search Obsidian notes, view read-only Google Calendar context, and use the
   Agent Pulse live heartbeat registry.
+- Choose from compact, soft-light, and popular editor-inspired color themes.
 
 ## A small, local stack
 

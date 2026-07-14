@@ -47,6 +47,7 @@ from agent_console_attachments import (
     garbage_collect as garbage_collect_console_attachments,
     get_attachment,
     list_run_attachments,
+    release_attachment,
     reconcile_startup as reconcile_console_attachments,
     resolve_blob_path,
     unbind_run_attachments,
@@ -59,6 +60,8 @@ from agent_console_artifacts import (
     discover_run_artifacts,
     search_workspace_files,
     snapshot_workspace_file,
+    workspace_file_reference,
+    read_workspace_text_context,
 )
 from command_manifest import command_manifest_payload
 from json_store import read_json as store_read_json, update_json as store_update_json
@@ -247,7 +250,7 @@ CONFIG_DISPLAY_NAME = None
 CONFIG_GREETING_PREFIX = None
 CONFIG_APP_NAME = DEFAULT_APP_NAME
 APP_CONFIG = AppConfig(tuple(), HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT)
-ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json"}
+ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json", "context_packs.json"}
 CALENDAR_CACHE_TTL_SECONDS = 300
 CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
 OBSIDIAN_NOTES_CACHE = {"key": None, "payload": None}
@@ -2988,13 +2991,19 @@ def preview_task_delegation(task_id: str, payload):
     board_id = compact_text(payload.get("board_id") or "default", max_length=64).lower()
     workspace = compact_text(payload.get("workspace") or "scratch", max_length=20).lower()
     instructions = str(payload.get("instructions") or "").strip()
+    context_pack_id = compact_text(payload.get("context_pack_id"), max_length=80)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", profile_id):
         return {"error": "Choose a valid Hermes profile."}, 400
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", board_id):
         return {"error": "Choose a valid Hermes Kanban board."}, 400
     if workspace not in {"scratch", "worktree"}:
         return {"error": "Workspace must be scratch or worktree."}, 400
-    if len(instructions) > 8000:
+    context_pack, pack_context, pack_error = context_pack_delegation_context(context_pack_id)
+    if pack_error:
+        return {"error": pack_error}, 409
+    pack_instructions = str((context_pack or {}).get("instructions") or "").strip()
+    combined_instructions = "\n\n".join(part for part in [pack_instructions, instructions] if part)
+    if len(combined_instructions) > 8000:
         return {"error": "Delegation instructions must be 8000 characters or fewer."}, 400
     adapter = kanban_adapter()
     capabilities = adapter.detect_capabilities()
@@ -3017,7 +3026,8 @@ def preview_task_delegation(task_id: str, payload):
             f"Task: {task.get('title') or task_id}",
             str(task.get("description") or "").strip(),
             f"Due: {task.get('due_date')}" if task.get("due_date") else "",
-            instructions,
+            combined_instructions,
+            pack_context,
         ] if part
     )
     note_context = task_note_context(task)
@@ -3028,7 +3038,8 @@ def preview_task_delegation(task_id: str, payload):
         "profile_id": profile_id,
         "board_id": board_id,
         "workspace": workspace,
-        "instructions": instructions,
+        "instructions": combined_instructions,
+        "context_pack": context_pack,
         "context": context,
         "dependencies": dependency_snapshot,
     }
@@ -3042,6 +3053,7 @@ def preview_task_delegation(task_id: str, payload):
         "effects": [
             f"Create one Hermes Kanban task on '{board_id}'.",
             f"Assign it to Hermes profile '{profile_id}'.",
+            *([f"Resolve context pack '{context_pack['name']}' into this exact preview."] if context_pack else []),
             "Store only safe task, run, session, and review references in Mentat task data.",
         ],
         "warnings": ["Hermes owns execution. Mentat will not edit Hermes Kanban files directly."],
@@ -3534,6 +3546,203 @@ def task_note_context(task: dict, *, total_limit: int = 6000) -> str:
         excerpts.append(f"Attached note: {item.get('path')}\n{excerpt}")
         remaining -= len(excerpt)
     return "\n\n".join(excerpts)
+
+
+CONTEXT_PACK_ID_PATTERN = re.compile(r"pack_[0-9a-f]{16}\Z")
+CONTEXT_PACK_MAX_ITEMS = 8
+
+
+def context_pack_record(pack_id: str) -> dict | None:
+    if not CONTEXT_PACK_ID_PATTERN.fullmatch(str(pack_id or "")):
+        return None
+    records = read_json_file("context_packs.json", [])
+    if not isinstance(records, list):
+        return None
+    return next((item for item in records if isinstance(item, dict) and item.get("id") == pack_id), None)
+
+
+def normalize_context_pack(payload, *, existing: dict | None = None) -> tuple[dict | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, "Context pack must be a JSON object."
+    name = compact_text(payload.get("name"), max_length=80)
+    description = compact_text(payload.get("description"), max_length=500)
+    instructions = str(payload.get("instructions") or "").strip()
+    if not name:
+        return None, "Context pack name is required."
+    if "\x00" in instructions or len(instructions) > 6000:
+        return None, "Context pack instructions must be 6000 characters or fewer."
+
+    note_paths = []
+    for value in payload.get("note_paths") or []:
+        path = compact_text(value, max_length=500)
+        if path and path not in note_paths:
+            if safe_obsidian_note(path) is None:
+                return None, f"Context pack note is unavailable: {path}"
+            note_paths.append(path)
+    if len(note_paths) > 5:
+        return None, "A context pack accepts at most 5 Obsidian notes."
+
+    workspace_files = []
+    for value in payload.get("workspace_files") or []:
+        if not isinstance(value, dict):
+            return None, "Context pack workspace selections must be objects."
+        try:
+            reference = workspace_file_reference(
+                compact_text(value.get("root_id"), max_length=64),
+                str(value.get("relative_path") or ""),
+                roots=[BASE_DIR],
+            )
+        except ConsoleArtifactValidationError as exc:
+            return None, exc.message
+        if reference.get("kind") == "image":
+            return None, "Context packs accept text and source workspace files, not images."
+        key = (reference["root_id"], reference["relative_path"])
+        if key not in {(item["root_id"], item["relative_path"]) for item in workspace_files}:
+            workspace_files.append(reference)
+    if len(note_paths) + len(workspace_files) > CONTEXT_PACK_MAX_ITEMS:
+        return None, f"A context pack accepts at most {CONTEXT_PACK_MAX_ITEMS} total notes and files."
+    if not instructions and not note_paths and not workspace_files:
+        return None, "Add instructions, an Obsidian note, or a workspace file."
+
+    timestamp = now_iso()
+    normalized = {
+        "schema_version": 1,
+        "id": (existing or {}).get("id") or f"pack_{uuid4().hex[:16]}",
+        "name": name,
+        "description": description,
+        "instructions": instructions,
+        "note_paths": note_paths,
+        "workspace_files": workspace_files,
+        "created_at": (existing or {}).get("created_at") or timestamp,
+        "updated_at": (existing or {}).get("updated_at") or timestamp,
+    }
+    return normalized, None
+
+
+def context_packs_payload():
+    records = read_json_file("context_packs.json", [])
+    if not isinstance(records, list):
+        return {"error": "context_packs.json must contain a list"}
+    return {"context_packs": [item for item in records if isinstance(item, dict)], "max_items": CONTEXT_PACK_MAX_ITEMS}
+
+
+def create_context_pack(payload):
+    def mutator(records):
+        if not isinstance(records, list):
+            return records, ({"error": "context_packs.json must contain a list"}, 500)
+        normalized, error = normalize_context_pack(payload)
+        if error:
+            return records, ({"error": error}, 400)
+        if any(str(item.get("name") or "").casefold() == normalized["name"].casefold() for item in records if isinstance(item, dict)):
+            return records, ({"error": "A context pack with that name already exists."}, 409)
+        next_records = [item for item in records if isinstance(item, dict)] + [normalized]
+        return next_records, ({"ok": True, "context_pack": normalized, "context_packs": next_records}, 201)
+    return update_json_file("context_packs.json", [], mutator)
+
+
+def update_context_pack(pack_id: str, payload):
+    if not CONTEXT_PACK_ID_PATTERN.fullmatch(str(pack_id or "")):
+        return {"error": "Invalid context pack id"}, 400
+    def mutator(records):
+        if not isinstance(records, list):
+            return records, ({"error": "context_packs.json must contain a list"}, 500)
+        next_records = [item for item in records if isinstance(item, dict)]
+        for index, existing in enumerate(next_records):
+            if existing.get("id") != pack_id:
+                continue
+            normalized, error = normalize_context_pack(payload, existing=existing)
+            if error:
+                return records, ({"error": error}, 400)
+            if any(item.get("id") != pack_id and str(item.get("name") or "").casefold() == normalized["name"].casefold() for item in next_records):
+                return records, ({"error": "A context pack with that name already exists."}, 409)
+            normalized["updated_at"] = now_iso()
+            next_records[index] = normalized
+            return next_records, ({"ok": True, "context_pack": normalized, "context_packs": next_records}, 200)
+        return records, ({"error": "Context pack not found"}, 404)
+    return update_json_file("context_packs.json", [], mutator)
+
+
+def delete_context_pack(pack_id: str, payload):
+    if not CONTEXT_PACK_ID_PATTERN.fullmatch(str(pack_id or "")):
+        return {"error": "Invalid context pack id"}, 400
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        return {"error": "Context pack deletion requires confirmation."}, 400
+    def mutator(records):
+        if not isinstance(records, list):
+            return records, ({"error": "context_packs.json must contain a list"}, 500)
+        current = next((item for item in records if isinstance(item, dict) and item.get("id") == pack_id), None)
+        if current is None:
+            return records, ({"error": "Context pack not found"}, 404)
+        if compact_text(payload.get("expected_updated_at"), max_length=80) != current.get("updated_at"):
+            return records, ({"error": "Context pack changed; reopen it before deleting."}, 409)
+        next_records = [item for item in records if not (isinstance(item, dict) and item.get("id") == pack_id)]
+        return next_records, ({"ok": True, "context_packs": next_records}, 200)
+    return update_json_file("context_packs.json", [], mutator)
+
+
+def stage_context_pack(pack_id: str, _payload=None):
+    pack = context_pack_record(pack_id)
+    if pack is None:
+        return {"error": "Context pack not found"}, 404
+    normalized, error = normalize_context_pack(pack, existing=pack)
+    if error:
+        return {"error": error}, 409
+    created_ids = []
+    attachments = []
+    try:
+        for relative_path in normalized["note_paths"]:
+            note = safe_obsidian_note(relative_path)
+            if note is None:
+                raise AttachmentValidationError("A context pack note is unavailable")
+            metadata = store_console_snapshot(note, original_name=note.name, mime_type="text/markdown")
+            created_ids.append(metadata["id"])
+            attachments.append(public_console_attachment(metadata))
+        for reference in normalized["workspace_files"]:
+            stored = snapshot_workspace_file(
+                DATA_DIR, reference["root_id"], reference["relative_path"], store_console_snapshot, roots=[BASE_DIR]
+            )
+            metadata = get_attachment(DATA_DIR, str(stored.get("id") or stored.get("attachment_id") or ""))
+            if not metadata:
+                raise AttachmentNotFound("Workspace attachment was not stored")
+            created_ids.append(metadata["id"])
+            attachments.append(public_console_attachment(metadata))
+    except (AttachmentError, ConsoleArtifactValidationError, OSError):
+        for attachment_id in created_ids:
+            try:
+                release_attachment(DATA_DIR, attachment_id)
+            except AttachmentError:
+                pass
+        return {"error": "Context pack contents changed or could not be staged safely."}, 409
+    return {"ok": True, "context_pack": normalized, "instructions": normalized["instructions"], "attachments": attachments}, 201
+
+
+def context_pack_delegation_context(pack_id: str) -> tuple[dict | None, str, str | None]:
+    if not pack_id:
+        return None, "", None
+    pack = context_pack_record(pack_id)
+    if pack is None:
+        return None, "", "Choose an available context pack."
+    normalized, error = normalize_context_pack(pack, existing=pack)
+    if error:
+        return None, "", error
+    parts = []
+    remaining = 8000
+    for relative_path in normalized["note_paths"]:
+        note = safe_obsidian_note(relative_path)
+        if note is None:
+            return None, "", f"Context pack note is unavailable: {relative_path}"
+        excerpt = sanitize_public_text(note.read_text(encoding="utf-8", errors="replace"), min(remaining, 3000))
+        parts.append(f"Context pack note: {relative_path}\n{excerpt}")
+        remaining -= len(excerpt)
+    for reference in normalized["workspace_files"]:
+        try:
+            metadata, text = read_workspace_text_context(reference["root_id"], reference["relative_path"], roots=[BASE_DIR], max_chars=min(remaining, 3000))
+        except ConsoleArtifactValidationError as exc:
+            return None, "", exc.message
+        excerpt = sanitize_public_text(text, min(remaining, 3000))
+        parts.append(f"Context pack workspace file: {metadata['relative_path']}\n{excerpt}")
+        remaining -= len(excerpt)
+    return normalized, "\n\n".join(parts), None
 
 
 def create_project(payload):
@@ -4932,6 +5141,10 @@ POST_ROUTES = [
     (re.compile(r"^/api/tasks/([^/]+)$"), update_task, True),
     (re.compile(r"^/api/projects$"), create_project, True),
     (re.compile(r"^/api/projects/([^/]+)$"), update_project, True),
+    (re.compile(r"^/api/context-packs$"), create_context_pack, True),
+    (re.compile(r"^/api/context-packs/([^/]+)/stage$"), stage_context_pack, True),
+    (re.compile(r"^/api/context-packs/([^/]+)/delete$"), delete_context_pack, True),
+    (re.compile(r"^/api/context-packs/([^/]+)$"), update_context_pack, True),
     (re.compile(r"^/api/agent-messages$"), create_agent_message, True),
     (re.compile(r"^/api/agent-messages/([^/]+)/state$"), update_agent_message_state, True),
     (re.compile(r"^/api/agent-console/runs$"), start_agent_console_run, True),
@@ -4954,6 +5167,7 @@ POST_ROUTES = [
 API_ROUTES = {
     "/api/overview": overview,
     "/api/projects": lambda: {"projects": read_json_file("projects.json", [])},
+    "/api/context-packs": context_packs_payload,
     "/api/tasks": lambda: {"tasks": read_json_file("tasks.json", [])},
     "/api/agents": agents_payload,
     "/api/agent-messages": agent_messages_payload,

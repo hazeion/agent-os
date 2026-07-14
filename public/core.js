@@ -10,7 +10,7 @@ const endpoints = {
   projects: '/api/projects',
   tasks: '/api/tasks',
   agents: '/api/agents',
-  agentMessages: '/api/agent-messages',
+  contextPacks: '/api/context-packs',
   agentActivity: '/api/agent-activity',
   attention: '/api/attention',
   calendar: '/api/calendar',
@@ -39,7 +39,9 @@ const state = {
   taskDeletionRequestToken: 0,
   projects: [],
   agents: [],
-  agentMessages: [],
+  contextPacks: [],
+  contextPackDraft: null,
+  editingContextPackId: '',
   dismissedAgentPulseIds: new Set(),
   lastAgentPulsePayload: null,
   renderCache: {},
@@ -427,12 +429,27 @@ async function saveProjectEdits(id, payload) {
   return sendJson(`${endpoints.projects}/${encodeURIComponent(id)}`, payload, { method: 'POST' });
 }
 
-async function sendAgentMessage(payload) {
-  return sendJson(endpoints.agentMessages, payload, { method: 'POST' });
+async function fetchContextPacks() {
+  return api(endpoints.contextPacks);
 }
 
-async function setAgentMessageState(id, payload) {
-  return sendJson(`${endpoints.agentMessages}/${encodeURIComponent(id)}/state`, payload, { method: 'POST' });
+async function createContextPack(payload) {
+  return sendJson(endpoints.contextPacks, payload, { method: 'POST' });
+}
+
+async function saveContextPack(id, payload) {
+  return sendJson(`${endpoints.contextPacks}/${encodeURIComponent(id)}`, payload, { method: 'POST' });
+}
+
+async function removeContextPack(id, updatedAt) {
+  return sendJson(`${endpoints.contextPacks}/${encodeURIComponent(id)}/delete`, {
+    confirmed: true,
+    expected_updated_at: updatedAt,
+  }, { method: 'POST' });
+}
+
+async function stageContextPack(id) {
+  return sendJson(`${endpoints.contextPacks}/${encodeURIComponent(id)}/stage`, {}, { method: 'POST' });
 }
 
 async function startAgentConsoleRun(payload) {

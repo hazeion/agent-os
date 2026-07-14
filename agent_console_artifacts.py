@@ -638,6 +638,72 @@ def _validate_relative_workspace_path(value: Any) -> Path:
     return Path(*public_path.parts)
 
 
+def workspace_file_reference(
+    root_id: str,
+    relative_path: str,
+    *,
+    roots: Sequence[Path] | None = None,
+) -> dict[str, Any]:
+    """Validate one reusable workspace reference without exposing its local path."""
+    configured = dict(_workspace_roots(roots))
+    root = configured.get(str(root_id or ""))
+    if root is None:
+        raise ArtifactValidationError("invalid_workspace_root", "Workspace root is not available")
+    relative = _validate_relative_workspace_path(relative_path)
+    if _excluded_workspace_path(relative) or _path_has_symlink(root, relative):
+        raise ArtifactValidationError("workspace_file_unsupported", "Workspace file is not selectable")
+    candidate = root / relative
+    try:
+        resolved = candidate.resolve(strict=True)
+        details = candidate.lstat()
+    except (FileNotFoundError, OSError) as exc:
+        raise ArtifactValidationError("workspace_file_unavailable", "Workspace file is unavailable") from exc
+    if root not in resolved.parents or not stat.S_ISREG(details.st_mode):
+        raise ArtifactValidationError("invalid_workspace_path", "Workspace file is outside the configured root")
+    if _excluded_workspace_path(relative, details=details):
+        raise ArtifactValidationError("workspace_file_unsupported", "Workspace file is not selectable")
+    classification = _classify_path(candidate)
+    if classification is None or not _valid_content(candidate, classification[0]):
+        raise ArtifactValidationError("workspace_file_unsupported", "Workspace file content is unsupported")
+    kind, mime_type, byte_size = classification
+    return {
+        "root_id": str(root_id),
+        "relative_path": relative.as_posix(),
+        "name": _safe_display_name(candidate.name),
+        "kind": kind,
+        "mime_type": mime_type,
+        "byte_size": byte_size,
+    }
+
+
+def read_workspace_text_context(
+    root_id: str,
+    relative_path: str,
+    *,
+    roots: Sequence[Path] | None = None,
+    max_chars: int = 6000,
+) -> tuple[dict[str, Any], str]:
+    """Read bounded text from a currently valid reusable workspace reference."""
+    metadata = workspace_file_reference(root_id, relative_path, roots=roots)
+    if metadata["kind"] == "image":
+        raise ArtifactValidationError("workspace_file_unsupported", "Context packs accept text workspace files only")
+    root = dict(_workspace_roots(roots))[metadata["root_id"]]
+    candidate = root / Path(*PurePosixPath(metadata["relative_path"]).parts)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(candidate, flags)
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_TEXT_BYTES:
+                raise ArtifactValidationError("workspace_file_unsupported", "Workspace file is unsupported or too large")
+            payload = os.read(descriptor, min(MAX_TEXT_BYTES, max_chars * 4 + 4))
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ArtifactValidationError("workspace_file_unavailable", "Workspace file is unavailable") from exc
+    return metadata, payload.decode("utf-8", errors="replace")[:max_chars]
+
+
 def _copy_validated_snapshot(source: Path, staging_root: Path, *, max_bytes: int) -> Path:
     staging_root = _ensure_private_directory(staging_root)
     flags = os.O_RDONLY

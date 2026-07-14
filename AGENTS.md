@@ -186,6 +186,15 @@ Do not pass extensionless content-addressed blob paths directly to Hermes image
 arguments. Materialize a private run-scoped input snapshot with the validated
 image extension, keep that path server-only, and clean it after execution.
 
+Context Packs are project-owned reusable references, not copied authority.
+Store only bounded instructions, validated vault-relative Markdown paths, and
+validated workspace root IDs plus relative paths in `data/context_packs.json`.
+Revalidate every referenced item when a pack is used. Console application must
+create private staged snapshots through the existing attachment boundary;
+delegation application must resolve bounded text into the exact preview so any
+pack, note, or file change invalidates confirmation. Never persist absolute
+paths, note contents, file contents, credentials, or Hermes state in a pack.
+
 Tracked JSON fixtures under `data/` should remain public-safe seed/example data. Avoid committing personal names, local paths, account identifiers, or real message history there.
 Gitignored Agent Console history must remain redacted and private. Use
 owner-only runtime-directory and file permissions where the platform supports
@@ -268,6 +277,9 @@ python -m unittest discover -s tests -v
   explicit mobile reason for one dominant full-width action.
 - Keep Agent Creator progress compact and text-led; do not reintroduce pill
   containers for its step indicator.
+- Add site themes through the shared token set, saved-theme preloader, selector,
+  preview swatches, and visual contract tests together. Avoid one-off
+  component-specific palette overrides.
 - Avoid reintroducing removed/redundant dashboard surfaces without a clear product reason.
 - Keep completed work visible when useful; do not assume deletion is the right default.
 - Favor incremental changes over broad rewrites.

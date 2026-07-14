@@ -82,6 +82,13 @@ dependency, build, runtime, secret, archive, executable, and symlinked paths are
 excluded. Selection creates a private no-follow snapshot before storage, so a
 later workspace edit cannot change prompt context already attached to a run.
 
+Context Packs store reusable references in project-owned `data/context_packs.json`:
+bounded instructions, vault-relative Markdown paths, and workspace root ids plus
+relative paths. They never store note/file contents or absolute paths. Every use
+revalidates the references. Console use creates normal private staged snapshots;
+delegation use resolves bounded text into the exact preview and confirmation
+digest, so changed pack content must be previewed again.
+
 Assistant-created artifacts are accepted only from a private per-run export
 directory named in trusted server-generated execution context. Mentat does not
 parse paths from assistant prose. After execution, it scans that directory with

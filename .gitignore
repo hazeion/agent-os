@@ -26,6 +26,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Local top-level design screenshots
+/*.png
+
 # Future local secrets/auth files
 .env
 mentat.local.env

@@ -6,6 +6,7 @@ INDEX = (ROOT / "public" / "index.html").read_text(encoding="utf-8")
 CSS = (ROOT / "public" / "styles.css").read_text(encoding="utf-8")
 APP_JS = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
 CORE_JS = (ROOT / "public" / "core.js").read_text(encoding="utf-8")
+LOGO = ROOT / "public" / "mentat-logo.png"
 
 
 class VisualContractTests(unittest.TestCase):
@@ -13,7 +14,7 @@ class VisualContractTests(unittest.TestCase):
         panel_controls = CSS[CSS.index(".panel-controls {") : CSS.index(".task-status-filter-shell")]
         item_actions = CSS[CSS.index(".item-actions {") : CSS.index(".action-button")]
         editor_start = CSS.rindex("\n.task-editor-actions {\n  align-items:") + 1
-        editor_actions = CSS[editor_start : CSS.index(".agent-message-form .task-editor-actions", editor_start)]
+        editor_actions = CSS[editor_start : CSS.index(".config-pre", editor_start)]
         calendar_actions = CSS[
             CSS.index(".calendar-task-actions {") : CSS.index(".global-search-wrap")
         ]
@@ -25,6 +26,14 @@ class VisualContractTests(unittest.TestCase):
         self.assertNotIn("justify-content: space-between", editor_actions)
         self.assertIn("flex-wrap: wrap", item_actions)
         self.assertIn("flex-wrap: wrap", calendar_actions)
+
+    def test_legacy_agent_messages_ui_is_retired_but_context_packs_are_visible(self):
+        self.assertNotIn("Agent Messages", INDEX)
+        self.assertNotIn('id="agent-message-panel"', INDEX)
+        self.assertNotIn("agentMessages", APP_JS)
+        self.assertIn("Context Packs", INDEX)
+        self.assertIn('id="context-pack-list"', INDEX)
+        self.assertIn("stageContextPack", CORE_JS)
 
     def test_compact_dark_board_tokens_exist(self):
         self.assertIn("Compact Dark Board Rewrite", CSS)
@@ -43,25 +52,26 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("--hero-blue", hero_block)
         self.assertNotIn("--led-amber", hero_block)
 
-    def test_sidebar_brand_contains_digitized_brain_not_plain_ao(self):
+    def test_sidebar_and_browser_use_mentat_portrait_logo(self):
         brand_block = INDEX[INDEX.index('<div class="brand-block">') : INDEX.index('<nav class="nav-groups">')]
         header_block = INDEX[INDEX.index('<header class="command-header">') : INDEX.index('</header>')]
-        self.assertIn("brain-brand", brand_block)
-        self.assertIn("brain-frame", brand_block)
-        self.assertIn("Digitized Mentat brain logo", brand_block)
+        self.assertTrue(LOGO.is_file())
+        self.assertGreater(LOGO.stat().st_size, 10_000)
+        self.assertIn("mentat-brand", brand_block)
+        self.assertIn("Mentat portrait logo", brand_block)
+        self.assertIn('src="/mentat-logo.png"', brand_block)
+        self.assertIn('rel="icon" type="image/png" href="/mentat-logo.png"', INDEX)
         self.assertNotIn('class="brain-orb"', header_block)
         self.assertNotIn("15-frame cortex", header_block)
         self.assertNotIn(">AO</div>", brand_block)
 
-    def test_brain_animation_is_low_frame_rate_and_respects_reduced_motion(self):
-        self.assertIn("steps(15, end)", CSS)
+    def test_portrait_logo_is_static_and_old_brain_art_is_retired(self):
+        logo_block = CSS[CSS.index(".mentat-brand {") : CSS.index(".brand-name")]
+        self.assertNotIn("animation:", logo_block)
+        self.assertNotIn("brain-spin", CSS)
+        self.assertNotIn("brain-frame", INDEX)
         self.assertNotIn("15-frame cortex", INDEX)
-        self.assertNotIn("15fps cortex", INDEX)
-        self.assertIn("brain-spin", CSS)
         self.assertIn("prefers-reduced-motion", CSS)
-        reduced_motion_block = CSS[CSS.index("prefers-reduced-motion") :]
-        self.assertIn("animation: none !important", reduced_motion_block)
-        self.assertNotIn("animation-name: brain-spin", reduced_motion_block)
 
     def test_projects_tasks_view_uses_refined_a_task_inspector(self):
         self.assertIn('id="selected-task-panel"', INDEX)
@@ -215,10 +225,10 @@ class VisualContractTests(unittest.TestCase):
 
     def test_theme_preinit_applies_saved_theme_before_css(self):
         head_block = INDEX[INDEX.index('<head>') : INDEX.index('</head>')]
-        self.assertLess(head_block.index("localStorage.getItem(key)"), head_block.index('/styles.css?v=theme-studio-2'))
+        self.assertLess(head_block.index("localStorage.getItem(key)"), head_block.index('/styles.css?v=context-packs-2'))
         self.assertIn("document.documentElement.dataset.theme = theme", head_block)
-        self.assertIn('/core.js?v=theme-studio-2', INDEX)
-        self.assertIn('/app.js?v=theme-studio-2', INDEX)
+        self.assertIn('/core.js?v=context-packs-2', INDEX)
+        self.assertIn('/app.js?v=context-packs-2', INDEX)
         self.assertNotIn('compact-dark-board-1', INDEX)
         self.assertIn("applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id)", APP_JS)
 
@@ -230,16 +240,36 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('function applyTheme(themeId = state.currentTheme || THEMES[0].id)', APP_JS)
         self.assertIn("document.documentElement.dataset.theme = theme.id", APP_JS)
         self.assertIn("localStorage.setItem(THEME_STORAGE_KEY, theme.id)", APP_JS)
-        self.assertIn(":root[data-theme='light']", CSS)
-        self.assertIn(":root[data-theme='catppuccin']", CSS)
-        self.assertIn(":root[data-theme='nord']", CSS)
-        self.assertIn(":root[data-theme='aurora']", CSS)
+        dark_themes = ('compact-dark', 'catppuccin', 'nord', 'aurora', 'tokyo-night', 'gruvbox-dark', 'dracula', 'one-dark', 'solarized-dark')
+        light_themes = ('light', 'github-light', 'gruvbox-light', 'solarized-light', 'catppuccin-latte', 'rose-pine-dawn')
+        for theme in dark_themes + light_themes:
+            self.assertIn(f"id: '{theme}'", APP_JS)
+            self.assertIn(f'value="{theme}"', INDEX)
+            if theme != 'compact-dark':
+                self.assertIn(f":root[data-theme='{theme}']", CSS)
+            self.assertIn(f'.theme-swatch-chip.theme-{theme}', CSS)
+        self.assertEqual(APP_JS.count("mode: 'dark' },"), len(dark_themes))
+        self.assertEqual(APP_JS.count("mode: 'light' },"), len(light_themes))
+        self.assertIn('<optgroup label="Dark themes">', INDEX)
+        self.assertIn('<optgroup label="Light themes">', INDEX)
+        self.assertIn('.theme-preview-group', CSS)
+        self.assertIn('.theme-preview-list', CSS)
         self.assertIn('.theme-preview-grid', CSS)
         self.assertIn('.theme-swatch.active', CSS)
+        soft_light = CSS[CSS.index(":root[data-theme='light'] {") : CSS.index(":root[data-theme='catppuccin'] {")]
+        self.assertIn('--bg: #dfe5ec;', soft_light)
+        self.assertNotIn('--bg-elevated: #ffffff;', soft_light)
         self.assertIn('--header-bg:', CSS)
         self.assertIn('--panel-bg:', CSS)
+        self.assertIn('--button-text: var(--text);', CSS)
+        self.assertIn('color: var(--button-text);', CSS)
+        self.assertNotIn('color: #e4e6ea;', CSS)
+        self.assertIn('--calendar-fallback-bg:', CSS)
+        self.assertIn('background: var(--calendar-fallback-bg);', CSS)
+        self.assertIn('background: var(--calendar-local-event-bg);', CSS)
         self.assertIn('background: var(--panel-bg)', CSS)
         self.assertIn('color: var(--text-secondary)', CSS)
+        self.assertNotIn('color: #b8b8bd;', CSS)
         self.assertIn('scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track)', CSS)
 
 

@@ -4,10 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mentat · Mission Control</title>
+  <link rel="icon" type="image/png" href="/mentat-logo.png" />
   <script>
     (() => {
       const key = 'mentat-theme';
-      const allowed = new Set(['compact-dark', 'light', 'catppuccin', 'nord', 'aurora']);
+      const allowed = new Set([
+        'compact-dark', 'catppuccin', 'nord', 'aurora', 'tokyo-night',
+        'gruvbox-dark', 'dracula', 'one-dark', 'solarized-dark', 'light',
+        'github-light', 'gruvbox-light', 'solarized-light',
+        'catppuccin-latte', 'rose-pine-dawn',
+      ]);
       let theme = 'compact-dark';
       try {
         const saved = localStorage.getItem(key);
@@ -16,7 +22,7 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/styles.css?v=theme-studio-2" />
+  <link rel="stylesheet" href="/styles.css?v=context-packs-2" />
 </head>
 <body>
   <div class="grid-bg" aria-hidden="true"></div>
@@ -24,40 +30,8 @@
   <div class="app-shell">
     <aside class="sidebar" aria-label="Mentat navigation">
       <div class="brand-block">
-        <div class="brand-mark brain-brand" role="img" aria-label="Digitized Mentat brain logo">
-          <div class="brain-frame" aria-hidden="true">
-            <svg class="brain-model" viewBox="0 0 160 160" focusable="false">
-              <defs>
-                <linearGradient id="brain-edge" x1="20" y1="20" x2="140" y2="140" gradientUnits="userSpaceOnUse">
-                  <stop offset="0" stop-color="var(--hero-white, var(--text))" />
-                  <stop offset="0.36" stop-color="var(--hero-blue, var(--accent))" />
-                  <stop offset="0.7" stop-color="var(--hero-teal, var(--success))" />
-                  <stop offset="1" stop-color="var(--accent-2)" />
-                </linearGradient>
-                <radialGradient id="brain-core" cx="50%" cy="42%" r="62%">
-                  <stop offset="0" stop-color="var(--hero-white, var(--text))" stop-opacity="0.9" />
-                  <stop offset="0.42" stop-color="var(--hero-blue, var(--accent))" stop-opacity="0.42" />
-                  <stop offset="1" stop-color="var(--bg)" stop-opacity="0.9" />
-                </radialGradient>
-              </defs>
-              <path class="brain-fill" d="M47 51 65 35h33l20 15 10 27-8 34-24 17H63l-27-17-8-31 7-21Z" />
-              <g class="brain-mesh">
-                <path d="M47 51 73 54l25-19 20 15-11 29 21-2" />
-                <path d="M35 59 63 80l10-26 21 27 24-31" />
-                <path d="M28 80h35l17 27 27-28 13 32" />
-                <path d="M36 111 80 107l16 21 11-49" />
-                <path d="M63 128V80l35-45" />
-                <path d="M47 51 36 111 63 128" />
-                <path d="M98 35 96 128" />
-              </g>
-              <g class="brain-nodes">
-                <circle cx="47" cy="51" r="3" /><circle cx="73" cy="54" r="2.5" /><circle cx="98" cy="35" r="3" />
-                <circle cx="118" cy="50" r="3" /><circle cx="128" cy="77" r="2.5" /><circle cx="120" cy="111" r="3" />
-                <circle cx="96" cy="128" r="2.5" /><circle cx="63" cy="128" r="3" /><circle cx="36" cy="111" r="2.5" />
-                <circle cx="28" cy="80" r="3" /><circle cx="63" cy="80" r="2.5" /><circle cx="80" cy="107" r="3" />
-              </g>
-            </svg>
-          </div>
+        <div class="brand-mark mentat-brand" role="img" aria-label="Mentat portrait logo">
+          <img class="mentat-brand-image" src="/mentat-logo.png" alt="" aria-hidden="true" />
         </div>
         <div>
           <div class="brand-name" id="brand-name">Mentat</div>
@@ -196,8 +170,16 @@
                     <div id="agent-console-attachment-choices">
                       <button type="button" data-agent-console-upload>Upload image or text file</button>
                       <button type="button" data-agent-console-workspace>Choose from workspace</button>
+                      <button type="button" data-agent-console-context-packs>Use a context pack</button>
                       <span class="mono">Images, text, and source code</span>
                     </div>
+                    <section id="agent-console-context-pack-picker" class="agent-console-workspace-picker" aria-label="Choose a context pack" hidden>
+                      <div class="agent-console-workspace-head">
+                        <strong>Context packs</strong>
+                        <button type="button" data-agent-console-context-pack-back aria-label="Back to attachment choices">×</button>
+                      </div>
+                      <div id="agent-console-context-pack-results" class="agent-console-workspace-results" role="listbox" aria-live="polite"></div>
+                    </section>
                     <section id="agent-console-workspace-picker" class="agent-console-workspace-picker" aria-label="Choose a workspace file" hidden>
                       <div class="agent-console-workspace-head">
                         <strong>Workspace files</strong>
@@ -297,16 +279,6 @@
             <div id="cron-list" class="stack"></div>
           </section>
 
-          <section class="panel agent-message-panel" id="agent-message-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Agent Messages</h2>
-                <p class="panel-subtitle">Queue local-only messages for agents without granting browser-triggered shell execution.</p>
-              </div>
-            </div>
-            <div id="agent-message-compose" class="agent-message-compose"></div>
-            <div id="agent-message-list" class="stack"></div>
-          </section>
         </section>
       </section>
 
@@ -417,6 +389,16 @@
       </section>
 
       <section class="view" id="view-notes" data-view-panel="notes">
+        <section class="panel context-packs-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Context Packs</h2>
+              <p class="section-copy">Reuse a reviewed bundle of instructions, Obsidian notes, and workspace files in Console or delegated work.</p>
+            </div>
+            <div class="panel-controls"><button class="mini-button" type="button" id="create-context-pack">Create Context Pack</button></div>
+          </div>
+          <div id="context-pack-list" class="context-pack-grid"></div>
+        </section>
         <section class="panel notes-panel">
           <div class="panel-head">
             <div>
@@ -454,11 +436,25 @@
             <label class="theme-select-shell" for="theme-select">
               <span class="mono">Active theme</span>
               <select id="theme-select" class="theme-select">
-                <option value="compact-dark">Compact Dark</option>
-                <option value="light">Light</option>
-                <option value="catppuccin">Catppuccin</option>
-                <option value="nord">Nord</option>
-                <option value="aurora">Aurora</option>
+                <optgroup label="Dark themes">
+                  <option value="compact-dark">Compact Dark</option>
+                  <option value="catppuccin">Catppuccin Mocha</option>
+                  <option value="nord">Nord</option>
+                  <option value="aurora">Aurora</option>
+                  <option value="tokyo-night">Tokyo Night</option>
+                  <option value="gruvbox-dark">Gruvbox Dark</option>
+                  <option value="dracula">Dracula</option>
+                  <option value="one-dark">One Dark</option>
+                  <option value="solarized-dark">Solarized Dark</option>
+                </optgroup>
+                <optgroup label="Light themes">
+                  <option value="light">Soft Light</option>
+                  <option value="github-light">GitHub Light</option>
+                  <option value="gruvbox-light">Gruvbox Light</option>
+                  <option value="solarized-light">Solarized Light</option>
+                  <option value="catppuccin-latte">Catppuccin Latte</option>
+                  <option value="rose-pine-dawn">Rosé Pine Dawn</option>
+                </optgroup>
               </select>
             </label>
             <div id="theme-preview-grid" class="theme-preview-grid" aria-label="Mentat theme choices"></div>
@@ -669,6 +665,10 @@
             <span class="task-editor-label mono">Workspace</span>
             <select name="workspace"><option value="scratch">Scratch</option><option value="worktree">Git worktree</option></select>
           </label>
+          <label class="task-editor-field">
+            <span class="task-editor-label mono">Context pack</span>
+            <select name="context_pack_id"><option value="">No context pack</option></select>
+          </label>
           <label class="task-editor-field field-span-2">
             <span class="task-editor-label mono">Additional instructions</span>
             <textarea name="instructions" rows="4" maxlength="8000" placeholder="Optional constraints, expected output, or review criteria."></textarea>
@@ -684,6 +684,25 @@
           <button class="action-button" type="submit" data-task-delegation-confirm disabled>Delegate Task</button>
         </div>
       </footer>
+    </form>
+  </dialog>
+
+  <dialog id="context-pack-dialog" class="agent-creator-dialog" aria-labelledby="context-pack-title">
+    <form id="context-pack-form" class="agent-creator-shell">
+      <header class="agent-creator-head">
+        <div><div class="detail-context-label mono">Reusable agent context</div><h2 id="context-pack-title">Create Context Pack</h2></div>
+        <button class="agent-creator-close" type="button" data-context-pack-cancel aria-label="Close context pack editor">×</button>
+      </header>
+      <div class="agent-creator-body">
+        <div class="task-editor-grid">
+          <label class="task-editor-field"><span class="task-editor-label">Name</span><input name="name" maxlength="80" required /></label>
+          <label class="task-editor-field"><span class="task-editor-label">Description</span><input name="description" maxlength="500" /></label>
+          <label class="task-editor-field field-span-2"><span class="task-editor-label">Standard instructions</span><textarea name="instructions" rows="5" maxlength="6000" placeholder="Goals, constraints, preferred output, or review checklist."></textarea></label>
+        </div>
+        <section class="context-pack-builder-section"><h3>Obsidian notes</h3><p class="section-copy">Choose notes whose current contents should be snapshotted when the pack is used.</p><div id="context-pack-note-options" class="context-pack-options"></div></section>
+        <section class="context-pack-builder-section"><h3>Workspace files</h3><div class="agent-console-workspace-search"><input id="context-pack-workspace-query" type="search" maxlength="200" placeholder="Search workspace files…" /><button type="button" data-context-pack-workspace-search>Search</button></div><div id="context-pack-workspace-selected" class="context-pack-selected"></div><div id="context-pack-workspace-results" class="agent-console-workspace-results"></div></section>
+      </div>
+      <footer class="agent-creator-actions"><span id="context-pack-status" class="task-editor-status mono" role="status" aria-live="polite"></span><div><button class="mini-button danger-button" type="button" data-context-pack-delete hidden>Delete</button><button class="mini-button" type="button" data-context-pack-cancel>Cancel</button><button class="action-button" type="submit">Save Context Pack</button></div></footer>
     </form>
   </dialog>
 
@@ -721,7 +740,7 @@
     </div>
   </dialog>
 
-  <script src="/core.js?v=theme-studio-2"></script>
-  <script src="/app.js?v=theme-studio-2"></script>
+  <script src="/core.js?v=context-packs-2"></script>
+  <script src="/app.js?v=context-packs-2"></script>
 </body>
 </html>
