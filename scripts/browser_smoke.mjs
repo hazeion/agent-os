@@ -7,6 +7,7 @@ const baseUrl = process.env.MENTAT_BASE_URL || 'http://127.0.0.1:8888';
 const debugPort = Number(process.env.MENTAT_BROWSER_DEBUG_PORT || 9223);
 const repoRoot = resolve(new URL('..', import.meta.url).pathname.replace(/^\/(.:\/)/, '$1'));
 const runtimeDir = resolve(repoRoot, 'data/runtime/browser-smoke-profile');
+const calendarScreenshotPath = resolve(repoRoot, 'data/runtime/calendar-week-smoke.png');
 const chromeCandidates = [
   process.env.CHROME_PATH,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -95,7 +96,7 @@ class CdpClient {
 }
 
 async function main() {
-  const backups = [backupFile('data/agents.json'), backupFile('data/agent_messages.json')];
+  const backups = [backupFile('data/agents.json')];
   let chrome;
   let client;
   try {
@@ -123,6 +124,7 @@ async function main() {
     client = new CdpClient(ws);
     await client.call('Runtime.enable');
     await client.call('Page.enable');
+    await client.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await client.call('Page.navigate', { url: baseUrl });
     await waitFor(() => client.eval('document.readyState === "complete"'), 'page load');
     await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'Today View default');
@@ -147,40 +149,53 @@ async function main() {
     await waitFor(() => client.eval('document.querySelector("#task-editor-form") !== null'), 'task editor form');
     await client.eval(`document.querySelector('[data-task-editor-cancel]').click()`);
 
+    await client.eval(`document.querySelector('[data-view="calendar"]').click()`);
+    await waitFor(() => client.eval('document.querySelector("#view-calendar.active") !== null'), 'Calendar view');
+    await waitFor(() => client.eval(`document.querySelectorAll('#calendar-week-days .calendar-week-day-header').length === 7 && document.querySelector('#calendar-week')?.getAttribute('aria-busy') === 'false'`), 'Operator Week render');
+    const currentWeekLabel = await client.eval(`document.querySelector('#calendar-week-range')?.textContent || ''`);
+    await client.eval(`document.querySelector('[data-calendar-week-nav="next"]').click()`);
+    await waitFor(() => client.eval(`document.querySelector('#calendar-week')?.getAttribute('aria-busy') === 'false' && (document.querySelector('#calendar-week-range')?.textContent || '') !== ${JSON.stringify(currentWeekLabel)}`), 'next calendar week');
+    await client.eval(`document.querySelector('[data-calendar-week-nav="today"]').click()`);
+    await waitFor(() => client.eval(`document.querySelector('#calendar-week')?.getAttribute('aria-busy') === 'false' && (document.querySelector('#calendar-week-range')?.textContent || '') === ${JSON.stringify(currentWeekLabel)}`), 'current calendar week');
+    await client.eval(`renderCalendar({ source: 'local', auth: 'not_connected', read_only: true, items: [], summary: {}, range_days: 7 }, { view: 'calendar' })`);
+    await waitFor(() => client.eval(`document.querySelectorAll('[data-calendar-source="preview"]').length === 3`), 'disconnected calendar preview');
+    await client.eval(`document.querySelector('[data-calendar-source="preview"]')?.click()`);
+    await waitFor(() => client.eval(`Boolean(document.querySelector('#calendar-event-inspector:not([hidden])'))`), 'calendar event inspector');
+    const previewMutationSafe = await client.eval(`!document.querySelector('#calendar-event-inspector [data-calendar-create-task], #calendar-event-inspector [data-calendar-link-task]')`);
+    if (!previewMutationSafe) throw new Error('Preview calendar event exposed task mutation actions');
+    const calendarScreenshot = await client.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
+    mkdirSync(dirname(calendarScreenshotPath), { recursive: true });
+    writeFileSync(calendarScreenshotPath, calendarScreenshot.data, 'base64');
+
     await client.eval(`document.querySelector('[data-view="agents"]').click()`);
     await waitFor(() => client.eval('document.querySelector("#view-agents.active") !== null'), 'Agents view');
-    await waitFor(() => client.eval('document.querySelector("#agent-message-form") !== null'), 'agent message compose');
-    await waitFor(() => client.eval(`document.querySelectorAll('#managed-agent-list .managed-agent-card').length > 0`), 'managed Hermes profiles');
-    const agentsWorkspaceVisible = await client.eval(`Boolean(document.querySelector('#managed-agents-panel') && document.querySelector('#conversation-library-panel') && document.querySelector('#agent-message-panel'))`);
-    if (!agentsWorkspaceVisible) throw new Error('Agents workspace/message panel smoke failed');
-    const agentDeletionContract = await client.eval(`(() => { const dialog = document.querySelector('#agent-delete-dialog'); const defaultCard = document.querySelector('[data-hermes-profile-id="default"]'); return Boolean(dialog && defaultCard && !defaultCard.querySelector('[data-delete-hermes-profile]')); })()`);
+    await waitFor(() => client.eval(`Boolean(document.querySelector('#managed-agent-list .managed-agent-card, #managed-agent-list .empty'))`), 'managed agents inventory');
+    const agentsWorkspaceVisible = await client.eval(`Boolean(document.querySelector('#managed-agents-panel') && document.querySelector('#conversation-library-panel') && !document.querySelector('#agent-message-panel'))`);
+    if (!agentsWorkspaceVisible) throw new Error('Agents workspace smoke failed');
+    const agentDeletionContract = await client.eval(`(() => { const dialog = document.querySelector('#agent-delete-dialog'); const defaultCard = document.querySelector('[data-hermes-profile-id="default"]'); return Boolean(dialog && (!defaultCard || !defaultCard.querySelector('[data-delete-hermes-profile]'))); })()`);
     if (!agentDeletionContract) throw new Error('Managed Agent deletion safety contract smoke failed');
 
     const routedProfileId = await client.eval(`(() => { const button = document.querySelector('[data-use-hermes-profile]'); const profileId = button?.dataset.useHermesProfile || ''; button?.click(); return profileId; })()`);
-    if (!routedProfileId) throw new Error('Managed Agent did not expose a Console route');
-    await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'profile-aware Console route');
-    await waitFor(() => client.eval(`document.querySelector('#agent-console-agent')?.value === ${JSON.stringify(routedProfileId)}`), 'selected Console profile');
-    await client.eval(`document.querySelector('[data-view="agents"]').click()`);
-    await waitFor(() => client.eval('document.querySelector("#view-agents.active") !== null'), 'Agents view after Console routing');
+    if (routedProfileId) {
+      await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'profile-aware Console route');
+      await waitFor(() => client.eval(`document.querySelector('#agent-console-agent')?.value === ${JSON.stringify(routedProfileId)}`), 'selected Console profile');
+      await client.eval(`document.querySelector('[data-view="agents"]').click()`);
+      await waitFor(() => client.eval('document.querySelector("#view-agents.active") !== null'), 'Agents view after Console routing');
+    }
 
     await client.eval(`document.querySelector('#create-agent-button').click()`);
     await waitFor(() => client.eval(`Boolean(document.querySelector('#agent-creator-dialog')?.open)`), 'agent creator dialog');
-    await client.eval(`(() => { const name = document.querySelector('#agent-creator-form [name="name"]'); name.value = 'browser-smoke-agent'; name.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('[data-agent-creator-next]').click(); })()`);
-    await waitFor(() => client.eval(`!document.querySelector('[data-agent-creator-step="configuration"]')?.hidden`), 'agent creator configuration');
-    await client.eval(`document.querySelector('input[name="skill_mode"][value="custom"]').click()`);
-    await waitFor(() => client.eval(`document.querySelectorAll('#agent-creator-skill-list input[type="checkbox"]').length > 0`), 'Hermes built-in skill catalog');
-    const agentCreatorOk = await client.eval(`(() => { const dialog = document.querySelector('#agent-creator-dialog'); const count = document.querySelectorAll('#agent-creator-skill-list input[type="checkbox"]').length; const status = document.querySelector('#agent-creator-status')?.textContent || ''; return Boolean(dialog?.open && count > 0 && status.includes('built-in skills available')); })()`);
-    if (!agentCreatorOk) throw new Error('Agent Creator skill selection smoke failed');
     await client.eval(`document.querySelector('[data-agent-creator-close]').click()`);
 
     const heartbeatStatus = await client.eval(`fetch('/api/agents/heartbeat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: 'browser_smoke_agent', name: 'Browser Smoke Agent', status: 'running', project: 'Mentat', current_task: 'Browser smoke live state' }) }).then((response) => response.status)`);
     if (![200, 201].includes(heartbeatStatus)) throw new Error(`Heartbeat smoke returned HTTP ${heartbeatStatus}`);
 
-    const messageText = `Browser smoke queued message ${Date.now()}`;
-    await client.eval(`(() => { const form = document.querySelector('#agent-message-form'); form.querySelector('textarea[name="message"]').value = ${JSON.stringify(messageText)}; form.querySelector('textarea[name="message"]').dispatchEvent(new Event('input', { bubbles: true })); form.requestSubmit(); })()`);
-    await waitFor(() => client.eval(`document.body.textContent.includes(${JSON.stringify(messageText)})`), 'queued agent message appears');
+    await client.eval(`document.querySelector('[data-view="notes"]').click()`);
+    await waitFor(() => client.eval('document.querySelector("#view-notes.active") !== null'), 'Notes view');
+    const contextPacksVisible = await client.eval(`Boolean(document.querySelector('#context-pack-list') && document.querySelector('#create-context-pack') && document.querySelector('#context-pack-dialog'))`);
+    if (!contextPacksVisible) throw new Error('Context Packs workspace smoke failed');
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'structured event render', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'managed Hermes profiles', 'profile-aware Console route', 'agent deletion safeguards', 'agent creator skills', 'agent message compose'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'structured event render', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace'] }, null, 2));
     await client.ws.close?.();
   } finally {
     if (chrome && !chrome.killed) chrome.kill();

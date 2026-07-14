@@ -24,7 +24,7 @@ today, but still actively evolving.
 - Delegate durable tasks through Hermes Kanban and review results, questions,
   retries, and revisions from Mentat.
 - Browse read-only Hermes sessions and cron inventory.
-- Search Obsidian notes, view read-only Google Calendar context, and use the
+- Search Obsidian notes, scan a full read-only Google Calendar week, and use the
   Agent Pulse live heartbeat registry.
 - Choose from compact, soft-light, and popular editor-inspired color themes.
 

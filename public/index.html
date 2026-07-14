@@ -378,13 +378,62 @@
       </section>
 
       <section class="view" id="view-calendar" data-view-panel="calendar">
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <h2>Next 7 Days</h2>
+        <section class="panel calendar-operator-panel" id="calendar-operator-panel">
+          <header class="calendar-operator-header">
+            <div class="calendar-title-block">
+              <p class="calendar-view-kicker mono">Operator Week</p>
+              <h2 id="calendar-week-label"><span id="calendar-week-range">Current week</span></h2>
+              <p class="panel-subtitle">A read-only view of the whole week. Select an event to connect it to Mentat work.</p>
             </div>
+            <div class="calendar-header-actions">
+              <div class="calendar-week-nav" role="group" aria-label="Navigate calendar weeks">
+                <button class="mini-button calendar-nav-button" type="button" id="calendar-week-previous" data-calendar-week-nav="previous" aria-label="Previous week">‹</button>
+                <button class="mini-button" type="button" id="calendar-week-today" data-calendar-week-nav="today">Today</button>
+                <button class="mini-button calendar-nav-button" type="button" id="calendar-week-next" data-calendar-week-nav="next" aria-label="Next week">›</button>
+              </div>
+              <div class="calendar-operator-status" aria-label="Calendar connection status">
+                <span class="calendar-status-chip" id="calendar-source-status" data-calendar-source-status>Calendar · read-only</span>
+                <span class="calendar-status-chip mono" id="calendar-timezone" data-calendar-timezone>Local time</span>
+              </div>
+            </div>
+          </header>
+
+          <div class="calendar-operator-layout">
+            <div class="calendar-week-region">
+              <div id="calendar-week-scroll" class="calendar-week-scroll" tabindex="0" aria-label="Scrollable weekly calendar">
+                <div id="calendar-week" class="calendar-week-shell" aria-live="polite" aria-busy="true">
+                  <div id="calendar-week-days" class="calendar-week-day-headers">
+                    <div class="calendar-week-corner" aria-hidden="true"></div>
+                    <div class="calendar-week-loading mono">Loading week…</div>
+                  </div>
+                  <div class="calendar-week-all-day">
+                    <div class="calendar-week-all-day-label mono">All day</div>
+                    <div id="calendar-all-day-events" class="calendar-all-day-events"></div>
+                  </div>
+                  <div id="calendar-week-grid" class="calendar-week-time-grid">
+                    <div id="calendar-time-labels" class="calendar-week-time-labels" aria-hidden="true"></div>
+                    <div id="calendar-week-events" class="calendar-week-events"></div>
+                    <div id="calendar-now-line" class="calendar-week-now-line" aria-hidden="true" hidden>
+                      <span class="calendar-week-now-label"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <aside id="calendar-event-inspector" class="calendar-event-inspector" aria-labelledby="calendar-inspector-title" hidden>
+              <div class="calendar-inspector-head">
+                <div>
+                  <p class="calendar-view-kicker mono">Selected event</p>
+                  <h3 id="calendar-inspector-title">Event details</h3>
+                </div>
+                <button class="mini-button calendar-inspector-close" type="button" id="calendar-inspector-close" aria-label="Close event details">×</button>
+              </div>
+              <div id="calendar-inspector-content" class="calendar-inspector-content">
+                <p class="empty">Select an appointment to inspect its details and Mentat actions.</p>
+              </div>
+            </aside>
           </div>
-          <div id="calendar-full-list" class="stack"></div>
         </section>
       </section>
 

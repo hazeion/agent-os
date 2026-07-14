@@ -150,6 +150,116 @@ class RequestBoundaryTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", captured.get("Content-Security-Policy", ""))
         self.assertEqual(captured.get("Referrer-Policy"), "no-referrer")
 
+    def test_disconnected_json_client_does_not_trigger_a_second_get_response(self):
+        for disconnect_error in (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            with self.subTest(disconnect_error=disconnect_error.__name__):
+                writer = Mock()
+                writer.write.side_effect = disconnect_error("client disconnected")
+                instance = self.handler(headers=self.local_headers())
+                instance.path = "/api/overview"
+                instance.wfile = writer
+                instance.send_response = Mock()
+                instance.send_header = Mock()
+                instance.end_headers = Mock()
+                instance.log_internal_error = Mock()
+
+                with patch.dict(server.API_ROUTES, {"/api/overview": lambda: {"ok": True}}):
+                    instance.do_GET()
+
+                instance.send_response.assert_called_once_with(200)
+                writer.write.assert_called_once()
+                instance.log_internal_error.assert_not_called()
+                self.assertTrue(instance.close_connection)
+
+    def test_json_transmission_failure_never_reaches_route_retry(self):
+        writer = Mock()
+        failure = TimeoutError("response write timed out")
+        writer.write.side_effect = failure
+        instance = self.handler(headers=self.local_headers())
+        instance.path = "/api/overview"
+        instance.wfile = writer
+        instance.send_response = Mock()
+        instance.send_header = Mock()
+        instance.end_headers = Mock()
+        instance.log_internal_error = Mock()
+
+        with patch.dict(server.API_ROUTES, {"/api/overview": lambda: {"ok": True}}):
+            instance.do_GET()
+
+        instance.send_response.assert_called_once_with(200)
+        writer.write.assert_called_once()
+        instance.log_internal_error.assert_called_once_with("JSON response transmission", failure)
+        self.assertTrue(instance.close_connection)
+
+    def test_disconnected_static_client_does_not_trigger_error_response(self):
+        for disconnect_error in (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            with self.subTest(disconnect_error=disconnect_error.__name__), TemporaryDirectory() as tmpdir:
+                public = Path(tmpdir)
+                (public / "index.html").write_text("<!doctype html><title>Mentat</title>", encoding="utf-8")
+                writer = Mock()
+                writer.write.side_effect = disconnect_error("client disconnected")
+                instance = self.handler(headers=self.local_headers())
+                instance.path = "/"
+                instance.wfile = writer
+                instance.send_response = Mock()
+                instance.send_header = Mock()
+                instance.end_headers = Mock()
+                instance.send_error = Mock()
+                instance.log_internal_error = Mock()
+
+                with patch.object(server, "PUBLIC_DIR", public):
+                    instance.do_GET()
+
+                instance.send_response.assert_called_once_with(200)
+                writer.write.assert_called_once()
+                instance.send_error.assert_not_called()
+                instance.log_internal_error.assert_not_called()
+                self.assertTrue(instance.close_connection)
+
+    def test_static_preparation_failure_sends_one_500_response(self):
+        with TemporaryDirectory() as tmpdir:
+            public = Path(tmpdir)
+            (public / "index.html").write_text("<!doctype html><title>Mentat</title>", encoding="utf-8")
+            instance = self.handler(headers=self.local_headers())
+            instance.path = "/"
+            instance.send_response = Mock()
+            instance.send_error = Mock()
+            instance.log_internal_error = Mock()
+
+            failure = OSError("asset read failed")
+            with patch.object(server, "PUBLIC_DIR", public), patch.object(
+                Path, "read_bytes", side_effect=failure
+            ):
+                instance.do_GET()
+
+        instance.send_response.assert_not_called()
+        instance.send_error.assert_called_once_with(500, "Static asset could not be loaded")
+        instance.log_internal_error.assert_called_once_with("static asset preparation", failure)
+
+    def test_static_transmission_failure_never_attempts_error_response(self):
+        with TemporaryDirectory() as tmpdir:
+            public = Path(tmpdir)
+            (public / "index.html").write_text("<!doctype html><title>Mentat</title>", encoding="utf-8")
+            writer = Mock()
+            failure = RuntimeError("response stream failed")
+            writer.write.side_effect = failure
+            instance = self.handler(headers=self.local_headers())
+            instance.path = "/"
+            instance.wfile = writer
+            instance.send_response = Mock()
+            instance.send_header = Mock()
+            instance.end_headers = Mock()
+            instance.send_error = Mock()
+            instance.log_internal_error = Mock()
+
+            with patch.object(server, "PUBLIC_DIR", public):
+                instance.do_GET()
+
+        instance.send_response.assert_called_once_with(200)
+        instance.send_error.assert_not_called()
+        instance.log_internal_error.assert_called_once_with("static asset transmission", failure)
+        self.assertTrue(instance.close_connection)
+
     def test_unexpected_api_failure_is_logged_but_client_response_stays_generic(self):
         instance = self.handler(headers=self.local_headers())
         instance.path = "/api/overview"

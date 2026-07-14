@@ -33,7 +33,14 @@ class ContextPackTests(unittest.TestCase):
             "description": "Reusable delivery context",
             "instructions": "Return a concise verified result.",
             "note_paths": ["Plan.md"],
-            "workspace_files": [{"root_id": "workspace", "relative_path": "README.md"}],
+            "workspace_files": [{
+                "root_id": "workspace",
+                "relative_path": "README.md",
+                "name": "README.md",
+                "kind": "text",
+                "mime_type": "text/markdown",
+                "byte_size": 999,
+            }],
         }
 
     def test_create_update_delete_uses_project_owned_store_and_stale_delete_guard(self):
@@ -42,13 +49,46 @@ class ContextPackTests(unittest.TestCase):
         pack = created["context_pack"]
         stored = json.loads((self.data / "context_packs.json").read_text(encoding="utf-8"))
         self.assertEqual(stored[0]["id"], pack["id"])
-        self.assertEqual(stored[0]["workspace_files"][0]["relative_path"], "README.md")
+        authority = {"root_id": "workspace", "relative_path": "README.md"}
+        self.assertEqual(stored[0]["workspace_files"], [authority])
+        self.assertEqual(pack["workspace_files"], [authority])
+        listed = server.context_packs_payload()["context_packs"][0]
+        self.assertEqual(listed["workspace_files"], [authority])
 
         rejected, status = server.delete_context_pack(pack["id"], {"confirmed": True, "expected_updated_at": "stale"})
         self.assertEqual(status, 409)
         self.assertIn("changed", rejected["error"])
 
-        deleted, status = server.delete_context_pack(pack["id"], {"confirmed": True, "expected_updated_at": pack["updated_at"]})
+        deleted, status = server.delete_context_pack(pack["id"], {"confirmed": True, "expected_revision": pack["revision"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(deleted["context_packs"], [])
+
+    def test_same_timestamp_update_changes_revision_and_invalidates_stale_delete(self):
+        fixed_timestamp = "2026-07-14T10:30:00-07:00"
+        with patch.object(server, "now_iso", return_value=fixed_timestamp):
+            created, status = server.create_context_pack(self.payload())
+            self.assertEqual(status, 201)
+            original = created["context_pack"]
+
+            changed_payload = self.payload()
+            changed_payload["instructions"] = "Use the newly reviewed delivery checklist."
+            updated, status = server.update_context_pack(original["id"], changed_payload)
+            self.assertEqual(status, 200)
+            changed = updated["context_pack"]
+
+        self.assertEqual(original["updated_at"], changed["updated_at"])
+        self.assertNotEqual(original["revision"], changed["revision"])
+        rejected, status = server.delete_context_pack(
+            original["id"],
+            {"confirmed": True, "expected_revision": original["revision"]},
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("changed", rejected["error"])
+
+        deleted, status = server.delete_context_pack(
+            original["id"],
+            {"confirmed": True, "expected_revision": changed["revision"]},
+        )
         self.assertEqual(status, 200)
         self.assertEqual(deleted["context_packs"], [])
 
@@ -64,6 +104,10 @@ class ContextPackTests(unittest.TestCase):
         resolved, context, error = server.context_pack_delegation_context(pack["id"])
         self.assertIsNone(error)
         self.assertEqual(resolved["id"], pack["id"])
+        self.assertEqual(
+            resolved["workspace_files"],
+            [{"root_id": "workspace", "relative_path": "README.md"}],
+        )
         self.assertIn("Ship the reviewed slice", context)
         self.assertIn("# Mentat", context)
 

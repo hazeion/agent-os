@@ -372,12 +372,22 @@ async function reorderTodayTask(id, direction) {
   return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/today-order`, { direction }, { method: 'POST' });
 }
 
-async function createTaskFromCalendarEvent(eventId, project) {
-  return sendJson(`/api/calendar/events/${encodeURIComponent(eventId)}/task`, { project }, { method: 'POST' });
+async function createTaskFromCalendarEvent(eventId, project, context = {}) {
+  const payload = { project };
+  if (context.week_start && context.timezone) {
+    payload.week_start = context.week_start;
+    payload.timezone = context.timezone;
+  }
+  return sendJson(`/api/calendar/events/${encodeURIComponent(eventId)}/task`, payload, { method: 'POST' });
 }
 
-async function linkTaskToCalendarEvent(taskId, eventId) {
-  return sendJson(`${endpoints.tasks}/${encodeURIComponent(taskId)}/calendar-link`, { event_id: eventId }, { method: 'POST' });
+async function linkTaskToCalendarEvent(taskId, eventId, context = {}) {
+  const payload = { event_id: eventId };
+  if (context.week_start && context.timezone) {
+    payload.week_start = context.week_start;
+    payload.timezone = context.timezone;
+  }
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(taskId)}/calendar-link`, payload, { method: 'POST' });
 }
 
 async function unlinkTaskFromCalendarEvent(taskId, eventId) {
@@ -441,11 +451,12 @@ async function saveContextPack(id, payload) {
   return sendJson(`${endpoints.contextPacks}/${encodeURIComponent(id)}`, payload, { method: 'POST' });
 }
 
-async function removeContextPack(id, updatedAt) {
-  return sendJson(`${endpoints.contextPacks}/${encodeURIComponent(id)}/delete`, {
-    confirmed: true,
-    expected_updated_at: updatedAt,
-  }, { method: 'POST' });
+async function removeContextPack(id, revision, updatedAt = '') {
+  const payload = { confirmed: true };
+  const expectedRevision = String(revision || '').trim();
+  if (expectedRevision) payload.expected_revision = expectedRevision;
+  else if (updatedAt) payload.expected_updated_at = updatedAt;
+  return sendJson(`${endpoints.contextPacks}/${encodeURIComponent(id)}/delete`, payload, { method: 'POST' });
 }
 
 async function stageContextPack(id) {

@@ -5,6 +5,13 @@ All notable changes to Mentat.
 ## 2026-07-14
 
 ### Added
+- Added Operator Week, a full Sunday-through-Saturday calendar with exact-week
+  navigation, all-day and hourly lanes, overlap-aware appointments, a current-
+  time marker, and a responsive event inspector that retains Mentat task-link
+  actions without writing to Google Calendar.
+- Added a clearly labeled client-only preview week for disconnected calendars,
+  plus validated timezone-aware week queries and DST-safe Google Calendar
+  windows for previous, current, and future weeks.
 - Added reusable Context Packs for combining standard instructions, validated
   Obsidian notes, and safe workspace-file references. Packs can stage current
   private snapshots for Agent Console or resolve bounded text into an exact
@@ -16,6 +23,8 @@ All notable changes to Mentat.
   instant site-wide selection and saved-theme preloading.
 
 ### Changed
+- Kept the compact calendar agenda on Today while replacing the standalone
+  Calendar page's list with the Operator Week grid.
 - Retired the redundant Agent Messages dashboard surface and its frontend
   polling while preserving existing project-owned message data and compatibility
   endpoints for a migration window.

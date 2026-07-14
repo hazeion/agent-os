@@ -139,6 +139,9 @@ Google Calendar stays read-only. Creating or linking a task from a verified
 calendar event may write Mentat task metadata only. Obsidian note attachments
 must be vault-relative validated Markdown paths; attached content used for a
 delegation preview must remain bounded, and Mentat must not edit the note.
+Calendar week navigation may request only a validated Sunday start, a fixed
+seven-day range, and a validated IANA timezone. Keep disconnected preview events
+client-only and ineligible for task or calendar mutations.
 
 Grouped dashboard search is navigation-only and may cover tasks, projects,
 session metadata, notes, and cached/local calendar events. Typing must not change

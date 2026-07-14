@@ -253,6 +253,8 @@ APP_CONFIG = AppConfig(tuple(), HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, O
 ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json", "context_packs.json"}
 CALENDAR_CACHE_TTL_SECONDS = 300
 CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
+CALENDAR_MAX_EVENTS = 250
+CALENDAR_MAX_PAGES = 5
 OBSIDIAN_NOTES_CACHE = {"key": None, "payload": None}
 SESSION_DETAIL_CACHE: dict[tuple, tuple[dict, int]] = {}
 SESSION_REPLAY_CACHE: dict[tuple, tuple[dict, int]] = {}
@@ -1390,18 +1392,126 @@ def calendar_sort_key(item: dict):
     return dt or datetime.max.replace(tzinfo=datetime.now().astimezone().tzinfo)
 
 
-def calendar_payload(items, source: str, auth: str, *, days: int = 7, error: str | None = None, calendar: str | None = None, fallback_available: bool | None = None):
+def calendar_timezone(timezone_name: str | None = None):
+    """Resolve a browser-supplied IANA zone without exposing host configuration."""
+    if timezone_name is None:
+        zone = datetime.now().astimezone().tzinfo or timezone.utc
+        zone_id = getattr(zone, "key", None) or "local"
+        return zone, zone_id, None
+    value = str(timezone_name).strip()
+    if len(value) > 128 or not re.fullmatch(r"[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*", value):
+        raise ValueError("Timezone must be a valid IANA timezone name.")
+    try:
+        zone = ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError("Timezone must be a valid IANA timezone name.") from None
+    return zone, value, value
+
+
+def calendar_timezone_metadata(zone, zone_id: str, reference: datetime) -> dict:
+    local_reference = reference.astimezone(zone)
+    offset = local_reference.utcoffset() or timedelta(0)
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    return {
+        "id": zone_id,
+        "name": local_reference.tzname() or "Local time",
+        "utc_offset": f"{sign}{total_minutes // 60:02d}:{total_minutes % 60:02d}",
+    }
+
+
+def calendar_week_label(start_date: date, end_date: date) -> str:
+    """Return an operator-readable inclusive label for an exclusive date range."""
+    final_date = end_date - timedelta(days=1)
+    if start_date.year == final_date.year and start_date.month == final_date.month:
+        return f"{start_date.strftime('%B')} {start_date.day}–{final_date.day}, {start_date.year}"
+    if start_date.year == final_date.year:
+        return f"{start_date.strftime('%b')} {start_date.day}–{final_date.strftime('%b')} {final_date.day}, {start_date.year}"
+    return f"{start_date.strftime('%b')} {start_date.day}, {start_date.year}–{final_date.strftime('%b')} {final_date.day}, {final_date.year}"
+
+
+def exact_calendar_week(start_value: str, timezone_name: str | None = None):
+    try:
+        start_date = datetime.strptime(str(start_value), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        raise ValueError("Calendar start must use YYYY-MM-DD format.") from None
+    if start_date.isoformat() != str(start_value) or start_date.weekday() != 6:
+        raise ValueError("Calendar start must be a Sunday in YYYY-MM-DD format.")
+    zone, zone_id, google_zone_id = calendar_timezone(timezone_name)
+    end_date = start_date + timedelta(days=7)
+    start = datetime.combine(start_date, datetime.min.time(), tzinfo=zone)
+    end = datetime.combine(end_date, datetime.min.time(), tzinfo=zone)
+    return {
+        "start": start,
+        "end": end,
+        "label": calendar_week_label(start_date, end_date),
+        "zone": zone,
+        "zone_id": zone_id,
+        "google_zone_id": google_zone_id,
+    }
+
+
+def parse_calendar_value(value, zone):
+    if not value:
+        return None
+    text = str(value)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        try:
+            return datetime.combine(date.fromisoformat(text), datetime.min.time(), tzinfo=zone)
+        except ValueError:
+            return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=zone)
+    return parsed.astimezone(zone)
+
+
+def calendar_items_in_window(items, start: datetime, end: datetime, zone) -> list[dict]:
+    """Keep events that overlap the exact half-open calendar window."""
+    matches = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        event_start = parse_calendar_value(item.get("start"), zone)
+        event_end = parse_calendar_value(item.get("end"), zone)
+        if event_start is None:
+            continue
+        if event_end is None or event_end <= event_start:
+            event_end = event_start + timedelta(microseconds=1)
+        if event_start < end and event_end > start:
+            matches.append(item)
+    return matches
+
+
+def calendar_payload(
+    items,
+    source: str,
+    auth: str,
+    *,
+    days: int = 7,
+    error: str | None = None,
+    calendar: str | None = None,
+    fallback_available: bool | None = None,
+    window: dict | None = None,
+):
     """Normalize calendar responses for the Today preview and 7-day agenda."""
     safe_items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
     safe_items = sorted(safe_items, key=calendar_sort_key)
-    now = datetime.now().astimezone()
-    window_end = now + timedelta(days=days)
+    operator_zone = window.get("zone") if window else (datetime.now().astimezone().tzinfo or timezone.utc)
+    zone_id = window.get("zone_id") if window else (getattr(operator_zone, "key", None) or "local")
+    now = datetime.now(timezone.utc).astimezone(operator_zone)
+    window_start = window.get("start") if window else now
+    window_end = window.get("end") if window else now + timedelta(days=days)
     today = now.date()
     today_count = 0
     next_event = None
     dated_count = 0
     for item in safe_items:
-        start_dt = parse_iso(item.get("start"))
+        start_dt = parse_calendar_value(item.get("start"), operator_zone)
         if start_dt:
             dated_count += 1
         if start_dt and start_dt.date() == today:
@@ -1427,10 +1537,11 @@ def calendar_payload(items, source: str, auth: str, *, days: int = 7, error: str
         "data_updated_at": local_updated if source == "local" else None,
         "read_only": True,
         "window": {
-            "start": now.isoformat(timespec="seconds"),
+            "start": window_start.isoformat(timespec="seconds"),
             "end": window_end.isoformat(timespec="seconds"),
-            "label": f"Today + next {days - 1} days" if days > 1 else "Today",
+            "label": window.get("label") if window else (f"Today + next {days - 1} days" if days > 1 else "Today"),
         },
+        "timezone": calendar_timezone_metadata(operator_zone, zone_id, window_start),
         "summary": {
             "count": len(safe_items),
             "today_count": today_count,
@@ -1444,10 +1555,13 @@ def calendar_payload(items, source: str, auth: str, *, days: int = 7, error: str
     return payload
 
 
-def calendar_cache_key(days: int, limit: int):
+def calendar_cache_key(days: int, limit: int, *, window: dict | None = None):
     return {
         "days": days,
         "limit": limit,
+        "window_start": window.get("start").isoformat() if window else None,
+        "window_end": window.get("end").isoformat() if window else None,
+        "timezone": window.get("zone_id") if window else None,
         "token_mtime": file_mtime_iso(GOOGLE_TOKEN),
     }
 
@@ -1483,40 +1597,84 @@ def store_calendar_cache(key: dict, payload: dict) -> dict:
     return copy_calendar_payload(payload, cached=False, fetched_at=fetched_at)
 
 
-def google_calendar_events(days: int = 7, limit: int = 50):
+def google_calendar_events(
+    days: int = 7,
+    limit: int = 50,
+    *,
+    start: str | None = None,
+    timezone_name: str | None = None,
+    refresh: bool = False,
+):
     """Read upcoming Google Calendar events with local JSON fallback metadata."""
+    if start is not None and days != 7:
+        raise ValueError("Exact calendar week requests must cover exactly 7 days.")
+    try:
+        bounded_limit = max(1, min(int(limit), CALENDAR_MAX_EVENTS))
+    except (TypeError, ValueError):
+        raise ValueError("Calendar result limit is invalid.") from None
     scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
     fallback = read_json_file("calendar.json", [])
     fallback_available = bool(fallback)
-    cache_key = calendar_cache_key(days, limit)
-    cached = cached_calendar_payload(cache_key)
-    if cached:
-        return cached
+    window = exact_calendar_week(start, timezone_name) if start is not None else None
+    if window is not None:
+        fallback = calendar_items_in_window(fallback, window["start"], window["end"], window["zone"])
+    cache_key = calendar_cache_key(days, bounded_limit, window=window)
+    if not refresh:
+        cached = cached_calendar_payload(cache_key)
+        if cached:
+            return cached
 
     creds, auth_error = google_credentials(scopes)
     if creds is None:
-        return calendar_payload(fallback, "local", "not_connected", days=days, error=auth_error, fallback_available=fallback_available)
+        return calendar_payload(fallback, "local", "not_connected", days=days, error=auth_error, fallback_available=fallback_available, window=window)
 
     try:
         from googleapiclient.discovery import build
 
-        start = datetime.now(timezone.utc)
-        end = start + timedelta(days=days)
+        query_start = window["start"].astimezone(timezone.utc) if window else datetime.now(timezone.utc)
+        query_end = window["end"].astimezone(timezone.utc) if window else query_start + timedelta(days=days)
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        response = (
-            service.events()
-            .list(
-                calendarId="primary",
-                timeMin=start.isoformat().replace("+00:00", "Z"),
-                timeMax=end.isoformat().replace("+00:00", "Z"),
-                singleEvents=True,
-                orderBy="startTime",
-                maxResults=limit,
+        list_args = {
+            "calendarId": "primary",
+            "timeMin": query_start.isoformat().replace("+00:00", "Z"),
+            "timeMax": query_end.isoformat().replace("+00:00", "Z"),
+            "singleEvents": True,
+            "orderBy": "startTime",
+        }
+        if window and window.get("google_zone_id"):
+            list_args["timeZone"] = window["google_zone_id"]
+        raw_items = []
+        page_token = None
+        seen_page_tokens = set()
+        for _page in range(CALENDAR_MAX_PAGES):
+            page_args = {
+                **list_args,
+                "maxResults": min(250, bounded_limit - len(raw_items)),
+            }
+            if page_token:
+                page_args["pageToken"] = page_token
+            response = service.events().list(**page_args).execute()
+            page_items = response.get("items", []) if isinstance(response, dict) else []
+            remaining = bounded_limit - len(raw_items)
+            raw_items.extend(
+                item
+                for item in page_items[:remaining]
+                if isinstance(item, dict)
             )
-            .execute()
-        )
+            if len(raw_items) >= bounded_limit:
+                break
+            next_token = response.get("nextPageToken") if isinstance(response, dict) else None
+            if (
+                not isinstance(next_token, str)
+                or not next_token
+                or len(next_token) > 2048
+                or next_token in seen_page_tokens
+            ):
+                break
+            seen_page_tokens.add(next_token)
+            page_token = next_token
         items = []
-        for event in response.get("items", []):
+        for event in raw_items[:bounded_limit]:
             start_value = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date")
             end_value = event.get("end", {}).get("dateTime") or event.get("end", {}).get("date")
             items.append(
@@ -1525,6 +1683,7 @@ def google_calendar_events(days: int = 7, limit: int = 50):
                     "title": event.get("summary") or "Untitled event",
                     "start": start_value,
                     "end": end_value,
+                    "all_day": bool(event.get("start", {}).get("date") and not event.get("start", {}).get("dateTime")),
                     "type": "google",
                     "description": clean_snippet(event.get("description"), 180),
                     "location": event.get("location") or "",
@@ -1532,7 +1691,9 @@ def google_calendar_events(days: int = 7, limit: int = 50):
                     "htmlLink": event.get("htmlLink"),
                 }
             )
-        payload = calendar_payload(items, "google", "connected", days=days, calendar="primary", fallback_available=fallback_available)
+        if window is not None:
+            items = calendar_items_in_window(items, window["start"], window["end"], window["zone"])
+        payload = calendar_payload(items, "google", "connected", days=days, calendar="primary", fallback_available=fallback_available, window=window)
         return store_calendar_cache(cache_key, payload)
     except Exception:
         return calendar_payload(
@@ -1542,7 +1703,37 @@ def google_calendar_events(days: int = 7, limit: int = 50):
             days=days,
             error="Google Calendar could not be refreshed; showing the local fallback.",
             fallback_available=fallback_available,
+            window=window,
         )
+
+
+def calendar_request_payload(query_string: str):
+    """Validate the narrow read-only query surface used by the week calendar."""
+    query = parse_qs(query_string, keep_blank_values=True)
+    unknown = set(query) - {"start", "days", "timezone"}
+    if unknown:
+        return {"error": "Unsupported calendar query parameter."}, 400
+    if not query:
+        return google_calendar_events(), 200
+    if any(len(values) != 1 for values in query.values()):
+        return {"error": "Calendar query parameters may be provided only once."}, 400
+    start = query.get("start", [""])[0]
+    days = query.get("days", ["7"])[0]
+    timezone_name = query.get("timezone", [None])[0]
+    if not start:
+        return {"error": "Calendar start is required when selecting a week."}, 400
+    if days != "7":
+        return {"error": "Calendar week requests must cover exactly 7 days."}, 400
+    try:
+        exact_calendar_week(start, timezone_name)
+    except ValueError as exc:
+        return {"error": str(exc)}, 400
+    return google_calendar_events(
+        days=7,
+        limit=CALENDAR_MAX_EVENTS,
+        start=start,
+        timezone_name=timezone_name,
+    ), 200
 
 
 def hermes_config():
@@ -3392,15 +3583,50 @@ def agent_activity_payload() -> dict:
     return {"generated_at": now_iso(), "groups": groups, "counts": {key: len(value) for key, value in groups.items()}}
 
 
-def calendar_event_by_id(event_id: str) -> dict | None:
-    payload = google_calendar_events(days=30, limit=200)
+def calendar_event_by_id(
+    event_id: str,
+    *,
+    week_start: str | None = None,
+    timezone_name: str | None = None,
+) -> dict | None:
+    if week_start is not None:
+        payload = google_calendar_events(
+            days=7,
+            limit=CALENDAR_MAX_EVENTS,
+            start=week_start,
+            timezone_name=timezone_name,
+            refresh=True,
+        )
+    else:
+        payload = google_calendar_events(days=30, limit=200, refresh=True)
+    if not isinstance(payload, dict) or payload.get("source") != "google" or payload.get("auth") != "connected":
+        return None
     items = payload.get("items") if isinstance(payload, dict) else []
     matches = [item for item in items or [] if isinstance(item, dict) and str(item.get("id") or "") == event_id]
     return matches[0] if len(matches) == 1 else None
 
 
+def calendar_mutation_window(payload) -> tuple[str | None, str | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None, None
+    week_start = str(payload.get("week_start") or "").strip()
+    timezone_name = str(payload.get("timezone") or "").strip()
+    if not week_start and not timezone_name:
+        return None, None, None
+    if not week_start or not timezone_name:
+        return None, None, "Calendar week start and timezone must be provided together."
+    try:
+        exact_calendar_week(week_start, timezone_name)
+    except ValueError as exc:
+        return None, None, str(exc)
+    return week_start, timezone_name, None
+
+
 def create_task_from_calendar_event(event_id: str, payload):
-    event = calendar_event_by_id(event_id)
+    week_start, timezone_name, window_error = calendar_mutation_window(payload)
+    if window_error:
+        return {"error": window_error}, 400
+    event = calendar_event_by_id(event_id, week_start=week_start, timezone_name=timezone_name)
     if event is None:
         return {"error": "Calendar event is unavailable or changed; refresh Calendar and try again."}, 409
     project = canonical_project_name((payload or {}).get("project")) if isinstance(payload, dict) else ""
@@ -3427,7 +3653,10 @@ def create_task_from_calendar_event(event_id: str, payload):
 
 def link_task_calendar_event(task_id: str, payload):
     event_id = compact_text((payload or {}).get("event_id"), max_length=160) if isinstance(payload, dict) else ""
-    event = calendar_event_by_id(event_id)
+    week_start, timezone_name, window_error = calendar_mutation_window(payload)
+    if window_error:
+        return {"error": window_error}, 400
+    event = calendar_event_by_id(event_id, week_start=week_start, timezone_name=timezone_name)
     if event is None:
         return {"error": "Calendar event is unavailable or changed; refresh Calendar and try again."}, 409
     task = task_record(task_id)
@@ -3552,13 +3781,58 @@ CONTEXT_PACK_ID_PATTERN = re.compile(r"pack_[0-9a-f]{16}\Z")
 CONTEXT_PACK_MAX_ITEMS = 8
 
 
+def context_pack_workspace_authorities(values) -> list[dict]:
+    authorities = []
+    seen = set()
+    for value in values if isinstance(values, list) else []:
+        if not isinstance(value, dict):
+            continue
+        authority = {
+            "root_id": str(value.get("root_id") or ""),
+            "relative_path": str(value.get("relative_path") or ""),
+        }
+        key = (authority["root_id"], authority["relative_path"])
+        if key not in seen:
+            seen.add(key)
+            authorities.append(authority)
+    return authorities
+
+
+def context_pack_revision(pack: dict) -> str:
+    canonical = {
+        key: deepcopy(value)
+        for key, value in pack.items()
+        if key not in {"revision", "updated_at"}
+    }
+    canonical["workspace_files"] = context_pack_workspace_authorities(
+        canonical.get("workspace_files")
+    )
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def context_pack_with_revision(pack: dict) -> dict:
+    safe_pack = deepcopy(pack)
+    safe_pack["workspace_files"] = context_pack_workspace_authorities(
+        safe_pack.get("workspace_files")
+    )
+    safe_pack["revision"] = context_pack_revision(safe_pack)
+    return safe_pack
+
+
 def context_pack_record(pack_id: str) -> dict | None:
     if not CONTEXT_PACK_ID_PATTERN.fullmatch(str(pack_id or "")):
         return None
     records = read_json_file("context_packs.json", [])
     if not isinstance(records, list):
         return None
-    return next((item for item in records if isinstance(item, dict) and item.get("id") == pack_id), None)
+    record = next((item for item in records if isinstance(item, dict) and item.get("id") == pack_id), None)
+    return context_pack_with_revision(record) if record is not None else None
 
 
 def normalize_context_pack(payload, *, existing: dict | None = None) -> tuple[dict | None, str | None]:
@@ -3598,7 +3872,12 @@ def normalize_context_pack(payload, *, existing: dict | None = None) -> tuple[di
             return None, "Context packs accept text and source workspace files, not images."
         key = (reference["root_id"], reference["relative_path"])
         if key not in {(item["root_id"], item["relative_path"]) for item in workspace_files}:
-            workspace_files.append(reference)
+            workspace_files.append(
+                {
+                    "root_id": reference["root_id"],
+                    "relative_path": reference["relative_path"],
+                }
+            )
     if len(note_paths) + len(workspace_files) > CONTEXT_PACK_MAX_ITEMS:
         return None, f"A context pack accepts at most {CONTEXT_PACK_MAX_ITEMS} total notes and files."
     if not instructions and not note_paths and not workspace_files:
@@ -3616,6 +3895,7 @@ def normalize_context_pack(payload, *, existing: dict | None = None) -> tuple[di
         "created_at": (existing or {}).get("created_at") or timestamp,
         "updated_at": (existing or {}).get("updated_at") or timestamp,
     }
+    normalized["revision"] = context_pack_revision(normalized)
     return normalized, None
 
 
@@ -3623,7 +3903,10 @@ def context_packs_payload():
     records = read_json_file("context_packs.json", [])
     if not isinstance(records, list):
         return {"error": "context_packs.json must contain a list"}
-    return {"context_packs": [item for item in records if isinstance(item, dict)], "max_items": CONTEXT_PACK_MAX_ITEMS}
+    return {
+        "context_packs": [context_pack_with_revision(item) for item in records if isinstance(item, dict)],
+        "max_items": CONTEXT_PACK_MAX_ITEMS,
+    }
 
 
 def create_context_pack(payload):
@@ -3636,7 +3919,11 @@ def create_context_pack(payload):
         if any(str(item.get("name") or "").casefold() == normalized["name"].casefold() for item in records if isinstance(item, dict)):
             return records, ({"error": "A context pack with that name already exists."}, 409)
         next_records = [item for item in records if isinstance(item, dict)] + [normalized]
-        return next_records, ({"ok": True, "context_pack": normalized, "context_packs": next_records}, 201)
+        return next_records, ({
+            "ok": True,
+            "context_pack": normalized,
+            "context_packs": [context_pack_with_revision(item) for item in next_records],
+        }, 201)
     return update_json_file("context_packs.json", [], mutator)
 
 
@@ -3656,8 +3943,13 @@ def update_context_pack(pack_id: str, payload):
             if any(item.get("id") != pack_id and str(item.get("name") or "").casefold() == normalized["name"].casefold() for item in next_records):
                 return records, ({"error": "A context pack with that name already exists."}, 409)
             normalized["updated_at"] = now_iso()
+            normalized["revision"] = context_pack_revision(normalized)
             next_records[index] = normalized
-            return next_records, ({"ok": True, "context_pack": normalized, "context_packs": next_records}, 200)
+            return next_records, ({
+                "ok": True,
+                "context_pack": normalized,
+                "context_packs": [context_pack_with_revision(item) for item in next_records],
+            }, 200)
         return records, ({"error": "Context pack not found"}, 404)
     return update_json_file("context_packs.json", [], mutator)
 
@@ -3673,10 +3965,20 @@ def delete_context_pack(pack_id: str, payload):
         current = next((item for item in records if isinstance(item, dict) and item.get("id") == pack_id), None)
         if current is None:
             return records, ({"error": "Context pack not found"}, 404)
-        if compact_text(payload.get("expected_updated_at"), max_length=80) != current.get("updated_at"):
+        expected_revision = compact_text(payload.get("expected_revision"), max_length=80)
+        current_revision = context_pack_revision(current)
+        legacy_timestamp_matches = (
+            "revision" not in current
+            and not expected_revision
+            and compact_text(payload.get("expected_updated_at"), max_length=80) == current.get("updated_at")
+        )
+        if expected_revision != current_revision and not legacy_timestamp_matches:
             return records, ({"error": "Context pack changed; reopen it before deleting."}, 409)
         next_records = [item for item in records if not (isinstance(item, dict) and item.get("id") == pack_id)]
-        return next_records, ({"ok": True, "context_packs": next_records}, 200)
+        return next_records, ({
+            "ok": True,
+            "context_packs": [context_pack_with_revision(item) for item in next_records],
+        }, 200)
     return update_json_file("context_packs.json", [], mutator)
 
 
@@ -5173,7 +5475,6 @@ API_ROUTES = {
     "/api/agent-messages": agent_messages_payload,
     "/api/agent-activity": agent_activity_payload,
     "/api/attention": attention_payload,
-    "/api/calendar": google_calendar_events,
     "/api/email": email_payload,
     "/api/agent-console": agent_console_payload,
     "/api/agent-console/commands": command_manifest_payload,
@@ -5237,18 +5538,45 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def send_json(self, payload, status=200):
+    def send_json(self, payload, status=200) -> bool:
         body = json.dumps(payload, indent=2, default=str).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return True
+        except ConnectionError:
+            # The client has gone away after requesting this response. Headers
+            # may already be committed, so never attempt a second response.
+            self.close_connection = True
+            return False
+        except Exception as exc:
+            # Serialization completed before response emission. Any failure
+            # here may follow committed headers and must not reach route-level
+            # retry handling, which would attempt a second HTTP response.
+            self.close_connection = True
+            self.log_internal_error("JSON response transmission", exc)
+            return False
+
+    def send_error_once(self, status: int, message: str | None = None) -> bool:
+        """Send one HTTP error without retrying a partially committed response."""
+        try:
+            self.send_error(status, message)
+            return True
+        except ConnectionError:
+            self.close_connection = True
+            return False
+        except Exception as exc:
+            self.close_connection = True
+            self.log_internal_error("error response transmission", exc)
+            return False
 
     def send_attachment_file(self, metadata: dict, path: Path) -> None:
         """Stream an owned blob with a browser-safe, non-sniffable response."""
@@ -5352,13 +5680,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             resolved = file_path.resolve()
             if PUBLIC_DIR.resolve() not in resolved.parents and resolved != PUBLIC_DIR.resolve():
-                self.send_error(403)
+                self.send_error_once(403)
                 return
             if not resolved.exists() or not resolved.is_file():
-                self.send_error(404)
+                self.send_error_once(404)
                 return
             body = resolved.read_bytes()
             content_type = mimetypes.guess_type(str(resolved))[0] or "application/octet-stream"
+        except Exception as exc:
+            self.log_internal_error("static asset preparation", exc)
+            self.send_error_once(500, "Static asset could not be loaded")
+            return
+        try:
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
@@ -5369,9 +5702,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        except ConnectionError:
+            # The client disconnected after requesting this asset. A response
+            # may already be partially committed, so never send an error body.
+            self.close_connection = True
         except Exception as exc:
-            self.log_internal_error("static asset response", exc)
-            self.send_error(500, "Static asset could not be loaded")
+            self.close_connection = True
+            self.log_internal_error("static asset transmission", exc)
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -5430,6 +5767,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.log_internal_error("Obsidian notes", exc)
                 self.send_json({"error": "Obsidian notes are unavailable."}, status=500)
+            return
+        if parsed.path == "/api/calendar":
+            try:
+                payload, status = calendar_request_payload(parsed.query)
+                self.send_json(payload, status=status)
+            except Exception as exc:
+                self.log_internal_error("calendar", exc)
+                self.send_json({"error": "Calendar is unavailable."}, status=500)
             return
         if parsed.path in API_ROUTES:
             try:

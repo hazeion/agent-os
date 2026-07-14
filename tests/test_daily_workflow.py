@@ -55,11 +55,25 @@ class DailyWorkflowTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "tasks.json", [])
             self.write_json(root, "projects.json", [{"id": "project-1", "name": "Mentat"}])
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "calendar_event_by_id", return_value=event):
-                payload, status = server.create_task_from_calendar_event("event-1", {"project": "Mentat"})
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "calendar_event_by_id", return_value=event
+            ) as event_lookup:
+                payload, status = server.create_task_from_calendar_event(
+                    "event-1",
+                    {
+                        "project": "Mentat",
+                        "week_start": "2026-07-12",
+                        "timezone": "America/Los_Angeles",
+                    },
+                )
         self.assertEqual(status, 201)
         self.assertEqual(payload["task"]["calendar_links"][0]["event_id"], "event-1")
         self.assertEqual(payload["task"]["scheduled_block"]["start"], event["start"])
+        event_lookup.assert_called_once_with(
+            "event-1",
+            week_start="2026-07-12",
+            timezone_name="America/Los_Angeles",
+        )
 
     def test_unified_search_groups_results_without_absolute_note_paths(self):
         with TemporaryDirectory() as tmpdir:

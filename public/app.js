@@ -1466,6 +1466,452 @@ function taskLinkedToCalendarEvent(eventId = '') {
   return state.tasks.find((task) => (task.calendar_links || []).some((link) => link.event_id === eventId));
 }
 
+function calendarPayloadIsVerified(payload = {}) {
+  return !Array.isArray(payload) && payload.source === 'google' && payload.auth === 'connected';
+}
+
+function calendarEventActionMarkup(item = {}, linkedTask = null, { verified = false, actionContext = '' } = {}) {
+  if (linkedTask?.id) {
+    return `<button class="mini-button" type="button" data-calendar-linked-task="${escapeHtml(linkedTask.id)}">Open linked task</button>`;
+  }
+  if (!verified || !item.id) return '';
+  const title = item.title || 'calendar event';
+  return `<button class="mini-button" type="button" data-calendar-create-task="${escapeHtml(item.id)}" aria-label="Create task from ${escapeHtml(title)}"${actionContext}>Create task</button><button class="mini-button" type="button" data-calendar-link-task="${escapeHtml(item.id)}" aria-label="Link selected task to ${escapeHtml(title)}"${actionContext}>Link selected task</button>`;
+}
+
+const CALENDAR_DEFAULT_START_HOUR = 6;
+const CALENDAR_DEFAULT_END_HOUR = 22;
+
+function calendarDateKey(value) {
+  const date = value instanceof Date ? value : calendarDate(value);
+  if (!date) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function calendarAddDays(value, amount) {
+  const date = value instanceof Date ? new Date(value) : calendarDate(value);
+  if (!date) return null;
+  date.setDate(date.getDate() + amount);
+  return date;
+}
+
+function startOfCalendarWeek(value = new Date()) {
+  const date = value instanceof Date ? new Date(value) : calendarDate(value);
+  if (!date) return null;
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - date.getDay());
+  return date;
+}
+
+function calendarWeekStartDate() {
+  const selected = calendarDate(state.calendarWeekStart || '');
+  return startOfCalendarWeek(selected || new Date());
+}
+
+function calendarWeekDates(weekStart) {
+  return Array.from({ length: 7 }, (_, index) => calendarAddDays(weekStart, index));
+}
+
+function calendarWeekLabel(weekStart) {
+  const weekEnd = calendarAddDays(weekStart, 6);
+  if (!weekStart || !weekEnd) return 'Current week';
+  const month = new Intl.DateTimeFormat(undefined, { month: 'long' });
+  if (weekStart.getFullYear() === weekEnd.getFullYear() && weekStart.getMonth() === weekEnd.getMonth()) {
+    return `${month.format(weekStart)} ${weekStart.getDate()}–${weekEnd.getDate()}, ${weekEnd.getFullYear()}`;
+  }
+  const startLabel = new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(weekStart.getFullYear() !== weekEnd.getFullYear() ? { year: 'numeric' } : {}),
+  }).format(weekStart);
+  const endLabel = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(weekEnd);
+  return `${startLabel}–${endLabel}`;
+}
+
+function calendarTimezoneId() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch {
+    return '';
+  }
+}
+
+function calendarTimezoneLabel(payload = {}) {
+  if (payload.timezone?.name) return payload.timezone.name;
+  if (payload.timezone?.id) return payload.timezone.id;
+  try {
+    const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+      .formatToParts(new Date())
+      .find((part) => part.type === 'timeZoneName')?.value;
+    return zone || calendarTimezoneId() || 'Local time';
+  } catch {
+    return calendarTimezoneId() || 'Local time';
+  }
+}
+
+function calendarWeekRequestUrl(weekStart) {
+  const params = new URLSearchParams({ start: calendarDateKey(weekStart), days: '7' });
+  const timezone = calendarTimezoneId();
+  if (timezone) params.set('timezone', timezone);
+  return `${endpoints.calendar}?${params.toString()}`;
+}
+
+function calendarItemKey(item = {}, index = 0) {
+  return String(item.id || `${item.title || 'event'}:${item.start || 'unscheduled'}:${index}`);
+}
+
+function isCalendarAllDay(item = {}) {
+  return item.all_day === true || isDateOnly(item.start);
+}
+
+function normalizedCalendarEventEnd(item = {}, start = calendarDate(item.start)) {
+  const end = calendarDate(item.end);
+  if (end && start && end > start) return end;
+  if (!start) return null;
+  return isCalendarAllDay(item) ? calendarAddDays(start, 1) : new Date(start.getTime() + 30 * 60_000);
+}
+
+function calendarPreviewEvents(weekStart) {
+  const definitions = [
+    [2, 9, 0, 60, 'Weekly planning'],
+    [3, 13, 0, 45, 'Project review'],
+    [5, 10, 0, 120, 'Focus block'],
+  ];
+  return definitions.map(([dayOffset, hour, minute, duration, title], index) => {
+    const start = calendarAddDays(weekStart, dayOffset);
+    start.setHours(hour, minute, 0, 0);
+    const end = new Date(start.getTime() + duration * 60_000);
+    return {
+      id: `preview:${calendarDateKey(weekStart)}:${index}`,
+      title,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      type: 'preview',
+      description: 'Generic preview appointment. Connect Google Calendar to replace this sample week.',
+      preview: true,
+    };
+  });
+}
+
+function calendarWeekItems(payload = {}, weekStart) {
+  const sourceItems = Array.isArray(payload) ? payload : (payload.items || []);
+  const hasDatedItems = sourceItems.some((item) => calendarDate(item?.start));
+  const preview = !Array.isArray(payload)
+    && payload.source === 'local'
+    && payload.auth === 'not_connected'
+    && !hasDatedItems;
+  const items = preview ? calendarPreviewEvents(weekStart) : sourceItems;
+  const verified = calendarPayloadIsVerified(payload);
+  const weekEnd = calendarAddDays(weekStart, 7);
+  return {
+    preview,
+    items: items.map((item, index) => ({
+      ...item,
+      _calendarKey: calendarItemKey(item, index),
+      _calendarVerified: verified,
+    })).filter((item) => {
+      const start = calendarDate(item.start);
+      const end = normalizedCalendarEventEnd(item, start);
+      return start && end && start < weekEnd && end > weekStart;
+    }),
+  };
+}
+
+function calendarAllDayItemsByDay(items, weekStart) {
+  const days = Array.from({ length: 7 }, () => []);
+  items.filter(isCalendarAllDay).forEach((item) => {
+    const itemStart = calendarDate(item.start);
+    const itemEnd = normalizedCalendarEventEnd(item, itemStart);
+    calendarWeekDates(weekStart).forEach((day, dayIndex) => {
+      const nextDay = calendarAddDays(day, 1);
+      if (itemStart < nextDay && itemEnd > day) days[dayIndex].push(item);
+    });
+  });
+  return days;
+}
+
+function calendarTimedSegmentMetrics(segmentStart, segmentEnd, day, nextDay) {
+  const startMinute = segmentStart.getTime() === day.getTime()
+    ? 0
+    : segmentStart.getHours() * 60 + segmentStart.getMinutes() + segmentStart.getSeconds() / 60;
+  let endMinute = segmentEnd.getTime() === nextDay.getTime()
+    ? 24 * 60
+    : segmentEnd.getHours() * 60 + segmentEnd.getMinutes() + segmentEnd.getSeconds() / 60;
+  const elapsedMinutes = (segmentEnd.getTime() - segmentStart.getTime()) / 60_000;
+  const wallMinutes = endMinute - startMinute;
+  // During a fall-back fold the same wall time occurs twice. Keep the event at
+  // its visible wall-clock start, but preserve its real duration so it does not
+  // collapse to zero height or disappear from overlap layout.
+  if (elapsedMinutes > wallMinutes && elapsedMinutes > 0) endMinute = startMinute + elapsedMinutes;
+  return { startMinute, endMinute };
+}
+
+function calendarTimedSegmentsByDay(items, weekStart) {
+  const days = Array.from({ length: 7 }, () => []);
+  items.filter((item) => !isCalendarAllDay(item)).forEach((item) => {
+    const itemStart = calendarDate(item.start);
+    const itemEnd = normalizedCalendarEventEnd(item, itemStart);
+    calendarWeekDates(weekStart).forEach((day, dayIndex) => {
+      const nextDay = calendarAddDays(day, 1);
+      if (itemStart >= nextDay || itemEnd <= day) return;
+      const segmentStart = itemStart > day ? itemStart : day;
+      const segmentEnd = itemEnd < nextDay ? itemEnd : nextDay;
+      const { startMinute, endMinute } = calendarTimedSegmentMetrics(segmentStart, segmentEnd, day, nextDay);
+      days[dayIndex].push({ item, startMinute, endMinute });
+    });
+  });
+  return days;
+}
+
+function layoutCalendarDayOverlaps(segments = []) {
+  const sorted = [...segments].sort((a, b) => (
+    a.startMinute - b.startMinute
+    || a.endMinute - b.endMinute
+    || a.item._calendarKey.localeCompare(b.item._calendarKey)
+  ));
+  const groups = [];
+  sorted.forEach((segment) => {
+    const group = groups.at(-1);
+    if (!group || segment.startMinute >= group.endMinute) {
+      groups.push({ endMinute: segment.endMinute, segments: [segment] });
+      return;
+    }
+    group.segments.push(segment);
+    group.endMinute = Math.max(group.endMinute, segment.endMinute);
+  });
+  return groups.flatMap((group) => {
+    const active = [];
+    let columnCount = 1;
+    const laidOut = group.segments.map((segment) => {
+      active.forEach((entry, column) => {
+        if (entry && entry.endMinute <= segment.startMinute) active[column] = null;
+      });
+      let column = active.findIndex((entry) => !entry);
+      if (column < 0) column = active.length;
+      active[column] = segment;
+      columnCount = Math.max(columnCount, column + 1);
+      return { ...segment, column };
+    });
+    return laidOut.map((segment) => ({ ...segment, columnCount }));
+  });
+}
+
+function calendarVisibleHours(segmentsByDay) {
+  const segments = segmentsByDay.flat();
+  const earliest = segments.length ? Math.floor(Math.min(...segments.map((item) => item.startMinute)) / 60) : CALENDAR_DEFAULT_START_HOUR;
+  const latest = segments.length ? Math.ceil(Math.max(...segments.map((item) => item.endMinute)) / 60) : CALENDAR_DEFAULT_END_HOUR;
+  return {
+    startHour: Math.max(0, Math.min(CALENDAR_DEFAULT_START_HOUR, earliest)),
+    endHour: Math.min(24, Math.max(CALENDAR_DEFAULT_END_HOUR, latest)),
+  };
+}
+
+function calendarWeekEventButton(item, { timed = false, segment = null, startHour = 0, endHour = 24 } = {}) {
+  const selected = state.calendarSelectedEventKey === item._calendarKey;
+  const source = item.preview ? 'preview' : (item._calendarVerified ? 'google' : 'local');
+  const title = item.title || 'Untitled event';
+  let style = '';
+  if (timed && segment) {
+    const visibleMinutes = (endHour - startHour) * 60;
+    const visibleStart = startHour * 60;
+    const clampedStart = Math.max(visibleStart, segment.startMinute);
+    const clampedEnd = Math.min(endHour * 60, segment.endMinute);
+    const top = ((clampedStart - visibleStart) / visibleMinutes) * 100;
+    const height = Math.max(0.7, ((clampedEnd - clampedStart) / visibleMinutes) * 100);
+    const columnWidth = 100 / segment.columnCount;
+    const left = segment.column * columnWidth;
+    style = ` style="top:${top.toFixed(4)}%;height:${height.toFixed(4)}%;left:calc(${left.toFixed(4)}% + 2px);width:calc(${columnWidth.toFixed(4)}% - 4px)"`;
+  }
+  const date = calendarDate(item.start);
+  const accessibleDate = date ? new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(date) : '';
+  const accessibleTime = calendarTimeLabel(item);
+  return `
+    <button class="calendar-week-event ${source === 'google' ? 'google-event' : ''} ${item.preview ? 'preview-event' : ''}" type="button"
+      data-calendar-event-select="${escapeHtml(item._calendarKey)}"
+      data-calendar-source="${escapeHtml(source)}" aria-selected="${selected ? 'true' : 'false'}" aria-pressed="${selected ? 'true' : 'false'}"
+      aria-label="${escapeHtml(`${title}, ${accessibleDate}, ${accessibleTime}${item.preview ? ', preview' : ''}`)}"${style}>
+      <span class="calendar-week-event-title">${escapeHtml(title)}</span>
+      ${timed ? `<span class="calendar-week-event-time">${escapeHtml(calendarTimeLabel(item))}</span>` : ''}
+      ${item.location ? `<span class="calendar-week-event-meta">${escapeHtml(item.location)}</span>` : ''}
+    </button>`;
+}
+
+function renderCalendarEventInspector() {
+  const inspector = $('#calendar-event-inspector');
+  const content = $('#calendar-inspector-content');
+  if (!inspector || !content) return;
+  const item = (state.calendarWeekRenderedItems || []).find((event) => event._calendarKey === state.calendarSelectedEventKey);
+  if (!item) {
+    inspector.hidden = true;
+    content.innerHTML = '<p class="empty">Select an appointment to inspect its details and Mentat actions.</p>';
+    return;
+  }
+  const linkedTask = item.preview ? null : taskLinkedToCalendarEvent(item.id || '');
+  const googleUrl = item._calendarVerified ? safeExternalUrl(item.htmlLink || '') : '';
+  const weekStart = state.calendarWeekStart || '';
+  const timezone = state.calendarWeekTimezone || calendarTimezoneId();
+  const actionContext = weekStart && timezone
+    ? ` data-calendar-week-start="${escapeHtml(weekStart)}" data-calendar-timezone="${escapeHtml(timezone)}"`
+    : '';
+  const realEventActions = calendarEventActionMarkup(item, linkedTask, {
+    verified: item._calendarVerified === true,
+    actionContext,
+  });
+  const sourceLabel = item.preview ? 'Preview appointment' : item._calendarVerified ? 'Google Calendar · read-only' : 'Local calendar · read-only';
+  content.innerHTML = `
+    <div class="item-title"><span>${escapeHtml(item.title || 'Untitled event')}</span><span class="pill">${escapeHtml(item.preview ? 'preview' : item.type || 'event')}</span></div>
+    <div class="item-meta mono">${escapeHtml(calendarDayLabel(calendarDate(item.start)))} · ${escapeHtml(calendarTimeLabel(item))}</div>
+    <div class="item-meta mono">${escapeHtml(sourceLabel)}</div>
+    ${item.location ? `<div class="item-desc"><strong>Location</strong><br>${escapeHtml(item.location)}</div>` : ''}
+    ${item.description ? `<div class="item-desc">${escapeHtml(item.description)}</div>` : ''}
+    ${item.preview ? '<div class="calendar-preview-notice">Preview events are client-only examples. They cannot create or link tasks.</div>' : ''}
+    ${(realEventActions || googleUrl) ? `<div class="calendar-task-actions">${realEventActions}${googleUrl ? `<a class="mini-button" href="${escapeHtml(googleUrl)}" target="_blank" rel="noreferrer">Open in Google</a>` : ''}</div>` : ''}
+  `;
+  inspector.hidden = false;
+}
+
+function selectCalendarEvent(eventKey = '') {
+  state.calendarSelectedEventKey = eventKey;
+  $$('[data-calendar-event-select]').forEach((button) => {
+    const selected = button.dataset.calendarEventSelect === eventKey;
+    button.setAttribute('aria-selected', selected ? 'true' : 'false');
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  });
+  renderCalendarEventInspector();
+}
+
+function calendarMutationContext(element) {
+  const weekStart = element?.dataset?.calendarWeekStart || '';
+  const timezone = element?.dataset?.calendarTimezone || '';
+  return weekStart && timezone ? { week_start: weekStart, timezone } : {};
+}
+
+function renderCalendarWeek(payload = {}, weekStart = calendarWeekStartDate()) {
+  const shell = $('#calendar-week');
+  const dayHeaders = $('#calendar-week-days');
+  const allDayEvents = $('#calendar-all-day-events');
+  const timeLabels = $('#calendar-time-labels');
+  const events = $('#calendar-week-events');
+  if (!shell || !dayHeaders || !allDayEvents || !timeLabels || !events || !weekStart) return;
+
+  state.calendarWeekStart = calendarDateKey(weekStart);
+  state.calendarWeekTimezone = payload.timezone?.id && payload.timezone.id !== 'local'
+    ? payload.timezone.id
+    : calendarTimezoneId();
+  const { items, preview } = calendarWeekItems(payload, weekStart);
+  state.calendarWeekRenderedItems = items;
+  if (!items.some((item) => item._calendarKey === state.calendarSelectedEventKey)) state.calendarSelectedEventKey = '';
+
+  const rangeLabel = payload.window?.label || calendarWeekLabel(weekStart);
+  const label = $('#calendar-week-range') || $('#calendar-week-label');
+  if (label) label.textContent = rangeLabel;
+  const sourceStatus = $('#calendar-source-status');
+  if (sourceStatus) {
+    sourceStatus.textContent = preview ? 'Preview week · Google not connected' : payload.source === 'google' ? 'Google Calendar · read-only' : 'Local calendar · read-only';
+    sourceStatus.dataset.source = preview ? 'preview' : (payload.source || 'local');
+    sourceStatus.className = `calendar-status-chip ${payload.source === 'google' ? 'live' : 'fallback'}`;
+  }
+  const timezone = $('#calendar-timezone');
+  if (timezone) timezone.textContent = calendarTimezoneLabel(payload);
+
+  const dates = calendarWeekDates(weekStart);
+  const today = new Date();
+  dayHeaders.innerHTML = `<div class="calendar-week-corner" aria-hidden="true"></div>${dates.map((date) => {
+    const isToday = sameCalendarDay(date, today);
+    return `<div class="calendar-week-day-header ${isToday ? 'is-today' : ''}" data-calendar-date="${calendarDateKey(date)}"${isToday ? ' aria-current="date"' : ''}><span class="calendar-week-day-name">${escapeHtml(new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(date))}</span><strong class="calendar-week-day-number">${date.getDate()}</strong></div>`;
+  }).join('')}`;
+
+  const allDayByDay = calendarAllDayItemsByDay(items, weekStart);
+  allDayEvents.innerHTML = allDayByDay.map((dayItems, index) => `<div class="calendar-week-all-day-cell" data-calendar-date="${calendarDateKey(dates[index])}">${dayItems.map((item) => calendarWeekEventButton(item)).join('')}</div>`).join('');
+
+  const timedByDay = calendarTimedSegmentsByDay(items, weekStart);
+  const { startHour, endHour } = calendarVisibleHours(timedByDay);
+  const visibleHours = endHour - startHour;
+  shell.style.setProperty('--calendar-grid-height', `calc(var(--calendar-hour-height) * ${visibleHours})`);
+  timeLabels.innerHTML = Array.from({ length: visibleHours + 1 }, (_, index) => {
+    const hour = startHour + index;
+    const labelDate = new Date(2020, 0, 1, hour % 24);
+    const top = (index / visibleHours) * 100;
+    return `<span class="calendar-week-hour-label" style="top:${top.toFixed(4)}%">${escapeHtml(new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).format(labelDate))}</span>`;
+  }).join('');
+  events.innerHTML = timedByDay.map((segments, dayIndex) => {
+    const laidOut = layoutCalendarDayOverlaps(segments);
+    return `<div class="calendar-week-day-column ${sameCalendarDay(dates[dayIndex], today) ? 'is-today' : ''}" data-calendar-date="${calendarDateKey(dates[dayIndex])}">${laidOut.map((segment) => calendarWeekEventButton(segment.item, { timed: true, segment, startHour, endHour })).join('')}</div>`;
+  }).join('');
+
+  const nowLine = $('#calendar-now-line');
+  if (nowLine) {
+    const todayInWeek = today >= weekStart && today < calendarAddDays(weekStart, 7);
+    const minute = today.getHours() * 60 + today.getMinutes();
+    const visibleNow = minute >= startHour * 60 && minute <= endHour * 60;
+    nowLine.hidden = !(todayInWeek && visibleNow);
+    if (!nowLine.hidden) {
+      nowLine.style.top = `${((minute - startHour * 60) / (visibleHours * 60) * 100).toFixed(4)}%`;
+      const nowLabel = nowLine.querySelector('.calendar-week-now-label');
+      if (nowLabel) nowLabel.textContent = timeFmt.format(today);
+    }
+  }
+  shell.setAttribute('aria-busy', 'false');
+  renderCalendarEventInspector();
+}
+
+function renderCalendarWeekLoading(weekStart) {
+  const shell = $('#calendar-week');
+  if (shell) shell.setAttribute('aria-busy', 'true');
+  const label = $('#calendar-week-range') || $('#calendar-week-label');
+  if (label) label.textContent = calendarWeekLabel(weekStart);
+  const status = $('#calendar-source-status');
+  if (status) status.textContent = 'Loading calendar week…';
+  const dates = calendarWeekDates(weekStart);
+  const today = new Date();
+  const dayHeaders = $('#calendar-week-days');
+  if (dayHeaders) dayHeaders.innerHTML = `<div class="calendar-week-corner" aria-hidden="true"></div>${dates.map((date) => {
+    const isToday = sameCalendarDay(date, today);
+    return `<div class="calendar-week-day-header ${isToday ? 'is-today' : ''}" data-calendar-date="${calendarDateKey(date)}"${isToday ? ' aria-current="date"' : ''}><span class="calendar-week-day-name">${escapeHtml(new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(date))}</span><strong class="calendar-week-day-number">${date.getDate()}</strong></div>`;
+  }).join('')}`;
+  ['#calendar-all-day-events', '#calendar-time-labels', '#calendar-week-events'].forEach((selector) => {
+    const container = $(selector);
+    if (container) container.innerHTML = '';
+  });
+  const nowLine = $('#calendar-now-line');
+  if (nowLine) nowLine.hidden = true;
+  state.calendarWeekRenderedItems = [];
+  renderCalendarEventInspector();
+}
+
+async function loadCalendarWeek(weekStart) {
+  const normalizedStart = startOfCalendarWeek(weekStart);
+  if (!normalizedStart) return;
+  const weekKey = calendarDateKey(normalizedStart);
+  state.calendarWeekStart = weekKey;
+  state.calendarSelectedEventKey = '';
+  const requestToken = (state.calendarWeekRequestToken || 0) + 1;
+  state.calendarWeekRequestToken = requestToken;
+  renderCalendarWeekLoading(normalizedStart);
+  try {
+    const payload = await api(calendarWeekRequestUrl(normalizedStart));
+    if (requestToken !== state.calendarWeekRequestToken || state.calendarWeekStart !== weekKey || state.activeView !== 'calendar') return;
+    renderCalendar(payload, { view: 'calendar' });
+  } catch (err) {
+    if (requestToken !== state.calendarWeekRequestToken || state.calendarWeekStart !== weekKey) return;
+    const shell = $('#calendar-week');
+    if (shell) shell.setAttribute('aria-busy', 'false');
+    const status = $('#calendar-source-status');
+    if (status) status.textContent = `Calendar failed: ${err.message}`;
+  }
+}
+
+function navigateCalendarWeek(direction) {
+  const current = calendarWeekStartDate();
+  const target = direction === 'today'
+    ? startOfCalendarWeek(new Date())
+    : calendarAddDays(current, direction === 'previous' ? -7 : 7);
+  return loadCalendarWeek(target);
+}
+
 function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
   const container = $(selector);
   if (!container) return;
@@ -1473,6 +1919,7 @@ function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
   const visible = sortedCalendarItems(items).slice(0, limit);
   const source = Array.isArray(payload) ? 'local' : (payload.source || 'local');
   const auth = Array.isArray(payload) ? 'legacy' : (payload.auth || 'unknown');
+  const verified = calendarPayloadIsVerified(payload);
   const summary = payload.summary || {};
   const statusLine = calendarStatusText(payload, items);
   const groups = calendarGroups(visible);
@@ -1505,16 +1952,15 @@ function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
       <div class="calendar-day-list">
         ${groupItems.map((item) => {
           const linkedTask = taskLinkedToCalendarEvent(item.id || '');
+          const actions = calendarEventActionMarkup(item, linkedTask, { verified });
           return `
           <article class="item calendar-event ${source === 'google' ? 'google-event' : 'local-event'}">
             <div class="calendar-event-time mono">${escapeHtml(calendarTimeLabel(item))}</div>
             <div class="calendar-event-body">
               <div class="item-title"><span>${escapeHtml(item.title || 'Untitled event')}</span><span class="pill">${escapeHtml(item.type || 'event')}</span></div>
               <div class="item-desc">${escapeHtml(item.description || item.location || '')}</div>
-              <div class="item-meta mono">${escapeHtml(item.location || source)}${calendarEventLink(item)}</div>
-              <div class="calendar-task-actions">
-                ${linkedTask ? `<button class="mini-button" type="button" data-calendar-linked-task="${escapeHtml(linkedTask.id || '')}">Open linked task</button>` : `<button class="mini-button" type="button" data-calendar-create-task="${escapeHtml(item.id || '')}" aria-label="Create task from ${escapeHtml(item.title || 'calendar event')}">Create task</button><button class="mini-button" type="button" data-calendar-link-task="${escapeHtml(item.id || '')}" aria-label="Link selected task to ${escapeHtml(item.title || 'calendar event')}">Link selected task</button>`}
-              </div>
+              <div class="item-meta mono">${escapeHtml(item.location || source)}${verified ? calendarEventLink(item) : ''}</div>
+              ${actions ? `<div class="calendar-task-actions">${actions}</div>` : ''}
             </div>
           </article>
         `; }).join('')}
@@ -1528,20 +1974,12 @@ function renderCalendarInto(selector, payload = {}, { limit = Infinity } = {}) {
   container.innerHTML = `${summaryMarkup}${groupMarkup}${overflow}`;
 }
 
-function renderCalendar(payload = {}) {
-  const source = Array.isArray(payload) ? 'local' : (payload.source || 'local');
-  const auth = Array.isArray(payload) ? 'legacy' : (payload.auth || 'unknown');
-  const sourceLabel = source === 'google' ? 'Google live' : source === 'local' && auth === 'error' ? 'Google error' : source === 'local' && auth === 'not_connected' ? 'local fallback' : 'local json';
-  const pillClass = source === 'google' ? 'pill success' : auth === 'error' ? 'pill warn' : 'pill';
-  ['#calendar-source-pill', '#calendar-full-source-pill'].forEach((selector) => {
-    const pill = $(selector);
-    if (!pill) return;
-    pill.textContent = sourceLabel;
-    pill.className = pillClass;
-    if (payload.error) pill.title = payload.error;
-  });
+function renderCalendar(payload = {}, { view = state.activeView } = {}) {
+  if (view === 'calendar') {
+    renderCalendarWeek(payload, calendarWeekStartDate());
+    return;
+  }
   renderCalendarInto('#calendar-list', payload, { limit: 5 });
-  renderCalendarInto('#calendar-full-list', payload, { limit: Infinity });
 }
 
 function renderEmail(payload = {}) {
@@ -3864,11 +4302,36 @@ function renderContextPackWorkspaceSelected() {
   selected.innerHTML = (state.contextPackDraft.workspace_files || []).map((file) => `<span class="context-pack-chip"><span>${escapeHtml(file.relative_path)}</span><button type="button" data-remove-context-pack-file="${escapeHtml(file.relative_path)}" aria-label="Remove ${escapeHtml(file.relative_path)}">×</button></span>`).join('') || '<span class="section-copy">No workspace files selected.</span>';
 }
 
+function contextPackEditorDraft(pack = null) {
+  const draft = pack ? JSON.parse(JSON.stringify(pack)) : {};
+  return {
+    ...draft,
+    id: String(draft.id || ''),
+    name: String(draft.name || ''),
+    revision: String(draft.revision || ''),
+    updated_at: String(draft.updated_at || ''),
+    description: String(draft.description || ''),
+    instructions: String(draft.instructions || ''),
+    note_paths: Array.isArray(draft.note_paths) ? draft.note_paths : [],
+    workspace_files: Array.isArray(draft.workspace_files) ? draft.workspace_files : [],
+  };
+}
+
+function contextPackDeleteBinding(draft = {}, editingId = '') {
+  if (!draft.id || draft.id !== editingId || (!draft.revision && !draft.updated_at)) return null;
+  return {
+    id: draft.id,
+    name: draft.name || 'Context pack',
+    revision: draft.revision || '',
+    updated_at: draft.updated_at || '',
+  };
+}
+
 async function openContextPackEditor(packId = '') {
   if (!state.notesPayload.notes?.length) state.notesPayload = await fetchObsidianNotes();
   const pack = state.contextPacks.find((item) => item.id === packId);
   state.editingContextPackId = pack?.id || '';
-  state.contextPackDraft = pack ? JSON.parse(JSON.stringify(pack)) : { name: '', description: '', instructions: '', note_paths: [], workspace_files: [] };
+  state.contextPackDraft = contextPackEditorDraft(pack || null);
   renderContextPackEditor();
   $('#context-pack-dialog')?.showModal();
 }
@@ -3969,7 +4432,15 @@ async function refresh() {
     health: api(endpoints.health),
   };
 
-  if (activeView === 'calendar' || activeView === 'today') requests.calendar = api(endpoints.calendar);
+  let calendarRequestWeekKey = '';
+  if (activeView === 'calendar') {
+    const weekStart = calendarWeekStartDate();
+    calendarRequestWeekKey = calendarDateKey(weekStart);
+    state.calendarWeekStart = calendarRequestWeekKey;
+    requests.calendar = api(calendarWeekRequestUrl(weekStart));
+  } else if (activeView === 'today') {
+    requests.calendar = api(endpoints.calendar);
+  }
   if (activeView === 'today') requests.agentConsole = api(endpoints.agentConsole);
   if (activeView === 'today' || activeView === 'agents') requests.agentActivity = api(endpoints.agentActivity);
   if (activeView === 'today') requests.agentConsoleCommandManifest = fetchAgentConsoleCommandManifest();
@@ -4006,7 +4477,10 @@ async function refresh() {
     if (data.projects) renderIfChanged(`projects-${state.projectFilter}-${state.projectEditorMode}`, state.projects, renderProjects);
     renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
     renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
-    if (data.calendar) renderIfChanged('calendar', data.calendar, renderCalendar);
+    if (data.calendar && (activeView !== 'calendar' || state.calendarWeekStart === calendarRequestWeekKey)) {
+      const cacheKey = activeView === 'calendar' ? `calendar-week-${calendarRequestWeekKey}` : 'calendar-agenda';
+      renderIfChanged(cacheKey, data.calendar, (payload) => renderCalendar(payload, { view: activeView }));
+    }
     if (data.agentConsoleCommandManifest) setAgentConsoleCommandManifest(data.agentConsoleCommandManifest);
     if (data.agentConsole) renderAgentConsole(data.agentConsole);
     if (data.agentActivity) renderIfChanged('agent-activity', data.agentActivity, renderAgentActivity);
@@ -4496,6 +4970,20 @@ if (clearProjectFilter) {
 }
 
 document.addEventListener('click', async (event) => {
+  const weekNavigation = event.target.closest('[data-calendar-week-nav]');
+  if (weekNavigation) {
+    await navigateCalendarWeek(weekNavigation.dataset.calendarWeekNav || 'today');
+    return;
+  }
+  const calendarEvent = event.target.closest('[data-calendar-event-select]');
+  if (calendarEvent) {
+    selectCalendarEvent(calendarEvent.dataset.calendarEventSelect || '');
+    return;
+  }
+  if (event.target.closest('#calendar-inspector-close')) {
+    selectCalendarEvent('');
+    return;
+  }
   const triggerCronButton = event.target.closest('[data-trigger-cron]');
   if (triggerCronButton) {
     await openCronTrigger(triggerCronButton.dataset.triggerCron || '');
@@ -4737,7 +5225,11 @@ document.addEventListener('click', async (event) => {
       return;
     }
     try {
-      const result = await createTaskFromCalendarEvent(createFromCalendar.dataset.calendarCreateTask || '', project);
+      const result = await createTaskFromCalendarEvent(
+        createFromCalendar.dataset.calendarCreateTask || '',
+        project,
+        calendarMutationContext(createFromCalendar),
+      );
       state.tasks = Array.isArray(result.tasks) ? result.tasks : [...state.tasks, result.task];
       state.selectedTaskId = result.task?.id || '';
       state.projectFilter = result.task?.project || project;
@@ -4757,7 +5249,11 @@ document.addEventListener('click', async (event) => {
       return;
     }
     try {
-      const result = await linkTaskToCalendarEvent(selected.id, linkCalendar.dataset.calendarLinkTask || '');
+      const result = await linkTaskToCalendarEvent(
+        selected.id,
+        linkCalendar.dataset.calendarLinkTask || '',
+        calendarMutationContext(linkCalendar),
+      );
       state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks.map((task) => task.id === result.task?.id ? result.task : task);
       $('#health-label').textContent = `Linked calendar event to ${selected.title}.`;
       renderProjectScopedViews();
@@ -4910,10 +5406,14 @@ $('#context-pack-workspace-selected')?.addEventListener('click', (event) => {
   renderContextPackWorkspaceSelected();
 });
 $('[data-context-pack-delete]')?.addEventListener('click', async () => {
-  const pack = state.contextPacks.find((item) => item.id === state.editingContextPackId);
-  if (!pack || !window.confirm(`Delete context pack “${pack.name}”?`)) return;
+  const binding = contextPackDeleteBinding(state.contextPackDraft, state.editingContextPackId);
+  if (!binding) {
+    $('#context-pack-status').textContent = 'Reopen this context pack before deleting it.';
+    return;
+  }
+  if (!window.confirm(`Delete context pack “${binding.name}”?`)) return;
   try {
-    const result = await removeContextPack(pack.id, pack.updated_at);
+    const result = await removeContextPack(binding.id, binding.revision, binding.updated_at);
     renderContextPacks(result);
     $('#context-pack-dialog')?.close();
   } catch (err) {

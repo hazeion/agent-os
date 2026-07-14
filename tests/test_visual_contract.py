@@ -160,6 +160,58 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('agentConsoleCommands', APP_JS)
         self.assertNotIn('id="agent-console-status-pill"', today_block)
 
+    def test_calendar_view_uses_responsive_operator_week_shell(self):
+        calendar_block = INDEX[INDEX.index('id="view-calendar"') : INDEX.index('id="view-notes"')]
+        required_ids = (
+            'calendar-operator-panel',
+            'calendar-week-label',
+            'calendar-week-range',
+            'calendar-week-previous',
+            'calendar-week-today',
+            'calendar-week-next',
+            'calendar-source-status',
+            'calendar-timezone',
+            'calendar-week-scroll',
+            'calendar-week-days',
+            'calendar-all-day-events',
+            'calendar-time-labels',
+            'calendar-week-grid',
+            'calendar-week-events',
+            'calendar-now-line',
+            'calendar-event-inspector',
+            'calendar-inspector-close',
+            'calendar-inspector-content',
+        )
+        for element_id in required_ids:
+            self.assertIn(f'id="{element_id}"', calendar_block)
+
+        self.assertIn('data-calendar-week-nav="previous"', calendar_block)
+        self.assertIn('data-calendar-week-nav="today"', calendar_block)
+        self.assertIn('data-calendar-week-nav="next"', calendar_block)
+        self.assertIn('Calendar · read-only', calendar_block)
+        self.assertNotIn('id="calendar-full-list"', calendar_block)
+        self.assertNotIn('#calendar-full-list', CSS)
+        self.assertNotIn('.calendar-week-host', CSS)
+        self.assertNotIn('.calendar-operator-layout.inspector-open', CSS)
+        self.assertNotIn('--calendar-day-min:', CSS)
+
+        operator_css = CSS[CSS.index('/* Operator Week calendar */') : CSS.index('.agents-session-layout {')]
+        self.assertIn('.calendar-week-day-headers,', operator_css)
+        self.assertIn('repeat(7, minmax(0, 1fr))', operator_css)
+        self.assertIn('overflow-x: auto', operator_css)
+        self.assertIn('--calendar-week-min: 772px', operator_css)
+        self.assertIn('--calendar-week-min: 876px', operator_css)
+        self.assertIn('.calendar-week-now-line', operator_css)
+        self.assertIn('.calendar-week-event', operator_css)
+        self.assertIn('.calendar-event-inspector[hidden]', operator_css)
+
+        header_actions = operator_css[
+            operator_css.index('.calendar-header-actions {') : operator_css.index('.calendar-week-nav,')
+        ]
+        self.assertIn('justify-content: flex-end', header_actions)
+        self.assertIn('flex-wrap: wrap', header_actions)
+        self.assertNotIn('justify-content: space-between', header_actions)
+
     def test_today_next_moves_support_project_filter_and_task_jump(self):
         self.assertIn('id="focus-task-list"', INDEX)
         self.assertNotIn('id="attention-panel"', INDEX)

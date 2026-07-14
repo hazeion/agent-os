@@ -190,6 +190,11 @@ into needs input, ready for review, running, failed, and recently completed.
 Google Calendar access remains read-only. Creating a Mentat task from a verified
 event, linking a selected task, or assigning a scheduled block writes only to
 `data/tasks.json`. Mentat never edits, deletes, or reschedules the Google event.
+The week view accepts only a validated Sunday start, a fixed seven-day range,
+and a validated IANA timezone. Google and local-fallback results are filtered to
+the exact half-open week window, including events that overlap a boundary. The
+disconnected preview is generated only in the browser and its sample events are
+never eligible for task-link mutations.
 
 Task note attachments are validated Markdown paths relative to the configured
 Obsidian vault. Symlinks and paths that escape the vault are rejected. Delegation
