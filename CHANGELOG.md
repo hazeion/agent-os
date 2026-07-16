@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-14
 
 ### Added
+- Added an ordered Road to Beta covering the release contract, durable user
+  data, packaging and CLI work, CI, public trust and support, release rehearsal,
+  an external tester cohort, and final public-beta acceptance criteria.
 - Added Operator Week, a full Sunday-through-Saturday calendar with exact-week
   navigation, all-day and hourly lanes, overlap-aware appointments, a current-
   time marker, and a responsive event inspector that retains Mentat task-link
