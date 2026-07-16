@@ -2,6 +2,14 @@
 
 All notable changes to Mentat.
 
+## 2026-07-15
+
+### Changed
+- Formalized the Road to Beta as a slice-based workflow using one bounded
+  GitHub issue and draft pull request at a time, explicit acceptance evidence,
+  private Obsidian learnings, and an early cross-platform CI guardrail before
+  data-root implementation begins.
+
 ## 2026-07-14
 
 ### Added

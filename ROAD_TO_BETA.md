@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
-Status: working roadmap  
-Last updated: 2026-07-14
+Status: Milestone 0 in progress
+Last updated: 2026-07-15
 
 This document organizes the work required to make Mentat safe, installable,
 supportable, and useful as a public beta. It is deliberately ordered: each
@@ -69,6 +69,48 @@ The largest beta gaps are operational rather than feature gaps:
 - public trust and support documents are incomplete;
 - the release and external-tester process has not been rehearsed.
 
+## How roadmap work is organized
+
+Each project artifact has one job:
+
+| Artifact | Purpose |
+| --- | --- |
+| This roadmap | Milestone order, status, dependencies, and exit evidence |
+| GitHub issue | One bounded implementation slice with acceptance criteria |
+| Branch and draft pull request | Implementation, tests, review, and discussion |
+| `CHANGELOG.md` | The operator-visible outcome that actually shipped |
+| Obsidian notes | Private brainstorming, session summaries, and reusable learnings |
+
+Do not put credentials, personal operator content, machine-specific paths, or
+private diagnostics in GitHub issues or pull requests.
+
+### Slice workflow
+
+Every slice follows the same reviewable loop:
+
+1. Select the next task from the earliest incomplete milestone.
+2. Define the goal, non-goals, safety boundaries, acceptance criteria, and
+   verification evidence in a GitHub issue.
+3. Create a focused `codex/beta-<milestone>-<slice>` branch.
+4. Add or identify the tests that prove the acceptance criteria before
+   broadening implementation.
+5. Implement only the agreed slice.
+6. Run focused checks, the full suite, and rendered/browser verification when
+   the slice changes user-facing behavior.
+7. Review failure modes, compatibility, privacy, and rollback behavior.
+8. Update the roadmap, changelog, and relevant private notes with the result.
+9. Push a draft pull request with the evidence and unresolved decisions.
+10. Merge or revise the slice before beginning dependent work.
+
+### Early CI guardrail
+
+Before Milestone 1 changes the data boundary, pull forward a narrow part of
+Milestone 3: run Python compilation, JavaScript syntax checks, and the existing
+test suite automatically on macOS, Windows, and Ubuntu. Packaging, release
+artifacts, dependency scanning, and browser release gates remain in Milestone
+3. This early guardrail exists to catch cross-platform path regressions while
+the data-root work is still small.
+
 ## Milestone map
 
 | Order | Milestone | Status | Depends on | Exit evidence |
@@ -88,22 +130,25 @@ Goal: remove ambiguity about who the beta serves and what the project promises.
 
 Work in order:
 
-1. Approve or revise the recommended release contract above.
-2. Choose the public license.
-3. Confirm tier-one operating systems and Python versions.
-4. Confirm the initial install channel and version naming convention.
-5. Define severity levels:
+1. Adopt the slice-based working process in this roadmap. **Approved
+   2026-07-15.**
+2. Approve or revise the recommended release contract above.
+3. Choose the public license.
+4. Confirm tier-one operating systems and Python versions.
+5. Confirm the initial install channel and version naming convention.
+6. Define severity levels:
    - P0: data loss, secret exposure, unsafe mutation, or app-wide unusability;
    - P1: a core workflow is unusable with no reasonable workaround;
    - P2: degraded behavior with a workaround;
    - P3: polish, documentation, or minor inconvenience.
-6. Record explicit non-goals and the policy for accepting beta feedback.
+7. Record explicit non-goals and the policy for accepting beta feedback.
 
 Exit criteria:
 
 - the release contract is approved in this document;
 - the license choice is recorded;
 - supported and preview environments are unambiguous;
+- the slice workflow and review evidence are used consistently;
 - every later milestone can make decisions against the same target.
 
 ## Milestone 1 — Move user data out of the install
@@ -337,16 +382,12 @@ The release cannot be called public beta until all of the following are true:
   editors;
 - large new product surfaces that do not close a beta acceptance gap.
 
-## How to work this roadmap
+## Current next actions
 
-Take one small, reviewable slice at a time:
-
-1. select the next unchecked task from the earliest incomplete milestone;
-2. write its acceptance tests or evidence before broadening its scope;
-3. update this document and the changelog with the result;
-4. do not begin a dependent milestone while an earlier data-safety or release
+1. Finish Milestone 0 by approving the release contract and choosing the
+   license. These remain explicit project-owner decisions.
+2. Land the early CI guardrail described above.
+3. Begin Milestone 1A with a complete mutable-path inventory and data-layout
+   contract before changing any runtime default.
+4. Do not begin a dependent slice while an earlier data-safety or release
    blocker remains open.
-
-The immediate next slice is **Milestone 0: approve the release contract and
-choose the license**. After those short decisions, begin Milestone 1 with the
-mutable-path inventory and platform-aware data-root resolver.
