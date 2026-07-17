@@ -1,6 +1,6 @@
 # Feature Slice Review: Add the Early Cross-Platform CI Guardrail
 
-Status: Authorized; final hosted retry pending
+Status: Complete
 Slice: `beta-ci-guardrail`
 Date: `2026-07-17`
 Review log: `reviews/2026-07-17-beta-ci-guardrail.md`
@@ -45,12 +45,12 @@ mutable-data boundary.
 | AC-1 | A workflow runs on pull requests and pushes to `main`. | Focused workflow contract test and workflow inspection. | Passed locally and hosted |
 | AC-2 | The workflow expands to all nine combinations of Ubuntu, macOS, Windows, and Python 3.11 through 3.13 without cancelling sibling failures. | Focused matrix contract test and first Actions run. | Passed; all nine jobs launched |
 | AC-3 | Every job checks out the repository, selects its matrix Python version, installs pinned dependencies, and uses a fixed Node version. | Focused workflow contract test and Actions logs/status. | Passed locally and hosted |
-| AC-4 | Every job compiles all project Python, checks all three tracked JavaScript/MJS files, and runs the full unittest suite. | Focused workflow contract test and Actions logs/status. | Local pass; hosted retry pending after remediation |
+| AC-4 | Every job compiles all project Python, checks all three tracked JavaScript/MJS files, and runs the full unittest suite. | Focused workflow contract test and Actions logs/status. | Passed locally and hosted |
 | AC-5 | The workflow has read-only repository permissions and does not consume repository secrets. | Focused negative contract assertions and inspection. | Passed |
 | AC-6 | The full existing suite remains green locally. | Full-suite result. | Passed |
-| AC-7 | The first GitHub-hosted nine-job matrix completes successfully. | GitHub Actions check results for the ready PR. | Pending |
+| AC-7 | The GitHub-hosted nine-job matrix completes successfully after remediation. | GitHub Actions check results for the ready PR. | Passed; run `29617117932` |
 | AC-8 | Roadmap and changelog truthfully record the early guardrail without claiming later Milestone 4 gates. | Documentation assertions and inspection. | Passed |
-| AC-9 | Runtime changes are limited to Windows-safe binary copies and pinned timezone data; tests no longer depend on developer-owned Hermes/Obsidian state. | Focused regressions, dependency contract, changed-file inspection, and hosted matrix. | Passed locally; hosted retry pending |
+| AC-9 | Runtime changes are limited to Windows-safe binary copies and pinned timezone data; tests no longer depend on developer-owned Hermes/Obsidian state. | Focused regressions, dependency contract, changed-file inspection, and hosted matrix. | Passed locally and hosted |
 
 ### Constraints and recovery
 
@@ -190,6 +190,7 @@ mutable-data boundary.
 | --- | --- | --- |
 | GitHub Actions run `29611921877`, attempt 2, commit `1036d5e` | 9 jobs launched; all reached the full suite and failed | Checkout, Python/Node setup, dependency installation, compilation, and all JavaScript checks passed in every job. macOS/Ubuntu exposed seven local-state-dependent tests. Windows additionally exposed missing timezone data, binary truncation at Ctrl-Z, and a POSIX-only assertion. The approved remediation addresses those causes; a retry after publication is mandatory. |
 | GitHub Actions run `29616839592`, commit `8f9c0be` | 6 macOS/Ubuntu jobs passed; 3 Windows jobs each failed one identical assertion | The runtime, timezone, Hermes/Obsidian, and original path fixes passed. One workspace-snapshot fixture used `Path.write_text`, which produced CRLF on Windows while its assertion intentionally required exact LF bytes. The approved final correction writes the fixture as explicit LF bytes and keeps the strict assertion. |
+| GitHub Actions run `29617117932`, commit `bea0f63` | 9 of 9 jobs passed | The complete macOS, Windows, and Ubuntu matrix passed on Python 3.11, 3.12, and 3.13. This satisfies the mandatory hosted acceptance gate. |
 
 ### Remediation checks
 
@@ -318,9 +319,8 @@ Reviewer findings pending.
 - PR summary: Add the read-only nine-job OS/Python matrix, portable syntax and
   full-suite checks, regression contracts, and truthful roadmap/changelog
   records while deferring the remaining Milestone 4 release gates.
-- Unresolved risks: The correction has not yet rerun on hosted Windows; all
-  nine jobs remain mandatory before successful outcome acceptance. PR #18 is
-  still open, so this slice remains stacked until its approved base lands.
+- Unresolved risks: None within the approved slice. PR #18 is still open, so
+  PR #19 remains stacked until its approved base lands.
 - User authorization and scope: The project owner explicitly approved staging
   the six reviewed files, committing, pushing `codex/beta-ci-guardrail`, and
   opening the ready stacked PR on 2026-07-17. The owner explicitly approved
@@ -335,16 +335,18 @@ Reviewer findings pending.
 
 ## Outcome review
 
-- Classification: Authorized for the final test-only correction; locally
-  verified and independently reviewed, with the replacement hosted matrix
-  still mandatory.
-- Acceptance criteria summary: AC-1 through AC-6, AC-8, and AC-9 pass local
-  evidence; AC-7 requires all nine GitHub-hosted jobs after publication.
-- Potential bugs or untested paths: The first hosted matrix exposed and bounded
-  the portability defects; the correction still requires a hosted retry.
-- Remaining reviewer dissent: None; both reviewers reported no findings in
-  Round 3.
-- Compatibility/migration/rollback concerns: No migration; workflow rollback
-  is a normal revert.
-- User decision: Pending.
-- Next slice authorized: No
+- Classification: Successful.
+- Acceptance criteria summary: AC-1 through AC-9 passed, including all nine
+  GitHub-hosted OS/Python jobs.
+- Potential bugs or untested paths: Native installers, browser automation,
+  packaging, self-hosted runners, dependency scanning, branch protection, and
+  later Milestone 4 release gates remain intentionally outside this slice.
+- Remaining reviewer dissent: None; both reviewers reported no findings in the
+  final hosted-follow-up review.
+- Compatibility/migration/rollback concerns: No migration. The workflow,
+  timezone dependency, binary flags, and test-fixture corrections can be
+  reverted through their ordinary commits.
+- User decision: Accepted as successful by the project owner on 2026-07-17.
+- Next slice authorized: Milestone 1A contract planning is authorized;
+  implementation still requires explicit approval of its bounded slice
+  contract and test strategy.
