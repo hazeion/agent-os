@@ -40,7 +40,22 @@ Mentat uses:
 There is currently **no npm install step**.
 
 Hermes profiles are the canonical agent identities. Mentat uses supported,
-validated Hermes operations for agent control and keeps credentials in Hermes.
+validated Hermes operations for agent control and keeps provider/model
+credentials in Hermes. The future remote-connection API key will be
+Mentat-owned, server-only operator configuration stored outside the install.
+
+## Remote Hermes direction
+
+The public-beta contract keeps Mentat installed locally and bound to loopback,
+while allowing one active local or operator-managed remote Hermes endpoint.
+Remote mode is not implemented yet. Its mandatory feature set, HTTPS/API-key
+boundary, safe degradation rules, and upstream Kanban, profile-discovery, and
+clarification blockers are documented in
+[REMOTE_HERMES.md](REMOTE_HERMES.md).
+
+Mentat will not expose its own dashboard to the network, send a Hermes API key
+to the browser, mount a remote Hermes home, or use SSH and undocumented APIs as
+substitutes for supported capabilities.
 
 ## Quick start
 
@@ -136,6 +151,9 @@ agent_console_*.py           Console files, artifacts, and run support
 task_planning.py             Planning validation and recurrence
 scripts/mentat_setup.py      Local setup wizard
 mentat.toml                  Shared configuration defaults
+ARCHITECTURE.md              Capability and mutation contract
+REMOTE_HERMES.md             Remote capability matrix and trust boundary
+ROAD_TO_BETA.md              Ordered public-beta milestones and exit evidence
 tests/                       Unit and contract tests
 ```
 
@@ -153,7 +171,7 @@ python -m unittest discover -s tests -v
 ```
 
 Developer guidance lives in [AGENTS.md](AGENTS.md). Recent changes are in
-[CHANGELOG.md](CHANGELOG.md).
+[CHANGELOG.md](CHANGELOG.md). Mentat is licensed under the [MIT License](LICENSE).
 
 ## Project status
 
@@ -162,6 +180,8 @@ that stays friendly to new contributors while its workflows mature. If you find
 something rough, an issue or a focused pull request is welcome.
 
 The ordered release plan, milestone dependencies, and public-beta acceptance
-criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The next focus is locking
-the beta support contract, then moving mutable operator data out of the
-application directory before packaging and distribution work begins.
+criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The remote architecture and
+MIT license are approved; the remaining Milestone 0 owner decisions are still
+open. After those decisions, the next focus is the early CI guardrail, followed
+by moving mutable operator data and future remote credentials out of the
+application directory before remote-Hermes implementation and packaging begin.

@@ -2,10 +2,13 @@
 
 ## Product role
 
-Mentat is a local-first, capability-scoped Hermes control plane. It is not only
-a read-only viewer, and it is not a general-purpose editor for Hermes files.
-Mentat may observe Hermes state broadly, but it may mutate Hermes only through
-explicit, supported capabilities implemented by the Hermes adapter.
+Mentat is a local-first, capability-scoped Hermes control plane. The Mentat
+server and browser remain on the operator's device, while one active Hermes
+connection may eventually be local or an operator-managed remote HTTPS
+endpoint. Mentat is not only a read-only viewer, and it is not a general-purpose
+editor for Hermes files. It may observe Hermes state broadly, but it may mutate
+Hermes only through explicit, supported capabilities implemented by the Hermes
+adapter.
 
 ## Identity model
 
@@ -20,7 +23,8 @@ explicit, supported capabilities implemented by the Hermes adapter.
 | Surface | Policy |
 | --- | --- |
 | Hermes sessions and `state.db` | Read-only |
-| Credentials and authentication files | Never read or write directly |
+| Hermes provider credentials and authentication files | Never read or write directly |
+| Remote Hermes API credential | Server-side owner-only configuration; never returned to the browser or written to tracked files |
 | Hermes profiles | Mutate only through approved, fixed Hermes CLI/API operations |
 | Model/provider configuration | Mutate only through validated Hermes operations |
 | Existing Hermes cron jobs | Read-only inventory; queue controls fail closed |
@@ -30,6 +34,7 @@ explicit, supported capabilities implemented by the Hermes adapter.
 | Mentat project/task data | Writable through allowlisted project-owned storage |
 | Hermes Kanban tasks and runs | Mutate only through the supported, capability-gated Kanban adapter |
 | Arbitrary Hermes files | Never write directly |
+| Remote Hermes files and stores | Never access directly; use only documented, authenticated capabilities |
 
 ## Mutation contract
 
@@ -44,14 +49,61 @@ Every write-capable Hermes operation must declare:
 7. privacy-aware local audit data that excludes secrets.
 
 Unsupported capabilities and unknown Hermes versions fail closed. Mentat never
-constructs a shell command from browser text and never collects Hermes secrets.
+constructs a shell command from browser text and never collects Hermes-owned
+provider/model credentials or authentication-file contents. The sole remote
+connection credential is the operator-supplied API key governed by the
+owner-only, server-side boundary below.
 
 Mentat is an unauthenticated local application and must bind only to a loopback
-host. Non-loopback access is not a deployment option under this contract.
+host. Non-loopback serving of Mentat is not a deployment option under this
+contract. A later server-side outbound connection to one remote Hermes endpoint
+is allowed only under [REMOTE_HERMES.md](REMOTE_HERMES.md); that does not expose
+Mentat itself or permit the browser to call Hermes directly.
 
-Agent Console execution is globally single-run in v1. Every run records its
-Hermes profile id, launches with a fixed `-p <profile>` selector, and may resume
-only a session already associated with that same profile.
+In the current local mode, Agent Console execution is globally single-run.
+Every run records its Hermes profile id, launches with a fixed
+`-p <profile>` selector, and may resume only a session already associated with
+that same profile. A future remote transport must preserve the single-run and
+profile/session binding without launching a local Hermes process.
+
+## Remote Hermes connection boundary
+
+The approved public-beta direction is local Mentat connected to one active
+local or remote Hermes endpoint. The detailed capability matrix, upstream
+blockers, implementation order, and exit evidence live in
+[REMOTE_HERMES.md](REMOTE_HERMES.md). The current runtime has not implemented
+this transport and must not advertise remote readiness yet.
+
+The remote boundary has these architectural invariants:
+
+1. the operator explicitly supplies an HTTPS endpoint and API credential;
+2. the credential is used only by Mentat's server and remains outside tracked
+   files, URLs, browser storage/payloads, diagnostics, backups that are not
+   secret-aware, and logs;
+3. public health is treated only as untrusted liveness; authenticated readiness
+   and machine-readable capabilities are validated before Mentat enables a
+   dependent feature;
+4. endpoint, profile, session, run, preview, and confirmation identity remain
+   bound so state from one host cannot authorize an operation on another;
+5. unsupported, changed, timed-out, or unverifiable capabilities fail closed;
+6. the existing typed-intent, preview, confirmation, locking, read-back,
+   partial-failure, audit, and rollback rules apply equally to HTTP adapters;
+7. Mentat never substitutes SSH, a remote shell, a mounted Hermes home,
+   dashboard-token scraping, direct database/file access, or an undocumented
+   endpoint for a missing capability; and
+8. local Mentat features continue to work when they do not depend on the failed
+   or unavailable remote capability.
+
+Remote Console, sessions/runs, approvals/cancellation/stopping, and
+skill/toolset visibility have documented Hermes API surfaces and remain
+mandatory beta work. Clarification handling is also mandatory, but remains a
+compatibility blocker until the HTTP API advertises a typed request/response
+capability.
+Complete read-only profile discovery and API-key-authenticated Kanban are also
+mandatory, but are upstream blockers until Hermes exposes supported,
+capability-advertised server-to-server operations. Profile creation/deletion,
+identity editing, provider administration, cron inventory, and advanced
+artifact transfer may degrade clearly in remote mode.
 
 ## Agent Console file boundary
 
@@ -110,15 +162,18 @@ and role available to the running agent's system prompt. Mentat does not create
 a second identity registry and never returns the remaining soul content to the
 browser.
 
-Identity inspection and writes run inside the Hermes runtime and resolve the
-profile only through Hermes' profile API. A write is allowed only when the
-runtime exposes the required profile-resolution and metadata operations. The
-adapter rejects symlinked soul files, multiple or malformed managed blocks,
+In local mode, identity inspection and writes run inside the Hermes runtime and
+resolve the profile only through Hermes' profile API. A write is allowed only
+when the runtime exposes the required profile-resolution and metadata
+operations. The adapter rejects symlinked soul files, multiple or malformed
+managed blocks,
 reserved marker text, unknown profiles, stale revisions, and active Console
 runs. Every change requires an exact preview and profile-bound confirmation,
 uses an atomic same-directory soul replacement, synchronizes the Hermes routing
 description, refreshes both surfaces for verification, and attempts rollback on
 failure. Content outside the managed block is preserved and remains read-only.
+Remote mode must not inspect or edit `SOUL.md`; identity controls remain
+unavailable until Hermes advertises an equivalent authenticated capability.
 
 ## Personal task and planning model
 
@@ -145,9 +200,12 @@ Google Calendar.
 ## Hermes Kanban delegation boundary
 
 The supported Hermes Kanban adapter is the only durable delegation mutation
-path. Agent Messages remains a project-owned communication queue, and Agent
-Console remains an interactive, globally single-run conversation surface;
-neither is a durable dispatcher.
+path. Its current implementation uses fixed local Hermes operations. Remote
+beta parity requires an authenticated, capability-advertised Kanban surface
+that preserves the same revision and read-back behavior; until then remote
+delegation fails closed. Agent Messages remains a project-owned communication
+queue, and Agent Console remains an interactive, globally single-run
+conversation surface; neither is a durable dispatcher.
 
 The adapter uses shell-free argument arrays and a fixed set of supported Kanban
 operations. It omits workspace paths, process identifiers, arbitrary metadata,
@@ -209,7 +267,10 @@ a result. Deep Hermes message search remains a separate read-only endpoint.
 
 ## Provider switching boundary
 
-Provider discovery and selection are scoped to the selected Hermes profile.
+Provider discovery and selection are scoped to the selected Hermes profile. The
+current adapter runs locally; remote mode may expose these controls only when a
+supported endpoint advertises equivalent authenticated inventory, mutation,
+verification, and rollback behavior.
 Mentat obtains picker context from Hermes through `load_picker_context()` and
 builds the selectable inventory with
 `build_models_payload(..., explicit_only=True, picker_hints=True)`. The browser
@@ -250,8 +311,10 @@ does not mutate Hermes data and is not reversible from Mentat.
 
 ## Hermes cron boundary
 
-Mentat currently exposes Hermes cron inventory as read-only. The installed
-Hermes runtime does not provide an atomic, expected-revision, enabled-only
+Mentat currently exposes local Hermes cron inventory as read-only. Remote mode
+does not read the cron store and must hide the inventory unless Hermes exposes a
+supported bounded read capability. The installed Hermes runtime does not
+provide an atomic, expected-revision, enabled-only
 operation for moving an existing job to the next scheduler tick. A separate
 read followed by the available trigger operation cannot close that race: a job
 could be changed or disabled between validation and mutation, and the trigger
@@ -336,7 +399,7 @@ Deferred until separately approved:
 - clone-all;
 - profile rename;
 - skill content editing, hub installation, or arbitrary MCP configuration;
-- non-loopback access.
+- non-loopback Mentat serving or browser-to-Hermes access.
 
 Mentat retains one active dashboard run globally for the first version. This
 can be revisited after profile-scoped execution and cancellation are proven.
