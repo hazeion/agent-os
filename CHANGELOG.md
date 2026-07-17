@@ -2,6 +2,24 @@
 
 All notable changes to Mentat.
 
+## 2026-07-16
+
+### Added
+- Adopted the MIT License and documented the approved remote-Hermes portion of
+  the public-beta contract without closing the remaining owner decisions.
+- Added the remote Hermes capability matrix, security boundary, upstream
+  blockers, and ordered implementation plan for connecting local Mentat to one
+  operator-managed HTTPS endpoint.
+
+### Changed
+- Made Console, sessions/runs, approvals/clarification/cancellation/stopping,
+  skills/toolsets, Kanban, and read-only profile discovery the mandatory
+  remote-beta capability set.
+- Reordered the Road to Beta to put secure remote Hermes parity before public
+  trust work, release rehearsal, and external testing.
+- Aligned roadmap slices with persistent evidence logs, two independent
+  adversarial reviews, and explicitly approved ready pull requests.
+
 ## 2026-07-15
 
 ### Changed
