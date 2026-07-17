@@ -234,7 +234,7 @@ class AgentConsoleArtifactTests(unittest.TestCase):
             workspace = Path(tmpdir) / "workspace"
             workspace.mkdir()
             original = workspace / "review.py"
-            original.write_text("print('snapshot')\n", encoding="utf-8")
+            original.write_bytes(b"print('snapshot')\n")
             data_dir = Path(tmpdir) / "data"
             store = RecordingStore()
 

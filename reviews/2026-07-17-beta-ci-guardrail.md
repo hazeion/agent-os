@@ -1,6 +1,6 @@
 # Feature Slice Review: Add the Early Cross-Platform CI Guardrail
 
-Status: Ready for correction publication approval
+Status: Authorized; final hosted retry pending
 Slice: `beta-ci-guardrail`
 Date: `2026-07-17`
 Review log: `reviews/2026-07-17-beta-ci-guardrail.md`
@@ -189,6 +189,7 @@ mutable-data boundary.
 | Run | Result | Evidence and disposition |
 | --- | --- | --- |
 | GitHub Actions run `29611921877`, attempt 2, commit `1036d5e` | 9 jobs launched; all reached the full suite and failed | Checkout, Python/Node setup, dependency installation, compilation, and all JavaScript checks passed in every job. macOS/Ubuntu exposed seven local-state-dependent tests. Windows additionally exposed missing timezone data, binary truncation at Ctrl-Z, and a POSIX-only assertion. The approved remediation addresses those causes; a retry after publication is mandatory. |
+| GitHub Actions run `29616839592`, commit `8f9c0be` | 6 macOS/Ubuntu jobs passed; 3 Windows jobs each failed one identical assertion | The runtime, timezone, Hermes/Obsidian, and original path fixes passed. One workspace-snapshot fixture used `Path.write_text`, which produced CRLF on Windows while its assertion intentionally required exact LF bytes. The approved final correction writes the fixture as explicit LF bytes and keeps the strict assertion. |
 
 ### Remediation checks
 
@@ -278,6 +279,23 @@ Reviewer findings pending.
 - Review gate: Passed. Both reviewers require the nine-job hosted retry as the
   remaining acceptance evidence.
 
+### Final hosted-follow-up review
+
+- Trigger: Run `29616839592` reduced the matrix to one identical Windows-only
+  test failure caused by text-mode fixture creation, not snapshot behavior.
+- Correction: Create exact LF fixture bytes with `write_bytes` and retain the
+  strict byte-equality assertion. No runtime code changed.
+- Verification: 18 focused tests and all 367 tests passed locally; Python
+  compilation and the diff check also passed.
+- Reviewer A — correctness and safety: No findings. Confirmed exact source-byte
+  construction preserves the fidelity contract without normalization, skips,
+  or masking.
+- Reviewer B — compatibility and product: No findings. Confirmed the change
+  removes only Windows fixture translation and the review record remains
+  truthful.
+- Review gate: Passed; the owner authorized publication and another complete
+  hosted matrix run.
+
 ## Documentation updates
 
 - Roadmap: Records the implemented nine-job early guardrail and advances the
@@ -308,14 +326,17 @@ Reviewer findings pending.
   opening the ready stacked PR on 2026-07-17. The owner explicitly approved
   staging the 12 reviewed correction files, committing them as `Fix
   cross-platform CI failures`, pushing the same branch, and rerunning the
-  nine-job matrix on 2026-07-17.
+  nine-job matrix on 2026-07-17. After that run isolated one Windows newline
+  fixture mismatch, the owner approved the final test-only byte-explicit
+  fixture correction, local verification, re-review, push, and another hosted
+  matrix run on 2026-07-17.
 - Published workflow commit: `1036d5ea9b245086c19003ab582aa5f56f484e55`.
 - Ready PR URL: `https://github.com/hazeion/agent-os/pull/19`.
 
 ## Outcome review
 
-- Classification: Ready for correction publication approval; remediation is
-  locally verified and independently reviewed, with the hosted matrix retry
+- Classification: Authorized for the final test-only correction; locally
+  verified and independently reviewed, with the replacement hosted matrix
   still mandatory.
 - Acceptance criteria summary: AC-1 through AC-6, AC-8, and AC-9 pass local
   evidence; AC-7 requires all nine GitHub-hosted jobs after publication.
