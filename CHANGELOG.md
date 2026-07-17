@@ -2,6 +2,20 @@
 
 All notable changes to Mentat.
 
+## 2026-07-17
+
+### Changed
+- Closed the remaining Milestone 0 release-contract decisions for the beta
+  audience, supported and preview platforms, Python versions, manual updates,
+  absent-by-default telemetry, initial version, severity levels, and feedback
+  policy.
+- Made signed native installers the required primary public-beta path on macOS
+  and Windows, with macOS notarization and `pipx` retained as the supported
+  advanced/fallback and Linux preview path. Installer implementation remains a
+  future packaging milestone.
+- Moved the roadmap forward to the early cross-platform CI guardrail followed
+  by the Milestone 1A mutable-path inventory and data-layout contract.
+
 ## 2026-07-16
 
 ### Added

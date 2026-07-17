@@ -10,6 +10,14 @@ REMOTE_HERMES = (ROOT / "REMOTE_HERMES.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 
+def section(text: str, start: str, end: str) -> str:
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def normalized_section(text: str, start: str, end: str) -> str:
+    return " ".join(section(text, start, end).split())
+
+
 class BetaContractTests(unittest.TestCase):
     def test_standard_mit_license_uses_approved_holder(self):
         self.assertTrue(LICENSE.startswith("MIT License\n"))
@@ -17,13 +25,94 @@ class BetaContractTests(unittest.TestCase):
         self.assertIn("Permission is hereby granted, free of charge", LICENSE)
         self.assertIn('THE SOFTWARE IS PROVIDED "AS IS"', LICENSE)
 
-    def test_milestone_zero_records_only_the_approved_decisions(self):
-        self.assertIn("Status: Milestone 0 in progress", ROADMAP)
-        self.assertIn("Remote architecture and license decisions approved: 2026-07-16", ROADMAP)
-        self.assertIn("| License | MIT | Approved 2026-07-16 |", ROADMAP)
-        self.assertIn("| Tier-one platforms | macOS and Windows | Recommended; approval pending |", ROADMAP)
-        self.assertIn("| Python | 3.11 through 3.13 | Recommended; approval pending |", ROADMAP)
-        self.assertIn("one active local or remote Hermes endpoint", ROADMAP)
+    def test_milestone_zero_records_the_complete_approved_contract(self):
+        decisions = section(ROADMAP, "## Beta contract decisions", "## Current baseline")
+        milestone = section(ROADMAP, "## Milestone 0", "## Milestone 1")
+
+        self.assertIn("Status: Milestone 0 complete", ROADMAP)
+        self.assertIn("Beta release contract approved: 2026-07-17", ROADMAP)
+        self.assertIn("| Audience | Hermes operators comfortable installing local software | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Tier-one platforms | macOS and Windows | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Preview platform | Linux, covered by CI but not initially promised at the same support level | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Python | 3.11 through 3.13 | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Update model | Manual, versioned upgrades with a pre-upgrade backup | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Telemetry | Off and absent by default | Approved 2026-07-17 |", decisions)
+        self.assertIn("| First version | `0.1.0b1`, displayed to users as `v0.1.0-beta.1` | Approved 2026-07-17 |", decisions)
+        self.assertIn("| License | MIT | Approved 2026-07-16 |", decisions)
+        self.assertIn("Native installers are primary on tier-one platforms", decisions)
+        self.assertIn("`pipx` from a tagged release remains supported", decisions)
+        self.assertNotIn("approval pending", decisions.lower())
+        self.assertNotIn("pending", milestone.lower())
+
+    def test_native_installers_and_pipx_are_consistent_beta_channels(self):
+        milestone_three = normalized_section(ROADMAP, "## Milestone 3", "## Milestone 4")
+        milestone_four = normalized_section(ROADMAP, "## Milestone 4", "## Milestone 5")
+        milestone_six = normalized_section(ROADMAP, "## Milestone 6", "## Milestone 7")
+        milestone_eight = normalized_section(ROADMAP, "## Milestone 8", "## Public beta definition of done")
+        definition_of_done = normalized_section(ROADMAP, "## Public beta definition of done", "## Work intentionally deferred")
+
+        for requirement in (
+            "signed and notarized native installer for macOS",
+            "signed native installer for Windows",
+            "`pipx`",
+        ):
+            self.assertIn(requirement, ROADMAP)
+        self.assertIn("Exact installer formats and tooling", ROADMAP)
+        for milestone in (
+            milestone_three,
+            milestone_four,
+            milestone_six,
+            milestone_eight,
+            definition_of_done,
+        ):
+            self.assertIn("signed and notarized native installer for macOS", milestone)
+            self.assertIn("signed native installer for Windows", milestone)
+            self.assertIn("`pipx`", milestone)
+        self.assertIn("native installers", section(ROADMAP, "## Milestone map", "## Milestone 0").lower())
+        normalized_roadmap = " ".join(ROADMAP.lower().split())
+        self.assertNotIn("| native installers | deferred", normalized_roadmap)
+        self.assertNotIn("native installers are deferred", normalized_roadmap)
+        self.assertNotIn("native signed installers and automatic updates", normalized_roadmap)
+
+    def test_severity_feedback_and_next_slice_order_are_approved(self):
+        milestone = section(ROADMAP, "## Milestone 0", "## Milestone 1")
+        deferred_work = normalized_section(
+            ROADMAP,
+            "## Work intentionally deferred",
+            "## Current next actions",
+        )
+        next_actions = ROADMAP.split("## Current next actions", 1)[1]
+
+        for policy in (
+            "P0: data loss, secret exposure, unsafe mutation, or app-wide unusability",
+            "P1: a core workflow is unusable with no reasonable workaround",
+            "P2: degraded behavior with a workaround",
+            "P3: polish, documentation, or minor inconvenience",
+            "P0 and P1 issues block a release",
+            "P2 and P3 issues are prioritized by frequency and operator impact",
+            "ordinary reports use GitHub Issues after the public issue path opens",
+            "security reports use the private channel established in Milestone 5",
+            "beta support is best effort with no guaranteed response-time SLA",
+            "reports must exclude credentials and private operator content",
+            "explicit beta non-goals are maintained in the deferred-work section",
+        ):
+            self.assertIn(policy, milestone)
+        for non_goal in (
+            "non-loopback or hosted Mentat access",
+            "authentication, multi-user accounts, or multi-tenancy",
+            "automatic updates",
+            "telemetry or analytics by default",
+            "large new product surfaces that do not close a beta acceptance gap",
+        ):
+            self.assertIn(non_goal, deferred_work)
+        self.assertIn("Approved 2026-07-17", milestone)
+        self.assertLess(next_actions.index("early CI guardrail"), next_actions.index("Milestone 1A"))
+        self.assertNotIn("Finish the remaining Milestone 0", next_actions)
+
+    def test_docs_do_not_claim_native_installers_already_exist(self):
+        self.assertIn("Native installers are required for the public beta but are not implemented yet", README)
+        self.assertIn("source-checkout instructions remain the current install path", README)
+        self.assertIn("You need Python 3.11 through 3.13", README)
 
     def test_remote_contract_records_required_parity_and_safe_degradation(self):
         for required in (
