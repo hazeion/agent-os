@@ -125,6 +125,12 @@ Common overrides include:
 Command-line values override environment variables, which override local and
 shared configuration files.
 
+The source checkout currently keeps `data_dir = "data"` in the shared config.
+The approved installed-app target, platform defaults, complete mutable-path
+inventory, missing-only seed rules, and migration/backup safety boundary are in
+[DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A documents and tests that contract;
+the platform-aware resolver and data move are not implemented yet.
+
 ## A few important boundaries
 
 Mentat is a local control plane, not a general editor for Hermes internals.
@@ -150,6 +156,7 @@ server.py                    Local HTTP server and workflow orchestration
 public/                      Static dashboard UI
 data/                        Public-safe project-owned seed data
 data/runtime/                Private, generated, gitignored runtime data
+DATA_LAYOUT.md               Approved target data-root and migration contract
 hermes_*.py                  Capability-scoped Hermes adapters
 agent_console_*.py           Console files, artifacts, and run support
 task_planning.py             Planning validation and recurrence
@@ -187,7 +194,7 @@ The ordered release plan, milestone dependencies, and public-beta acceptance
 criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The beta contract is
 approved: macOS and Windows are tier one, Linux is preview, Python 3.11 through
 3.13 is supported, and signed native installers plus a supported `pipx` path
-are required release channels. Those artifacts do not exist yet. The next
-focus is the early CI guardrail, followed by moving mutable operator data and
-future remote credentials out of the application directory before remote-
-Hermes implementation and packaging begin.
+are required release channels. Those artifacts do not exist yet. The early CI
+guardrail and Milestone 1A data-layout contract are complete; the next focus is
+implementing the platform-aware data root and missing-only initialization before
+remote-Hermes implementation and packaging begin.

@@ -143,7 +143,7 @@ work is still small.
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
-| 1 | Durable user data | Not started | 0 | Migration, backup, restore, and clean-install tests |
+| 1 | Durable user data | In progress — 1A complete | 0 | Migration, backup, restore, and clean-install tests |
 | 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
@@ -203,6 +203,12 @@ contract require another explicit project-owner decision.
 Goal: make operator data survive upgrades and keep a running installation from
 modifying its application files or Git checkout.
 
+Status: Milestone 1A contract complete. The complete current mutable-path
+inventory, target directory classes, platform defaults, precedence, and
+fail-closed initialization/migration/backup rules are approved in
+[DATA_LAYOUT.md](DATA_LAYOUT.md). Runtime behavior remains unchanged until a
+separately reviewed Milestone 1B implementation.
+
 Work in order:
 
 1. Inventory every mutable path and classify it as seed data, operator data,
@@ -211,7 +217,8 @@ Work in order:
    [`platformdirs`](https://platformdirs.readthedocs.io/en/latest/platforms.html):
    - macOS: `~/Library/Application Support/Mentat`;
    - Windows: `%LOCALAPPDATA%\Mentat`;
-   - Linux: `~/.local/share/Mentat`.
+   - Linux: `$XDG_DATA_HOME/Mentat` when valid and set, otherwise
+     `~/.local/share/Mentat`.
 3. Treat the repository's `data/` files as immutable, public-safe seed data.
    Copy missing seeds into a new data root; never run against tracked fixtures.
 4. Preserve explicit local overrides for development and advanced operators.
@@ -510,8 +517,9 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Begin Milestone 1A with a complete mutable-path inventory and data-layout
-   contract before changing any runtime default.
+1. Begin Milestone 1B with the platform-aware data-root resolver, owner-only
+   directory creation, and missing-only seed initialization defined by
+   [DATA_LAYOUT.md](DATA_LAYOUT.md).
 2. Ensure Milestone 1 includes owner-only storage for the future remote Hermes
    endpoint and API credential outside the application directory.
 3. Track the mandatory upstream Hermes capabilities for authenticated Kanban,

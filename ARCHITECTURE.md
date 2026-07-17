@@ -18,6 +18,19 @@ adapter.
 - A Hermes **session** is conversation history owned by a specific profile.
 - Mentat must not create a second agent registry that competes with Hermes.
 
+## Data ownership and layout
+
+The canonical durable-data inventory, platform defaults, target directory
+classes, initialization rules, migration/backup contract, and secret exclusions
+live in [DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A defines that target but
+does not implement it: the current source checkout still resolves the shared
+`mentat.toml` override to repo-local `data/`.
+
+Later data-root work must keep immutable packaged seeds separate from durable
+operator copies, move durable private Console state out of ephemeral runtime
+storage, and preserve explicit development/operator overrides. It must not
+weaken any capability or mutation boundary in this document.
+
 ## Write boundaries
 
 | Surface | Policy |
@@ -107,10 +120,12 @@ artifact transfer may degrade clearly in remote mode.
 
 ## Agent Console file boundary
 
-Console files are Mentat-owned runtime data, never Hermes core data. SQLite at
-`data/runtime/mentat.sqlite3` stores attachment, blob, and run-reference
-metadata; bytes use private content-addressed blob files below the same
-gitignored runtime root. The browser sees only opaque attachment ids, bounded
+Console files are Mentat-owned private/runtime data, never Hermes core data. In
+the current source-checkout layout, SQLite at `data/runtime/mentat.sqlite3`
+stores attachment, blob, and run-reference metadata; bytes use private
+content-addressed blob files below the same gitignored runtime root. The target
+layout separates durable private state from ephemeral runtime state as defined
+in [DATA_LAYOUT.md](DATA_LAYOUT.md). The browser sees only opaque attachment ids, bounded
 display metadata, and fixed same-origin content routes. It never receives blob
 hashes, storage keys, trusted server paths, or arbitrary file-serving URLs.
 

@@ -10,6 +10,11 @@ All notable changes to Mentat.
   across macOS, Windows, and Ubuntu on Python 3.11 through 3.13. This narrow
   guardrail does not yet add packaging, native installers, browser release
   gates, dependency scanning, or branch-protection configuration.
+- Defined the Milestone 1A data-layout contract, including the complete current
+  mutable-path inventory, target durable/private/runtime/backup/cache/log/config
+  classes, platform defaults, override precedence, missing-only seed behavior,
+  fail-closed migration/schema rules, and secret exclusions. Runtime defaults
+  and data remain unchanged until Milestone 1B.
 
 ### Changed
 - Closed the remaining Milestone 0 release-contract decisions for the beta

@@ -106,7 +106,8 @@ class BetaContractTests(unittest.TestCase):
         ):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
-        self.assertTrue(next_actions.lstrip().startswith("1. Begin Milestone 1A"))
+        self.assertTrue(next_actions.lstrip().startswith("1. Begin Milestone 1B"))
+        self.assertIn("[DATA_LAYOUT.md](DATA_LAYOUT.md)", next_actions)
         self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 

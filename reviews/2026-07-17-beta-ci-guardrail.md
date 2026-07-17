@@ -1,6 +1,6 @@
 # Feature Slice Review: Add the Early Cross-Platform CI Guardrail
 
-Status: In progress — post-acceptance merge gate
+Status: Complete
 Slice: `beta-ci-guardrail`
 Date: `2026-07-17`
 Review log: `reviews/2026-07-17-beta-ci-guardrail.md`
@@ -192,6 +192,7 @@ mutable-data boundary.
 | GitHub Actions run `29616839592`, commit `8f9c0be` | 6 macOS/Ubuntu jobs passed; 3 Windows jobs each failed one identical assertion | The runtime, timezone, Hermes/Obsidian, and original path fixes passed. One workspace-snapshot fixture used `Path.write_text`, which produced CRLF on Windows while its assertion intentionally required exact LF bytes. The approved final correction writes the fixture as explicit LF bytes and keeps the strict assertion. |
 | GitHub Actions run `29617117932`, commit `bea0f63` | 9 of 9 jobs passed | The complete macOS, Windows, and Ubuntu matrix passed on Python 3.11, 3.12, and 3.13. This satisfies the mandatory hosted acceptance gate. |
 | GitHub Actions run `29617635914`, rebased commit `3c527e7` | 8 jobs passed; Windows Python 3.12 failed one heartbeat assertion | Two immediate heartbeat calls received the same Windows clock value, so the test's strict advancement assertion was nondeterministic. The runtime behavior and all other checks passed. The owner approved an explicit two-value test clock while retaining the strict assertion, followed by re-review and another full matrix before merge. |
+| GitHub Actions run `29617967920`, exact merge candidate `20ec1eb` | 9 of 9 jobs passed | The deterministic heartbeat test passed on Windows Python 3.12 and every macOS, Windows, and Ubuntu job passed on Python 3.11 through 3.13. PR #19 was then squash-merged as `75bed15026ff932606de7a26475f7de74c3cbfda`. |
 
 ### Remediation checks
 
@@ -332,7 +333,8 @@ Reviewer findings pending.
 - Round 2 Reviewer B — compatibility and product: No findings. The record now
   truthfully identifies the base, current files, pending AC-7, and exact-commit
   matrix gate; the test uses no sleep, skip, or weakened assertion.
-- Independent review gate: Passed for publication. Hosted AC-7 remains pending.
+- Independent review gate: Passed for publication. Hosted AC-7 passed in run
+  `29617967920`; PR #19 merged as `75bed15026ff932606de7a26475f7de74c3cbfda`.
 
 ## Documentation updates
 
@@ -356,8 +358,8 @@ Reviewer findings pending.
 - PR summary: Add the read-only nine-job OS/Python matrix, portable syntax and
   full-suite checks, regression contracts, and truthful roadmap/changelog
   records while deferring the remaining Milestone 4 release gates.
-- Unresolved gate: The corrected rebased commit must pass all nine hosted
-  OS/Python jobs before PR #19 may merge.
+- Unresolved gate: None. The corrected rebased commit passed all nine hosted
+  OS/Python jobs before PR #19 merged.
 - User authorization and scope: The project owner explicitly approved staging
   the six reviewed files, committing, pushing `codex/beta-ci-guardrail`, and
   opening the ready stacked PR on 2026-07-17. The owner explicitly approved
@@ -372,12 +374,14 @@ Reviewer findings pending.
   and merge of PR #19 on 2026-07-17.
 - Published workflow commit: `1036d5ea9b245086c19003ab582aa5f56f484e55`.
 - Ready PR URL: `https://github.com/hazeion/agent-os/pull/19`.
+- Exact merge-candidate commit: `20ec1eb0db6627c9a28d06b5204d723c6e0deabc`.
+- Squash-merge commit: `75bed15026ff932606de7a26475f7de74c3cbfda`.
 
 ## Outcome review
 
-- Classification: In progress — post-acceptance merge gate.
-- Acceptance criteria summary: AC-1 through AC-6 and AC-8 through AC-9 remain
-  passed. AC-7 is pending a green nine-job run for the corrected rebased commit.
+- Classification: Successful.
+- Acceptance criteria summary: AC-1 through AC-9 passed. AC-7 passed on the
+  exact merge candidate in GitHub Actions run `29617967920`.
 - Potential bugs or untested paths: Native installers, browser automation,
   packaging, self-hosted runners, dependency scanning, branch protection, and
   later Milestone 4 release gates remain intentionally outside this slice.
@@ -387,8 +391,7 @@ Reviewer findings pending.
 - Compatibility/migration/rollback concerns: No migration. The workflow,
   timezone dependency, binary flags, and test-fixture corrections can be
   reverted through their ordinary commits.
-- User decision: The earlier green outcome was accepted by the project owner on
-  2026-07-17. The owner subsequently approved the post-rebase correction and
-  exact-commit gate; final success remains pending that hosted evidence.
+- User decision: Accepted as successful by the project owner on 2026-07-17. The
+  approved post-rebase correction, exact-commit gate, and merge all completed.
 - Next slice authorized: The Milestone 1A slice contract and test strategy are
   approved; implementation may begin after PR #19 clears its merge gate.
