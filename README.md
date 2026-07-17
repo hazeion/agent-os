@@ -160,3 +160,8 @@ Developer guidance lives in [AGENTS.md](AGENTS.md). Recent changes are in
 Mentat is under active development. The current goal is a practical local tool
 that stays friendly to new contributors while its workflows mature. If you find
 something rough, an issue or a focused pull request is welcome.
+
+The ordered release plan, milestone dependencies, and public-beta acceptance
+criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The next focus is locking
+the beta support contract, then moving mutable operator data out of the
+application directory before packaging and distribution work begins.
