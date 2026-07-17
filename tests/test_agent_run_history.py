@@ -298,6 +298,10 @@ super-private-material
             data_dir = Path(tmpdir)
             with patch.object(server, "DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
+            ), patch.object(
+                server,
+                "hermes_profiles_payload",
+                return_value={"status": "available", "profiles": [{"id": "default"}]},
             ), patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
                 server, "agent_console_model", return_value="test/model"
             ), patch.object(server.threading, "Thread"):

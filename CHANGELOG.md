@@ -23,6 +23,12 @@ All notable changes to Mentat.
 - Moved the roadmap forward to the early cross-platform CI guardrail followed
   by the Milestone 1A mutable-path inventory and data-layout contract.
 
+### Fixed
+- Made Agent Console binary snapshots preserve all bytes on Windows and added
+  pinned IANA timezone data for Windows calendar and recurrence behavior.
+- Removed test-suite dependencies on a developer's local Hermes profiles and
+  Obsidian vault, and made the Hermes-home assertion platform-correct.
+
 ## 2026-07-16
 
 ### Added

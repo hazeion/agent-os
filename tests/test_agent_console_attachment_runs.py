@@ -11,6 +11,10 @@ import server
 PNG = b"\x89PNG\r\n\x1a\n" + b"safe-image-payload"
 
 
+def profile_discovery():
+    return {"status": "available", "profiles": [{"id": "default", "name": "default", "is_default": True}]}
+
+
 class AgentConsoleAttachmentRunTests(unittest.TestCase):
     def tearDown(self):
         server.AGENT_CONSOLE_RUNS.clear()
@@ -26,7 +30,9 @@ class AgentConsoleAttachmentRunTests(unittest.TestCase):
                     content=PNG,
                 )
                 attachment = upload["attachment"]
-                with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+                with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
+                    server, "hermes_command_path", return_value="/tmp/hermes"
+                ), patch.object(
                     server, "agent_console_model", return_value="test/model"
                 ), patch.object(server.threading, "Thread") as worker:
                     payload, status = server.start_agent_console_run(
@@ -60,7 +66,9 @@ class AgentConsoleAttachmentRunTests(unittest.TestCase):
                     content_type="text/x-python",
                     content=b"print('hello')\n",
                 )
-                with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+                with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
+                    server, "hermes_command_path", return_value="/tmp/hermes"
+                ), patch.object(
                     server.threading, "Thread"
                 ):
                     payload, status = server.start_agent_console_run(

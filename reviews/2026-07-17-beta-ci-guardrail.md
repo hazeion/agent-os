@@ -1,6 +1,6 @@
 # Feature Slice Review: Add the Early Cross-Platform CI Guardrail
 
-Status: Paused
+Status: Ready for correction publication approval
 Slice: `beta-ci-guardrail`
 Date: `2026-07-17`
 Review log: `reviews/2026-07-17-beta-ci-guardrail.md`
@@ -24,28 +24,33 @@ mutable-data boundary.
 - Add focused workflow contract tests and update the roadmap and changelog.
 - Require a green first GitHub-hosted matrix run before classifying the slice
   as successful.
+- Remediate only the clean-runner and Windows portability gaps exposed by that
+  first hosted run: hermetic Hermes/Obsidian fixtures, pinned IANA timezone
+  data, binary-safe low-level file copies, and platform-correct path assertions.
 
 ### Out of scope
 
 - Packaging, native installers, signing, notarization, or release artifacts.
 - Browser automation or rendered UI checks.
 - Dependency scanning, secret scanning, or branch-protection configuration.
-- Runtime, UI, Hermes, operator-data, or migration behavior.
+- UI, Hermes capabilities, configuration behavior, operator data, or migrations.
+- Runtime changes beyond the binary-mode portability correction and timezone
+  dependency required by the approved Windows support tier.
 - Milestone 1A implementation.
 
 ### Acceptance criteria
 
 | ID | Observable criterion | Evidence | Status |
 | --- | --- | --- | --- |
-| AC-1 | A workflow runs on pull requests and pushes to `main`. | Focused workflow contract test and workflow inspection. | Passed locally; hosted parse pending |
-| AC-2 | The workflow expands to all nine combinations of Ubuntu, macOS, Windows, and Python 3.11 through 3.13 without cancelling sibling failures. | Focused matrix contract test and first Actions run. | Passed statically; hosted run pending |
-| AC-3 | Every job checks out the repository, selects its matrix Python version, installs pinned dependencies, and uses a fixed Node version. | Focused workflow contract test and Actions logs/status. | Passed statically; hosted run pending |
-| AC-4 | Every job compiles all project Python, checks all three tracked JavaScript/MJS files, and runs the full unittest suite. | Focused workflow contract test and Actions logs/status. | Passed locally; hosted run pending |
+| AC-1 | A workflow runs on pull requests and pushes to `main`. | Focused workflow contract test and workflow inspection. | Passed locally and hosted |
+| AC-2 | The workflow expands to all nine combinations of Ubuntu, macOS, Windows, and Python 3.11 through 3.13 without cancelling sibling failures. | Focused matrix contract test and first Actions run. | Passed; all nine jobs launched |
+| AC-3 | Every job checks out the repository, selects its matrix Python version, installs pinned dependencies, and uses a fixed Node version. | Focused workflow contract test and Actions logs/status. | Passed locally and hosted |
+| AC-4 | Every job compiles all project Python, checks all three tracked JavaScript/MJS files, and runs the full unittest suite. | Focused workflow contract test and Actions logs/status. | Local pass; hosted retry pending after remediation |
 | AC-5 | The workflow has read-only repository permissions and does not consume repository secrets. | Focused negative contract assertions and inspection. | Passed |
 | AC-6 | The full existing suite remains green locally. | Full-suite result. | Passed |
 | AC-7 | The first GitHub-hosted nine-job matrix completes successfully. | GitHub Actions check results for the ready PR. | Pending |
 | AC-8 | Roadmap and changelog truthfully record the early guardrail without claiming later Milestone 4 gates. | Documentation assertions and inspection. | Passed |
-| AC-9 | No runtime, UI, Hermes, configuration, operator-data, or migration behavior changes. | Changed-file and raw-diff inspection. | Passed |
+| AC-9 | Runtime changes are limited to Windows-safe binary copies and pinned timezone data; tests no longer depend on developer-owned Hermes/Obsidian state. | Focused regressions, dependency contract, changed-file inspection, and hosted matrix. | Passed locally; hosted retry pending |
 
 ### Constraints and recovery
 
@@ -78,6 +83,23 @@ mutable-data boundary.
   exclusions.
 - Approved at: Explicitly approved by the project owner on 2026-07-17.
 
+### Hosted-run remediation amendment
+
+- Trigger: The first ready-PR matrix reached all verification steps, but all
+  nine jobs failed in the full suite. macOS and Ubuntu exposed seven tests that
+  depended on local Hermes/Obsidian state. Windows additionally exposed missing
+  IANA timezone data, text-mode truncation of PNG bytes at Ctrl-Z in low-level
+  copies, and one POSIX-only path assertion.
+- Decision: Treat these as required clean-install and Tier 1 Windows
+  compatibility corrections, not as accepted CI gaps or reasons to weaken the
+  matrix.
+- Constraints: Do not skip or conditionally suppress the affected tests. Do
+  not broaden runtime work beyond the demonstrated binary-copy correction and
+  pinned timezone dependency. Packaging, installers, and Milestone 1A remain
+  deferred.
+- Approved at: Explicitly approved by the project owner on 2026-07-17 after
+  reviewing the hosted failure causes and amended remediation slice.
+
 ## Test strategy
 
 | Acceptance criterion | Pre-implementation gap | Planned test or evidence | What it proves | Limitations |
@@ -89,7 +111,7 @@ mutable-data boundary.
 | AC-6 | Existing local baseline must remain stable. | Run the complete unittest suite before and after implementation. | Existing repository behavior does not regress locally. | One local platform/runtime is not the support matrix. |
 | AC-7 | No hosted matrix evidence exists. | Inspect the ready PR's GitHub Actions checks and require all nine jobs to pass. | The actual GitHub-hosted OS/Python combinations execute successfully. | Does not cover self-hosted runners or native installers. |
 | AC-8 | Roadmap still describes the guardrail as future work. | Focused documentation assertions and manual contradiction search. | Records match implemented CI scope without overstating Milestone 4. | Documentation tests remain intentionally text-based. |
-| AC-9 | Runtime is outside scope. | Inspect changed files and raw diff; run the full suite. | Only workflow, tests, and approved records changed. | Cannot prove absence of every indirect dependency-service change. |
+| AC-9 | The first hosted run exposed local-state assumptions and Windows portability defects. | Isolate Hermes/Obsidian fixtures, assert the pinned timezone package and binary flags, retain the PNG Ctrl-Z fixture, and inspect the narrow runtime diff. | The suite runs without developer state and the demonstrated Windows behaviors are corrected without weakening tests. | Final Windows proof requires the hosted retry. |
 
 ### Baseline results
 
@@ -124,6 +146,12 @@ mutable-data boundary.
   nine-job OS/Python matrix and every agreed verification command.
 - Updated the roadmap and changelog to distinguish the early guardrail from
   the deferred Milestone 4 release gates.
+- After the first hosted run, isolated seven tests from developer-owned Hermes
+  profiles and Obsidian files instead of skipping them.
+- Added `tzdata==2026.3` for cross-platform `zoneinfo` behavior and applied
+  `O_BINARY` to the two low-level copy paths that truncated PNG data on Windows.
+- Made the Hermes-home assertion compare the platform representation of the
+  input `Path`.
 
 ### Deviations and decisions
 
@@ -132,6 +160,10 @@ mutable-data boundary.
   pending action before Milestone 1A. Updating that assertion to require
   Milestone 1A first and reject stale pending-CI language is within AC-8 and is
   necessary to represent the completed handoff accurately.
+- The hosted matrix demonstrated that the original no-runtime-change boundary
+  could not satisfy the approved Tier 1 Windows contract. The owner approved a
+  narrow amendment for binary copy semantics and timezone data; no unrelated
+  runtime, UI, configuration, or Hermes capability behavior changed.
 
 ## Verification
 
@@ -150,6 +182,21 @@ mutable-data boundary.
 | --- | --- | --- | --- | --- |
 | First `python3 -m unittest discover -s tests -v` | macOS, local Python 3.13 | Exit 1 | 364 passed, 1 error | Prior beta-contract test still expected CI to be pending; corrected within AC-8. |
 | Final `python3 -m unittest discover -s tests -v` | macOS, local Python 3.13 | Exit 0 | 365 passed, 0 failed, 0 skipped | Existing history-permission warning observed; no test failure. |
+| Remediation `python3 -m unittest discover -s tests -v` | macOS, local Python 3.13 | Exit 0 | 367 passed, 0 failed, 0 skipped | Includes two new Windows/timezone regression contracts; existing history-permission warning observed. |
+
+### Hosted matrix evidence
+
+| Run | Result | Evidence and disposition |
+| --- | --- | --- |
+| GitHub Actions run `29611921877`, attempt 2, commit `1036d5e` | 9 jobs launched; all reached the full suite and failed | Checkout, Python/Node setup, dependency installation, compilation, and all JavaScript checks passed in every job. macOS/Ubuntu exposed seven local-state-dependent tests. Windows additionally exposed missing timezone data, binary truncation at Ctrl-Z, and a POSIX-only assertion. The approved remediation addresses those causes; a retry after publication is mandatory. |
+
+### Remediation checks
+
+| Command or action | Environment | Exit/result | Notes |
+| --- | --- | --- | --- |
+| Focused 9-module remediation suite | macOS, local Python 3.13 | 81 passed | The new binary-mode and dependency tests first failed, then passed after implementation. |
+| `python3 -m pip install --dry-run -r requirements.txt` | macOS, local Python 3.13 | Exit 0 | Resolved the pinned universal `tzdata==2026.3` wheel. |
+| Python compilation, three JavaScript syntax checks, and `git diff --check` | Local worktree | Exit 0 | No syntax or whitespace errors. |
 
 ### Rendered or manual behavior
 
@@ -216,20 +263,36 @@ Reviewer findings pending.
   sequenced as a mandatory post-publication gate.
 - Review gate: Passed with no blocking findings after two rounds.
 
+### Round 3 remediation review
+
+- Packet: Complete current diff after the approved hosted-failure remediation,
+  with Actions run `29611921877` evidence, 81 focused passes, 367 full-suite
+  passes, compilation and JavaScript checks, dependency dry-run, and diff
+  check.
+- Reviewer A — correctness and safety: No findings. Confirmed both low-level
+  copies request Windows binary mode, pinned timezone data is narrow, fixtures
+  are hermetic, and the active Ctrl-Z PNG test provides hosted behavioral proof.
+- Reviewer B — compatibility and product: No findings. Confirmed the changes do
+  not skip or mask failures, preserve POSIX behavior, and remain within the
+  amended clean-install and Tier 1 Windows boundary.
+- Review gate: Passed. Both reviewers require the nine-job hosted retry as the
+  remaining acceptance evidence.
+
 ## Documentation updates
 
 - Roadmap: Records the implemented nine-job early guardrail and advances the
   next action to Milestone 1A while preserving later Milestone 4 scope.
 - Changelog: Records the early workflow and its explicit exclusions.
+- Changelog: Also records the clean-runner and Windows portability corrections
+  exposed by the first matrix.
 - Architecture/operator docs: No change expected.
 - Project/session notes: This review log.
 - Documentation verification: Focused workflow/record contract tests passed.
 
 ## Publication gate
 
-- Proposed files: `.github/workflows/ci.yml`, `CHANGELOG.md`,
-  `ROAD_TO_BETA.md`, `tests/test_beta_contract.py`,
-  `tests/test_ci_workflow.py`, and this review log.
+- Proposed correction files: `agent_console_artifacts.py`, `requirements.txt`,
+  `CHANGELOG.md`, eight affected test modules, and this review log.
 - Branch and base: `codex/beta-ci-guardrail`; stacked base
   `codex/beta-0-release-contract` while PR #18 is open.
 - Commit message: `Add cross-platform CI guardrail`.
@@ -237,25 +300,29 @@ Reviewer findings pending.
 - PR summary: Add the read-only nine-job OS/Python matrix, portable syntax and
   full-suite checks, regression contracts, and truthful roadmap/changelog
   records while deferring the remaining Milestone 4 release gates.
-- Unresolved risks: Hosted-runner evidence is unavailable until publication;
-  all nine jobs are mandatory before successful outcome acceptance. PR #18 is
-  still open, so this slice must remain stacked until its approved base lands.
+- Unresolved risks: The correction has not yet rerun on hosted Windows; all
+  nine jobs remain mandatory before successful outcome acceptance. PR #18 is
+  still open, so this slice remains stacked until its approved base lands.
 - User authorization and scope: The project owner explicitly approved staging
   the six reviewed files, committing, pushing `codex/beta-ci-guardrail`, and
-  opening the ready stacked PR on 2026-07-17.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+  opening the ready stacked PR on 2026-07-17. The owner explicitly approved
+  staging the 12 reviewed correction files, committing them as `Fix
+  cross-platform CI failures`, pushing the same branch, and rerunning the
+  nine-job matrix on 2026-07-17.
+- Published workflow commit: `1036d5ea9b245086c19003ab582aa5f56f484e55`.
+- Ready PR URL: `https://github.com/hazeion/agent-os/pull/19`.
 
 ## Outcome review
 
-- Classification: Paused pending publication approval and hosted matrix
-  evidence.
+- Classification: Ready for correction publication approval; remediation is
+  locally verified and independently reviewed, with the hosted matrix retry
+  still mandatory.
 - Acceptance criteria summary: AC-1 through AC-6, AC-8, and AC-9 pass local
   evidence; AC-7 requires all nine GitHub-hosted jobs after publication.
-- Potential bugs or untested paths: Cross-platform execution is untested until
-  the first hosted matrix run.
+- Potential bugs or untested paths: The first hosted matrix exposed and bounded
+  the portability defects; the correction still requires a hosted retry.
 - Remaining reviewer dissent: None; both reviewers reported no findings in
-  Round 2.
+  Round 3.
 - Compatibility/migration/rollback concerns: No migration; workflow rollback
   is a normal revert.
 - User decision: Pending.

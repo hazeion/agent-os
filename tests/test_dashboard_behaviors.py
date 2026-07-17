@@ -11,13 +11,18 @@ from unittest.mock import patch
 import server
 
 
+def profile_discovery():
+    return {"status": "available", "profiles": [{"id": "default", "name": "default", "is_default": True}]}
+
+
 class DashboardBehaviorTests(unittest.TestCase):
     def write_json(self, root: Path, name: str, payload) -> None:
         (root / name).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     def test_agent_console_only_accepts_hermes_and_requires_a_prompt(self):
-        invalid_agent, invalid_agent_status = server.start_agent_console_run({"agent_id": "shell", "prompt": "hello"})
-        missing_prompt, missing_prompt_status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "  "})
+        with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()):
+            invalid_agent, invalid_agent_status = server.start_agent_console_run({"agent_id": "shell", "prompt": "hello"})
+            missing_prompt, missing_prompt_status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "  "})
 
         self.assertEqual(invalid_agent_status, 400)
         self.assertIn("Unknown or unavailable Hermes profile", invalid_agent["error"])
@@ -27,7 +32,9 @@ class DashboardBehaviorTests(unittest.TestCase):
     def test_agent_console_starts_a_managed_hermes_run(self):
         server.AGENT_CONSOLE_RUNS.clear()
         try:
-            with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+            with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
+                server, "hermes_command_path", return_value="/tmp/hermes"
+            ), patch.object(
                 server, "agent_console_model", return_value="test/model"
             ), patch.object(server.threading, "Thread") as worker:
                 payload, status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "Inspect the queue"})
