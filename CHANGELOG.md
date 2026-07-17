@@ -4,6 +4,13 @@ All notable changes to Mentat.
 
 ## 2026-07-17
 
+### Added
+- Added the early GitHub Actions guardrail for pull requests and `main`, with
+  Python compilation, JavaScript syntax checks, and the complete unittest suite
+  across macOS, Windows, and Ubuntu on Python 3.11 through 3.13. This narrow
+  guardrail does not yet add packaging, native installers, browser release
+  gates, dependency scanning, or branch-protection configuration.
+
 ### Changed
 - Closed the remaining Milestone 0 release-contract decisions for the beta
   audience, supported and preview platforms, Python versions, manual updates,
