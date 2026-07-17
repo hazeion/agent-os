@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Hermes Beta Contract
 
-Status: Ready for publication approval
+Status: Published; outcome accepted
 Slice: `beta-0-remote-contract`
 Date: `2026-07-16`
 Review log: `reviews/2026-07-16-beta-remote-contract.md`
@@ -230,15 +230,25 @@ Establish the authoritative beta product, security, licensing, and remote-capabi
 - User authorization and scope: Approved in the active Codex conversation on
   2026-07-16 for the eight listed files, approved commit message, branch push,
   and ready pull request.
-- Commit hash: Not created.
-- Ready PR URL: Not created.
+- Commit hash: `60f70e75714d9a9c179d9be0ae257c7c0caf04fb`.
+- Ready PR URL: <https://github.com/hazeion/agent-os/pull/17>.
 
 ## Outcome review
 
-- Classification: Pending.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending.
-- Remaining reviewer dissent: Pending.
-- Compatibility/migration/rollback concerns: Pending.
-- User decision: Pending.
+- Classification: Successful.
+- Acceptance criteria summary: AC-1 through AC-12 passed; the approved license,
+  remote product/security boundary, capability inventory, roadmap order,
+  verification evidence, and clean independent reviews are present.
+- Potential bugs or untested paths: Live HTTPS/auth interoperability,
+  cross-platform remote behavior, and the future runtime implementation remain
+  untested. Clarification, complete profile discovery, and Kanban still require
+  supported upstream authenticated capabilities.
+- Remaining reviewer dissent: None. Both independent reviewers completed the
+  final full-diff review with no blocking or nonblocking findings.
+- Compatibility/migration/rollback concerns: This slice changes documentation,
+  licensing, and contract tests only; it does not change runtime behavior or
+  migrate data. Reverting the commits restores repository state, while MIT
+  grants already distributed with a copy remain effective for that copy.
+- User decision: Accepted as successful in the active Codex conversation on
+  2026-07-16.
 - Next slice authorized: No
