@@ -1,6 +1,6 @@
 # Feature Slice Review: Add the Early Cross-Platform CI Guardrail
 
-Status: Complete
+Status: In progress — post-acceptance merge gate
 Slice: `beta-ci-guardrail`
 Date: `2026-07-17`
 Review log: `reviews/2026-07-17-beta-ci-guardrail.md`
@@ -191,6 +191,7 @@ mutable-data boundary.
 | GitHub Actions run `29611921877`, attempt 2, commit `1036d5e` | 9 jobs launched; all reached the full suite and failed | Checkout, Python/Node setup, dependency installation, compilation, and all JavaScript checks passed in every job. macOS/Ubuntu exposed seven local-state-dependent tests. Windows additionally exposed missing timezone data, binary truncation at Ctrl-Z, and a POSIX-only assertion. The approved remediation addresses those causes; a retry after publication is mandatory. |
 | GitHub Actions run `29616839592`, commit `8f9c0be` | 6 macOS/Ubuntu jobs passed; 3 Windows jobs each failed one identical assertion | The runtime, timezone, Hermes/Obsidian, and original path fixes passed. One workspace-snapshot fixture used `Path.write_text`, which produced CRLF on Windows while its assertion intentionally required exact LF bytes. The approved final correction writes the fixture as explicit LF bytes and keeps the strict assertion. |
 | GitHub Actions run `29617117932`, commit `bea0f63` | 9 of 9 jobs passed | The complete macOS, Windows, and Ubuntu matrix passed on Python 3.11, 3.12, and 3.13. This satisfies the mandatory hosted acceptance gate. |
+| GitHub Actions run `29617635914`, rebased commit `3c527e7` | 8 jobs passed; Windows Python 3.12 failed one heartbeat assertion | Two immediate heartbeat calls received the same Windows clock value, so the test's strict advancement assertion was nondeterministic. The runtime behavior and all other checks passed. The owner approved an explicit two-value test clock while retaining the strict assertion, followed by re-review and another full matrix before merge. |
 
 ### Remediation checks
 
@@ -297,6 +298,42 @@ Reviewer findings pending.
 - Review gate: Passed; the owner authorized publication and another complete
   hosted matrix run.
 
+### Post-acceptance merge gate
+
+- PR #18 was squash-merged, and PR #19 was rebased onto the resulting `main`
+  before its authorized merge.
+- The exact rebased matrix exposed one pre-existing Windows clock-resolution
+  flake in the heartbeat upsert test: two real-time calls can share a timestamp
+  even though the test requires advancement.
+- Approved correction: inject two deterministic timestamps one microsecond
+  apart in the test and retain the strict `updated_at` inequality assertion.
+  Do not add sleeps, loosen the assertion, or change runtime behavior.
+- Owner approval: Explicitly approved on 2026-07-17, including focused/full
+  verification, independent re-review, publication, a green nine-job matrix,
+  and merge of PR #19.
+- Reviewer A — correctness and safety: Blocking P2 documentation finding. The
+  deterministic clock fixture is localized and preserves the strict assertion,
+  but the older outcome text still claimed success while the rebased matrix was
+  red.
+- Reviewer B — compatibility and product: Blocking P3 documentation finding.
+  The test correction is sound, but the publication record still described the
+  superseded stacked-PR state.
+- Disposition: Corroborated and accepted. The publication and outcome sections
+  now identify `main` as the base and leave the exact-commit hosted gate pending.
+  The slice returns to Successful only after all nine corrected-commit jobs pass.
+- Post-fix verification: `python -m unittest ...` could not start because this
+  shell has no `python` shim (exit 127; environment-only, no test executed).
+  Re-running with `python3` passed the exact heartbeat test (1/1), the complete
+  suite (367/367), and `git diff --check` (exit 0). The suite emitted only the
+  pre-existing history-permission warning.
+- Round 2 Reviewer A — correctness and safety: No findings. The earlier record
+  inconsistency is resolved, and the deterministic clock remains localized,
+  aware, strict, and runtime-neutral.
+- Round 2 Reviewer B — compatibility and product: No findings. The record now
+  truthfully identifies the base, current files, pending AC-7, and exact-commit
+  matrix gate; the test uses no sleep, skip, or weakened assertion.
+- Independent review gate: Passed for publication. Hosted AC-7 remains pending.
+
 ## Documentation updates
 
 - Roadmap: Records the implemented nine-job early guardrail and advances the
@@ -310,17 +347,17 @@ Reviewer findings pending.
 
 ## Publication gate
 
-- Proposed correction files: `agent_console_artifacts.py`, `requirements.txt`,
-  `CHANGELOG.md`, eight affected test modules, and this review log.
-- Branch and base: `codex/beta-ci-guardrail`; stacked base
-  `codex/beta-0-release-contract` while PR #18 is open.
-- Commit message: `Add cross-platform CI guardrail`.
+- Current post-acceptance correction files: `tests/test_dashboard_behaviors.py`
+  and this review log.
+- Branch and base: `codex/beta-ci-guardrail` targeting `main`; PR #18 is merged
+  and PR #19 has been rebased onto that result.
+- Commit message: `Stabilize heartbeat timestamp test`.
 - PR title: `Add the early cross-platform CI guardrail`.
 - PR summary: Add the read-only nine-job OS/Python matrix, portable syntax and
   full-suite checks, regression contracts, and truthful roadmap/changelog
   records while deferring the remaining Milestone 4 release gates.
-- Unresolved risks: None within the approved slice. PR #18 is still open, so
-  PR #19 remains stacked until its approved base lands.
+- Unresolved gate: The corrected rebased commit must pass all nine hosted
+  OS/Python jobs before PR #19 may merge.
 - User authorization and scope: The project owner explicitly approved staging
   the six reviewed files, committing, pushing `codex/beta-ci-guardrail`, and
   opening the ready stacked PR on 2026-07-17. The owner explicitly approved
@@ -329,24 +366,29 @@ Reviewer findings pending.
   nine-job matrix on 2026-07-17. After that run isolated one Windows newline
   fixture mismatch, the owner approved the final test-only byte-explicit
   fixture correction, local verification, re-review, push, and another hosted
-  matrix run on 2026-07-17.
+  matrix run on 2026-07-17. After the rebased run exposed the heartbeat clock
+  flake, the owner approved this deterministic test correction, focused/full
+  verification, independent re-review, publication, a green nine-job matrix,
+  and merge of PR #19 on 2026-07-17.
 - Published workflow commit: `1036d5ea9b245086c19003ab582aa5f56f484e55`.
 - Ready PR URL: `https://github.com/hazeion/agent-os/pull/19`.
 
 ## Outcome review
 
-- Classification: Successful.
-- Acceptance criteria summary: AC-1 through AC-9 passed, including all nine
-  GitHub-hosted OS/Python jobs.
+- Classification: In progress — post-acceptance merge gate.
+- Acceptance criteria summary: AC-1 through AC-6 and AC-8 through AC-9 remain
+  passed. AC-7 is pending a green nine-job run for the corrected rebased commit.
 - Potential bugs or untested paths: Native installers, browser automation,
   packaging, self-hosted runners, dependency scanning, branch protection, and
   later Milestone 4 release gates remain intentionally outside this slice.
-- Remaining reviewer dissent: None; both reviewers reported no findings in the
-  final hosted-follow-up review.
+- Remaining reviewer dissent: None on the test correction. The corroborated
+  blocking review-record finding was accepted and corrected; both reviewers
+  reported no findings on re-review.
 - Compatibility/migration/rollback concerns: No migration. The workflow,
   timezone dependency, binary flags, and test-fixture corrections can be
   reverted through their ordinary commits.
-- User decision: Accepted as successful by the project owner on 2026-07-17.
-- Next slice authorized: Milestone 1A contract planning is authorized;
-  implementation still requires explicit approval of its bounded slice
-  contract and test strategy.
+- User decision: The earlier green outcome was accepted by the project owner on
+  2026-07-17. The owner subsequently approved the post-rebase correction and
+  exact-commit gate; final success remains pending that hosted evidence.
+- Next slice authorized: The Milestone 1A slice contract and test strategy are
+  approved; implementation may begin after PR #19 clears its merge gate.

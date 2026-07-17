@@ -459,6 +459,8 @@ class DashboardBehaviorTests(unittest.TestCase):
         self.assertEqual(payload["sessions"][0]["id"], "session_active")
 
     def test_agent_heartbeat_route_upserts_live_registry_records(self):
+        first_heartbeat_at = datetime.now().astimezone()
+        second_heartbeat_at = first_heartbeat_at + timedelta(microseconds=1)
         request = {
             "name": "Hermes",
             "status": "running",
@@ -473,7 +475,8 @@ class DashboardBehaviorTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "agents.json", [])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "datetime") as clock:
+                clock.now.side_effect = [first_heartbeat_at, second_heartbeat_at]
                 payload, status = server.handle_post_route("/api/agents/heartbeat", request)
                 updated_payload, updated_status = server.handle_post_route(
                     "/api/agents/heartbeat",
