@@ -4,6 +4,13 @@ All notable changes to Mentat.
 
 ## 2026-07-17
 
+### Added
+- Added the early GitHub Actions guardrail for pull requests and `main`, with
+  Python compilation, JavaScript syntax checks, and the complete unittest suite
+  across macOS, Windows, and Ubuntu on Python 3.11 through 3.13. This narrow
+  guardrail does not yet add packaging, native installers, browser release
+  gates, dependency scanning, or branch-protection configuration.
+
 ### Changed
 - Closed the remaining Milestone 0 release-contract decisions for the beta
   audience, supported and preview platforms, Python versions, manual updates,
@@ -15,6 +22,12 @@ All notable changes to Mentat.
   future packaging milestone.
 - Moved the roadmap forward to the early cross-platform CI guardrail followed
   by the Milestone 1A mutable-path inventory and data-layout contract.
+
+### Fixed
+- Made Agent Console binary snapshots preserve all bytes on Windows and added
+  pinned IANA timezone data for Windows calendar and recurrence behavior.
+- Removed test-suite dependencies on a developer's local Hermes profiles and
+  Obsidian vault, and made the Hermes-home assertion platform-correct.
 
 ## 2026-07-16
 

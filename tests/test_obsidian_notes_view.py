@@ -12,18 +12,18 @@ import server
 
 class ObsidianNotesViewTests(unittest.TestCase):
     def test_obsidian_notes_endpoint_returns_all_markdown_notes(self):
-        payload = server.obsidian_notes()
+        with TemporaryDirectory() as tmpdir:
+            vault = Path(tmpdir) / "vault"
+            (vault / "nested").mkdir(parents=True)
+            (vault / "daily.md").write_text("# Daily", encoding="utf-8")
+            (vault / "nested" / "project.md").write_text("# Project", encoding="utf-8")
+            with patch.object(server, "OBSIDIAN_VAULT", vault), patch.dict(
+                server.OBSIDIAN_NOTES_CACHE, {"key": None, "payload": None}, clear=True
+            ):
+                payload = server.obsidian_notes()
+
         self.assertTrue(payload["exists"])
-        vault = server.OBSIDIAN_VAULT
-        expected = sorted(
-            [
-                p.relative_to(vault).as_posix()
-                for p in vault.rglob("*.md")
-                if not p.is_symlink()
-                and (p.resolve() == vault.resolve() or vault.resolve() in p.resolve().parents)
-            ],
-            reverse=True,
-        )
+        expected = ["nested/project.md", "daily.md"]
         actual = [note["relative_path"] for note in payload["notes"]]
         self.assertEqual(sorted(actual, reverse=True), expected)
         self.assertEqual(payload["note_count"], len(expected))

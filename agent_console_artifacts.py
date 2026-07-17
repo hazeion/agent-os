@@ -165,18 +165,19 @@ def prepare_input_directory(data_dir: Path, run_id: str) -> Path:
 def _copy_private_regular_file(source: Path, destination: Path, *, max_bytes: int) -> Path:
     """Copy one validated private file without following source or destination symlinks."""
     no_follow = getattr(os, "O_NOFOLLOW", 0)
+    binary = getattr(os, "O_BINARY", 0)
     source_descriptor = destination_descriptor = None
     created = False
     completed = False
     copied = 0
     try:
-        source_descriptor = os.open(source, os.O_RDONLY | no_follow)
+        source_descriptor = os.open(source, os.O_RDONLY | no_follow | binary)
         source_details = os.fstat(source_descriptor)
         if not stat.S_ISREG(source_details.st_mode) or source_details.st_size > max_bytes:
             raise ArtifactValidationError("invalid_attachment_path", "Attachment must be a bounded regular file")
         destination_descriptor = os.open(
             destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow | binary,
             0o600,
         )
         created = True
@@ -706,7 +707,7 @@ def read_workspace_text_context(
 
 def _copy_validated_snapshot(source: Path, staging_root: Path, *, max_bytes: int) -> Path:
     staging_root = _ensure_private_directory(staging_root)
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

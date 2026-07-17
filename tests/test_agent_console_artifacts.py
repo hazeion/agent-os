@@ -25,6 +25,12 @@ class RecordingStore:
 
 
 class AgentConsoleArtifactTests(unittest.TestCase):
+    def test_low_level_snapshot_copies_request_binary_mode_when_available(self):
+        for copier in (artifacts._copy_private_regular_file, artifacts._copy_validated_snapshot):
+            source = inspect.getsource(copier)
+            self.assertIn('getattr(os, "O_BINARY", 0)', source)
+            self.assertIn("os.open", source)
+
     def test_export_directory_is_private_and_rejects_invalid_run_ids(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "data"
@@ -228,7 +234,7 @@ class AgentConsoleArtifactTests(unittest.TestCase):
             workspace = Path(tmpdir) / "workspace"
             workspace.mkdir()
             original = workspace / "review.py"
-            original.write_text("print('snapshot')\n", encoding="utf-8")
+            original.write_bytes(b"print('snapshot')\n")
             data_dir = Path(tmpdir) / "data"
             store = RecordingStore()
 

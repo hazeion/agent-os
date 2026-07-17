@@ -106,7 +106,8 @@ class BetaContractTests(unittest.TestCase):
         ):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
-        self.assertLess(next_actions.index("early CI guardrail"), next_actions.index("Milestone 1A"))
+        self.assertTrue(next_actions.lstrip().startswith("1. Begin Milestone 1A"))
+        self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 
     def test_docs_do_not_claim_native_installers_already_exist(self):

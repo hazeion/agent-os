@@ -126,13 +126,17 @@ Every slice follows the same reviewable loop:
 
 ### Early CI guardrail
 
-Before Milestone 1 changes the data boundary, pull forward a narrow part of
-Milestone 4: run Python compilation, JavaScript syntax checks, and the existing
-test suite automatically on macOS, Windows, and Ubuntu. Packaging, release
-artifacts, dependency scanning, and browser release gates remain in Milestone
-4, after the installable product work in Milestone 3. This early guardrail
-exists to catch cross-platform path regressions while the data-root work is
-still small.
+Implemented by `.github/workflows/ci.yml`, this narrow part of Milestone 4 runs
+Python compilation, JavaScript syntax checks, and the existing test suite on
+pull requests and pushes to `main`. It covers all nine OS/Python combinations:
+macOS, Windows, and Ubuntu with Python 3.11, 3.12, and 3.13. The guardrail is
+complete only when its GitHub-hosted matrix is green.
+
+Packaging, release artifacts, dependency scanning, browser release gates, and
+branch-protection configuration remain in Milestone 4 after the installable
+product work in Milestone 3. Keeping those later gates separate lets this early
+guardrail catch cross-platform path regressions while the Milestone 1 data-root
+work is still small.
 
 ## Milestone map
 
@@ -506,16 +510,15 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Land the early CI guardrail described above.
-2. Begin Milestone 1A with a complete mutable-path inventory and data-layout
+1. Begin Milestone 1A with a complete mutable-path inventory and data-layout
    contract before changing any runtime default.
-3. Ensure Milestone 1 includes owner-only storage for the future remote Hermes
+2. Ensure Milestone 1 includes owner-only storage for the future remote Hermes
    endpoint and API credential outside the application directory.
-4. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
+3. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
    complete read-only profile discovery, and clarification handling without
    implementing an unsafe substitute.
-5. After the data-root and remote-parity milestones, design the native
+4. After the data-root and remote-parity milestones, design the native
    installer formats, runtime strategy, signing boundary, and `pipx` fallback
    in Milestone 3 rather than choosing tooling prematurely.
-6. Do not begin a dependent slice while an earlier data-safety or release
+5. Do not begin a dependent slice while an earlier data-safety or release
    blocker remains open.

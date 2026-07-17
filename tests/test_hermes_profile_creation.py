@@ -304,7 +304,9 @@ class HermesProfileCreationServerTests(unittest.TestCase):
         request = self.confirmed_request()
         server.HERMES_PROFILE_CREATION_LOCK.acquire()
         blocked_create, blocked_create_status = server.create_hermes_profile(request)
-        with patch.object(server, "hermes_command_path", return_value="/opt/hermes/bin/hermes"):
+        with patch.object(server, "hermes_profiles_payload", return_value=discovery("default")), patch.object(
+            server, "hermes_command_path", return_value="/opt/hermes/bin/hermes"
+        ):
             blocked_run, blocked_run_status = server.start_agent_console_run(
                 {"agent_id": "hermes", "prompt": "hello"}
             )

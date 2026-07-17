@@ -71,7 +71,7 @@ class HermesProfileDiscoveryTests(unittest.TestCase):
         self.assertNotIn("path", payload["profiles"][0])
         self.assertNotIn("unexpected", payload["capabilities"])
         self.assertEqual(calls[0][0][:2], ["/opt/hermes/python", "-c"])
-        self.assertEqual(calls[0][1]["env"]["HERMES_HOME"], "/home/user/.hermes")
+        self.assertEqual(calls[0][1]["env"]["HERMES_HOME"], str(Path("/home/user/.hermes")))
         self.assertFalse(calls[0][1]["check"])
 
     def test_missing_runtime_fails_closed(self):
