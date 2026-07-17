@@ -59,7 +59,11 @@ substitutes for supported capabilities.
 
 ## Quick start
 
-You need Python 3. Install and configure
+Native installers are required for the public beta but are not implemented yet.
+Until the packaging and installer milestones are complete, the following
+source-checkout instructions remain the current install path.
+
+You need Python 3.11 through 3.13. Install and configure
 [Hermes Agent](https://hermes-agent.nousresearch.com/) if you want agent,
 session, provider, and delegation features.
 
@@ -180,8 +184,10 @@ that stays friendly to new contributors while its workflows mature. If you find
 something rough, an issue or a focused pull request is welcome.
 
 The ordered release plan, milestone dependencies, and public-beta acceptance
-criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The remote architecture and
-MIT license are approved; the remaining Milestone 0 owner decisions are still
-open. After those decisions, the next focus is the early CI guardrail, followed
-by moving mutable operator data and future remote credentials out of the
-application directory before remote-Hermes implementation and packaging begin.
+criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The beta contract is
+approved: macOS and Windows are tier one, Linux is preview, Python 3.11 through
+3.13 is supported, and signed native installers plus a supported `pipx` path
+are required release channels. Those artifacts do not exist yet. The next
+focus is the early CI guardrail, followed by moving mutable operator data and
+future remote credentials out of the application directory before remote-
+Hermes implementation and packaging begin.

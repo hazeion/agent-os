@@ -1,7 +1,8 @@
 # Mentat Road to Beta
 
-Status: Milestone 0 in progress
-Last updated: 2026-07-16
+Status: Milestone 0 complete
+Last updated: 2026-07-17
+Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
 This document organizes the work required to make Mentat safe, installable,
@@ -40,23 +41,25 @@ The beta should be:
 ## Beta contract decisions
 
 The remote architecture and MIT license were approved by the project owner on
-2026-07-16. The remaining recommended choices are still explicit project-owner
-decisions and must not be treated as commitments until approved.
+2026-07-16. The remaining release choices, severity definitions, and feedback
+policy were approved on 2026-07-17. This table is the authoritative beta
+release contract for later implementation and release decisions.
 
 | Decision | Current beta choice | Status |
 | --- | --- | --- |
-| Audience | Hermes operators comfortable installing local software | Recommended; approval pending |
+| Audience | Hermes operators comfortable installing local software | Approved 2026-07-17 |
 | Access model | One local operator; Mentat loopback only; one active local or remote Hermes endpoint | Approved 2026-07-16 |
 | Remote transport | Operator-supplied HTTPS endpoint and API key; server-to-server only | Approved 2026-07-16 |
 | Remote parity | Console, sessions/runs, approvals/clarification/cancellation/stopping, skills/toolsets, Kanban, and read-only profile discovery are mandatory; approved administration features may degrade clearly | Approved 2026-07-16 |
-| Tier-one platforms | macOS and Windows | Recommended; approval pending |
-| Preview platform | Linux, covered by CI but not initially promised at the same support level | Recommended; approval pending |
-| Python | 3.11 through 3.13 | Recommended; approval pending |
-| Install channel | `pipx` from a tagged release; consider PyPI after the release process is proven | Recommended; approval pending |
-| Update model | Manual, versioned upgrades with a pre-upgrade backup | Recommended; approval pending |
-| Telemetry | Off and absent by default | Recommended; approval pending |
-| First version | `0.1.0b1`, displayed to users as `v0.1.0-beta.1` | Recommended; approval pending |
-| Native installers | Deferred until the package-based beta is stable | Recommended; approval pending |
+| Tier-one platforms | macOS and Windows | Approved 2026-07-17 |
+| Preview platform | Linux, covered by CI but not initially promised at the same support level | Approved 2026-07-17 |
+| Python | 3.11 through 3.13 | Approved 2026-07-17 |
+| Install channels | Native installers are primary on tier-one platforms; `pipx` from a tagged release remains supported as an advanced/fallback channel and is the Linux preview path | Approved 2026-07-17 |
+| Native installers | A signed and notarized native installer for macOS and a signed native installer for Windows are required public-beta artifacts; they bundle or manage the required runtime and launch loopback-only Mentat | Approved 2026-07-17 |
+| Installer implementation | Exact installer formats and tooling are selected in Milestone 3; the current source-checkout flow remains in place until that work is complete | Approved 2026-07-17 |
+| Update model | Manual, versioned upgrades with a pre-upgrade backup | Approved 2026-07-17 |
+| Telemetry | Off and absent by default | Approved 2026-07-17 |
+| First version | `0.1.0b1`, displayed to users as `v0.1.0-beta.1` | Approved 2026-07-17 |
 | License | MIT | Approved 2026-07-16 |
 
 ## Current baseline
@@ -73,8 +76,8 @@ Mentat already has a strong product and safety foundation:
 The largest beta gaps are operational rather than feature gaps:
 
 - mutable user data still defaults to the repository's `data/` directory;
-- there is no installable Python package, product version source, or unified
-  `mentat` command;
+- there is no installable Python package, native installer, product version
+  source, or unified `mentat` command;
 - the repository has no automated GitHub Actions quality gate;
 - the runtime currently assumes Hermes is installed locally and has no remote
   connection, capability-discovery, or server-side credential boundary;
@@ -135,10 +138,10 @@ still small.
 
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
-| 0 | Beta contract | In progress | — | Approved license/remote scope plus resolved remaining owner decisions |
+| 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Not started | 0 | Migration, backup, restore, and clean-install tests |
 | 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
-| 3 | Installable product and CLI | Not started | 2 | Fresh `pipx` install and lifecycle smoke test |
+| 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
 | 6 | Release-candidate rehearsal | Not started | 1–5 | Reproducible tagged RC with rollback drill |
@@ -153,27 +156,31 @@ Work in order:
 
 1. Adopt the slice-based working process in this roadmap. **Approved
    2026-07-15.**
-2. Approve the remaining recommended release contract choices above. **Pending
-   project-owner decision.**
+2. Approve the remaining release contract choices above. **Approved
+   2026-07-17.**
 3. Choose the public license. **MIT approved 2026-07-16.**
 4. Approve the local-Mentat/one-endpoint remote Hermes architecture and
    mandatory capability set. **Approved 2026-07-16.**
-5. Confirm tier-one operating systems and Python versions. **Pending.**
-6. Confirm the initial install channel and version naming convention.
-   **Pending.**
-7. Define severity levels. **Recommended; approval pending:**
+5. Confirm tier-one operating systems and Python versions. **Approved
+   2026-07-17.**
+6. Confirm the install channels, signed native-installer requirement, update
+   model, telemetry policy, and version naming convention. **Approved
+   2026-07-17.**
+7. Define severity levels. **Approved 2026-07-17:**
    - P0: data loss, secret exposure, unsafe mutation, or app-wide unusability;
    - P1: a core workflow is unusable with no reasonable workaround;
    - P2: degraded behavior with a workaround;
    - P3: polish, documentation, or minor inconvenience.
 8. Record explicit non-goals and the policy for accepting beta feedback.
-   **Recommended; approval pending:**
+   **Approved 2026-07-17:**
    - P0 and P1 issues block a release;
    - P2 and P3 issues are prioritized by frequency and operator impact;
    - ordinary reports use GitHub Issues after the public issue path opens;
    - security reports use the private channel established in Milestone 5;
-   - beta support is best effort with no guaranteed response-time SLA; and
-   - reports must exclude credentials and private operator content.
+   - beta support is best effort with no guaranteed response-time SLA;
+   - reports must exclude credentials and private operator content; and
+   - the explicit beta non-goals are maintained in the deferred-work section
+     below.
 
 Exit criteria:
 
@@ -184,8 +191,8 @@ Exit criteria:
 - every later milestone can make decisions against the same target.
 
 The approved remote capability details and upstream blockers are recorded in
-[REMOTE_HERMES.md](REMOTE_HERMES.md). Milestone 0 remains in progress until the
-remaining support, distribution, severity, and feedback decisions are approved.
+[REMOTE_HERMES.md](REMOTE_HERMES.md). Milestone 0 is complete; changes to this
+contract require another explicit project-owner decision.
 
 ## Milestone 1 — Move user data out of the install
 
@@ -264,10 +271,10 @@ Exit criteria:
 - remote Kanban mutations preserve exact preview, confirmation, locking,
   idempotency where available, and operation-specific read-back verification.
 
-## Milestone 3 — Create an installable product and unified CLI
+## Milestone 3 — Create an installable product, native installers, and unified CLI
 
-Goal: replace repository-specific setup steps with a versioned installation and
-one predictable command surface.
+Goal: replace repository-specific setup steps with versioned native and `pipx`
+installation paths plus one predictable command surface.
 
 Work in order:
 
@@ -287,13 +294,24 @@ Work in order:
    - `mentat restore`
 5. Preserve the existing scripts as compatibility wrappers during the beta.
 6. Test wheel/sdist contents and install into a fresh isolated environment.
-7. Update the README from source-checkout instructions to an operator-first
-   install path, with source setup retained for contributors.
+7. Select the exact native installer formats and tooling, then build a signed
+   and notarized native installer for macOS and a signed native installer for
+   Windows. Each installer must bundle or manage its required runtime, preserve
+   the loopback-only boundary, and support clean removal without deleting
+   operator data.
+8. Keep signing credentials out of source, ordinary CI jobs, artifacts, logs,
+   diagnostics, and browser-visible state.
+9. Update the README from source-checkout instructions to operator-first native
+   and `pipx` install paths, with source setup retained for contributors.
 
 Exit criteria:
 
-- a clean machine can install Mentat through the chosen `pipx` path;
+- clean macOS and Windows machines can install Mentat through their native
+  installer, and `pipx` works as the supported advanced/fallback and Linux
+  preview path;
 - no command depends on the current working directory;
+- native installs launch the local Mentat service and browser without changing
+  the loopback-only network boundary;
 - `mentat doctor` explains missing optional integrations without exposing
   credentials or private paths;
 - version output is consistent everywhere;
@@ -317,16 +335,21 @@ Work in order:
    Python versions.
 3. Run Python compilation and JavaScript syntax checks.
 4. Build the package and verify wheel/sdist contents.
-5. Install the built artifact in a clean environment and exercise setup,
-   lifecycle, and health checks.
-6. Run browser smoke coverage on at least one supported platform.
-7. Add dependency and secret scanning with actionable failure output.
-8. Require the stable checks before merging and before creating a release tag.
+5. Build native installer test artifacts on macOS and Windows and validate
+   their contents without exposing signing credentials to pull-request jobs.
+6. Produce a signed and notarized native installer for macOS and a signed
+   native installer for Windows only in a protected, trusted release context.
+7. Install the built native installer and `pipx` artifacts in clean
+   environments and exercise setup, lifecycle, and health checks.
+8. Run browser smoke coverage on at least one supported platform.
+9. Add dependency and secret scanning with actionable failure output.
+10. Require the stable checks before merging and before creating a release tag.
 
 Exit criteria:
 
 - the required matrix is green from a clean checkout;
-- packaging and lifecycle failures block release candidates;
+- package, native installer, signing/notarization, and lifecycle failures block
+  release candidates;
 - CI logs do not disclose environment secrets or private operator data;
 - the exact release artifact has passed installation smoke tests.
 
@@ -369,9 +392,12 @@ Work in order:
 
 1. Create a release checklist and scripted artifact build.
 2. Generate a tagged release candidate such as `v0.1.0-beta.1-rc.1`.
-3. Publish checksums, installation instructions, release notes, known
-   limitations, backup steps, and rollback instructions.
-4. Test clean installation on each tier-one platform.
+3. Produce the signed and notarized native installer for macOS, signed native
+   installer for Windows, and supported `pipx` artifact with checksums,
+   installation instructions, release notes, known limitations, backup steps,
+   and rollback instructions.
+4. Test each native installer on a clean tier-one system and test the `pipx`
+   path in its supported roles.
 5. Test upgrade from a representative legacy checkout and prior package build.
 6. Restore a backup into a clean install and compare the expected data.
 7. Test uninstall/reinstall while preserving operator data.
@@ -379,7 +405,8 @@ Work in order:
 
 Exit criteria:
 
-- another person can install the exact tagged artifact using only public docs;
+- another person can install each exact tagged native installer or the
+  supported `pipx` artifact using only public docs;
 - clean install, upgrade, rollback, backup, restore, and uninstall-preservation
   drills pass on every tier-one platform;
 - artifact checksums and release notes are reproducible;
@@ -422,7 +449,9 @@ Work in order:
 
 1. Freeze the release candidate except for release-blocking fixes.
 2. Run the full CI, clean-install, upgrade, backup, restore, and rollback gates.
-3. Tag `v0.1.0-beta.1` and publish the tested artifacts and checksums.
+3. Tag `v0.1.0-beta.1` and publish the tested signed and notarized native
+   installer for macOS, signed native installer for Windows, supported `pipx`
+   artifact, and checksums.
 4. Publish release notes, known limitations, security/privacy links, and
    rollback instructions.
 5. Open the public issue path and begin the documented beta support window.
@@ -446,7 +475,10 @@ The release cannot be called public beta until all of the following are true:
 - [ ] Legacy data migration is previewed, backed up, and tested.
 - [ ] Backup, restore, upgrade, rollback, and uninstall preservation work.
 - [ ] A versioned package and unified CLI install cleanly through the supported
-  channel.
+  `pipx` channel.
+- [ ] A signed and notarized native installer for macOS and a signed native
+  installer for Windows pass clean-install, upgrade, rollback, and uninstall-
+  preservation checks.
 - [ ] Required CI is green on the supported platform/Python matrix.
 - [ ] One remote Hermes endpoint can provide every mandatory capability over
   verified HTTPS without exposing its API credential.
@@ -465,7 +497,7 @@ The release cannot be called public beta until all of the following are true:
 - non-loopback or hosted Mentat access, browser-to-Hermes access, and a
   Mentat-operated relay;
 - authentication, multi-user accounts, or multi-tenancy;
-- native signed installers and automatic updates;
+- automatic updates;
 - telemetry or analytics by default;
 - Hermes cron write controls without upstream atomic capabilities;
 - general Hermes configuration, soul, skill-content, credential, or MCP
@@ -474,15 +506,16 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Finish the remaining Milestone 0 audience, platform/Python, distribution,
-   severity, non-goal, and feedback-policy decisions.
-2. Land the early CI guardrail described above.
-3. Begin Milestone 1A with a complete mutable-path inventory and data-layout
+1. Land the early CI guardrail described above.
+2. Begin Milestone 1A with a complete mutable-path inventory and data-layout
    contract before changing any runtime default.
-4. Ensure Milestone 1 includes owner-only storage for the future remote Hermes
+3. Ensure Milestone 1 includes owner-only storage for the future remote Hermes
    endpoint and API credential outside the application directory.
-5. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
+4. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
    complete read-only profile discovery, and clarification handling without
    implementing an unsafe substitute.
+5. After the data-root and remote-parity milestones, design the native
+   installer formats, runtime strategy, signing boundary, and `pipx` fallback
+   in Milestone 3 rather than choosing tooling prematurely.
 6. Do not begin a dependent slice while an earlier data-safety or release
    blocker remains open.
