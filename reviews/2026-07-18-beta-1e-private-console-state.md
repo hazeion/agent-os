@@ -185,11 +185,22 @@ reference-consistent private unit.
   Windows-only SQLite WAL recovery incompatibility in all three Windows jobs:
   read-only recovery of the captured main/WAL pair cannot portably rebuild a
   missing SHM index. The live source remains read-only and byte-revalidated;
-  SQLite now opens only the private temporary main/WAL copy read-write so it
-  can create its temporary SHM index before producing the backup-API snapshot.
+  SQLite now rebuilds a fresh SHM cache for the captured private main/WAL copy,
+  explicitly checkpoints only that copy, verifies its integrity, converts it
+  to rollback-journal mode, and then produces the backup-API snapshot. This
+  avoids both stale copied wal-index state and platform-dependent WAL behavior
+  in `sqlite3_backup` while live main/WAL/SHM remain untouched and
+  byte-revalidated.
   Platform-correct absolute SQLite file URIs replace path-string URIs for every
   remaining read-only open. The 30-test focused suite and full 573-test suite
   pass after the correction; a fresh hosted matrix is pending.
+- Hosted remediation run `29662888922` again passed all six Linux/macOS jobs
+  but showed that merely opening the main/WAL temporary copy read-write still
+  yielded malformed Windows snapshots in all three Windows jobs. The current
+  correction therefore explicitly uses SQLite to rebuild a fresh private SHM,
+  checkpoint, integrity-check, and convert only the private temporary copy to
+  rollback-journal mode before `sqlite3_backup`. A fresh hosted matrix for this
+  second correction is pending.
 
 ## Adversarial review
 

@@ -259,15 +259,25 @@ def _sqlite_backup(
     source_connection = None
     destination_connection = None
     try:
-        # The copied main/WAL pair belongs to a private temporary directory, so
-        # SQLite may safely open it read-write to create a fresh SHM index and
-        # recover the WAL.  A read-only WAL open without a pre-existing SHM is
-        # not portable on Windows.  The live source is still opened read-only.
+        # The captured main/WAL set belongs to a private temporary, so SQLite
+        # may safely rebuild a fresh SHM cache, recover, and checkpoint without
+        # touching the operator source.  Converting that private copy to
+        # rollback-journal mode before backup also avoids platform-dependent
+        # WAL handling in sqlite3_backup on Windows.
         source_connection = (
             sqlite3.connect(source_for_sqlite)
-            if copy_source
+            if source_temporary is not None
             else sqlite3.connect(_sqlite_readonly_uri(source_for_sqlite), uri=True)
         )
+        if source_temporary is not None:
+            checkpoint = source_connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint is None or int(checkpoint[0]) != 0:
+                raise PrivateConsoleUnitError("private_database_busy")
+            journal_mode = source_connection.execute("PRAGMA journal_mode=DELETE").fetchone()
+            if journal_mode is None or str(journal_mode[0]).lower() != "delete":
+                raise PrivateConsoleUnitError("private_database_invalid")
+            if source_connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise PrivateConsoleUnitError("private_database_invalid")
         destination_connection = sqlite3.connect(destination)
         source_connection.backup(destination_connection)
     finally:
