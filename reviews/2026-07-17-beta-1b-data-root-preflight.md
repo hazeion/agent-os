@@ -169,6 +169,8 @@ without writing to the filesystem.
 | `python3 -m unittest discover -s tests -v` | macOS, system Python 3 | Exit 0 | 389 passed, 0 failed/skipped | Existing history-permission warning only. |
 | Post-review quiet full-suite rerun | macOS, system Python 3 | Exit 0 | 394 passed, 0 failed/skipped | Existing history-permission warning only. |
 | Final quiet full-suite rerun after TOCTOU/special-file fixes | macOS, system Python 3 | Exit 0 | 395 passed, 0 failed/skipped | Existing history-permission warning only. |
+| GitHub Actions run `29633885730`, first attempt | macOS/Windows/Ubuntu, Python 3.11–3.13 | Exit 1 | 6 jobs passed, 3 Windows jobs failed | All Windows versions exposed the same host-dependent simulated Linux absolute-path check. macOS and Ubuntu were green. |
+| Approved hosted-CI correction local rerun | macOS, system Python 3 | Exit 0 | 51 focused and 395 full tests passed | Compilation and diff check passed; both independent reviewers reported no findings on the `PurePosixPath` correction. |
 
 ### Rendered or manual behavior
 
@@ -286,8 +288,15 @@ were reconciled as single fixes:
 - User authorization and scope: Approved staging the documented slice, creating
   the agreed commit, pushing the feature branch, and opening a ready PR on
   2026-07-17. Merge remains separately gated after hosted CI.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- Initial commit hash: `0ad4260c48e348064493dc645216874f5ed810d0`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/21
+- Hosted-CI correction: The first hosted run showed that Linux/XDG validation
+  used the runner host's `Path.is_absolute()` semantics during simulation, so
+  Windows treated `/srv/operator-data` as non-absolute. The approved focused fix
+  uses `PurePosixPath` for Linux validation without changing runtime precedence
+  or platform defaults.
+- Hosted-CI correction review: Both independent post-publication reviewers
+  reported no P0-P3 findings. A new nine-job run remains required after push.
 
 ## Outcome review
 

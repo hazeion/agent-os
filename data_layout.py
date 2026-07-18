@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
 import sys
 from typing import Mapping, Sequence
@@ -121,7 +121,7 @@ def resolve_platform_data_root(
 
     if platform_value.startswith("linux"):
         xdg_data_home = _nonempty(environment.get("XDG_DATA_HOME"))
-        if xdg_data_home is not None and Path(xdg_data_home).is_absolute():
+        if xdg_data_home is not None and PurePosixPath(xdg_data_home).is_absolute():
             return Path(xdg_data_home) / "Mentat"
         return home_path / ".local" / "share" / "Mentat"
 
