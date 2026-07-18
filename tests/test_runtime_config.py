@@ -5,10 +5,13 @@ import os
 import socket
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 import unittest
 from unittest.mock import patch
 
 import data_layout
+import data_migration
+import json_store
 import runtime_config
 import server
 
@@ -318,6 +321,659 @@ greeting_prefix = "Hi"
 
             self.assertIn("migration_required", error)
             self.assertFalse(target.exists())
+
+    def test_verified_migration_receipt_allows_normal_mutation_and_blocks_invalid_data(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds_and_legacy = root / "source-data"
+            target = root / "platform-data"
+            seeds_and_legacy.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                if name == "tasks.json":
+                    payload = [{"id": "legacy-task"}]
+                (seeds_and_legacy / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            source_config = root / "mentat.toml"
+            source_config.write_text('[paths]\ndata_dir = "data"\n', encoding="utf-8")
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="platform_default",
+            )
+            preview = data_migration.preview_legacy_migration(
+                seeds_and_legacy,
+                seeds_and_legacy,
+                target,
+                home=root / "home",
+            )
+            result = data_migration.migrate_legacy_data(
+                seeds_and_legacy,
+                seeds_and_legacy,
+                target,
+                confirmation_token=preview.confirmation_token or "",
+                home=root / "home",
+            )
+            self.assertEqual(result.status, "migrated")
+
+            with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds_and_legacy), patch.object(
+                runtime_config,
+                "DEFAULT_CONFIG_FILE",
+                source_config,
+            ):
+                self.assertIsNone(runtime_config.prepare_data_root_for_startup(config))
+                json_store.update_json(
+                    target / "tasks.json",
+                    [],
+                    lambda _current: (
+                        [{"id": "legitimate-post-migration-task"}],
+                        None,
+                    ),
+                )
+                if os.name == "posix":
+                    self.assertEqual((target / "tasks.json").stat().st_mode & 0o777, 0o600)
+                self.assertTrue(data_migration.migration_receipt_valid(target))
+                self.assertIsNone(runtime_config.prepare_data_root_for_startup(config))
+                orphan = target / (".tasks.json." + "a" * 32 + ".tmp")
+                orphan.write_bytes(b'[{"id":"interrupted-write"}')
+                if os.name == "posix":
+                    orphan.chmod(0o600)
+                self.assertTrue(data_migration.migration_receipt_valid(target))
+                self.assertEqual(
+                    data_migration.preview_legacy_migration(
+                        seeds_and_legacy,
+                        seeds_and_legacy,
+                        target,
+                        home=root / "home",
+                    ).status,
+                    "already_migrated",
+                )
+                self.assertIsNone(runtime_config.prepare_data_root_for_startup(config))
+                if os.name == "posix":
+                    orphan.chmod(0o644)
+                    self.assertFalse(data_migration.migration_receipt_valid(target))
+                    self.assertIsNotNone(runtime_config.prepare_data_root_for_startup(config))
+                    orphan.chmod(0o600)
+                    self.assertTrue(data_migration.migration_receipt_valid(target))
+
+            explicit_config = server.AppConfig(
+                config_files=config.config_files,
+                host=config.host,
+                port=config.port,
+                data_dir=config.data_dir,
+                public_dir=config.public_dir,
+                hermes_home=config.hermes_home,
+                obsidian_vault=config.obsidian_vault,
+                data_dir_source="cli",
+            )
+            with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds_and_legacy):
+                self.assertIsNone(runtime_config.prepare_data_root_for_startup(explicit_config))
+                (target / "tasks.json").write_text("{}\n", encoding="utf-8")
+                self.assertFalse(data_migration.migration_receipt_valid(target))
+                self.assertIsNotNone(runtime_config.prepare_data_root_for_startup(explicit_config))
+
+    def test_interrupted_migration_blocks_startup_for_every_data_root_source(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "seeds"
+            legacy = root / "legacy"
+            target = root / "target"
+            seeds.mkdir()
+            legacy.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+                if name == "tasks.json":
+                    payload = [{"id": "legacy-task"}]
+                (legacy / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            preview = data_migration.preview_legacy_migration(
+                seeds,
+                legacy,
+                target,
+                home=root / "home",
+            )
+            original_publish = data_migration._publish_destination
+            calls = 0
+
+            def interrupt_after_one(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("simulated interruption")
+                return original_publish(*args, **kwargs)
+
+            with patch.object(
+                data_migration,
+                "_publish_destination",
+                side_effect=interrupt_after_one,
+            ):
+                result = data_migration.migrate_legacy_data(
+                    seeds,
+                    legacy,
+                    target,
+                    confirmation_token=preview.confirmation_token or "",
+                    home=root / "home",
+                )
+            self.assertEqual(result.status, "partial_failure")
+            before_names = {path.name for path in target.glob("*.json")}
+
+            for source in ("cli", "environment", "legacy_environment", "toml", "platform_default"):
+                with self.subTest(source=source):
+                    config = server.AppConfig(
+                        config_files=tuple(),
+                        host="127.0.0.1",
+                        port=8888,
+                        data_dir=target,
+                        public_dir=server.PUBLIC_DIR,
+                        hermes_home=server.HERMES_HOME,
+                        obsidian_vault=server.OBSIDIAN_VAULT,
+                        data_dir_source=source,
+                    )
+                    with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
+                        error = runtime_config.prepare_data_root_for_startup(config)
+                    self.assertIn("incomplete or invalid legacy migration", error)
+                    self.assertEqual(
+                        {path.name for path in target.glob("*.json")},
+                        before_names,
+                    )
+
+    def test_startup_rechecks_migration_artifacts_under_the_shared_lock(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "seeds"
+            legacy = root / "legacy"
+            target = root / "target"
+            seeds.mkdir()
+            legacy.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                seed_payload = {} if name == "dashboard.json" else []
+                legacy_payload = seed_payload
+                if name == "tasks.json":
+                    legacy_payload = [{"id": "legacy-task"}]
+                (seeds / name).write_text(json.dumps(seed_payload) + "\n", encoding="utf-8")
+                (legacy / name).write_text(json.dumps(legacy_payload) + "\n", encoding="utf-8")
+
+            preview = data_migration.preview_legacy_migration(
+                seeds,
+                legacy,
+                target,
+                home=root / "home",
+            )
+            checked = Event()
+            migration_finished = Event()
+            startup_result: list[str | None] = []
+            real_startup_status = data_migration.migration_startup_status
+
+            def pause_after_unlocked_check(data_root):
+                status = real_startup_status(data_root)
+                checked.set()
+                self.assertTrue(migration_finished.wait(10))
+                return status
+
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="cli",
+            )
+
+            def run_startup():
+                with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds), patch.object(
+                    runtime_config,
+                    "migration_startup_status",
+                    side_effect=pause_after_unlocked_check,
+                ):
+                    startup_result.append(runtime_config.prepare_data_root_for_startup(config))
+
+            startup_thread = Thread(target=run_startup)
+            startup_thread.start()
+            self.assertTrue(checked.wait(10))
+            original_publish = data_migration._publish_destination
+            calls = 0
+
+            def interrupt_after_one(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("simulated interruption")
+                return original_publish(*args, **kwargs)
+
+            try:
+                with patch.object(
+                    data_migration,
+                    "_publish_destination",
+                    side_effect=interrupt_after_one,
+                ):
+                    migrated = data_migration.migrate_legacy_data(
+                        seeds,
+                        legacy,
+                        target,
+                        confirmation_token=preview.confirmation_token or "",
+                        home=root / "home",
+                    )
+                self.assertEqual(migrated.status, "partial_failure")
+            finally:
+                migration_finished.set()
+                startup_thread.join(10)
+
+            self.assertFalse(startup_thread.is_alive())
+            self.assertEqual(len(startup_result), 1)
+            self.assertIn("migration_incomplete_or_invalid", startup_result[0] or "")
+            self.assertLess(
+                len(list(target.glob("*.json"))),
+                len(data_layout.SEED_FILE_NAMES),
+            )
+
+    def test_startup_rejects_root_substitution_during_receipt_validation(self):
+        if os.name == "nt":
+            self.skipTest("Windows target guards prevent the injected rename natively")
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "seeds"
+            target = root / "target"
+            displaced = root / "displaced-target"
+            seeds.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            preview = data_migration.preview_legacy_migration(
+                seeds,
+                seeds,
+                target,
+                home=root / "home",
+            )
+            migrated = data_migration.migrate_legacy_data(
+                seeds,
+                seeds,
+                target,
+                confirmation_token=preview.confirmation_token or "",
+                home=root / "home",
+            )
+            self.assertEqual(migrated.status, "migrated")
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="cli",
+            )
+            real_receipt_valid = data_migration.migration_receipt_valid
+            substituted = False
+
+            def substitute_after_validation(data_root):
+                nonlocal substituted
+                valid = real_receipt_valid(data_root)
+                if valid and not substituted:
+                    substituted = True
+                    target.rename(displaced)
+                    target.mkdir()
+                return valid
+
+            with patch.object(
+                data_migration,
+                "migration_receipt_valid",
+                side_effect=substitute_after_validation,
+            ), patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
+                error = runtime_config.prepare_data_root_for_startup(config)
+
+            self.assertTrue(substituted)
+            self.assertIsNotNone(error)
+            self.assertFalse(
+                any((target / name).exists() for name in data_layout.SEED_FILE_NAMES)
+            )
+            self.assertTrue(data_migration.migration_receipt_valid(displaced))
+
+    def test_startup_rejects_completed_root_substitution_before_initialization(self):
+        if os.name == "nt":
+            self.skipTest("Windows target guards prevent the injected rename natively")
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "seeds"
+            target = root / "target"
+            displaced = root / "displaced-target"
+            seeds.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            preview = data_migration.preview_legacy_migration(
+                seeds,
+                seeds,
+                target,
+                home=root / "home",
+            )
+            migrated = data_migration.migrate_legacy_data(
+                seeds,
+                seeds,
+                target,
+                confirmation_token=preview.confirmation_token or "",
+                home=root / "home",
+            )
+            self.assertEqual(migrated.status, "migrated")
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="cli",
+            )
+            real_initialize = runtime_config.initialize_data_root
+
+            def substitute_before_initialize(*args, **kwargs):
+                target.rename(displaced)
+                target.mkdir()
+                return real_initialize(*args, **kwargs)
+
+            with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds), patch.object(
+                runtime_config,
+                "initialize_data_root",
+                side_effect=substitute_before_initialize,
+            ):
+                error = runtime_config.prepare_data_root_for_startup(config)
+
+            self.assertIsNotNone(error)
+            self.assertFalse(
+                any((target / name).exists() for name in data_layout.SEED_FILE_NAMES)
+            )
+            self.assertTrue(data_migration.migration_receipt_valid(displaced))
+
+    def test_completed_migration_secures_every_required_directory_boundary(self):
+        for case in ("missing_runtime", "broad_private", "file_private", "linked_runtime"):
+            if case == "broad_private" and os.name != "posix":
+                continue
+            with self.subTest(case=case), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                seeds = root / "seeds"
+                target = root / "target"
+                seeds.mkdir()
+                for name in data_layout.SEED_FILE_NAMES:
+                    payload = {} if name == "dashboard.json" else []
+                    (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+                preview = data_migration.preview_legacy_migration(
+                    seeds,
+                    seeds,
+                    target,
+                    home=root / "home",
+                )
+                migrated = data_migration.migrate_legacy_data(
+                    seeds,
+                    seeds,
+                    target,
+                    confirmation_token=preview.confirmation_token or "",
+                    home=root / "home",
+                )
+                self.assertEqual(migrated.status, "migrated")
+
+                outside = root / "outside"
+                if case == "missing_runtime":
+                    (target / "runtime").rmdir()
+                elif case == "broad_private":
+                    (target / "private").chmod(0o755)
+                elif case == "file_private":
+                    (target / "private").rmdir()
+                    (target / "private").write_text("not a directory", encoding="utf-8")
+                else:
+                    (target / "runtime").rmdir()
+                    outside.mkdir()
+                    try:
+                        (target / "runtime").symlink_to(outside, target_is_directory=True)
+                    except OSError:
+                        self.skipTest("directory symlink creation unavailable")
+
+                config = server.AppConfig(
+                    config_files=tuple(),
+                    host="127.0.0.1",
+                    port=8888,
+                    data_dir=target,
+                    public_dir=server.PUBLIC_DIR,
+                    hermes_home=server.HERMES_HOME,
+                    obsidian_vault=server.OBSIDIAN_VAULT,
+                    data_dir_source="cli",
+                )
+                with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
+                    error = runtime_config.prepare_data_root_for_startup(config)
+
+                if case in {"missing_runtime", "broad_private"}:
+                    self.assertIsNone(error)
+                    selected = target / (
+                        "runtime" if case == "missing_runtime" else "private"
+                    )
+                    self.assertTrue(selected.is_dir())
+                    if os.name == "posix":
+                        self.assertEqual(selected.stat().st_mode & 0o777, 0o700)
+                else:
+                    self.assertIsNotNone(error)
+                    self.assertFalse((outside / "server-state.json").exists())
+
+    def test_completed_receipt_writer_temporary_exception_stays_fail_closed(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "seeds"
+            target = root / "target"
+            seeds.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            preview = data_migration.preview_legacy_migration(
+                seeds,
+                seeds,
+                target,
+                home=root / "home",
+            )
+            migrated = data_migration.migrate_legacy_data(
+                seeds,
+                seeds,
+                target,
+                confirmation_token=preview.confirmation_token or "",
+                home=root / "home",
+            )
+            self.assertEqual(migrated.status, "migrated")
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="cli",
+            )
+            exact = target / (".tasks.json." + "b" * 32 + ".tmp")
+            outside = root / "outside"
+            outside.write_bytes(b"[]\n")
+            if os.name == "posix":
+                outside.chmod(0o600)
+
+            def assert_completed_root_blocks(artifact: Path):
+                self.assertFalse(data_migration.migration_receipt_valid(target))
+                blocked = data_migration.preview_legacy_migration(
+                    seeds,
+                    seeds,
+                    target,
+                    home=root / "home",
+                )
+                self.assertEqual(blocked.status, "unsafe")
+                self.assertIsNotNone(runtime_config.prepare_data_root_for_startup(config))
+                if artifact.is_symlink() or artifact.is_file():
+                    artifact.unlink()
+                self.assertTrue(data_migration.migration_receipt_valid(target))
+
+            with self.subTest(case="lookalike_name"):
+                lookalike = target / (".tasks.json." + "g" * 32 + ".tmp")
+                lookalike.write_bytes(b"[]\n")
+                if os.name == "posix":
+                    lookalike.chmod(0o600)
+                assert_completed_root_blocks(lookalike)
+
+            with self.subTest(case="symlink"):
+                try:
+                    exact.symlink_to(outside)
+                except OSError:
+                    pass
+                else:
+                    assert_completed_root_blocks(exact)
+
+            with self.subTest(case="hardlink"):
+                try:
+                    os.link(outside, exact)
+                except OSError:
+                    pass
+                else:
+                    assert_completed_root_blocks(exact)
+
+            with self.subTest(case="oversized"):
+                with exact.open("wb") as handle:
+                    handle.truncate(data_layout.MAX_PREFLIGHT_JSON_BYTES + 1)
+                if os.name == "posix":
+                    exact.chmod(0o600)
+                assert_completed_root_blocks(exact)
+
+            if os.name == "posix" and hasattr(os, "geteuid"):
+                with self.subTest(case="owner_mismatch"):
+                    exact.write_bytes(b"[]\n")
+                    exact.chmod(0o600)
+                    effective_uid = os.geteuid()
+                    with patch.object(
+                        data_migration.os,
+                        "geteuid",
+                        return_value=effective_uid + 1,
+                    ):
+                        self.assertFalse(data_migration._safe_json_store_temporary(exact))
+                    exact.unlink()
+
+            with self.subTest(case="receipt_absent"):
+                fresh_target = root / "fresh-target"
+                fresh_target.mkdir()
+                fresh_temp = fresh_target / (".tasks.json." + "c" * 32 + ".tmp")
+                fresh_temp.write_bytes(b"[]\n")
+                if os.name == "posix":
+                    fresh_temp.chmod(0o600)
+                blocked = data_migration.preview_legacy_migration(
+                    seeds,
+                    seeds,
+                    fresh_target,
+                    home=root / "home",
+                )
+                self.assertEqual(blocked.status, "unsafe")
+                self.assertIn("unsupported_target_entries", blocked.issues)
+
+    def test_orphaned_backup_temporary_blocks_explicit_root_startup(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "seeds"
+            target = root / "target"
+            seeds.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            backups = target / "backups"
+            backups.mkdir(parents=True)
+            temporary = backups / (
+                ".legacy-migration-v1-"
+                + "0" * 24
+                + ".zip.mentat-init-"
+                + "1" * 32
+                + ".tmp"
+            )
+            temporary.write_bytes(b"interrupted-private-backup")
+            if os.name == "posix":
+                temporary.chmod(0o600)
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="cli",
+            )
+
+            with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
+                error = runtime_config.prepare_data_root_for_startup(config)
+
+            self.assertIn("incomplete or invalid legacy migration", error)
+            self.assertFalse(any((target / name).exists() for name in data_layout.SEED_FILE_NAMES))
+
+    def test_legacy_migration_cli_preview_and_confirmation_are_bounded(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "seeds"
+            legacy = root / "legacy"
+            target = root / "target"
+            seeds.mkdir()
+            legacy.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+                if name == "tasks.json":
+                    payload = [{"id": "legacy-task"}]
+                (legacy / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="cli",
+            )
+            preview_args = server.parse_cli_args(
+                ["--preview-legacy-migration", "--legacy-data-dir", str(legacy)]
+            )
+            with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
+                preview_summary, preview_exit = runtime_config.run_legacy_migration_cli(
+                    preview_args,
+                    config,
+                )
+                token = preview_summary["confirmation_token"]
+                confirm_args = server.parse_cli_args(
+                    [
+                        "--confirm-legacy-migration",
+                        token,
+                        "--legacy-data-dir",
+                        str(legacy),
+                    ]
+                )
+                result_summary, result_exit = runtime_config.run_legacy_migration_cli(
+                    confirm_args,
+                    config,
+                )
+
+            serialized = json.dumps(preview_summary)
+            self.assertEqual(preview_exit, 0)
+            self.assertEqual(preview_summary["status"], "ready")
+            self.assertNotIn(str(root), serialized)
+            self.assertNotIn("sha256", serialized)
+            self.assertEqual(result_exit, 0)
+            self.assertEqual(result_summary["status"], "migrated")
+            self.assertTrue(data_migration.migration_receipt_valid(target))
+
+    def test_legacy_migration_cli_modes_are_explicit_and_exclusive(self):
+        with self.assertRaises(SystemExit):
+            server.parse_cli_args(["--legacy-data-dir", "/tmp/legacy-only"])
+        with self.assertRaises(SystemExit):
+            server.parse_cli_args(
+                ["--print-config", "--preview-legacy-migration"]
+            )
+        with self.assertRaises(SystemExit):
+            server.parse_cli_args(
+                ["--preview-legacy-migration", "--confirm-legacy-migration", "0" * 64]
+            )
 
     def test_startup_rejects_a_data_root_overlapping_packaged_seeds(self):
         with TemporaryDirectory() as tmpdir:

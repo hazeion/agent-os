@@ -5,6 +5,13 @@ All notable changes to Mentat.
 ## 2026-07-18
 
 ### Added
+- Completed Milestone 1C with an explicit CLI preview/confirmation workflow for
+  the fixed legacy durable-JSON inventory, including a validated versioned ZIP,
+  locked revalidation, missing-only atomic publication, interruption-safe
+  resume, exact verification, and a completion receipt checked at startup.
+- Added stale-token, conflict, source-change, destination-race, backup ordering,
+  corruption, interruption/resume, receipt, CLI-isolation, and source-
+  preservation coverage.
 - Completed Milestone 1B with a standard-library, cross-process-locked data-root
   initializer. Clean installed layouts create owner-only durable, private,
   runtime, backup, cache, log, and config boundaries and copy only missing
@@ -15,13 +22,23 @@ All notable changes to Mentat.
   two-process serialization coverage.
 
 ### Safety
+- Keeps migration output path/content/hash-free, preserves the legacy source,
+  refuses unknown, symbolic-linked, or hard-linked inputs and changed partial
+  state, binds confirmation to exact root spellings and an empty initial target,
+  pins receipt validation against root substitution, secures every required
+  completed-migration directory boundary before startup, never overwrites a
+  destination, preserves owner-only mode before ordinary atomic-write commit,
+  tolerates only exact safe orphan writer temporaries after completion, and
+  leaves schema evolution, private-state movement, and general backup/restore
+  outside this slice.
 - Revalidates the complete bounded preflight after acquiring the initialization
   lock, never replaces an existing operator destination, keeps `--print-config`
   side-effect-free, treats the tracked source layout as a no-op development
   override, and fails closed before seed copying when legacy, invalid, linked,
   conflicting, or unverifiable state is present.
-- Keeps migration, schema evolution, backup/restore, private/runtime data moves,
-  remote credentials, packaging, and installers outside this slice.
+- The Milestone 1B initializer kept migration, schema evolution,
+  backup/restore, private/runtime data moves, remote credentials, packaging,
+  and installers outside that initializer slice.
 
 ## 2026-07-17
 
