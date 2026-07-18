@@ -154,7 +154,7 @@ class DataRootInitializerTests(unittest.TestCase):
             root = Path(tmpdir)
             package = root / "LongPackageName"
             seeds = package / "data"
-            alias_package = root / "LONGPA~1"
+            alias_package = root / "MockAliasSpelling"
             alias_seeds = alias_package / "data"
             self.write_seeds(seeds)
             alias_seeds.mkdir(parents=True)
@@ -293,6 +293,13 @@ class DataRootInitializerTests(unittest.TestCase):
             with (
                 patch.object(data_layout.sys, "platform", "darwin"),
                 patch.object(data_layout.os.path, "samefile", return_value=False),
+                patch.object(
+                    data_layout,
+                    "_native_path_comparison_key",
+                    side_effect=lambda path: os.fspath(
+                        data_layout._absolute_without_following(path)
+                    ),
+                ),
             ):
                 result = initialize_data_root(seeds, target, home=root / "home")
 
@@ -546,6 +553,48 @@ class DataRootInitializerTests(unittest.TestCase):
             self.assertEqual(blocked_attempts, {"lock", "temp", "seed"})
             for name in data_layout.SEED_FILE_NAMES:
                 self.assertEqual((target / name).read_bytes(), (seeds / name).read_bytes())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows access mask")
+    def test_windows_directory_guards_do_not_require_listing_access(self):
+        import ctypes
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            captured_access: list[int] = []
+            kernel32 = data_layout._windows_kernel32()
+            real_create_file = kernel32.CreateFileW
+
+            def capture_create_file(
+                path,
+                desired_access,
+                share_mode,
+                security_attributes,
+                disposition,
+                flags,
+                template,
+            ):
+                captured_access.append(desired_access)
+                return real_create_file(
+                    path,
+                    desired_access,
+                    share_mode,
+                    security_attributes,
+                    disposition,
+                    flags,
+                    template,
+                )
+
+            with (
+                patch.object(data_layout, "_windows_kernel32", return_value=kernel32),
+                patch.object(kernel32, "CreateFileW", side_effect=capture_create_file),
+            ):
+                handles = data_layout._windows_open_directory_chain(root)
+            for handle in reversed(handles):
+                data_layout._windows_close_handle(handle)
+
+            self.assertTrue(captured_access)
+            self.assertEqual(set(captured_access), {0x00000020 | 0x00000080})
+            self.assertTrue(all(not access & 0x00000001 for access in captured_access))
 
     def test_preflight_is_repeated_after_the_initialization_lock(self):
         with TemporaryDirectory() as tmpdir:

@@ -265,8 +265,11 @@ the CRT's shorter implicit retry window.
 On Windows, no-reparse, non-delete-sharing handle chains also pin the packaged
 seed root and any distinct existing legacy root from the first preflight
 through seed reads and final verification. The seed-file open still protects
-its final component. A junction or directory substitution therefore cannot
-redirect a validated packaged read between inspection and copying.
+its final component. Directory guards request only traverse and read-attributes
+access—never directory-list access—so Windows enforces the omitted
+delete-sharing permission against rename as well as deletion without rejecting
+a traverse-only ancestor. A junction or directory substitution therefore
+cannot redirect a validated packaged read between inspection and copying.
 
 Legacy detection and destination reservation occur before any durable JSON
 initialization. A source-checkout operator who explicitly keeps the repo-local

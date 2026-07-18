@@ -1,6 +1,6 @@
 # Feature Slice Review: Initialize the Platform Data Root
 
-Status: Paused pending publication approval
+Status: Paused pending corrective publication approval
 Slice: `beta-1b-data-root-initializer`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1b-data-root-initializer.md`
@@ -320,6 +320,30 @@ legacy data.
 - Hosted Windows execution of the two native tests remains the publication CI
   gate; no local approximation is recorded as equivalent evidence.
 
+### Hosted CI correction
+
+- The first published matrix run passed all six macOS/Ubuntu jobs and failed
+  all three Windows jobs with the same deterministic test results.
+- Two portable regressions made invalid host assumptions: `LONGPA~1` was a real
+  short-name alias on Windows, and patching `sys.platform` did not undo Windows'
+  native case-folding in `normcase`. The tests now use a synthetic alias name
+  and an explicit Darwin-native lexical-key stub.
+- The native substitution test proved that a metadata-only directory handle did
+  not block the hosted Windows runner's rename operation. Directory guards now
+  request `FILE_TRAVERSE | FILE_READ_ATTRIBUTES` while continuing to omit
+  `FILE_SHARE_DELETE`. Traverse supplies ordinary access for share-mode
+  enforcement without the directory-list permission included by generic read.
+- The corrective reviewers agreed the original generic-read fix was broader
+  than necessary for traverse-only enterprise paths. The narrowed mask retains
+  the native rename-substitution test and adds a native mask regression that
+  rejects accidental directory-list access.
+- Corrective verification: 92 focused tests passed with three Windows-native
+  skips; the full suite passed 417 tests with those same skips; compilation and
+  diff checks passed.
+- Final corrective review: Both independent reviewers reported no findings and
+  confirmed the prior traverse-only compatibility concern resolved. Hosted
+  Windows execution remains required to prove the native behavioral guards.
+
 ## Documentation updates
 
 - Roadmap: Records 1A/1B complete and makes previewed, backed-up legacy
@@ -345,25 +369,28 @@ legacy data.
   confined, no-replace operations; integrate config-less installed startup;
   preserve source/legacy data for later migration; document and test the full
   Milestone 1B contract.
-- Verification: 92 focused tests passed with two Windows-native skips; 417 full
-  tests passed with those same skips; compilation and diff checks passed; two
-  independent reviewers reported no findings in the final round.
-- Unresolved risks: Native Windows root-pinning and short-name tests require
-  hosted matrix CI. Exact native Windows private ACL enforcement remains a
+- Verification: Before first publication, 92 focused and 417 full tests passed
+  with two Windows-native skips. After the corrective delta, 92 focused and 417
+  full tests pass with three Windows-native skips; compilation/diff checks pass;
+  two independent reviewers report no findings.
+- Unresolved risks: Native Windows root-pinning, short-name, and access-mask
+  tests require the next hosted matrix run. Exact native Windows private ACL enforcement remains a
   prerequisite for any later secret-bearing surface. Migration, backup,
   restore, schema, and data-class moves are intentionally deferred.
-- User authorization and scope: Implementation/review authorized; publication
-  approval must be requested against the final packet.
-- Commit hash: Not committed.
-- Ready PR URL: Not published.
+- User authorization and scope: Initial publication was explicitly approved.
+  The four-file CI correction requires immediate approval before staging,
+  commit, and push.
+- Initial commit hash: `eff458d985365ccda0431c5054fec06b9d417cb8`.
+- Corrective commit: Not committed; proposed message `Harden Windows data-root guards`.
+- Ready PR URL: `https://github.com/hazeion/agent-os/pull/22`.
 
 ## Outcome review
 
-- Classification: Locally successful; paused pending publication approval and
-  hosted CI.
+- Classification: Locally successful; paused pending corrective publication
+  approval and hosted CI.
 - Acceptance criteria summary: AC-1 through AC-6 pass locally. AC-7's local
   documentation, suite, and two-reviewer gates pass; hosted CI is pending.
-- Potential bugs or untested paths: The two native Windows tests were skipped
+- Potential bugs or untested paths: The three native Windows tests were skipped
   on macOS and must run in hosted CI. Native Windows ACL exclusivity is not
   claimed for secret-bearing data.
 - Remaining reviewer dissent: None.
@@ -371,7 +398,7 @@ legacy data.
   unchanged; migration, backup, and restore remain separate slices. Reverting
   startup integration is the code rollback; public-safe initialized defaults
   can remain without overwriting operator data.
-- User decision: Immediate approval is required before staging, commit, push,
-  and ready-PR publication.
+- User decision: Immediate approval is required before staging, committing, and
+  pushing the four-file CI correction to the existing ready PR.
 - Next slice authorized: No; publication, hosted CI, and owner outcome review
   remain for this slice.

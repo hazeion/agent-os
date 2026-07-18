@@ -371,6 +371,7 @@ def _windows_open_handle(
 
     generic_read = 0x80000000
     generic_write = 0x40000000
+    file_traverse = 0x00000020
     file_read_attributes = 0x00000080
     file_share_read = 0x00000001
     file_share_write = 0x00000002
@@ -383,6 +384,11 @@ def _windows_open_handle(
     desired_access = (generic_read | generic_write) if writable else file_read_attributes
     flags = file_flag_open_reparse_point
     if directory:
+        # Metadata-only directory handles did not prevent a POSIX-style rename
+        # on current hosted Windows. FILE_TRAVERSE establishes ordinary access
+        # whose missing FILE_SHARE_DELETE permission is enforced, while avoiding
+        # the FILE_LIST_DIRECTORY permission included by GENERIC_READ.
+        desired_access = file_traverse | file_read_attributes
         flags |= file_flag_backup_semantics
     else:
         flags |= file_attribute_normal
