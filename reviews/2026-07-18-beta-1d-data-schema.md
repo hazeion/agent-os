@@ -1,6 +1,6 @@
 # Feature Slice Review: Version Durable JSON Schemas
 
-Status: Round 15 cleared with zero findings; hosted CI pending
+Status: All review and verification gates cleared; ready to merge
 Slice: `beta-1d-data-schema`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1d-data-schema.md`
@@ -56,7 +56,7 @@ normal runtime writes begin.
 | AC-5 | The version-1 manifest is fixed-inventory, owner-only, no-follow, single-link, bounded, atomically missing-only, and records only ordered supported steps and safe backup evidence. | Manifest semantic and filesystem-boundary tests | Passed locally |
 | AC-6 | Startup accepts valid version 0 or 1, blocks interrupted/invalid schema artifacts, and distinctly refuses any newer manifest or document version before other writes. | Startup/lifecycle ordering and forward-version tests | Passed locally |
 | AC-7 | Ordinary post-upgrade JSON mutations preserve manifest validity while unsafe live shapes, modes, links, missing documents, or invalid backup evidence fail closed. | Product-writer and tamper integration tests | Passed locally |
-| AC-8 | CLI/lifecycle/docs contracts are current; focused/full/local checks and hosted matrix pass; two independent reviewers clear the complete slice. | Suites, CI, and this review record | Local verification and review passed; hosted CI pending |
+| AC-8 | CLI/lifecycle/docs contracts are current; focused/full/local checks and hosted matrix pass; two independent reviewers clear the complete slice. | Suites, CI, and this review record | Passed |
 
 ### Constraints and recovery
 
@@ -659,6 +659,15 @@ native Windows flag, and synthesizes and strips a fake bit only when the host
 does not define `O_BINARY`. Both independent reviewers then rechecked the exact
 revised diff and returned zero findings.
 
+### Round 15 hosted verification
+
+- GitHub Actions run `29657043052` passed all nine jobs on commit `201b51e`:
+  Ubuntu, macOS, and Windows on Python 3.11, 3.12, and 3.13.
+- Every job passed dependency installation, Python compilation, all three
+  JavaScript syntax checks, and the full repository test suite.
+- The three native-Windows jobs passed without the prior committed-content
+  verification errors, directly validating the binary-mode fix.
+
 ### Implementation notes
 
 - `data_schema.py` owns the fixed manifest, preview/token, deterministic schema
@@ -695,13 +704,13 @@ revised diff and returned zero findings.
 - Branch/base: `codex/beta-1d-data-schema` to `main`.
 - Commit message: `Version durable JSON schemas safely`.
 - PR title: `Add durable JSON schema versioning`.
-- User authorization: Standing approval granted; publication remains gated on
-  clean independent review and hosted CI.
+- User authorization: Standing approval granted; independent review and hosted
+  CI gates are cleared.
 
 ## Outcome review
 
-- Classification: Ready for publication; hosted CI pending.
-- Acceptance criteria summary: AC-1 through AC-7 passed; AC-8 awaits hosted CI.
+- Classification: Ready to merge.
+- Acceptance criteria summary: AC-1 through AC-8 passed.
 - Remaining reviewer dissent: None after Round 15.
-- User decision: Standing approval recorded; publication remains gated.
+- User decision: Standing approval recorded; publication is authorized.
 - Next slice authorized: Yes after this slice merges cleanly.
