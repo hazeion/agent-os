@@ -22,11 +22,12 @@ adapter.
 
 The canonical durable-data inventory, platform defaults, target directory
 classes, initialization rules, migration/backup contract, and secret exclusions
-live in [DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A defines that target, and
-Milestone 1B-A implements only deterministic resolution and bounded read-only
-preflight. The current source checkout still resolves the shared `mentat.toml`
-override to repo-local `data/`; directory creation, seed copying, and migration
-remain deferred.
+live in [DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A defines that target,
+while Milestone 1B implements deterministic resolution, bounded read-only
+preflight, owner-only directory creation, and locked missing-only seed copying.
+The current source checkout still resolves the shared `mentat.toml` override to
+repo-local `data/`; legacy migration, schema evolution, backup/restore, and
+private/runtime data moves remain deferred.
 
 Later data-root work must keep immutable packaged seeds separate from durable
 operator copies, move durable private Console state out of ephemeral runtime

@@ -15,16 +15,18 @@ REQUIREMENTS = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
 class DataLayoutContractTests(unittest.TestCase):
     def test_canonical_contract_distinguishes_read_only_from_writable_work(self):
+        normalized = " ".join(CONTRACT.split())
         self.assertTrue(CONTRACT_PATH.exists())
         self.assertIn("Status: Milestone 1A contract approved", CONTRACT)
-        self.assertIn("Milestone 1B-A read-only resolver and preflight implemented", CONTRACT)
-        self.assertIn("It neither creates nor modifies filesystem entries", CONTRACT)
+        self.assertIn("Milestone 1B resolver, preflight, and initializer implemented", CONTRACT)
+        self.assertIn("`--print-config` uses only this read-only path", normalized)
         self.assertIn(
-            "config-less normal launch fails before lifecycle cleanup",
-            " ".join(CONTRACT.split()),
+            "config-less installed launch now initializes before lifecycle cleanup",
+            normalized,
         )
         self.assertIn("no larger than 16 MiB", CONTRACT)
         self.assertIn("Milestone 1B-B", CONTRACT)
+        self.assertIn("atomic hard-link operation that fails if the destination appeared", normalized)
 
     def test_all_tracked_seed_json_and_target_classes_are_defined(self):
         seed_names = sorted(path.name for path in (ROOT / "data").glob("*.json"))
@@ -160,15 +162,18 @@ class DataLayoutContractTests(unittest.TestCase):
             self.assertIn(consistency_rule, backup_section)
 
     def test_primary_docs_link_the_contract_and_bound_the_implementation(self):
+        normalized_roadmap = " ".join(ROADMAP.split())
         link = "[DATA_LAYOUT.md](DATA_LAYOUT.md)"
         self.assertIn(link, ARCHITECTURE)
         self.assertIn(link, README)
         self.assertIn(link, ROADMAP)
-        self.assertIn("Milestone 1A contract and Milestone 1B-A", ROADMAP)
-        self.assertIn("Begin Milestone 1B-B", ROADMAP)
-        self.assertIn("| 1 | Durable user data | In progress — 1A and 1B-A complete |", ROADMAP)
+        self.assertIn("Milestone 1A contract and Milestone 1B", ROADMAP)
+        self.assertIn("previewed, backed-up, locked legacy migration", normalized_roadmap)
+        self.assertIn("| 1 | Durable user data | In progress — 1A and 1B complete |", ROADMAP)
 
-        self.assertIn("from data_layout import resolve_data_root", RUNTIME_CONFIG)
+        self.assertIn("from data_layout import", RUNTIME_CONFIG)
+        self.assertIn("resolve_data_root", RUNTIME_CONFIG)
+        self.assertIn("initialize_data_root", RUNTIME_CONFIG)
         self.assertIn("data_dir_source=data_resolution.source", RUNTIME_CONFIG)
         self.assertIn('data_dir = "data"', SHARED_CONFIG)
         self.assertNotIn("platformdirs", REQUIREMENTS.lower())

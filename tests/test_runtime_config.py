@@ -6,7 +6,9 @@ import socket
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
+import data_layout
 import runtime_config
 import server
 
@@ -253,6 +255,97 @@ greeting_prefix = "Hi"
         self.assertEqual(config.data_dir, xdg_root / "Mentat")
         self.assertEqual(config.data_dir_source, "platform_default")
         self.assertFalse(xdg_root.exists())
+
+    def test_installed_startup_initializes_configless_root_from_packaged_seeds(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "packaged-seeds"
+            target = root / "platform-data"
+            seeds.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="platform_default",
+            )
+            with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds), patch.object(
+                runtime_config,
+                "DEFAULT_CONFIG_FILE",
+                root / "not-a-source-checkout.toml",
+            ):
+                error = runtime_config.prepare_data_root_for_startup(config)
+
+            self.assertIsNone(error)
+            self.assertEqual(
+                sorted(path.name for path in target.glob("*.json")),
+                sorted(data_layout.SEED_FILE_NAMES),
+            )
+
+    def test_source_checkout_platform_default_requires_legacy_migration(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds_and_legacy = root / "source-data"
+            target = root / "platform-data"
+            seeds_and_legacy.mkdir()
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds_and_legacy / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            source_config = root / "mentat.toml"
+            source_config.write_text('[paths]\ndata_dir = "data"\n', encoding="utf-8")
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=target,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="platform_default",
+            )
+            with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds_and_legacy), patch.object(
+                runtime_config,
+                "DEFAULT_CONFIG_FILE",
+                source_config,
+            ):
+                error = runtime_config.prepare_data_root_for_startup(config)
+
+            self.assertIn("migration_required", error)
+            self.assertFalse(target.exists())
+
+    def test_startup_rejects_a_data_root_overlapping_packaged_seeds(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            seeds = root / "package" / "data"
+            seeds.mkdir(parents=True)
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (seeds / name).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=seeds.parent,
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                data_dir_source="cli",
+            )
+            before = sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+            with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
+                error = runtime_config.prepare_data_root_for_startup(config)
+
+            self.assertIn("data_root_overlaps_seed_root", error)
+            self.assertEqual(
+                sorted(str(path.relative_to(root)) for path in root.rglob("*")),
+                before,
+            )
 
     def test_print_config_summary_includes_only_the_data_dir_source_label(self):
         with TemporaryDirectory() as tmpdir:
