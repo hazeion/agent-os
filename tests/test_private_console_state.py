@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import io
 import os
@@ -15,6 +16,7 @@ import zipfile
 import data_backup_restore
 import data_layout
 import data_schema
+import json_store
 import private_console_migration
 import private_console_unit
 from agent_console_attachments import (
@@ -898,28 +900,61 @@ class PrivateConsoleStateTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"
             entered = Event()
+            attempt_write = Event()
+            attempting = Event()
+            lock_was_busy = Event()
             writer_done = Event()
             errors: list[Exception] = []
 
             def writer():
                 entered.set()
+                attempt_write.wait()
                 try:
                     create_attachment(root, original_name="blocked.txt", content=b"blocked")
                 except Exception as exc:
                     errors.append(exc)
                 writer_done.set()
 
-            with private_state_lock(root, allow_control=True):
-                thread = Thread(target=writer)
-                thread.start()
+            thread = Thread(target=writer)
+            thread.start()
+            try:
                 self.assertTrue(entered.wait(1))
-                config = root / "config"
-                config.mkdir(mode=0o700)
-                (config / "restore-state-v1.json").write_text("{}\n")
-                if os.name == "posix":
-                    (config / "restore-state-v1.json").chmod(0o600)
-                self.assertFalse(writer_done.wait(0.1))
-            thread.join(2)
+                with private_state_lock(root, allow_control=True):
+                    real_root_lock_for = json_store._root_lock_for
+
+                    def observed_root_lock(path):
+                        root_lock = real_root_lock_for(path)
+
+                        @contextmanager
+                        def observed():
+                            acquired = root_lock.acquire(blocking=False)
+                            if acquired:
+                                root_lock.release()
+                            else:
+                                lock_was_busy.set()
+                            attempting.set()
+                            with root_lock:
+                                yield root_lock
+
+                        return observed()
+
+                    with patch.object(
+                        json_store, "_root_lock_for", side_effect=observed_root_lock
+                    ):
+                        attempt_write.set()
+                        self.assertTrue(attempting.wait(1))
+                        self.assertTrue(lock_was_busy.is_set())
+                        config = root / "config"
+                        config.mkdir(mode=0o700)
+                        (config / "restore-state-v1.json").write_text("{}\n")
+                        if os.name == "posix":
+                            (config / "restore-state-v1.json").chmod(0o600)
+                        self.assertFalse(writer_done.wait(0.1))
+            finally:
+                attempt_write.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
+            self.assertTrue(writer_done.is_set())
             self.assertTrue(errors)
             self.assertFalse((root / "private" / "console" / "mentat.sqlite3").exists())
 
