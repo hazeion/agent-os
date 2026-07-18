@@ -94,7 +94,7 @@ class CalendarWeekBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_calendar(root, events)
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "google_credentials", return_value=(None, "Google OAuth token not found")
             ):
                 payload, status = server.calendar_request_payload(
@@ -153,7 +153,7 @@ class CalendarWeekBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_calendar(root, [])
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "google_credentials", return_value=(object(), None)
             ), patch("googleapiclient.discovery.build", return_value=service) as build:
                 first = server.google_calendar_events(
@@ -209,7 +209,7 @@ class CalendarWeekBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_calendar(root, [])
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "google_credentials", return_value=(object(), None)
             ), patch("googleapiclient.discovery.build", return_value=service):
                 payload = server.google_calendar_events(
@@ -245,7 +245,7 @@ class CalendarWeekBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_calendar(root, [])
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "google_credentials", return_value=(object(), None)
             ), patch("googleapiclient.discovery.build", return_value=service):
                 paged = server.google_calendar_events(
@@ -274,7 +274,7 @@ class CalendarWeekBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_calendar(root, [])
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "google_credentials", return_value=(object(), None)
             ), patch("googleapiclient.discovery.build", return_value=oversized_service):
                 limited = server.google_calendar_events(
@@ -304,7 +304,7 @@ class CalendarWeekBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_calendar(root, [])
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "google_credentials", return_value=(object(), None)
             ), patch("googleapiclient.discovery.build", return_value=service):
                 payload, status = server.calendar_request_payload(

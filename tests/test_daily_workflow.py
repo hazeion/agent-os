@@ -21,7 +21,7 @@ class DailyWorkflowTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "tasks.json", tasks)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.reorder_today_task("task-b", {"direction": "up"})
         self.assertEqual(status, 200)
         by_id = {task["id"]: task for task in payload["tasks"]}
@@ -36,7 +36,7 @@ class DailyWorkflowTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "tasks.json", tasks)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.reorder_today_task("task-b", {"direction": "up"})
         self.assertEqual(status, 200)
         by_id = {task["id"]: task for task in payload["tasks"]}
@@ -55,7 +55,7 @@ class DailyWorkflowTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "tasks.json", [])
             self.write_json(root, "projects.json", [{"id": "project-1", "name": "Mentat"}])
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "calendar_event_by_id", return_value=event
             ) as event_lookup:
                 payload, status = server.create_task_from_calendar_event(
@@ -81,7 +81,7 @@ class DailyWorkflowTests(unittest.TestCase):
             self.write_json(root, "tasks.json", [{"id": "task-1", "title": "Mentat research", "project": "Mentat"}])
             self.write_json(root, "projects.json", [{"id": "project-1", "name": "Mentat"}])
             self.write_json(root, "calendar.json", [{"id": "event-1", "title": "Mentat review"}])
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "recent_sessions", return_value={"sessions": [{"id": "session-1", "title": "Mentat session"}]}), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "recent_sessions", return_value={"sessions": [{"id": "session-1", "title": "Mentat session"}]}), patch.object(
                 server, "obsidian_notes", return_value={"notes": [{"title": "Mentat plan", "relative_path": "Work/Mentat.md", "path": "/Users/private/Mentat.md", "excerpt": "Mentat notes"}]}
             ), patch.object(server, "CALENDAR_CACHE", {"payload": None}):
                 payload = server.unified_search("Mentat")

@@ -27,9 +27,17 @@ while Milestone 1B implements deterministic resolution, bounded read-only
 preflight, owner-only directory creation, and locked missing-only seed copying.
 Milestone 1C adds explicit, backed-up, locked migration of the fixed legacy
 durable-JSON inventory with source preservation, interruption-safe reservation,
-and verified completion receipt. The current source checkout still resolves the
-shared `mentat.toml` override to repo-local `data/`; schema evolution, general
-backup/restore, and private/runtime data moves remain deferred.
+and verified completion receipt. Milestone 1D adds a sidecar schema manifest,
+backed-up version-0 bootstrap, read-only pre-write schema gating, clean-install
+provenance, exact temporary reconciliation, process-reentrant shared-lock
+coordination with ordinary durable JSON writes, and forward-version refusal
+without changing consumer-visible JSON shapes. Both ordinary writers and schema
+recovery preserve the configured no-follow root spelling and keep validation
+and mutation on the same pinned filesystem objects. Terminal success is bound
+to root identity and exact durable bytes, and ordinary writers preserve the
+same schema size/type/file-object invariants. The current source checkout still resolves the shared `mentat.toml`
+override to repo-local `data/`; general backup/restore and private/runtime data
+moves remain deferred.
 
 Later data-root work must keep immutable packaged seeds separate from durable
 operator copies, move durable private Console state out of ephemeral runtime

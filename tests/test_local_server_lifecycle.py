@@ -283,6 +283,20 @@ class LocalServerLifecycleTests(unittest.TestCase):
         initialize.assert_not_called()
         print_report.assert_not_called()
 
+    def test_preflight_schema_migration_mode_remains_side_effect_free(self):
+        with patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
+            lifecycle,
+            "print_report",
+        ) as print_report, patch.object(server, "prepare_data_root_for_startup") as initialize:
+            exit_code = lifecycle.main(
+                ["preflight", "--preview-schema-migration"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        cleanup.assert_not_called()
+        initialize.assert_not_called()
+        print_report.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

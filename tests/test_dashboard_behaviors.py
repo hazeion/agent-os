@@ -213,7 +213,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "calendar.json", fallback_events)
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "google_credentials", return_value=(None, "Google OAuth token not found")
             ):
                 server.CALENDAR_CACHE.update({"key": None, "payload": None, "fetched_at": None})
@@ -258,7 +258,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "attention.json", attention)
             self.write_json(root, "tasks.json", tasks)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.resolve_attention_item("attn_manual")
                 follow_up = server.attention_payload()
                 stored_attention = json.loads((root / "attention.json").read_text(encoding="utf-8"))
@@ -316,7 +316,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "attention.json", [])
             self.write_json(root, "dashboard.json", dashboard)
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "CONFIG_DISPLAY_NAME", None
             ), patch.object(server, "CONFIG_GREETING_PREFIX", "Hello"
             ), patch.object(
@@ -345,7 +345,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload = server.API_ROUTES["/api/projects"]()
 
         self.assertEqual(payload["projects"], projects)
@@ -390,7 +390,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             state_db = root / "state.db"
             self.write_json(root, "agents.json", agents)
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
                 payload = server.agents_payload()
 
         self.assertEqual([agent["id"] for agent in payload["agents"]], ["agent_hermes", "agent_helper"])
@@ -443,7 +443,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             con.commit()
             con.close()
 
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
                 payload = server.agents_payload()
 
         self.assertEqual(payload["summary"]["total"], 1)
@@ -475,7 +475,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "agents.json", [])
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "datetime") as clock:
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "datetime") as clock:
                 clock.now.side_effect = [first_heartbeat_at, second_heartbeat_at]
                 payload, status = server.handle_post_route("/api/agents/heartbeat", request)
                 updated_payload, updated_status = server.handle_post_route(
@@ -564,7 +564,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             con.commit()
             con.close()
 
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "STATE_DB", db_path):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "STATE_DB", db_path):
                 payload, status = server.session_replay("session_trace")
 
         replay = payload["replay"]
@@ -606,7 +606,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "tasks.json", [])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.create_task(request)
                 stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 
@@ -668,7 +668,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "tasks.json", [existing])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.update_task("task_existing", request)
                 stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 
@@ -705,7 +705,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "tasks.json", [])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.handle_post_route("/api/tasks", request)
                 stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 
@@ -749,7 +749,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "tasks.json", [existing])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.handle_post_route("/api/tasks/task_existing", request)
                 stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 

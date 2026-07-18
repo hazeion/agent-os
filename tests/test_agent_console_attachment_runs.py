@@ -23,7 +23,7 @@ class AgentConsoleAttachmentRunTests(unittest.TestCase):
     def test_uploaded_image_binds_to_run_without_exposing_its_path(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
-            with patch.object(server, "DATA_DIR", data_dir):
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir):
                 upload, upload_status = server.create_agent_console_attachment(
                     original_name="diagram.png",
                     content_type="image/png",
@@ -60,7 +60,7 @@ class AgentConsoleAttachmentRunTests(unittest.TestCase):
     def test_text_attachment_adds_fixed_execution_context_but_keeps_display_prompt(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
-            with patch.object(server, "DATA_DIR", data_dir):
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir):
                 upload, _ = server.create_agent_console_attachment(
                     original_name="context.py",
                     content_type="text/x-python",

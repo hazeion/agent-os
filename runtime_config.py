@@ -20,7 +20,21 @@ from data_migration import (
     migration_startup_status,
     preview_legacy_migration,
 )
-from data_layout import initialize_data_root, resolve_data_root, resolve_explicit_data_root
+from data_schema import (
+    initialize_fresh_schema_under_lock,
+    migrate_data_schema,
+    prepare_fresh_schema_initialization,
+    preview_schema_migration,
+    schema_preflight_status,
+    schema_status_under_lock,
+)
+from data_layout import (
+    _initialization_lock,
+    _pinned_root_identity,
+    initialize_data_root,
+    resolve_data_root,
+    resolve_explicit_data_root,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_FILE = BASE_DIR / "mentat.toml"
@@ -55,6 +69,20 @@ class AppConfig:
 def prepare_data_root_for_startup(config: AppConfig) -> str | None:
     """Initialize the bounded layout or return a secret-free startup error."""
 
+    schema_preflight = schema_preflight_status(config.data_dir)
+    if schema_preflight == "newer":
+        return (
+            "Mentat refuses a data schema newer than this build supports "
+            "(schema_version_newer_than_supported). Install a compatible "
+            "Mentat version; no downgrade was attempted."
+        )
+    if schema_preflight == "invalid":
+        return (
+            "Mentat found incomplete or invalid data schema metadata "
+            "(invalid_data_schema). Run the schema migration preview and "
+            "confirm any exact recovery plan before startup."
+        )
+
     migration_status = migration_startup_status(config.data_dir)
     if migration_status == "invalid":
         return (
@@ -69,6 +97,52 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             return "migration_incomplete_or_invalid"
         if migration_status == "complete" and locked_status != "complete":
             return "migration_incomplete_or_invalid"
+        locked_schema = schema_status_under_lock(target, descriptor)
+        if locked_schema == "newer":
+            return "schema_version_newer_than_supported"
+        if locked_schema == "invalid":
+            return "invalid_data_schema"
+        return None
+
+    def schema_prepare(target: Path, descriptor: int | None, plan) -> str | None:
+        return prepare_fresh_schema_initialization(
+            PACKAGED_SEED_DIR,
+            target,
+            descriptor,
+            plan,
+        )
+
+    verified_schema_status: str | None = None
+    verified_root_identity: tuple[int, int] | None = None
+
+    def schema_finalize(target: Path, descriptor: int | None, _plan) -> str | None:
+        nonlocal verified_root_identity, verified_schema_status
+        finalize_issue = initialize_fresh_schema_under_lock(
+            PACKAGED_SEED_DIR,
+            target,
+            descriptor,
+        )
+        if finalize_issue is not None:
+            return finalize_issue
+        final_migration = migration_status_under_lock(target, descriptor)
+        if migration_status == "complete" and final_migration != "complete":
+            return "migration_incomplete_or_invalid"
+        final_schema = schema_status_under_lock(target, descriptor)
+        allowed = (
+            {"current"}
+            if schema_preflight in {"current", "fresh_incomplete"}
+            else {"legacy", "current"}
+        )
+        if final_schema not in allowed:
+            return (
+                "schema_version_newer_than_supported"
+                if final_schema == "newer"
+                else "invalid_data_schema"
+            )
+        verified_root_identity = _pinned_root_identity(target, descriptor)
+        if verified_root_identity is None:
+            return "data_root_identity_unverified"
+        verified_schema_status = final_schema
         return None
 
     legacy_root = None
@@ -87,9 +161,56 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         config.data_dir,
         legacy_root=legacy_root,
         locked_guard=migration_guard,
+        locked_prepare=schema_prepare,
+        locked_finalize=schema_finalize,
     )
     if result.status in {"initialized", "existing", "development_override"}:
+        if result.status == "development_override":
+            return None
+        try:
+            with _initialization_lock(config.data_dir) as descriptor:
+                current_identity = _pinned_root_identity(config.data_dir, descriptor)
+                schema_status = schema_status_under_lock(config.data_dir, descriptor)
+                final_identity = _pinned_root_identity(config.data_dir, descriptor)
+        except OSError:
+            current_identity = None
+            final_identity = None
+            schema_status = "invalid"
+        if (
+            verified_schema_status is None
+            or verified_root_identity is None
+            or current_identity != verified_root_identity
+            or final_identity != verified_root_identity
+            or schema_status != verified_schema_status
+        ):
+            return (
+                "Mentat found the selected data root changed after locked verification "
+                "(invalid_data_schema). Restore the approved root before startup."
+            )
+        if schema_status == "newer":
+            return (
+                "Mentat refuses a data schema newer than this build supports "
+                "(schema_version_newer_than_supported). Install a compatible "
+                "Mentat version; no downgrade was attempted."
+            )
+        if schema_status == "invalid":
+            return (
+                "Mentat found incomplete or invalid data schema metadata "
+                "(invalid_data_schema). Run the schema migration preview and "
+                "confirm any exact recovery plan before startup."
+            )
         return None
+    if "schema_version_newer_than_supported" in result.issues:
+        return (
+            "Mentat refuses a data schema newer than this build supports "
+            "(schema_version_newer_than_supported). Install a compatible "
+            "Mentat version; no downgrade was attempted."
+        )
+    if "invalid_data_schema" in result.issues:
+        return (
+            "Mentat found incomplete or invalid data schema metadata "
+            "(invalid_data_schema)."
+        )
     issue_text = ", ".join(result.issues[:4]) or "initialization_failed"
     return (
         "Mentat could not safely initialize the selected data root "
@@ -244,6 +365,16 @@ def parse_cli_args(argv=None):
         metavar="TOKEN",
         help="Execute the exact legacy migration preview identified by TOKEN.",
     )
+    operation.add_argument(
+        "--preview-schema-migration",
+        action="store_true",
+        help="Preview the bounded durable-JSON schema migration.",
+    )
+    operation.add_argument(
+        "--confirm-schema-migration",
+        metavar="TOKEN",
+        help="Execute the exact data-schema migration preview identified by TOKEN.",
+    )
     parser.add_argument(
         "--legacy-data-dir",
         help="Legacy checkout data directory; valid only with a legacy migration operation.",
@@ -294,6 +425,32 @@ def run_legacy_migration_cli(
         "migrated",
         "resumed",
     } else 2
+
+
+def run_schema_migration_cli(
+    cli_args: argparse.Namespace,
+    config: AppConfig,
+) -> tuple[dict, int]:
+    """Run one explicit schema preview or confirmation with bounded output."""
+
+    if bool(getattr(cli_args, "preview_schema_migration", False)):
+        preview = preview_schema_migration(PACKAGED_SEED_DIR, config.data_dir)
+        summary = preview.public_summary()
+        return summary, 0 if preview.status in {
+            "ready",
+            "resume_required",
+            "recovery_required",
+            "already_current",
+            "development_override",
+        } else 2
+    token = str(getattr(cli_args, "confirm_schema_migration", "") or "")
+    result = migrate_data_schema(
+        PACKAGED_SEED_DIR,
+        config.data_dir,
+        confirmation_token=token,
+    )
+    summary = result.public_summary()
+    return summary, 0 if result.status in {"migrated", "resumed", "reconciled"} else 2
 
 
 def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:

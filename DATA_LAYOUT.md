@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1A contract approved; Milestone 1B initialization and Milestone 1C legacy durable-JSON migration implemented
+Status: Milestone 1A contract approved; Milestone 1B initialization, Milestone 1C legacy migration, and Milestone 1D durable-JSON schema versioning implemented
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -8,9 +8,10 @@ path resolution, bounded read-only preflight, owner-only directory creation,
 and missing-only packaged-seed initialization. Milestone 1C implements an
 explicit, previewed, migration-specific-backup workflow for the nine durable
 JSON documents. It does not change the source-checkout runtime default, move
-private/runtime data, add a dependency, evolve schemas, or implement general
-backup, restore, or installer behavior. Later Milestone 1 slices must preserve
-this boundary.
+private/runtime data, add a dependency, or implement general backup, restore,
+or installer behavior. Milestone 1D versions those unchanged JSON shapes
+through one sidecar manifest and explicit bootstrap migration. Later Milestone
+1 slices must preserve this boundary.
 
 ## Principles
 
@@ -367,9 +368,105 @@ state change. A `resume_required` preview returns the same state-bound token
 only when the reservation, backup, and partial copies still verify. The source
 is intentionally retained; no cleanup command is authorized by this slice.
 
-Schema evolution remains unimplemented. The `unversioned-json-v1` label records
-the bounded current input shape; it is not an embedded per-document schema
-version and does not authorize transforms or forward-version handling.
+Milestone 1D implements schema versioning without wrapping or rewriting the
+nine consumer-visible JSON documents. A missing manifest means supported legacy
+document version 0. A clean all-seed initialization records version 1 in the
+owner-only `config/data-schema.json` sidecar. Existing version-0 roots remain
+readable until the operator explicitly upgrades them, so an update does not
+silently mutate operator state.
+
+The explicit schema preview lists every fixed document's from/to version and
+action plus the excluded private/runtime classes. Its opaque token binds the
+exact target spelling, live bytes, ordered step, and expected missing manifest,
+while public output contains no paths, content, hashes, backup names, or secret
+metadata. Confirmation re-previews beneath the shared pinned-root lock, creates
+and verifies an owner-only versioned ZIP before publishing metadata, and then
+atomically publishes the missing manifest. A matching interrupted backup can
+resume only when its bytes exactly match the deterministic archive. An exact,
+owner-only orphan manifest/backup temporary produces a bounded
+`recovery_required` preview; confirming that state-bound plan removes only the
+revalidated non-authoritative temporary, after which the operator previews the
+migration again. Changed data, invalid artifacts, multiple/lookalike
+temporaries, or a raced manifest fail closed. The recognized publication state
+may be either a pre-link temporary or the exact same-inode, two-link
+temporary/final pair left after missing-only promotion; confirmation always
+removes only the temporary name.
+Inventory covers the complete root/config/backup reserved namespace before a
+recoverable state is selected, so an exact temporary cannot mask a lookalike in
+another category. At confirmation, enumeration, bounded reads, promotion-pair
+checks, unlink, and absence verification all remain relative to the same pinned
+root/child descriptors; a renamed root cannot redirect recovery to a replacement.
+After unlink, the complete pinned inventory must equal its confirmation-bound
+pre-state minus exactly that temporary, and any promoted final must retain the
+same inode and bytes, before reconciliation can be reported. The resulting
+`ready`, exact `resume_required`, or fully valid `already_current` state and all
+nine confirmation-bound live bytes must also verify; any failure after deletion
+is reported as partial, never as an untouched block.
+
+Clean initialization records a hidden, owner-only fresh-schema reservation
+before the first seed copy. Retry completes that reservation after a partial
+copy or after all copies but before manifest publication; a pre-existing
+version-0 root without the reservation is never inferred to be fresh merely
+because its bytes equal packaged seeds. The reservation is removed only after
+the current manifest verifies. Exact reservation writer temporaries are
+reconciled under the same pinned lock. Exact seed and fresh-manifest pre-link or
+same-inode post-link publication states are reconciled before copying resumes,
+and the reservation is removed last only after every live document, required
+artifact, and absence of fresh-init temporaries verifies.
+The same complete pinned inventory is repeated before each fresh reconciliation,
+manifest publication, and final reservation removal.
+Fresh schema finalization now occurs before the layout initializer releases its
+root descriptor and cross-process lock. The final data preflight, exact allowed
+schema transition, and selected-path identity are checked again before startup
+can report success. The guarded root's device/file identity is carried across
+the final reacquisition, so a different inode with the same schema status is
+not accepted.
+
+Normal top-level JSON writes take the same process-reentrant, cross-process
+mutation lock before any per-file lock, so nested writers cannot invert the
+lock order and the
+backup and metadata checkpoint cannot race a dashboard task/project/settings
+write. The configured root remains an absolute lexical spelling rather than a
+symlink-resolved destination, and lock acquisition walks every component without
+following redirects (with only the platform's trusted macOS aliases normalized).
+The server preserves that spelling through its allowlisted child handoff. On
+POSIX the outer lock's pinned root descriptor is reused for the JSON read,
+temporary creation, and atomic replace; on Windows the guarded handle chain is
+retained. The source development override omits only the on-disk lock artifact;
+it retains process-local ordering, component validation, and pinned I/O. A
+substituted final root or ancestor is never written and cannot
+claim success. The manifest records the ordered
+`durable-json-v0-to-v1` identity step
+and immutable backup evidence. Later legitimate JSON mutations remain valid as
+long as every live document stays fixed-inventory, owner-only, single-link,
+bounded, valid JSON with its supported top-level shape. The writer opens each
+file without following its final entry, validates the private regular-file
+boundary, bounds reads and serialized output, enforces the fixed top-level type,
+and refuses nested development-to-installed lock-mode escalation. Product reads
+use the same guarded root and policy; installed mutations never infer a missing
+durable document from an empty default. Atomic writes retain and verify the
+temporary's exact bytes and identity through commit, verify the committed entry,
+and remove every uncommitted temporary on failure. Startup performs a
+read-only schema gate before layout repair, lifecycle, or runtime/private
+writes, then validates the manifest and backup under the pinned lock. A current
+schema with a missing or unsafe document therefore fails closed instead of
+being seed-repaired. Valid current roots still traverse the locked layout
+initializer so every required private/runtime/backup/cache/log/config directory
+is created or hardened and redirected boundaries are refused. A
+newer manifest format or per-document version is read and refused distinctly
+before temporary/reservation classification; Mentat never attempts a
+best-effort downgrade or an older recovery mutation.
+
+Use the same installed data root for preview and confirmation:
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --preview-schema-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-schema-migration TOKEN_FROM_PREVIEW
+```
+
+This schema-specific recovery ZIP is not the later general backup/restore
+product. Private SQLite evolution, arbitrary restore, and JSON record-shape
+changes remain outside Milestone 1D.
 
 ## Backup and restore contract
 
@@ -434,9 +531,11 @@ runtime history.
   lock-protected missing-only initialization; complete.
 - Milestone 1C: previewed, migration-backed, locked legacy durable-JSON copying,
   interruption resume, and completion receipt; complete.
-- Later bounded slices: schema evolution, general backup/restore, private-state
-  movement, and installer/uninstall preservation, each with its own approved
-  contract and failure-path evidence.
+- Milestone 1D: sidecar schema versioning, explicit backed-up version-0
+  bootstrap, coordinated durable writes, and forward-version refusal; complete.
+- Later bounded slices: general backup/restore, private-state movement, and
+  installer/uninstall preservation, each with its own approved contract and
+  failure-path evidence.
 
 The source checkout continues using the current repo-local `data/` override.
 Documentation must describe that as development behavior, not as the installed

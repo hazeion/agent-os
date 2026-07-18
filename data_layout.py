@@ -839,6 +839,43 @@ def _secure_directory(path: Path) -> bool:
         return False
 
 
+def _secure_child_directory(
+    data_root: Path,
+    root_descriptor: int | None,
+    name: str,
+) -> bool:
+    """Create/harden a fixed child relative to the pinned data-root handle."""
+
+    if name not in DATA_ROOT_DIRECTORY_NAMES:
+        return False
+    if os.name == "nt" or root_descriptor is None:
+        return _secure_directory(data_root / name)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = -1
+    try:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=root_descriptor)
+        except FileExistsError:
+            pass
+        descriptor = os.open(name, flags, dir_fd=root_descriptor)
+        metadata = os.fstat(descriptor)
+        if _is_redirecting_entry(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            return False
+        os.fchmod(descriptor, 0o700)
+        metadata = os.fstat(descriptor)
+        return stat.S_ISDIR(metadata.st_mode) and stat.S_IMODE(metadata.st_mode) == 0o700
+    except (OSError, TypeError):
+        return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _secure_regular_descriptor(
     descriptor: int,
     mode: int,
@@ -915,15 +952,68 @@ def _unlock_descriptor(descriptor: int) -> None:
     fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
+def _pinned_root_matches(data_root: Path, root_descriptor: int | None) -> bool:
+    if os.name == "nt":
+        return True
+    if root_descriptor is None:
+        return _redirected_component_issue(data_root, "data_root") is None
+    try:
+        pinned = os.fstat(root_descriptor)
+        current = os.stat(data_root, follow_symlinks=False)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(pinned.st_mode)
+        and stat.S_ISDIR(current.st_mode)
+        and pinned.st_dev == current.st_dev
+        and pinned.st_ino == current.st_ino
+    )
+
+
+def _pinned_root_identity(
+    data_root: Path,
+    root_descriptor: int | None,
+) -> tuple[int, int] | None:
+    try:
+        metadata = (
+            os.fstat(root_descriptor)
+            if root_descriptor is not None
+            else os.stat(data_root, follow_symlinks=False)
+        )
+    except OSError:
+        return None
+    if _is_redirecting_entry(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        return None
+    return metadata.st_dev, metadata.st_ino
+
+
 @contextmanager
-def _initialization_lock(data_root: Path):
-    lock_path = data_root / INITIALIZATION_LOCK_NAME
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+def _initialization_lock(data_root: Path, *, cross_process_lock: bool = True):
     use_dir_fd = bool(
         getattr(os, "O_NOFOLLOW", 0)
         and getattr(os, "O_DIRECTORY", 0)
         and os.open in os.supports_dir_fd
     )
+    if not cross_process_lock:
+        root_descriptor = -1
+        windows_guards: list[int] = []
+        try:
+            if os.name == "nt":
+                windows_guards = _windows_open_directory_chain(data_root)
+            elif use_dir_fd:
+                root_descriptor = _open_directory_no_follow(data_root)
+            elif _redirected_component_issue(data_root, "data_root") is not None:
+                raise OSError("unsafe data root")
+            yield root_descriptor if use_dir_fd else None
+        finally:
+            if root_descriptor >= 0:
+                os.close(root_descriptor)
+            for handle in reversed(windows_guards):
+                _windows_close_handle(handle)
+        return
+
+    lock_path = data_root / INITIALIZATION_LOCK_NAME
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     root_descriptor = -1
     descriptor = -1
     windows_guards: list[int] = []
@@ -1135,6 +1225,8 @@ def initialize_data_root(
     legacy_root: Path | None = None,
     home: Path | None = None,
     locked_guard: Callable[[Path, int | None], str | None] | None = None,
+    locked_prepare: Callable[[Path, int | None, DataRootPreflight], str | None] | None = None,
+    locked_finalize: Callable[[Path, int | None, DataRootPreflight], str | None] | None = None,
 ) -> DataRootInitialization:
     """Create the private layout while holding any required input guards."""
 
@@ -1149,6 +1241,8 @@ def initialize_data_root(
                 legacy_root=legacy,
                 home=home,
                 locked_guard=locked_guard,
+                locked_prepare=locked_prepare,
+                locked_finalize=locked_finalize,
             )
     except OSError:
         failed = DataRootPreflight(
@@ -1166,6 +1260,8 @@ def _initialize_data_root_guarded(
     legacy_root: Path | None = None,
     home: Path | None = None,
     locked_guard: Callable[[Path, int | None], str | None] | None = None,
+    locked_prepare: Callable[[Path, int | None, DataRootPreflight], str | None] | None = None,
+    locked_finalize: Callable[[Path, int | None, DataRootPreflight], str | None] | None = None,
 ) -> DataRootInitialization:
     """Create the layout after platform input-root guards are established."""
 
@@ -1192,11 +1288,16 @@ def _initialize_data_root_guarded(
                 return _initialization_blocked(current)
 
             for name in DATA_ROOT_DIRECTORY_NAMES:
-                if not _secure_directory(target / name):
+                if not _secure_child_directory(target, data_root_fd, name):
                     return _initialization_blocked(
                         current,
                         issue="directory_permissions_unverified",
                     )
+
+            if locked_prepare is not None:
+                prepare_issue = locked_prepare(target, data_root_fd, current)
+                if prepare_issue is not None:
+                    return _initialization_blocked(current, issue=prepare_issue)
 
             result_items: list[PreflightItem] = []
             copied_any = False
@@ -1232,6 +1333,26 @@ def _initialize_data_root_guarded(
                 return _initialization_blocked(
                     final,
                     issue="final_verification_failed",
+                    items=tuple(result_items),
+                )
+            if not _pinned_root_matches(target, data_root_fd):
+                return _initialization_blocked(
+                    final,
+                    issue="data_root_changed_before_completion",
+                    items=tuple(result_items),
+                )
+            if locked_finalize is not None:
+                finalize_issue = locked_finalize(target, data_root_fd, final)
+                if finalize_issue is not None:
+                    return _initialization_blocked(
+                        final,
+                        issue=finalize_issue,
+                        items=tuple(result_items),
+                    )
+            if not _pinned_root_matches(target, data_root_fd):
+                return _initialization_blocked(
+                    final,
+                    issue="data_root_changed_before_completion",
                     items=tuple(result_items),
                 )
             return DataRootInitialization(

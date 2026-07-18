@@ -152,7 +152,7 @@ super-private-material
                 path,
                 [sample_run("run_queued", "2026-07-10T12:00:00-07:00", status="queued")],
             )
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
                 server.load_agent_console_runs()
@@ -197,7 +197,7 @@ super-private-material
             path.parent.chmod(0o755)
             path.chmod(0o644)
 
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
                 server.load_agent_console_runs()
@@ -221,7 +221,7 @@ super-private-material
             path.parent.chmod(0o755)
             path.chmod(0o644)
 
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
                 server.load_agent_console_runs()
@@ -260,7 +260,7 @@ super-private-material
             outside.chmod(0o644)
             (runtime_dir / "agent-console-runs.json").symlink_to(outside)
 
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
                 server.AGENT_CONSOLE_RUNS["existing"] = {"id": "existing"}
@@ -284,7 +284,7 @@ super-private-material
             outside_history.chmod(0o644)
             (data_dir / "runtime").symlink_to(outside, target_is_directory=True)
 
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
                 server.load_agent_console_runs()
@@ -296,7 +296,7 @@ super-private-material
     def test_starting_console_run_persists_summary_without_full_prompt(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ), patch.object(
                 server,

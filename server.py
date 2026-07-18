@@ -64,7 +64,7 @@ from agent_console_artifacts import (
     read_workspace_text_context,
 )
 from command_manifest import command_manifest_payload
-from json_store import read_json as store_read_json, update_json as store_update_json
+from json_store import read_json_guarded as store_read_json, update_json as store_update_json
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
 from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
 from hermes_profile_identity import (
@@ -93,6 +93,13 @@ from runtime_config import (
     parse_cli_args,
     prepare_data_root_for_startup,
     run_legacy_migration_cli,
+    run_schema_migration_cli,
+)
+from data_layout import (
+    MAX_PREFLIGHT_JSON_BYTES,
+    SEED_FILE_NAMES,
+    SEED_ROOT_TYPES,
+    _absolute_without_following,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -113,13 +120,15 @@ def browser_url(host: str, port: int) -> str:
     return f"http://{display_host}:{port}"
 
 def apply_runtime_config(config: AppConfig) -> AppConfig:
-    global APP_CONFIG, HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT, STATE_DB, CRON_JOBS, CONFIG_PATH, GOOGLE_TOKEN
+    global APP_CONFIG, HOST, PORT, DATA_DIR, CONFIGURED_DATA_DIR, DATA_MUTATION_LOCK, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT, STATE_DB, CRON_JOBS, CONFIG_PATH, GOOGLE_TOKEN
     global CONFIG_DISPLAY_NAME, CONFIG_GREETING_PREFIX, CONFIG_APP_NAME
 
     APP_CONFIG = config
     HOST = config.host
     PORT = config.port
-    DATA_DIR = config.data_dir
+    DATA_DIR = _absolute_without_following(config.data_dir)
+    CONFIGURED_DATA_DIR = DATA_DIR
+    DATA_MUTATION_LOCK = DATA_DIR != _absolute_without_following(BASE_DIR / "data")
     PUBLIC_DIR = config.public_dir
     HERMES_HOME = config.hermes_home
     OBSIDIAN_VAULT = config.obsidian_vault
@@ -242,6 +251,8 @@ def start_launcher_watch(http_server: ThreadingHTTPServer) -> int | None:
 HOST = DEFAULT_HOST
 PORT = DEFAULT_PORT
 DATA_DIR = BASE_DIR / "data"
+CONFIGURED_DATA_DIR = DATA_DIR
+DATA_MUTATION_LOCK = False
 PUBLIC_DIR = BASE_DIR / "public"
 HERMES_HOME = default_hermes_home()
 OBSIDIAN_VAULT = default_obsidian_vault()
@@ -254,6 +265,7 @@ CONFIG_GREETING_PREFIX = None
 CONFIG_APP_NAME = DEFAULT_APP_NAME
 APP_CONFIG = AppConfig(tuple(), HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT)
 ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json", "context_packs.json"}
+ALLOWED_DATA_READS = frozenset(SEED_FILE_NAMES) | ALLOWED_DATA_WRITES
 CALENDAR_CACHE_TTL_SECONDS = 300
 CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
 CALENDAR_MAX_EVENTS = 250
@@ -1305,36 +1317,62 @@ def human_bytes(n: int | float | None) -> str | None:
 
 
 
-def dashboard_data_path(name: str) -> Path:
-    """Resolve an allowlisted project-owned data file under DATA_DIR."""
-    if name not in ALLOWED_DATA_WRITES or "/" in name or "\\" in name:
+def dashboard_data_path(name: str, *, write: bool = False) -> Path:
+    """Return one lexical allowlisted child under the startup-approved root."""
+    allowlist = ALLOWED_DATA_WRITES if write else ALLOWED_DATA_READS
+    if name not in allowlist or "/" in name or "\\" in name:
         raise ValueError(f"Refusing to access non-allowlisted dashboard data file: {name}")
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    data_root = DATA_DIR.resolve()
-    path = (DATA_DIR / name).resolve()
-    if path.parent != data_root:
-        raise ValueError(f"Refusing to access outside dashboard data directory: {name}")
-    return path
+    return _absolute_without_following(DATA_DIR) / name
 
 
 def read_json_file(name: str, default):
-    path = DATA_DIR / name
+    path = dashboard_data_path(name)
+    durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
+        DATA_DIR
+    ) != _absolute_without_following(CONFIGURED_DATA_DIR)
     try:
-        return store_read_json(path, default)
-    except FileNotFoundError:
-        return default
+        return store_read_json(
+            path,
+            default,
+            mutation_lock=durable_policy,
+            maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+            expected_type=SEED_ROOT_TYPES[name],
+            required_mode=0o600 if durable_policy else None,
+            require_existing=durable_policy,
+        )
     except json.JSONDecodeError as exc:
         return {"error": f"Invalid JSON in {path}: {exc}"}
 
 
 def update_json_file(name: str, default, mutator):
     """Run a locked project-owned JSON read/modify/write cycle."""
-    path = dashboard_data_path(name)
+    path = dashboard_data_path(name, write=True)
+    durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
+        DATA_DIR
+    ) != _absolute_without_following(CONFIGURED_DATA_DIR)
     try:
         if name == "tasks.json":
             with HERMES_KANBAN_LOCK:
-                return store_update_json(path, default, mutator)
-        return store_update_json(path, default, mutator)
+                return store_update_json(
+                    path,
+                    default,
+                    mutator,
+                    mutation_lock=durable_policy,
+                    maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+                    expected_type=SEED_ROOT_TYPES[name],
+                    required_mode=0o600 if durable_policy else None,
+                    require_existing=durable_policy,
+                )
+        return store_update_json(
+            path,
+            default,
+            mutator,
+            mutation_lock=durable_policy,
+            maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+            expected_type=SEED_ROOT_TYPES[name],
+            required_mode=0o600 if durable_policy else None,
+            require_existing=durable_policy,
+        )
     except json.JSONDecodeError as exc:
         return {"error": f"Invalid JSON in {path}: {exc}"}, 500
 
@@ -5892,6 +5930,10 @@ if __name__ == "__main__":
         migration_summary, migration_exit = run_legacy_migration_cli(cli_args, APP_CONFIG)
         print(json.dumps(migration_summary, indent=2))
         raise SystemExit(migration_exit)
+    if cli_args.preview_schema_migration or cli_args.confirm_schema_migration:
+        schema_summary, schema_exit = run_schema_migration_cli(cli_args, APP_CONFIG)
+        print(json.dumps(schema_summary, indent=2))
+        raise SystemExit(schema_exit)
     if HOST.lower() not in {"127.0.0.1", "::1", "localhost"}:
         print("Mentat refuses non-loopback binds until authenticated remote access is implemented.")
         raise SystemExit(2)

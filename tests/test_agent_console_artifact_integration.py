@@ -31,7 +31,7 @@ class AgentConsoleArtifactIntegrationTests(unittest.TestCase):
             workspace.mkdir()
             (workspace / "visible.py").write_text("print('safe')\n", encoding="utf-8")
             (workspace / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
-            with patch.object(server, "BASE_DIR", workspace), patch.object(server, "DATA_DIR", data_dir):
+            with patch.object(server, "BASE_DIR", workspace), patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir):
                 search, search_status = server.workspace_files_payload("visible")
                 selected, selected_status = server.create_workspace_attachment(
                     {"root_id": "workspace", "relative_path": "visible.py"}
@@ -53,7 +53,7 @@ class AgentConsoleArtifactIntegrationTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
             profile = {"id": "default", "name": "Hermes", "model": "test/model", "available": True}
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", True
             ), patch.object(
                 server, "hermes_profiles_payload", return_value={"profiles": [profile]}
@@ -68,7 +68,7 @@ class AgentConsoleArtifactIntegrationTests(unittest.TestCase):
             export_dir = prepare_export_directory(data_dir, run_id)
             (export_dir / "example.py").write_text("print('artifact')\n", encoding="utf-8")
 
-            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", True
             ), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()

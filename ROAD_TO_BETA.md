@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 1 in progress — 1A, 1B, and 1C complete
+Status: Milestone 1 in progress — 1A, 1B, 1C, and 1D complete
 Last updated: 2026-07-18
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -147,7 +147,7 @@ work is still small.
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
-| 1 | Durable user data | In progress — 1A, 1B, and 1C complete | 0 | Schema, backup, restore, and clean-install tests |
+| 1 | Durable user data | In progress — 1A, 1B, 1C, and 1D complete | 0 | Backup, restore, and clean-install tests |
 | 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
@@ -207,16 +207,19 @@ contract require another explicit project-owner decision.
 Goal: make operator data survive upgrades and keep a running installation from
 modifying its application files or Git checkout.
 
-Status: Milestone 1A contract, Milestone 1B resolver/preflight/initializer, and
-Milestone 1C legacy durable-JSON migration complete. The complete current
-mutable-path inventory, target directory classes, platform defaults,
+Status: Milestone 1A contract, Milestone 1B resolver/preflight/initializer,
+Milestone 1C legacy durable-JSON migration, and Milestone 1D schema versioning
+complete. The complete current mutable-path inventory, target directory
+classes, platform defaults,
 precedence, and fail-closed initialization/migration/backup rules are approved
 in [DATA_LAYOUT.md](DATA_LAYOUT.md). A clean config-less installed launch now
 creates the owner-only layout and copies only missing immutable seeds under a
 cross-process lock. An explicit CLI preview/confirmation flow can migrate the
 nine legacy JSON documents after a validated backup; the source remains
 unchanged. Schema evolution, private-state movement, and general backup/restore
-remain deferred.
+are separated: the fixed JSON inventory now has explicit version metadata,
+backed-up bootstrap, and forward-version refusal, while private-state movement
+and general backup/restore remain deferred.
 
 Work in order:
 
@@ -236,6 +239,7 @@ Work in order:
    Do not silently overwrite either source or destination. **Milestone 1C
    complete.**
 6. Add versioned data-schema migrations and forward-version refusal.
+   **Milestone 1D complete.**
 7. Implement atomic backup and restore with validation and a restore preview.
 8. Add tests for first run, repeat run, migration, interrupted migration,
    upgrade, restore, and uninstall-data preservation.
@@ -528,9 +532,10 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Begin the next bounded Milestone 1 slice for versioned schema evolution and
-   forward-version refusal defined by [DATA_LAYOUT.md](DATA_LAYOUT.md); keep
-   general backup/restore and private-state movement separate.
+1. Begin the next bounded Milestone 1 slice for atomic general backup and
+   validated previewed restore defined by [DATA_LAYOUT.md](DATA_LAYOUT.md);
+   keep private-state movement and installer behavior separate where the
+   approved consistency boundary permits.
 2. Ensure later Milestone 1 work moves private Console state and provides
    owner-only storage for the future remote Hermes endpoint and API credential
    outside the application directory.
