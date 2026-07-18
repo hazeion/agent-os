@@ -104,6 +104,28 @@ class PrivateConsoleStateTests(unittest.TestCase):
             if os.name == "posix":
                 self.assertEqual((root / "private").stat().st_mode & 0o777, 0o700)
 
+    def test_private_raw_writer_requests_windows_binary_mode(self):
+        with TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "snapshot.sqlite3"
+            real_open = os.open
+            real_binary = getattr(os, "O_BINARY", 0)
+            synthetic_binary = 1 << 29
+            observed_flags: list[int] = []
+
+            def open_without_synthetic_flag(path, flags, mode=0o777):
+                observed_flags.append(flags)
+                return real_open(path, (flags & ~synthetic_binary) | real_binary, mode)
+
+            with patch.object(private_console_unit.os, "O_BINARY", synthetic_binary, create=True), patch.object(
+                private_console_unit.os,
+                "open",
+                side_effect=open_without_synthetic_flag,
+            ):
+                private_console_unit._write_private_file(destination, b"SQLite\n\x1a\x00")
+
+            self.assertEqual(destination.read_bytes(), b"SQLite\n\x1a\x00")
+            self.assertTrue(observed_flags[0] & synthetic_binary)
+
     def test_previewed_private_migration_preserves_source_and_is_idempotent(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"

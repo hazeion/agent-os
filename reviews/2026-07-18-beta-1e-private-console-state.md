@@ -167,7 +167,7 @@ reference-consistent private unit.
 
 ## Verification
 
-- Focused private-state suite: 30 tests passing, including byte-for-byte
+- Focused private-state suite: 31 tests passing, including byte-for-byte
   read-only legacy preview, missing-root creation, partial-stage rebuild,
   receipt-crash recovery, stale confirmation, startup refusal, filtered archive
   inventory, missing blob refusal, live-WAL capture, active-run fidelity,
@@ -181,19 +181,12 @@ reference-consistent private unit.
   failures/errors on macOS Python 3.13.
 - `python3 -m compileall -q .`, every `public/*.js`/`scripts/*.mjs` Node syntax
   check, and `git diff --check` pass.
-- Hosted run `29662474337` passed all six Linux/macOS jobs and exposed a
-  Windows-only SQLite WAL recovery incompatibility in all three Windows jobs:
-  read-only recovery of the captured main/WAL pair cannot portably rebuild a
-  missing SHM index. The live source remains read-only and byte-revalidated;
-  SQLite now rebuilds a fresh SHM cache for the captured private main/WAL copy,
-  explicitly checkpoints only that copy, verifies its integrity, converts it
-  to rollback-journal mode, and then produces the backup-API snapshot. This
-  avoids both stale copied wal-index state and platform-dependent WAL behavior
-  in `sqlite3_backup` while live main/WAL/SHM remain untouched and
-  byte-revalidated.
-  Platform-correct absolute SQLite file URIs replace path-string URIs for every
-  remaining read-only open. The 30-test focused suite and full 573-test suite
-  pass after the correction; a fresh hosted matrix is pending.
+- Hosted run `29662474337` passed all six Linux/macOS jobs and exposed malformed
+  private SQLite snapshots in all three Windows jobs. The first remediation
+  kept the live source read-only and byte-revalidated, opened only the private
+  main/WAL copy read-write for recovery, and replaced path-string SQLite URIs
+  with platform-correct absolute file URIs. The 30-test focused suite and full
+  573-test suite passed locally before its hosted rerun.
 - Hosted remediation run `29662888922` again passed all six Linux/macOS jobs
   but showed that merely opening the main/WAL temporary copy read-write still
   yielded malformed Windows snapshots in all three Windows jobs. The current
@@ -201,6 +194,14 @@ reference-consistent private unit.
   checkpoint, integrity-check, and convert only the private temporary copy to
   rollback-journal mode before `sqlite3_backup`. A fresh hosted matrix for this
   second correction is pending.
+- Hosted remediation run `29663395377` passed all six Linux/macOS jobs but
+  failed all three Windows jobs at the temporary copy's first SQLite checkpoint,
+  proving corruption occurred before `sqlite3_backup`. The root cause was the
+  private raw-file writer omitting Windows `O_BINARY`, which allowed C-runtime
+  text translation while materializing captured database/WAL bytes. All private
+  raw-file writes now explicitly use binary mode; the private checkpoint,
+  rollback-journal conversion, and integrity check remain as pre-backup proof.
+  A fresh hosted matrix for this correction is pending.
 
 ## Adversarial review
 
@@ -224,7 +225,7 @@ Later passes additionally found and resolved exact stage-inventory gaps,
 post-promotion races, main-database byte stability, malformed manifest types,
 cleanup-resume windows, and same-shape mutation during cleanup. The final exact
 diff received independent zero-finding results from both the compatibility and
-filesystem/crash-safety reviewers after 30 focused tests and diff hygiene.
+filesystem/crash-safety reviewers after the focused suite and diff hygiene.
 Both reviewers then re-reviewed the Windows WAL correction and independently
 returned zero findings, including the lexical absolute-URI refinement that
 avoids following a pathname merely to construct the SQLite URI.
