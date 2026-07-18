@@ -14,6 +14,13 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from data_backup_restore import (
+    create_durable_backup,
+    preview_durable_restore,
+    restore_durable_backup,
+    restore_startup_status,
+    restore_status_under_lock,
+)
 from data_migration import (
     migrate_legacy_data,
     migration_status_under_lock,
@@ -83,6 +90,13 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             "confirm any exact recovery plan before startup."
         )
 
+    if restore_startup_status(config.data_dir) != "clear":
+        return (
+            "Mentat found an incomplete or invalid durable-data restore "
+            "(restore_incomplete_or_invalid). Re-run the restore preview with "
+            "the selected backup before startup."
+        )
+
     migration_status = migration_startup_status(config.data_dir)
     if migration_status == "invalid":
         return (
@@ -92,6 +106,8 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         )
 
     def migration_guard(target: Path, descriptor: int | None) -> str | None:
+        if restore_status_under_lock(target, descriptor) != "clear":
+            return "restore_incomplete_or_invalid"
         locked_status = migration_status_under_lock(target, descriptor)
         if locked_status == "invalid":
             return "migration_incomplete_or_invalid"
@@ -124,6 +140,8 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         )
         if finalize_issue is not None:
             return finalize_issue
+        if restore_status_under_lock(target, descriptor) != "clear":
+            return "restore_incomplete_or_invalid"
         final_migration = migration_status_under_lock(target, descriptor)
         if migration_status == "complete" and final_migration != "complete":
             return "migration_incomplete_or_invalid"
@@ -166,16 +184,41 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
     )
     if result.status in {"initialized", "existing", "development_override"}:
         if result.status == "development_override":
+            try:
+                with _initialization_lock(config.data_dir) as descriptor:
+                    locked_restore = restore_status_under_lock(
+                        config.data_dir,
+                        descriptor,
+                    )
+            except OSError:
+                locked_restore = "invalid"
+            if locked_restore != "clear":
+                return (
+                    "Mentat found an incomplete or invalid durable-data restore "
+                    "(restore_incomplete_or_invalid). Re-run the restore preview with "
+                    "the selected backup before startup."
+                )
             return None
         try:
             with _initialization_lock(config.data_dir) as descriptor:
                 current_identity = _pinned_root_identity(config.data_dir, descriptor)
+                restore_status = restore_status_under_lock(
+                    config.data_dir,
+                    descriptor,
+                )
                 schema_status = schema_status_under_lock(config.data_dir, descriptor)
                 final_identity = _pinned_root_identity(config.data_dir, descriptor)
         except OSError:
             current_identity = None
             final_identity = None
+            restore_status = "invalid"
             schema_status = "invalid"
+        if restore_status != "clear":
+            return (
+                "Mentat found an incomplete or invalid durable-data restore "
+                "(restore_incomplete_or_invalid). Re-run the restore preview with "
+                "the selected backup before startup."
+            )
         if (
             verified_schema_status is None
             or verified_root_identity is None
@@ -205,6 +248,12 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             "Mentat refuses a data schema newer than this build supports "
             "(schema_version_newer_than_supported). Install a compatible "
             "Mentat version; no downgrade was attempted."
+        )
+    if "restore_incomplete_or_invalid" in result.issues:
+        return (
+            "Mentat found an incomplete or invalid durable-data restore "
+            "(restore_incomplete_or_invalid). Re-run the restore preview with "
+            "the selected backup before startup."
         )
     if "invalid_data_schema" in result.issues:
         return (
@@ -375,15 +424,37 @@ def parse_cli_args(argv=None):
         metavar="TOKEN",
         help="Execute the exact data-schema migration preview identified by TOKEN.",
     )
+    operation.add_argument(
+        "--create-backup",
+        action="store_true",
+        help="Create a validated backup of the durable operator JSON set.",
+    )
+    operation.add_argument(
+        "--preview-restore",
+        action="store_true",
+        help="Preview restoring one validated durable-data backup.",
+    )
+    operation.add_argument(
+        "--confirm-restore",
+        metavar="TOKEN",
+        help="Execute the exact durable-data restore preview identified by TOKEN.",
+    )
     parser.add_argument(
         "--legacy-data-dir",
         help="Legacy checkout data directory; valid only with a legacy migration operation.",
+    )
+    parser.add_argument(
+        "--restore-backup",
+        help="Backup ZIP selected for a restore preview or confirmation.",
     )
     args = parser.parse_args(argv)
     if args.legacy_data_dir and not (
         args.preview_legacy_migration or args.confirm_legacy_migration
     ):
         parser.error("--legacy-data-dir requires a legacy migration operation")
+    restore_operation = args.preview_restore or args.confirm_restore
+    if bool(args.restore_backup) != bool(restore_operation):
+        parser.error("--restore-backup is required only with a restore operation")
     return args
 
 
@@ -451,6 +522,40 @@ def run_schema_migration_cli(
     )
     summary = result.public_summary()
     return summary, 0 if result.status in {"migrated", "resumed", "reconciled"} else 2
+
+
+def run_backup_restore_cli(
+    cli_args: argparse.Namespace,
+    config: AppConfig,
+) -> tuple[dict, int]:
+    """Run one bounded backup or restore CLI operation."""
+
+    if bool(getattr(cli_args, "create_backup", False)):
+        result = create_durable_backup(config.data_dir)
+        return result.public_summary(), 0 if result.status in {"created", "existing"} else 2
+
+    selected_value = maybe_stripped(getattr(cli_args, "restore_backup", None))
+    if selected_value is None:
+        return {"status": "blocked", "issues": ["restore_backup_required"]}, 2
+    selected = resolve_path(selected_value, base_dir=Path.cwd())
+    if bool(getattr(cli_args, "preview_restore", False)):
+        preview = preview_durable_restore(config.data_dir, selected)
+        return preview.public_summary(), 0 if preview.status in {
+            "ready",
+            "resume_required",
+            "recovery_required",
+            "not_required",
+        } else 2
+    result = restore_durable_backup(
+        config.data_dir,
+        selected,
+        confirmation_token=str(getattr(cli_args, "confirm_restore", "") or ""),
+    )
+    return result.public_summary(), 0 if result.status in {
+        "restored",
+        "resumed",
+        "recovered",
+    } else 2
 
 
 def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:

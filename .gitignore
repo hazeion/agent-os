@@ -19,6 +19,7 @@ docs/
 sketches/
 .hermes-tmp.*/
 data/runtime/
+data/.mentat-initialization.lock
 
 # OS/editor noise
 .DS_Store

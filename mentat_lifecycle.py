@@ -470,6 +470,9 @@ def main(argv: list[str] | None = None) -> int:
         or server_cli_args.confirm_legacy_migration
         or server_cli_args.preview_schema_migration
         or server_cli_args.confirm_schema_migration
+        or server_cli_args.create_backup
+        or server_cli_args.preview_restore
+        or server_cli_args.confirm_restore
     ):
         return 0
     if not loopback_host_is_supported(config.host):

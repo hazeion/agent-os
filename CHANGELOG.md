@@ -5,6 +5,16 @@ All notable changes to Mentat.
 ## 2026-07-18
 
 ### Added
+- Added Milestone 1E-A's deterministic, bounded, owner-only general backup
+  format for the fixed nine-document durable operator JSON inventory.
+- Added read-only restore preview, state-bound confirmation, forward refusal,
+  pre-restore recovery backup, exact atomic document replacement, verified
+  interruption resume, confirmed orphan-temporary cleanup, and startup refusal
+  for incomplete or ambiguous restore state.
+- Added explicit source-checkout CLI modes for backup creation and restore
+  preview/confirmation while keeping private Console state, credentials,
+  runtime/cache/log/browser/external state, nested backups, and the later
+  installed CLI out of this bounded format.
 - Completed Milestone 1D with a fixed owner-only durable-JSON schema manifest,
   current metadata for clean seed-only installs, explicit backed-up version-0
   bootstrap, interruption-safe retry, and distinct forward-version refusal.

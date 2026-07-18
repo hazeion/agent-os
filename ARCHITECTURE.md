@@ -35,9 +35,18 @@ without changing consumer-visible JSON shapes. Both ordinary writers and schema
 recovery preserve the configured no-follow root spelling and keep validation
 and mutation on the same pinned filesystem objects. Terminal success is bound
 to root identity and exact durable bytes, and ordinary writers preserve the
-same schema size/type/file-object invariants. The current source checkout still resolves the shared `mentat.toml`
-override to repo-local `data/`; general backup/restore and private/runtime data
-moves remain deferred.
+same schema size/type/file-object invariants. Milestone 1E-A adds a fixed,
+versioned backup and preview-confirm restore boundary for the nine
+schema-governed durable JSON documents. Backup snapshots share the pinned root
+lock with normal mutations. Restore binds exact archive and target state,
+publishes pre-restore recovery evidence and a reservation before atomic document
+commits, resumes only exact old/new interruption state, and blocks startup while
+incomplete. Already-running dashboard JSON reads and writes share that lock and
+fail closed while a reservation or restore recovery temporary exists. It
+preserves the destination's schema provenance and every excluded
+class. The current source checkout still resolves the shared `mentat.toml`
+override to repo-local `data/`; private/runtime data moves and the Console
+SQLite/history/blob backup unit remain deferred.
 
 Later data-root work must keep immutable packaged seeds separate from durable
 operator copies, move durable private Console state out of ephemeral runtime

@@ -267,6 +267,56 @@ def write_json_atomic(
     parent_fd: int | None = None,
     maximum_bytes: int | None = None,
 ) -> None:
+    """Serialize and atomically write one JSON document."""
+
+    serialized_bytes = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    _write_json_bytes_atomic_impl(
+        path,
+        serialized_bytes,
+        mode=mode,
+        parent_fd=parent_fd,
+        maximum_bytes=maximum_bytes,
+    )
+
+
+def write_json_bytes_atomic(
+    path: Path,
+    serialized_bytes: bytes,
+    *,
+    expected_type: type,
+    mode: int | None = None,
+    parent_fd: int | None = None,
+    maximum_bytes: int | None = None,
+) -> None:
+    """Atomically restore exact validated UTF-8 JSON bytes."""
+
+    if not isinstance(serialized_bytes, bytes):
+        raise TypeError("durable JSON bytes required")
+    if maximum_bytes is not None and len(serialized_bytes) > maximum_bytes:
+        raise ValueError("durable JSON payload too large")
+    try:
+        payload = json.loads(serialized_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError("durable JSON payload invalid") from exc
+    if not isinstance(payload, expected_type):
+        raise ValueError("durable JSON payload has invalid type")
+    _write_json_bytes_atomic_impl(
+        path,
+        serialized_bytes,
+        mode=mode,
+        parent_fd=parent_fd,
+        maximum_bytes=maximum_bytes,
+    )
+
+
+def _write_json_bytes_atomic_impl(
+    path: Path,
+    serialized_bytes: bytes,
+    *,
+    mode: int | None,
+    parent_fd: int | None,
+    maximum_bytes: int | None,
+) -> None:
     """Atomically write JSON with a unique temp filename beside the target.
 
     Windows can transiently deny ``os.replace``/``Path.replace`` while another
@@ -274,7 +324,6 @@ def write_json_atomic(
     the target. Keep the operation atomic, but retry briefly before surfacing the
     error so high-frequency dashboard writes do not fail spuriously.
     """
-    serialized_bytes = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     if maximum_bytes is not None and len(serialized_bytes) > maximum_bytes:
         raise ValueError("durable JSON payload too large")
     if parent_fd is None:

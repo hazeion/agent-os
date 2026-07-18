@@ -156,8 +156,21 @@ python server.py --data-dir "/path/to/mentat-data" --preview-schema-migration
 python server.py --data-dir "/path/to/mentat-data" --confirm-schema-migration TOKEN_FROM_PREVIEW
 ```
 
-General backup/restore, private-state movement, and installer behavior are not
-implemented yet. `--print-config` and both preview modes remain side-effect-free.
+Milestone 1E-A adds fixed durable-JSON backup and restore. It creates an
+owner-only versioned archive of the nine schema-governed documents, then
+requires an exact read-only preview and matching confirmation before restore.
+It publishes a pre-restore recovery archive and resumes only recognized exact
+interruption state; startup blocks ambiguous or incomplete restore evidence.
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --create-backup
+python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v1-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v1-ID.zip"
+```
+
+Private Console history/SQLite/blob backup, private-state movement, unified
+installed CLI commands, and installer behavior remain separate roadmap work.
+`--print-config` and every preview mode remain side-effect-free.
 
 ## A few important boundaries
 
@@ -228,5 +241,7 @@ approved: macOS and Windows are tier one, Linux is preview, Python 3.11 through
 are required release channels. Those artifacts do not exist yet. The early CI
 guardrail, Milestone 1A data-layout contract, Milestone 1B resolver/preflight/
 initializer, and Milestone 1C legacy durable-JSON migration are complete.
-Schema evolution and general backup/restore remain the next durable-data work
-before remote-Hermes implementation and packaging begin.
+Durable JSON schema evolution and its bounded backup/restore foundation are
+complete. Moving private Console state and adding its consistent backup unit
+remain the next durable-data work before remote-Hermes implementation and
+packaging begin.

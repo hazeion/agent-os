@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1A contract approved; Milestone 1B initialization, Milestone 1C legacy migration, and Milestone 1D durable-JSON schema versioning implemented
+Status: Milestone 1A contract approved; Milestone 1B initialization, Milestone 1C legacy migration, Milestone 1D durable-JSON schema versioning implemented, and Milestone 1E-A durable-JSON backup/restore implemented
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -8,10 +8,11 @@ path resolution, bounded read-only preflight, owner-only directory creation,
 and missing-only packaged-seed initialization. Milestone 1C implements an
 explicit, previewed, migration-specific-backup workflow for the nine durable
 JSON documents. It does not change the source-checkout runtime default, move
-private/runtime data, add a dependency, or implement general backup, restore,
-or installer behavior. Milestone 1D versions those unchanged JSON shapes
-through one sidecar manifest and explicit bootstrap migration. Later Milestone
-1 slices must preserve this boundary.
+private/runtime data, add a dependency, or implement general restore or
+installer behavior. Milestone 1D versions those unchanged JSON shapes through
+one sidecar manifest and explicit bootstrap migration. Milestone 1E-A adds the
+first general backup/restore format for that same fixed durable JSON set. Later
+Milestone 1 slices must preserve and extend this boundary.
 
 ## Principles
 
@@ -422,9 +423,9 @@ can report success. The guarded root's device/file identity is carried across
 the final reacquisition, so a different inode with the same schema status is
 not accepted.
 
-Normal top-level JSON writes take the same process-reentrant, cross-process
-mutation lock before any per-file lock, so nested writers cannot invert the
-lock order and the
+Normal top-level JSON reads and writes take the same process-reentrant,
+cross-process mutation lock before any per-file lock, so nested writers cannot
+invert the lock order and the
 backup and metadata checkpoint cannot race a dashboard task/project/settings
 write. The configured root remains an absolute lexical spelling rather than a
 symlink-resolved destination, and lock acquisition walks every component without
@@ -432,8 +433,9 @@ following redirects (with only the platform's trusted macOS aliases normalized).
 The server preserves that spelling through its allowlisted child handoff. On
 POSIX the outer lock's pinned root descriptor is reused for the JSON read,
 temporary creation, and atomic replace; on Windows the guarded handle chain is
-retained. The source development override omits only the on-disk lock artifact;
-it retains process-local ordering, component validation, and pinned I/O. A
+retained. The source development override omits the on-disk lock for lower-level
+JSON helpers, while server reads and writes retain it so they cannot race a
+restore; both retain process-local ordering, component validation, and pinned I/O. A
 substituted final root or ancestor is never written and cannot
 claim success. The manifest records the ordered
 `durable-json-v0-to-v1` identity step
@@ -502,6 +504,53 @@ replacement, and post-restore schema/integrity verification. A newer unsupported
 backup fails closed. Runtime scratch, caches, logs, browser storage, and external
 Hermes/Obsidian/Google state are not restored as operator data.
 
+Milestone 1E-A implements the schema-governed durable-operator portion of this
+contract. `mentat-backup-v1-<id>.zip` is a deterministic, owner-only, stored ZIP
+with exactly one canonical manifest and the nine fixed `data/*.json` entries.
+The manifest records format and data-schema versions, classifications, sizes,
+integrity metadata, and every excluded class. It contains no absolute paths,
+credentials, private Console bytes, runtime state, caches, logs, browser state,
+external state, or nested backup files. Backup creation holds the shared pinned
+data-root mutation lock, validates current schema and exact live bytes, publishes
+missing-only below `backups/`, verifies the committed archive, and rechecks that
+the source did not change. Restore parsing validates the single-disk end record,
+exact entry count, and a tight central-directory bound before constructing a ZIP
+reader; JSON trees are decoded one document at a time for shape validation and
+discarded rather than retained with the raw snapshot.
+
+Restore accepts only that exact canonical archive format and an initialized
+current-schema target. Preview is read-only, reports replace/unchanged actions,
+refuses newer or malformed input, and binds an opaque token to the safe archive
+identity and bytes plus exact target identity and live bytes. Confirmation
+revalidates beneath the shared pinned-root lock, imports exact source evidence,
+publishes a validated backup of the pre-restore documents, and records an
+owner-only reservation before any live replacement. Every document replacement
+is exact, size/type validated, owner-only, atomic, and post-commit verified. A
+recognized interrupted state may resume only while the selected source,
+internal evidence, recovery archive, reservation, and every live document still
+match the token-bound old-or-new set. Unknown state fails closed, and startup
+blocks while any reservation or restore temporary remains. An exact uncommitted
+temporary has its own previewed, confirmed cleanup path and is never silently
+deleted.
+
+The current schema manifest and its bootstrap evidence stay at the destination:
+they describe the supported document schema and remain valid across legitimate
+document mutations. Migration receipts, schema backups, and all excluded
+directories are not replaced. A clean-install recovery initializes the target
+layout and current schema first, then runs restore. The later private-state
+slice must extend the ordinary format with one WAL-safe Console history/SQLite/
+referenced-blob consistency unit; 1E-A deliberately does not represent that
+deferred unit as backed up.
+
+Current source-checkout CLI form (the unified installed `mentat backup` and
+`mentat restore` commands remain Milestone 3):
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --create-backup
+python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v1-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v1-ID.zip"
+```
+
 ## Secret and privacy boundary
 
 Private directories and files use owner-only permissions where supported. The
@@ -533,9 +582,11 @@ runtime history.
   interruption resume, and completion receipt; complete.
 - Milestone 1D: sidecar schema versioning, explicit backed-up version-0
   bootstrap, coordinated durable writes, and forward-version refusal; complete.
-- Later bounded slices: general backup/restore, private-state movement, and
-  installer/uninstall preservation, each with its own approved contract and
-  failure-path evidence.
+- Milestone 1E-A: fixed durable-operator JSON backup and previewed restore with
+  pre-restore recovery evidence and interruption resume; complete.
+- Later bounded slices: private-state movement and consistent private backup,
+  followed by upgrade/uninstall preservation, each with its own approved
+  contract and failure-path evidence.
 
 The source checkout continues using the current repo-local `data/` override.
 Documentation must describe that as development behavior, not as the installed

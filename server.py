@@ -64,7 +64,12 @@ from agent_console_artifacts import (
     read_workspace_text_context,
 )
 from command_manifest import command_manifest_payload
-from json_store import read_json_guarded as store_read_json, update_json as store_update_json
+from json_store import (
+    _durable_mutation_lock,
+    read_json_guarded as store_read_json,
+    update_json as store_update_json,
+)
+from data_backup_restore import restore_status_under_lock
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
 from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
 from hermes_profile_identity import (
@@ -92,6 +97,7 @@ from runtime_config import (
     load_app_config,
     parse_cli_args,
     prepare_data_root_for_startup,
+    run_backup_restore_cli,
     run_legacy_migration_cli,
     run_schema_migration_cli,
 )
@@ -1331,15 +1337,18 @@ def read_json_file(name: str, default):
         DATA_DIR
     ) != _absolute_without_following(CONFIGURED_DATA_DIR)
     try:
-        return store_read_json(
-            path,
-            default,
-            mutation_lock=durable_policy,
-            maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
-            expected_type=SEED_ROOT_TYPES[name],
-            required_mode=0o600 if durable_policy else None,
-            require_existing=durable_policy,
-        )
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise OSError("durable JSON unavailable during restore")
+            return store_read_json(
+                path,
+                default,
+                mutation_lock=durable_policy,
+                maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+                expected_type=SEED_ROOT_TYPES[name],
+                required_mode=0o600 if durable_policy else None,
+                require_existing=durable_policy,
+            )
     except json.JSONDecodeError as exc:
         return {"error": f"Invalid JSON in {path}: {exc}"}
 
@@ -1350,29 +1359,27 @@ def update_json_file(name: str, default, mutator):
     durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
         DATA_DIR
     ) != _absolute_without_following(CONFIGURED_DATA_DIR)
+
+    def update_under_restore_guard():
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise OSError("durable JSON unavailable during restore")
+            return store_update_json(
+                path,
+                default,
+                mutator,
+                mutation_lock=durable_policy,
+                maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+                expected_type=SEED_ROOT_TYPES[name],
+                required_mode=0o600 if durable_policy else None,
+                require_existing=durable_policy,
+            )
+
     try:
         if name == "tasks.json":
             with HERMES_KANBAN_LOCK:
-                return store_update_json(
-                    path,
-                    default,
-                    mutator,
-                    mutation_lock=durable_policy,
-                    maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
-                    expected_type=SEED_ROOT_TYPES[name],
-                    required_mode=0o600 if durable_policy else None,
-                    require_existing=durable_policy,
-                )
-        return store_update_json(
-            path,
-            default,
-            mutator,
-            mutation_lock=durable_policy,
-            maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
-            expected_type=SEED_ROOT_TYPES[name],
-            required_mode=0o600 if durable_policy else None,
-            require_existing=durable_policy,
-        )
+                return update_under_restore_guard()
+        return update_under_restore_guard()
     except json.JSONDecodeError as exc:
         return {"error": f"Invalid JSON in {path}: {exc}"}, 500
 
@@ -5934,6 +5941,10 @@ if __name__ == "__main__":
         schema_summary, schema_exit = run_schema_migration_cli(cli_args, APP_CONFIG)
         print(json.dumps(schema_summary, indent=2))
         raise SystemExit(schema_exit)
+    if cli_args.create_backup or cli_args.preview_restore or cli_args.confirm_restore:
+        backup_summary, backup_exit = run_backup_restore_cli(cli_args, APP_CONFIG)
+        print(json.dumps(backup_summary, indent=2))
+        raise SystemExit(backup_exit)
     if HOST.lower() not in {"127.0.0.1", "::1", "localhost"}:
         print("Mentat refuses non-loopback binds until authenticated remote access is implemented.")
         raise SystemExit(2)

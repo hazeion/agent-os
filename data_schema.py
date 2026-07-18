@@ -2,8 +2,8 @@
 
 The current schema migration is intentionally an identity migration: it records
 the already-supported top-level shapes in one owner-only sidecar manifest. It
-does not wrap or rewrite live operator documents. General backup/restore and
-private SQLite evolution remain separate capabilities.
+does not wrap or rewrite live operator documents. General durable backup/restore
+and private SQLite evolution live in separate capabilities.
 """
 
 from __future__ import annotations

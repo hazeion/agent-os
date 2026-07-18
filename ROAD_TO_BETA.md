@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 1 in progress — 1A, 1B, 1C, and 1D complete
+Status: Milestone 1 in progress — 1A through 1D and 1E-A complete
 Last updated: 2026-07-18
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -147,7 +147,7 @@ work is still small.
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
-| 1 | Durable user data | In progress — 1A, 1B, 1C, and 1D complete | 0 | Backup, restore, and clean-install tests |
+| 1 | Durable user data | In progress — 1A through 1D and 1E-A complete | 0 | Private-state move/backup and upgrade/uninstall tests |
 | 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
@@ -208,8 +208,8 @@ Goal: make operator data survive upgrades and keep a running installation from
 modifying its application files or Git checkout.
 
 Status: Milestone 1A contract, Milestone 1B resolver/preflight/initializer,
-Milestone 1C legacy durable-JSON migration, and Milestone 1D schema versioning
-complete. The complete current mutable-path inventory, target directory
+Milestone 1C legacy durable-JSON migration, Milestone 1D schema versioning, and
+Milestone 1E-A durable-JSON backup/restore complete. The complete current mutable-path inventory, target directory
 classes, platform defaults,
 precedence, and fail-closed initialization/migration/backup rules are approved
 in [DATA_LAYOUT.md](DATA_LAYOUT.md). A clean config-less installed launch now
@@ -218,8 +218,9 @@ cross-process lock. An explicit CLI preview/confirmation flow can migrate the
 nine legacy JSON documents after a validated backup; the source remains
 unchanged. Schema evolution, private-state movement, and general backup/restore
 are separated: the fixed JSON inventory now has explicit version metadata,
-backed-up bootstrap, and forward-version refusal, while private-state movement
-and general backup/restore remain deferred.
+backed-up bootstrap, forward-version refusal, and a validated preview-confirm
+backup/restore foundation, while the private Console consistency unit remains
+deferred to its durable-state move.
 
 Work in order:
 
@@ -241,6 +242,8 @@ Work in order:
 6. Add versioned data-schema migrations and forward-version refusal.
    **Milestone 1D complete.**
 7. Implement atomic backup and restore with validation and a restore preview.
+   **Milestone 1E-A complete for the fixed durable JSON set.** The private
+   Console consistency unit remains part of the next private-state slice.
 8. Add tests for first run, repeat run, migration, interrupted migration,
    upgrade, restore, and uninstall-data preservation.
 
@@ -532,11 +535,10 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Begin the next bounded Milestone 1 slice for atomic general backup and
-   validated previewed restore defined by [DATA_LAYOUT.md](DATA_LAYOUT.md);
-   keep private-state movement and installer behavior separate where the
-   approved consistency boundary permits.
-2. Ensure later Milestone 1 work moves private Console state and provides
+1. Begin the next bounded Milestone 1 slice to move private Console state and
+   extend ordinary backup with its WAL-safe SQLite/history/referenced-blob
+   consistency unit; keep installer behavior separate.
+2. Ensure that private-state work also provides
    owner-only storage for the future remote Hermes endpoint and API credential
    outside the application directory.
 3. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
