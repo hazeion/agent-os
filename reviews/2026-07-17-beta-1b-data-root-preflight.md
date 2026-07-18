@@ -46,7 +46,7 @@ without writing to the filesystem.
 | AC-5 | Any supported legacy state is detected before initialization planning, reserves all potentially colliding destinations, and never produces a partial clean plan. | Legacy reservation/conflict tests | Passed locally |
 | AC-6 | Symlinked/non-regular roots or files, invalid/missing seeds, invalid target JSON, and dangerously broad roots fail closed without exposing file contents. | Negative-path tests | Passed locally |
 | AC-7 | Configuration/preflight summaries are side-effect-free and contain only normalized source/status/name metadata. | Reporting and before/after filesystem assertions | Passed locally |
-| AC-8 | Documentation remains truthful about the read-only boundary, focused/full tests pass, hosted CI passes, and two independent reviewers clear the slice. | Docs tests, suites, CI, review record | Local gates/reviews passed; hosted CI pending publication |
+| AC-8 | Documentation remains truthful about the read-only boundary, focused/full tests pass, hosted CI passes, and two independent reviewers clear the slice. | Docs tests, suites, CI, review record | Passed |
 
 ### Constraints and recovery
 
@@ -172,6 +172,7 @@ without writing to the filesystem.
 | GitHub Actions run `29633885730`, first attempt | macOS/Windows/Ubuntu, Python 3.11–3.13 | Exit 1 | 6 jobs passed, 3 Windows jobs failed | All Windows versions exposed the same host-dependent simulated Linux absolute-path check. macOS and Ubuntu were green. |
 | Approved hosted-CI correction local rerun | macOS, system Python 3 | Exit 0 | 51 focused and 395 full tests passed | Compilation and diff check passed; both independent reviewers reported no findings on the `PurePosixPath` correction. |
 | GitHub Actions run `29634031472`, second attempt | macOS/Windows/Ubuntu, Python 3.11–3.13 | Exit 1 | 6 jobs passed, 3 Windows jobs failed | Production validation advanced correctly; the configless integration fixture still supplied a native Windows temp path while simulating Linux. |
+| GitHub Actions run `29634337791`, corrected code/fixture | macOS/Windows/Ubuntu, Python 3.11–3.13 | Exit 0 | 9 jobs passed, 0 failed | All compile, JavaScript syntax, and 395-test suite steps passed on Python 3.11–3.13 for macOS, Windows, and Ubuntu. |
 
 ### Rendered or manual behavior
 
@@ -282,14 +283,16 @@ were reconciled as single fixes:
   invalid state, legacy reservations, and conflicts; block config-less normal
   startup before deferred initialization writes; preserve the tracked source
   checkout override; update milestone records and tests.
-- Unresolved risks: Hosted nine-job CI is pending; native Windows junction and
-  path behavior require that matrix; the read-only result grants no future
-  mutation authority and 1B-B must lock/revalidate; initializer, permission,
-  seed-copy, migration, backup, and restore work remains deferred.
+- Unresolved risks: The read-only result grants no future mutation authority
+  and 1B-B must lock/revalidate; Windows cannot provide the same descriptor-walk
+  guarantee as POSIX against concurrent local substitution; initializer,
+  permission, seed-copy, migration, backup, and restore work remains deferred.
 - User authorization and scope: Approved staging the documented slice, creating
   the agreed commit, pushing the feature branch, and opening a ready PR on
   2026-07-17. Merge remains separately gated after hosted CI.
 - Initial commit hash: `0ad4260c48e348064493dc645216874f5ed810d0`.
+- Hosted correction commits: `7dd9179beecfea575168bb8d7ccdf1352a5e5ce2`
+  and `79ac55379617257ba7e2d63696f976deee966c35`.
 - Ready PR URL: https://github.com/hazeion/agent-os/pull/21
 - Hosted-CI correction: The first hosted run showed that Linux/XDG validation
   used the runner host's `Path.is_absolute()` semantics during simulation, so
@@ -306,12 +309,13 @@ were reconciled as single fixes:
 - Final hosted-fixture review: Both independent reviewers reported no P0-P3
   findings after the raw-string correction; 51 focused and 395 full local tests,
   compilation, and diff checks passed.
+- Final hosted gate: GitHub Actions run `29634337791` passed all nine jobs.
 
 ## Outcome review
 
 - Classification: In progress.
-- Acceptance criteria summary: AC-1 through AC-7 and the local/reviewer portions
-  of AC-8 pass; hosted CI requires publication.
+- Acceptance criteria summary: AC-1 through AC-8 pass locally, independently,
+  and on the complete hosted OS/Python matrix.
 - Potential bugs or untested paths: Writable initialization and migration remain deferred.
 - Remaining reviewer dissent: None.
 - Compatibility/migration/rollback concerns: No filesystem mutations in this slice.
