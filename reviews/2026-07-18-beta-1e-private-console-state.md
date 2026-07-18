@@ -1,6 +1,6 @@
 # Feature Slice Review: Durable Private Console State
 
-Status: Implementation, local verification, documentation, and two zero-finding adversarial reviews complete; publication in progress
+Status: Implementation, local verification, documentation, and two zero-finding adversarial reviews complete; hosted remediation rerun pending
 Slice: `beta-1e-private-console-state`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1e-private-console-state.md`
@@ -66,7 +66,7 @@ reference-consistent private unit.
 | AC-6 | Restore remains backward-compatible with version-1 JSON-only archives and restores the current private unit only through exact preview/confirmation, pre-restore recovery evidence, bounded staging, and post-restore relational/blob verification. | v1/v2 preview, recovery ordering, stale-token, and success tests | Complete |
 | AC-7 | Interrupted private restore resumes only exact recognized old-or-new history/database/blob states; unknown bytes, extra/missing blobs, changed receipt/reservation, and unsafe paths block startup and all private mutation without overwrite. | Interruption matrix, startup/live-server gate, conflict, and boundary tests | Complete |
 | AC-8 | Browser responses and logs continue to expose only opaque attachment metadata and bounded errors; no local path, storage key, digest, SQLite bytes, history content, or secret is added to public output. | Request-boundary, public-summary, CLI, and redaction tests | Complete |
-| AC-9 | Focused/full local checks, static gates, supported nine-job hosted CI, documentation, and two independent adversarial reviews clear on the final diff. | Verification record and CI links | Local/review complete; hosted pending |
+| AC-9 | Focused/full local checks, static gates, supported nine-job hosted CI, documentation, and two independent adversarial reviews clear on the final diff. | Verification record and CI links | Local/review complete; hosted remediation rerun pending |
 
 ### Constraints and recovery
 
@@ -181,6 +181,15 @@ reference-consistent private unit.
   failures/errors on macOS Python 3.13.
 - `python3 -m compileall -q .`, every `public/*.js`/`scripts/*.mjs` Node syntax
   check, and `git diff --check` pass.
+- Hosted run `29662474337` passed all six Linux/macOS jobs and exposed a
+  Windows-only SQLite WAL recovery incompatibility in all three Windows jobs:
+  read-only recovery of the captured main/WAL pair cannot portably rebuild a
+  missing SHM index. The live source remains read-only and byte-revalidated;
+  SQLite now opens only the private temporary main/WAL copy read-write so it
+  can create its temporary SHM index before producing the backup-API snapshot.
+  Platform-correct absolute SQLite file URIs replace path-string URIs for every
+  remaining read-only open. The 30-test focused suite and full 573-test suite
+  pass after the correction; a fresh hosted matrix is pending.
 
 ## Adversarial review
 
@@ -205,6 +214,9 @@ post-promotion races, main-database byte stability, malformed manifest types,
 cleanup-resume windows, and same-shape mutation during cleanup. The final exact
 diff received independent zero-finding results from both the compatibility and
 filesystem/crash-safety reviewers after 30 focused tests and diff hygiene.
+Both reviewers then re-reviewed the Windows WAL correction and independently
+returned zero findings, including the lexical absolute-URI refinement that
+avoids following a pathname merely to construct the SQLite URI.
 
 ## Documentation updates
 
@@ -215,7 +227,8 @@ storage guidance are updated.
 ## Publication gate
 
 - Branch and base: `codex/beta-1e-private-console-state` to merged `main`.
-- Commit/PR packet: Ready; publication and hosted CI remain pending.
+- Commit/PR packet: PR #26 is open; Windows remediation publication and a fresh
+  hosted matrix remain pending.
 - User authorization: Standing approval recorded.
 
 ## Outcome review

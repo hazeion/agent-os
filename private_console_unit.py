@@ -218,6 +218,13 @@ def _initialize_database(path: Path) -> None:
         path.chmod(0o600)
 
 
+def _sqlite_readonly_uri(path: Path) -> str:
+    """Return a platform-correct absolute SQLite URI for one local file."""
+
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    return f"{absolute.as_uri()}?mode=ro"
+
+
 def _sqlite_backup(
     source: Path | None,
     destination: Path,
@@ -252,7 +259,15 @@ def _sqlite_backup(
     source_connection = None
     destination_connection = None
     try:
-        source_connection = sqlite3.connect(f"file:{source_for_sqlite}?mode=ro", uri=True)
+        # The copied main/WAL pair belongs to a private temporary directory, so
+        # SQLite may safely open it read-write to create a fresh SHM index and
+        # recover the WAL.  A read-only WAL open without a pre-existing SHM is
+        # not portable on Windows.  The live source is still opened read-only.
+        source_connection = (
+            sqlite3.connect(source_for_sqlite)
+            if copy_source
+            else sqlite3.connect(_sqlite_readonly_uri(source_for_sqlite), uri=True)
+        )
         destination_connection = sqlite3.connect(destination)
         source_connection.backup(destination_connection)
     finally:
@@ -365,7 +380,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
 
 def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tuple[str, str, int], ...]:
     retained = set(run_ids)
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
     try:
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise PrivateConsoleUnitError("private_database_invalid")
@@ -442,7 +457,7 @@ def capture_private_console_unit(
         snapshot_path = Path(temporary) / "mentat.sqlite3"
         _sqlite_backup(database_source, snapshot_path, copy_source=copy_sqlite_source)
         blob_rows = _validate_and_filter_database(snapshot_path, run_ids)
-        connection = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
+        connection = sqlite3.connect(_sqlite_readonly_uri(snapshot_path), uri=True)
         try:
             database_references = {
                 (str(row[0]), str(row[1]))
@@ -545,7 +560,7 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         if os.name != "nt":
             database.chmod(0o600)
         rows = _inspect_filtered_database(database, run_ids)
-        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
         try:
             database_references = {
                 (str(row[0]), str(row[1]))
@@ -571,7 +586,7 @@ def private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
     with TemporaryDirectory(prefix="mentat-private-identity-") as temporary:
         database = Path(temporary) / "mentat.sqlite3"
         database.write_bytes(unit.database_raw)
-        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
         try:
             logical_database = "\n".join(connection.iterdump()).encode("utf-8")
         finally:
