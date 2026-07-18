@@ -1,6 +1,6 @@
 # Feature Slice Review: Back Up and Restore Durable Operator JSON
 
-Status: Local verification and two independent zero-finding reviews complete; hosted CI pending
+Status: Final local verification and two zero-finding reviews complete; hosted CI correction awaiting publication and rerun
 Slice: `beta-1e-durable-backup-restore`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1e-durable-backup-restore.md`
@@ -60,7 +60,7 @@ without changing current schema provenance or any excluded storage class.
 | AC-5 | Confirmation publishes and validates an owner-only pre-restore recovery backup before the first live replacement, then uses only owner-only verified staging and atomic per-document commits beneath the shared pinned-root lock. | Ordering, mode, staging, and injected-failure tests | Local and review verified |
 | AC-6 | A matching interrupted restore can resume only when its reservation, selected/internal source evidence, recovery backup, and every live document exactly match an allowed old-or-new state; conflicts fail closed without overwriting unknown bytes. | Interruption matrix, resume, conflict, and recovery-evidence tests | Local and review verified |
 | AC-7 | Success requires exact post-restore schema/integrity verification while preserving schema metadata/evidence and all excluded directories/files; startup and already-running JSON access block incomplete or invalid restore state before ordinary writes. | Terminal verification, exclusion preservation, lifecycle ordering, and live-server lock tests | Local and review verified |
-| AC-8 | CLI contracts, documentation, local focused/full checks, the supported nine-job hosted matrix, and two independent adversarial reviews all clear on the final diff. | CLI/docs/CI suites and this review record | Local/review passed; hosted pending |
+| AC-8 | CLI contracts, documentation, local focused/full checks, the supported nine-job hosted matrix, and two independent adversarial reviews all clear on the final diff. | CLI/docs/CI suites and this review record | Final local/review checks passed; hosted correction pending rerun |
 
 ### Constraints and recovery
 
@@ -157,6 +157,12 @@ without changing current schema provenance or any excluded storage class.
   selected archive/live plan, pre-`ZipFile` central-directory bounds, discarded
   decoded JSON trees, exact canonical reservation verification, and conservative
   partial-failure reporting after any restore mutation attempt.
+- Corrected the Windows native-directory-pin inventory contract after the first
+  hosted run. The presence-aware helper now distinguishes an absent child from
+  a native pinned directory whose POSIX descriptor representation is `None`,
+  refuses an appeared child without enumerating it, rejects unsafe native
+  metadata, and inventories broad POSIX directories only through their pinned
+  descriptor so startup permission repair remains compatible.
 
 ### Deviations and decisions
 
@@ -173,8 +179,8 @@ without changing current schema provenance or any excluded storage class.
 
 ### Focused checks
 
-- `python3 -m unittest tests.test_data_backup_restore tests.test_json_store tests.test_runtime_config tests.test_beta_contract tests.test_ci_workflow tests.test_data_layout_contract -v`
-  passed: 82 tests.
+- `python3 -m unittest tests.test_data_backup_restore tests.test_json_store tests.test_runtime_config tests.test_beta_contract tests.test_ci_workflow tests.test_data_layout_contract -q`
+  passed: 85 tests on the final hosted-CI correction diff.
 - `python3 -m compileall -q .`, `node --check public/core.js`,
   `node --check public/app.js`, and `git diff --check` passed.
 - One diagnostic static-check command named a nonexistent historical
@@ -185,8 +191,21 @@ without changing current schema provenance or any excluded storage class.
 
 ### Full suite
 
-- `python3 -m unittest discover -s tests -q` passed: 540 tests, four
-  platform-specific skips, on local macOS/Python 3.13.
+- `python3 -m unittest discover -s tests -q` passed: 543 tests, four
+  platform-specific skips, on the final hosted-CI correction diff using local
+  macOS/Python 3.13.
+
+### Hosted matrix
+
+- Initial run [29659230543](https://github.com/hazeion/agent-os/actions/runs/29659230543)
+  passed all Python 3.11-3.13 jobs on Ubuntu and macOS and failed all three
+  Windows jobs. The shared failure was isolated to restore inventory treating
+  the Windows native pin's intentional `descriptor=None` as a missing child;
+  one concurrency test also attempted to read the live byte-range-locked root
+  coordination file.
+- The correction is locally verified and reviewed below. A fresh complete
+  nine-job run is required after publication; no partial rerun is accepted as
+  final evidence.
 
 ### Rendered or manual behavior
 
@@ -274,7 +293,35 @@ without changing current schema provenance or any excluded storage class.
   all production cleanup, startup, resource, CLI, documentation, and verification
   fixes remain consistent.
 - Review gate: complete with two independent zero-finding reports on the same
-  final diff.
+  pre-publication diff.
+
+### Hosted-CI correction rounds
+
+- The first correction made descriptor-`None` inventory list the native-pinned
+  Windows pathname and excluded the active lock from test snapshots. Safety
+  initially reported zero findings. Compatibility found two blocking edges:
+  absent-then-appeared children could be pathname-enumerated, and the snapshot
+  filter excluded same-named nested files rather than only the root lock.
+- Resolution: `data_schema.py` now exposes a presence-aware pinned-child
+  context while preserving the existing wrapper API. Restore inventory fails
+  closed when an absent child appears, never enumerates unsafe native metadata,
+  and the snapshot excludes only the exact root coordination file. Regressions
+  force native pinned presence with no POSIX descriptor and prove an appeared
+  child is never listed.
+- On re-review, compatibility reported zero findings. Safety then found one
+  high blocking interaction: skipping all unsafe-directory enumeration could
+  hide restore state in a broad POSIX config directory because artifact-free
+  broad directories must remain repairable at startup.
+- Resolution: unsafe native/pathname metadata still fails immediately; POSIX
+  broad directories are enumerated only via their already-pinned descriptor.
+  A regression proves hidden restore state is classified invalid and every
+  config inventory read used a descriptor, while the existing startup test
+  proves artifact-free broad directories are still hardened successfully.
+- Safety final re-review: zero findings. Compatibility found only that this
+  review record still contained the pre-correction test totals; the exact final
+  commands were rerun and are recorded above (85 focused, 543 full, all static
+  gates clean). Both reviewers then audited this final record and reported zero
+  findings on the same publication diff.
 
 ## Documentation updates
 
@@ -289,19 +336,22 @@ without changing current schema provenance or any excluded storage class.
 
 ## Publication gate
 
-- Proposed files: `.gitignore`, `data_backup_restore.py`, `json_store.py`,
+- Proposed files: `.gitignore`, `data_backup_restore.py`, `data_schema.py`, `json_store.py`,
   `runtime_config.py`, `server.py`, `mentat_lifecycle.py`, the focused tests,
   the five operator/architecture records, and this review log.
 - Branch and base: `codex/beta-1e-backup-restore` to `main`.
 - Commit message: `Back up and restore durable operator data`.
 - PR title: `Add durable data backup and restore`.
-- PR summary: Pending.
+- PR summary: Fixed-inventory durable JSON backup and exact confirmed restore,
+  including interruption recovery, startup/live-server coordination, operator
+  documentation, and supported-platform regressions.
 - Unresolved risks: None accepted; private Console inclusion is an explicit
   follow-up, not represented as complete.
 - User authorization and scope: Standing approval recorded; publication still
   requires clean verification and two zero-finding reviews.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- Implementation commit: `8c69370`.
+- Hosted-CI correction commit: Pending.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/25
 
 ## Outcome review
 

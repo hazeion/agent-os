@@ -35,6 +35,7 @@ from data_schema import (
     _guarded_child_directory,
     _names_from_pinned_directory,
     _pinned_existing_child_directory,
+    _pinned_existing_child_directory_state,
     _read_private_artifact_at,
     _unlink_relative,
     schema_preflight_status,
@@ -560,19 +561,27 @@ def _restore_artifact_issue_under_lock(
         unsafe_directory = False
         for directory_name in ("config", "backups"):
             directory = target / directory_name
-            with _pinned_existing_child_directory(
+            with _pinned_existing_child_directory_state(
                 target,
                 root_descriptor,
                 directory_name,
-            ) as directory_descriptor:
-                if directory_descriptor is None:
+            ) as (directory_present, directory_descriptor):
+                if not directory_present:
                     names.append(())
+                    if os.path.lexists(os.fspath(directory)):
+                        return "restore_artifacts_invalid"
                     continue
-                metadata = os.fstat(directory_descriptor)
+                if directory_descriptor is None:
+                    metadata = os.lstat(directory)
+                else:
+                    metadata = os.fstat(directory_descriptor)
                 if (
                     not stat.S_ISDIR(metadata.st_mode)
+                    or stat.S_ISLNK(metadata.st_mode)
                     or (os.name == "posix" and stat.S_IMODE(metadata.st_mode) != 0o700)
                 ):
+                    if directory_descriptor is None:
+                        return "restore_artifacts_invalid"
                     unsafe_directory = True
                 names.append(
                     _names_from_pinned_directory(directory, directory_descriptor)

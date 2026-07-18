@@ -962,18 +962,20 @@ def _schema_artifact_issue_pinned(target: Path, root_descriptor: int | None) -> 
 
 
 @contextmanager
-def _pinned_existing_child_directory(
+def _pinned_existing_child_directory_state(
     target: Path,
     root_descriptor: int | None,
     name: str,
 ):
+    """Yield whether a child existed when pinned plus its POSIX descriptor."""
+
     path = target / name
     if root_descriptor is None:
         if not os.path.lexists(os.fspath(path)):
-            yield None
+            yield False, None
             return
         with _guarded_mutation_directory(path) as descriptor:
-            yield descriptor
+            yield True, descriptor
         return
     flags = (
         os.O_RDONLY
@@ -984,14 +986,28 @@ def _pinned_existing_child_directory(
     try:
         descriptor = os.open(name, flags, dir_fd=root_descriptor)
     except FileNotFoundError:
-        yield None
+        yield False, None
         return
     try:
         if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
             raise OSError("schema artifact directory invalid")
-        yield descriptor
+        yield True, descriptor
     finally:
         os.close(descriptor)
+
+
+@contextmanager
+def _pinned_existing_child_directory(
+    target: Path,
+    root_descriptor: int | None,
+    name: str,
+):
+    with _pinned_existing_child_directory_state(
+        target,
+        root_descriptor,
+        name,
+    ) as (_present, descriptor):
+        yield descriptor
 
 
 def _names_from_pinned_directory(path: Path, descriptor: int | None) -> tuple[str, ...]:

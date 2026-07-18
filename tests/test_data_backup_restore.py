@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -81,6 +82,7 @@ class DataBackupRestoreTests(unittest.TestCase):
         return {
             str(path.relative_to(root)): path.read_bytes() if path.is_file() else None
             for path in root.rglob("*")
+            if path.relative_to(root) != Path(data_layout.INITIALIZATION_LOCK_NAME)
         }
 
     def config(self, target: Path) -> runtime_config.AppConfig:
@@ -235,6 +237,124 @@ class DataBackupRestoreTests(unittest.TestCase):
             self.assertFalse(
                 any(path.name.startswith(backup_restore.BACKUP_PREFIX) for path in displaced.iterdir())
             )
+
+    def test_restore_inventory_lists_native_pins_without_posix_descriptors(self):
+        with TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            _seeds, target = self.make_current(base, "target", "target")
+            state_path = target / "config" / backup_restore.RESTORE_STATE_NAME
+            state_path.write_bytes(b'{"marker":"state"}\n')
+            if os.name == "posix":
+                state_path.chmod(0o600)
+
+            @contextmanager
+            def native_pin_without_descriptor(selected, descriptor, name):
+                self.assertEqual(
+                    selected,
+                    data_layout._absolute_without_following(target),
+                )
+                self.assertIn(name, {"config", "backups"})
+                yield True, None
+
+            with json_store._durable_mutation_lock(target) as root_descriptor:
+                with patch.object(
+                    backup_restore,
+                    "_pinned_existing_child_directory_state",
+                    side_effect=native_pin_without_descriptor,
+                ):
+                    issue = backup_restore._restore_artifact_issue_under_lock(
+                        target,
+                        root_descriptor,
+                    )
+
+            self.assertEqual(issue, "restore_incomplete")
+
+    def test_restore_inventory_never_lists_child_that_appears_after_absence(self):
+        with TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            _seeds, target = self.make_current(base, "target", "target")
+            normalized_target = data_layout._absolute_without_following(target)
+            real_pin = backup_restore._pinned_existing_child_directory_state
+            real_names = backup_restore._names_from_pinned_directory
+            listed: list[Path] = []
+
+            @contextmanager
+            def appear_after_absence(selected, descriptor, name):
+                if name == "backups":
+                    yield False, None
+                    return
+                with real_pin(selected, descriptor, name) as pinned:
+                    yield pinned
+
+            def record_listing(path, descriptor):
+                listed.append(path)
+                return real_names(path, descriptor)
+
+            real_lexists = os.path.lexists
+
+            def appeared(path):
+                if Path(path).name == "backups":
+                    return True
+                return real_lexists(path)
+
+            with json_store._durable_mutation_lock(target) as root_descriptor:
+                with (
+                    patch.object(
+                        backup_restore,
+                        "_pinned_existing_child_directory_state",
+                        side_effect=appear_after_absence,
+                    ),
+                    patch.object(
+                        backup_restore,
+                        "_names_from_pinned_directory",
+                        side_effect=record_listing,
+                    ),
+                    patch.object(backup_restore.os.path, "lexists", side_effect=appeared),
+                ):
+                    issue = backup_restore._restore_artifact_issue_under_lock(
+                        target,
+                        root_descriptor,
+                    )
+
+            self.assertEqual(issue, "restore_artifacts_invalid")
+            self.assertNotIn(normalized_target / "backups", listed)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX pinned-mode regression")
+    def test_restore_inventory_finds_state_in_broad_directory_via_descriptor(self):
+        with TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            _seeds, target = self.make_current(base, "target", "target")
+            normalized_target = data_layout._absolute_without_following(target)
+            state_path = target / "config" / backup_restore.RESTORE_STATE_NAME
+            state_path.write_bytes(b'{"marker":"state"}\n')
+            state_path.chmod(0o600)
+            (target / "config").chmod(0o755)
+            real_names = backup_restore._names_from_pinned_directory
+            listed_with: list[tuple[Path, int | None]] = []
+
+            def record_listing(path, descriptor):
+                listed_with.append((path, descriptor))
+                return real_names(path, descriptor)
+
+            with json_store._durable_mutation_lock(target) as root_descriptor:
+                with patch.object(
+                    backup_restore,
+                    "_names_from_pinned_directory",
+                    side_effect=record_listing,
+                ):
+                    issue = backup_restore._restore_artifact_issue_under_lock(
+                        target,
+                        root_descriptor,
+                    )
+
+            config_listings = [
+                descriptor
+                for path, descriptor in listed_with
+                if path == normalized_target / "config"
+            ]
+            self.assertEqual(issue, "restore_artifacts_invalid")
+            self.assertTrue(config_listings)
+            self.assertTrue(all(descriptor is not None for descriptor in config_listings))
 
     def test_restore_preview_is_read_only_and_success_preserves_exclusions(self):
         with TemporaryDirectory() as tmpdir:
