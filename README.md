@@ -118,6 +118,7 @@ Common overrides include:
 
 - `MENTAT_PORT`
 - `MENTAT_HOST` (loopback only)
+- `MENTAT_DATA_DIR`
 - `HERMES_HOME`
 - `OBSIDIAN_VAULT_PATH`
 - `MENTAT_CONFIG`
@@ -129,7 +130,13 @@ The source checkout currently keeps `data_dir = "data"` in the shared config.
 The approved installed-app target, platform defaults, complete mutable-path
 inventory, missing-only seed rules, and migration/backup safety boundary are in
 [DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A documents and tests that contract;
-the platform-aware resolver and data move are not implemented yet.
+Milestone 1B-A now resolves the approved platform default for config-less
+installs, preserves the tracked development override, exposes a non-sensitive
+source label in `--print-config`, and provides a bounded read-only preflight.
+Directory creation, seed copying, data movement, and migration are not
+implemented yet. Consequently, a config-less normal launch fails closed before
+lifecycle cleanup or filesystem writes until the Milestone 1B-B initializer is
+available; `--print-config` can safely show the selected root in the meantime.
 
 ## A few important boundaries
 
@@ -153,6 +160,7 @@ contract.
 
 ```text
 server.py                    Local HTTP server and workflow orchestration
+data_layout.py               Data-root resolver and read-only preflight
 public/                      Static dashboard UI
 data/                        Public-safe project-owned seed data
 data/runtime/                Private, generated, gitignored runtime data
@@ -195,6 +203,7 @@ criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The beta contract is
 approved: macOS and Windows are tier one, Linux is preview, Python 3.11 through
 3.13 is supported, and signed native installers plus a supported `pipx` path
 are required release channels. Those artifacts do not exist yet. The early CI
-guardrail and Milestone 1A data-layout contract are complete; the next focus is
-implementing the platform-aware data root and missing-only initialization before
-remote-Hermes implementation and packaging begin.
+guardrail, Milestone 1A data-layout contract, and Milestone 1B-A read-only
+resolver/preflight are complete; the next focus is owner-only directory creation
+and missing-only initialization before remote-Hermes implementation and
+packaging begin.

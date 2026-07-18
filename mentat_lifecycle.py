@@ -476,6 +476,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    startup_error = server.data_root_startup_error(config)
+    if startup_error is not None:
+        print_report({"ok": False, "error": startup_error})
+        return 2
+
     report = cleanup_mentat_listeners(config, stop_only=False)
     print_report(report)
     return 0 if report.get("ok", False) else 1

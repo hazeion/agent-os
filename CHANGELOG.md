@@ -13,8 +13,16 @@ All notable changes to Mentat.
 - Defined the Milestone 1A data-layout contract, including the complete current
   mutable-path inventory, target durable/private/runtime/backup/cache/log/config
   classes, platform defaults, override precedence, missing-only seed behavior,
-  fail-closed migration/schema rules, and secret exclusions. Runtime defaults
-  and data remain unchanged until Milestone 1B.
+  fail-closed migration/schema rules, and secret exclusions.
+- Added the Milestone 1B-A standard-library data-root resolver and bounded
+  read-only preflight. Config-less loads select the approved macOS, Windows, or
+  Linux/XDG root; explicit CLI, current environment, legacy environment, and
+  TOML inputs retain exact precedence and report a safe source label. Preflight
+  validates only the fixed seed set, enforces a 16 MiB per-document ceiling and
+  current top-level shapes, and fails closed on symlink/reparse, legacy, or
+  conflicting state without creating or modifying files. Config-less normal
+  startup is blocked before lifecycle cleanup or writes until the writable
+  initializer lands; print-config remains side-effect-free.
 
 ### Changed
 - Closed the remaining Milestone 0 release-contract decisions for the beta
