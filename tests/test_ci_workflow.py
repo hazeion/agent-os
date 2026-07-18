@@ -77,7 +77,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertIn("if: runner.os != 'Windows'", workflow)
         self.assertIn("if: runner.os == 'Windows'", workflow)
 
-    def test_windows_shards_cover_each_test_module_exactly_once(self):
+    def test_windows_shards_cover_each_test_exactly_once(self):
         method_sys_path = list(sys.path)
         self.addCleanup(sys.path.__setitem__, slice(None), method_sys_path)
         self.assertTrue(SHARD_RUNNER.exists())
@@ -88,9 +88,9 @@ class CiWorkflowContractTests(unittest.TestCase):
         exec(SHARD_RUNNER.read_text(encoding="utf-8"), namespace)
 
         modules = namespace["test_modules"]()
-        weighted = namespace["weighted_modules"](modules)
-        shards = namespace["partition_modules"](weighted)
-        flattened = tuple(module for shard in shards for module in shard)
+        weighted = namespace["weighted_units"](modules)
+        shards = namespace["partition_units"](weighted)
+        flattened = tuple(unit for shard in shards for unit in shard)
 
         def suite_ids(suite):
             selected = []
@@ -98,31 +98,63 @@ class CiWorkflowContractTests(unittest.TestCase):
                 if isinstance(item, unittest.TestSuite):
                     selected.extend(suite_ids(item))
                 else:
-                    selected.append(item.id())
+                    selected.append(namespace["_canonical_test_id"](item))
             return selected
 
         loader = unittest.TestLoader()
         discovered = loader.discover(str(ROOT / "tests"))
         self.assertEqual(loader.errors, [])
         expected_ids = Counter(suite_ids(discovered))
+        self.assertEqual(
+            Counter(flattened),
+            Counter(unit for unit, _weight in weighted),
+        )
         sharded_ids = Counter()
-        for module in modules:
-            sharded_ids.update(suite_ids(namespace["_discover_module"](module)))
+        covered_modules = set()
+        for shard in shards:
+            sharded_ids.update(suite_ids(namespace["_build_shard_suite"](shard)))
+            for unit in shard:
+                if unit.startswith(namespace["MODULE_UNIT_PREFIX"]):
+                    covered_modules.add(
+                        unit.removeprefix(namespace["MODULE_UNIT_PREFIX"])
+                    )
+                else:
+                    self.assertTrue(unit.startswith(namespace["TEST_UNIT_PREFIX"]))
+                    identifier = unit.removeprefix(namespace["TEST_UNIT_PREFIX"])
+                    covered_modules.add(namespace["_split_module_for_id"](identifier))
         self.assertEqual(sharded_ids, expected_ids)
         expected_modules = tuple(
             f"tests.{path.stem}"
             for path in sorted((ROOT / "tests").glob("test*.py"))
             if re.fullmatch(r"[_a-zA-Z]\w*\.py", path.name)
         )
-        self.assertEqual(tuple(sorted(flattened)), expected_modules)
+        self.assertEqual(tuple(sorted(covered_modules)), expected_modules)
         self.assertEqual(len(flattened), len(set(flattened)))
-        self.assertEqual(tuple(module for module, _count in weighted), modules)
-        self.assertTrue(all(count >= 0 for _module, count in weighted))
-        self.assertEqual(namespace["SHARD_COUNT"], 6)
-        self.assertEqual(len(shards), 6)
+        self.assertTrue(all(count >= 0 for _unit, count in weighted))
+        shard_totals = [
+            sum(dict(weighted)[unit] for unit in shard)
+            for shard in shards
+        ]
+        self.assertLessEqual(
+            max(shard_totals) - min(shard_totals),
+            namespace["SPLIT_TEST_WEIGHT"],
+        )
+        self.assertEqual(namespace["SHARD_COUNT"], 12)
+        self.assertEqual(len(shards), 12)
         self.assertTrue(all(shards))
+        for module in namespace["SPLITTABLE_MODULES"]:
+            source = (ROOT / Path(*module.split("."))).with_suffix(".py").read_text(
+                encoding="utf-8"
+            )
+            self.assertIsNone(
+                re.search(
+                    r"\b(?:addClassCleanup|enterClassContext|"
+                    r"addModuleCleanup|enterModuleContext)\b",
+                    source,
+                )
+            )
         self.assertEqual(
-            namespace["partition_modules"](
+            namespace["partition_units"](
                 (
                     ("tests.a", 8),
                     ("tests.b", 7),
@@ -174,6 +206,26 @@ class CiWorkflowContractTests(unittest.TestCase):
                 "        pass\n",
                 encoding="utf-8",
             )
+            (sample / "test_class_cleanup.py").write_text(
+                "import unittest\n"
+                "class CleanupTest(unittest.TestCase):\n"
+                "    def test_cleanup(self):\n"
+                "        pass\n"
+                "    @classmethod\n"
+                "    def doClassCleanups(cls):\n"
+                "        return super().doClassCleanups()\n"
+                "CleanupTest.addClassCleanup(lambda: None)\n",
+                encoding="utf-8",
+            )
+            (sample / "test_module_cleanup_alias.py").write_text(
+                "import unittest\n"
+                "cleanup = unittest.addModuleCleanup\n"
+                "cleanup(lambda: None)\n"
+                "class CleanupTest(unittest.TestCase):\n"
+                "    def test_cleanup(self):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
             original_tests = namespace["TESTS"]
             original_sys_path = list(sys.path)
             namespace["TESTS"] = sample
@@ -193,6 +245,25 @@ class CiWorkflowContractTests(unittest.TestCase):
                     ).countTestCases(),
                     1,
                 )
+                cleanup_suite = namespace["_discover_module"](
+                    "tests.test_class_cleanup"
+                )
+                with self.assertRaisesRegex(RuntimeError, "has cleanups"):
+                    namespace["_split_tests"](
+                        "tests.test_class_cleanup", cleanup_suite
+                    )
+                cleanup_case = next(namespace["_tests_in"](cleanup_suite))
+                cleanup_case.__class__._class_cleanups.clear()
+                with self.assertRaisesRegex(RuntimeError, "has fixtures"):
+                    namespace["_split_tests"](
+                        "tests.test_class_cleanup", cleanup_suite
+                    )
+                module_cleanups_before = list(unittest.case._module_cleanups)
+                with self.assertRaisesRegex(RuntimeError, "module has cleanups"):
+                    namespace["_discover_split_tests"](
+                        "tests.test_module_cleanup_alias"
+                    )
+                self.assertEqual(unittest.case._module_cleanups, module_cleanups_before)
             finally:
                 namespace["TESTS"] = original_tests
                 sys.path[:] = original_sys_path
@@ -201,6 +272,8 @@ class CiWorkflowContractTests(unittest.TestCase):
                     "test_skip",
                     "test_load_pattern",
                     "test_nested",
+                    "test_class_cleanup",
+                    "test_module_cleanup_alias",
                 ):
                     sys.modules.pop(module, None)
             package = sample / "package"

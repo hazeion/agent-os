@@ -13,7 +13,16 @@ from unittest.loader import VALID_MODULE_NAME
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ROOT / "tests"
-SHARD_COUNT = 6
+SHARD_COUNT = 12
+SPLIT_TEST_WEIGHT = 12
+SPLITTABLE_MODULES = frozenset(
+    {
+        "tests.test_data_backup_restore",
+        "tests.test_private_console_state",
+    }
+)
+MODULE_UNIT_PREFIX = "module:"
+TEST_UNIT_PREFIX = "test:"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -74,48 +83,156 @@ def _discover_module(module: str) -> unittest.TestSuite:
     return suite
 
 
-def weighted_modules(modules: tuple[str, ...]) -> tuple[tuple[str, int], ...]:
-    """Measure discovery suites without splitting their unittest fixtures."""
+def _tests_in(suite: unittest.TestSuite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from _tests_in(item)
+        else:
+            yield item
+
+
+def _canonical_test_id(test: unittest.TestCase) -> str:
+    identifier = test.id()
+    return identifier if identifier.startswith("tests.") else f"tests.{identifier}"
+
+
+def _split_tests(module: str, suite: unittest.TestSuite) -> tuple[unittest.TestCase, ...]:
+    """Return explicitly fixture-free tests that may run in separate processes."""
+
+    loaded_name = module.removeprefix("tests.")
+    loaded = sys.modules.get(loaded_name)
+    if loaded is None or any(
+        getattr(loaded, hook, None) is not None
+        for hook in ("load_tests", "setUpModule", "tearDownModule")
+    ):
+        raise RuntimeError(f"split unittest module has fixtures: {module}")
+    tests = tuple(_tests_in(suite))
+    identifiers = tuple(_canonical_test_id(test) for test in tests)
+    if (
+        not tests
+        or len(identifiers) != len(set(identifiers))
+        or any(not identifier.startswith(f"{module}.") for identifier in identifiers)
+    ):
+        raise RuntimeError(f"split unittest inventory is invalid: {module}")
+    for test in tests:
+        if getattr(test.__class__, "_class_cleanups", ()):
+            raise RuntimeError(f"split unittest class has cleanups: {module}")
+        for base in test.__class__.__mro__:
+            if base is unittest.TestCase:
+                break
+            if any(
+                hook in base.__dict__
+                for hook in (
+                    "setUpClass",
+                    "tearDownClass",
+                    "addClassCleanup",
+                    "enterClassContext",
+                    "doClassCleanups",
+                )
+            ):
+                raise RuntimeError(f"split unittest class has fixtures: {module}")
+    return tests
+
+
+def _discover_split_tests(module: str) -> tuple[unittest.TestCase, ...]:
+    module_cleanups = getattr(unittest.case, "_module_cleanups", None)
+    if not isinstance(module_cleanups, list):
+        raise RuntimeError("unittest module cleanup state is unavailable")
+    before = list(module_cleanups)
+    try:
+        suite = _discover_module(module)
+    except BaseException:
+        module_cleanups[:] = before
+        raise
+    if module_cleanups != before:
+        module_cleanups[:] = before
+        raise RuntimeError(f"split unittest module has cleanups: {module}")
+    return _split_tests(module, suite)
+
+
+def weighted_units(modules: tuple[str, ...]) -> tuple[tuple[str, int], ...]:
+    """Measure fixture-preserving modules and allowlisted independent tests."""
 
     weighted: list[tuple[str, int]] = []
     for module in modules:
-        weighted.append((module, _discover_module(module).countTestCases()))
+        if module in SPLITTABLE_MODULES:
+            weighted.extend(
+                (f"{TEST_UNIT_PREFIX}{_canonical_test_id(test)}", SPLIT_TEST_WEIGHT)
+                for test in _discover_split_tests(module)
+            )
+        else:
+            suite = _discover_module(module)
+            weighted.append(
+                (f"{MODULE_UNIT_PREFIX}{module}", suite.countTestCases())
+            )
     return tuple(weighted)
 
 
-def partition_modules(
+def partition_units(
     weighted: tuple[tuple[str, int], ...], shard_count: int = SHARD_COUNT
 ) -> tuple[tuple[str, ...], ...]:
-    """Greedily balance whole modules across non-empty deterministic shards."""
+    """Greedily balance fixture-safe units across deterministic shards."""
 
-    modules = tuple(module for module, _count in weighted)
+    units = tuple(unit for unit, _count in weighted)
     if (
         shard_count < 1
         or len(weighted) < shard_count
-        or len(modules) != len(set(modules))
-        or any(not isinstance(count, int) or count < 0 for _module, count in weighted)
+        or len(units) != len(set(units))
+        or any(not isinstance(count, int) or count < 0 for _unit, count in weighted)
     ):
         raise ValueError("invalid unittest shard count")
     shards: list[list[str]] = [[] for _ in range(shard_count)]
     totals = [0] * shard_count
-    order = {module: index for index, module in enumerate(modules)}
-    for module, count in sorted(weighted, key=lambda item: (-item[1], order[item[0]])):
+    order = {unit: index for index, unit in enumerate(units)}
+    for unit, count in sorted(weighted, key=lambda item: (-item[1], order[item[0]])):
         index = min(range(shard_count), key=lambda candidate: (totals[candidate], candidate))
-        shards[index].append(module)
+        shards[index].append(unit)
         totals[index] += max(count, 1)
     return tuple(tuple(sorted(shard, key=order.__getitem__)) for shard in shards)
 
 
-def run_shard(modules: tuple[str, ...]) -> int:
-    inventory = test_modules()
-    selected = set(modules)
-    if (
-        not modules
-        or len(modules) != len(selected)
-        or tuple(module for module in inventory if module in selected) != modules
-    ):
+def _split_module_for_id(identifier: str) -> str:
+    matches = tuple(
+        module for module in SPLITTABLE_MODULES if identifier.startswith(f"{module}.")
+    )
+    if len(matches) != 1:
         raise RuntimeError("invalid unittest shard inventory")
-    suite = unittest.TestSuite(_discover_module(module) for module in modules)
+    return matches[0]
+
+
+def _build_shard_suite(units: tuple[str, ...]) -> unittest.TestSuite:
+    inventory = set(test_modules())
+    if not units or len(units) != len(set(units)):
+        raise RuntimeError("invalid unittest shard inventory")
+    split_inventories: dict[str, dict[str, unittest.TestCase]] = {}
+    suite = unittest.TestSuite()
+    for unit in units:
+        if unit.startswith(MODULE_UNIT_PREFIX):
+            module = unit.removeprefix(MODULE_UNIT_PREFIX)
+            if module not in inventory or module in SPLITTABLE_MODULES:
+                raise RuntimeError("invalid unittest shard inventory")
+            suite.addTest(_discover_module(module))
+            continue
+        if not unit.startswith(TEST_UNIT_PREFIX):
+            raise RuntimeError("invalid unittest shard inventory")
+        identifier = unit.removeprefix(TEST_UNIT_PREFIX)
+        module = _split_module_for_id(identifier)
+        if module not in inventory:
+            raise RuntimeError("invalid unittest shard inventory")
+        if module not in split_inventories:
+            split_inventories[module] = {
+                _canonical_test_id(test): test
+                for test in _discover_split_tests(module)
+            }
+        test = split_inventories[module].get(identifier)
+        if test is None:
+            raise RuntimeError("invalid unittest shard inventory")
+        suite.addTest(test)
+    return suite
+
+
+def run_shard(units: tuple[str, ...]) -> int:
+    suite = _build_shard_suite(units)
     return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
 
 
@@ -129,7 +246,7 @@ def main(argv: tuple[str, ...] | None = None) -> int:
     processes: list[subprocess.Popen[bytes]] = []
     try:
         modules = test_modules()
-        for shard in partition_modules(weighted_modules(modules)):
+        for shard in partition_units(weighted_units(modules)):
             processes.append(
                 subprocess.Popen(
                     [sys.executable, str(Path(__file__).resolve()), "--run-shard", *shard],
