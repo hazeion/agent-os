@@ -199,9 +199,17 @@ reference-consistent private unit.
   proving corruption occurred before `sqlite3_backup`. The root cause was the
   private raw-file writer omitting Windows `O_BINARY`, which allowed C-runtime
   text translation while materializing captured database/WAL bytes. All private
-  raw-file writes now explicitly use binary mode; the private checkpoint,
-  rollback-journal conversion, and integrity check remain as pre-backup proof.
-  A fresh hosted matrix for this correction is pending.
+  raw-file writes now explicitly use binary mode, with a cross-platform
+  regression test that preserves the real Windows flag while asserting the
+  request. Its first hosted rerun is recorded below.
+- Hosted remediation run `29663664415` showed that explicit pre-backup
+  checkpointing was redundant and too expensive on Windows: the binary-mode
+  correction let the formerly failing private snapshot, migration, and restore
+  tests pass, but Windows reached the job timeout near the end of the suite.
+  The final path therefore uses SQLite's backup API directly against the
+  correctly materialized private main/WAL copy and retains mandatory integrity,
+  schema, relationship, and blob validation on the standalone result. A fresh
+  hosted matrix for this timeout correction is pending.
 
 ## Adversarial review
 
