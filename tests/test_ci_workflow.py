@@ -1,10 +1,12 @@
 from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+SHARD_RUNNER = ROOT / "scripts" / "run_unittest_shards.py"
 ROADMAP = (ROOT / "ROAD_TO_BETA.md").read_text(encoding="utf-8")
 CHANGELOG = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
@@ -69,6 +71,66 @@ class CiWorkflowContractTests(unittest.TestCase):
             "node --check scripts/browser_smoke.mjs",
         ):
             self.assertEqual(workflow.count(f"run: {command}"), 1)
+        self.assertEqual(workflow.count("python scripts/run_unittest_shards.py"), 1)
+        self.assertIn("if: runner.os != 'Windows'", workflow)
+        self.assertIn("if: runner.os == 'Windows'", workflow)
+
+    def test_windows_shards_cover_each_test_module_exactly_once(self):
+        self.assertTrue(SHARD_RUNNER.exists())
+        namespace: dict[str, object] = {
+            "__name__": "ci_shard_contract",
+            "__file__": str(SHARD_RUNNER),
+        }
+        exec(SHARD_RUNNER.read_text(encoding="utf-8"), namespace)
+
+        modules = namespace["test_modules"]()
+        shards = namespace["partition_modules"](modules)
+        flattened = tuple(module for shard in shards for module in shard)
+
+        def suite_modules(suite):
+            selected = set()
+            for item in suite:
+                if isinstance(item, unittest.TestSuite):
+                    selected.update(suite_modules(item))
+                else:
+                    module = item.__class__.__module__
+                    self.assertNotEqual(module, "unittest.loader")
+                    selected.add(
+                        module if module.startswith("tests.") else f"tests.{module}"
+                    )
+            return selected
+
+        discovered = unittest.defaultTestLoader.discover(str(ROOT / "tests"))
+        expected = tuple(sorted(suite_modules(discovered)))
+        self.assertEqual(tuple(sorted(flattened)), expected)
+        self.assertEqual(len(flattened), len(set(flattened)))
+        self.assertEqual(namespace["SHARD_COUNT"], 3)
+        self.assertEqual(len(shards), 3)
+        self.assertTrue(all(shards))
+
+        with TemporaryDirectory() as temporary:
+            sample = Path(temporary)
+            (sample / "testroot.py").touch()
+            package = sample / "package"
+            package.mkdir()
+            (package / "__init__.py").touch()
+            (package / "test_nested.py").touch()
+            nonpackage = sample / "nonpackage"
+            nonpackage.mkdir()
+            (nonpackage / "test_hidden.py").touch()
+            invalid_package = sample / "bad-package"
+            invalid_package.mkdir()
+            (invalid_package / "__init__.py").touch()
+            (invalid_package / "test_hidden.py").touch()
+            selected = namespace["discoverable_test_paths"](sample)
+            self.assertEqual(
+                tuple(path.relative_to(sample).as_posix() for path in selected),
+                (
+                    "bad-package/test_hidden.py",
+                    "package/test_nested.py",
+                    "testroot.py",
+                ),
+            )
 
     def test_workflow_is_read_only_and_secret_free(self):
         workflow = self.workflow()
