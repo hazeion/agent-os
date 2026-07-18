@@ -1,12 +1,13 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1A contract approved
+Status: Milestone 1A contract approved; Milestone 1B-A read-only resolver and preflight implemented
 
 This document defines where Mentat-owned state belongs for the public beta. It
-is a contract-only milestone: it does not change the current runtime default,
-move operator data, add a dependency, or implement initialization, migration,
-backup, restore, or installer behavior. Those changes begin in Milestone 1B and
-must preserve this boundary.
+began as the contract-only Milestone 1A. Milestone 1B-A implements deterministic
+path resolution and a bounded read-only preflight, but it does not change the
+source-checkout runtime default, move operator data, add a dependency, create
+directories, copy seeds, or implement migration, backup, restore, or installer
+behavior. Later Milestone 1 slices must preserve this boundary.
 
 ## Principles
 
@@ -44,8 +45,8 @@ browser.
 
 ## Platform defaults and override precedence
 
-When no explicit data-root override exists, the resolver implemented in
-Milestone 1B must use:
+When no explicit data-root override exists, the read-only resolver implemented
+in Milestone 1B-A uses:
 
 | Platform | Default data root | Support level |
 | --- | --- | --- |
@@ -54,10 +55,10 @@ Milestone 1B must use:
 | Linux | `$XDG_DATA_HOME/Mentat` when `XDG_DATA_HOME` is valid and non-empty; otherwise `~/.local/share/Mentat` | Preview |
 
 The exact precedence is `--data-dir` → `MENTAT_DATA_DIR` →
-`[paths].data_dir` in TOML → platform default. Relative TOML paths continue to
-resolve from the file that declares them. An explicit extra config file may
-participate at the existing TOML configuration layer, but it does not outrank
-CLI or environment values.
+`AGENT_OS_DATA_DIR` → `[paths].data_dir` in TOML → platform default. Relative
+TOML paths continue to resolve from the file that declares them. An explicit
+extra config file may participate at the existing TOML configuration layer,
+but it does not outrank CLI or environment values.
 
 Linux XDG base selection occurs inside the lowest-priority platform-default
 layer; it does not outrank a Mentat-specific override. During the compatibility
@@ -66,9 +67,11 @@ and `MENTAT_DATA_DIR` outranks `AGENT_OS_DATA_DIR`. An invalid, relative, or
 empty `XDG_DATA_HOME` does not become the base; the resolver uses the documented
 fallback instead.
 
-The shared source-checkout `mentat.toml` may keep its current `data_dir =
-"data"` development override until Milestone 1B deliberately changes runtime
-behavior. Installed distributions must not ship that override as their default.
+The shared source-checkout `mentat.toml` keeps its current `data_dir = "data"`
+development override until a later writable Milestone 1 slice deliberately
+changes runtime behavior. A config-less load now selects the platform default
+without creating it. Installed distributions must not ship the source-checkout
+override as their default.
 
 ## Immutable packaged seeds and durable JSON
 
@@ -198,7 +201,22 @@ file writes or copying external secrets into Mentat.
 
 ## Initialization contract
 
-Milestone 1B initialization must:
+Milestone 1B-A implements the read-only portion of this contract: it resolves
+one root, validates the fixed nine-file seed inventory, and reports existing,
+initialization-ready, migration-required, conflict, development-override, or
+unsafe states. Known documents must be regular, have the expected current
+top-level list/object shape, and be no larger than 16 MiB. Component checks
+reject symlinks and Windows reparse points; POSIX file reads use no-follow
+descriptor walking after normalizing only the standard macOS system aliases.
+It neither creates nor modifies filesystem entries.
+
+Until Milestone 1B-B supplies an approved initializer, a config-less normal
+launch fails before lifecycle cleanup, directory creation, Console
+reconciliation, or runtime-state writes. `--print-config` remains available to
+inspect the selected platform root, and an explicitly configured initialized
+development/operator root remains usable.
+
+The writable initialization slice must:
 
 1. resolve one data root using the approved precedence;
 2. detect supported legacy state before copying any packaged seed;
@@ -310,13 +328,15 @@ runtime history.
 
 ## Implementation sequence
 
-- Milestone 1A (this slice): canonical inventory and tested contract only.
-- Milestone 1B: platform-aware resolver, installed/source-checkout configuration
-  behavior, owner-only directory creation, and missing-only initialization.
+- Milestone 1A: canonical inventory and tested contract only; complete.
+- Milestone 1B-A: platform-aware resolver, source labels, and bounded read-only
+  seed/legacy/conflict preflight; implemented without filesystem writes.
+- Milestone 1B-B: owner-only directory creation, packaged-seed loading, and
+  missing-only initialization.
 - Later bounded slices: legacy migration, schema evolution, backup/restore, and
   installer/uninstall preservation, each with its own approved contract and
   failure-path evidence.
 
-Until Milestone 1B lands, the source checkout continues using the current
-repo-local `data/` default. Documentation must describe that as current behavior,
-not as the installed public-beta layout.
+Until the writable Milestone 1 work lands, the source checkout continues using
+the current repo-local `data/` override. Documentation must describe that as
+current behavior, not as the installed public-beta layout.

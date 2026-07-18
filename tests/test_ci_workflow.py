@@ -87,7 +87,7 @@ class CiWorkflowContractTests(unittest.TestCase):
     def test_project_records_describe_only_the_early_guardrail(self):
         self.assertIn("Implemented by `.github/workflows/ci.yml`", ROADMAP)
         self.assertIn("all nine OS/Python combinations", ROADMAP)
-        self.assertIn("Begin Milestone 1B", ROADMAP.split("## Current next actions", 1)[1])
+        self.assertIn("Begin Milestone 1B-B", ROADMAP.split("## Current next actions", 1)[1])
         self.assertNotIn("Land the early CI guardrail", ROADMAP)
         self.assertIn("Added the early GitHub Actions guardrail", CHANGELOG)
         self.assertIn("does not yet add packaging", CHANGELOG)

@@ -75,10 +75,13 @@ Mentat already has a strong product and safety foundation:
 
 The largest beta gaps are operational rather than feature gaps:
 
-- mutable user data still defaults to the repository's `data/` directory;
+- the source checkout still uses repository-local `data/`, while the new
+  platform resolver and read-only preflight do not yet create an installed
+  data root or copy packaged seeds;
 - there is no installable Python package, native installer, product version
   source, or unified `mentat` command;
-- the repository has no automated GitHub Actions quality gate;
+- the early GitHub Actions matrix is in place, while later packaging, browser,
+  dependency, and release gates remain outstanding;
 - the runtime currently assumes Hermes is installed locally and has no remote
   connection, capability-discovery, or server-side credential boundary;
 - complete remote profile discovery and API-key-authenticated Kanban require a
@@ -143,7 +146,7 @@ work is still small.
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
-| 1 | Durable user data | In progress — 1A complete | 0 | Migration, backup, restore, and clean-install tests |
+| 1 | Durable user data | In progress — 1A and 1B-A complete | 0 | Migration, backup, restore, and clean-install tests |
 | 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
@@ -203,18 +206,19 @@ contract require another explicit project-owner decision.
 Goal: make operator data survive upgrades and keep a running installation from
 modifying its application files or Git checkout.
 
-Status: Milestone 1A contract complete. The complete current mutable-path
-inventory, target directory classes, platform defaults, precedence, and
-fail-closed initialization/migration/backup rules are approved in
-[DATA_LAYOUT.md](DATA_LAYOUT.md). Runtime behavior remains unchanged until a
-separately reviewed Milestone 1B implementation.
+Status: Milestone 1A contract and Milestone 1B-A read-only resolver/preflight
+complete. The complete current mutable-path inventory, target directory classes,
+platform defaults, precedence, and fail-closed initialization/migration/backup
+rules are approved in [DATA_LAYOUT.md](DATA_LAYOUT.md). Config-less resolution
+now selects the approved platform root, while the tracked source override remains
+unchanged and no initialization or migration writes occur.
 
 Work in order:
 
 1. Inventory every mutable path and classify it as seed data, operator data,
    cache, runtime data, log, backup, or configuration.
-2. Add one platform-aware data-root resolver, preferably using
-   [`platformdirs`](https://platformdirs.readthedocs.io/en/latest/platforms.html):
+2. Add one platform-aware standard-library data-root resolver: **Milestone 1B-A
+   complete.**
    - macOS: `~/Library/Application Support/Mentat`;
    - Windows: `%LOCALAPPDATA%\Mentat`;
    - Linux: `$XDG_DATA_HOME/Mentat` when valid and set, otherwise
@@ -517,9 +521,9 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Begin Milestone 1B with the platform-aware data-root resolver, owner-only
-   directory creation, and missing-only seed initialization defined by
-   [DATA_LAYOUT.md](DATA_LAYOUT.md).
+1. Begin Milestone 1B-B with owner-only directory creation, immutable packaged
+   seed loading, and missing-only initialization defined by
+   [DATA_LAYOUT.md](DATA_LAYOUT.md); keep migration execution separate.
 2. Ensure Milestone 1 includes owner-only storage for the future remote Hermes
    endpoint and API credential outside the application directory.
 3. Track the mandatory upstream Hermes capabilities for authenticated Kanban,

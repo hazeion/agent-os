@@ -14,11 +14,17 @@ REQUIREMENTS = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
 
 class DataLayoutContractTests(unittest.TestCase):
-    def test_canonical_contract_is_explicitly_contract_only(self):
+    def test_canonical_contract_distinguishes_read_only_from_writable_work(self):
         self.assertTrue(CONTRACT_PATH.exists())
         self.assertIn("Status: Milestone 1A contract approved", CONTRACT)
-        self.assertIn("does not change the current runtime default", CONTRACT)
-        self.assertIn("Milestone 1B", CONTRACT)
+        self.assertIn("Milestone 1B-A read-only resolver and preflight implemented", CONTRACT)
+        self.assertIn("It neither creates nor modifies filesystem entries", CONTRACT)
+        self.assertIn(
+            "config-less normal launch fails before lifecycle cleanup",
+            " ".join(CONTRACT.split()),
+        )
+        self.assertIn("no larger than 16 MiB", CONTRACT)
+        self.assertIn("Milestone 1B-B", CONTRACT)
 
     def test_all_tracked_seed_json_and_target_classes_are_defined(self):
         seed_names = sorted(path.name for path in (ROOT / "data").glob("*.json"))
@@ -89,8 +95,8 @@ class DataLayoutContractTests(unittest.TestCase):
 
         normalized = " ".join(CONTRACT.split())
         precedence = (
-            "`--data-dir` → `MENTAT_DATA_DIR` → `[paths].data_dir` in TOML "
-            "→ platform default"
+            "`--data-dir` → `MENTAT_DATA_DIR` → `AGENT_OS_DATA_DIR` → "
+            "`[paths].data_dir` in TOML → platform default"
         )
         self.assertIn(precedence, normalized)
         self.assertIn("`MENTAT_DATA_DIR` outranks `AGENT_OS_DATA_DIR`", normalized)
@@ -153,16 +159,17 @@ class DataLayoutContractTests(unittest.TestCase):
         ):
             self.assertIn(consistency_rule, backup_section)
 
-    def test_primary_docs_link_the_contract_without_claiming_implementation(self):
+    def test_primary_docs_link_the_contract_and_bound_the_implementation(self):
         link = "[DATA_LAYOUT.md](DATA_LAYOUT.md)"
         self.assertIn(link, ARCHITECTURE)
         self.assertIn(link, README)
         self.assertIn(link, ROADMAP)
-        self.assertIn("Milestone 1A contract complete", ROADMAP)
-        self.assertIn("Begin Milestone 1B", ROADMAP)
-        self.assertIn("| 1 | Durable user data | In progress — 1A complete |", ROADMAP)
+        self.assertIn("Milestone 1A contract and Milestone 1B-A", ROADMAP)
+        self.assertIn("Begin Milestone 1B-B", ROADMAP)
+        self.assertIn("| 1 | Durable user data | In progress — 1A and 1B-A complete |", ROADMAP)
 
-        self.assertIn('BASE_DIR / "data"', RUNTIME_CONFIG)
+        self.assertIn("from data_layout import resolve_data_root", RUNTIME_CONFIG)
+        self.assertIn("data_dir_source=data_resolution.source", RUNTIME_CONFIG)
         self.assertIn('data_dir = "data"', SHARED_CONFIG)
         self.assertNotIn("platformdirs", REQUIREMENTS.lower())
 

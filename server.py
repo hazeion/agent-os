@@ -86,6 +86,7 @@ from runtime_config import (
     DEFAULT_APP_NAME,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    data_root_startup_error,
     default_hermes_home,
     default_obsidian_vault,
     env_value,
@@ -137,6 +138,7 @@ def runtime_config_summary() -> dict:
         "server": {"host": HOST, "port": PORT},
         "paths": {
             "data_dir": str(DATA_DIR),
+            "data_dir_source": APP_CONFIG.data_dir_source,
             "public_dir": str(PUBLIC_DIR),
             "hermes_home": str(HERMES_HOME),
             "obsidian_vault": str(OBSIDIAN_VAULT),
@@ -5887,6 +5889,11 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if HOST.lower() not in {"127.0.0.1", "::1", "localhost"}:
         print("Mentat refuses non-loopback binds until authenticated remote access is implemented.")
+        raise SystemExit(2)
+
+    startup_error = data_root_startup_error(APP_CONFIG)
+    if startup_error is not None:
+        print(startup_error)
         raise SystemExit(2)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)

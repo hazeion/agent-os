@@ -33,6 +33,7 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(config.host, "127.0.0.1")
         self.assertEqual(config.port, 8888)
         self.assertEqual(config.app_name, "Mentat")
+        self.assertEqual(config.data_dir_source, "toml")
 
     def test_explicit_config_file_resolves_relative_paths_from_its_own_directory(self):
         with TemporaryDirectory() as tmpdir:
@@ -68,7 +69,7 @@ app_name = "CaseyOps"
 
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 8890)
-        self.assertEqual(config.data_dir, (root / "runtime" / "data").resolve())
+        self.assertEqual(config.data_dir, config_path.resolve().parent / "runtime" / "data")
         self.assertEqual(config.public_dir, (root / "runtime" / "public").resolve())
         self.assertEqual(config.hermes_home, (root / "runtime" / "hermes").resolve())
         self.assertEqual(config.obsidian_vault, (root / "runtime" / "vault").resolve())
@@ -180,6 +181,101 @@ greeting_prefix = "Hi"
         self.assertEqual(config.display_name, "CLI Name")
         self.assertEqual(config.greeting_prefix, "Howdy")
         self.assertEqual(config.app_name, "CLI App")
+
+    def test_data_dir_source_distinguishes_cli_current_and_legacy_environment(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            original = os.environ.copy()
+            try:
+                os.environ["MENTAT_DATA_DIR"] = str(root / "mentat")
+                os.environ["AGENT_OS_DATA_DIR"] = str(root / "legacy")
+                mentat = server.load_app_config()
+                del os.environ["MENTAT_DATA_DIR"]
+                legacy = server.load_app_config()
+                cli = server.load_app_config(server.parse_cli_args(["--data-dir", str(root / "cli")]))
+            finally:
+                os.environ.clear()
+                os.environ.update(original)
+
+        self.assertEqual(mentat.data_dir_source, "environment")
+        self.assertEqual(
+            mentat.data_dir,
+            runtime_config.resolve_explicit_data_root(root / "mentat", base_dir=root),
+        )
+        self.assertEqual(legacy.data_dir_source, "legacy_environment")
+        self.assertEqual(
+            legacy.data_dir,
+            runtime_config.resolve_explicit_data_root(root / "legacy", base_dir=root),
+        )
+        self.assertEqual(cli.data_dir_source, "cli")
+        self.assertEqual(
+            cli.data_dir,
+            runtime_config.resolve_explicit_data_root(root / "cli", base_dir=root),
+        )
+
+    def test_configless_data_root_uses_platform_default_without_creating_it(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            # Simulate a Linux process input even when this test runs on a
+            # Windows host; native Windows temp paths are not valid XDG paths.
+            xdg_value = f"/mentat-test-{root.name}-xdg"
+            xdg_root = Path(xdg_value)
+            missing = root / "missing.toml"
+            original = os.environ.copy()
+            original_paths = (
+                runtime_config.DEFAULT_CONFIG_FILE,
+                runtime_config.LOCAL_CONFIG_FILE,
+                runtime_config.LEGACY_DEFAULT_CONFIG_FILE,
+                runtime_config.LEGACY_LOCAL_CONFIG_FILE,
+            )
+            original_platform = runtime_config.sys.platform
+            try:
+                runtime_config.DEFAULT_CONFIG_FILE = missing
+                runtime_config.LOCAL_CONFIG_FILE = missing
+                runtime_config.LEGACY_DEFAULT_CONFIG_FILE = missing
+                runtime_config.LEGACY_LOCAL_CONFIG_FILE = missing
+                runtime_config.sys.platform = "linux"
+                os.environ.pop("MENTAT_DATA_DIR", None)
+                os.environ.pop("AGENT_OS_DATA_DIR", None)
+                os.environ["XDG_DATA_HOME"] = xdg_value
+                config = server.load_app_config()
+            finally:
+                (
+                    runtime_config.DEFAULT_CONFIG_FILE,
+                    runtime_config.LOCAL_CONFIG_FILE,
+                    runtime_config.LEGACY_DEFAULT_CONFIG_FILE,
+                    runtime_config.LEGACY_LOCAL_CONFIG_FILE,
+                ) = original_paths
+                runtime_config.sys.platform = original_platform
+                os.environ.clear()
+                os.environ.update(original)
+
+        self.assertEqual(config.data_dir, xdg_root / "Mentat")
+        self.assertEqual(config.data_dir_source, "platform_default")
+        self.assertFalse(xdg_root.exists())
+
+    def test_print_config_summary_includes_only_the_data_dir_source_label(self):
+        with TemporaryDirectory() as tmpdir:
+            config = server.AppConfig(
+                config_files=tuple(),
+                host="127.0.0.1",
+                port=8888,
+                data_dir=Path(tmpdir),
+                public_dir=server.PUBLIC_DIR,
+                hermes_home=server.HERMES_HOME,
+                obsidian_vault=server.OBSIDIAN_VAULT,
+                app_name="Mentat",
+                data_dir_source="cli",
+            )
+            original = server.APP_CONFIG
+            try:
+                server.apply_runtime_config(config)
+                summary = server.runtime_config_summary()
+            finally:
+                server.apply_runtime_config(original)
+
+        self.assertEqual(summary["paths"]["data_dir_source"], "cli")
+        self.assertNotIn("preflight", summary)
 
     def test_overview_uses_config_identity_when_dashboard_json_is_missing(self):
         with TemporaryDirectory() as tmpdir:

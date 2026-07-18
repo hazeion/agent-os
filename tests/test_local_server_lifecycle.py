@@ -204,6 +204,31 @@ class LocalServerLifecycleTests(unittest.TestCase):
         cleanup.assert_not_called()
         self.assertIn("non-loopback", print_report.call_args.args[0]["error"])
 
+    def test_preflight_blocks_uninitialized_platform_root_before_cleanup(self):
+        with TemporaryDirectory() as tmpdir:
+            data_root = Path(tmpdir) / "platform-data"
+            config = self.make_config(data_root)
+            config = server.AppConfig(
+                **{
+                    **config.__dict__,
+                    "data_dir_source": "platform_default",
+                }
+            )
+            cli_args = server.parse_cli_args([])
+            with patch.object(
+                lifecycle,
+                "load_runtime_request",
+                return_value=(cli_args, config),
+            ), patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
+                lifecycle, "print_report"
+            ) as print_report:
+                result = lifecycle.main(["preflight"])
+
+            self.assertEqual(result, 2)
+            self.assertFalse(data_root.exists())
+            cleanup.assert_not_called()
+            self.assertIn("initialization", print_report.call_args.args[0]["error"])
+
     def test_preflight_print_config_remains_side_effect_free(self):
         with TemporaryDirectory() as tmpdir, patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
             lifecycle, "print_report"

@@ -14,6 +14,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from data_layout import resolve_data_root, resolve_explicit_data_root
+
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_FILE = BASE_DIR / "mentat.toml"
 LOCAL_CONFIG_FILE = BASE_DIR / "mentat.local.toml"
@@ -40,6 +42,17 @@ class AppConfig:
     display_name: str | None = None
     greeting_prefix: str | None = None
     app_name: str | None = None
+    data_dir_source: str = "unknown"
+
+
+def data_root_startup_error(config: AppConfig) -> str | None:
+    if config.data_dir_source != "platform_default":
+        return None
+    return (
+        "Mentat selected the platform data root, but writable initialization "
+        "is not implemented yet. Use --print-config to inspect it or provide "
+        "an explicit initialized --data-dir."
+    )
 
 
 def maybe_stripped(value) -> str | None:
@@ -156,7 +169,12 @@ def normalize_config_document(config: dict, source_path: Path) -> dict:
             value = paths.get(key)
             if maybe_stripped(value) is None:
                 continue
-            paths[key] = str(resolve_path(value, base_dir=source_path.parent))
+            if key == "data_dir":
+                paths[key] = str(
+                    resolve_explicit_data_root(value, base_dir=source_path.parent)
+                )
+            else:
+                paths[key] = str(resolve_path(value, base_dir=source_path.parent))
     return normalized
 
 
@@ -208,10 +226,13 @@ def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
         first_nonempty(getattr(cli_args, "port", None), env_value("PORT"), server_config.get("port"), DEFAULT_PORT),
         source="Mentat port",
     )
-    data_dir = resolve_path(
-        first_nonempty(getattr(cli_args, "data_dir", None), env_value("DATA_DIR"), paths_config.get("data_dir"), BASE_DIR / "data"),
+    data_resolution = resolve_data_root(
+        cli_value=getattr(cli_args, "data_dir", None),
+        environ=os.environ,
+        toml_value=paths_config.get("data_dir"),
         base_dir=BASE_DIR,
     )
+    data_dir = data_resolution.path
     public_dir = resolve_path(
         first_nonempty(getattr(cli_args, "public_dir", None), env_value("PUBLIC_DIR"), paths_config.get("public_dir"), BASE_DIR / "public"),
         base_dir=BASE_DIR,
@@ -257,4 +278,5 @@ def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
         display_name=display_name,
         greeting_prefix=greeting_prefix,
         app_name=app_name,
+        data_dir_source=data_resolution.source,
     )
