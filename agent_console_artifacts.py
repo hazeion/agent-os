@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from runtime_config import BASE_DIR
+from private_state import ensure_console_root
 
 SCHEMA_VERSION = 1
 RUN_ID_PATTERN = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
@@ -257,7 +258,9 @@ def build_execution_context(
     """
     normalized_run_id = validate_run_id(run_id)
     export_directory = prepare_export_directory(data_dir, normalized_run_id)
-    owned_root = Path(attachment_root or (Path(data_dir) / "runtime"))
+    ensure_console_root(data_dir)
+    default_owned_root = Path(data_dir).absolute() / "private" / "console"
+    owned_root = Path(attachment_root or default_owned_root)
     try:
         owned_root.resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:

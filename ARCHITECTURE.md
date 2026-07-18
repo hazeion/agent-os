@@ -43,15 +43,17 @@ publishes pre-restore recovery evidence and a reservation before atomic document
 commits, resumes only exact old/new interruption state, and blocks startup while
 incomplete. Already-running dashboard JSON reads and writes share that lock and
 fail closed while a reservation or restore recovery temporary exists. It
-preserves the destination's schema provenance and every excluded
-class. The current source checkout still resolves the shared `mentat.toml`
-override to repo-local `data/`; private/runtime data moves and the Console
-SQLite/history/blob backup unit remain deferred.
-
-Later data-root work must keep immutable packaged seeds separate from durable
-operator copies, move durable private Console state out of ephemeral runtime
-storage, and preserve explicit development/operator overrides. It must not
-weaken any capability or mutation boundary in this document.
+preserves the destination's schema provenance and every excluded class.
+Milestone 1E-B moves retained Console history, SQLite metadata, and
+content-addressed blobs to owner-only `<data-root>/private/console/`. A shared
+private-state lock coordinates history and attachment mutation, reconciliation,
+migration, backup, and restore. Version-2 backups add a WAL-safe filtered
+SQLite snapshot, canonical retained history, and only referenced ready blobs;
+version-1 JSON-only restores remain supported and leave private state intact.
+Private migration and restore use exact reservations, verified old/new states,
+source or recovery evidence, and startup refusal while incomplete. Runtime
+uploads, exports, execution inputs, snapshots, future credentials, and other
+secret-bearing private state are excluded.
 
 ## Write boundaries
 
@@ -64,8 +66,8 @@ weaken any capability or mutation boundary in this document.
 | Model/provider configuration | Mutate only through validated Hermes operations |
 | Existing Hermes cron jobs | Read-only inventory; queue controls fail closed |
 | Skills and general `SOUL.md` content | Read-only; only the versioned Mentat identity block is writable |
-| Mentat runtime history | Writable, private, and gitignored |
-| Mentat attachment database and blobs | Writable, private, gitignored, and project-owned |
+| Mentat retained Console history | Writable below owner-only durable private storage and gitignored in development |
+| Mentat attachment database and blobs | Writable below owner-only durable private storage, gitignored, and project-owned |
 | Mentat project/task data | Writable through allowlisted project-owned storage |
 | Hermes Kanban tasks and runs | Mutate only through the supported, capability-gated Kanban adapter |
 | Arbitrary Hermes files | Never write directly |
@@ -142,12 +144,12 @@ artifact transfer may degrade clearly in remote mode.
 
 ## Agent Console file boundary
 
-Console files are Mentat-owned private/runtime data, never Hermes core data. In
-the current source-checkout layout, SQLite at `data/runtime/mentat.sqlite3`
-stores attachment, blob, and run-reference metadata; bytes use private
-content-addressed blob files below the same gitignored runtime root. The target
-layout separates durable private state from ephemeral runtime state as defined
-in [DATA_LAYOUT.md](DATA_LAYOUT.md). The browser sees only opaque attachment ids, bounded
+Console files are Mentat-owned private/runtime data, never Hermes core data.
+Retained history, attachment/blob/run-reference SQLite metadata, and referenced
+content-addressed bytes form one durable owner-only unit below
+`<data-root>/private/console/`. Uploads, execution inputs/exports, workspace
+snapshots, and lifecycle files remain ephemeral below `<data-root>/runtime/`,
+as defined in [DATA_LAYOUT.md](DATA_LAYOUT.md). The browser sees only opaque attachment ids, bounded
 display metadata, and fixed same-origin content routes. It never receives blob
 hashes, storage keys, trusted server paths, or arbitrary file-serving URLs.
 

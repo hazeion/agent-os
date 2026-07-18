@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1A contract approved; Milestone 1B initialization, Milestone 1C legacy migration, Milestone 1D durable-JSON schema versioning implemented, and Milestone 1E-A durable-JSON backup/restore implemented
+Status: Milestone 1A contract approved; Milestone 1B initialization, Milestone 1C legacy migration, Milestone 1D durable-JSON schema versioning implemented, and Milestone 1E durable JSON/private Console backup and restore implemented
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -11,8 +11,9 @@ JSON documents. It does not change the source-checkout runtime default, move
 private/runtime data, add a dependency, or implement general restore or
 installer behavior. Milestone 1D versions those unchanged JSON shapes through
 one sidecar manifest and explicit bootstrap migration. Milestone 1E-A adds the
-first general backup/restore format for that same fixed durable JSON set. Later
-Milestone 1 slices must preserve and extend this boundary.
+first general backup/restore format for that same fixed durable JSON set.
+Milestone 1E-B adds the durable private Console move, exact legacy migration,
+and WAL-safe retained history/SQLite/referenced-blob consistency unit.
 
 ## Principles
 
@@ -119,9 +120,9 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 
 | Current surface | Target class | Notes |
 | --- | --- | --- |
-| `data/runtime/agent-console-runs.json` | `<data-root>/private/` | Redacted retained Console history; durable according to its retention policy. |
-| `data/runtime/mentat.sqlite3` plus its WAL/SHM files | `<data-root>/private/` | Attachment, blob, and run-reference metadata with schema-version checks. |
-| `data/runtime/blobs/sha256/` | `<data-root>/private/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
+| Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | Redacted retained Console history; durable according to its retention policy. |
+| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, and run-reference metadata; live WAL/SHM remain SQLite-owned beside the database. |
+| Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
 | Future remote connection selection and credential | `<data-root>/private/` | Server-only, owner-only, and excluded from ordinary backups and diagnostics. |
 
 The private class is durable but not public. Paths, storage keys, hashes,
@@ -505,11 +506,14 @@ backup fails closed. Runtime scratch, caches, logs, browser storage, and externa
 Hermes/Obsidian/Google state are not restored as operator data.
 
 Milestone 1E-A implements the schema-governed durable-operator portion of this
-contract. `mentat-backup-v1-<id>.zip` is a deterministic, owner-only, stored ZIP
-with exactly one canonical manifest and the nine fixed `data/*.json` entries.
+contract. Milestone 1E-B extends the current deterministic owner-only format as
+`mentat-backup-v2-<id>.zip`, with one canonical manifest, the nine fixed
+`data/*.json` entries, canonical retained history, a supported-schema SQLite
+snapshot captured through SQLite's backup API and pruned to retained run
+references, and exactly the verified ready blobs referenced by that snapshot.
 The manifest records format and data-schema versions, classifications, sizes,
 integrity metadata, and every excluded class. It contains no absolute paths,
-credentials, private Console bytes, runtime state, caches, logs, browser state,
+credentials, unreferenced/staged Console bytes, runtime state, caches, logs, browser state,
 external state, or nested backup files. Backup creation holds the shared pinned
 data-root mutation lock, validates current schema and exact live bytes, publishes
 missing-only below `backups/`, verifies the committed archive, and rechecks that
@@ -518,7 +522,8 @@ exact entry count, and a tight central-directory bound before constructing a ZIP
 reader; JSON trees are decoded one document at a time for shape validation and
 discarded rather than retained with the raw snapshot.
 
-Restore accepts only that exact canonical archive format and an initialized
+Restore accepts that exact canonical version-2 archive and the prior canonical
+version-1 JSON-only format on an initialized
 current-schema target. Preview is read-only, reports replace/unchanged actions,
 refuses newer or malformed input, and binds an opaque token to the safe archive
 identity and bytes plus exact target identity and live bytes. Confirmation
@@ -533,22 +538,33 @@ blocks while any reservation or restore temporary remains. An exact uncommitted
 temporary has its own previewed, confirmed cleanup path and is never silently
 deleted.
 
-The current schema manifest and its bootstrap evidence stay at the destination:
+For version 2, private restore exchanges a complete staged Console directory,
+keeps the old directory until new-state verification, and resumes only exact
+recognized old/new/staged states. Version-1 restore preserves the current
+private Console unit. The current schema manifest and its bootstrap evidence stay at the destination:
 they describe the supported document schema and remain valid across legitimate
 document mutations. Migration receipts, schema backups, and all excluded
 directories are not replaced. A clean-install recovery initializes the target
-layout and current schema first, then runs restore. The later private-state
-slice must extend the ordinary format with one WAL-safe Console history/SQLite/
-referenced-blob consistency unit; 1E-A deliberately does not represent that
-deferred unit as backed up.
+layout and current schema first, then runs restore. Version 2 completes the
+private Console consistency unit; version 1 remains a supported JSON-only
+legacy format.
 
 Current source-checkout CLI form (the unified installed `mentat backup` and
 `mentat restore` commands remain Milestone 3):
 
 ```bash
 python server.py --data-dir "/path/to/mentat-data" --create-backup
-python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v1-ID.zip"
-python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v1-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v2-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v2-ID.zip"
+```
+
+Legacy private Console state is never moved silently. Preview and confirmation
+use the same configured data root; confirmation preserves the runtime source,
+publishes the verified private destination, and writes its receipt last:
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --preview-private-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-private-migration TOKEN_FROM_PREVIEW
 ```
 
 ## Secret and privacy boundary
@@ -584,9 +600,9 @@ runtime history.
   bootstrap, coordinated durable writes, and forward-version refusal; complete.
 - Milestone 1E-A: fixed durable-operator JSON backup and previewed restore with
   pre-restore recovery evidence and interruption resume; complete.
-- Later bounded slices: private-state movement and consistent private backup,
-  followed by upgrade/uninstall preservation, each with its own approved
-  contract and failure-path evidence.
+- Milestone 1E-B: private-state movement and consistent private backup;
+  implemented with its approved contract and failure-path evidence. Upgrade and
+  uninstall-preservation tests remain the next Milestone 1 work.
 
 The source checkout continues using the current repo-local `data/` override.
 Documentation must describe that as development behavior, not as the installed

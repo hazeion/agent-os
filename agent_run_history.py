@@ -6,11 +6,13 @@ import json
 import os
 import re
 import stat
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from json_store import lock_for, write_json_atomic
+from private_state import private_state_lock
 
 SCHEMA_VERSION = 3
 LEGACY_SCHEMA_VERSIONS = {1, 2}
@@ -222,13 +224,16 @@ def save_run_summaries(
     retention: int = DEFAULT_RETENTION,
     data_root: Path | None = None,
 ) -> None:
-    if not secure_history_permissions(path, data_root=data_root or path.parent):
-        raise OSError("Agent Console history path is not a safe regular-file location")
-    summaries = [summarize_run(run) for run in runs if isinstance(run, dict) and run.get("id")]
-    summaries.sort(key=_sort_key, reverse=True)
-    payload = {"schema_version": SCHEMA_VERSION, "runs": summaries[:retention]}
-    with lock_for(path):
-        write_json_atomic(path, payload, mode=0o600)
+    root = Path(data_root or path.parent)
+    boundary = private_state_lock(root) if data_root is not None else nullcontext()
+    with boundary:
+        if not secure_history_permissions(path, data_root=root):
+            raise OSError("Agent Console history path is not a safe regular-file location")
+        summaries = [summarize_run(run) for run in runs if isinstance(run, dict) and run.get("id")]
+        summaries.sort(key=_sort_key, reverse=True)
+        payload = {"schema_version": SCHEMA_VERSION, "runs": summaries[:retention]}
+        with lock_for(path):
+            write_json_atomic(path, payload, mode=0o600)
 
 
 def _chmod_verified_path(path: Path, mode: int, *, directory: bool) -> None:
@@ -346,14 +351,20 @@ def load_run_summaries(
     *,
     now: Callable[[], str] | None = None,
     retention: int = DEFAULT_RETENTION,
+    data_root: Path | None = None,
 ) -> tuple[list[dict], bool]:
     """Load summaries, returning an empty history for absent/corrupt/unknown data.
 
     The boolean indicates whether recovered active runs were marked interrupted.
     """
     try:
-        with lock_for(path):
-            payload = json.loads(path.read_text(encoding="utf-8"))
+        if data_root is None:
+            with lock_for(path):
+                payload = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            with private_state_lock(data_root):
+                with lock_for(path):
+                    payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
         return [], False
     if not isinstance(payload, dict) or payload.get("schema_version") not in (

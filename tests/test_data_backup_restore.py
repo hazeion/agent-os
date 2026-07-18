@@ -132,15 +132,18 @@ class DataBackupRestoreTests(unittest.TestCase):
             with zipfile.ZipFile(backup_path, "r") as archive:
                 self.assertEqual(
                     archive.namelist(),
-                    ["manifest.json", *(f"data/{name}" for name in data_layout.SEED_FILE_NAMES)],
+                    [
+                        "manifest.json",
+                        *(f"data/{name}" for name in data_layout.SEED_FILE_NAMES),
+                        "private/history.json",
+                        "private/mentat.sqlite3",
+                    ],
                 )
                 manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual(manifest["kind"], backup_restore.BACKUP_KIND)
-            self.assertEqual(len(manifest["items"]), len(data_layout.SEED_FILE_NAMES))
-            self.assertIn(
-                {"name": "private_console", "classification": "deferred_private_consistency_unit"},
-                manifest["excluded"],
-            )
+            self.assertEqual(len(manifest["items"]), len(data_layout.SEED_FILE_NAMES) + 1)
+            self.assertIn("private_console", {item["name"] for item in manifest["items"]})
+            self.assertNotIn("private_console", {item["name"] for item in manifest["excluded"]})
             encoded = backup_path.read_bytes()
             self.assertNotIn(b"must-not-enter", encoded)
             self.assertNotIn(b"runtime-secret", encoded)
@@ -155,10 +158,10 @@ class DataBackupRestoreTests(unittest.TestCase):
             writer_finished = Event()
             real_build = backup_restore._build_backup
 
-            def pause_build(documents):
+            def pause_build(documents, private_unit=None, **kwargs):
                 entered.set()
                 self.assertTrue(release.wait(2))
-                return real_build(documents)
+                return real_build(documents, private_unit, **kwargs)
 
             def create_backup():
                 backup_restore.create_durable_backup(source)
@@ -462,7 +465,7 @@ class DataBackupRestoreTests(unittest.TestCase):
     def test_zip_entry_count_is_bounded_before_zipfile_construction(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
-            for index in range(1 + len(data_layout.SEED_FILE_NAMES) + 1):
+            for index in range(1 + len(data_layout.SEED_FILE_NAMES) + 2 + backup_restore.MAX_BLOBS + 1):
                 archive.writestr(f"entry-{index}", b"")
         with patch.object(
             backup_restore.zipfile,

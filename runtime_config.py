@@ -27,6 +27,11 @@ from data_migration import (
     migration_startup_status,
     preview_legacy_migration,
 )
+from private_console_migration import (
+    migrate_private_console,
+    preview_private_console_migration,
+)
+from private_state import private_control_issue
 from data_schema import (
     initialize_fresh_schema_under_lock,
     migrate_data_schema,
@@ -97,12 +102,27 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             "the selected backup before startup."
         )
 
+    if private_control_issue(config.data_dir) is not None:
+        return (
+            "Mentat found incomplete or invalid private Console state "
+            "(private_console_state_invalid). Re-run the applicable private "
+            "migration or restore preview before startup."
+        )
+
     migration_status = migration_startup_status(config.data_dir)
     if migration_status == "invalid":
         return (
             "Mentat found an incomplete or invalid legacy migration "
             "(migration_incomplete_or_invalid). Re-run the migration preview "
             "before startup."
+        )
+
+    private_migration = preview_private_console_migration(config.data_dir)
+    if private_migration.status not in {"not_required", "already_migrated"}:
+        return (
+            "Mentat found legacy or incomplete private Console state "
+            "(private_console_migration_required). Run the private Console "
+            "migration preview and confirm its exact plan before startup."
         )
 
     def migration_guard(target: Path, descriptor: int | None) -> str | None:
@@ -113,6 +133,10 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             return "migration_incomplete_or_invalid"
         if migration_status == "complete" and locked_status != "complete":
             return "migration_incomplete_or_invalid"
+        if private_control_issue(target) is not None:
+            return "private_console_state_invalid"
+        if preview_private_console_migration(target).status not in {"not_required", "already_migrated"}:
+            return "private_console_migration_required"
         locked_schema = schema_status_under_lock(target, descriptor)
         if locked_schema == "newer":
             return "schema_version_newer_than_supported"
@@ -142,6 +166,10 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             return finalize_issue
         if restore_status_under_lock(target, descriptor) != "clear":
             return "restore_incomplete_or_invalid"
+        if private_control_issue(target) is not None:
+            return "private_console_state_invalid"
+        if preview_private_console_migration(target).status not in {"not_required", "already_migrated"}:
+            return "private_console_migration_required"
         final_migration = migration_status_under_lock(target, descriptor)
         if migration_status == "complete" and final_migration != "complete":
             return "migration_incomplete_or_invalid"
@@ -190,13 +218,27 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
                         config.data_dir,
                         descriptor,
                     )
+                    locked_private = private_control_issue(config.data_dir)
+                    locked_private_migration = preview_private_console_migration(
+                        config.data_dir
+                    ).status
             except OSError:
                 locked_restore = "invalid"
+                locked_private = "invalid"
+                locked_private_migration = "blocked"
             if locked_restore != "clear":
                 return (
                     "Mentat found an incomplete or invalid durable-data restore "
                     "(restore_incomplete_or_invalid). Re-run the restore preview with "
                     "the selected backup before startup."
+                )
+            if locked_private is not None or locked_private_migration not in {
+                "not_required", "already_migrated"
+            }:
+                return (
+                    "Mentat found incomplete or legacy private Console state "
+                    "(private_console_state_invalid). Re-run the private migration "
+                    "or restore preview before startup."
                 )
             return None
         try:
@@ -207,17 +249,31 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
                     descriptor,
                 )
                 schema_status = schema_status_under_lock(config.data_dir, descriptor)
+                private_status = private_control_issue(config.data_dir)
+                private_migration_status = preview_private_console_migration(
+                    config.data_dir
+                ).status
                 final_identity = _pinned_root_identity(config.data_dir, descriptor)
         except OSError:
             current_identity = None
             final_identity = None
             restore_status = "invalid"
             schema_status = "invalid"
+            private_status = "invalid"
+            private_migration_status = "blocked"
         if restore_status != "clear":
             return (
                 "Mentat found an incomplete or invalid durable-data restore "
                 "(restore_incomplete_or_invalid). Re-run the restore preview with "
                 "the selected backup before startup."
+            )
+        if private_status is not None or private_migration_status not in {
+            "not_required", "already_migrated"
+        }:
+            return (
+                "Mentat found incomplete or legacy private Console state "
+                "(private_console_state_invalid). Re-run the private migration "
+                "or restore preview before startup."
             )
         if (
             verified_schema_status is None
@@ -254,6 +310,14 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             "Mentat found an incomplete or invalid durable-data restore "
             "(restore_incomplete_or_invalid). Re-run the restore preview with "
             "the selected backup before startup."
+        )
+    if any(issue in result.issues for issue in {
+        "private_console_state_invalid", "private_console_migration_required"
+    }):
+        return (
+            "Mentat found incomplete or legacy private Console state "
+            "(private_console_state_invalid). Re-run the private migration "
+            "or restore preview before startup."
         )
     if "invalid_data_schema" in result.issues:
         return (
@@ -425,9 +489,19 @@ def parse_cli_args(argv=None):
         help="Execute the exact data-schema migration preview identified by TOKEN.",
     )
     operation.add_argument(
+        "--preview-private-migration",
+        action="store_true",
+        help="Preview migration of legacy private Agent Console state.",
+    )
+    operation.add_argument(
+        "--confirm-private-migration",
+        metavar="TOKEN",
+        help="Execute the exact private Console migration preview identified by TOKEN.",
+    )
+    operation.add_argument(
         "--create-backup",
         action="store_true",
-        help="Create a validated backup of the durable operator JSON set.",
+        help="Create a validated backup of durable operator JSON and retained private Console state.",
     )
     operation.add_argument(
         "--preview-restore",
@@ -522,6 +596,24 @@ def run_schema_migration_cli(
     )
     summary = result.public_summary()
     return summary, 0 if result.status in {"migrated", "resumed", "reconciled"} else 2
+
+
+def run_private_console_migration_cli(
+    cli_args: argparse.Namespace,
+    config: AppConfig,
+) -> tuple[dict, int]:
+    if bool(getattr(cli_args, "preview_private_migration", False)):
+        preview = preview_private_console_migration(config.data_dir)
+        summary = preview.public_summary()
+        return summary, 0 if preview.status in {
+            "ready", "resume_required", "already_migrated", "not_required"
+        } else 2
+    result = migrate_private_console(
+        config.data_dir,
+        confirmation_token=str(getattr(cli_args, "confirm_private_migration", "") or ""),
+    )
+    summary = result.public_summary()
+    return summary, 0 if result.status in {"migrated", "resumed"} else 2
 
 
 def run_backup_restore_cli(

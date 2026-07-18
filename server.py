@@ -36,6 +36,11 @@ from agent_run_history import (
     save_run_summaries,
     secure_history_permissions,
 )
+from private_state import (
+    console_root as private_console_root,
+    history_path as private_history_path,
+    private_state_lock,
+)
 from agent_console_attachments import (
     MAX_IMAGE_BYTES as AGENT_CONSOLE_MAX_IMAGE_BYTES,
     AttachmentError,
@@ -99,6 +104,7 @@ from runtime_config import (
     prepare_data_root_for_startup,
     run_backup_restore_cli,
     run_legacy_migration_cli,
+    run_private_console_migration_cli,
     run_schema_migration_cli,
 )
 from data_layout import (
@@ -324,7 +330,7 @@ def now_iso() -> str:
 
 
 def agent_console_history_path() -> Path:
-    return DATA_DIR / "runtime" / "agent-console-runs.json"
+    return private_history_path(DATA_DIR)
 
 
 def persist_agent_console_runs() -> bool:
@@ -349,16 +355,22 @@ def load_agent_console_runs() -> None:
     """Restore prior summaries and fail closed to an empty history on corruption."""
     global AGENT_CONSOLE_HISTORY_LOADED
     history_path = agent_console_history_path()
-    if not secure_history_permissions(history_path, data_root=DATA_DIR):
-        print("Agent Console history permissions could not be restricted on this platform.")
-        with AGENT_CONSOLE_LOCK:
+    with AGENT_CONSOLE_LOCK:
+        try:
+            with private_state_lock(DATA_DIR):
+                if not secure_history_permissions(history_path, data_root=DATA_DIR):
+                    raise OSError("unsafe private history")
+                runs, recovered = load_run_summaries(
+                    history_path,
+                    now=now_iso,
+                    retention=AGENT_CONSOLE_RUN_LIMIT,
+                    data_root=DATA_DIR,
+                )
+        except OSError:
+            print("Agent Console history permissions could not be restricted on this platform.")
             AGENT_CONSOLE_RUNS.clear()
             AGENT_CONSOLE_HISTORY_LOADED = True
-        return
-    with AGENT_CONSOLE_LOCK:
-        runs, recovered = load_run_summaries(
-            history_path, now=now_iso, retention=AGENT_CONSOLE_RUN_LIMIT
-        )
+            return
         AGENT_CONSOLE_RUNS.clear()
         AGENT_CONSOLE_RUNS.update((run["id"], run) for run in runs)
         AGENT_CONSOLE_HISTORY_LOADED = True
@@ -5260,7 +5272,7 @@ def start_agent_console_run(payload):
                     }
                     for item in bound_attachments
                 ],
-                attachment_root=(DATA_DIR / "runtime").resolve(strict=False),
+                attachment_root=private_console_root(DATA_DIR).resolve(strict=False),
             )
         except ConsoleArtifactValidationError:
             unbind_run_attachments(DATA_DIR, run_id, active_run_ids=())
@@ -5941,6 +5953,10 @@ if __name__ == "__main__":
         schema_summary, schema_exit = run_schema_migration_cli(cli_args, APP_CONFIG)
         print(json.dumps(schema_summary, indent=2))
         raise SystemExit(schema_exit)
+    if cli_args.preview_private_migration or cli_args.confirm_private_migration:
+        private_summary, private_exit = run_private_console_migration_cli(cli_args, APP_CONFIG)
+        print(json.dumps(private_summary, indent=2))
+        raise SystemExit(private_exit)
     if cli_args.create_backup or cli_args.preview_restore or cli_args.confirm_restore:
         backup_summary, backup_exit = run_backup_restore_cli(cli_args, APP_CONFIG)
         print(json.dumps(backup_summary, indent=2))
