@@ -990,18 +990,60 @@ def _read_exact_regular(path: Path, maximum: int) -> bytes:
         os.close(descriptor)
 
 
+def _read_exact_regular_at(
+    path: Path,
+    maximum: int,
+    *,
+    parent_fd: int | None,
+) -> bytes:
+    if parent_fd is None:
+        return _read_exact_regular(path, maximum)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not _owner_only_regular_descriptor(descriptor)
+            or metadata.st_size > maximum
+        ):
+            raise OSError("invalid published file")
+        chunks: list[bytes] = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > maximum:
+            raise OSError("published file too large")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
 def _publish_raw_missing(
     destination: Path,
     raw: bytes,
     *,
     parent_fd: int | None,
     maximum: int,
+    on_published=None,
 ) -> None:
     temp_path = _temporary_seed_path(destination)
     temp_present = True
     try:
         _write_seed_temporary(temp_path, raw, data_root_fd=parent_fd)
         _promote_seed_copy(temp_path, destination, data_root_fd=parent_fd)
+        if on_published is not None:
+            on_published()
         if parent_fd is not None:
             os.fsync(parent_fd)
         if parent_fd is not None and os.unlink in os.supports_dir_fd:
@@ -1011,7 +1053,7 @@ def _publish_raw_missing(
         temp_present = False
         if parent_fd is not None:
             os.fsync(parent_fd)
-        if _read_exact_regular(destination, maximum) != raw:
+        if _read_exact_regular_at(destination, maximum, parent_fd=parent_fd) != raw:
             raise OSError("published file verification failed")
     finally:
         if temp_present:

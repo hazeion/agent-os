@@ -974,6 +974,14 @@ greeting_prefix = "Hi"
             server.parse_cli_args(
                 ["--preview-legacy-migration", "--confirm-legacy-migration", "0" * 64]
             )
+        with self.assertRaises(SystemExit):
+            server.parse_cli_args(
+                ["--preview-legacy-migration", "--preview-schema-migration"]
+            )
+        with self.assertRaises(SystemExit):
+            server.parse_cli_args(
+                ["--preview-schema-migration", "--confirm-schema-migration", "0" * 64]
+            )
 
     def test_startup_rejects_a_data_root_overlapping_packaged_seeds(self):
         with TemporaryDirectory() as tmpdir:
@@ -1026,12 +1034,15 @@ greeting_prefix = "Hi"
         self.assertEqual(summary["paths"]["data_dir_source"], "cli")
         self.assertNotIn("preflight", summary)
 
-    def test_overview_uses_config_identity_when_dashboard_json_is_missing(self):
+    def test_overview_uses_config_identity_when_dashboard_identity_is_absent(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / "tasks.json").write_text(json.dumps([], indent=2) + "\n", encoding="utf-8")
-            (root / "projects.json").write_text(json.dumps([], indent=2) + "\n", encoding="utf-8")
-            (root / "attention.json").write_text(json.dumps([], indent=2) + "\n", encoding="utf-8")
+            for name in data_layout.SEED_FILE_NAMES:
+                payload = {} if name == "dashboard.json" else []
+                (root / name).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            if os.name == "posix":
+                for path in root.glob("*.json"):
+                    path.chmod(0o600)
             config = server.AppConfig(
                 config_files=tuple(),
                 host="127.0.0.1",

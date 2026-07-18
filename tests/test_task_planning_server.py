@@ -18,7 +18,7 @@ class TaskPlanningServerTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", [{"id": "project-mentat", "name": "Mentat"}])
             self.write_json(root, "tasks.json", [])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.create_task(
                     {
                         "title": "Plan tomorrow",
@@ -52,7 +52,7 @@ class TaskPlanningServerTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", [{"id": "project-mentat", "name": "Mentat"}])
             self.write_json(root, "tasks.json", [existing])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.update_task(
                     "task-1",
                     {
@@ -74,7 +74,7 @@ class TaskPlanningServerTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", [{"id": "project-mentat", "name": "Mentat"}])
             self.write_json(root, "tasks.json", [])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.create_task(
                     {
                         "title": "Unsafe delegation",
@@ -95,7 +95,7 @@ class TaskPlanningServerTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", [{"id": "project-mentat", "name": "Mentat"}])
             self.write_json(root, "tasks.json", tasks)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 missing, missing_status = server.update_task(
                     "task-b", {"title": "B", "project": "Mentat", "depends_on": ["missing"]}
                 )
@@ -122,7 +122,7 @@ class TaskPlanningServerTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", [{"id": "project-mentat", "name": "Mentat"}])
             self.write_json(root, "tasks.json", [recurring])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 first, first_status = server.update_task(
                     "task-daily", {"title": "Daily review", "project": "Mentat", "status": "completed"}
                 )
@@ -185,7 +185,7 @@ class TaskPlanningServerTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", [{"id": "project-mentat", "name": "Mentat"}])
             self.write_json(root, "tasks.json", [recurring])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 first, _ = server.update_task("task-series", {"status": "completed"})
                 server.update_task("task-series", {"status": "todo"})
                 final, _ = server.update_task("task-series", {"status": "completed"})

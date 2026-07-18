@@ -57,8 +57,11 @@ class NextPhaseReadinessTests(unittest.TestCase):
 
     def test_dashboard_json_writes_are_allowlisted_to_data_files(self):
         self.assertIn('ALLOWED_DATA_WRITES = {', SERVER)
-        self.assertIn('if name not in ALLOWED_DATA_WRITES', SERVER)
-        self.assertIn('path.parent != data_root', SERVER)
+        self.assertIn('allowlist = ALLOWED_DATA_WRITES if write else ALLOWED_DATA_READS', SERVER)
+        self.assertIn('if name not in allowlist', SERVER)
+        self.assertIn('"/" in name or "\\\\" in name', SERVER)
+        self.assertIn('return _absolute_without_following(DATA_DIR) / name', SERVER)
+        self.assertNotIn('(DATA_DIR / name).resolve()', SERVER)
         self.assertIn('update_json_file("attention.json", [], mutator)', SERVER)
     def test_core_script_loads_before_app_script(self):
         self.assertLess(INDEX.index('/core.js?v='), INDEX.index('/app.js?v='))

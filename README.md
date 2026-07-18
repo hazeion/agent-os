@@ -143,9 +143,21 @@ durable JSON slots, using legacy files or explicit packaged-seed fallbacks,
 with a verified migration backup, locked revalidation, missing-only
 publication, safe interruption resume, source
 preservation, and a verified completion receipt. Use the same `--data-dir` and,
-if supplied, `--legacy-data-dir` for preview and confirmation. Schema evolution,
-general backup/restore, private-state movement, and installer behavior are not
-implemented yet. `--print-config` remains side-effect-free.
+if supplied, `--legacy-data-dir` for preview and confirmation. Milestone 1D
+adds a fixed owner-only sidecar schema manifest, current metadata for clean
+installs, explicit backed-up version-0 to version-1 bootstrap, and startup
+refusal for newer unsupported versions. Existing unversioned roots remain
+supported until explicitly upgraded. If preview reports `recovery_required`,
+confirm that exact token to discard only the revalidated orphan schema
+temporary, then preview again:
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --preview-schema-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-schema-migration TOKEN_FROM_PREVIEW
+```
+
+General backup/restore, private-state movement, and installer behavior are not
+implemented yet. `--print-config` and both preview modes remain side-effect-free.
 
 ## A few important boundaries
 
@@ -171,6 +183,7 @@ contract.
 server.py                    Local HTTP server and workflow orchestration
 data_layout.py               Data-root resolver, preflight, and safe initializer
 data_migration.py            Previewed, backed-up legacy JSON migration
+data_schema.py               Durable JSON schema manifest and migration
 public/                      Static dashboard UI
 data/                        Public-safe project-owned seed data
 data/runtime/                Private, generated, gitignored runtime data

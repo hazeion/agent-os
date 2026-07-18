@@ -18,12 +18,15 @@ class ContextPackTests(unittest.TestCase):
         (self.data / "context_packs.json").write_text("[]\n", encoding="utf-8")
         (self.vault / "Plan.md").write_text("# Plan\nShip the reviewed slice.\n", encoding="utf-8")
         self.data_patch = patch.object(server, "DATA_DIR", self.data)
+        self.configured_data_patch = patch.object(server, "CONFIGURED_DATA_DIR", self.data)
         self.vault_patch = patch.object(server, "OBSIDIAN_VAULT", self.vault)
         self.data_patch.start()
+        self.configured_data_patch.start()
         self.vault_patch.start()
 
     def tearDown(self):
         self.vault_patch.stop()
+        self.configured_data_patch.stop()
         self.data_patch.stop()
         self.temp.cleanup()
 

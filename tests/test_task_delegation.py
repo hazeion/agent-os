@@ -81,7 +81,7 @@ class TaskDelegationTests(unittest.TestCase):
         (self.root / "projects.json").write_text(json.dumps([{"id": "project-1", "name": "Mentat"}]), encoding="utf-8")
         self.adapter = FakeKanban()
         self.patches = [
-            patch.object(server, "DATA_DIR", self.root),
+            patch.object(server, "DATA_DIR", self.root), patch.object(server, "CONFIGURED_DATA_DIR", self.root),
             patch.object(server, "kanban_adapter", return_value=self.adapter),
             patch.object(server, "hermes_profiles_payload", return_value={"status": "available", "profiles": [{"id": "researcher"}]}),
         ]

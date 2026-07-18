@@ -468,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
         server_cli_args.print_config
         or server_cli_args.preview_legacy_migration
         or server_cli_args.confirm_legacy_migration
+        or server_cli_args.preview_schema_migration
+        or server_cli_args.confirm_schema_migration
     ):
         return 0
     if not loopback_host_is_supported(config.host):

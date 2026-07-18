@@ -5,6 +5,43 @@ All notable changes to Mentat.
 ## 2026-07-18
 
 ### Added
+- Completed Milestone 1D with a fixed owner-only durable-JSON schema manifest,
+  current metadata for clean seed-only installs, explicit backed-up version-0
+  bootstrap, interruption-safe retry, and distinct forward-version refusal.
+- Added schema preview/confirmation, manifest/backup integrity, clean/repeat,
+  stale-token, interruption, substitution, normal-write serialization, tamper,
+  and newer-version coverage.
+- Added pre-write current/newer schema refusal, durable clean-initialization
+  provenance, exact orphan-temporary reconciliation, canonical resume-backup
+  binding, strict integer semantics, bounded malformed-artifact handling,
+  pinned descriptor-relative schema writes, seed/target containment refusal,
+  and reentrant global-before-file mutation locking.
+- Reconciles exact pre-link and same-inode post-link reservation, seed, backup,
+  and manifest publication states; rejects multiple recovery temporaries; and
+  preserves full required-directory hardening for current-schema startup.
+- Pins required-directory hardening and ordinary durable JSON I/O to the locked
+  root descriptor, refuses all recovery on newer schemas, rejects contextual
+  reserved-namespace lookalikes, and repairs a missing empty fresh backup
+  directory without weakening migrated-backup evidence.
+- Preserves the configured data-root spelling through component-by-component
+  no-follow locking, including the server write handoff; binds recovery
+  inventory, validation, deletion, and verification to one pinned root; gives
+  cross-category invalid artifacts global precedence; and reports safely read
+  newer metadata before any older recovery classification.
+- Keeps component validation and pinned JSON I/O active when the source
+  development override omits only the on-disk lock artifact; finalizes fresh
+  schema state inside the initializer lock with a final root-identity check;
+  and verifies complete recovery inventory and promoted-final identity again
+  after temporary deletion before claiming reconciliation.
+- Binds startup handoff to the guarded root's device/file identity, rejects
+  mixed nested lock-mode escalation, validates durable JSON file objects and
+  bounded top-level shapes before successful writes, and rechecks all nine
+  confirmation/seed bytes at migration, recovery, and fresh terminal success.
+- Routes product reads through the pinned bounded file boundary, refuses
+  missing installed durable documents, hardens parent permissions only through
+  the pinned descriptor, binds temporary and committed bytes/inodes, cleans all
+  precommit failures, and validates terminal manifest/backup/data evidence
+  entirely through retained root/child descriptors.
 - Completed Milestone 1C with an explicit CLI preview/confirmation workflow for
   the fixed legacy durable-JSON inventory, including a validated versioned ZIP,
   locked revalidation, missing-only atomic publication, interruption-safe
@@ -22,6 +59,11 @@ All notable changes to Mentat.
   two-process serialization coverage.
 
 ### Safety
+- Coordinates ordinary durable JSON writes and schema migration through the
+  process-reentrant shared cross-process lock, binds confirmation to live bytes and the exact
+  target, publishes backup evidence before metadata, keeps browser-visible JSON
+  shapes unchanged, and never performs a downgrade or silent existing-root
+  upgrade.
 - Keeps migration output path/content/hash-free, preserves the legacy source,
   refuses unknown, symbolic-linked, or hard-linked inputs and changed partial
   state, binds confirmation to exact root spellings and an empty initial target,
@@ -29,8 +71,7 @@ All notable changes to Mentat.
   completed-migration directory boundary before startup, never overwrites a
   destination, preserves owner-only mode before ordinary atomic-write commit,
   tolerates only exact safe orphan writer temporaries after completion, and
-  leaves schema evolution, private-state movement, and general backup/restore
-  outside this slice.
+  leaves private-state movement and general backup/restore outside this slice.
 - Revalidates the complete bounded preflight after acquiring the initialization
   lock, never replaces an existing operator destination, keeps `--print-config`
   side-effect-free, treats the tracked source layout as a no-op development
