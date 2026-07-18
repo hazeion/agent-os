@@ -92,6 +92,7 @@ from runtime_config import (
     load_app_config,
     parse_cli_args,
     prepare_data_root_for_startup,
+    run_legacy_migration_cli,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -5887,6 +5888,10 @@ if __name__ == "__main__":
     if cli_args.print_config:
         print(json.dumps(runtime_config_summary(), indent=2))
         raise SystemExit(0)
+    if cli_args.preview_legacy_migration or cli_args.confirm_legacy_migration:
+        migration_summary, migration_exit = run_legacy_migration_cli(cli_args, APP_CONFIG)
+        print(json.dumps(migration_summary, indent=2))
+        raise SystemExit(migration_exit)
     if HOST.lower() not in {"127.0.0.1", "::1", "localhost"}:
         print("Mentat refuses non-loopback binds until authenticated remote access is implemented.")
         raise SystemExit(2)

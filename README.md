@@ -101,6 +101,8 @@ python server.py
 ./status.sh                         # check the managed server
 ./stop.sh                           # stop it
 python server.py --print-config     # show effective configuration
+python server.py --data-dir "/path/to/mentat-data" --preview-legacy-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-legacy-migration TOKEN_FROM_PREVIEW
 python -m unittest discover -s tests -v
 ```
 
@@ -129,14 +131,20 @@ shared configuration files.
 The source checkout currently keeps `data_dir = "data"` in the shared config.
 The approved installed-app target, platform defaults, complete mutable-path
 inventory, missing-only seed rules, and migration/backup safety boundary are in
-[DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A documents and tests that contract;
-Milestone 1B now resolves the approved platform default for config-less
+[DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A documents and tests that contract.
+Milestone 1B resolves the approved platform default for config-less
 installs, preserves the tracked development override, exposes a non-sensitive
 source label in `--print-config`, and supplies bounded preflight plus
 lock-protected, owner-only, missing-only seed initialization. A clean installed
 launch can initialize before ordinary runtime writes, while legacy checkout
-data, conflicts, links, invalid files, and raced destinations fail closed. Data
-migration, schema evolution, backup/restore, and installer behavior are not
+data, conflicts, links, invalid files, and raced destinations fail closed.
+Milestone 1C adds explicit CLI preview and token-confirmation for the nine
+durable JSON slots, using legacy files or explicit packaged-seed fallbacks,
+with a verified migration backup, locked revalidation, missing-only
+publication, safe interruption resume, source
+preservation, and a verified completion receipt. Use the same `--data-dir` and,
+if supplied, `--legacy-data-dir` for preview and confirmation. Schema evolution,
+general backup/restore, private-state movement, and installer behavior are not
 implemented yet. `--print-config` remains side-effect-free.
 
 ## A few important boundaries
@@ -162,6 +170,7 @@ contract.
 ```text
 server.py                    Local HTTP server and workflow orchestration
 data_layout.py               Data-root resolver, preflight, and safe initializer
+data_migration.py            Previewed, backed-up legacy JSON migration
 public/                      Static dashboard UI
 data/                        Public-safe project-owned seed data
 data/runtime/                Private, generated, gitignored runtime data
@@ -204,7 +213,7 @@ criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The beta contract is
 approved: macOS and Windows are tier one, Linux is preview, Python 3.11 through
 3.13 is supported, and signed native installers plus a supported `pipx` path
 are required release channels. Those artifacts do not exist yet. The early CI
-guardrail, Milestone 1A data-layout contract, and Milestone 1B resolver,
-preflight, and missing-only initializer are complete. Legacy migration, schema
-evolution, and backup/restore remain the next durable-data work before
-remote-Hermes implementation and packaging begin.
+guardrail, Milestone 1A data-layout contract, Milestone 1B resolver/preflight/
+initializer, and Milestone 1C legacy durable-JSON migration are complete.
+Schema evolution and general backup/restore remain the next durable-data work
+before remote-Hermes implementation and packaging begin.

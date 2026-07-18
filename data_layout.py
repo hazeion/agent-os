@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
 import sys
 import time
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 import unicodedata
 from uuid import uuid4
 
@@ -986,12 +986,19 @@ def _initialization_lock(data_root: Path):
             _windows_close_handle(handle)
 
 
-def _read_validated_seed_bytes(path: Path, name: str) -> bytes:
+def _read_validated_seed_bytes(
+    path: Path,
+    name: str,
+    *,
+    require_single_link: bool = False,
+) -> bytes:
     descriptor = _open_readonly_no_follow(path)
     try:
         metadata = os.fstat(descriptor)
         if _is_redirecting_entry(metadata) or not stat.S_ISREG(metadata.st_mode):
             raise TypeError("not_regular")
+        if require_single_link and metadata.st_nlink != 1:
+            raise TypeError("linked")
         if metadata.st_size > MAX_PREFLIGHT_JSON_BYTES:
             raise OverflowError("too_large")
         chunks: list[bytes] = []
@@ -1127,6 +1134,7 @@ def initialize_data_root(
     *,
     legacy_root: Path | None = None,
     home: Path | None = None,
+    locked_guard: Callable[[Path, int | None], str | None] | None = None,
 ) -> DataRootInitialization:
     """Create the private layout while holding any required input guards."""
 
@@ -1140,6 +1148,7 @@ def initialize_data_root(
                 target,
                 legacy_root=legacy,
                 home=home,
+                locked_guard=locked_guard,
             )
     except OSError:
         failed = DataRootPreflight(
@@ -1156,6 +1165,7 @@ def _initialize_data_root_guarded(
     *,
     legacy_root: Path | None = None,
     home: Path | None = None,
+    locked_guard: Callable[[Path, int | None], str | None] | None = None,
 ) -> DataRootInitialization:
     """Create the layout after platform input-root guards are established."""
 
@@ -1173,6 +1183,10 @@ def _initialize_data_root_guarded(
 
     try:
         with _initialization_lock(target) as data_root_fd:
+            if locked_guard is not None:
+                guard_issue = locked_guard(target, data_root_fd)
+                if guard_issue is not None:
+                    return _initialization_blocked(initial, issue=guard_issue)
             current = preflight_data_root(seeds, target, legacy_root=legacy, home=home)
             if current.status not in {"ready", "existing"}:
                 return _initialization_blocked(current)

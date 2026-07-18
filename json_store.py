@@ -9,6 +9,8 @@ keeps the allowlist and data-directory boundary checks.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -50,19 +52,41 @@ def write_json_atomic(path: Path, payload: Any, *, mode: int | None = None) -> N
     the target. Keep the operation atomic, but retry briefly before surfacing the
     error so high-frequency dashboard writes do not fail spuriously.
     """
+    serialized = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
+    effective_mode = mode
+    if effective_mode is None:
+        try:
+            metadata = os.lstat(path)
+        except FileNotFoundError:
+            effective_mode = 0o600
+        else:
+            effective_mode = (
+                stat.S_IMODE(metadata.st_mode)
+                if stat.S_ISREG(metadata.st_mode)
+                else 0o600
+            )
     if mode is not None:
         path.parent.chmod(0o700)
     tmp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    if mode is not None:
-        tmp.chmod(mode)
+    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, effective_mode)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, effective_mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not hasattr(os, "fchmod"):
+        tmp.chmod(effective_mode)
     delays = (0.01, 0.025, 0.05, 0.1)
     for attempt in range(len(delays) + 1):
         try:
             tmp.replace(path)
-            if mode is not None:
-                path.chmod(mode)
             return
         except PermissionError:
             if attempt == len(delays):

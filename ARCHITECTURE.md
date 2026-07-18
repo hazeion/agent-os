@@ -25,9 +25,11 @@ classes, initialization rules, migration/backup contract, and secret exclusions
 live in [DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A defines that target,
 while Milestone 1B implements deterministic resolution, bounded read-only
 preflight, owner-only directory creation, and locked missing-only seed copying.
-The current source checkout still resolves the shared `mentat.toml` override to
-repo-local `data/`; legacy migration, schema evolution, backup/restore, and
-private/runtime data moves remain deferred.
+Milestone 1C adds explicit, backed-up, locked migration of the fixed legacy
+durable-JSON inventory with source preservation, interruption-safe reservation,
+and verified completion receipt. The current source checkout still resolves the
+shared `mentat.toml` override to repo-local `data/`; schema evolution, general
+backup/restore, and private/runtime data moves remain deferred.
 
 Later data-root work must keep immutable packaged seeds separate from durable
 operator copies, move durable private Console state out of ephemeral runtime

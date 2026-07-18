@@ -464,7 +464,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Keep the server's print-only mode side-effect free. The server prints the
     # effective config and exits before its bind-host validation.
-    if server_cli_args.print_config:
+    if (
+        server_cli_args.print_config
+        or server_cli_args.preview_legacy_migration
+        or server_cli_args.confirm_legacy_migration
+    ):
         return 0
     if not loopback_host_is_supported(config.host):
         print_report(

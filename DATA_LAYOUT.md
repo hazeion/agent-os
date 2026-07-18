@@ -1,14 +1,16 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1A contract approved; Milestone 1B resolver, preflight, and initializer implemented
+Status: Milestone 1A contract approved; Milestone 1B initialization and Milestone 1C legacy durable-JSON migration implemented
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
 path resolution, bounded read-only preflight, owner-only directory creation,
-and missing-only packaged-seed initialization. It does not change the
-source-checkout runtime default, move existing operator/private/runtime data,
-add a dependency, or implement migration, backup, restore, or installer
-behavior. Later Milestone 1 slices must preserve this boundary.
+and missing-only packaged-seed initialization. Milestone 1C implements an
+explicit, previewed, migration-specific-backup workflow for the nine durable
+JSON documents. It does not change the source-checkout runtime default, move
+private/runtime data, add a dependency, evolve schemas, or implement general
+backup, restore, or installer behavior. Later Milestone 1 slices must preserve
+this boundary.
 
 ## Principles
 
@@ -271,12 +273,12 @@ delete-sharing permission against rename as well as deletion without rejecting
 a traverse-only ancestor. A junction or directory substitution therefore
 cannot redirect a validated packaged read between inspection and copying.
 
-Legacy detection and destination reservation occur before any durable JSON
-initialization. A source-checkout operator who explicitly keeps the repo-local
+Legacy detection and destination reservation occur before any ordinary durable
+JSON initialization. A source-checkout operator who explicitly keeps the repo-local
 data override may continue using it; selecting the new platform root must not
-silently hide legacy work behind fresh seeds. A later migration slice may define
-a provenance-verified pristine-seed replacement rule, but only with exact
-preview, backup, confirmation, locked revalidation, and destination verification.
+silently hide legacy work behind fresh seeds. A later schema or merge slice may
+define additional provenance or merge rules, but only with exact preview, backup,
+confirmation, locked revalidation, and destination verification.
 
 Repeat startup is idempotent. It does not refresh, merge, or normalize existing
 operator files merely because the packaged seed differs.
@@ -311,6 +313,63 @@ Interrupted migration startup must detect reservations or temporary state,
 verify what happened, and either safely resume an explicitly supported step or
 fail closed with recovery instructions. It must not infer success from a
 partially populated destination.
+
+Milestone 1C implements that migration contract for the fixed nine-file,
+currently unversioned JSON inventory only. Its public preview names every
+document, whether the source is legacy or a packaged-seed fallback, the
+destination filename, the `durable_operator` classification, the
+`unversioned-json-v1` schema label, the action, and the excluded private runtime
+class. It deliberately returns no filesystem paths, file content, hashes, or
+backup names. The opaque token binds the exact roots, source bytes,
+classifications, exclusions, expected-empty initial destination, and protocol
+version. Root binding uses exact normalized absolute spellings, not a
+case-folded overlap key. Legacy and packaged-fallback source snapshots require
+single-link regular files so a hard link cannot import bytes from outside the
+selected roots.
+
+Execution shares the initialization lock and repeats the full preview after
+locking. It durably publishes and validates a versioned ZIP under `backups/`
+before publishing the first destination, records a fixed reservation under
+`config/`, copies only to missing destinations, verifies every byte, preserves
+the legacy source, and writes a completion receipt last. A matching interrupted
+reservation can resume verified copies; a changed source, backup, reservation,
+partial destination, linked control, or raced operator destination fails
+closed. Ordinary startup suppresses legacy detection only when the receipt and
+immutable backup evidence verify and every live destination remains a safe,
+owner-only document with the supported top-level shape. Later legitimate task,
+project, setting, and Context Pack mutations do not invalidate the receipt.
+Those atomic writes establish the replacement file's mode before commit. A
+process interruption may leave an exact per-document writer temporary; a
+completed receipt ignores it only when it remains bounded, owner-only,
+single-link, and regular, while lookalikes or unsafe entries fail closed.
+Receipt recognition runs under the shared initialization lock and a pinned
+target identity; a substituted path fails closed and is never seed-initialized.
+After validating the receipt, startup also establishes or revalidates the data
+root and all six required directory boundaries while the root remains pinned:
+missing directories are created, broad POSIX modes are tightened where
+supported, and files, symbolic links, or reparse points fail closed. The root
+identity and receipt are checked again before startup accepts completion.
+An incomplete reservation, promoted backup, or exact migration temporary blocks
+startup for every selected data-root source until the operator re-runs preview.
+
+The migration is an explicit CLI operation and never runs during ordinary
+startup. Substitute the intended installed data root and, when needed, an
+alternate legacy checkout directory:
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --preview-legacy-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-legacy-migration TOKEN_FROM_PREVIEW
+```
+
+Add `--legacy-data-dir "/path/to/checkout/data"` to both commands when the
+source is not this checkout's `data/` directory. Re-run the preview after any conflict or
+state change. A `resume_required` preview returns the same state-bound token
+only when the reservation, backup, and partial copies still verify. The source
+is intentionally retained; no cleanup command is authorized by this slice.
+
+Schema evolution remains unimplemented. The `unversioned-json-v1` label records
+the bounded current input shape; it is not an embedded per-document schema
+version and does not authorize transforms or forward-version handling.
 
 ## Backup and restore contract
 
@@ -373,10 +432,12 @@ runtime history.
   seed/legacy/conflict preflight; complete without filesystem writes.
 - Milestone 1B-B: owner-only directory creation, packaged-seed loading, and
   lock-protected missing-only initialization; complete.
-- Later bounded slices: legacy migration, schema evolution, backup/restore, and
-  installer/uninstall preservation, each with its own approved contract and
-  failure-path evidence.
+- Milestone 1C: previewed, migration-backed, locked legacy durable-JSON copying,
+  interruption resume, and completion receipt; complete.
+- Later bounded slices: schema evolution, general backup/restore, private-state
+  movement, and installer/uninstall preservation, each with its own approved
+  contract and failure-path evidence.
 
-Until the writable Milestone 1 work lands, the source checkout continues using
-the current repo-local `data/` override. Documentation must describe that as
-current behavior, not as the installed public-beta layout.
+The source checkout continues using the current repo-local `data/` override.
+Documentation must describe that as development behavior, not as the installed
+public-beta layout.

@@ -91,6 +91,10 @@ class CiWorkflowContractTests(unittest.TestCase):
             "Begin the next bounded Milestone 1 slice",
             ROADMAP.split("## Current next actions", 1)[1],
         )
+        self.assertIn(
+            "versioned schema evolution",
+            ROADMAP.split("## Current next actions", 1)[1],
+        )
         self.assertNotIn("Land the early CI guardrail", ROADMAP)
         self.assertIn("Added the early GitHub Actions guardrail", CHANGELOG)
         self.assertIn("does not yet add packaging", CHANGELOG)

@@ -14,6 +14,12 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from data_migration import (
+    migrate_legacy_data,
+    migration_status_under_lock,
+    migration_startup_status,
+    preview_legacy_migration,
+)
 from data_layout import initialize_data_root, resolve_data_root, resolve_explicit_data_root
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -49,8 +55,28 @@ class AppConfig:
 def prepare_data_root_for_startup(config: AppConfig) -> str | None:
     """Initialize the bounded layout or return a secret-free startup error."""
 
+    migration_status = migration_startup_status(config.data_dir)
+    if migration_status == "invalid":
+        return (
+            "Mentat found an incomplete or invalid legacy migration "
+            "(migration_incomplete_or_invalid). Re-run the migration preview "
+            "before startup."
+        )
+
+    def migration_guard(target: Path, descriptor: int | None) -> str | None:
+        locked_status = migration_status_under_lock(target, descriptor)
+        if locked_status == "invalid":
+            return "migration_incomplete_or_invalid"
+        if migration_status == "complete" and locked_status != "complete":
+            return "migration_incomplete_or_invalid"
+        return None
+
     legacy_root = None
-    if config.data_dir_source == "platform_default" and DEFAULT_CONFIG_FILE.exists():
+    if (
+        migration_status != "complete"
+        and config.data_dir_source == "platform_default"
+        and DEFAULT_CONFIG_FILE.exists()
+    ):
         # A source checkout may have used its tracked data directory as live
         # storage. Selecting the new default must not hide that state behind
         # fresh seeds. Installed distributions do not ship this source-only
@@ -60,6 +86,7 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
         PACKAGED_SEED_DIR,
         config.data_dir,
         legacy_root=legacy_root,
+        locked_guard=migration_guard,
     )
     if result.status in {"initialized", "existing", "development_override"}:
         return None
@@ -205,8 +232,68 @@ def parse_cli_args(argv=None):
     parser.add_argument("--display-name", help="Dashboard greeting name override.")
     parser.add_argument("--greeting-prefix", help="Dashboard greeting prefix override.")
     parser.add_argument("--app-name", help="User-facing dashboard product name override.")
-    parser.add_argument("--print-config", action="store_true", help="Print the effective runtime config and exit.")
-    return parser.parse_args(argv)
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument("--print-config", action="store_true", help="Print the effective runtime config and exit.")
+    operation.add_argument(
+        "--preview-legacy-migration",
+        action="store_true",
+        help="Preview the bounded legacy JSON migration and print its confirmation token.",
+    )
+    operation.add_argument(
+        "--confirm-legacy-migration",
+        metavar="TOKEN",
+        help="Execute the exact legacy migration preview identified by TOKEN.",
+    )
+    parser.add_argument(
+        "--legacy-data-dir",
+        help="Legacy checkout data directory; valid only with a legacy migration operation.",
+    )
+    args = parser.parse_args(argv)
+    if args.legacy_data_dir and not (
+        args.preview_legacy_migration or args.confirm_legacy_migration
+    ):
+        parser.error("--legacy-data-dir requires a legacy migration operation")
+    return args
+
+
+def run_legacy_migration_cli(
+    cli_args: argparse.Namespace,
+    config: AppConfig,
+) -> tuple[dict, int]:
+    """Run one explicit migration CLI operation with bounded JSON output."""
+
+    legacy_value = maybe_stripped(getattr(cli_args, "legacy_data_dir", None))
+    legacy_root = (
+        resolve_explicit_data_root(legacy_value, base_dir=Path.cwd())
+        if legacy_value is not None
+        else PACKAGED_SEED_DIR
+    )
+    if bool(getattr(cli_args, "preview_legacy_migration", False)):
+        preview = preview_legacy_migration(
+            PACKAGED_SEED_DIR,
+            legacy_root,
+            config.data_dir,
+        )
+        summary = preview.public_summary()
+        return summary, 0 if preview.status in {
+            "ready",
+            "resume_required",
+            "already_migrated",
+            "not_required",
+        } else 2
+
+    token = str(getattr(cli_args, "confirm_legacy_migration", "") or "")
+    result = migrate_legacy_data(
+        PACKAGED_SEED_DIR,
+        legacy_root,
+        config.data_dir,
+        confirmation_token=token,
+    )
+    summary = result.public_summary()
+    return summary, 0 if result.status in {
+        "migrated",
+        "resumed",
+    } else 2
 
 
 def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
