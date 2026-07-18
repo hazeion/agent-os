@@ -1,6 +1,6 @@
 # Feature Slice Review: Back Up and Restore Durable Operator JSON
 
-Status: Final local verification and two zero-finding reviews complete; hosted CI correction awaiting publication and rerun
+Status: Complete; final local, adversarial-review, and hosted gates passed
 Slice: `beta-1e-durable-backup-restore`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1e-durable-backup-restore.md`
@@ -53,14 +53,14 @@ without changing current schema provenance or any excluded storage class.
 
 | ID | Observable criterion | Evidence | Status |
 | --- | --- | --- | --- |
-| AC-1 | Backup creates one bounded owner-only versioned ZIP containing exactly the fixed nine documents plus a canonical manifest, and names every included/excluded class without paths, secrets, recursive backups, or private/runtime bytes. | Archive, manifest, privacy, and inventory tests | Local and review verified |
-| AC-2 | Backup validates the current schema and exact fixed documents under the shared pinned-root lock, publishes missing-only with exact read-back verification, leaves operator source bytes unchanged, and cannot race an ordinary JSON mutation. | Lock/order, source snapshot, collision, and tamper tests | Local and review verified |
-| AC-3 | Restore preview is read-only and bounded, validates the exact archive shape and integrity, reports deterministic replace/unchanged actions, and distinctly refuses malformed, linked, oversized, unsupported-format, or newer-schema backups. | Preview filesystem snapshot and negative archive tests | Local and review verified |
-| AC-4 | The opaque confirmation token binds the exact archive bytes, safe archive identity, exact target spelling/identity, current schema, live document bytes, ordered actions, and protocol; any state change requires a new preview. | Token, substitution, archive-change, target-change, and stale-preview tests | Local and review verified |
-| AC-5 | Confirmation publishes and validates an owner-only pre-restore recovery backup before the first live replacement, then uses only owner-only verified staging and atomic per-document commits beneath the shared pinned-root lock. | Ordering, mode, staging, and injected-failure tests | Local and review verified |
-| AC-6 | A matching interrupted restore can resume only when its reservation, selected/internal source evidence, recovery backup, and every live document exactly match an allowed old-or-new state; conflicts fail closed without overwriting unknown bytes. | Interruption matrix, resume, conflict, and recovery-evidence tests | Local and review verified |
-| AC-7 | Success requires exact post-restore schema/integrity verification while preserving schema metadata/evidence and all excluded directories/files; startup and already-running JSON access block incomplete or invalid restore state before ordinary writes. | Terminal verification, exclusion preservation, lifecycle ordering, and live-server lock tests | Local and review verified |
-| AC-8 | CLI contracts, documentation, local focused/full checks, the supported nine-job hosted matrix, and two independent adversarial reviews all clear on the final diff. | CLI/docs/CI suites and this review record | Final local/review checks passed; hosted correction pending rerun |
+| AC-1 | Backup creates one bounded owner-only versioned ZIP containing exactly the fixed nine documents plus a canonical manifest, and names every included/excluded class without paths, secrets, recursive backups, or private/runtime bytes. | Archive, manifest, privacy, and inventory tests | Verified |
+| AC-2 | Backup validates the current schema and exact fixed documents under the shared pinned-root lock, publishes missing-only with exact read-back verification, leaves operator source bytes unchanged, and cannot race an ordinary JSON mutation. | Lock/order, source snapshot, collision, and tamper tests | Verified |
+| AC-3 | Restore preview is read-only and bounded, validates the exact archive shape and integrity, reports deterministic replace/unchanged actions, and distinctly refuses malformed, linked, oversized, unsupported-format, or newer-schema backups. | Preview filesystem snapshot and negative archive tests | Verified |
+| AC-4 | The opaque confirmation token binds the exact archive bytes, safe archive identity, exact target spelling/identity, current schema, live document bytes, ordered actions, and protocol; any state change requires a new preview. | Token, substitution, archive-change, target-change, and stale-preview tests | Verified |
+| AC-5 | Confirmation publishes and validates an owner-only pre-restore recovery backup before the first live replacement, then uses only owner-only verified staging and atomic per-document commits beneath the shared pinned-root lock. | Ordering, mode, staging, and injected-failure tests | Verified |
+| AC-6 | A matching interrupted restore can resume only when its reservation, selected/internal source evidence, recovery backup, and every live document exactly match an allowed old-or-new state; conflicts fail closed without overwriting unknown bytes. | Interruption matrix, resume, conflict, and recovery-evidence tests | Verified |
+| AC-7 | Success requires exact post-restore schema/integrity verification while preserving schema metadata/evidence and all excluded directories/files; startup and already-running JSON access block incomplete or invalid restore state before ordinary writes. | Terminal verification, exclusion preservation, lifecycle ordering, and live-server lock tests | Verified |
+| AC-8 | CLI contracts, documentation, local focused/full checks, the supported nine-job hosted matrix, and two independent adversarial reviews all clear on the final diff. | CLI/docs/CI suites and this review record | Verified |
 
 ### Constraints and recovery
 
@@ -203,9 +203,10 @@ without changing current schema provenance or any excluded storage class.
   the Windows native pin's intentional `descriptor=None` as a missing child;
   one concurrency test also attempted to read the live byte-range-locked root
   coordination file.
-- The correction is locally verified and reviewed below. A fresh complete
-  nine-job run is required after publication; no partial rerun is accepted as
-  final evidence.
+- Correction run [29659920084](https://github.com/hazeion/agent-os/actions/runs/29659920084)
+  passed all nine jobs on correction commit `2983ec9`: Python 3.11, 3.12, and
+  3.13 on Ubuntu, macOS, and Windows. This is the complete fresh matrix; no
+  failed job was selectively rerun.
 
 ### Rendered or manual behavior
 
@@ -350,15 +351,22 @@ without changing current schema provenance or any excluded storage class.
 - User authorization and scope: Standing approval recorded; publication still
   requires clean verification and two zero-finding reviews.
 - Implementation commit: `8c69370`.
-- Hosted-CI correction commit: Pending.
+- Hosted-CI correction commit: `2983ec9`.
 - Ready PR URL: https://github.com/hazeion/agent-os/pull/25
 
 ## Outcome review
 
-- Classification: In progress.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending review.
-- Remaining reviewer dissent: Pending.
-- Compatibility/migration/rollback concerns: Pending.
+- Classification: Successful bounded slice.
+- Acceptance criteria summary: AC-1 through AC-8 passed with exact local,
+  hosted, and adversarial evidence above.
+- Potential bugs or untested paths: No unresolved finding. Real power loss is
+  represented by deterministic injected interruption boundaries rather than a
+  destructive hardware test; private Console backup remains the explicit next
+  consistency slice.
+- Remaining reviewer dissent: None; both independent reviewers reported zero
+  findings on the final production and publication-record diffs.
+- Compatibility/migration/rollback concerns: Supported Python/platform matrix
+  is green. Existing schema/migration evidence is preserved; restore retains a
+  verified recovery backup and fails closed on ambiguous interruption state.
 - User decision: Standing authorization recorded.
 - Next slice authorized: Yes after this slice merges cleanly.
