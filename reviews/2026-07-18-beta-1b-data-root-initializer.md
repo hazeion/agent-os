@@ -1,6 +1,6 @@
 # Feature Slice Review: Initialize the Platform Data Root
 
-Status: Paused pending corrective publication approval
+Status: Successful
 Slice: `beta-1b-data-root-initializer`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1b-data-root-initializer.md`
@@ -50,7 +50,7 @@ legacy data.
 | AC-4 | Legacy, conflict, unsafe, symlink/reparse, invalid seed/target, and permission-verification failures stop before any seed copy and return bounded errors. | Negative-path and filesystem snapshot tests | Passed locally |
 | AC-5 | A failure or interruption leaves prior valid destinations intact and any temporary copy distinctly named; the next run can safely complete missing seeds. | Injected failure/interruption and recovery tests | Passed locally |
 | AC-6 | Development override remains a no-op, while config-less lifecycle and direct server startup initialize before ordinary runtime writes; print-config stays side-effect-free. | Lifecycle/server integration and source-checkout compatibility tests | Passed locally |
-| AC-7 | Documentation accurately closes Milestone 1B, leaves migration/backup/restore pending, focused/full tests pass, and two independent reviewers clear the slice. | Contract tests, suites, and review record | Passed locally; hosted CI pending publication |
+| AC-7 | Documentation accurately closes Milestone 1B, leaves migration/backup/restore pending, focused/full tests pass, and two independent reviewers clear the slice. | Contract tests, suites, and review record | Passed |
 
 ### Constraints and recovery
 
@@ -342,7 +342,10 @@ legacy data.
   diff checks passed.
 - Final corrective review: Both independent reviewers reported no findings and
   confirmed the prior traverse-only compatibility concern resolved. Hosted
-  Windows execution remains required to prove the native behavioral guards.
+  Windows execution remained required to prove the native behavioral guards.
+- Corrective hosted run `29642167247` passed all nine macOS, Ubuntu, and Windows
+  Python 3.11-3.13 jobs. Each Windows job completed all 420 tests successfully;
+  the native root-substitution, short-name, and access-mask gates did not fail.
 
 ## Documentation updates
 
@@ -372,33 +375,33 @@ legacy data.
 - Verification: Before first publication, 92 focused and 417 full tests passed
   with two Windows-native skips. After the corrective delta, 92 focused and 417
   full tests pass with three Windows-native skips; compilation/diff checks pass;
-  two independent reviewers report no findings.
-- Unresolved risks: Native Windows root-pinning, short-name, and access-mask
-  tests require the next hosted matrix run. Exact native Windows private ACL enforcement remains a
+  two independent reviewers report no findings. Hosted run `29642167247`
+  passed all nine jobs, including Windows Python 3.11-3.13.
+- Unresolved risks: Exact native Windows private ACL enforcement remains a
   prerequisite for any later secret-bearing surface. Migration, backup,
   restore, schema, and data-class moves are intentionally deferred.
 - User authorization and scope: Initial publication was explicitly approved.
   The four-file CI correction requires immediate approval before staging,
   commit, and push.
 - Initial commit hash: `eff458d985365ccda0431c5054fec06b9d417cb8`.
-- Corrective commit: Not committed; proposed message `Harden Windows data-root guards`.
+- Corrective commit: `5cd248a782f541028e295bafb354225df475cb01`.
+- Outcome-record commit: Not committed; proposed message `Close Milestone 1B outcome`.
 - Ready PR URL: `https://github.com/hazeion/agent-os/pull/22`.
 
 ## Outcome review
 
-- Classification: Locally successful; paused pending corrective publication
-  approval and hosted CI.
-- Acceptance criteria summary: AC-1 through AC-6 pass locally. AC-7's local
-  documentation, suite, and two-reviewer gates pass; hosted CI is pending.
-- Potential bugs or untested paths: The three native Windows tests were skipped
-  on macOS and must run in hosted CI. Native Windows ACL exclusivity is not
-  claimed for secret-bearing data.
+- Classification: Successful.
+- Acceptance criteria summary: AC-1 through AC-7 pass locally and in the full
+  nine-job hosted matrix. Both independent reviewers report no findings.
+- Potential bugs or untested paths: No known Milestone 1B blocker remains.
+  Native Windows ACL exclusivity is intentionally not claimed for future
+  secret-bearing data.
 - Remaining reviewer dissent: None.
 - Compatibility/migration/rollback concerns: Source checkout behavior remains
   unchanged; migration, backup, and restore remain separate slices. Reverting
   startup integration is the code rollback; public-safe initialized defaults
   can remain without overwriting operator data.
-- User decision: Immediate approval is required before staging, committing, and
-  pushing the four-file CI correction to the existing ready PR.
-- Next slice authorized: No; publication, hosted CI, and owner outcome review
-  remain for this slice.
+- User decision: Pending owner confirmation of this outcome classification and
+  immediate approval to publish the documentation-only closure record.
+- Next slice authorized: Pending owner outcome review; the roadmap's next
+  bounded slice is previewed, backed-up, locked legacy migration.
