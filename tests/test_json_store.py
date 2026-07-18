@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,39 @@ import json_store
 
 
 class JsonStoreTests(unittest.TestCase):
+    def test_atomic_temporary_requests_binary_mode_when_available(self):
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "tasks.json"
+            path.write_text("[]\n", encoding="utf-8")
+            native_binary_flag = getattr(os, "O_BINARY", 0)
+            binary_flag = native_binary_flag or (1 << 29)
+            synthetic_binary_flag = 0 if native_binary_flag else binary_flag
+            real_open = os.open
+            temporary_flags: list[int] = []
+
+            def record_open(selected, flags, *args, **kwargs):
+                name = Path(os.fspath(selected)).name
+                if name.startswith(".tasks.json.") and name.endswith(".tmp"):
+                    temporary_flags.append(flags)
+                return real_open(
+                    selected,
+                    flags & ~synthetic_binary_flag,
+                    *args,
+                    **kwargs,
+                )
+
+            with ExitStack() as stack:
+                if not native_binary_flag:
+                    stack.enter_context(
+                        patch.object(os, "O_BINARY", binary_flag, create=True)
+                    )
+                stack.enter_context(patch.object(os, "open", side_effect=record_open))
+                json_store.write_json_atomic(path, [{"id": "binary-exact"}])
+
+            self.assertTrue(temporary_flags)
+            self.assertTrue(all(flags & binary_flag for flags in temporary_flags))
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), [{"id": "binary-exact"}])
+
     def test_mode_is_established_before_atomic_replace_commit(self):
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "tasks.json"

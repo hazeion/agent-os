@@ -529,7 +529,12 @@ def _read_private_artifact_at(
             maximum=maximum,
             maximum_links=maximum_links,
         )
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     flags |= getattr(os, "O_NONBLOCK", 0)
     descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
     return _read_private_artifact_descriptor(

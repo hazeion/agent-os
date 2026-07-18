@@ -1,6 +1,6 @@
 # Feature Slice Review: Version Durable JSON Schemas
 
-Status: Round 14 cleared with zero findings; publication and hosted CI pending
+Status: Round 15 cleared with zero findings; hosted CI pending
 Slice: `beta-1d-data-schema`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1d-data-schema.md`
@@ -620,6 +620,45 @@ record, and the exact 32-path publication inventory.
 - `compileall`, all three JavaScript syntax checks, and `git diff --check` pass.
 - Remaining reviewer dissent: None.
 
+### Hosted matrix follow-up and Round 15 fix
+
+Hosted run `29656633349` passed all Ubuntu and macOS jobs on Python 3.11,
+3.12, and 3.13, but all three Windows jobs exposed one platform-specific
+exact-byte bug. `write_json_atomic()` created its temporary descriptor without
+`O_BINARY`; Windows text-mode translation changed serialized line feeds on
+disk while the same text descriptor translated them back during pre-commit
+verification. The secure committed-file reopen correctly used binary mode and
+therefore rejected the changed bytes with `JsonCommitVerificationError`.
+
+All low-level regular-file reads and the atomic temporary write in this slice
+now request `O_BINARY` where available. A regression injects a synthetic binary
+flag on POSIX, records the temporary open, and proves that the exact-byte writer
+requests it. The revised frozen snapshot requires complete local verification,
+two fresh independent zero-finding reviews, and a clean hosted matrix before
+publication can clear.
+
+### Round 15 fix verification
+
+- 89 focused schema/store/runtime tests pass, with one native-Windows skip on
+  macOS.
+- 514 full repository tests pass with four platform-specific skips on macOS.
+- `compileall`, all three JavaScript syntax checks, and `git diff --check` pass.
+- Independent re-review: Both reviewers returned zero findings on the final
+  native-safe technical snapshot.
+
+### Round 15 findings and dispositions
+
+One reviewer found a low-severity record inconsistency: the document headline
+still described the cleared Round 14 snapshot after the hosted-Windows fix had
+changed it. The headline now states the current Round 15 and hosted-CI gates.
+The other reviewer found a medium-severity native-Windows flaw in the portable
+regression: it replaced a real `os.O_BINARY` process-wide with the synthetic
+POSIX bit, which would remove binary mode from the exact write and contaminate
+the secure committed reopen. The test now preserves and passes through the
+native Windows flag, and synthesizes and strips a fake bit only when the host
+does not define `O_BINARY`. Both independent reviewers then rechecked the exact
+revised diff and returned zero findings.
+
 ### Implementation notes
 
 - `data_schema.py` owns the fixed manifest, preview/token, deterministic schema
@@ -663,6 +702,6 @@ record, and the exact 32-path publication inventory.
 
 - Classification: Ready for publication; hosted CI pending.
 - Acceptance criteria summary: AC-1 through AC-7 passed; AC-8 awaits hosted CI.
-- Remaining reviewer dissent: None after Round 14.
+- Remaining reviewer dissent: None after Round 15.
 - User decision: Standing approval recorded; publication remains gated.
 - Next slice authorized: Yes after this slice merges cleanly.

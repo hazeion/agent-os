@@ -159,6 +159,7 @@ def read_json(
     if parent_fd is not None:
         flags = (
             os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
             | getattr(os, "O_NOFOLLOW", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NONBLOCK", 0)
@@ -303,7 +304,13 @@ def write_json_atomic(
         else:
             path.parent.chmod(0o700)
     tmp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     descriptor = -1
     committed = False
     try:
@@ -373,6 +380,7 @@ def write_json_atomic(
             os.open(
                 path.name,
                 os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
                 | getattr(os, "O_NOFOLLOW", 0)
                 | getattr(os, "O_CLOEXEC", 0)
                 | getattr(os, "O_NONBLOCK", 0),
