@@ -12,6 +12,37 @@ import json_store
 
 
 class JsonStoreTests(unittest.TestCase):
+    def test_exact_json_byte_restore_validates_type_and_preserves_bytes(self):
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "tasks.json"
+            path.write_text("[]\n", encoding="utf-8")
+            restored = b'[ { "id" : "format-preserved" } ]\n'
+
+            json_store.write_json_bytes_atomic(
+                path,
+                restored,
+                expected_type=list,
+                mode=0o600,
+                maximum_bytes=128,
+            )
+
+            self.assertEqual(path.read_bytes(), restored)
+            with self.assertRaises(ValueError):
+                json_store.write_json_bytes_atomic(
+                    path,
+                    b'{"wrong":true}\n',
+                    expected_type=list,
+                    maximum_bytes=128,
+                )
+            with self.assertRaises(ValueError):
+                json_store.write_json_bytes_atomic(
+                    path,
+                    b"not-json",
+                    expected_type=list,
+                    maximum_bytes=128,
+                )
+            self.assertEqual(path.read_bytes(), restored)
+
     def test_atomic_temporary_requests_binary_mode_when_available(self):
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "tasks.json"

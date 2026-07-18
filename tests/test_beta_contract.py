@@ -107,9 +107,8 @@ class BetaContractTests(unittest.TestCase):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
         self.assertTrue(next_actions.lstrip().startswith("1. Begin the next bounded Milestone 1 slice"))
-        self.assertIn("atomic general backup", next_actions)
-        self.assertIn("validated previewed restore", next_actions)
-        self.assertIn("[DATA_LAYOUT.md](DATA_LAYOUT.md)", next_actions)
+        self.assertIn("move private Console state", next_actions)
+        self.assertIn("WAL-safe SQLite/history/referenced-blob", next_actions)
         self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 

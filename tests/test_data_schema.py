@@ -693,7 +693,7 @@ class DataSchemaTests(unittest.TestCase):
                     self.assertEqual((outside / "projects.json").read_bytes(), outside_before)
                     self.assertFalse((outside / data_layout.INITIALIZATION_LOCK_NAME).exists())
 
-    def test_development_json_write_is_pinned_without_disk_lock_artifact(self):
+    def test_development_json_write_is_pinned_with_restore_coordination_lock(self):
         with TemporaryDirectory() as tmpdir:
             target = Path(tmpdir) / "data"
             self.write_inventory(target, private=True)
@@ -713,7 +713,10 @@ class DataSchemaTests(unittest.TestCase):
                 json.loads((target / "projects.json").read_text(encoding="utf-8")),
                 [{"id": "development-write"}],
             )
-            self.assertFalse((target / data_layout.INITIALIZATION_LOCK_NAME).exists())
+            lock_path = target / data_layout.INITIALIZATION_LOCK_NAME
+            self.assertTrue(lock_path.is_file())
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(lock_path.stat().st_mode), 0o600)
 
     def test_successful_product_writes_cannot_break_schema_shape_or_size(self):
         with TemporaryDirectory() as tmpdir:

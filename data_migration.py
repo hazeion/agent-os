@@ -1,8 +1,8 @@
 """Preview and execute bounded legacy durable-JSON migration.
 
 This module intentionally migrates only the fixed public-safe JSON inventory.
-Schema evolution, general backup/restore, private runtime movement, and legacy
-cleanup remain separate reviewed capabilities.
+Schema evolution, general durable backup/restore, private runtime movement, and
+legacy cleanup live in separate reviewed capabilities.
 """
 
 from __future__ import annotations
