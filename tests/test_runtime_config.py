@@ -216,7 +216,10 @@ greeting_prefix = "Hi"
     def test_configless_data_root_uses_platform_default_without_creating_it(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            xdg_root = root / "xdg"
+            # Simulate a Linux process input even when this test runs on a
+            # Windows host; native Windows temp paths are not valid XDG paths.
+            xdg_value = f"/mentat-test-{root.name}-xdg"
+            xdg_root = Path(xdg_value)
             missing = root / "missing.toml"
             original = os.environ.copy()
             original_paths = (
@@ -234,7 +237,7 @@ greeting_prefix = "Hi"
                 runtime_config.sys.platform = "linux"
                 os.environ.pop("MENTAT_DATA_DIR", None)
                 os.environ.pop("AGENT_OS_DATA_DIR", None)
-                os.environ["XDG_DATA_HOME"] = str(xdg_root)
+                os.environ["XDG_DATA_HOME"] = xdg_value
                 config = server.load_app_config()
             finally:
                 (

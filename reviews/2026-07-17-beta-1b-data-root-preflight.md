@@ -171,6 +171,7 @@ without writing to the filesystem.
 | Final quiet full-suite rerun after TOCTOU/special-file fixes | macOS, system Python 3 | Exit 0 | 395 passed, 0 failed/skipped | Existing history-permission warning only. |
 | GitHub Actions run `29633885730`, first attempt | macOS/Windows/Ubuntu, Python 3.11–3.13 | Exit 1 | 6 jobs passed, 3 Windows jobs failed | All Windows versions exposed the same host-dependent simulated Linux absolute-path check. macOS and Ubuntu were green. |
 | Approved hosted-CI correction local rerun | macOS, system Python 3 | Exit 0 | 51 focused and 395 full tests passed | Compilation and diff check passed; both independent reviewers reported no findings on the `PurePosixPath` correction. |
+| GitHub Actions run `29634031472`, second attempt | macOS/Windows/Ubuntu, Python 3.11–3.13 | Exit 1 | 6 jobs passed, 3 Windows jobs failed | Production validation advanced correctly; the configless integration fixture still supplied a native Windows temp path while simulating Linux. |
 
 ### Rendered or manual behavior
 
@@ -297,6 +298,14 @@ were reconciled as single fixes:
   or platform defaults.
 - Hosted-CI correction review: Both independent post-publication reviewers
   reported no P0-P3 findings. A new nine-job run remains required after push.
+- Second hosted-fixture correction: Approved on 2026-07-17. The simulated Linux
+  configless test now keeps a POSIX-form absolute XDG environment value as a
+  raw string on every runner, using the host `Path` only for the expected result
+  and no-creation assertion; production resolver code is unchanged. Both first
+  review attempts caught and prevented host-native slash conversion before push.
+- Final hosted-fixture review: Both independent reviewers reported no P0-P3
+  findings after the raw-string correction; 51 focused and 395 full local tests,
+  compilation, and diff checks passed.
 
 ## Outcome review
 
