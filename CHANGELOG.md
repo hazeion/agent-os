@@ -2,6 +2,27 @@
 
 All notable changes to Mentat.
 
+## 2026-07-18
+
+### Added
+- Completed Milestone 1B with a standard-library, cross-process-locked data-root
+  initializer. Clean installed layouts create owner-only durable, private,
+  runtime, backup, cache, log, and config boundaries and copy only missing
+  validated seeds through synced same-directory temporary files and atomic
+  no-replace promotion.
+- Added first-run, repeat-run, mixed existing/missing, legacy/conflict,
+  permission, interruption-recovery, destination-race, startup-ordering, and
+  two-process serialization coverage.
+
+### Safety
+- Revalidates the complete bounded preflight after acquiring the initialization
+  lock, never replaces an existing operator destination, keeps `--print-config`
+  side-effect-free, treats the tracked source layout as a no-op development
+  override, and fails closed before seed copying when legacy, invalid, linked,
+  conflicting, or unverifiable state is present.
+- Keeps migration, schema evolution, backup/restore, private/runtime data moves,
+  remote credentials, packaging, and installers outside this slice.
+
 ## 2026-07-17
 
 ### Added

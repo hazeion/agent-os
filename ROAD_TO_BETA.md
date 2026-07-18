@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
-Status: Milestone 0 complete
-Last updated: 2026-07-17
+Status: Milestone 1 in progress — 1A and 1B complete
+Last updated: 2026-07-18
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
@@ -75,9 +75,9 @@ Mentat already has a strong product and safety foundation:
 
 The largest beta gaps are operational rather than feature gaps:
 
-- the source checkout still uses repository-local `data/`, while the new
-  platform resolver and read-only preflight do not yet create an installed
-  data root or copy packaged seeds;
+- clean installed layouts can now initialize the platform root from immutable
+  seeds, while legacy migration, schema evolution, backup/restore, and movement
+  of existing private/runtime state remain incomplete;
 - there is no installable Python package, native installer, product version
   source, or unified `mentat` command;
 - the early GitHub Actions matrix is in place, while later packaging, browser,
@@ -146,7 +146,7 @@ work is still small.
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
-| 1 | Durable user data | In progress — 1A and 1B-A complete | 0 | Migration, backup, restore, and clean-install tests |
+| 1 | Durable user data | In progress — 1A and 1B complete | 0 | Migration, backup, restore, and clean-install tests |
 | 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
@@ -206,12 +206,13 @@ contract require another explicit project-owner decision.
 Goal: make operator data survive upgrades and keep a running installation from
 modifying its application files or Git checkout.
 
-Status: Milestone 1A contract and Milestone 1B-A read-only resolver/preflight
+Status: Milestone 1A contract and Milestone 1B resolver/preflight/initializer
 complete. The complete current mutable-path inventory, target directory classes,
 platform defaults, precedence, and fail-closed initialization/migration/backup
-rules are approved in [DATA_LAYOUT.md](DATA_LAYOUT.md). Config-less resolution
-now selects the approved platform root, while the tracked source override remains
-unchanged and no initialization or migration writes occur.
+rules are approved in [DATA_LAYOUT.md](DATA_LAYOUT.md). A clean config-less
+installed launch now creates the owner-only layout and copies only missing
+immutable seeds under a cross-process lock. The tracked source override remains
+unchanged; legacy migration and all backup/restore writes remain deferred.
 
 Work in order:
 
@@ -225,6 +226,7 @@ Work in order:
      `~/.local/share/Mentat`.
 3. Treat the repository's `data/` files as immutable, public-safe seed data.
    Copy missing seeds into a new data root; never run against tracked fixtures.
+   **Milestone 1B-B complete.**
 4. Preserve explicit local overrides for development and advanced operators.
 5. Detect legacy repo-local data and offer a previewed, backed-up migration.
    Do not silently overwrite either source or destination.
@@ -521,11 +523,12 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Begin Milestone 1B-B with owner-only directory creation, immutable packaged
-   seed loading, and missing-only initialization defined by
-   [DATA_LAYOUT.md](DATA_LAYOUT.md); keep migration execution separate.
-2. Ensure Milestone 1 includes owner-only storage for the future remote Hermes
-   endpoint and API credential outside the application directory.
+1. Begin the next bounded Milestone 1 slice with previewed, backed-up, locked
+   legacy migration and explicit conflict handling defined by
+   [DATA_LAYOUT.md](DATA_LAYOUT.md); keep schema evolution and restore separate.
+2. Ensure later Milestone 1 work moves private Console state and provides
+   owner-only storage for the future remote Hermes endpoint and API credential
+   outside the application directory.
 3. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
    complete read-only profile discovery, and clarification handling without
    implementing an unsafe substitute.

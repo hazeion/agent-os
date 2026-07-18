@@ -1,12 +1,13 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1A contract approved; Milestone 1B-A read-only resolver and preflight implemented
+Status: Milestone 1A contract approved; Milestone 1B resolver, preflight, and initializer implemented
 
 This document defines where Mentat-owned state belongs for the public beta. It
-began as the contract-only Milestone 1A. Milestone 1B-A implements deterministic
-path resolution and a bounded read-only preflight, but it does not change the
-source-checkout runtime default, move operator data, add a dependency, create
-directories, copy seeds, or implement migration, backup, restore, or installer
+began as the contract-only Milestone 1A. Milestone 1B implements deterministic
+path resolution, bounded read-only preflight, owner-only directory creation,
+and missing-only packaged-seed initialization. It does not change the
+source-checkout runtime default, move existing operator/private/runtime data,
+add a dependency, or implement migration, backup, restore, or installer
 behavior. Later Milestone 1 slices must preserve this boundary.
 
 ## Principles
@@ -208,15 +209,18 @@ unsafe states. Known documents must be regular, have the expected current
 top-level list/object shape, and be no larger than 16 MiB. Component checks
 reject symlinks and Windows reparse points; POSIX file reads use no-follow
 descriptor walking after normalizing only the standard macOS system aliases.
-It neither creates nor modifies filesystem entries.
+It neither creates nor modifies filesystem entries. `--print-config` uses only
+this read-only path and remains side-effect-free.
 
-Until Milestone 1B-B supplies an approved initializer, a config-less normal
-launch fails before lifecycle cleanup, directory creation, Console
-reconciliation, or runtime-state writes. `--print-config` remains available to
-inspect the selected platform root, and an explicitly configured initialized
-development/operator root remains usable.
+Milestone 1B-B implements the writable initialization portion. A config-less
+installed launch now initializes before lifecycle cleanup, Console
+reconciliation, or runtime-state writes. A source checkout that keeps the
+tracked `data_dir = "data"` override remains a no-op development layout. If a
+source checkout explicitly selects the platform default, its repo-local data is
+reserved as legacy state and startup fails closed for the later migration
+workflow instead of hiding it behind fresh seeds.
 
-The writable initialization slice must:
+The initializer:
 
 1. resolve one data root using the approved precedence;
 2. detect supported legacy state before copying any packaged seed;
@@ -230,6 +234,42 @@ The writable initialization slice must:
 7. validate each existing or newly copied document before startup uses it;
 8. avoid dirtying the package, installation, or Git checkout; and
 9. leave an interrupted temporary copy distinguishable and safe to reconcile.
+
+Execution uses a persistent owner-only `.mentat-initialization.lock`, repeats
+the complete preflight after acquiring the operating-system file lock, and
+creates the six approved directory classes with owner-only POSIX modes. Each
+missing seed is read through the bounded no-follow boundary, written and synced
+to a same-directory `.<name>.mentat-init-<nonce>.tmp`, then published with an
+atomic hard-link operation that fails if the destination appeared. The
+temporary link is removed after success or an ordinary caught failure. A
+process interruption may leave the distinctly named temporary file; fixed-name
+preflight ignores it and a repeat run can safely complete the missing seed.
+
+The target must not be an ancestor or descendant of the packaged seed root;
+exact equality is the only development no-op. Existing filesystem identity and
+conservative Darwin case-folding and Unicode normalization prevent an aliased
+macOS override from bypassing that rule. Nearest existing ancestors are also
+walked and compared by filesystem identity before an existing alias or missing
+suffix is accepted. Only proven filesystem identity or exact native path
+equality establishes the development no-op; conservative aliases otherwise
+fail closed as overlap.
+Existing lock files must be
+single-link regular files owned by the current POSIX operator before Mentat
+changes their mode or writes a Windows lock byte. Windows initialization pins
+every data-root component with non-delete-sharing, no-reparse handles while
+opening the lock and temporary files with final-component reparse protection;
+this prevents a junction substitution from redirecting the write boundary.
+Windows lock contention uses an explicit bounded 120-second wait instead of
+the CRT's shorter implicit retry window.
+
+On Windows, no-reparse, non-delete-sharing handle chains also pin the packaged
+seed root and any distinct existing legacy root from the first preflight
+through seed reads and final verification. The seed-file open still protects
+its final component. Directory guards request only traverse and read-attributes
+access—never directory-list access—so Windows enforces the omitted
+delete-sharing permission against rename as well as deletion without rejecting
+a traverse-only ancestor. A junction or directory substitution therefore
+cannot redirect a validated packaged read between inspection and copying.
 
 Legacy detection and destination reservation occur before any durable JSON
 initialization. A source-checkout operator who explicitly keeps the repo-local
@@ -330,9 +370,9 @@ runtime history.
 
 - Milestone 1A: canonical inventory and tested contract only; complete.
 - Milestone 1B-A: platform-aware resolver, source labels, and bounded read-only
-  seed/legacy/conflict preflight; implemented without filesystem writes.
+  seed/legacy/conflict preflight; complete without filesystem writes.
 - Milestone 1B-B: owner-only directory creation, packaged-seed loading, and
-  missing-only initialization.
+  lock-protected missing-only initialization; complete.
 - Later bounded slices: legacy migration, schema evolution, backup/restore, and
   installer/uninstall preservation, each with its own approved contract and
   failure-path evidence.

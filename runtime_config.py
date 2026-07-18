@@ -14,7 +14,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from data_layout import resolve_data_root, resolve_explicit_data_root
+from data_layout import initialize_data_root, resolve_data_root, resolve_explicit_data_root
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_FILE = BASE_DIR / "mentat.toml"
@@ -27,6 +27,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8888
 DEFAULT_APP_NAME = "Mentat"
 DEFAULT_OBSIDIAN_VAULT = Path.home() / "Documents" / "Obsidian Vault"
+PACKAGED_SEED_DIR = BASE_DIR / "data"
 PATH_SETTING_KEYS = {"data_dir", "public_dir", "hermes_home", "obsidian_vault"}
 
 
@@ -45,13 +46,27 @@ class AppConfig:
     data_dir_source: str = "unknown"
 
 
-def data_root_startup_error(config: AppConfig) -> str | None:
-    if config.data_dir_source != "platform_default":
+def prepare_data_root_for_startup(config: AppConfig) -> str | None:
+    """Initialize the bounded layout or return a secret-free startup error."""
+
+    legacy_root = None
+    if config.data_dir_source == "platform_default" and DEFAULT_CONFIG_FILE.exists():
+        # A source checkout may have used its tracked data directory as live
+        # storage. Selecting the new default must not hide that state behind
+        # fresh seeds. Installed distributions do not ship this source-only
+        # TOML override and therefore have no implicit legacy checkout root.
+        legacy_root = PACKAGED_SEED_DIR
+    result = initialize_data_root(
+        PACKAGED_SEED_DIR,
+        config.data_dir,
+        legacy_root=legacy_root,
+    )
+    if result.status in {"initialized", "existing", "development_override"}:
         return None
+    issue_text = ", ".join(result.issues[:4]) or "initialization_failed"
     return (
-        "Mentat selected the platform data root, but writable initialization "
-        "is not implemented yet. Use --print-config to inspect it or provide "
-        "an explicit initialized --data-dir."
+        "Mentat could not safely initialize the selected data root "
+        f"({issue_text}). Resolve the reported data-layout condition before startup."
     )
 
 

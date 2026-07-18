@@ -204,7 +204,7 @@ class LocalServerLifecycleTests(unittest.TestCase):
         cleanup.assert_not_called()
         self.assertIn("non-loopback", print_report.call_args.args[0]["error"])
 
-    def test_preflight_blocks_uninitialized_platform_root_before_cleanup(self):
+    def test_preflight_blocks_initializer_failure_before_cleanup(self):
         with TemporaryDirectory() as tmpdir:
             data_root = Path(tmpdir) / "platform-data"
             config = self.make_config(data_root)
@@ -219,6 +219,10 @@ class LocalServerLifecycleTests(unittest.TestCase):
                 lifecycle,
                 "load_runtime_request",
                 return_value=(cli_args, config),
+            ), patch.object(
+                server,
+                "prepare_data_root_for_startup",
+                return_value="Mentat could not safely initialize the selected data root (unsafe).",
             ), patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
                 lifecycle, "print_report"
             ) as print_report:
@@ -227,18 +231,42 @@ class LocalServerLifecycleTests(unittest.TestCase):
             self.assertEqual(result, 2)
             self.assertFalse(data_root.exists())
             cleanup.assert_not_called()
-            self.assertIn("initialization", print_report.call_args.args[0]["error"])
+            self.assertIn("initialize", print_report.call_args.args[0]["error"])
+
+    def test_preflight_initializes_before_listener_cleanup(self):
+        with TemporaryDirectory() as tmpdir:
+            config = self.make_config(Path(tmpdir) / "platform-data")
+            cli_args = server.parse_cli_args([])
+            order = []
+            with patch.object(
+                lifecycle,
+                "load_runtime_request",
+                return_value=(cli_args, config),
+            ), patch.object(
+                server,
+                "prepare_data_root_for_startup",
+                side_effect=lambda _config: order.append("initialize"),
+            ), patch.object(
+                lifecycle,
+                "cleanup_mentat_listeners",
+                side_effect=lambda *_args, **_kwargs: order.append("cleanup") or {"ok": True},
+            ), patch.object(lifecycle, "print_report"):
+                result = lifecycle.main(["preflight"])
+
+            self.assertEqual(result, 0)
+            self.assertEqual(order, ["initialize", "cleanup"])
 
     def test_preflight_print_config_remains_side_effect_free(self):
         with TemporaryDirectory() as tmpdir, patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
             lifecycle, "print_report"
-        ) as print_report:
+        ) as print_report, patch.object(server, "prepare_data_root_for_startup") as initialize:
             exit_code = lifecycle.main(
                 ["preflight", "--host", "0.0.0.0", "--data-dir", tmpdir, "--print-config"]
             )
 
         self.assertEqual(exit_code, 0)
         cleanup.assert_not_called()
+        initialize.assert_not_called()
         print_report.assert_not_called()
 
 

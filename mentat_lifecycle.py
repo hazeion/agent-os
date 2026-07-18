@@ -476,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    startup_error = server.data_root_startup_error(config)
+    startup_error = server.prepare_data_root_for_startup(config)
     if startup_error is not None:
         print_report({"ok": False, "error": startup_error})
         return 2

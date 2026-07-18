@@ -86,12 +86,12 @@ from runtime_config import (
     DEFAULT_APP_NAME,
     DEFAULT_HOST,
     DEFAULT_PORT,
-    data_root_startup_error,
     default_hermes_home,
     default_obsidian_vault,
     env_value,
     load_app_config,
     parse_cli_args,
+    prepare_data_root_for_startup,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -5891,7 +5891,7 @@ if __name__ == "__main__":
         print("Mentat refuses non-loopback binds until authenticated remote access is implemented.")
         raise SystemExit(2)
 
-    startup_error = data_root_startup_error(APP_CONFIG)
+    startup_error = prepare_data_root_for_startup(APP_CONFIG)
     if startup_error is not None:
         print(startup_error)
         raise SystemExit(2)
