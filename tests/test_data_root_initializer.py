@@ -645,22 +645,56 @@ class DataRootInitializerTests(unittest.TestCase):
                 )
                 for _ in range(2)
             ]
-            for worker in workers:
-                worker.start()
-            for _ in workers:
-                self.assertTrue(ready.get(timeout=10))
-            start.set()
-            for worker in workers:
-                worker.join(15)
-                self.assertEqual(worker.exitcode, 0)
+            try:
+                for worker in workers:
+                    worker.start()
+                for _ in workers:
+                    self.assertTrue(ready.get(timeout=10))
+                start.set()
+                for worker in workers:
+                    worker.join(15)
+                    self.assertEqual(worker.exitcode, 0)
 
-            worker_results = [results.get(timeout=5) for _ in workers]
-            statuses = sorted(result[0] for result in worker_results)
-            self.assertEqual(statuses, ["existing", "initialized"], worker_results)
-            self.assertEqual(
-                sorted(path.name for path in target.glob("*.json")),
-                sorted(SEED_FILE_NAMES),
-            )
+                worker_results = [results.get(timeout=5) for _ in workers]
+                statuses = sorted(result[0] for result in worker_results)
+                self.assertEqual(statuses, ["existing", "initialized"], worker_results)
+                self.assertEqual(
+                    sorted(path.name for path in target.glob("*.json")),
+                    sorted(SEED_FILE_NAMES),
+                )
+            finally:
+                original_failure = sys.exc_info()[0] is not None
+                cleanup_errors: list[BaseException] = []
+
+                def attempt(action):
+                    try:
+                        return True, action()
+                    except BaseException as exc:
+                        cleanup_errors.append(exc)
+                        return False, None
+
+                attempt(start.set)
+                for worker in workers:
+                    if worker.ident is None:
+                        continue
+                    alive_ok, alive = attempt(worker.is_alive)
+                    if alive_ok and alive:
+                        attempt(worker.terminate)
+                    attempt(lambda worker=worker: worker.join(5))
+                    alive_ok, alive = attempt(worker.is_alive)
+                    if alive_ok and alive:
+                        attempt(worker.kill)
+                        attempt(lambda worker=worker: worker.join(5))
+                        alive_ok, alive = attempt(worker.is_alive)
+                    if alive_ok and not alive:
+                        attempt(worker.close)
+                    elif alive_ok:
+                        cleanup_errors.append(RuntimeError("initializer test worker did not stop"))
+                for queue in (ready, results):
+                    attempt(queue.close)
+                    attempt(queue.join_thread)
+                if cleanup_errors and not original_failure:
+                    raise RuntimeError("multiprocessing test cleanup failed") from cleanup_errors[0]
 
 
 if __name__ == "__main__":
