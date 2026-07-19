@@ -26,13 +26,23 @@ class CiWorkflowContractTests(unittest.TestCase):
     def test_declares_the_complete_os_and_python_matrix(self):
         workflow = self.workflow()
 
-        for runner in ("ubuntu-latest", "macos-latest", "windows-latest"):
+        for runner in ("ubuntu-latest", "macos-latest"):
             self.assertEqual(workflow.count(f"          - {runner}"), 1)
         for version in ("3.11", "3.12", "3.13"):
-            self.assertEqual(workflow.count(f'          - "{version}"'), 1)
+            self.assertEqual(workflow.count(f'          - "{version}"'), 2)
         self.assertIn("runs-on: ${{ matrix.os }}", workflow)
+        self.assertEqual(workflow.count("runs-on: windows-latest"), 1)
         self.assertIn("python-version: ${{ matrix.python-version }}", workflow)
-        self.assertIn("fail-fast: false", workflow)
+        self.assertEqual(workflow.count("fail-fast: false"), 2)
+        self.assertIn(
+            "group:\n          - 0\n          - 1\n          - 2",
+            workflow,
+        )
+        self.assertIn(
+            "windows-latest / Python ${{ matrix.python-version }} / "
+            "group ${{ matrix.group }}",
+            workflow,
+        )
         self.assertNotIn("\n        include:", workflow)
         self.assertNotIn("\n        exclude:", workflow)
 
@@ -56,36 +66,35 @@ class CiWorkflowContractTests(unittest.TestCase):
                 "uses: actions/checkout@v6",
                 "uses: actions/setup-python@v6",
                 "uses: actions/setup-node@v7",
+                "uses: actions/checkout@v6",
+                "uses: actions/setup-python@v6",
+                "uses: actions/setup-node@v7",
             ],
         )
 
     def test_every_job_runs_all_agreed_checks(self):
         workflow = self.workflow()
 
-        for command in (
-            "python -m compileall -q .",
-            "python -m unittest discover -s tests -v",
-        ):
-            self.assertEqual(workflow.count(command), 1)
+        self.assertEqual(workflow.count("python -m compileall -q ."), 2)
+        self.assertEqual(
+            workflow.count("python -m unittest discover -s tests -v"),
+            1,
+        )
         for command in (
             "node --check public/core.js",
             "node --check public/app.js",
             "node --check scripts/browser_smoke.mjs",
         ):
-            self.assertEqual(workflow.count(f"run: {command}"), 1)
-        for group_index in range(3):
-            self.assertEqual(
-                workflow.count(
-                    f"python scripts/run_unittest_shards.py --run-group {group_index}"
-                ),
-                1,
-            )
-        self.assertEqual(workflow.count("Run Windows test shard group"), 3)
-        self.assertIn("if: runner.os != 'Windows'", workflow)
+            self.assertEqual(workflow.count(f"run: {command}"), 2)
         self.assertEqual(
-            workflow.count("if: ${{ runner.os == 'Windows' && !cancelled() }}"),
-            3,
+            workflow.count(
+                "python scripts/run_unittest_shards.py --run-group "
+                "${{ matrix.group }}"
+            ),
+            1,
         )
+        self.assertEqual(workflow.count("Run bounded Windows test group"), 1)
+        self.assertNotIn("if: runner.os", workflow)
 
     def test_windows_shards_cover_each_test_exactly_once(self):
         method_sys_path = list(sys.path)
