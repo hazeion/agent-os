@@ -1,6 +1,6 @@
 # Feature Slice Review: Durable Private Console State
 
-Status: Implementation, local verification, documentation, and two zero-finding adversarial reviews complete; hosted remediation rerun pending
+Status: Implementation, local/hosted verification, documentation, and two zero-finding adversarial reviews complete; publication pending
 Slice: `beta-1e-private-console-state`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1e-private-console-state.md`
@@ -40,7 +40,7 @@ reference-consistent private unit.
 - Startup refusal for incomplete/invalid private migration or restore state;
   clear instructions for explicit migration rather than silently stranding or
   overwriting legacy Console work.
-- Documentation, focused/full tests, the nine-job supported CI matrix, two
+- Documentation, focused/full tests, the supported hosted CI matrix, two
   independent adversarial reviewers, publication, merge, and outcome review.
 
 ### Out of scope
@@ -66,7 +66,7 @@ reference-consistent private unit.
 | AC-6 | Restore remains backward-compatible with version-1 JSON-only archives and restores the current private unit only through exact preview/confirmation, pre-restore recovery evidence, bounded staging, and post-restore relational/blob verification. | v1/v2 preview, recovery ordering, stale-token, and success tests | Complete |
 | AC-7 | Interrupted private restore resumes only exact recognized old-or-new history/database/blob states; unknown bytes, extra/missing blobs, changed receipt/reservation, and unsafe paths block startup and all private mutation without overwrite. | Interruption matrix, startup/live-server gate, conflict, and boundary tests | Complete |
 | AC-8 | Browser responses and logs continue to expose only opaque attachment metadata and bounded errors; no local path, storage key, digest, SQLite bytes, history content, or secret is added to public output. | Request-boundary, public-summary, CLI, and redaction tests | Complete |
-| AC-9 | Focused/full local checks, static gates, supported nine-job hosted CI, documentation, and two independent adversarial reviews clear on the final diff. | Verification record and CI links | Local/review complete; hosted remediation rerun pending |
+| AC-9 | Focused/full local checks, static gates, supported hosted OS/Python CI, documentation, and two independent adversarial reviews clear on the final diff. | Verification record and CI links | Complete |
 
 ### Constraints and recovery
 
@@ -177,7 +177,7 @@ reference-consistent private unit.
   privacy.
 - Existing backup/restore, runtime configuration, history, attachment, and
   artifact suites pass after the path move and format revision.
-- Full local discovery: 573 tests, four platform-specific skips, zero
+- Full local discovery: 575 tests, four platform-specific skips, zero
   failures/errors on macOS Python 3.13.
 - `python3 -m compileall -q .`, every `public/*.js`/`scripts/*.mjs` Node syntax
   check, and `git diff --check` pass.
@@ -192,8 +192,8 @@ reference-consistent private unit.
   yielded malformed Windows snapshots in all three Windows jobs. The current
   correction therefore explicitly uses SQLite to rebuild a fresh private SHM,
   checkpoint, integrity-check, and convert only the private temporary copy to
-  rollback-journal mode before `sqlite3_backup`. A fresh hosted matrix for this
-  second correction is pending.
+  rollback-journal mode before `sqlite3_backup`. The next hosted matrix tested
+  this second correction.
 - Hosted remediation run `29663395377` passed all six Linux/macOS jobs but
   failed all three Windows jobs at the temporary copy's first SQLite checkpoint,
   proving corruption occurred before `sqlite3_backup`. The root cause was the
@@ -209,7 +209,23 @@ reference-consistent private unit.
   The final path therefore uses SQLite's backup API directly against the
   correctly materialized private main/WAL copy and retains mandatory integrity,
   schema, relationship, and blob validation on the standalone result. A fresh
-  hosted matrix for this timeout correction is pending.
+  hosted matrix for this timeout correction followed.
+- Subsequent Windows-only diagnosis preserved exact test coverage while
+  splitting the bounded Windows workload into 12 independently observable
+  groups. Runs `29668703052` and `29668869333` isolated the remaining silent
+  post-success exit to group 8 on Python 3.11-3.13: all 46 tests passed,
+  then the process returned 1 without a test failure. Running each balanced
+  unit sequentially in its own process group removed the cross-unit/process
+  interaction; process-tree interruption cleanup is bounded and descendant
+  aware on Windows and POSIX.
+- Hosted run `29669189621` confirmed group 8 green on all three Windows Python
+  versions and exposed one deterministic cleanup-contract error in group 4:
+  the Windows control-event constant was referenced from `subprocess` rather
+  than `signal`. The two-line API correction received two independent
+  zero-finding reviews.
+- Final hosted run `29669268759` passed all 42 jobs: the complete Linux/macOS
+  Python 3.11-3.13 jobs plus all 12 bounded Windows groups on each of Python
+  3.11, 3.12, and 3.13. No job failed or was skipped.
 
 ## Adversarial review
 
@@ -237,6 +253,12 @@ filesystem/crash-safety reviewers after the focused suite and diff hygiene.
 Both reviewers then re-reviewed the Windows WAL correction and independently
 returned zero findings, including the lexical absolute-URI refinement that
 avoids following a pathname merely to construct the SQLite URI.
+The later Windows runner remediation also completed repeated independent
+safety and compatibility reviews. Findings about orphanable descendants and
+unbounded interruption waits were fixed with isolated process groups/sessions,
+bounded graceful-to-forced tree cleanup, original-exception preservation, and
+contracts that exercise cleanup failure. Both reviewers returned zero findings
+on the final runner diff and on the hosted Windows control-event API correction.
 
 ## Documentation updates
 
@@ -247,10 +269,10 @@ storage guidance are updated.
 ## Publication gate
 
 - Branch and base: `codex/beta-1e-private-console-state` to merged `main`.
-- Commit/PR packet: PR #26 is open; Windows remediation publication and a fresh
-  hosted matrix remain pending.
+- Commit/PR packet: PR #26 is open at commit `140126f`; final hosted run
+  `29669268759` passed all 42 jobs. Merge remains pending.
 - User authorization: Standing approval recorded.
 
 ## Outcome review
 
-Pending publication, hosted verification, and merge.
+Hosted verification is complete. Pending merge and post-merge verification.
