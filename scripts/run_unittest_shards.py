@@ -6,6 +6,7 @@ from __future__ import annotations
 from fnmatch import fnmatchcase
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.loader import VALID_MODULE_NAME
@@ -14,6 +15,7 @@ from unittest.loader import VALID_MODULE_NAME
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ROOT / "tests"
 SHARD_COUNT = 12
+MAX_CONCURRENT_SHARDS = 6
 SPLIT_TEST_WEIGHT = 12
 SPLITTABLE_MODULES = frozenset(
     {
@@ -233,7 +235,59 @@ def _build_shard_suite(units: tuple[str, ...]) -> unittest.TestSuite:
 
 def run_shard(units: tuple[str, ...]) -> int:
     suite = _build_shard_suite(units)
-    return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+    return 0 if unittest.TextTestRunner(verbosity=0, buffer=True).run(suite).wasSuccessful() else 1
+
+
+def _spawn_shard(units: tuple[str, ...]) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "--run-shard", *units],
+        cwd=ROOT,
+    )
+
+
+def run_shards(
+    shards: tuple[tuple[str, ...], ...],
+    max_concurrent: int = MAX_CONCURRENT_SHARDS,
+) -> int:
+    """Run every shard while bounding process contention on smaller CI hosts."""
+
+    if not shards or max_concurrent < 1 or any(not shard for shard in shards):
+        raise ValueError("invalid unittest shard schedule")
+    pending = iter(shards)
+    active: list[subprocess.Popen[bytes]] = []
+    results: list[int] = []
+
+    def fill_available_slots() -> None:
+        while len(active) < max_concurrent:
+            try:
+                shard = next(pending)
+            except StopIteration:
+                return
+            active.append(_spawn_shard(shard))
+
+    try:
+        fill_available_slots()
+        while active:
+            finished: list[subprocess.Popen[bytes]] = []
+            for process in active:
+                result = process.poll()
+                if result is not None:
+                    results.append(result)
+                    finished.append(process)
+            if not finished:
+                time.sleep(0.05)
+                continue
+            for process in finished:
+                active.remove(process)
+            fill_available_slots()
+    except BaseException:
+        for process in active:
+            if process.poll() is None:
+                process.terminate()
+        for process in active:
+            process.wait()
+        raise
+    return 1 if any(results) else 0
 
 
 def main(argv: tuple[str, ...] | None = None) -> int:
@@ -243,25 +297,8 @@ def main(argv: tuple[str, ...] | None = None) -> int:
             raise RuntimeError("invalid unittest shard operation")
         return run_shard(arguments[1:])
 
-    processes: list[subprocess.Popen[bytes]] = []
-    try:
-        modules = test_modules()
-        for shard in partition_units(weighted_units(modules)):
-            processes.append(
-                subprocess.Popen(
-                    [sys.executable, str(Path(__file__).resolve()), "--run-shard", *shard],
-                    cwd=ROOT,
-                )
-            )
-        results = [process.wait() for process in processes]
-    except BaseException:
-        for process in processes:
-            if process.poll() is None:
-                process.terminate()
-        for process in processes:
-            process.wait()
-        raise
-    return 1 if any(results) else 0
+    modules = test_modules()
+    return run_shards(partition_units(weighted_units(modules)))
 
 
 if __name__ == "__main__":

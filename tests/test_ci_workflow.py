@@ -140,6 +140,7 @@ class CiWorkflowContractTests(unittest.TestCase):
             namespace["SPLIT_TEST_WEIGHT"],
         )
         self.assertEqual(namespace["SHARD_COUNT"], 12)
+        self.assertEqual(namespace["MAX_CONCURRENT_SHARDS"], 6)
         self.assertEqual(len(shards), 12)
         self.assertTrue(all(shards))
         for module in namespace["SPLITTABLE_MODULES"]:
@@ -282,6 +283,88 @@ class CiWorkflowContractTests(unittest.TestCase):
             (package / "test_nested.py").touch()
             with self.assertRaisesRegex(RuntimeError, "package-style"):
                 namespace["discoverable_test_paths"](sample)
+
+        class FakeProcess:
+            active = 0
+            max_active = 0
+
+            def __init__(self, result=0, polls_until_done=2):
+                self.result = result
+                self.polls_until_done = polls_until_done
+                self.polls = 0
+                self.done = False
+                self.terminated = False
+                self.waited = False
+                FakeProcess.active += 1
+                FakeProcess.max_active = max(FakeProcess.max_active, FakeProcess.active)
+
+            def poll(self):
+                if self.done:
+                    return self.result
+                self.polls += 1
+                if self.polls < self.polls_until_done:
+                    return None
+                self.done = True
+                FakeProcess.active -= 1
+                return self.result
+
+            def terminate(self):
+                self.terminated = True
+                if not self.done:
+                    self.done = True
+                    FakeProcess.active -= 1
+
+            def wait(self):
+                self.waited = True
+                return self.result
+
+        spawned = []
+        original_spawn = namespace["_spawn_shard"]
+        original_sleep = namespace["time"].sleep
+        namespace["_spawn_shard"] = lambda shard: spawned.append(FakeProcess()) or spawned[-1]
+        namespace["time"].sleep = lambda _seconds: None
+        try:
+            self.assertEqual(namespace["run_shards"](shards), 0)
+        finally:
+            namespace["_spawn_shard"] = original_spawn
+            namespace["time"].sleep = original_sleep
+        self.assertEqual(len(spawned), 12)
+        self.assertEqual(FakeProcess.max_active, 6)
+
+        spawned.clear()
+        FakeProcess.active = 0
+        FakeProcess.max_active = 0
+        namespace["_spawn_shard"] = (
+            lambda shard: spawned.append(FakeProcess(result=1 if not spawned else 0))
+            or spawned[-1]
+        )
+        namespace["time"].sleep = lambda _seconds: None
+        try:
+            self.assertEqual(namespace["run_shards"](shards), 1)
+        finally:
+            namespace["_spawn_shard"] = original_spawn
+            namespace["time"].sleep = original_sleep
+        self.assertEqual(len(spawned), 12)
+        self.assertEqual(FakeProcess.active, 0)
+
+        spawned.clear()
+        FakeProcess.active = 0
+        FakeProcess.max_active = 0
+        namespace["_spawn_shard"] = (
+            lambda shard: spawned.append(FakeProcess(polls_until_done=99))
+            or spawned[-1]
+        )
+        namespace["time"].sleep = lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt())
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                namespace["run_shards"](shards)
+        finally:
+            namespace["_spawn_shard"] = original_spawn
+            namespace["time"].sleep = original_sleep
+        self.assertEqual(len(spawned), 6)
+        self.assertTrue(all(process.terminated for process in spawned))
+        self.assertTrue(all(process.waited for process in spawned))
+        self.assertEqual(FakeProcess.active, 0)
 
     def test_workflow_is_read_only_and_secret_free(self):
         workflow = self.workflow()
