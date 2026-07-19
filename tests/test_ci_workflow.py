@@ -73,9 +73,19 @@ class CiWorkflowContractTests(unittest.TestCase):
             "node --check scripts/browser_smoke.mjs",
         ):
             self.assertEqual(workflow.count(f"run: {command}"), 1)
-        self.assertEqual(workflow.count("python scripts/run_unittest_shards.py"), 1)
+        for group_index in range(3):
+            self.assertEqual(
+                workflow.count(
+                    f"python scripts/run_unittest_shards.py --run-group {group_index}"
+                ),
+                1,
+            )
+        self.assertEqual(workflow.count("Run Windows test shard group"), 3)
         self.assertIn("if: runner.os != 'Windows'", workflow)
-        self.assertIn("if: runner.os == 'Windows'", workflow)
+        self.assertEqual(
+            workflow.count("if: ${{ runner.os == 'Windows' && !cancelled() }}"),
+            3,
+        )
 
     def test_windows_shards_cover_each_test_exactly_once(self):
         method_sys_path = list(sys.path)
@@ -140,9 +150,17 @@ class CiWorkflowContractTests(unittest.TestCase):
             namespace["SPLIT_TEST_WEIGHT"],
         )
         self.assertEqual(namespace["SHARD_COUNT"], 12)
+        self.assertEqual(namespace["SHARD_GROUP_COUNT"], 3)
         self.assertEqual(namespace["MAX_CONCURRENT_SHARDS"], 4)
         self.assertEqual(len(shards), 12)
         self.assertTrue(all(shards))
+        groups = namespace["shard_groups"](shards)
+        self.assertEqual(len(groups), 3)
+        self.assertTrue(all(len(group) == 4 for group in groups))
+        self.assertEqual(
+            Counter(shard for group in groups for shard in group),
+            Counter(shards),
+        )
         for module in namespace["SPLITTABLE_MODULES"]:
             source = (ROOT / Path(*module.split("."))).with_suffix(".py").read_text(
                 encoding="utf-8"

@@ -15,6 +15,7 @@ from unittest.loader import VALID_MODULE_NAME
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ROOT / "tests"
 SHARD_COUNT = 12
+SHARD_GROUP_COUNT = 3
 MAX_CONCURRENT_SHARDS = 4
 SPLIT_TEST_WEIGHT = 12
 SPLITTABLE_MODULES = frozenset(
@@ -193,6 +194,17 @@ def partition_units(
     return tuple(tuple(sorted(shard, key=order.__getitem__)) for shard in shards)
 
 
+def shard_groups(
+    shards: tuple[tuple[str, ...], ...],
+    group_count: int = SHARD_GROUP_COUNT,
+) -> tuple[tuple[tuple[str, ...], ...], ...]:
+    """Divide the complete shard inventory among bounded CI steps."""
+
+    if group_count < 1 or len(shards) < group_count or any(not shard for shard in shards):
+        raise ValueError("invalid unittest shard groups")
+    return tuple(tuple(shards[index::group_count]) for index in range(group_count))
+
+
 def _split_module_for_id(identifier: str) -> str:
     matches = tuple(
         module for module in SPLITTABLE_MODULES if identifier.startswith(f"{module}.")
@@ -293,9 +305,19 @@ def run_shards(
 def main(argv: tuple[str, ...] | None = None) -> int:
     arguments = tuple(sys.argv[1:] if argv is None else argv)
     if arguments:
-        if arguments[0] != "--run-shard":
-            raise RuntimeError("invalid unittest shard operation")
-        return run_shard(arguments[1:])
+        if arguments[0] == "--run-shard":
+            return run_shard(arguments[1:])
+        if len(arguments) == 2 and arguments[0] == "--run-group":
+            try:
+                group_index = int(arguments[1])
+            except ValueError as exc:
+                raise RuntimeError("invalid unittest shard operation") from exc
+            modules = test_modules()
+            groups = shard_groups(partition_units(weighted_units(modules)))
+            if group_index < 0 or group_index >= len(groups):
+                raise RuntimeError("invalid unittest shard operation")
+            return run_shards(groups[group_index])
+        raise RuntimeError("invalid unittest shard operation")
 
     modules = test_modules()
     return run_shards(partition_units(weighted_units(modules)))

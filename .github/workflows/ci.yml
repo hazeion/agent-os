@@ -69,6 +69,14 @@ jobs:
         if: runner.os != 'Windows'
         run: python -m unittest discover -s tests -v
 
-      - name: Run test suite in Windows shards
-        if: runner.os == 'Windows'
-        run: python scripts/run_unittest_shards.py
+      - name: Run Windows test shard group 1
+        if: ${{ runner.os == 'Windows' && !cancelled() }}
+        run: python scripts/run_unittest_shards.py --run-group 0
+
+      - name: Run Windows test shard group 2
+        if: ${{ runner.os == 'Windows' && !cancelled() }}
+        run: python scripts/run_unittest_shards.py --run-group 1
+
+      - name: Run Windows test shard group 3
+        if: ${{ runner.os == 'Windows' && !cancelled() }}
+        run: python scripts/run_unittest_shards.py --run-group 2
