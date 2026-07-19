@@ -175,7 +175,8 @@ class DataLayoutContractTests(unittest.TestCase):
         self.assertIn("Milestone 1C legacy durable-JSON migration", normalized_roadmap)
         self.assertIn("Milestone 1D schema versioning", normalized_roadmap)
         self.assertIn("Milestone 1E-A durable-JSON backup/restore complete", normalized_roadmap)
-        self.assertIn("| 1 | Durable user data | In progress — 1A through 1D and 1E-A complete |", ROADMAP)
+        self.assertIn("Milestone 1E-B durable private Console migration/backup/restore is also complete", normalized_roadmap)
+        self.assertIn("| 1 | Durable user data | In progress — 1A through 1E-B complete |", ROADMAP)
 
         self.assertIn("from data_layout import", RUNTIME_CONFIG)
         self.assertIn("resolve_data_root", RUNTIME_CONFIG)

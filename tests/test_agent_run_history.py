@@ -144,10 +144,10 @@ super-private-material
             path.write_text(json.dumps({"schema_version": 99, "runs": []}), encoding="utf-8")
             self.assertEqual(agent_run_history.load_run_summaries(path), ([], False))
 
-    def test_server_load_rewrites_recovered_status_and_uses_runtime_directory(self):
+    def test_server_load_rewrites_recovered_status_and_uses_private_directory(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
-            path = data_dir / "runtime" / "agent-console-runs.json"
+            path = data_dir / "private" / "console" / "agent-console-runs.json"
             agent_run_history.save_run_summaries(
                 path,
                 [sample_run("run_queued", "2026-07-10T12:00:00-07:00", status="queued")],
@@ -166,7 +166,7 @@ super-private-material
         legacy_secret = "github_" + "pat_1234567890abcdefghijklmnop"
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
-            path = data_dir / "runtime" / "agent-console-runs.json"
+            path = data_dir / "private" / "console" / "agent-console-runs.json"
             path.parent.mkdir(parents=True)
             path.write_text(
                 json.dumps(
@@ -215,7 +215,7 @@ super-private-material
     def test_server_load_restricts_corrupt_history_without_overwriting_it(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
-            path = data_dir / "runtime" / "agent-console-runs.json"
+            path = data_dir / "private" / "console" / "agent-console-runs.json"
             path.parent.mkdir(parents=True)
             path.write_text("{broken", encoding="utf-8")
             path.parent.chmod(0o755)
@@ -239,8 +239,8 @@ super-private-material
     def test_server_skips_history_file_symlink_without_changing_external_target(self):
         with TemporaryDirectory() as tmpdir, TemporaryDirectory() as outside_dir:
             data_dir = Path(tmpdir)
-            runtime_dir = data_dir / "runtime"
-            runtime_dir.mkdir()
+            private_dir = data_dir / "private" / "console"
+            private_dir.mkdir(parents=True)
             outside = Path(outside_dir) / "external-history.json"
             outside.write_text(
                 json.dumps(
@@ -258,7 +258,7 @@ super-private-material
                 encoding="utf-8",
             )
             outside.chmod(0o644)
-            (runtime_dir / "agent-console-runs.json").symlink_to(outside)
+            (private_dir / "agent-console-runs.json").symlink_to(outside)
 
             with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
@@ -271,7 +271,7 @@ super-private-material
             self.assertIn("external_run", outside.read_text(encoding="utf-8"))
 
     @unittest.skipIf(os.name == "nt", "Symlink creation is not reliably available on Windows")
-    def test_server_skips_symlinked_runtime_directory_outside_data_root(self):
+    def test_server_skips_symlinked_private_directory_outside_data_root(self):
         with TemporaryDirectory() as tmpdir, TemporaryDirectory() as outside_dir:
             data_dir = Path(tmpdir)
             outside = Path(outside_dir)
@@ -282,7 +282,7 @@ super-private-material
             )
             outside.chmod(0o755)
             outside_history.chmod(0o644)
-            (data_dir / "runtime").symlink_to(outside, target_is_directory=True)
+            (data_dir / "private").symlink_to(outside, target_is_directory=True)
 
             with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
@@ -311,7 +311,7 @@ super-private-material
                     "prompt": "x" * (agent_run_history.PROMPT_EXCERPT_LIMIT + 25),
                 })
                 stored = json.loads(
-                    (data_dir / "runtime" / "agent-console-runs.json").read_text(encoding="utf-8")
+                    (data_dir / "private" / "console" / "agent-console-runs.json").read_text(encoding="utf-8")
                 )["runs"][0]
 
         self.assertEqual(status, 202)

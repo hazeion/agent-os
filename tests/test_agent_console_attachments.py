@@ -53,7 +53,7 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
 
             if os.name != "nt":
                 self.assertEqual(database_path(data_dir).stat().st_mode & 0o777, 0o600)
-                self.assertEqual((data_dir / "runtime").stat().st_mode & 0o777, 0o700)
+                self.assertEqual((data_dir / "private" / "console").stat().st_mode & 0o777, 0o700)
                 self.assertEqual(resolve_blob_path(data_dir, metadata["id"]).stat().st_mode & 0o777, 0o600)
 
     def test_streaming_text_validation_and_content_addressed_deduplication(self):
@@ -136,7 +136,7 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
                 row = connection.execute("SELECT storage_key FROM blobs").fetchone()
             finally:
                 connection.close()
-            path = data_dir / "runtime" / "blobs" / "sha256" / row["storage_key"]
+            path = data_dir / "private" / "console" / "blobs" / "sha256" / row["storage_key"]
             path.write_bytes(b"unrelated")
             with self.assertRaises(AttachmentStorageError):
                 create_attachment(data_dir, original_name="again.txt", content=b"fallback")
@@ -223,7 +223,7 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
             item = create_attachment(data_dir, original_name="missing.txt", content=b"missing", now=100)
             resolve_blob_path(data_dir, item["id"]).unlink()
 
-            orphan_dir = data_dir / "runtime" / "blobs" / "sha256" / "aa"
+            orphan_dir = data_dir / "private" / "console" / "blobs" / "sha256" / "aa"
             orphan_dir.mkdir(mode=0o700)
             orphan = orphan_dir / ("a" * 64)
             orphan.write_bytes(b"orphan")
@@ -285,11 +285,11 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
             self.assertIsNone(get_attachment(data_dir, item["id"]))
 
     @unittest.skipIf(os.name == "nt", "POSIX symlink boundary test")
-    def test_runtime_and_blob_symlinks_fail_closed(self):
+    def test_private_and_blob_symlinks_fail_closed(self):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
             data_dir = self.make_data_dir(root)
             data_dir.mkdir()
-            (data_dir / "runtime").symlink_to(outside, target_is_directory=True)
+            (data_dir / "private").symlink_to(outside, target_is_directory=True)
             with self.assertRaises(Exception):
                 create_attachment(data_dir, original_name="safe.txt", content=b"safe")
 

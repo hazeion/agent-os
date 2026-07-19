@@ -18,7 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Collection
 
-from mentat_db import connect, ensure_private_runtime_dir, transaction
+from mentat_db import (
+    connect,
+    ensure_private_console_dir,
+    ensure_private_runtime_dir,
+    transaction,
+)
+from private_state import synchronized_private_state
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -295,16 +301,16 @@ def _validate_content(name: str, data: bytes, supplied_type: str | None) -> tupl
 
 
 def _blobs_root(data_dir: Path) -> Path:
-    runtime = ensure_private_runtime_dir(data_dir)
-    root = runtime / "blobs" / "sha256"
-    cursor = runtime
+    private = ensure_private_console_dir(data_dir)
+    root = private / "blobs" / "sha256"
+    cursor = private
     for part in ("blobs", "sha256"):
         cursor = cursor / part
         if cursor.is_symlink():
             raise AttachmentStorageError("Attachment blob directory must not be a symlink")
         cursor.mkdir(mode=0o700, exist_ok=True)
         if cursor.resolve(strict=True).parent != cursor.parent.resolve(strict=True):
-            raise AttachmentStorageError("Attachment blob directory escapes private runtime storage")
+            raise AttachmentStorageError("Attachment blob directory escapes durable private storage")
         if os.name != "nt":
             cursor.chmod(0o700, follow_symlinks=False)
     return root.resolve(strict=True)
@@ -419,6 +425,7 @@ def _public_metadata(row: sqlite3.Row) -> dict:
     }
 
 
+@synchronized_private_state
 def create_attachment(
     data_dir: Path,
     *,
@@ -520,6 +527,7 @@ def create_attachment(
         connection.close()
 
 
+@synchronized_private_state
 def get_attachment(data_dir: Path, attachment_id: str) -> dict | None:
     """Return browser-safe metadata without a filesystem path or storage key."""
     identifier = _validate_attachment_id(attachment_id)
@@ -531,6 +539,7 @@ def get_attachment(data_dir: Path, attachment_id: str) -> dict | None:
         connection.close()
 
 
+@synchronized_private_state
 def resolve_blob_path(
     data_dir: Path,
     attachment_id: str,
@@ -563,6 +572,7 @@ def resolve_blob_path(
         connection.close()
 
 
+@synchronized_private_state
 def bind_run_attachment(
     data_dir: Path,
     attachment_id: str,
@@ -617,6 +627,7 @@ def bind_run_attachment(
         connection.close()
 
 
+@synchronized_private_state
 def list_run_attachments(
     data_dir: Path,
     run_id: str,
@@ -649,6 +660,7 @@ def list_run_attachments(
         connection.close()
 
 
+@synchronized_private_state
 def release_attachment(
     data_dir: Path,
     attachment_id: str,
@@ -683,6 +695,7 @@ def release_attachment(
         connection.close()
 
 
+@synchronized_private_state
 def unbind_run_attachments(
     data_dir: Path,
     run_id: str,
@@ -740,6 +753,7 @@ def unbind_run_attachments(
         connection.close()
 
 
+@synchronized_private_state
 def garbage_collect(
     data_dir: Path,
     *,
@@ -867,6 +881,7 @@ def garbage_collect(
         connection.close()
 
 
+@synchronized_private_state
 def reconcile_startup(
     data_dir: Path,
     *,

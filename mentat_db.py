@@ -10,6 +10,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from private_state import (
+    console_root,
+    database_path as private_database_path,
+    ensure_console_root,
+)
+
 
 DATABASE_NAME = "mentat.sqlite3"
 SCHEMA_VERSION = 1
@@ -84,8 +90,12 @@ def runtime_dir(data_dir: Path) -> Path:
     return Path(data_dir) / "runtime"
 
 
+def private_console_dir(data_dir: Path) -> Path:
+    return console_root(data_dir)
+
+
 def database_path(data_dir: Path) -> Path:
-    return runtime_dir(data_dir) / DATABASE_NAME
+    return private_database_path(data_dir)
 
 
 def _chmod(path: Path, mode: int) -> None:
@@ -114,15 +124,43 @@ def ensure_private_runtime_dir(data_dir: Path) -> Path:
     return resolved
 
 
-def _validate_database_file(path: Path, runtime: Path) -> None:
-    if path.is_symlink():
-        raise MentatDatabaseError("Mentat database must not be a symlink")
+def ensure_private_console_dir(data_dir: Path) -> Path:
+    return ensure_console_root(data_dir)
+
+
+def _is_reparse_point(details: os.stat_result) -> bool:
+    attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(getattr(details, "st_file_attributes", 0) & attribute)
+
+
+def _validate_database_file(path: Path, runtime: Path) -> tuple[int, int] | None:
     try:
         details = path.lstat()
     except FileNotFoundError:
-        return
-    if not stat.S_ISREG(details.st_mode) or path.resolve(strict=True).parent != runtime:
+        return None
+    if (
+        stat.S_ISLNK(details.st_mode)
+        or _is_reparse_point(details)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_nlink != 1
+        or path.resolve(strict=True).parent != runtime
+        or (
+            os.name == "posix"
+            and (
+                details.st_uid != os.getuid()
+                or stat.S_IMODE(details.st_mode) != 0o600
+            )
+        )
+    ):
         raise MentatDatabaseError("Mentat database path is not a safe regular file")
+    return int(details.st_dev), int(details.st_ino)
+
+
+def _validate_database_set(path: Path, runtime: Path) -> dict[Path, tuple[int, int] | None]:
+    return {
+        candidate: _validate_database_file(candidate, runtime)
+        for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm"))
+    }
 
 
 def _secure_database_files(path: Path) -> None:
@@ -159,9 +197,9 @@ def migrate(connection: sqlite3.Connection) -> None:
 
 def connect(data_dir: Path) -> sqlite3.Connection:
     """Open a migrated SQLite connection with Mentat's local concurrency defaults."""
-    runtime = ensure_private_runtime_dir(data_dir)
-    path = runtime / DATABASE_NAME
-    _validate_database_file(path, runtime)
+    private = ensure_private_console_dir(data_dir)
+    path = private / DATABASE_NAME
+    _validate_database_set(path, private)
     if not path.exists():
         descriptor = None
         try:
@@ -171,8 +209,7 @@ def connect(data_dir: Path) -> sqlite3.Connection:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
-    _validate_database_file(path, runtime)
-    _chmod(path, 0o600)
+    identities = _validate_database_set(path, private)
     connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
     connection.row_factory = sqlite3.Row
     try:
@@ -181,6 +218,10 @@ def connect(data_dir: Path) -> sqlite3.Connection:
         connection.execute("PRAGMA journal_mode = WAL")
         migrate(connection)
         _secure_database_files(path)
+        verified = _validate_database_set(path, private)
+        for candidate, identity in identities.items():
+            if identity is not None and verified.get(candidate) != identity:
+                raise MentatDatabaseError("Mentat database file identity changed while opening")
         return connection
     except Exception:
         connection.close()

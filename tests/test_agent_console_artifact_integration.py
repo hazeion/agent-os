@@ -78,7 +78,7 @@ class AgentConsoleArtifactIntegrationTests(unittest.TestCase):
             run = server.agent_console_snapshot(server.AGENT_CONSOLE_RUNS[run_id])
             artifact = run["artifacts"][0]
             stored_history = json.loads(
-                (data_dir / "runtime" / "agent-console-runs.json").read_text(encoding="utf-8")
+                (data_dir / "private" / "console" / "agent-console-runs.json").read_text(encoding="utf-8")
             )["runs"][0]
 
             self.assertEqual(status, 202)

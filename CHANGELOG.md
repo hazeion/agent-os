@@ -5,6 +5,18 @@ All notable changes to Mentat.
 ## 2026-07-18
 
 ### Added
+- Moved retained Agent Console history, SQLite metadata, and content-addressed
+  blobs to owner-only durable `private/console` storage while keeping uploads,
+  exports, execution inputs, and workspace/artifact snapshots in ephemeral
+  runtime storage.
+- Added exact preview-confirm migration for legacy runtime Console state with a
+  shared cross-process lock, SQLite backup semantics, source preservation,
+  reservation-first recovery, verified receipt-last completion, and startup
+  refusal for incomplete or conflicting state.
+- Extended ordinary backup to version 2 with canonical retained history, a
+  supported-schema WAL-safe SQLite snapshot filtered to retained run references,
+  and exactly referenced ready blobs. Restore now exchanges the private unit
+  through verified old/new states and retains version-1 JSON-only compatibility.
 - Added Milestone 1E-A's deterministic, bounded, owner-only general backup
   format for the fixed nine-document durable operator JSON inventory.
 - Added read-only restore preview, state-bound confirmation, forward refusal,
@@ -12,7 +24,7 @@ All notable changes to Mentat.
   interruption resume, confirmed orphan-temporary cleanup, and startup refusal
   for incomplete or ambiguous restore state.
 - Added explicit source-checkout CLI modes for backup creation and restore
-  preview/confirmation while keeping private Console state, credentials,
+  preview/confirmation while keeping other private/credential state,
   runtime/cache/log/browser/external state, nested backups, and the later
   installed CLI out of this bounded format.
 - Completed Milestone 1D with a fixed owner-only durable-JSON schema manifest,

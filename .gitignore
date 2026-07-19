@@ -19,6 +19,8 @@ docs/
 sketches/
 .hermes-tmp.*/
 data/runtime/
+data/private/
+*.swp
 data/.mentat-initialization.lock
 
 # OS/editor noise

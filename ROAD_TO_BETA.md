@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 1 in progress — 1A through 1D and 1E-A complete
+Status: Milestone 1 in progress — 1A through 1E-B complete
 Last updated: 2026-07-18
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -147,7 +147,7 @@ work is still small.
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
-| 1 | Durable user data | In progress — 1A through 1D and 1E-A complete | 0 | Private-state move/backup and upgrade/uninstall tests |
+| 1 | Durable user data | In progress — 1A through 1E-B complete | 0 | Upgrade/uninstall preservation tests |
 | 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
@@ -209,18 +209,19 @@ modifying its application files or Git checkout.
 
 Status: Milestone 1A contract, Milestone 1B resolver/preflight/initializer,
 Milestone 1C legacy durable-JSON migration, Milestone 1D schema versioning, and
-Milestone 1E-A durable-JSON backup/restore complete. The complete current mutable-path inventory, target directory
+Milestone 1E-A durable-JSON backup/restore complete. Milestone 1E-B durable
+private Console migration/backup/restore is also complete. The complete current mutable-path inventory, target directory
 classes, platform defaults,
 precedence, and fail-closed initialization/migration/backup rules are approved
 in [DATA_LAYOUT.md](DATA_LAYOUT.md). A clean config-less installed launch now
 creates the owner-only layout and copies only missing immutable seeds under a
 cross-process lock. An explicit CLI preview/confirmation flow can migrate the
 nine legacy JSON documents after a validated backup; the source remains
-unchanged. Schema evolution, private-state movement, and general backup/restore
-are separated: the fixed JSON inventory now has explicit version metadata,
-backed-up bootstrap, forward-version refusal, and a validated preview-confirm
-backup/restore foundation, while the private Console consistency unit remains
-deferred to its durable-state move.
+unchanged. The fixed JSON inventory has explicit version metadata, backed-up
+bootstrap, forward-version refusal, and validated preview-confirm
+backup/restore. Retained Console history, SQLite metadata, and referenced blobs
+now use one owner-only durable consistency unit with explicit legacy migration,
+WAL-safe version-2 backup, exact restore, and version-1 restore compatibility.
 
 Work in order:
 
@@ -242,8 +243,8 @@ Work in order:
 6. Add versioned data-schema migrations and forward-version refusal.
    **Milestone 1D complete.**
 7. Implement atomic backup and restore with validation and a restore preview.
-   **Milestone 1E-A complete for the fixed durable JSON set.** The private
-   Console consistency unit remains part of the next private-state slice.
+   **Milestone 1E-A complete for the fixed durable JSON set; Milestone 1E-B
+   complete for the retained private Console consistency unit.**
 8. Add tests for first run, repeat run, migration, interrupted migration,
    upgrade, restore, and uninstall-data preservation.
 
@@ -535,12 +536,11 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Begin the next bounded Milestone 1 slice to move private Console state and
-   extend ordinary backup with its WAL-safe SQLite/history/referenced-blob
-   consistency unit; keep installer behavior separate.
-2. Ensure that private-state work also provides
-   owner-only storage for the future remote Hermes endpoint and API credential
-   outside the application directory.
+1. Finish Milestone 1 with explicit upgrade and uninstall-data-preservation
+   tests across durable JSON and retained private Console state; keep installer
+   format work separate.
+2. Use the completed owner-only private boundary for the future remote Hermes
+   endpoint and API credential without adding either secret to ordinary backup.
 3. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
    complete read-only profile discovery, and clarification handling without
    implementing an unsafe substitute.

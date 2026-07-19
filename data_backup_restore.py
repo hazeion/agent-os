@@ -1,9 +1,4 @@
-"""Bounded backup and restore for Mentat's durable operator JSON set.
-
-This capability intentionally covers only the fixed schema-governed JSON
-inventory. Private Console state remains excluded until its durable storage move
-can provide one SQLite/history/blob consistency boundary.
-"""
+"""Bounded backup and restore for Mentat durable operator and Console state."""
 
 from __future__ import annotations
 
@@ -47,33 +42,52 @@ from json_store import (
     _validate_private_descriptor,
     write_json_bytes_atomic,
 )
+from private_console_unit import (
+    MAX_BLOB_BYTES,
+    MAX_BLOBS,
+    MAX_DATABASE_BYTES,
+    MAX_HISTORY_BYTES,
+    MAX_PRIVATE_UNIT_BYTES,
+    PrivateBlob,
+    PrivateConsoleUnit,
+    PrivateConsoleUnitError,
+    capture_private_console_unit,
+    empty_private_console_unit,
+    materialize_private_console_unit,
+    private_console_unit_digest,
+    remove_private_console_tree,
+    validate_private_console_unit,
+    validate_private_console_stage_inventory,
+)
+from private_state import mentat_server_active, private_control_issue
+from private_state import console_root as private_console_root
 
 
-BACKUP_FORMAT_VERSION = 1
+BACKUP_FORMAT_VERSION = 2
 BACKUP_KIND = "mentat-general-backup"
-BACKUP_PREFIX = "mentat-backup-v1-"
+BACKUP_PREFIX = "mentat-backup-v2-"
+LEGACY_BACKUP_PREFIX = "mentat-backup-v1-"
 RESTORE_STATE_NAME = "restore-state-v1.json"
 MAX_BACKUP_MANIFEST_BYTES = 1024 * 1024
 MAX_BACKUP_CENTRAL_DIRECTORY_BYTES = 64 * 1024
 MAX_GENERAL_BACKUP_BYTES = (
     len(SEED_FILE_NAMES) * MAX_PREFLIGHT_JSON_BYTES
     + MAX_BACKUP_MANIFEST_BYTES
-    + 1024 * 1024
+    + MAX_HISTORY_BYTES
+    + MAX_DATABASE_BYTES
+    + MAX_PRIVATE_UNIT_BYTES
+    + 2 * 1024 * 1024
 )
 _TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
-_BACKUP_RE = re.compile(r"^mentat-backup-v1-([0-9a-f]{24})\.zip$")
+_BACKUP_RE = re.compile(r"^mentat-backup-v([12])-([0-9a-f]{24})\.zip$")
 _STATE_TEMP_RE = re.compile(
     r"^\.(restore-state-v1\.json)\.mentat-init-[0-9a-f]{32}\.tmp$"
 )
 _BACKUP_TEMP_RE = re.compile(
-    r"^\.(mentat-backup-v1-[0-9a-f]{24}\.zip)\.mentat-init-[0-9a-f]{32}\.tmp$"
+    r"^\.(mentat-backup-v[12]-[0-9a-f]{24}\.zip)\.mentat-init-[0-9a-f]{32}\.tmp$"
 )
 
 _EXCLUDED_CLASSES: tuple[dict[str, str], ...] = (
-    {
-        "name": "private_console",
-        "classification": "deferred_private_consistency_unit",
-    },
     {"name": "runtime", "classification": "excluded_ephemeral"},
     {"name": "backups", "classification": "excluded_recursive"},
     {"name": "cache", "classification": "excluded_rebuildable"},
@@ -152,7 +166,10 @@ class RestorePreview:
     issues: tuple[str, ...] = ()
     _backup_raw: bytes | None = None
     _backup_documents: tuple[_Document, ...] = ()
+    _backup_private: PrivateConsoleUnit | None = None
+    _backup_format_version: int = 1
     _target_documents: tuple[_Document, ...] = ()
+    _target_private: PrivateConsoleUnit | None = None
     _target_binding: str | None = None
     _state: Mapping[str, Any] | None = None
 
@@ -258,32 +275,89 @@ def _document_identity(documents: tuple[_Document, ...]) -> list[dict[str, Any]]
     ]
 
 
-def _backup_id(documents: tuple[_Document, ...]) -> str:
+def _private_identity(unit: PrivateConsoleUnit) -> dict[str, Any]:
+    return {
+        "name": "private_console",
+        "classification": "durable_private_consistency_unit",
+        "history_schema_version": 3,
+        "database_schema_version": 1,
+        "history_size": len(unit.history_raw),
+        "history_sha256": _digest(unit.history_raw),
+        "database_size": len(unit.database_raw),
+        "database_sha256": _digest(unit.database_raw),
+        "blob_count": len(unit.blobs),
+        "blobs": [
+            {
+                "entry": f"private/blobs/{index:04d}",
+                "storage_key": blob.storage_key,
+                "size": len(blob.raw),
+                "sha256": blob.sha256,
+            }
+            for index, blob in enumerate(unit.blobs)
+        ],
+    }
+
+
+def _backup_id(
+    documents: tuple[_Document, ...],
+    private_unit: PrivateConsoleUnit | None = None,
+    *,
+    format_version: int = BACKUP_FORMAT_VERSION,
+) -> str:
+    if format_version == 1:
+        private_items: list[dict[str, Any]] = []
+        excluded = [
+            {"name": "private_console", "classification": "deferred_private_consistency_unit"},
+            *[dict(item) for item in _EXCLUDED_CLASSES],
+        ]
+    else:
+        unit = private_unit or empty_private_console_unit()
+        private_items = [_private_identity(unit)]
+        excluded = [dict(item) for item in _EXCLUDED_CLASSES]
     identity = {
-        "format_version": BACKUP_FORMAT_VERSION,
+        "format_version": format_version,
         "kind": BACKUP_KIND,
         "data_schema_format_version": SCHEMA_FORMAT_VERSION,
         "document_version": CURRENT_DOCUMENT_VERSION,
-        "items": _document_identity(documents),
-        "excluded": [dict(item) for item in _EXCLUDED_CLASSES],
+        "items": [*_document_identity(documents), *private_items],
+        "excluded": excluded,
     }
     return _digest(_canonical_json(identity))[:24]
 
 
-def _backup_manifest(documents: tuple[_Document, ...]) -> dict[str, Any]:
+def _backup_manifest(
+    documents: tuple[_Document, ...],
+    private_unit: PrivateConsoleUnit | None = None,
+    *,
+    format_version: int = BACKUP_FORMAT_VERSION,
+) -> dict[str, Any]:
+    unit = private_unit or (empty_private_console_unit() if format_version == 2 else None)
+    excluded = [dict(item) for item in _EXCLUDED_CLASSES]
+    items = _document_identity(documents)
+    if format_version == 1:
+        excluded.insert(0, {"name": "private_console", "classification": "deferred_private_consistency_unit"})
+    else:
+        assert unit is not None
+        items.append(_private_identity(unit))
     return {
-        "format_version": BACKUP_FORMAT_VERSION,
+        "format_version": format_version,
         "kind": BACKUP_KIND,
-        "backup_id": _backup_id(documents),
+        "backup_id": _backup_id(documents, unit, format_version=format_version),
         "data_schema_format_version": SCHEMA_FORMAT_VERSION,
         "document_version": CURRENT_DOCUMENT_VERSION,
-        "items": _document_identity(documents),
-        "excluded": [dict(item) for item in _EXCLUDED_CLASSES],
+        "items": items,
+        "excluded": excluded,
     }
 
 
-def _backup_name(documents: tuple[_Document, ...]) -> str:
-    return f"{BACKUP_PREFIX}{_backup_id(documents)}.zip"
+def _backup_name(
+    documents: tuple[_Document, ...],
+    private_unit: PrivateConsoleUnit | None = None,
+    *,
+    format_version: int = BACKUP_FORMAT_VERSION,
+) -> str:
+    prefix = BACKUP_PREFIX if format_version == 2 else LEGACY_BACKUP_PREFIX
+    return f"{prefix}{_backup_id(documents, private_unit, format_version=format_version)}.zip"
 
 
 def _zip_entry(name: str) -> zipfile.ZipInfo:
@@ -294,19 +368,35 @@ def _zip_entry(name: str) -> zipfile.ZipInfo:
     return entry
 
 
-def _build_backup(documents: tuple[_Document, ...]) -> bytes:
+def _build_backup(
+    documents: tuple[_Document, ...],
+    private_unit: PrivateConsoleUnit | None = None,
+    *,
+    format_version: int = BACKUP_FORMAT_VERSION,
+) -> bytes:
+    unit = private_unit or (empty_private_console_unit() if format_version == 2 else None)
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.writestr(_zip_entry("manifest.json"), _canonical_json(_backup_manifest(documents)))
+        archive.writestr(
+            _zip_entry("manifest.json"),
+            _canonical_json(_backup_manifest(documents, unit, format_version=format_version)),
+        )
         for document in documents:
             archive.writestr(_zip_entry(f"data/{document.name}"), document.raw)
+        if unit is not None:
+            archive.writestr(_zip_entry("private/history.json"), unit.history_raw)
+            archive.writestr(_zip_entry("private/mentat.sqlite3"), unit.database_raw)
+            for index, blob in enumerate(unit.blobs):
+                archive.writestr(_zip_entry(f"private/blobs/{index:04d}"), blob.raw)
     raw = output.getvalue()
     if len(raw) > MAX_GENERAL_BACKUP_BYTES:
         raise OverflowError("general backup too large")
     return raw
 
 
-def _documents_from_backup(raw: bytes) -> tuple[_Document, ...]:
+def _contents_from_backup(
+    raw: bytes,
+) -> tuple[tuple[_Document, ...], PrivateConsoleUnit | None, int]:
     if len(raw) > MAX_GENERAL_BACKUP_BYTES:
         raise ValueError("backup_too_large")
     if len(raw) < 22:
@@ -321,27 +411,38 @@ def _documents_from_backup(raw: bytes) -> tuple[_Document, ...]:
         central_offset,
         comment_size,
     ) = struct.unpack("<4s4H2LH", raw[-22:])
-    expected_count = 1 + len(SEED_FILE_NAMES)
+    if raw[-22:-18] != b"PK\x05\x06":
+        raise ValueError("backup_container_invalid")
     if (
         signature != b"PK\x05\x06"
         or disk_number != 0
         or central_disk != 0
-        or entries_on_disk != expected_count
-        or entry_count != expected_count
+        or entries_on_disk != entry_count
+        or entry_count < 1 + len(SEED_FILE_NAMES)
+        or entry_count > 1 + len(SEED_FILE_NAMES) + 2 + MAX_BLOBS
         or central_size > MAX_BACKUP_CENTRAL_DIRECTORY_BYTES
         or comment_size != 0
         or central_offset + central_size != len(raw) - 22
     ):
         raise ValueError("backup_container_invalid")
     with zipfile.ZipFile(io.BytesIO(raw), "r") as archive:
-        expected_names = ["manifest.json", *(f"data/{name}" for name in SEED_FILE_NAMES)]
-        if archive.comment or archive.namelist() != expected_names:
+        names = archive.namelist()
+        base_names = ["manifest.json", *(f"data/{name}" for name in SEED_FILE_NAMES)]
+        if archive.comment or names[: len(base_names)] != base_names:
             raise ValueError("backup_inventory_invalid")
         for info in archive.infolist():
             maximum = (
                 MAX_BACKUP_MANIFEST_BYTES
                 if info.filename == "manifest.json"
-                else MAX_PREFLIGHT_JSON_BYTES
+                else (
+                    MAX_HISTORY_BYTES
+                    if info.filename == "private/history.json"
+                    else MAX_DATABASE_BYTES
+                    if info.filename == "private/mentat.sqlite3"
+                    else MAX_BLOB_BYTES
+                    if info.filename.startswith("private/blobs/")
+                    else MAX_PREFLIGHT_JSON_BYTES
+                )
             )
             if (
                 info.is_dir()
@@ -355,8 +456,8 @@ def _documents_from_backup(raw: bytes) -> tuple[_Document, ...]:
         if len(manifest_raw) > MAX_BACKUP_MANIFEST_BYTES:
             raise ValueError("backup_manifest_invalid")
         manifest = json.loads(manifest_raw.decode("utf-8"))
+        format_version = manifest.get("format_version") if isinstance(manifest, dict) else None
         if isinstance(manifest, dict):
-            format_version = manifest.get("format_version")
             schema_version = manifest.get("data_schema_format_version")
             document_version = manifest.get("document_version")
             if type(format_version) is int and format_version > BACKUP_FORMAT_VERSION:
@@ -369,14 +470,53 @@ def _documents_from_backup(raw: bytes) -> tuple[_Document, ...]:
             _document_from_raw(name, archive.read(f"data/{name}"))
             for name in SEED_FILE_NAMES
         )
-    if manifest != _backup_manifest(documents) or raw != _build_backup(documents):
+        private_unit: PrivateConsoleUnit | None = None
+        if format_version == 1:
+            if names != base_names:
+                raise ValueError("backup_inventory_invalid")
+        elif format_version == 2:
+            manifest_items = manifest.get("items") if isinstance(manifest, dict) else None
+            if not isinstance(manifest_items, list) or not all(
+                isinstance(item, dict) for item in manifest_items
+            ):
+                raise ValueError("backup_manifest_invalid")
+            private_items = [item for item in manifest_items if item.get("name") == "private_console"]
+            if len(private_items) != 1 or not isinstance(private_items[0].get("blobs"), list):
+                raise ValueError("backup_manifest_invalid")
+            blob_items = private_items[0]["blobs"]
+            if not all(isinstance(item, dict) for item in blob_items):
+                raise ValueError("backup_manifest_invalid")
+            expected_private = ["private/history.json", "private/mentat.sqlite3", *[f"private/blobs/{index:04d}" for index in range(len(blob_items))]]
+            if names != [*base_names, *expected_private]:
+                raise ValueError("backup_inventory_invalid")
+            blobs = tuple(
+                PrivateBlob(storage_key=str(item.get("storage_key") or ""), raw=archive.read(f"private/blobs/{index:04d}"))
+                for index, item in enumerate(blob_items)
+            )
+            private_unit = validate_private_console_unit(
+                PrivateConsoleUnit(
+                    history_raw=archive.read("private/history.json"),
+                    database_raw=archive.read("private/mentat.sqlite3"),
+                    blobs=blobs,
+                )
+            )
+        else:
+            raise ValueError("backup_format_newer" if isinstance(format_version, int) and format_version > BACKUP_FORMAT_VERSION else "backup_manifest_invalid")
+    if (
+        manifest != _backup_manifest(documents, private_unit, format_version=format_version)
+        or raw != _build_backup(documents, private_unit, format_version=format_version)
+    ):
         raise ValueError("backup_integrity_invalid")
-    return documents
+    return documents, private_unit, int(format_version)
+
+
+def _documents_from_backup(raw: bytes) -> tuple[_Document, ...]:
+    return _contents_from_backup(raw)[0]
 
 
 def _read_backup_file(
     path: Path,
-) -> tuple[bytes, tuple[_Document, ...], str, str]:
+) -> tuple[bytes, tuple[_Document, ...], PrivateConsoleUnit | None, int, str, str]:
     selected = _absolute_without_following(Path(path))
     name_match = _BACKUP_RE.fullmatch(selected.name)
     if name_match is None:
@@ -403,9 +543,13 @@ def _read_backup_file(
         os.close(descriptor)
     if len(raw) > MAX_GENERAL_BACKUP_BYTES:
         raise ValueError("backup_too_large")
-    documents = _documents_from_backup(raw)
-    expected_name = _backup_name(documents)
-    if selected.name != expected_name or name_match.group(1) != _backup_id(documents):
+    documents, private_unit, format_version = _contents_from_backup(raw)
+    expected_name = _backup_name(documents, private_unit, format_version=format_version)
+    if (
+        selected.name != expected_name
+        or int(name_match.group(1)) != format_version
+        or name_match.group(2) != _backup_id(documents, private_unit, format_version=format_version)
+    ):
         raise ValueError("backup_name_invalid")
     binding = _digest(
         _canonical_json(
@@ -417,14 +561,14 @@ def _read_backup_file(
             }
         )
     )
-    return raw, documents, expected_name, binding
+    return raw, documents, private_unit, format_version, expected_name, binding
 
 
 def _read_internal_backup(
     target: Path,
     name: str,
     root_descriptor: int | None,
-) -> tuple[bytes, tuple[_Document, ...], str]:
+) -> tuple[bytes, tuple[_Document, ...], PrivateConsoleUnit | None, int, str]:
     if _BACKUP_RE.fullmatch(name) is None:
         raise ValueError("backup_name_invalid")
     path = target / "backups" / name
@@ -445,8 +589,8 @@ def _read_internal_backup(
             )
     if metadata.st_nlink != 1:
         raise OSError("backup links invalid")
-    documents = _documents_from_backup(raw)
-    if _backup_name(documents) != name:
+    documents, private_unit, format_version = _contents_from_backup(raw)
+    if _backup_name(documents, private_unit, format_version=format_version) != name:
         raise ValueError("backup_name_invalid")
     binding = _digest(
         _canonical_json(
@@ -458,7 +602,7 @@ def _read_internal_backup(
             }
         )
     )
-    return raw, documents, binding
+    return raw, documents, private_unit, format_version, binding
 
 
 def _item_summaries(
@@ -483,6 +627,34 @@ def _item_summaries(
     )
 
 
+def _backup_item_summaries(
+    documents: tuple[_Document, ...],
+    private_unit: PrivateConsoleUnit | None,
+    target: tuple[_Document, ...] | None = None,
+    target_private: PrivateConsoleUnit | None = None,
+) -> tuple[dict[str, Any], ...]:
+    items = list(_item_summaries(documents, target))
+    if private_unit is not None:
+        items.append(
+            {
+                "name": "private_console",
+                "classification": "durable_private_consistency_unit",
+                "run_count": private_unit.run_count,
+                "blob_count": len(private_unit.blobs),
+                "action": (
+                    "include"
+                    if target is None
+                    else "unchanged"
+                    if target_private is not None
+                    and private_console_unit_digest(private_unit)
+                    == private_console_unit_digest(target_private)
+                    else "replace"
+                ),
+            }
+        )
+    return tuple(items)
+
+
 def _classify_restore_artifact_names(
     config_names: tuple[str, ...],
     backup_names: tuple[str, ...],
@@ -498,7 +670,7 @@ def _classify_restore_artifact_names(
         for name in config_names
     )
     backup_lookalike = any(
-        name.startswith(".mentat-backup-v1-")
+        re.match(r"^\.mentat-backup-v[12]-", name) is not None
         and ".mentat-init-" in name
         and _BACKUP_TEMP_RE.fullmatch(name) is None
         for name in backup_names
@@ -803,6 +975,10 @@ def _preview_token(
     backup_raw: bytes,
     backup_documents: tuple[_Document, ...],
     target_documents: tuple[_Document, ...],
+    *,
+    backup_private: PrivateConsoleUnit | None = None,
+    backup_format_version: int = BACKUP_FORMAT_VERSION,
+    target_private: PrivateConsoleUnit | None = None,
 ) -> str:
     return _digest(
         _canonical_json(
@@ -811,9 +987,23 @@ def _preview_token(
                 "target_binding": target_binding,
                 "source_binding": source_binding,
                 "backup_sha256": _digest(backup_raw),
-                "backup_name": _backup_name(backup_documents),
+                "backup_name": _backup_name(
+                    backup_documents,
+                    backup_private,
+                    format_version=backup_format_version,
+                ),
                 "source_items": _document_identity(backup_documents),
                 "target_items": _document_identity(target_documents),
+                "source_private": (
+                    private_console_unit_digest(backup_private)
+                    if backup_private is not None
+                    else "excluded"
+                ),
+                "target_private": (
+                    private_console_unit_digest(target_private)
+                    if target_private is not None
+                    else "absent"
+                ),
             }
         )
     )
@@ -859,11 +1049,13 @@ def create_durable_backup(data_root: Path) -> BackupResult:
                 not _pinned_root_matches(target, root_descriptor)
                 or schema_status_under_lock(target, root_descriptor) != "current"
                 or _restore_artifact_issue_under_lock(target, root_descriptor) is not None
+                or private_control_issue(target) is not None
             ):
                 return _blocked_backup("backup_source_invalid")
             documents = _load_live_documents(target, root_descriptor)
-            raw = _build_backup(documents)
-            name = _backup_name(documents)
+            private_unit = capture_private_console_unit(target)
+            raw = _build_backup(documents, private_unit)
+            name = _backup_name(documents, private_unit)
             path = target / "backups" / name
             with _guarded_child_directory(target, root_descriptor, "backups") as backups_fd:
                 if _entry_exists_at(path, backups_fd):
@@ -893,10 +1085,13 @@ def create_durable_backup(data_root: Path) -> BackupResult:
                 if verified_state.st_nlink != 1 or verified != raw:
                     raise OSError("backup publication verification failed")
             terminal = _load_live_documents(target, root_descriptor)
+            terminal_private = capture_private_console_unit(target)
             if (
                 schema_status_under_lock(target, root_descriptor) != "current"
                 or [(item.name, item.raw) for item in terminal]
                 != [(item.name, item.raw) for item in documents]
+                or private_console_unit_digest(terminal_private)
+                != private_console_unit_digest(private_unit)
                 or _restore_artifact_issue_under_lock(target, root_descriptor) is not None
                 or not _pinned_root_matches(target, root_descriptor)
             ):
@@ -904,7 +1099,7 @@ def create_durable_backup(data_root: Path) -> BackupResult:
         return BackupResult(
             status=status,
             backup_name=name,
-            items=_item_summaries(documents),
+            items=_backup_item_summaries(documents, private_unit),
         )
     except _BOUNDARY_EXCEPTIONS:
         return _blocked_backup("backup_failed")
@@ -942,6 +1137,21 @@ def _read_restore_state(
     return payload
 
 
+def _capture_private_for_restore_state(
+    target: Path,
+    state: Mapping[str, Any] | None,
+) -> PrivateConsoleUnit:
+    console = private_console_root(target)
+    if os.path.lexists(os.fspath(console)):
+        return capture_private_console_unit(target)
+    token = state.get("preview_token") if isinstance(state, Mapping) else None
+    if isinstance(token, str) and _TOKEN_RE.fullmatch(token):
+        old = target / "private" / f".console-restore-{token[:24]}-old"
+        if os.path.lexists(os.fspath(old)):
+            return capture_private_console_unit(target, source_console=old)
+    return capture_private_console_unit(target)
+
+
 def _restore_state_document(
     *,
     token: str,
@@ -950,7 +1160,10 @@ def _restore_state_document(
     source_binding: str,
     source_evidence_binding: str,
     source_documents: tuple[_Document, ...],
+    source_private: PrivateConsoleUnit | None,
+    source_format_version: int,
     old_documents: tuple[_Document, ...],
+    old_private: PrivateConsoleUnit,
     recovery_raw: bytes,
     recovery_evidence_binding: str,
 ) -> dict[str, Any]:
@@ -962,10 +1175,20 @@ def _restore_state_document(
         "target_binding": target_binding,
         "source_binding": source_binding,
         "source_evidence_binding": source_evidence_binding,
-        "source_backup_name": _backup_name(source_documents),
+        "source_backup_name": _backup_name(
+            source_documents,
+            source_private,
+            format_version=source_format_version,
+        ),
         "source_backup_sha256": _digest(source_raw),
-        "recovery_backup_name": _backup_name(old_documents),
+        "source_private_sha256": (
+            private_console_unit_digest(source_private)
+            if source_private is not None
+            else "excluded"
+        ),
+        "recovery_backup_name": _backup_name(old_documents, old_private),
         "recovery_backup_sha256": _digest(recovery_raw),
+        "recovery_private_sha256": private_console_unit_digest(old_private),
         "recovery_evidence_binding": recovery_evidence_binding,
         "items": [
             {
@@ -987,7 +1210,10 @@ def _validated_resume(
     source_raw: bytes,
     source_binding: str,
     source_documents: tuple[_Document, ...],
+    source_private: PrivateConsoleUnit | None,
+    source_format_version: int,
     live_documents: tuple[_Document, ...],
+    live_private: PrivateConsoleUnit,
     target_binding: str,
     root_descriptor: int | None = None,
 ) -> tuple[bool, tuple[_Document, ...], bytes]:
@@ -1000,8 +1226,10 @@ def _validated_resume(
         "source_evidence_binding",
         "source_backup_name",
         "source_backup_sha256",
+        "source_private_sha256",
         "recovery_backup_name",
         "recovery_backup_sha256",
+        "recovery_private_sha256",
         "recovery_evidence_binding",
         "items",
     }
@@ -1014,8 +1242,17 @@ def _validated_resume(
         or state.get("restore_id") != token[:24]
         or state.get("target_binding") != target_binding
         or state.get("source_binding") != source_binding
-        or state.get("source_backup_name") != _backup_name(source_documents)
+        or state.get("source_backup_name") != _backup_name(
+            source_documents,
+            source_private,
+            format_version=source_format_version,
+        )
         or state.get("source_backup_sha256") != _digest(source_raw)
+        or state.get("source_private_sha256") != (
+            private_console_unit_digest(source_private)
+            if source_private is not None
+            else "excluded"
+        )
         or not isinstance(state.get("items"), list)
     ):
         return False, (), b""
@@ -1034,14 +1271,14 @@ def _validated_resume(
         or _TOKEN_RE.fullmatch(recovery_evidence_binding) is None
     ):
         return False, (), b""
-    internal_source_raw, internal_source_documents, internal_source_binding = (
+    internal_source_raw, internal_source_documents, internal_source_private, internal_source_version, internal_source_binding = (
         _read_internal_backup(
             target,
             str(state["source_backup_name"]),
             root_descriptor,
         )
     )
-    recovery_raw, recovery_documents, internal_recovery_binding = _read_internal_backup(
+    recovery_raw, recovery_documents, recovery_private, _recovery_version, internal_recovery_binding = _read_internal_backup(
         target,
         recovery_name,
         root_descriptor,
@@ -1049,9 +1286,13 @@ def _validated_resume(
     if (
         internal_source_raw != source_raw
         or internal_source_documents != source_documents
+        or internal_source_private != source_private
+        or internal_source_version != source_format_version
         or internal_source_binding != source_evidence_binding
         or internal_recovery_binding != recovery_evidence_binding
         or _digest(recovery_raw) != recovery_digest
+        or recovery_private is None
+        or state.get("recovery_private_sha256") != private_console_unit_digest(recovery_private)
         or state.get("items")
         != _restore_state_document(
             token=token,
@@ -1060,7 +1301,10 @@ def _validated_resume(
             source_binding=source_binding,
             source_evidence_binding=source_evidence_binding,
             source_documents=source_documents,
+            source_private=source_private,
+            source_format_version=source_format_version,
             old_documents=recovery_documents,
+            old_private=recovery_private,
             recovery_raw=recovery_raw,
             recovery_evidence_binding=recovery_evidence_binding,
         )["items"]
@@ -1074,6 +1318,11 @@ def _validated_resume(
             recovery_by_name[live.name].raw,
         }:
             return False, (), b""
+    allowed_private = {private_console_unit_digest(recovery_private)}
+    if source_private is not None:
+        allowed_private.add(private_console_unit_digest(source_private))
+    if private_console_unit_digest(live_private) not in allowed_private:
+        return False, (), b""
     return True, recovery_documents, recovery_raw
 
 
@@ -1082,10 +1331,19 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
 
     target = _absolute_without_following(Path(data_root))
     try:
-        backup_raw, backup_documents, backup_name, source_binding = _read_backup_file(
-            Path(backup_file)
-        )
+        (
+            backup_raw,
+            backup_documents,
+            backup_private,
+            backup_format_version,
+            backup_name,
+            source_binding,
+        ) = _read_backup_file(Path(backup_file))
+        if backup_private is not None and mentat_server_active(target):
+            return _blocked_preview("unsafe", "private_restore_server_active")
         target_documents, binding = _capture_target_read_only(target)
+        state_hint = _read_restore_state(target)
+        target_private = _capture_private_for_restore_state(target, state_hint)
         artifact_issue = _restore_artifact_issue(target)
         if artifact_issue == "restore_artifacts_invalid":
             return _blocked_preview("unsafe", artifact_issue)
@@ -1095,18 +1353,23 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
                 return _blocked_preview("unsafe", "restore_recovery_changed")
             state_evidence = _restore_state_evidence(target, None)
             verified_documents, verified_binding = _capture_target_read_only(target)
+            verified_private = _capture_private_for_restore_state(target, state_hint)
             if (
                 verified_binding != binding
                 or [(item.name, item.raw) for item in verified_documents]
                 != [(item.name, item.raw) for item in target_documents]
                 or _recovery_artifact(target, None) != artifact
                 or _restore_state_evidence(target, None) != state_evidence
+                or private_console_unit_digest(verified_private)
+                != private_console_unit_digest(target_private)
             ):
                 return _blocked_preview("unsafe", "restore_recovery_changed")
             return RestorePreview(
                 status="recovery_required",
                 backup_name=backup_name,
-                items=_item_summaries(backup_documents, target_documents),
+                items=_backup_item_summaries(
+                    backup_documents, backup_private, target_documents, target_private
+                ),
                 confirmation_token=_recovery_token(
                     binding,
                     artifact,
@@ -1118,10 +1381,13 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
                 ),
                 _backup_raw=backup_raw,
                 _backup_documents=backup_documents,
+                _backup_private=backup_private,
+                _backup_format_version=backup_format_version,
                 _target_documents=target_documents,
+                _target_private=target_private,
                 _target_binding=binding,
             )
-        state = _read_restore_state(target)
+        state = state_hint
         if state is not None:
             valid, _recovery_documents, _recovery_raw = _validated_resume(
                 target,
@@ -1129,40 +1395,64 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
                 source_raw=backup_raw,
                 source_binding=source_binding,
                 source_documents=backup_documents,
+                source_private=backup_private,
+                source_format_version=backup_format_version,
                 live_documents=target_documents,
+                live_private=target_private,
                 target_binding=binding,
             )
             if not valid:
                 return _blocked_preview("unsafe", "restore_state_invalid")
             verified_documents, verified_binding = _capture_target_read_only(target)
+            verified_private = _capture_private_for_restore_state(target, state)
             if (
                 verified_binding != binding
                 or [(item.name, item.raw) for item in verified_documents]
                 != [(item.name, item.raw) for item in target_documents]
                 or _read_restore_state(target) != state
+                or private_console_unit_digest(verified_private)
+                != private_console_unit_digest(target_private)
             ):
                 return _blocked_preview("unsafe", "restore_state_changed")
             token = str(state["preview_token"])
             return RestorePreview(
                 status="resume_required",
                 backup_name=backup_name,
-                items=_item_summaries(backup_documents, target_documents),
+                items=_backup_item_summaries(
+                    backup_documents, backup_private, target_documents, target_private
+                ),
                 confirmation_token=token,
                 _backup_raw=backup_raw,
                 _backup_documents=backup_documents,
+                _backup_private=backup_private,
+                _backup_format_version=backup_format_version,
                 _target_documents=target_documents,
+                _target_private=target_private,
                 _target_binding=binding,
                 _state=state,
             )
+        verified_private = _capture_private_for_restore_state(target, None)
+        if private_console_unit_digest(verified_private) != private_console_unit_digest(target_private):
+            return _blocked_preview("unsafe", "restore_state_changed")
         token = _preview_token(
             binding,
             source_binding,
             backup_raw,
             backup_documents,
             target_documents,
+            backup_private=backup_private,
+            backup_format_version=backup_format_version,
+            target_private=target_private,
         )
-        items = _item_summaries(backup_documents, target_documents)
-        if all(item["action"] == "unchanged" for item in items):
+        items = _backup_item_summaries(
+            backup_documents, backup_private, target_documents, target_private
+        )
+        private_unchanged = (
+            backup_private is None
+            or private_console_unit_digest(backup_private)
+            == private_console_unit_digest(target_private)
+        )
+        if all(item["action"] in {"unchanged", "included"} for item in items) and private_unchanged:
             return RestorePreview(
                 status="not_required",
                 backup_name=backup_name,
@@ -1175,7 +1465,10 @@ def preview_durable_restore(data_root: Path, backup_file: Path) -> RestorePrevie
             confirmation_token=token,
             _backup_raw=backup_raw,
             _backup_documents=backup_documents,
+            _backup_private=backup_private,
+            _backup_format_version=backup_format_version,
             _target_documents=target_documents,
+            _target_private=target_private,
             _target_binding=binding,
         )
     except ValueError as exc:
@@ -1195,7 +1488,10 @@ def _publish_verified_backup(
     documents: tuple[_Document, ...],
     raw: bytes,
 ) -> str:
-    name = _backup_name(documents)
+    parsed_documents, private_unit, format_version = _contents_from_backup(raw)
+    if parsed_documents != documents:
+        raise OSError("restore backup document mismatch")
+    name = _backup_name(documents, private_unit, format_version=format_version)
     path = target / "backups" / name
     with _guarded_child_directory(target, root_descriptor, "backups") as backups_fd:
         if _entry_exists_at(path, backups_fd):
@@ -1259,6 +1555,119 @@ def _publish_restore_state(
             raise OSError("restore state verification failed")
 
 
+def _restore_private_console_under_lock(
+    target: Path,
+    *,
+    token: str,
+    source: PrivateConsoleUnit,
+    recovery: PrivateConsoleUnit,
+) -> Path | None:
+    """Resume an exact directory exchange; return old tree pending cleanup."""
+
+    private = target / "private"
+    private.mkdir(mode=0o700, exist_ok=True)
+    if private.is_symlink() or not private.is_dir():
+        raise OSError("private restore root invalid")
+    if os.name == "posix":
+        private.chmod(0o700)
+    restore_id = token[:24]
+    console = private_console_root(target)
+    staged = private / f".console-restore-{restore_id}-new"
+    old = private / f".console-restore-{restore_id}-old"
+    source_digest = private_console_unit_digest(source)
+    recovery_digest = private_console_unit_digest(recovery)
+
+    def captured(path: Path) -> str | None:
+        if not os.path.lexists(os.fspath(path)):
+            return None
+        if path.is_symlink() or not path.is_dir():
+            raise OSError("private restore tree invalid")
+        return private_console_unit_digest(
+            capture_private_console_unit(target, source_console=path)
+        )
+
+    live_digest = captured(console)
+    try:
+        old_digest = captured(old)
+    except (OSError, ValueError, TypeError):
+        if live_digest != source_digest or old.is_symlink() or not old.is_dir():
+            raise OSError("private restore staging conflict")
+        remove_private_console_tree(target, old)
+        old_digest = None
+    if live_digest not in {None, recovery_digest, source_digest}:
+        raise OSError("private restore live conflict")
+    if old_digest not in {None, recovery_digest}:
+        if live_digest != source_digest:
+            raise OSError("private restore staging conflict")
+        remove_private_console_tree(target, old)
+        old_digest = None
+    try:
+        if os.path.lexists(os.fspath(staged)):
+            validate_private_console_stage_inventory(target, staged, source)
+        staged_digest = captured(staged)
+    except PrivateConsoleUnitError as exc:
+        if str(exc) != "private_stage_incomplete":
+            raise OSError("private restore staging conflict") from exc
+        remove_private_console_tree(target, staged)
+        staged_digest = None
+    except (OSError, ValueError, TypeError):
+        if staged.is_symlink() or not staged.is_dir():
+            raise OSError("private restore staging conflict")
+        remove_private_console_tree(target, staged)
+        staged_digest = None
+    if staged_digest not in {None, source_digest}:
+        remove_private_console_tree(target, staged)
+        staged_digest = None
+
+    if live_digest == source_digest:
+        try:
+            validate_private_console_stage_inventory(
+                target, console, source, allow_canonical=True
+            )
+        except PrivateConsoleUnitError:
+            if old_digest == recovery_digest and staged_digest is None:
+                os.rename(console, staged)
+                os.rename(old, console)
+            raise OSError("private restore live inventory conflict")
+        if staged_digest is not None:
+            remove_private_console_tree(target, staged)
+        return old if old_digest is not None else None
+
+    if staged_digest is None:
+        materialize_private_console_unit(target, source, staged)
+        validate_private_console_stage_inventory(target, staged, source)
+        staged_digest = source_digest
+    if live_digest is None:
+        if old_digest is None and recovery_digest == private_console_unit_digest(empty_private_console_unit()):
+            pass
+        elif old_digest != recovery_digest:
+            raise OSError("private restore recovery tree missing")
+    else:
+        if live_digest != recovery_digest or old_digest is not None:
+            raise OSError("private restore transition conflict")
+        os.rename(console, old)
+        old_digest = captured(old)
+        if old_digest != recovery_digest or os.path.lexists(os.fspath(console)):
+            raise OSError("private restore recovery promotion failed")
+    os.rename(staged, console)
+    try:
+        validate_private_console_stage_inventory(
+            target, console, source, allow_canonical=True
+        )
+    except Exception:
+        if (
+            os.path.lexists(os.fspath(console))
+            and not os.path.lexists(os.fspath(staged))
+        ):
+            os.rename(console, staged)
+        if old_digest == recovery_digest and not os.path.lexists(os.fspath(console)):
+            os.rename(old, console)
+        raise
+    if captured(console) != source_digest or os.path.lexists(os.fspath(staged)):
+        raise OSError("private restore source promotion failed")
+    return old
+
+
 def restore_durable_backup(
     data_root: Path,
     backup_file: Path,
@@ -1279,6 +1688,8 @@ def restore_durable_backup(
     recovery_name: str | None = None
     try:
         with _durable_mutation_lock(target) as root_descriptor:
+            if initial._backup_private is not None and mentat_server_active(target):
+                return _blocked_result(initial, "private_restore_server_active")
             if (
                 not _pinned_root_matches(target, root_descriptor)
                 or schema_status_under_lock(target, root_descriptor) != "current"
@@ -1298,6 +1709,8 @@ def restore_durable_backup(
                 (
                     source_raw,
                     source_documents,
+                    _source_private,
+                    _source_format_version,
                     _source_name,
                     source_binding,
                 ) = _read_backup_file(Path(backup_file))
@@ -1411,12 +1824,18 @@ def restore_durable_backup(
                     items=initial.items,
                     issues=("restore_preview_required",),
                 )
-            source_raw, source_documents, _source_name, source_binding = _read_backup_file(
-                Path(backup_file)
-            )
+            (
+                source_raw,
+                source_documents,
+                source_private,
+                source_format_version,
+                _source_name,
+                source_binding,
+            ) = _read_backup_file(Path(backup_file))
             live_documents = _load_live_documents(target, root_descriptor)
             binding = _target_binding(target, root_descriptor)
             state = _read_restore_state(target, root_descriptor)
+            live_private = _capture_private_for_restore_state(target, state)
             if state is None:
                 expected_token = _preview_token(
                     binding,
@@ -1424,11 +1843,15 @@ def restore_durable_backup(
                     source_raw,
                     source_documents,
                     live_documents,
+                    backup_private=source_private,
+                    backup_format_version=source_format_version,
+                    target_private=live_private,
                 )
                 if expected_token != confirmation_token:
                     return _blocked_result(initial, "restore_state_changed")
                 recovery_documents = live_documents
-                recovery_raw = _build_backup(recovery_documents)
+                recovery_private = live_private
+                recovery_raw = _build_backup(recovery_documents, recovery_private)
                 mutation_started = True
                 internal_source_name = _publish_verified_backup(
                     target,
@@ -1445,6 +1868,8 @@ def restore_durable_backup(
                 (
                     verified_source_raw,
                     verified_source_documents,
+                    _verified_source_private,
+                    _verified_source_version,
                     source_evidence_binding,
                 ) = _read_internal_backup(
                     target,
@@ -1454,6 +1879,8 @@ def restore_durable_backup(
                 (
                     verified_recovery_raw,
                     verified_recovery_documents,
+                    _verified_recovery_private,
+                    _verified_recovery_version,
                     recovery_evidence_binding,
                 ) = _read_internal_backup(
                     target,
@@ -1474,7 +1901,10 @@ def restore_durable_backup(
                     source_binding=source_binding,
                     source_evidence_binding=source_evidence_binding,
                     source_documents=source_documents,
+                    source_private=source_private,
+                    source_format_version=source_format_version,
                     old_documents=recovery_documents,
+                    old_private=recovery_private,
                     recovery_raw=recovery_raw,
                     recovery_evidence_binding=recovery_evidence_binding,
                 )
@@ -1487,13 +1917,25 @@ def restore_durable_backup(
                     source_raw=source_raw,
                     source_binding=source_binding,
                     source_documents=source_documents,
+                    source_private=source_private,
+                    source_format_version=source_format_version,
                     live_documents=live_documents,
+                    live_private=live_private,
                     target_binding=binding,
                     root_descriptor=root_descriptor,
                 )
                 if not valid or state.get("preview_token") != confirmation_token:
                     return _blocked_result(initial, "restore_state_changed")
                 recovery_name = str(state["recovery_backup_name"])
+                (
+                    _recovery_archive_raw,
+                    _recovery_archive_documents,
+                    recovery_private,
+                    _recovery_archive_version,
+                    _recovery_archive_binding,
+                ) = _read_internal_backup(target, recovery_name, root_descriptor)
+                if recovery_private is None:
+                    raise OSError("restore recovery private unit missing")
             source_by_name = {item.name: item for item in source_documents}
             recovery_by_name = {item.name: item for item in recovery_documents}
             current = _load_live_documents(target, root_descriptor)
@@ -1513,13 +1955,49 @@ def restore_durable_backup(
                     maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
                 )
             terminal = _load_live_documents(target, root_descriptor)
+            old_private_tree: Path | None = None
+            if source_private is not None:
+                old_private_tree = _restore_private_console_under_lock(
+                    target,
+                    token=confirmation_token,
+                    source=source_private,
+                    recovery=recovery_private,
+                )
+            terminal_private = capture_private_console_unit(target)
+            if source_private is not None:
+                validate_private_console_stage_inventory(
+                    target,
+                    private_console_root(target),
+                    terminal_private,
+                    allow_canonical=True,
+                )
             if (
                 [(item.name, item.raw) for item in terminal]
                 != [(item.name, item.raw) for item in source_documents]
+                or (
+                    source_private is not None
+                    and private_console_unit_digest(terminal_private)
+                    != private_console_unit_digest(source_private)
+                )
                 or schema_status_under_lock(target, root_descriptor) != "current"
                 or not _pinned_root_matches(target, root_descriptor)
             ):
                 raise OSError("restore terminal verification failed")
+            if old_private_tree is not None:
+                remove_private_console_tree(target, old_private_tree)
+            if source_private is not None:
+                validate_private_console_stage_inventory(
+                    target,
+                    private_console_root(target),
+                    source_private,
+                    allow_canonical=True,
+                )
+                post_cleanup_private = capture_private_console_unit(target)
+                if (
+                    private_console_unit_digest(post_cleanup_private)
+                    != private_console_unit_digest(source_private)
+                ):
+                    raise OSError("restore private content changed during cleanup")
             with _guarded_child_directory(target, root_descriptor, "config") as config_fd:
                 if (
                     _restore_artifact_issue_under_lock(target, root_descriptor)
@@ -1541,16 +2019,34 @@ def restore_durable_backup(
                 _unlink_relative(state_path, config_fd)
                 if _entry_exists_at(state_path, config_fd):
                     raise OSError("restore state removal unverified")
+            completion_private = capture_private_console_unit(target)
+            if source_private is not None:
+                validate_private_console_stage_inventory(
+                    target,
+                    private_console_root(target),
+                    completion_private,
+                    allow_canonical=True,
+                )
             if (
                 schema_status_under_lock(target, root_descriptor) != "current"
                 or _load_live_documents(target, root_descriptor) != terminal
+                or (
+                    source_private is not None
+                    and private_console_unit_digest(completion_private)
+                    != private_console_unit_digest(source_private)
+                )
                 or _restore_artifact_issue_under_lock(target, root_descriptor) is not None
                 or not _pinned_root_matches(target, root_descriptor)
             ):
                 raise OSError("restore completion verification failed")
         return RestoreResult(
             status="resumed" if initial.status == "resume_required" else "restored",
-            items=_item_summaries(source_documents, source_documents),
+            items=_backup_item_summaries(
+                source_documents,
+                source_private,
+                source_documents,
+                source_private,
+            ),
             recovery_backup_name=recovery_name,
         )
     except _BOUNDARY_EXCEPTIONS:

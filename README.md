@@ -156,20 +156,31 @@ python server.py --data-dir "/path/to/mentat-data" --preview-schema-migration
 python server.py --data-dir "/path/to/mentat-data" --confirm-schema-migration TOKEN_FROM_PREVIEW
 ```
 
-Milestone 1E-A adds fixed durable-JSON backup and restore. It creates an
-owner-only versioned archive of the nine schema-governed documents, then
-requires an exact read-only preview and matching confirmation before restore.
-It publishes a pre-restore recovery archive and resumes only recognized exact
-interruption state; startup blocks ambiguous or incomplete restore evidence.
+Milestone 1E adds durable JSON and private Console backup/restore. Retained
+Console history, a WAL-safe SQLite snapshot filtered to retained run
+references, and exactly the referenced ready blobs are captured with the nine
+schema-governed JSON documents under one shared lock. Runtime uploads, exports,
+input/workspace snapshots, credentials, logs, caches, and nested backups remain
+excluded. Version-1 JSON-only archives remain restorable without changing the
+destination's private Console state.
 
 ```bash
 python server.py --data-dir "/path/to/mentat-data" --create-backup
-python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v1-ID.zip"
-python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v1-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v2-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v2-ID.zip"
 ```
 
-Private Console history/SQLite/blob backup, private-state movement, unified
-installed CLI commands, and installer behavior remain separate roadmap work.
+Existing Console state below legacy `runtime/` paths must be moved explicitly;
+the preview is read-only and confirmation is bound to the exact source. The
+legacy source is preserved after the verified destination and completion
+receipt are published:
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --preview-private-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-private-migration TOKEN_FROM_PREVIEW
+```
+
+Unified installed CLI commands and installer behavior remain separate roadmap work.
 `--print-config` and every preview mode remain side-effect-free.
 
 ## A few important boundaries
@@ -199,7 +210,8 @@ data_migration.py            Previewed, backed-up legacy JSON migration
 data_schema.py               Durable JSON schema manifest and migration
 public/                      Static dashboard UI
 data/                        Public-safe project-owned seed data
-data/runtime/                Private, generated, gitignored runtime data
+<data-root>/private/         Durable, owner-only Console state
+<data-root>/runtime/         Ephemeral private execution and lifecycle state
 DATA_LAYOUT.md               Approved target data-root and migration contract
 hermes_*.py                  Capability-scoped Hermes adapters
 agent_console_*.py           Console files, artifacts, and run support
@@ -242,6 +254,7 @@ are required release channels. Those artifacts do not exist yet. The early CI
 guardrail, Milestone 1A data-layout contract, Milestone 1B resolver/preflight/
 initializer, and Milestone 1C legacy durable-JSON migration are complete.
 Durable JSON schema evolution and its bounded backup/restore foundation are
-complete. Moving private Console state and adding its consistent backup unit
-remain the next durable-data work before remote-Hermes implementation and
-packaging begin.
+complete. Durable private Console migration and its consistent retained
+history/SQLite/referenced-blob backup unit are also complete. Upgrade and
+uninstall-preservation coverage is the remaining Milestone 1 work before
+remote-Hermes implementation and packaging begin.
