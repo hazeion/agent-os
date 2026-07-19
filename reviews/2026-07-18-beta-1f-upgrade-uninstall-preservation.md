@@ -1,6 +1,6 @@
 # Feature Slice Review: Upgrade and Uninstall Data Preservation
 
-Status: Implementation, local verification, documentation, and two zero-finding adversarial reviews complete; hosted verification pending
+Status: Implementation, local verification, documentation, and two zero-finding adversarial reviews complete; final exact-head hosted verification and merge pending
 Slice: `beta-1f-upgrade-uninstall-preservation`
 Date: `2026-07-18`
 Review log: `reviews/2026-07-18-beta-1f-upgrade-uninstall-preservation.md`
@@ -54,7 +54,7 @@ metadata, and referenced blobs.
 | AC-4 | Upgrade preserves the retained Console consistency unit: history, SQLite relationships, attachment metadata, and referenced blob bytes remain valid and equivalent. | Private-unit capture/digest and attachment-resolution assertions | Complete |
 | AC-5 | Removing only the application tree leaves the external data root byte-for-byte unchanged, including backups and durable configuration, while excluded runtime/cache/log state grants no preservation authority. | Pre/post uninstall filesystem snapshot with class exclusions stated | Complete |
 | AC-6 | Reinstalling from another changed application tree reconnects to the same data root without recopying defaults, duplicating private records, or modifying the application tree. | Reinstall startup, exact JSON/private checks, and application snapshot | Complete |
-| AC-7 | Local/full/static checks, the supported hosted matrix, documentation, and two independent adversarial reviews clear on the final diff. | Verification record and CI link | Local/review complete; hosted pending |
+| AC-7 | Local/full/static checks, the supported hosted matrix, documentation, and two independent adversarial reviews clear on the final diff. | Verification record and CI link | Code-head hosted/review complete; final evidence-log head pending |
 
 ### Constraints and recovery
 
@@ -145,10 +145,16 @@ metadata, and referenced blobs.
 - Beta-contract and CI-contract suites pass with Milestone 1 complete and
   Milestone 2 as the next bounded roadmap action.
 - Full local discovery passes: 576 tests, four platform-specific skips, zero
-  failures/errors on macOS Python 3.13.
+  failures/errors on macOS Python 3.13 in 125.526 seconds after the hosted-CI
+  contract correction.
 - `python3 -m compileall -q .`, JavaScript syntax checks for the public/runtime
   scripts, and `git diff --check` pass.
-- Hosted verification remains pending publication.
+- The first hosted run, `29670059938`, passed 33 of 42 jobs. The preservation
+  test passed on Ubuntu and its Windows Python 3.11 shard; all nine failures
+  came from two stale `test_data_layout_contract.py` expectations that still
+  described Milestone 1 as incomplete.
+- Code-head hosted run `29706197693` passes all 42 Linux, macOS, and Windows
+  jobs on commit `5b0fd09ab7da51bfc8e8544fef5fa4fe7247b4fb`.
 
 ## Adversarial review
 
@@ -161,7 +167,15 @@ compatibility reviewer found a stale outcome sentence that understated the
 completed local gates and an overbroad read-only claim that did not distinguish
 POSIX modes from Windows snapshot evidence. All findings were fixed, the
 focused and full suites were rerun, and both reviewers returned zero findings
-on the final exact diff.
+on the implementation diff.
+
+After the first hosted run exposed obsolete documentation-contract assertions,
+both reviewers independently found that the initial correction encoded
+incidental Markdown wrapping. The correction now normalizes prose whitespace
+and slash-boundary wrapping while retaining exact status/table assertions and
+requiring the canonical combined 1E-B/1F completion statement. Focused tests
+passed 9/9, full discovery passed 576 tests with four native-platform skips,
+and both reviewers returned zero findings on the corrected exact diff.
 
 ## Documentation updates
 
@@ -174,10 +188,14 @@ credential and bounded HTTPS boundary to remain the next roadmap work.
 
 - Branch and base: `codex/beta-1f-upgrade-uninstall-preservation` to merged
   `main`.
-- Commit/PR packet: pending.
+- Implementation commit: `fa35bc884e271cde19de5ea53a5000f15cd660d5`.
+- Hosted-contract correction commit:
+  `5b0fd09ab7da51bfc8e8544fef5fa4fe7247b4fb`.
+- Ready PR: `https://github.com/hazeion/agent-os/pull/27`.
 - User authorization: standing approval recorded.
 
 ## Outcome review
 
-Implementation, local verification, and adversarial review are complete.
-Pending hosted verification, publication, and merge.
+Implementation, local verification, documentation, adversarial review, and
+ready-PR publication are complete. The code head passed the full hosted matrix;
+pending final evidence-log review, exact-head CI, and merge.
