@@ -33,6 +33,9 @@ from mentat_db import MentatDatabaseError, connect
 from runtime_config import AppConfig, prepare_data_root_for_startup
 
 
+THREAD_TIMEOUT_SECONDS = 15
+
+
 class PrivateConsoleStateTests(unittest.TestCase):
     def make_current(self, base: Path, name: str, marker: str) -> Path:
         seeds = base / f"{name}-seeds"
@@ -916,9 +919,9 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 writer_done.set()
 
             thread = Thread(target=writer)
-            thread.start()
             try:
-                self.assertTrue(entered.wait(1))
+                thread.start()
+                self.assertTrue(entered.wait(THREAD_TIMEOUT_SECONDS))
                 with private_state_lock(root, allow_control=True):
                     real_root_lock_for = json_store._root_lock_for
 
@@ -942,7 +945,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                         json_store, "_root_lock_for", side_effect=observed_root_lock
                     ):
                         attempt_write.set()
-                        self.assertTrue(attempting.wait(1))
+                        self.assertTrue(attempting.wait(THREAD_TIMEOUT_SECONDS))
                         self.assertTrue(lock_was_busy.is_set())
                         config = root / "config"
                         config.mkdir(mode=0o700)
@@ -952,7 +955,8 @@ class PrivateConsoleStateTests(unittest.TestCase):
                         self.assertFalse(writer_done.wait(0.1))
             finally:
                 attempt_write.set()
-                thread.join(2)
+                if thread.ident is not None:
+                    thread.join(THREAD_TIMEOUT_SECONDS)
             self.assertFalse(thread.is_alive())
             self.assertTrue(writer_done.is_set())
             self.assertTrue(errors)

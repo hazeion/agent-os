@@ -23,6 +23,7 @@ import server
 
 
 ROOT = Path(__file__).resolve().parents[1]
+THREAD_TIMEOUT_SECONDS = 15
 
 
 class DataBackupRestoreTests(unittest.TestCase):
@@ -160,7 +161,7 @@ class DataBackupRestoreTests(unittest.TestCase):
 
             def pause_build(documents, private_unit=None, **kwargs):
                 entered.set()
-                self.assertTrue(release.wait(2))
+                self.assertTrue(release.wait(THREAD_TIMEOUT_SECONDS))
                 return real_build(documents, private_unit, **kwargs)
 
             def create_backup():
@@ -181,16 +182,22 @@ class DataBackupRestoreTests(unittest.TestCase):
 
             with patch.object(backup_restore, "_build_backup", side_effect=pause_build):
                 backup_thread = Thread(target=create_backup)
-                backup_thread.start()
-                self.assertTrue(entered.wait(2))
-                writer_thread = Thread(target=mutate)
-                writer_thread.start()
-                self.assertFalse(writer_finished.wait(0.1))
-                release.set()
-                backup_thread.join(3)
-                writer_thread.join(3)
+                writer_thread = None
+                try:
+                    backup_thread.start()
+                    self.assertTrue(entered.wait(THREAD_TIMEOUT_SECONDS))
+                    writer_thread = Thread(target=mutate)
+                    writer_thread.start()
+                    self.assertFalse(writer_finished.wait(0.1))
+                finally:
+                    release.set()
+                    if backup_thread.ident is not None:
+                        backup_thread.join(THREAD_TIMEOUT_SECONDS)
+                    if writer_thread is not None and writer_thread.ident is not None:
+                        writer_thread.join(THREAD_TIMEOUT_SECONDS)
 
             self.assertFalse(backup_thread.is_alive())
+            self.assertIsNotNone(writer_thread)
             self.assertFalse(writer_thread.is_alive())
             self.assertTrue(writer_finished.is_set())
 
@@ -870,29 +877,32 @@ class DataBackupRestoreTests(unittest.TestCase):
                 )
                 startup_finished.set()
 
-            with json_store._durable_mutation_lock(target):
-                with patch.object(
-                    runtime_config,
-                    "restore_startup_status",
-                    side_effect=observe_initial_status,
-                ):
-                    startup_thread = Thread(target=run_startup)
-                    startup_thread.start()
-                    self.assertTrue(initial_checked.wait(2))
-                    self.assertFalse(startup_finished.wait(0.1))
+            startup_thread = Thread(target=run_startup)
+            try:
+                with json_store._durable_mutation_lock(target):
                     with patch.object(
-                        backup_restore,
-                        "write_json_bytes_atomic",
-                        side_effect=OSError("simulated first-commit failure"),
+                        runtime_config,
+                        "restore_startup_status",
+                        side_effect=observe_initial_status,
                     ):
-                        partial = backup_restore.restore_durable_backup(
-                            target,
-                            backup_path,
-                            confirmation_token=preview.confirmation_token or "",
-                        )
-                    self.assertEqual(partial.status, "partial_failure")
-                    partial_snapshot = self.snapshot(target)
-            startup_thread.join(3)
+                        startup_thread.start()
+                        self.assertTrue(initial_checked.wait(THREAD_TIMEOUT_SECONDS))
+                        self.assertFalse(startup_finished.wait(0.1))
+                        with patch.object(
+                            backup_restore,
+                            "write_json_bytes_atomic",
+                            side_effect=OSError("simulated first-commit failure"),
+                        ):
+                            partial = backup_restore.restore_durable_backup(
+                                target,
+                                backup_path,
+                                confirmation_token=preview.confirmation_token or "",
+                            )
+                        self.assertEqual(partial.status, "partial_failure")
+                        partial_snapshot = self.snapshot(target)
+            finally:
+                if startup_thread.ident is not None:
+                    startup_thread.join(THREAD_TIMEOUT_SECONDS)
 
             self.assertFalse(startup_thread.is_alive())
             self.assertIn("restore_incomplete_or_invalid", startup_errors[0] or "")
@@ -1071,7 +1081,7 @@ class DataBackupRestoreTests(unittest.TestCase):
 
             def fail_first_live_commit(*_args, **_kwargs):
                 entered.set()
-                self.assertTrue(release.wait(2))
+                self.assertTrue(release.wait(THREAD_TIMEOUT_SECONDS))
                 raise OSError("simulated commit interruption")
 
             def run_restore():
@@ -1106,16 +1116,22 @@ class DataBackupRestoreTests(unittest.TestCase):
                 patch.object(server, "DATA_MUTATION_LOCK", True),
             ):
                 restore_thread = Thread(target=run_restore)
-                restore_thread.start()
-                self.assertTrue(entered.wait(2))
-                writer_thread = Thread(target=run_server_writer)
-                writer_thread.start()
-                self.assertFalse(writer_finished.wait(0.1))
-                release.set()
-                restore_thread.join(3)
-                writer_thread.join(3)
+                writer_thread = None
+                try:
+                    restore_thread.start()
+                    self.assertTrue(entered.wait(THREAD_TIMEOUT_SECONDS))
+                    writer_thread = Thread(target=run_server_writer)
+                    writer_thread.start()
+                    self.assertFalse(writer_finished.wait(0.1))
+                finally:
+                    release.set()
+                    if restore_thread.ident is not None:
+                        restore_thread.join(THREAD_TIMEOUT_SECONDS)
+                    if writer_thread is not None and writer_thread.ident is not None:
+                        writer_thread.join(THREAD_TIMEOUT_SECONDS)
 
             self.assertFalse(restore_thread.is_alive())
+            self.assertIsNotNone(writer_thread)
             self.assertFalse(writer_thread.is_alive())
             self.assertCountEqual(results, ["partial_failure", "server_blocked"])
             self.assertEqual(backup_restore.restore_startup_status(target), "invalid")

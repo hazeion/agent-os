@@ -140,7 +140,7 @@ class CiWorkflowContractTests(unittest.TestCase):
             namespace["SPLIT_TEST_WEIGHT"],
         )
         self.assertEqual(namespace["SHARD_COUNT"], 12)
-        self.assertEqual(namespace["MAX_CONCURRENT_SHARDS"], 6)
+        self.assertEqual(namespace["MAX_CONCURRENT_SHARDS"], 4)
         self.assertEqual(len(shards), 12)
         self.assertTrue(all(shards))
         for module in namespace["SPLITTABLE_MODULES"]:
@@ -329,7 +329,7 @@ class CiWorkflowContractTests(unittest.TestCase):
             namespace["_spawn_shard"] = original_spawn
             namespace["time"].sleep = original_sleep
         self.assertEqual(len(spawned), 12)
-        self.assertEqual(FakeProcess.max_active, 6)
+        self.assertEqual(FakeProcess.max_active, 4)
 
         spawned.clear()
         FakeProcess.active = 0
@@ -361,7 +361,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         finally:
             namespace["_spawn_shard"] = original_spawn
             namespace["time"].sleep = original_sleep
-        self.assertEqual(len(spawned), 6)
+        self.assertEqual(len(spawned), 4)
         self.assertTrue(all(process.terminated for process in spawned))
         self.assertTrue(all(process.waited for process in spawned))
         self.assertEqual(FakeProcess.active, 0)
