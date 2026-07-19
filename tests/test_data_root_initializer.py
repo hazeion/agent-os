@@ -1,24 +1,43 @@
 from __future__ import annotations
 
 import json
-import multiprocessing
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
+import time
 import unittest
 from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import data_layout
 from data_layout import SEED_FILE_NAMES, initialize_data_root
 
 
-def _initializer_worker(seed_root: str, data_root: str, home: str, ready, start, results) -> None:
-    ready.put(True)
-    start.wait(10)
+def _initializer_worker(
+    seed_root: str,
+    data_root: str,
+    home: str,
+    ready_path: str,
+    start_path: str,
+    result_path: str,
+) -> None:
+    Path(ready_path).write_text("ready\n", encoding="utf-8")
+    deadline = time.monotonic() + 20
+    while not Path(start_path).is_file():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("initializer worker start rendezvous timed out")
+        time.sleep(0.01)
     result = initialize_data_root(Path(seed_root), Path(data_root), home=Path(home))
-    results.put((result.status, result.issues))
+    Path(result_path).write_text(
+        json.dumps([result.status, result.issues]) + "\n",
+        encoding="utf-8",
+    )
 
 
 class DataRootInitializerTests(unittest.TestCase):
@@ -634,28 +653,48 @@ class DataRootInitializerTests(unittest.TestCase):
             seeds = root / "seeds"
             target = root / "target"
             self.write_seeds(seeds)
-            context = multiprocessing.get_context("spawn")
-            ready = context.Queue()
-            results = context.Queue()
-            start = context.Event()
-            workers = [
-                context.Process(
-                    target=_initializer_worker,
-                    args=(str(seeds), str(target), str(root / "home"), ready, start, results),
-                )
-                for _ in range(2)
-            ]
+            start_path = root / "start"
+            ready_paths = [root / f"ready-{index}" for index in range(2)]
+            result_paths = [root / f"result-{index}.json" for index in range(2)]
+            workers: list[subprocess.Popen[str]] = []
             try:
+                for ready_path, result_path in zip(ready_paths, result_paths):
+                    workers.append(
+                        subprocess.Popen(
+                            [
+                                sys.executable,
+                                str(Path(__file__).resolve()),
+                                "--initializer-worker",
+                                str(seeds),
+                                str(target),
+                                str(root / "home"),
+                                str(ready_path),
+                                str(start_path),
+                                str(result_path),
+                            ],
+                            cwd=ROOT,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                        )
+                    )
+                deadline = time.monotonic() + 10
+                while not all(path.is_file() for path in ready_paths):
+                    for worker in workers:
+                        if worker.poll() is not None:
+                            _stdout, stderr = worker.communicate()
+                            self.fail(f"initializer worker exited before rendezvous: {stderr}")
+                    self.assertLess(time.monotonic(), deadline, "initializer workers did not become ready")
+                    time.sleep(0.01)
+                start_path.write_text("start\n", encoding="utf-8")
                 for worker in workers:
-                    worker.start()
-                for _ in workers:
-                    self.assertTrue(ready.get(timeout=10))
-                start.set()
-                for worker in workers:
-                    worker.join(15)
-                    self.assertEqual(worker.exitcode, 0)
+                    _stdout, stderr = worker.communicate(timeout=15)
+                    self.assertEqual(worker.returncode, 0, stderr)
 
-                worker_results = [results.get(timeout=5) for _ in workers]
+                worker_results = [
+                    json.loads(path.read_text(encoding="utf-8"))
+                    for path in result_paths
+                ]
                 statuses = sorted(result[0] for result in worker_results)
                 self.assertEqual(statuses, ["existing", "initialized"], worker_results)
                 self.assertEqual(
@@ -673,29 +712,35 @@ class DataRootInitializerTests(unittest.TestCase):
                         cleanup_errors.append(exc)
                         return False, None
 
-                attempt(start.set)
+                attempt(lambda: start_path.write_text("start\n", encoding="utf-8"))
                 for worker in workers:
-                    if worker.ident is None:
-                        continue
-                    alive_ok, alive = attempt(worker.is_alive)
-                    if alive_ok and alive:
+                    poll_ok, returncode = attempt(worker.poll)
+                    if poll_ok and returncode is None:
                         attempt(worker.terminate)
-                    attempt(lambda worker=worker: worker.join(5))
-                    alive_ok, alive = attempt(worker.is_alive)
-                    if alive_ok and alive:
+                    attempt(lambda worker=worker: worker.wait(timeout=5))
+                    poll_ok, returncode = attempt(worker.poll)
+                    if poll_ok and returncode is None:
                         attempt(worker.kill)
-                        attempt(lambda worker=worker: worker.join(5))
-                        alive_ok, alive = attempt(worker.is_alive)
-                    if alive_ok and not alive:
-                        attempt(worker.close)
-                    elif alive_ok:
+                        attempt(lambda worker=worker: worker.wait(timeout=5))
+                        poll_ok, returncode = attempt(worker.poll)
+                    if poll_ok and returncode is None:
                         cleanup_errors.append(RuntimeError("initializer test worker did not stop"))
-                for queue in (ready, results):
-                    attempt(queue.close)
-                    attempt(queue.join_thread)
+                    drained, _output = attempt(
+                        lambda worker=worker: worker.communicate(timeout=5)
+                    )
+                    if not drained:
+                        if worker.stdout is not None:
+                            attempt(worker.stdout.close)
+                        if worker.stderr is not None:
+                            attempt(worker.stderr.close)
                 if cleanup_errors and not original_failure:
-                    raise RuntimeError("multiprocessing test cleanup failed") from cleanup_errors[0]
+                    raise RuntimeError("initializer worker cleanup failed") from cleanup_errors[0]
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:2] == ["--initializer-worker"]:
+        if len(sys.argv) != 8:
+            raise SystemExit("invalid initializer worker arguments")
+        _initializer_worker(*sys.argv[2:])
+    else:
+        unittest.main()
