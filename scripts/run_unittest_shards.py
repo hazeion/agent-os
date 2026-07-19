@@ -292,7 +292,7 @@ def _stop_process_tree(process: subprocess.Popen[bytes]) -> None:
         return
     try:
         if IS_WINDOWS:
-            process.send_signal(subprocess.CTRL_BREAK_EVENT)
+            process.send_signal(signal.CTRL_BREAK_EVENT)
         else:
             os.killpg(process.pid, signal.SIGTERM)
     except (OSError, ValueError):

@@ -449,7 +449,7 @@ class CiWorkflowContractTests(unittest.TestCase):
                 namespace["subprocess"].run = original_run
             self.assertEqual(
                 hanging.signals,
-                [namespace["subprocess"].CTRL_BREAK_EVENT],
+                [namespace["signal"].CTRL_BREAK_EVENT],
             )
             self.assertEqual(
                 taskkill_commands,
