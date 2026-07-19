@@ -24,6 +24,7 @@ import server
 
 ROOT = Path(__file__).resolve().parents[1]
 THREAD_TIMEOUT_SECONDS = 15
+CLI_SUBPROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 class DataBackupRestoreTests(unittest.TestCase):
@@ -554,6 +555,7 @@ class DataBackupRestoreTests(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
+                creationflags=CLI_SUBPROCESS_FLAGS,
             )
             self.assertEqual(cli_preview.returncode, 0, cli_preview.stderr)
             self.assertEqual(json.loads(cli_preview.stdout)["status"], "recovery_required")
@@ -1175,6 +1177,7 @@ class DataBackupRestoreTests(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
+                creationflags=CLI_SUBPROCESS_FLAGS,
             )
             self.assertEqual(created.returncode, 0, created.stderr)
             created_payload = json.loads(created.stdout)
@@ -1193,6 +1196,7 @@ class DataBackupRestoreTests(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
+                creationflags=CLI_SUBPROCESS_FLAGS,
             )
             self.assertEqual(previewed.returncode, 0, previewed.stderr)
             preview_payload = json.loads(previewed.stdout)
@@ -1213,6 +1217,7 @@ class DataBackupRestoreTests(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
+                creationflags=CLI_SUBPROCESS_FLAGS,
             )
             self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
             self.assertEqual(json.loads(confirmed.stdout)["status"], "restored")
