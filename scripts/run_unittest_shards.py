@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -17,6 +19,9 @@ TESTS = ROOT / "tests"
 SHARD_COUNT = 12
 SHARD_GROUP_COUNT = 12
 MAX_CONCURRENT_SHARDS = 4
+PROCESS_STOP_TIMEOUT_SECONDS = 5
+IS_WINDOWS = sys.platform == "win32"
+ISOLATED_PROCESS_GROUP_FLAGS = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 SPLIT_TEST_WEIGHT = 12
 SPLITTABLE_MODULES = frozenset(
     {
@@ -251,17 +256,81 @@ def run_shard(units: tuple[str, ...]) -> int:
 
 
 def run_group(group: tuple[tuple[str, ...], ...]) -> int:
-    """Run one CI group directly, without a supervising console process."""
+    """Run each unit in a fresh, sequential process within one bounded CI job."""
 
     if not group or any(not shard for shard in group):
         raise ValueError("invalid unittest shard group")
-    return run_shard(tuple(unit for shard in group for unit in shard))
+    failed = False
+    for unit in (unit for shard in group for unit in shard):
+        print(f"Running unittest unit: {unit}", flush=True)
+        process = _spawn_shard((unit,))
+        try:
+            result = process.wait()
+        except BaseException:
+            try:
+                _stop_process_tree(process)
+            except BaseException:
+                pass
+            raise
+        print(f"Finished unittest unit: {unit} (exit {result})", flush=True)
+        failed = failed or result != 0
+    return 1 if failed else 0
+
+
+def _wait_bounded(process: subprocess.Popen[bytes]) -> bool:
+    try:
+        process.wait(timeout=PROCESS_STOP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
+
+
+def _stop_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Stop an isolated unit process and its descendants without hanging cleanup."""
+
+    if process.poll() is not None:
+        return
+    try:
+        if IS_WINDOWS:
+            process.send_signal(subprocess.CTRL_BREAK_EVENT)
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+    except (OSError, ValueError):
+        pass
+    if _wait_bounded(process):
+        return
+
+    if IS_WINDOWS:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=PROCESS_STOP_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if _wait_bounded(process):
+        return
+    try:
+        process.kill()
+    except OSError:
+        return
+    _wait_bounded(process)
 
 
 def _spawn_shard(units: tuple[str, ...]) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "--run-shard", *units],
         cwd=ROOT,
+        creationflags=ISOLATED_PROCESS_GROUP_FLAGS,
+        start_new_session=not IS_WINDOWS,
     )
 
 
@@ -302,10 +371,10 @@ def run_shards(
             fill_available_slots()
     except BaseException:
         for process in active:
-            if process.poll() is None:
-                process.terminate()
-        for process in active:
-            process.wait()
+            try:
+                _stop_process_tree(process)
+            except BaseException:
+                pass
         raise
     return 1 if any(results) else 0
 

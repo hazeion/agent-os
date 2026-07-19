@@ -164,6 +164,11 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertEqual(namespace["SHARD_COUNT"], 12)
         self.assertEqual(namespace["SHARD_GROUP_COUNT"], 12)
         self.assertEqual(namespace["MAX_CONCURRENT_SHARDS"], 4)
+        self.assertEqual(namespace["PROCESS_STOP_TIMEOUT_SECONDS"], 5)
+        self.assertEqual(
+            namespace["ISOLATED_PROCESS_GROUP_FLAGS"],
+            getattr(namespace["subprocess"], "CREATE_NEW_PROCESS_GROUP", 0),
+        )
         self.assertEqual(len(shards), 12)
         self.assertTrue(all(shards))
         groups = namespace["shard_groups"](shards)
@@ -334,6 +339,8 @@ class CiWorkflowContractTests(unittest.TestCase):
                 self.done = False
                 self.terminated = False
                 self.waited = False
+                self.killed = False
+                self.pid = 4321 + FakeProcess.active
                 FakeProcess.active += 1
                 FakeProcess.max_active = max(FakeProcess.max_active, FakeProcess.active)
 
@@ -353,12 +360,122 @@ class CiWorkflowContractTests(unittest.TestCase):
                     self.done = True
                     FakeProcess.active -= 1
 
-            def wait(self):
+            def wait(self, timeout=None):
+                if not self.done:
+                    self.done = True
+                    FakeProcess.active -= 1
                 self.waited = True
                 return self.result
 
-        spawned = []
+            def kill(self):
+                self.killed = True
+                self.terminate()
+
+        group_spawned = []
         original_spawn = namespace["_spawn_shard"]
+        namespace["_spawn_shard"] = (
+            lambda shard: group_spawned.append(
+                FakeProcess(result=1 if len(group_spawned) == 1 else 0)
+            )
+            or group_spawned[-1]
+        )
+        try:
+            self.assertEqual(namespace["run_group"]((shards[0],)), 1)
+        finally:
+            namespace["_spawn_shard"] = original_spawn
+        self.assertEqual(
+            [process.result for process in group_spawned],
+            [0, 1, *([0] * (len(shards[0]) - 2))],
+        )
+        self.assertTrue(all(process.waited for process in group_spawned))
+        self.assertEqual(FakeProcess.active, 0)
+
+        interrupted = FakeProcess()
+        original_wait = interrupted.wait
+        interrupted.wait = lambda timeout=None: (
+            (_ for _ in ()).throw(KeyboardInterrupt())
+            if timeout is None
+            else original_wait(timeout)
+        )
+        stopped = []
+        original_stop = namespace["_stop_process_tree"]
+        namespace["_spawn_shard"] = lambda _shard: interrupted
+        namespace["_stop_process_tree"] = lambda process: (
+            stopped.append(process),
+            (_ for _ in ()).throw(RuntimeError("cleanup failed")),
+        )[-1]
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                namespace["run_group"](((shards[0][0],),))
+        finally:
+            namespace["_spawn_shard"] = original_spawn
+            namespace["_stop_process_tree"] = original_stop
+        self.assertEqual(stopped, [interrupted])
+        interrupted.terminate()
+        self.assertEqual(FakeProcess.active, 0)
+
+        class HangingTreeProcess:
+            def __init__(self):
+                self.pid = 9876
+                self.signals = []
+                self.wait_timeouts = []
+                self.killed = False
+
+            def poll(self):
+                return None
+
+            def send_signal(self, sent):
+                self.signals.append(sent)
+
+            def wait(self, timeout=None):
+                self.wait_timeouts.append(timeout)
+                if len(self.wait_timeouts) == 1:
+                    raise namespace["subprocess"].TimeoutExpired("unit", timeout)
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        hanging = HangingTreeProcess()
+        if namespace["IS_WINDOWS"]:
+            taskkill_commands = []
+            original_run = namespace["subprocess"].run
+            namespace["subprocess"].run = (
+                lambda command, **_kwargs: taskkill_commands.append(command)
+            )
+            try:
+                namespace["_stop_process_tree"](hanging)
+            finally:
+                namespace["subprocess"].run = original_run
+            self.assertEqual(
+                hanging.signals,
+                [namespace["subprocess"].CTRL_BREAK_EVENT],
+            )
+            self.assertEqual(
+                taskkill_commands,
+                [["taskkill", "/PID", "9876", "/T", "/F"]],
+            )
+        else:
+            group_signals = []
+            original_killpg = namespace["os"].killpg
+            namespace["os"].killpg = (
+                lambda pid, sent: group_signals.append((pid, sent))
+            )
+            try:
+                namespace["_stop_process_tree"](hanging)
+            finally:
+                namespace["os"].killpg = original_killpg
+            self.assertEqual(
+                group_signals,
+                [
+                    (9876, namespace["signal"].SIGTERM),
+                    (9876, namespace["signal"].SIGKILL),
+                ],
+            )
+        self.assertEqual(hanging.wait_timeouts, [5, 5])
+        self.assertFalse(hanging.killed)
+
+        spawned = []
         original_sleep = namespace["time"].sleep
         namespace["_spawn_shard"] = lambda shard: spawned.append(FakeProcess()) or spawned[-1]
         namespace["time"].sleep = lambda _seconds: None
@@ -394,15 +511,24 @@ class CiWorkflowContractTests(unittest.TestCase):
             or spawned[-1]
         )
         namespace["time"].sleep = lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt())
+        stopped.clear()
+        namespace["_stop_process_tree"] = lambda process: (
+            stopped.append(process),
+            (_ for _ in ()).throw(RuntimeError("cleanup failed"))
+            if len(stopped) == 1
+            else None,
+        )[-1]
         try:
             with self.assertRaises(KeyboardInterrupt):
                 namespace["run_shards"](shards)
         finally:
             namespace["_spawn_shard"] = original_spawn
             namespace["time"].sleep = original_sleep
+            namespace["_stop_process_tree"] = original_stop
         self.assertEqual(len(spawned), 4)
-        self.assertTrue(all(process.terminated for process in spawned))
-        self.assertTrue(all(process.waited for process in spawned))
+        self.assertEqual(stopped, spawned)
+        for process in spawned:
+            process.terminate()
         self.assertEqual(FakeProcess.active, 0)
 
     def test_workflow_is_read_only_and_secret_free(self):
