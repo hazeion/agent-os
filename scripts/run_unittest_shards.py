@@ -15,7 +15,7 @@ from unittest.loader import VALID_MODULE_NAME
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ROOT / "tests"
 SHARD_COUNT = 12
-SHARD_GROUP_COUNT = 6
+SHARD_GROUP_COUNT = 12
 MAX_CONCURRENT_SHARDS = 4
 SPLIT_TEST_WEIGHT = 12
 SPLITTABLE_MODULES = frozenset(
