@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -19,10 +20,17 @@ class DataLayoutContractTests(unittest.TestCase):
     def test_canonical_contract_distinguishes_read_only_from_writable_work(self):
         normalized = " ".join(CONTRACT.split())
         self.assertTrue(CONTRACT_PATH.exists())
-        self.assertIn("Status: Milestone 1A contract approved", CONTRACT)
-        self.assertIn("Milestone 1B initialization", CONTRACT)
-        self.assertIn("Milestone 1C legacy migration", CONTRACT)
-        self.assertIn("Milestone 1D durable-JSON schema versioning implemented", CONTRACT)
+        self.assertIn(
+            "Status: Milestone 1 durable-data boundary complete through 1F",
+            CONTRACT,
+        )
+        self.assertIn("Milestone 1B implements deterministic", normalized)
+        self.assertIn("Milestone 1C implements an explicit", normalized)
+        self.assertIn("Milestone 1D versions those unchanged JSON shapes", normalized)
+        self.assertIn(
+            "Milestone 1F proves that versioned application replacement",
+            normalized,
+        )
         self.assertIn("`--print-config` uses only this read-only path", normalized)
         self.assertIn(
             "config-less installed launch now initializes before lifecycle cleanup",
@@ -166,7 +174,7 @@ class DataLayoutContractTests(unittest.TestCase):
             self.assertIn(consistency_rule, backup_section)
 
     def test_primary_docs_link_the_contract_and_bound_the_implementation(self):
-        normalized_roadmap = " ".join(ROADMAP.split())
+        normalized_roadmap = re.sub(r"\s*/\s*", "/", " ".join(ROADMAP.split()))
         link = "[DATA_LAYOUT.md](DATA_LAYOUT.md)"
         self.assertIn(link, ARCHITECTURE)
         self.assertIn(link, README)
@@ -175,8 +183,16 @@ class DataLayoutContractTests(unittest.TestCase):
         self.assertIn("Milestone 1C legacy durable-JSON migration", normalized_roadmap)
         self.assertIn("Milestone 1D schema versioning", normalized_roadmap)
         self.assertIn("Milestone 1E-A durable-JSON backup/restore complete", normalized_roadmap)
-        self.assertIn("Milestone 1E-B durable private Console migration/backup/restore is also complete", normalized_roadmap)
-        self.assertIn("| 1 | Durable user data | In progress — 1A through 1E-B complete |", ROADMAP)
+        self.assertIn(
+            "Milestone 1E-B durable private Console migration/backup/restore and "
+            "Milestone 1F application-upgrade/uninstall preservation coverage "
+            "are also complete.",
+            normalized_roadmap,
+        )
+        self.assertIn(
+            "| 1 | Durable user data | Complete — 1A through 1F |",
+            ROADMAP,
+        )
 
         self.assertIn("from data_layout import", RUNTIME_CONFIG)
         self.assertIn("resolve_data_root", RUNTIME_CONFIG)
