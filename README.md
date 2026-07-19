@@ -256,5 +256,7 @@ initializer, and Milestone 1C legacy durable-JSON migration are complete.
 Durable JSON schema evolution and its bounded backup/restore foundation are
 complete. Durable private Console migration and its consistent retained
 history/SQLite/referenced-blob backup unit are also complete. Upgrade and
-uninstall-preservation coverage is the remaining Milestone 1 work before
-remote-Hermes implementation and packaging begin.
+application-only uninstall/reinstall preservation coverage now proves that
+changed packaged defaults do not overwrite the external data root. Milestone 1
+is complete; secure remote-Hermes parity is next, while installer mechanics
+remain in Milestone 3.

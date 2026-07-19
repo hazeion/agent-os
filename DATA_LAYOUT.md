@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1A contract approved; Milestone 1B initialization, Milestone 1C legacy migration, Milestone 1D durable-JSON schema versioning implemented, and Milestone 1E durable JSON/private Console backup and restore implemented
+Status: Milestone 1 durable-data boundary complete through 1F upgrade/uninstall preservation coverage
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -14,6 +14,9 @@ one sidecar manifest and explicit bootstrap migration. Milestone 1E-A adds the
 first general backup/restore format for that same fixed durable JSON set.
 Milestone 1E-B adds the durable private Console move, exact legacy migration,
 and WAL-safe retained history/SQLite/referenced-blob consistency unit.
+Milestone 1F proves that versioned application replacement and application-only
+uninstall/reinstall preserve that external durable boundary without choosing an
+installer format.
 
 ## Principles
 
@@ -601,8 +604,11 @@ runtime history.
 - Milestone 1E-A: fixed durable-operator JSON backup and previewed restore with
   pre-restore recovery evidence and interruption resume; complete.
 - Milestone 1E-B: private-state movement and consistent private backup;
-  implemented with its approved contract and failure-path evidence. Upgrade and
-  uninstall-preservation tests remain the next Milestone 1 work.
+  implemented with its approved contract and failure-path evidence.
+- Milestone 1F: versioned application-tree replacement, verified pre-upgrade
+  backup, changed-seed non-overwrite, application-only uninstall, and reinstall
+  preservation coverage across durable JSON and retained private Console state;
+  complete without selecting installer tooling.
 
 The source checkout continues using the current repo-local `data/` override.
 Documentation must describe that as development behavior, not as the installed

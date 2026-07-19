@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 1 in progress — 1A through 1E-B complete
+Status: Milestone 1 complete — 1A through 1F complete
 Last updated: 2026-07-18
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -75,10 +75,10 @@ Mentat already has a strong product and safety foundation:
 
 The largest beta gaps are operational rather than feature gaps:
 
-- clean installed layouts can initialize the platform root from immutable
-  seeds, and legacy durable JSON can migrate through an explicit backed-up
-  workflow; schema evolution, general backup/restore, and movement of existing
-  private/runtime state remain incomplete;
+- clean installed layouts initialize the platform root from immutable seeds;
+  legacy durable JSON and private Console state migrate explicitly; schema,
+  backup/restore, application-upgrade, and application-only uninstall
+  preservation boundaries are implemented and tested;
 - there is no installable Python package, native installer, product version
   source, or unified `mentat` command;
 - the early GitHub Actions matrix is in place, while later packaging, browser,
@@ -147,7 +147,7 @@ work is still small.
 | Order | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
-| 1 | Durable user data | In progress — 1A through 1E-B complete | 0 | Upgrade/uninstall preservation tests |
+| 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
 | 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
@@ -210,7 +210,8 @@ modifying its application files or Git checkout.
 Status: Milestone 1A contract, Milestone 1B resolver/preflight/initializer,
 Milestone 1C legacy durable-JSON migration, Milestone 1D schema versioning, and
 Milestone 1E-A durable-JSON backup/restore complete. Milestone 1E-B durable
-private Console migration/backup/restore is also complete. The complete current mutable-path inventory, target directory
+private Console migration/backup/restore and Milestone 1F application-upgrade/
+uninstall preservation coverage are also complete. The complete current mutable-path inventory, target directory
 classes, platform defaults,
 precedence, and fail-closed initialization/migration/backup rules are approved
 in [DATA_LAYOUT.md](DATA_LAYOUT.md). A clean config-less installed launch now
@@ -246,7 +247,7 @@ Work in order:
    **Milestone 1E-A complete for the fixed durable JSON set; Milestone 1E-B
    complete for the retained private Console consistency unit.**
 8. Add tests for first run, repeat run, migration, interrupted migration,
-   upgrade, restore, and uninstall-data preservation.
+   upgrade, restore, and uninstall-data preservation. **Milestone 1F complete.**
 
 Exit criteria:
 
@@ -254,7 +255,9 @@ Exit criteria:
 - a legacy operator can migrate without losing or duplicating data;
 - backup and restore are documented, tested, and fail closed;
 - an upgrade preserves tasks, settings, Context Packs, and private Console
-  metadata according to their retention rules.
+  metadata according to their retention rules; and
+- removing only the application tree preserves the external data root, while a
+  reinstall reconnects without recopying packaged defaults.
 
 ## Milestone 2 — Secure remote Hermes parity
 
@@ -536,11 +539,11 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Finish Milestone 1 with explicit upgrade and uninstall-data-preservation
-   tests across durable JSON and retained private Console state; keep installer
-   format work separate.
-2. Use the completed owner-only private boundary for the future remote Hermes
-   endpoint and API credential without adding either secret to ordinary backup.
+1. Begin Milestone 2 by using the completed owner-only private boundary for the
+   future remote Hermes endpoint and API credential without adding either
+   secret to ordinary backup, browser payloads, logs, or diagnostics.
+2. Define and test the bounded server-side HTTPS connection/capability boundary
+   before routing any Hermes behavior through it.
 3. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
    complete read-only profile discovery, and clarification handling without
    implementing an unsafe substitute.

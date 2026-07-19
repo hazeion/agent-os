@@ -50,6 +50,12 @@ private-state lock coordinates history and attachment mutation, reconciliation,
 migration, backup, and restore. Version-2 backups add a WAL-safe filtered
 SQLite snapshot, canonical retained history, and only referenced ready blobs;
 version-1 JSON-only restores remain supported and leave private state intact.
+Milestone 1F treats the installed application tree as replaceable and the data
+root as operator-owned. Integration coverage replaces immutable application
+trees whose seeds differ, requires a verified pre-upgrade backup, removes only
+the application tree, and reconnects a reinstall to the unchanged durable JSON
+and retained private Console consistency unit. Installer mechanics remain a
+separate Milestone 3 boundary.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other
