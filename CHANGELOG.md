@@ -5,6 +5,10 @@ All notable changes to Mentat.
 ## 2026-07-18
 
 ### Added
+- Completed Milestone 1F with an installed-layout integration drill that creates
+  a verified pre-upgrade backup, replaces immutable application trees with
+  changed packaged seeds, removes only the application tree, and reconnects a
+  reinstall without changing durable JSON or retained private Console state.
 - Moved retained Agent Console history, SQLite metadata, and content-addressed
   blobs to owner-only durable `private/console` storage while keeping uploads,
   exports, execution inputs, and workspace/artifact snapshots in ephemeral
