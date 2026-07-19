@@ -250,6 +250,14 @@ def run_shard(units: tuple[str, ...]) -> int:
     return 0 if unittest.TextTestRunner(verbosity=0, buffer=True).run(suite).wasSuccessful() else 1
 
 
+def run_group(group: tuple[tuple[str, ...], ...]) -> int:
+    """Run one CI group directly, without a supervising console process."""
+
+    if not group or any(not shard for shard in group):
+        raise ValueError("invalid unittest shard group")
+    return run_shard(tuple(unit for shard in group for unit in shard))
+
+
 def _spawn_shard(units: tuple[str, ...]) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "--run-shard", *units],
@@ -316,7 +324,7 @@ def main(argv: tuple[str, ...] | None = None) -> int:
             groups = shard_groups(partition_units(weighted_units(modules)))
             if group_index < 0 or group_index >= len(groups):
                 raise RuntimeError("invalid unittest shard operation")
-            return run_shards(groups[group_index])
+            return run_group(groups[group_index])
         raise RuntimeError("invalid unittest shard operation")
 
     modules = test_modules()

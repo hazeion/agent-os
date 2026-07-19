@@ -161,6 +161,15 @@ class CiWorkflowContractTests(unittest.TestCase):
             Counter(shard for group in groups for shard in group),
             Counter(shards),
         )
+        self.assertEqual(
+            sum(
+                namespace["_build_shard_suite"](
+                    tuple(unit for shard in group for unit in shard)
+                ).countTestCases()
+                for group in groups
+            ),
+            sum(namespace["_build_shard_suite"](shard).countTestCases() for shard in shards),
+        )
         for module in namespace["SPLITTABLE_MODULES"]:
             source = (ROOT / Path(*module.split("."))).with_suffix(".py").read_text(
                 encoding="utf-8"
