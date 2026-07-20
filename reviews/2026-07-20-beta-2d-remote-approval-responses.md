@@ -71,3 +71,8 @@ and status-only blind approval remain out of scope.
 
 Publish only this blocker contract and the architecture/roadmap notes. Do not
 publish the withdrawn response implementation.
+
+- Implementation/audit commit: `133fb48`
+- Ready pull request: `#32`
+- Hosted supported-matrix run `29715527296`: all 42 jobs passed on macOS,
+  Ubuntu, and Windows with Python 3.11 through 3.13.
