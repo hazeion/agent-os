@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Session Search
 
-Status: Merged; post-merge Windows timing hotfix in progress
+Status: Merged; post-merge Windows timing hotfix ready to merge
 Slice: `beta-2h-remote-session-search`
 Date: `2026-07-20`
 Review log: `reviews/2026-07-20-beta-2h-remote-session-search.md`
@@ -186,7 +186,8 @@ unsupported remote mutation.
   exceeding the uniform 2.00-second test budget. The other 40 jobs passed and
   the production classifier remained unchanged. The
   assertion now keeps a 2.00-second non-Windows budget and uses 5.00 seconds on
-  Windows runners; hotfix hosted verification is pending.
+  Windows runners. Hotfix GitHub Actions run 85 passed all 42 jobs on exact
+  head `b605bcee1af05c1e0e55ba359af3be826ff0d069`.
 
 ### Rendered or manual behavior
 
@@ -857,6 +858,7 @@ unsupported remote mutation.
 - Commit evidence: `Add bounded remote session search`; final SHA is captured
   from Git HEAD for exact-head review and publication.
 - Ready PR URL: <https://github.com/hazeion/agent-os/pull/36>.
+- Timing hotfix PR URL: <https://github.com/hazeion/agent-os/pull/37>.
 
 ## Outcome review
 
