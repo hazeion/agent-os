@@ -15,6 +15,11 @@ All notable changes to Mentat.
   and retained Console run summaries, with safe defaults for older history.
 
 ### Safety
+- Audited remote approval responses and kept them unavailable: Hermes' current
+  mutation has no request ID/revision/hash, so Mentat cannot prove that a
+  user's confirmation still targets the displayed request. Approval requests
+  continue to stop the bound run safely until upstream adds exact binding and
+  a structured privacy-safe preview.
 - Remote runs now require the exact advertised Runs API endpoints, remain bound
   to one opaque connection identity, never retry submission, and issue at most
   one stop attempt. Interrupted streams reconcile through status; approval
