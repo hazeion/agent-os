@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Hermes Connection Foundation
 
-Status: Local verification and two adversarial reviews cleared; publication and hosted CI pending
+Status: Feature complete; exact CI on the evidence-only publication update pending
 Slice: `beta-2a-remote-hermes-foundation`
 Date: `2026-07-19`
 Review log: `reviews/2026-07-19-beta-2a-remote-hermes-foundation.md`
@@ -64,7 +64,7 @@ readiness/capability metadata from fixed authenticated Hermes API paths.
 | AC-5 | Only authenticated, schema-valid detailed health and capabilities authorize a trusted connection summary; unknown schemas/auth/platforms and unbounded or secret-shaped upstream data fail closed without raw details. | Discovery schema, redaction, auth, size, and malformed-response tests | Complete |
 | AC-6 | Browser-facing responses return only mode, the operator-supplied public label, opaque binding, minimized status/version/model/readiness/capability names, and bounded error codes; stored authority and unminimized upstream data are never returned. | Route and recursive secret-absence tests | Complete |
 | AC-7 | Local mode remains the default and performs no network request; changing a selection creates a different binding so later endpoint-bound state cannot cross connections. | Default/no-network and binding tests | Complete |
-| AC-8 | Focused/full/static checks, supported hosted matrix, documentation, and two independent adversarial reviews clear on the final diff. | Verification log and CI | Pending |
+| AC-8 | Focused/full/static checks, supported hosted matrix, documentation, and two independent adversarial reviews clear on the implementation diff. | Verification log and CI | Complete |
 
 ### Constraints and recovery
 
@@ -192,6 +192,7 @@ readiness/capability metadata from fixed authenticated Hermes API paths.
 | Command or action | Environment | Exit/result | Pass/fail/skip counts | Notes |
 | --- | --- | --- | --- | --- |
 | `python3 -m unittest discover -s tests -q` | macOS, Python 3.13 | `0` | 603 pass, 4 skip | Final post-review repository suite passed in 76.105 seconds. |
+| GitHub Actions run `29710865901` | Ubuntu, macOS, Windows; Python 3.11-3.13 | `success` | 42 pass | Exact implementation head `6c405c075bbfadf3b4d47ef86b33b889cba6d876`; native Windows DACL and all supported shards passed. |
 
 ### Rendered or manual behavior
 
@@ -247,15 +248,21 @@ readiness/capability metadata from fixed authenticated Hermes API paths.
   routes, tests, and documentation.
 - Unresolved risks: upstream profile, clarification, and Kanban blockers remain.
 - User authorization and scope: standing approval recorded.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- Commit hash: `6c405c075bbfadf3b4d47ef86b33b889cba6d876`.
+- Ready PR URL: `https://github.com/hazeion/agent-os/pull/29`.
 
 ## Outcome review
 
-- Classification: Pending.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending.
-- Remaining reviewer dissent: Pending.
-- Compatibility/migration/rollback concerns: Pending.
+- Classification: Success; Milestone 2A foundation complete without enabling
+  remote Console/runtime behavior.
+- Acceptance criteria summary: AC-1 through AC-8 complete on the implementation
+  head, including 603 local tests, 42 hosted jobs, and two zero-finding reviews.
+- Potential bugs or untested paths: live operator-managed remote-host
+  interoperability remains later Milestone 2 exit evidence; ordinary CI uses
+  canonical bounded response fixtures and native filesystem behavior.
+- Remaining reviewer dissent: None.
+- Compatibility/migration/rollback concerns: local mode remains the default;
+  selection failures preserve or exactly roll back prior state; the credential
+  remains intentionally outside ordinary backups.
 - User decision: standing authorization requires completion and continuation.
 - Next slice authorized: Yes, after merge.
