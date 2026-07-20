@@ -69,6 +69,9 @@ const state = {
   sessionDetailRequestGeneration: 0,
   activeView: 'today',
   messageSearchTimer: null,
+  messageSearchRequestGeneration: 0,
+  messageSearchInFlight: false,
+  messageSearchPending: null,
   isRefreshing: false,
   needsRefresh: false,
   hasBootstrapped: false,
@@ -216,9 +219,31 @@ function queryTerms(query = '') {
     .slice(0, 8);
 }
 
+function searchQueryLength(value = '') {
+  return Array.from(String(value)).length;
+}
+
 function highlightHtml(value = '', query = '') {
+  const text = String(value);
+  const literal = String(query).trim();
+  if (literal.length >= 1) {
+    const literalPattern = escapeRegExp(literal).replace(/\s+/g, '\\s+');
+    const matches = Array.from(text.matchAll(new RegExp(literalPattern, 'gi')));
+    if (matches.length) {
+      let offset = 0;
+      const parts = [];
+      matches.forEach((match) => {
+        const index = match.index ?? 0;
+        parts.push(escapeHtml(text.slice(offset, index)));
+        parts.push(`<mark>${escapeHtml(match[0])}</mark>`);
+        offset = index + match[0].length;
+      });
+      parts.push(escapeHtml(text.slice(offset)));
+      return parts.join('');
+    }
+  }
   const terms = queryTerms(query);
-  let html = escapeHtml(value);
+  let html = escapeHtml(text);
   terms.forEach((term) => {
     const safeTerm = escapeHtml(term);
     html = html.replace(new RegExp(`(${escapeRegExp(safeTerm)})`, 'gi'), '<mark>$1</mark>');

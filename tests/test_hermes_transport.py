@@ -73,6 +73,14 @@ class HermesTransportTests(unittest.TestCase):
             root.chmod(0o700)
         return root
 
+    def test_private_remote_content_has_a_bounded_public_message(self):
+        error = HermesTransportError("remote_private_reflection")
+        self.assertEqual(
+            error.public_message,
+            "Remote content was blocked by Mentat's content-safety checks.",
+        )
+        self.assertNotIn("reflection", error.public_message.casefold())
+
     def local_adapter(
         self,
         binding: TransportBinding,

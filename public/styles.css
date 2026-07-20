@@ -2274,6 +2274,13 @@ h2 {
   margin: 0 0 8px;
   text-transform: uppercase;
 }
+.message-search-coverage {
+  margin: -2px 0 8px;
+  color: var(--muted);
+  font-size: .7rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 .message-result-grid {
   display: grid;
   gap: 8px;
@@ -2462,6 +2469,7 @@ h2 {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.plain-text-message { white-space: pre-wrap; }
 .markdown-body p { margin: 0 0 .7em; }
 .markdown-body p:last-child { margin-bottom: 0; }
 .markdown-body h4,

@@ -5,6 +5,10 @@ All notable changes to Mentat.
 ## 2026-07-20
 
 ### Added
+- Added read-only remote message search across the same bounded 12 recent
+  sessions shown in Agents. Matches open the existing transcript through
+  private Mentat aliases, and the UI explains when the session limit was
+  reached or compacted history was outside the search window.
 - Added a read-only Hermes Capabilities view in Settings for remote skills and
   toolsets. Mentat uses only the exact authenticated endpoints advertised by
   Hermes and keeps local mode unchanged.
@@ -25,6 +29,16 @@ All notable changes to Mentat.
   and retained Console run summaries, with safe defaults for older history.
 
 ### Safety
+- Remote message search reads only the exact advertised session list/message
+  endpoints, returns at most 20 escaped user/assistant snippets, and exposes no
+  upstream session IDs. Any failed session read or changed connection discards
+  all matches; path-shaped or credential-shaped public text and partial message
+  envelopes fail closed, while syntactically public credential-free web URLs,
+  numeric dates/fractions, `A/B` abbreviations, and safe text-only multimodal
+  content remain searchable. Alternate numeric loopback, non-unicast or local
+  hosts, userinfo, backslash hybrids, private query values, and private-key
+  headers fail closed, as do special-use DNS and nested/adjacent URL-path
+  hybrids. List limits, compaction, and match truncation are explicit.
 - Remote capability inventory is connection-bound, size-limited, allowlisted,
   path-free, and escaped in the browser. Raw responses, descriptions, skill
   contents, tool names, credentials, and partial inventories are never exposed.

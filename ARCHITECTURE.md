@@ -84,6 +84,24 @@ bounded, path-free, and allowlisted to skill/toolset identifiers, enabled state,
 and tool counts. It never includes raw responses, descriptions, categories,
 labels, skill contents, tool names, configured-provider details, or partial
 results.
+Milestone 2H adds bounded remote message search over the same 12 recent session
+projections used by the Sessions view. Mentat reads every visible user/assistant
+message in that window through the exact authenticated message endpoint, returns
+at most 20 bounded snippets behind connection-bound aliases, and discards the
+whole search if any read or final connection check fails. The browser is told
+when the 12-session limit was reached and older sessions may not be included,
+or when compacted ancestor turns or additional matches were omitted; Mentat
+does not claim complete-history search.
+Remote browser-visible session titles, previews, and message text fail closed
+when they contain path-shaped slash/backslash tokens or credential-shaped
+assignments. Ordinary web URLs, numeric dates/fractions, and `A/B` abbreviations
+remain readable. URL exceptions require a syntactically public host, no user
+credentials, canonical global-unicast IP or valid public DNS syntax, no raw or
+encoded backslash, and only the same safe slash tokens in query/fragment values.
+Special-use DNS suffixes and nested/adjacent URL-path hybrids are rejected;
+Markdown, backtick, and emphasis wrappers are parsed outside the URL span.
+Supported structured messages contribute only bounded allowlisted text parts;
+image, tool, and reasoning content is omitted.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other

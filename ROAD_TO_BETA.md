@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 2 in progress — 2A through 2C and 2E through 2G complete
+Status: Milestone 2 in progress — 2A through 2C and 2E through 2H complete
 Last updated: 2026-07-20
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -149,7 +149,7 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | In progress — 2A through 2C and 2E through 2G complete; approval response and continuation blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
+| 2 | Secure remote Hermes parity | In progress — 2A through 2C and 2E through 2H complete; approval response and continuation blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
@@ -292,8 +292,12 @@ Work in order:
    structured preview, so approval response remains an upstream blocker.
    Milestone 2E adds bounded,
    read-only remote session list and replay with private connection-bound
-   aliases; remote continuation remains blocked until Hermes advertises an
-   exact stoppable continuation capability.**
+   aliases. Milestone 2H searches user/assistant text across that same complete
+   visible 12-session window, returns at most 20 safe snippets, and labels when
+   the session limit was reached or compacted/additional matches are excluded;
+   remote continuation
+   remains blocked until Hermes advertises an exact stoppable continuation
+   capability.**
 6. Send only bounded Context Pack text and supported inline images; keep local
    paths private and degrade unsupported file/artifact transfers clearly.
    **Milestone 2F sends one exact, bounded, private-snapshot Context Pack as
