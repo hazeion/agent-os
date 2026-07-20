@@ -467,13 +467,23 @@
         <section class="panel">
           <div class="panel-head">
             <div>
-              <h2>Local Runtime</h2>
+              <h2>Hermes Runtime</h2>
             </div>
           </div>
           <div class="settings-list">
             <article class="item"><div class="item-title"><span>Runtime mode</span></div><div class="item-desc">Mentat uses capability-gated Hermes operations and allowlisted project-owned storage.</div></article>
             <article class="item"><div class="item-title"><span>Calendar</span></div><div class="item-desc">Google Calendar read-only sync is connected when the Hermes token is available, with local <code>calendar.json</code> used as the fallback.</div></article>
-            <article class="item"><div class="item-title"><span>Agent console</span></div><div class="item-desc">Front-page prompts run through the installed Hermes CLI on this computer.</div></article>
+            <article class="item"><div class="item-title"><span>Agent console</span></div><div class="item-desc">Front-page prompts use the selected local or remote Hermes connection through supported, capability-gated operations.</div></article>
+          </div>
+          <div class="section-divider"></div>
+          <div class="panel-head compact-head">
+            <div>
+              <h2>Hermes Capabilities</h2>
+              <p class="section-copy">See the skills and toolsets available on the selected Hermes connection. This view is read-only.</p>
+            </div>
+          </div>
+          <div id="hermes-capability-summary" class="settings-list" aria-live="polite">
+            <div class="empty">Loading Hermes capabilities…</div>
           </div>
           <div class="section-divider"></div>
           <div class="panel-head compact-head">

@@ -78,6 +78,12 @@ Local paths, filenames, blob metadata, and storage identities never enter the
 upstream request. Direct files and artifacts fail before submission. Images
 also fail clearly because Hermes currently documents them on chat/responses,
 not on the stoppable Runs lifecycle used by Agent Console.
+Milestone 2G adds fixed authenticated reads for the advertised remote skills
+and toolsets endpoints. The Settings payload is read-only, connection-bound,
+bounded, path-free, and allowlisted to skill/toolset identifiers, enabled state,
+and tool counts. It never includes raw responses, descriptions, categories,
+labels, skill contents, tool names, configured-provider details, or partial
+results.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other
@@ -141,10 +147,11 @@ The approved public-beta direction is local Mentat connected to one active
 local or remote Hermes endpoint. The detailed capability matrix, upstream
 blockers, implementation order, and exit evidence live in
 [REMOTE_HERMES.md](REMOTE_HERMES.md). The connection/storage/discovery
-foundation, Agent Console transport boundary, and default-profile remote run
-lifecycle are implemented. Sessions, approval responses, content transfer,
-complete profile discovery, and Kanban remain incomplete, so Mentat must not
-advertise full remote parity yet.
+foundation, Agent Console transport boundary, default-profile remote run
+lifecycle, read-only sessions, bounded Context Pack text, and remote
+skill/toolset visibility are implemented. Approval responses, clarification,
+continuation, complete profile discovery, Kanban, and richer content transfer
+remain incomplete, so Mentat must not advertise full remote parity yet.
 
 The remote boundary has these architectural invariants:
 
@@ -167,9 +174,10 @@ The remote boundary has these architectural invariants:
    or unavailable remote capability.
 
 Default-profile remote runs, bounded events/status, cancellation, and stopping
-use the documented Hermes Runs API. Sessions, approval responses, and
-skill/toolset visibility remain mandatory beta work. Clarification handling is
-also mandatory, but remains a
+use the documented Hermes Runs API. Read-only session replay and remote
+skill/toolset visibility use their separately advertised authenticated GET
+surfaces. Approval responses and continuation remain mandatory beta work.
+Clarification handling is also mandatory, but remains a
 compatibility blocker until the HTTP API advertises a typed request/response
 capability.
 

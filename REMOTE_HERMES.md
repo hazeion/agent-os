@@ -1,6 +1,6 @@
 # Remote Hermes Capability Contract
 
-Status: Approved beta architecture; Milestones 2A through 2C, 2E, and 2F implemented; approval response audited and blocked
+Status: Approved beta architecture; Milestones 2A through 2C and 2E through 2G implemented; approval response audited and blocked
 Approved: 2026-07-16
 
 ## Product boundary
@@ -23,9 +23,11 @@ the established local launch contract, and supports one plain default-profile
 remote run through fixed submission, event, status, and stop operations.
 Bounded read-only remote session list and replay now use the advertised session
 resource endpoints and process-private connection-bound aliases. One staged
-Context Pack may supply bounded, path-free text to remote Runs. Session
-continuation, direct file/image/artifact transfer, complete profile discovery,
-and Kanban remain later capability-gated work. Approval response was audited
+Context Pack may supply bounded, path-free text to remote Runs. Settings can
+also show a bounded, read-only skills and toolsets inventory through the exact
+advertised endpoints. Session continuation, direct file/image/artifact
+transfer, complete profile discovery, and Kanban remain later capability-gated
+work. Approval response was audited
 after 2C and remains blocked on an exact upstream request-binding capability
 and a structured safe preview.
 Upstream run IDs remain process-private: graceful shutdown is reconciled, while
@@ -58,7 +60,7 @@ partial rather than claiming the remote run stopped.
 | Profile identity inspection and synchronization | `hermes_profile_identity.py` resolves local profile metadata and the managed `SOUL.md` block through Hermes APIs | No supported API-server identity capability is advertised | Direct remote `SOUL.md` access is prohibited | Existing revision-bound preview, confirmation, atomicity, verification, and rollback contract would still apply | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Profile deletion | `hermes_profile_deletion.py` calls the supported local Hermes profile API | No supported API-server deletion capability is advertised | No approved remote boundary | Existing exact preview, active-run exclusion, confirmation, and post-delete discovery would still apply | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Provider/model inventory and switching | `hermes_provider_switching.py` loads local picker context and performs a fixed profile-model operation | The API surface advertises the endpoint model, but the documented model field is not a complete provider-administration contract | Hermes remains credential owner; Mentat must never receive provider secrets | Require explicit authenticated inventory, exact preview, active-run lock, switch verification, and rollback capability | **Graceful degradation**; remote administration blocked pending a supported capability |
-| Skill and toolset visibility | `hermes_skills.py` discovers the local built-in catalog inside the Hermes runtime | The API capability document advertises skills/toolset visibility when supported | API-server bearer key | Validate bounded catalog metadata and enable visibility only when advertised | **Required**; supported upstream, Mentat adapter needed |
+| Skill and toolset visibility | `hermes_skills.py` discovers the local built-in catalog inside the Hermes runtime; Settings uses the remote inventory adapter only in remote mode | The API capability document advertises exact `GET /v1/skills` and `GET /v1/toolsets` paths when supported | API-server bearer key | Revalidate the selected connection before and after both reads; bound and allowlist skill/toolset identifiers, enabled state, and counts; reject private reflection and malformed/partial results; omit descriptions, categories, labels, paths, skill contents, and tool names | **Required**; read-only visibility implemented in 2G |
 | Skill selection | `hermes_skills.py` applies local profile-scoped selection through Hermes | No API-server skill-selection mutation is part of the approved stable surface | No approved remote boundary | Exact profile and selection preview, confirmation, capability match, and refreshed catalog | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Durable Kanban delegation and follow-up | `hermes_kanban.py` uses fixed shell-free `hermes kanban` operations with task/run read-back | Hermes documents localhost dashboard-plugin HTTP routes that are unauthenticated by design; only its events WebSocket uses an ephemeral query token in the [Kanban security model](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/kanban.md) | Neither unauthenticated HTTP nor the dashboard WebSocket token is an approved remote server-to-server boundary | Preserve exact preview/confirmation, mutation locks, in-flight reservation, live task/run binding, idempotency, and operation-specific read-back | **Required**; upstream authenticated capability blocker |
 | Cron inventory | `server.py` reads the local Hermes cron store; queue controls already fail closed | Hermes documents bearer-authenticated Jobs API list/CRUD/pause/resume/run endpoints, including `GET /api/jobs` | API-server bearer key; direct remote cron-file access remains prohibited | Before integration, verify capability advertisement, bounded schema, read-only inventory semantics, and correspondence with Mentat's existing job revisions; mutations remain separately deferred | **Graceful degradation**; documented upstream surface needs compatibility validation |
@@ -177,9 +179,12 @@ in this order:
 5. bounded Context Pack text and supported image inputs; **Milestone 2F
    implements exact one-use, path-free Context Pack text. Images remain blocked
    until upstream advertises them for the stoppable Runs lifecycle**;
-6. read-only profile discovery through a supported upstream capability;
-7. Kanban delegation and follow-up through a supported upstream capability;
-8. capability-gated degradation, compatibility, recovery, and cross-platform
+6. remote skill and toolset visibility through exact advertised authenticated
+   read-only endpoints; **Milestone 2G implemented with bounded Settings
+   metadata and fail-closed connection binding**;
+7. read-only profile discovery through a supported upstream capability;
+8. Kanban delegation and follow-up through a supported upstream capability;
+9. capability-gated degradation, compatibility, recovery, and cross-platform
    remote-parity tests.
 
 No later step may invent a workaround for a missing earlier capability.

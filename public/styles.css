@@ -3072,6 +3072,24 @@ h2 {
 }
 .note-card { padding: 14px; }
 .settings-list { display: grid; gap: 10px; }
+
+#hermes-capability-summary .item-title span:first-child,
+#hermes-capability-summary .item-desc,
+#hermes-capability-summary .item-meta {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+#hermes-capability-summary details .item-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+#hermes-capability-summary details .pill {
+  justify-self: start;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+}
 .theme-controls {
   display: grid;
   gap: 12px;
