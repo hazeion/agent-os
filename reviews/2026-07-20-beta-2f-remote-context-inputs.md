@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Context Pack Inputs
 
-Status: Ready PR implementation matrix complete; final evidence publication pending
+Status: Ready PR hosted verification complete; merge-readiness review pending
 Slice: `beta-2f-remote-context-inputs`
 Date: `2026-07-20`
 
@@ -57,7 +57,7 @@ gates remain in force.
 | AC-5 | Accepted snapshots are bound to the Mentat run; source-file changes after staging do not alter the submitted snapshot. | Snapshot/lifecycle tests | Complete |
 | AC-6 | Local Context Pack staging, local text/image attachments, and remote run/cancel/safe-stop behavior remain unchanged. | Compatibility/full suite | Complete |
 | AC-7 | The UI binds only the opaque grant and attachment ids, replaces stale remote pack state, and gives a clear unsupported-input error. | UI contract tests | Complete |
-| AC-8 | Focused/full/static checks, two independent zero-finding reviews, ready PR, and hosted matrix pass. | Verification record | Pending |
+| AC-8 | Focused/full/static checks, two independent zero-finding reviews, ready PR, and hosted matrix pass. | Verification record | Complete |
 
 ## Upstream evidence
 
@@ -133,7 +133,8 @@ gates remain in force.
 - Ready PR `#34` published at implementation commit `8cf07dd`.
 - GitHub Actions run `29719150251`: all 42 supported-platform jobs passed
   (macOS and Ubuntu on Python 3.11-3.13, plus all 36 Windows shards).
-- Final evidence-only head matrix pending.
+- Final evidence-only commit `df9b838` passed the same 42-job matrix in GitHub
+  Actions run `29719338181`.
 
 ## Independent review and publication
 
@@ -179,5 +180,5 @@ oldest grant and verifies that all other 127 grants remain live.
 
 Round 3 final exact-diff re-review completed after the capacity fix. Both the
 correctness/safety reviewer and compatibility/product reviewer returned
-`ZERO FINDINGS`. The local adversarial gate and implementation-head hosted
-matrix are complete; only the final evidence-only head matrix remains pending.
+`ZERO FINDINGS`. The local adversarial gate plus implementation-head and final
+evidence-only hosted matrices are complete; merge-readiness review remains.

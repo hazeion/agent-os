@@ -149,7 +149,7 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | In progress — 2A through 2C and 2E session visibility complete; approval response and continuation blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
+| 2 | Secure remote Hermes parity | In progress — 2A through 2C, 2E session visibility, and 2F remote Context Pack text complete; approval response and continuation blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
