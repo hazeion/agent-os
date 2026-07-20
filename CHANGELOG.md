@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-20
 
 ### Added
+- Added a read-only Hermes Capabilities view in Settings for remote skills and
+  toolsets. Mentat uses only the exact authenticated endpoints advertised by
+  Hermes and keeps local mode unchanged.
 - Added bounded remote Context Pack text for Agent Console. One short-lived
   opaque grant binds the selected connection, current pack revision, and exact
   private snapshots before Mentat sends path-free text to Hermes Runs.
@@ -22,6 +25,9 @@ All notable changes to Mentat.
   and retained Console run summaries, with safe defaults for older history.
 
 ### Safety
+- Remote capability inventory is connection-bound, size-limited, allowlisted,
+  path-free, and escaped in the browser. Raw responses, descriptions, skill
+  contents, tool names, credentials, and partial inventories are never exposed.
 - Remote Context Pack requests use generic context labels and fixed item,
   total-context, and complete-prompt limits. Changed, expired, replayed, or
   mismatched grants fail before submission. Direct files and artifacts remain

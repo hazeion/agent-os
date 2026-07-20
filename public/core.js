@@ -27,6 +27,7 @@ const endpoints = {
   hermesProfiles: '/api/hermes/profiles',
   hermesSkillCatalog: '/api/hermes/skills/catalog',
   hermesKanbanCapabilities: '/api/hermes/kanban/capabilities',
+  hermesCapabilities: '/api/hermes/capabilities',
   notes: '/api/obsidian-notes',
   health: '/api/health',
   unifiedSearch: '/api/search',

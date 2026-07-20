@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 2 in progress — 2A through 2C, 2E session visibility, and 2F remote Context Pack text complete
+Status: Milestone 2 in progress — 2A through 2C and 2E through 2G complete
 Last updated: 2026-07-20
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -149,7 +149,7 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | In progress — 2A through 2C, 2E session visibility, and 2F remote Context Pack text complete; approval response and continuation blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
+| 2 | Secure remote Hermes parity | In progress — 2A through 2C and 2E through 2G complete; approval response and continuation blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
@@ -301,12 +301,18 @@ Work in order:
    images fail clearly before submission. Inline images remain blocked because
    current Hermes advertises them for chat/responses, not for the Runs
    submission/status/stop lifecycle used by Agent Console.**
-7. Add complete read-only profile discovery through a supported,
+7. Show remote skills and toolsets only through supported, advertised,
+   API-key-authenticated read-only endpoints. **Milestone 2G adds a bounded,
+   connection-bound Settings inventory. It exposes only validated identifiers,
+   enabled state, and counts while omitting descriptions, categories, labels,
+   skill contents, paths, tool names, configured-provider details, and raw or
+   partial upstream results.**
+8. Add complete read-only profile discovery through a supported,
    API-key-authenticated upstream capability.
-8. Add Kanban delegation and follow-up only after Hermes exposes the supported
+9. Add Kanban delegation and follow-up only after Hermes exposes the supported
    authenticated, revision-aware capability required by
    [REMOTE_HERMES.md](REMOTE_HERMES.md).
-9. Test endpoint changes, authentication failure, certificate failure,
+10. Test endpoint changes, authentication failure, certificate failure,
    capability loss, timeouts, interrupted streams, stale confirmations,
    partial failures, local fallback, upgrade, and rollback.
 
@@ -558,15 +564,16 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Continue Milestone 2 after bounded Context Pack text by keeping remote
-   inline images unavailable until Hermes advertises an exact image-input
-   capability for the stoppable Runs lifecycle; do not substitute
-   chat/responses or enable general file transfer.
+1. Continue Milestone 2 after bounded Context Pack text and remote
+   skill/toolset visibility by keeping inline images unavailable until Hermes
+   advertises an exact image-input capability for the stoppable Runs lifecycle;
+   do not substitute chat/responses or enable general file transfer.
 2. Keep remote session continuation unavailable until Hermes advertises an
    exact stoppable continuation capability, and keep approval response
    unavailable until Hermes advertises an exact request binding plus a
    structured preview that is safe to display.
-3. Continue tracking the mandatory upstream Hermes capabilities for
+3. With read-only skills and toolsets now visible, continue tracking the
+   remaining mandatory upstream Hermes capabilities for
    authenticated Kanban, complete read-only profile discovery, and
    clarification handling without implementing an unsafe substitute.
 4. After the data-root and remote-parity milestones, design the native

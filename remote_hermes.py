@@ -1,8 +1,9 @@
-"""Owner-private remote Hermes selection, discovery, and fixed Runs operations.
+"""Owner-private remote Hermes selection and fixed Hermes API operations.
 
 This module deliberately exposes no generic request method. One validated
 operator-granted origin and one private credential authorize only the fixed
-discovery paths plus capability-gated run submission, status, SSE, and stop.
+discovery/inventory paths plus capability-gated run submission, status, SSE,
+and stop.
 """
 
 from __future__ import annotations
@@ -46,7 +47,15 @@ MAX_RUN_EVENTS = 5_000
 RUN_STREAM_READ_TIMEOUT_SECONDS = 35.0
 RUN_STREAM_MAX_SECONDS = 30 * 60.0
 DEFAULT_TIMEOUT_SECONDS = 5.0
-FIXED_PATHS = frozenset({"/health", "/health/detailed", "/v1/capabilities"})
+FIXED_PATHS = frozenset(
+    {
+        "/health",
+        "/health/detailed",
+        "/v1/capabilities",
+        "/v1/skills",
+        "/v1/toolsets",
+    }
+)
 _RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
 _SAFE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+()-]{0,79}$")
 _SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/@-]{0,159}$")
@@ -87,6 +96,15 @@ _SESSION_ENDPOINTS = {
     "session": ("GET", "/api/sessions/{session_id}"),
     "session_messages": ("GET", "/api/sessions/{session_id}/messages"),
 }
+_CAPABILITY_INVENTORY_ENDPOINTS = {
+    "skills": ("GET", "/v1/skills"),
+    "toolsets": ("GET", "/v1/toolsets"),
+}
+MAX_REMOTE_SKILLS = 500
+MAX_REMOTE_TOOLSETS = 128
+MAX_REMOTE_TOOLS_PER_TOOLSET = 256
+MAX_REMOTE_TOOL_REFERENCES = 4_096
+_INVENTORY_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}\Z")
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}\Z")
 SESSION_LIST_LIMIT = 12
 SESSION_MESSAGE_LIMIT = 500
@@ -900,12 +918,65 @@ def _safe_root_string_shape(
     return True
 
 
+def _safe_root_list_shape(
+    value: Any,
+    *,
+    list_limits: Mapping[str, int],
+) -> bool:
+    """Allow named root lists to exceed the generic 256-item shape ceiling."""
+    if type(value) is not dict or len(value) > 256:
+        return False
+    budget = [16_384]
+    budget[0] -= 1
+    for key, item in value.items():
+        if not isinstance(key, str) or len(key) > 160:
+            return False
+        limit = list_limits.get(key)
+        if limit is not None:
+            if not isinstance(item, list) or len(item) > limit:
+                return False
+            budget[0] -= 1
+            if budget[0] < 0:
+                return False
+            if not all(
+                _safe_shape(row, depth=1, budget=budget)
+                for row in item
+            ):
+                return False
+            continue
+        if not _safe_shape(item, depth=1, budget=budget):
+            return False
+    return True
+
+
 def _bounded_text(value: Any, *, maximum: int) -> str:
     if not isinstance(value, str):
         raise RemoteHermesError("remote_schema_unsupported")
     text = value.strip()
     if not text or len(text) > maximum or any(ord(char) < 32 or ord(char) == 127 for char in text):
         raise RemoteHermesError("remote_schema_unsupported")
+    return text
+
+
+def _inventory_text(
+    value: Any,
+    *,
+    maximum: int,
+    allow_empty: bool = False,
+    reject_paths: bool = True,
+) -> str:
+    if not isinstance(value, str):
+        raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+    if any(
+        (ord(char) < 32 and char not in "\t\r\n") or ord(char) == 127
+        for char in value
+    ):
+        raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+    text = " ".join(value.split())
+    if (not text and not allow_empty) or len(text) > maximum:
+        raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+    if reject_paths and ("/" in text or "\\" in text):
+        raise RemoteHermesError("remote_capability_inventory_private")
     return text
 
 
@@ -1000,7 +1071,13 @@ class RemoteHermesClient:
             )
         return http.client.HTTPConnection(host, port=port, timeout=timeout)
 
-    def _request_json(self, path: str, *, authenticated: bool) -> Mapping[str, Any]:
+    def _request_json(
+        self,
+        path: str,
+        *,
+        authenticated: bool,
+        root_list_limits: Mapping[str, int] | None = None,
+    ) -> Mapping[str, Any]:
         if path not in FIXED_PATHS:
             raise RemoteHermesError("remote_path_not_allowed")
         headers = {"Accept": "application/json", "User-Agent": "Mentat/remote-hermes-v1"}
@@ -1037,7 +1114,12 @@ class RemoteHermesClient:
                 )
             except (UnicodeError, ValueError, RecursionError) as exc:
                 raise RemoteHermesError("remote_response_invalid") from exc
-            if type(payload) is not dict or not _safe_shape(payload):
+            shape_ok = (
+                _safe_root_list_shape(payload, list_limits=root_list_limits)
+                if root_list_limits is not None
+                else _safe_shape(payload)
+            )
+            if type(payload) is not dict or not shape_ok:
                 raise RemoteHermesError("remote_response_invalid")
             return payload
         except RemoteHermesError:
@@ -1354,6 +1436,181 @@ class RemoteHermesClient:
                 raise RemoteHermesError("remote_private_reflection")
             messages.append({"role": role, "content": content, "timestamp": timestamp})
         return messages
+
+    def _contains_private_inventory_text(self, value: Any) -> bool:
+        endpoint_parts = urlsplit(self.endpoint)
+        hostname = endpoint_parts.hostname or ""
+        distinctive_hostname = (
+            hostname
+            if len(hostname) >= 8 or any(char in hostname for char in ".:")
+            else ""
+        )
+        short_hostname = hostname if hostname and not distinctive_hostname else ""
+        distinctive_netloc = (
+            endpoint_parts.netloc
+            if endpoint_parts.netloc != hostname
+            else ""
+        )
+        if _contains_private_text(
+            value,
+            (
+                self.api_key,
+                self.endpoint,
+                distinctive_hostname,
+                distinctive_netloc,
+            ),
+        ):
+            return True
+        if not short_hostname:
+            return False
+        hostname_token = re.compile(
+            rf"(?<![A-Za-z0-9]){re.escape(short_hostname)}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+
+        def contains_hostname(item: Any) -> bool:
+            if isinstance(item, str):
+                return hostname_token.search(item) is not None
+            if isinstance(item, dict):
+                return any(contains_hostname(key) or contains_hostname(child) for key, child in item.items())
+            if isinstance(item, (list, tuple)):
+                return any(contains_hostname(child) for child in item)
+            return False
+
+        return contains_hostname(value)
+
+    def _normalize_skill_inventory(self, payload: Any) -> list[dict[str, Any]]:
+        if type(payload) is not dict:
+            raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+        data = payload.get("data")
+        if (
+            set(payload) != {"object", "data"}
+            or payload.get("object") != "list"
+            or type(data) is not list
+        ):
+            raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+        skills: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for value in data:
+            if type(value) is not dict or len(value) > 32:
+                raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+            name = _inventory_text(value.get("name"), maximum=120)
+            if not _INVENTORY_IDENTIFIER.fullmatch(name) or name in seen:
+                raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+            seen.add(name)
+            category_value = value.get("category") if "category" in value else None
+            if category_value is not None:
+                _inventory_text(
+                    category_value,
+                    maximum=120,
+                    reject_paths=False,
+                )
+            description_value = value.get("description") if "description" in value else None
+            if description_value is not None:
+                _inventory_text(
+                    description_value,
+                    maximum=1024,
+                    allow_empty=True,
+                    reject_paths=False,
+                )
+            normalized = {"name": name}
+            if self._contains_private_inventory_text(normalized):
+                raise RemoteHermesError("remote_capability_inventory_private")
+            skills.append(normalized)
+        return sorted(
+            skills,
+            key=lambda item: item["name"].casefold(),
+        )
+
+    def _normalize_toolset_inventory(self, payload: Any) -> list[dict[str, Any]]:
+        if type(payload) is not dict:
+            raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+        data = payload.get("data")
+        if (
+            set(payload) != {"object", "platform", "data"}
+            or payload.get("object") != "list"
+            or payload.get("platform") != "api_server"
+            or type(data) is not list
+        ):
+            raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+        toolsets: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        total_tool_references = 0
+        for value in data:
+            if type(value) is not dict or len(value) > 32:
+                raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+            name = _inventory_text(value.get("name"), maximum=120)
+            if not _INVENTORY_IDENTIFIER.fullmatch(name) or name in seen:
+                raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+            seen.add(name)
+            label_value = value.get("label") if "label" in value else None
+            if label_value is not None:
+                _inventory_text(
+                    label_value,
+                    maximum=160,
+                    reject_paths=False,
+                )
+            description_value = value.get("description") if "description" in value else None
+            if description_value is not None:
+                _inventory_text(
+                    description_value,
+                    maximum=1024,
+                    allow_empty=True,
+                    reject_paths=False,
+                )
+            enabled = value.get("enabled")
+            tools = value.get("tools")
+            if type(enabled) is not bool or type(tools) is not list or len(tools) > MAX_REMOTE_TOOLS_PER_TOOLSET:
+                raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+            normalized_tools: list[str] = []
+            for tool in tools:
+                tool_name = _inventory_text(tool, maximum=120)
+                if not _INVENTORY_IDENTIFIER.fullmatch(tool_name):
+                    raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+                normalized_tools.append(tool_name)
+            if len(set(normalized_tools)) != len(normalized_tools):
+                raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+            total_tool_references += len(normalized_tools)
+            if total_tool_references > MAX_REMOTE_TOOL_REFERENCES:
+                raise RemoteHermesError("remote_capability_inventory_schema_invalid")
+            normalized = {
+                "name": name,
+                "enabled": enabled,
+                "tool_count": len(normalized_tools),
+            }
+            if self._contains_private_inventory_text(normalized):
+                raise RemoteHermesError("remote_capability_inventory_private")
+            toolsets.append(normalized)
+        return sorted(
+            toolsets,
+            key=lambda item: (not item["enabled"], item["name"].casefold()),
+        )
+
+    def read_capability_inventory(self) -> dict[str, Any]:
+        capabilities = self._trusted_capabilities()
+        if "skills_api" not in set(capabilities.get("features") or ()):
+            raise RemoteHermesError("remote_capability_inventory_unavailable")
+        if capabilities.get("capability_inventory_endpoints_valid") is not True:
+            raise RemoteHermesError("remote_schema_unsupported")
+        skills_payload = self._request_json(
+            "/v1/skills",
+            authenticated=True,
+            root_list_limits={"data": MAX_REMOTE_SKILLS},
+        )
+        toolsets_payload = self._request_json(
+            "/v1/toolsets",
+            authenticated=True,
+            root_list_limits={"data": MAX_REMOTE_TOOLSETS},
+        )
+        skills = self._normalize_skill_inventory(skills_payload)
+        toolsets = self._normalize_toolset_inventory(toolsets_payload)
+        return {
+            "skills": skills,
+            "toolsets": toolsets,
+            "skill_count": len(skills),
+            "toolset_count": len(toolsets),
+            "enabled_toolset_count": sum(1 for item in toolsets if item["enabled"]),
+        }
 
     def _run_json_request(
         self,
@@ -1722,6 +1979,14 @@ class RemoteHermesClient:
                 item = endpoints.get(name)
                 if type(item) is not dict or (item.get("method"), item.get("path")) != expected:
                     raise RemoteHermesError("remote_schema_unsupported")
+        capability_inventory_endpoints_valid = all(
+            type(endpoints.get(name)) is dict
+            and (
+                endpoints[name].get("method"),
+                endpoints[name].get("path"),
+            ) == expected
+            for name, expected in _CAPABILITY_INVENTORY_ENDPOINTS.items()
+        )
         model = _bounded_text(payload.get("model"), maximum=160)
         if not _SAFE_MODEL.fullmatch(model) or model.startswith("/") or ".." in model or "://" in model or "\\" in model:
             raise RemoteHermesError("remote_schema_unsupported")
@@ -1730,7 +1995,11 @@ class RemoteHermesClient:
             for name in _KNOWN_BOOLEAN_FEATURES
             if features.get(name) is True
         )
-        return {"model": model, "features": supported}
+        return {
+            "model": model,
+            "features": supported,
+            "capability_inventory_endpoints_valid": capability_inventory_endpoints_valid,
+        }
 
     def discover(self) -> dict[str, Any]:
         try:

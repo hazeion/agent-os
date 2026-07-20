@@ -6920,6 +6920,91 @@ def hermes_connection_payload():
     return public_connection_payload(DATA_DIR)
 
 
+def hermes_capability_inventory_payload():
+    """Return a bounded read-only inventory for the selected remote Hermes."""
+
+    base = {
+        "schema_version": 1,
+        "read_only": True,
+        "skills": [],
+        "toolsets": [],
+        "summary": {
+            "skill_count": 0,
+            "toolset_count": 0,
+            "enabled_toolset_count": 0,
+        },
+    }
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        try:
+            transport = hermes_console_transport()
+        except (HermesTransportError, RemoteHermesError):
+            return {
+                **base,
+                "status": "unavailable",
+                "mode": "unavailable",
+                "message": "Hermes connection settings are unavailable.",
+            }
+        if transport.mode != "remote":
+            return {
+                **base,
+                "status": "local",
+                "mode": "local",
+                "label": compact_text(transport.binding.label, max_length=80),
+                "message": "Local agent skills remain available in Managed Agents.",
+            }
+        label = compact_text(transport.binding.label, max_length=80)
+        if not isinstance(transport, RemoteHermesConsoleTransport):
+            return {
+                **base,
+                "status": "unavailable",
+                "mode": "remote",
+                "label": label,
+                "message": "Remote Hermes capabilities are unavailable.",
+            }
+        try:
+            transport.revalidate(DATA_DIR)
+            inventory = transport.read_capability_inventory()
+            transport.revalidate(DATA_DIR)
+        except HermesTransportError as exc:
+            if exc.code == "remote_capability_inventory_unavailable":
+                status = "unsupported"
+                message = "This remote Hermes host does not advertise read-only skills and toolsets."
+            elif exc.code in {
+                "remote_capability_inventory_schema_invalid",
+                "remote_capability_inventory_private",
+                "remote_response_invalid",
+                "remote_response_too_large",
+                "remote_content_type_invalid",
+                "remote_schema_unsupported",
+            }:
+                status = "unavailable"
+                message = "Mentat rejected the remote skills and toolsets response."
+            else:
+                status = "unavailable"
+                message = "Remote Hermes capabilities are unavailable."
+            return {
+                **base,
+                "status": status,
+                "mode": "remote",
+                "label": label,
+                "message": message,
+            }
+        return {
+            **base,
+            "status": "available",
+            "mode": "remote",
+            "label": label,
+            "skills": inventory["skills"],
+            "toolsets": inventory["toolsets"],
+            "summary": {
+                "skill_count": inventory["skill_count"],
+                "toolset_count": inventory["toolset_count"],
+                "enabled_toolset_count": inventory["enabled_toolset_count"],
+            },
+            "message": "Remote skills and toolsets loaded through Hermes' read-only API.",
+        }
+
+
 def _remote_connection_intent(payload, *, confirmation: bool) -> tuple[dict, str | None]:
     if type(payload) is not dict:
         raise RemoteHermesError("connection_payload_invalid")
@@ -7040,6 +7125,7 @@ API_ROUTES = {
     "/api/hermes/skills/catalog": hermes_skill_catalog_payload,
     "/api/hermes/kanban/capabilities": kanban_capabilities_payload,
     "/api/hermes/connection": hermes_connection_payload,
+    "/api/hermes/capabilities": hermes_capability_inventory_payload,
     "/api/health": health,
 }
 

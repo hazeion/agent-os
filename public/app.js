@@ -3103,6 +3103,59 @@ function renderMessageSearchResults(payload = {}, query = '') {
   ` : `<div class="empty">No message matches for “${escapeHtml(term)}”.</div>`;
 }
 
+function renderHermesCapabilityInventory(payload = {}) {
+  const container = $('#hermes-capability-summary');
+  if (!container) return;
+  const status = String(payload.status || 'unavailable');
+  const mode = String(payload.mode || 'unavailable');
+  const label = payload.label || (mode === 'local' ? 'Local Hermes' : 'Remote Hermes');
+  const message = payload.message || 'Hermes capabilities are unavailable.';
+  if (status !== 'available') {
+    const tone = status === 'local' ? 'success' : status === 'unsupported' ? 'warn' : 'danger';
+    container.innerHTML = `
+      <article class="item" ${status === 'unavailable' ? 'role="alert"' : ''}>
+        <div class="item-title"><span>${escapeHtml(label)}</span><span class="pill ${tone}">${escapeHtml(status)}</span></div>
+        <div class="item-desc">${escapeHtml(message)}</div>
+      </article>
+    `;
+    return;
+  }
+  const skills = Array.isArray(payload.skills) ? payload.skills : [];
+  const toolsets = Array.isArray(payload.toolsets) ? payload.toolsets : [];
+  const summary = payload.summary || {};
+  const skillCount = Number(summary.skill_count ?? skills.length);
+  const toolsetCount = Number(summary.toolset_count ?? toolsets.length);
+  const enabledToolsetCount = Number(summary.enabled_toolset_count ?? toolsets.filter((item) => item.enabled).length);
+  container.innerHTML = `
+    <article class="item">
+      <div class="item-title"><span>${escapeHtml(label)}</span><span class="pill success">read-only</span></div>
+      <div class="item-desc">${escapeHtml(message)}</div>
+      <div class="item-meta mono">${escapeHtml(skillCount)} skills · ${escapeHtml(enabledToolsetCount)} of ${escapeHtml(toolsetCount)} toolsets enabled</div>
+    </article>
+    <details class="managed-agent-advanced">
+      <summary>${escapeHtml(skillCount)} available skills</summary>
+      <div class="settings-list">
+        ${skills.length ? skills.map((skill) => `
+          <article class="item">
+            <div class="item-title"><span>${escapeHtml(skill.name || 'Unnamed skill')}</span></div>
+          </article>
+        `).join('') : '<div class="empty">No skills are visible to this Hermes host.</div>'}
+      </div>
+    </details>
+    <details class="managed-agent-advanced">
+      <summary>${escapeHtml(toolsetCount)} available toolsets</summary>
+      <div class="settings-list">
+        ${toolsets.length ? toolsets.map((toolset) => `
+          <article class="item">
+            <div class="item-title"><span>${escapeHtml(toolset.name || 'Unnamed toolset')}</span><span class="pill ${toolset.enabled ? 'success' : ''}">${toolset.enabled ? 'enabled' : 'available'}</span></div>
+            <div class="item-meta mono">${escapeHtml(toolset.name || '')} · ${escapeHtml(Number(toolset.tool_count || 0))} tools</div>
+          </article>
+        `).join('') : '<div class="empty">No toolsets are visible to this Hermes host.</div>'}
+      </div>
+    </details>
+  `;
+}
+
 function renderConfig(payload = {}) {
   const summary = $('#config-summary');
   const text = $('#config-text');
@@ -4530,7 +4583,10 @@ async function refresh() {
   if (activeView === 'agents') requests.crons = api(endpoints.crons);
   if (activeView === 'notes') requests.notes = api(endpoints.notes);
   if (activeView === 'today' || activeView === 'notes') requests.contextPacks = fetchContextPacks();
-  if (activeView === 'settings') requests.config = api(endpoints.config);
+  if (activeView === 'settings') {
+    requests.config = api(endpoints.config);
+    requests.hermesCapabilities = api(endpoints.hermesCapabilities);
+  }
 
   try {
     const entries = await Promise.all(Object.entries(requests).map(async ([key, promise]) => [key, await promise]));
@@ -4576,6 +4632,7 @@ async function refresh() {
     if (data.notes) renderIfChanged('notes', data.notes, renderNotes);
     if (data.contextPacks) renderContextPacks(data.contextPacks);
     if (data.config) renderIfChanged('config', data.config, renderConfig);
+    if (data.hermesCapabilities) renderIfChanged('hermes-capabilities', data.hermesCapabilities, renderHermesCapabilityInventory);
 
     renderIfChanged('health', data.health, renderHealth);
     state.hasBootstrapped = true;

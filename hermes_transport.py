@@ -25,6 +25,9 @@ class HermesTransportError(RuntimeError):
         "remote_session_not_found": "That remote session is no longer available.",
         "remote_session_unavailable": "Remote session history is unavailable.",
         "remote_session_alias_invalid": "That remote session selection is no longer valid.",
+        "remote_capability_inventory_unavailable": "This Hermes host does not support read-only skills and toolsets visibility.",
+        "remote_capability_inventory_schema_invalid": "This Hermes host returned an unsupported skills or toolsets inventory.",
+        "remote_capability_inventory_private": "This Hermes host returned unsafe skills or toolsets metadata.",
         "remote_approval_unsupported": "This remote run needs approval, which Mentat cannot answer yet.",
         "remote_run_failed": "The remote Hermes run failed.",
         "remote_submission_unverified": "Mentat could not verify whether the remote run started.",
@@ -191,6 +194,12 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
                 remote_session_id,
                 structural_ids=structural_ids,
             )
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def read_capability_inventory(self) -> dict[str, Any]:
+        try:
+            return self._client.read_capability_inventory()
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
