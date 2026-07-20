@@ -165,7 +165,14 @@ allocating the run. The descriptor contains no transcript content.
 
 - Fork: `hazeion/hermes-agent`
 - Branch: `feat/http-exact-stoppable-continuation`
-- Commit: `b5fd7cb8f21dc5beb82b92c04046f0a02fecfa4d`
+- Current commit after the Milestone 2-wide review fix:
+  `d0273162ffb590e40683dde61b6359263756e62c`.
+- The review found that exact-continuation endpoints inherited optional API
+  authentication. Both descriptor issuance and descriptor-based Runs now
+  require a configured bearer key, and capability discovery reports the
+  feature unavailable without one. Regressions prove a no-key client cannot
+  obtain a descriptor or submit it, while descriptor binding/lifecycle tests
+  still pass (58 focused tests after the fix).
 - Upstream draft PR:
   [NousResearch/hermes-agent#68177](https://github.com/NousResearch/hermes-agent/pull/68177)
 - Mentat must not advertise or enable this integration until the upstream
