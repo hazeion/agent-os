@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Session Search
 
-Status: CI compatibility repair in progress
+Status: Hosted gates complete; merge pending
 Slice: `beta-2h-remote-session-search`
 Date: `2026-07-20`
 Review log: `reviews/2026-07-20-beta-2h-remote-session-search.md`
@@ -46,7 +46,7 @@ unsupported remote mutation.
 | AC-3 | Connection changes, capability loss, malformed responses, private reflection, and any partial read failure return no partial results; list, compacted-history, and result truncation remain explicit. | Failure/binding/truncation tests | Complete |
 | AC-4 | Local message search remains unchanged and remote search never reads local Hermes `state.db`. | Compatibility tests | Complete |
 | AC-5 | The Agents view labels remote coverage accurately, escapes results, and keeps result click-through read-only and usable at narrow width. | UI contract and rendered checks | Complete |
-| AC-6 | Focused, full, static, two-reviewer, ready-PR, and hosted supported-platform gates pass. | Verification record | Pending |
+| AC-6 | Focused, full, static, two-reviewer, ready-PR, and hosted supported-platform gates pass. | Verification record | Complete |
 
 ### Constraints and recovery
 
@@ -176,7 +176,8 @@ unsupported remote mutation.
   budget. The rejection remained correct. That single maximum-input assertion
   now uses a 2.00-second cross-platform budget; all other performance budgets
   remain unchanged.
-- Post-timing-repair hosted rerun: pending.
+- Post-timing-repair GitHub Actions run 82: pass, all 42 supported-platform
+  jobs on exact head `4a1386bec664fe86b1f88f6322d8ab3613e890c8`.
 
 ### Rendered or manual behavior
 
@@ -846,7 +847,7 @@ unsupported remote mutation.
 - User authorization and scope: standing authorization recorded above.
 - Commit evidence: `Add bounded remote session search`; final SHA is captured
   from Git HEAD for exact-head review and publication.
-- Ready PR URL: pending.
+- Ready PR URL: <https://github.com/hazeion/agent-os/pull/36>.
 
 ## Outcome review
 
