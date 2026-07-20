@@ -1,9 +1,4 @@
-"""Binding-aware transport boundary for Hermes Agent Console execution.
-
-Milestone 2B deliberately implements only the established local CLI transport.
-The remote adapter is an explicit fail-closed placeholder until reviewed remote
-run/session operations land in the next slice.
-"""
+"""Binding-aware local CLI and remote Runs API Agent Console transports."""
 
 from __future__ import annotations
 
@@ -14,7 +9,7 @@ import re
 import subprocess
 from typing import Any, Callable
 
-from remote_hermes import RemoteHermesError, load_connection
+from remote_hermes import RemoteHermesClient, RemoteHermesError, load_connection
 
 
 class HermesTransportError(RuntimeError):
@@ -25,6 +20,11 @@ class HermesTransportError(RuntimeError):
         "transport_unavailable": "Hermes connection settings are unavailable.",
         "local_console_unavailable": "Hermes CLI was not found in the Mentat server environment.",
         "remote_console_not_implemented": "Remote Agent Console is not available yet.",
+        "remote_run_capability_unavailable": "This Hermes host does not support remote Console runs.",
+        "remote_approval_unsupported": "This remote run needs approval, which Mentat cannot answer yet.",
+        "remote_run_failed": "The remote Hermes run failed.",
+        "remote_submission_unverified": "Mentat could not verify whether the remote run started.",
+        "remote_stop_unverified": "Mentat could not verify that the remote run stopped.",
         "console_request_invalid": "The Hermes Console request is invalid.",
     }
 
@@ -114,8 +114,69 @@ class HermesConsoleTransport:
 
 class RemoteHermesConsoleTransport(HermesConsoleTransport):
     mode = "remote"
-    console_available = False
-    unavailable_code = "remote_console_not_implemented"
+    unavailable_code = "remote_run_capability_unavailable"
+
+    def __init__(
+        self,
+        binding: TransportBinding,
+        *,
+        client: RemoteHermesClient,
+    ):
+        super().__init__(binding)
+        self._client = client
+        self._ready = False
+        self.model = "configured default"
+
+    @property
+    def console_available(self) -> bool:
+        return self._ready
+
+    def prepare_console(self) -> dict[str, Any]:
+        try:
+            discovery = self._client.require_console_run_capabilities()
+        except RemoteHermesError as exc:
+            self._ready = False
+            raise HermesTransportError(exc.code) from exc
+        self.model = str(discovery.get("model") or "configured default")
+        self._ready = True
+        return {
+            "model": self.model,
+            "capabilities": tuple(discovery.get("capabilities") or ()),
+        }
+
+    def submit_run(self, prompt: str) -> dict[str, str]:
+        if not self._ready:
+            raise HermesTransportError(self.unavailable_code)
+        try:
+            return self._client.submit_run(prompt)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def get_run(self, remote_run_id: str) -> dict[str, Any]:
+        try:
+            return self._client.get_run(remote_run_id)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def iter_run_events(
+        self,
+        remote_run_id: str,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ):
+        try:
+            yield from self._client.iter_run_events(
+                remote_run_id,
+                should_stop=should_stop,
+            )
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def stop_run(self, remote_run_id: str) -> dict[str, str]:
+        try:
+            return self._client.stop_run(remote_run_id)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
 
 
 class LocalHermesConsoleTransport(HermesConsoleTransport):
@@ -212,6 +273,7 @@ def select_hermes_console_transport(
     data_root: Path,
     *,
     local_builder: Callable[[TransportBinding], LocalHermesConsoleTransport],
+    remote_builder: Callable[[TransportBinding, str, str], RemoteHermesConsoleTransport] | None = None,
 ) -> HermesConsoleTransport:
     """Select exactly one adapter without touching local state in remote mode."""
 
@@ -222,7 +284,22 @@ def select_hermes_console_transport(
         binding_id=selected.binding_id,
     )
     if selected.mode == "remote":
-        return RemoteHermesConsoleTransport(binding)
+        builder = remote_builder or (
+            lambda current_binding, endpoint, api_key: RemoteHermesConsoleTransport(
+                current_binding,
+                client=RemoteHermesClient(endpoint, api_key),
+            )
+        )
+        adapter = builder(
+            binding,
+            selected.endpoint or "",
+            selected.api_key or "",
+        )
+        if not isinstance(adapter, RemoteHermesConsoleTransport):
+            raise HermesTransportError("transport_unavailable")
+        if adapter.binding != binding:
+            raise HermesTransportError("transport_binding_changed")
+        return adapter
     adapter = local_builder(binding)
     if not isinstance(adapter, LocalHermesConsoleTransport):
         raise HermesTransportError("local_console_unavailable")

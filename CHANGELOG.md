@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-20
 
 ### Added
+- Added capability-gated remote Agent Console turns for the selected Hermes
+  host's default profile, including fixed run submission, bounded SSE progress,
+  status reconciliation, usage metadata, and remote cancellation.
 - Added a binding-aware Hermes Console transport boundary that keeps the local
   CLI launch contract intact and gives later remote execution one typed entry
   point.
@@ -12,6 +15,13 @@ All notable changes to Mentat.
   and retained Console run summaries, with safe defaults for older history.
 
 ### Safety
+- Remote runs now require the exact advertised Runs API endpoints, remain bound
+  to one opaque connection identity, never retry submission, and issue at most
+  one stop attempt. Interrupted streams reconcile through status; approval
+  requests stop safely because approval responses are not supported yet.
+- Graceful shutdown performs bounded remote stop/read-back. Abrupt process
+  death is reported as an interrupted partial run; upstream run IDs are not
+  persisted in this slice.
 - Selected remote mode now fails closed instead of inspecting or launching the
   local Hermes CLI. Connection changes are blocked during active runs, bindings
   are rechecked before queue and launch, and private launch errors or failed

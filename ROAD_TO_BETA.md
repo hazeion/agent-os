@@ -149,7 +149,7 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | In progress — 2A connection foundation complete | 1 | Mandatory remote capabilities verified over HTTPS |
+| 2 | Secure remote Hermes parity | In progress — 2A through 2C complete | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
@@ -286,6 +286,9 @@ Work in order:
 5. Route Console conversations, sessions, runs, structured events, approvals,
    cancellation, and stopping through supported remote APIs. Add clarification
    handling only when Hermes advertises a typed request/response capability.
+   **Milestone 2C implements one plain default-profile run, bounded events and
+   status, cancellation, and safe stopping for unsupported approval requests;
+   sessions and approval responses remain.**
 6. Send only bounded Context Pack text and supported inline images; keep local
    paths private and degrade unsupported file/artifact transfers clearly.
 7. Add complete read-only profile discovery through a supported,
@@ -545,11 +548,11 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Continue Milestone 2 by routing remote Console runs and structured events
-   through capability-advertised, authenticated APIs while preserving the
-   verified local transport behavior.
-2. Add remote approval, cancellation, stopping, and session behavior only with
-   exact connection/run binding and operation-specific verification.
+1. Continue Milestone 2 with remote sessions and approval responses only where
+   Hermes advertises exact authenticated capabilities and Mentat can verify the
+   resulting state.
+2. Add bounded Context Pack text and supported inline image inputs without
+   transmitting local paths or enabling general file transfer.
 3. Continue tracking the mandatory upstream Hermes capabilities for
    authenticated Kanban, complete read-only profile discovery, and
    clarification handling without implementing an unsafe substitute.

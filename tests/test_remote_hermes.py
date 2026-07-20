@@ -58,6 +58,7 @@ def _capabilities(*, auth_required=True, model="anthropic/claude-test"):
         "endpoints": {
             "health": {"method": "GET", "path": "/health"},
             "health_detailed": {"method": "GET", "path": "/health/detailed"},
+            "runs": {"method": "POST", "path": "/v1/runs"},
             "future": {"method": "POST", "path": f"/{DISTINCTIVE_SECRET}"},
         },
     }

@@ -553,7 +553,7 @@ class CiWorkflowContractTests(unittest.TestCase):
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
-            "remote Console runs",
+            "remote sessions and approval responses",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertNotIn("Land the early CI guardrail", ROADMAP)
