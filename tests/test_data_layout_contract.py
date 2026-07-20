@@ -136,7 +136,8 @@ class DataLayoutContractTests(unittest.TestCase):
     def test_private_and_secret_boundaries_are_explicit(self):
         normalized = " ".join(CONTRACT.split())
         self.assertIn("owner-only permissions", normalized)
-        self.assertIn("future remote Hermes endpoint and API credential", normalized)
+        self.assertIn("remote Hermes endpoint and API credential", normalized)
+        self.assertIn("`<data-root>/private/remote-hermes-connection-v1.json`", CONTRACT)
         self.assertIn("read-back verification of owner-only access", normalized)
         self.assertIn("before any private or secret-bearing content is written", normalized)
         self.assertIn("fails closed", normalized)
@@ -177,7 +178,7 @@ class DataLayoutContractTests(unittest.TestCase):
         normalized_roadmap = re.sub(r"\s*/\s*", "/", " ".join(ROADMAP.split()))
         link = "[DATA_LAYOUT.md](DATA_LAYOUT.md)"
         self.assertIn(link, ARCHITECTURE)
-        self.assertIn(link, README)
+        self.assertIn("(DATA_LAYOUT.md)", README)
         self.assertIn(link, ROADMAP)
         self.assertIn("Milestone 1A contract, Milestone 1B", ROADMAP)
         self.assertIn("Milestone 1C legacy durable-JSON migration", normalized_roadmap)

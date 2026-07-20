@@ -41,7 +41,7 @@ layout is:
 | Target | Class and policy | Ordinary backup policy |
 | --- | --- | --- |
 | `<data-root>/*.json` | Durable project-owned operator state. After legacy preflight, each missing file is initialized from its corresponding immutable packaged seed. | Included. |
-| `<data-root>/private/` | Durable private state, including Console history, SQLite metadata, content-addressed blobs, and the future remote Hermes endpoint and API credential. Owner-only permissions are required where the platform supports them. | The consistent Console set is included; credentials and connection secrets are excluded. |
+| `<data-root>/private/` | Durable private state, including Console history, SQLite metadata, content-addressed blobs, and the remote Hermes connection selection/API credential. Owner-only permissions are required where the platform supports them. | The consistent Console set is included; credentials and connection secrets are excluded. |
 | `<data-root>/runtime/` | Ephemeral process state, uploads, input/export directories, and snapshots. It is private and may be reconciled or collected. | Excluded. |
 | `<data-root>/backups/` | Validated, versioned migration or operator backups. Backups are created only through bounded workflows and are not runtime scratch space. | Excluded to prevent recursive backups. |
 | `<data-root>/cache/` | Rebuildable state. Deletion may reduce performance but must not destroy operator work. | Excluded. |
@@ -126,7 +126,7 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 | Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | Redacted retained Console history; durable according to its retention policy. |
 | Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, and run-reference metadata; live WAL/SHM remain SQLite-owned beside the database. |
 | Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
-| Future remote connection selection and credential | `<data-root>/private/` | Server-only, owner-only, and excluded from ordinary backups and diagnostics. |
+| Remote connection selection and credential | `<data-root>/private/remote-hermes-connection-v1.json` | Versioned, server-only, owner-only, atomically replaced, and excluded from ordinary backups and diagnostics. A missing record means local mode. |
 
 The private class is durable but not public. Paths, storage keys, hashes,
 credentials, and private file bytes remain server-side and must not become
@@ -497,7 +497,7 @@ Every target class has this explicit ordinary-backup policy:
 
 The Console consistency unit must not capture a live SQLite file with unmatched
 WAL/SHM state or copy the database, history, and blobs at unrelated points in
-time. Staged/unreferenced scratch is excluded. The future remote Hermes endpoint
+time. Staged/unreferenced scratch is excluded. The remote Hermes endpoint
 and API credential, tokens, and other credentials are excluded from ordinary
 backups even though their private storage is durable. A future secret-aware
 export would require a separately approved encrypted design.
@@ -581,10 +581,12 @@ credential there, and reports a bounded error without paths or private content.
 On an unsupported filesystem, privacy-dependent features remain unavailable
 until an approved secure boundary exists; the implementation must not silently
 degrade to broader access.
-The future remote Hermes endpoint and API credential remain server-side and are
-excluded from browser payloads, browser storage, tracked files, logs,
-diagnostics, crash text, ordinary backups, and test fixtures. Error messages and
-audit records may contain only bounded, normalized, secret-free identifiers.
+The remote Hermes endpoint and API credential remain server-side. Mentat
+accepts them only in the operator's explicit setup request and never returns
+them in browser payloads sourced from stored state or upstream responses. They
+are excluded from browser storage, tracked files, logs, diagnostics, crash
+text, ordinary backups, and test fixtures. Error messages and audit records may
+contain only bounded, normalized, secret-free identifiers.
 
 Tracked seeds and documentation remain public-safe. They must not contain real
 operator names, local paths, account identifiers, tokens, private messages, or
