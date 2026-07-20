@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Session Search
 
-Status: Committed; exact-head review and publication pending
+Status: CI compatibility repair in progress
 Slice: `beta-2h-remote-session-search`
 Date: `2026-07-20`
 Review log: `reviews/2026-07-20-beta-2h-remote-session-search.md`
@@ -147,6 +147,9 @@ unsupported remote mutation.
   round-four review fixes.
 - `python3 -m unittest tests.test_remote_sessions tests.test_remote_hermes tests.test_hermes_transport tests.test_frontend_workflow_feedback tests.test_next_phase_readiness tests.test_beta_contract`: pass, 98 tests after round-thirty-six review fixes.
 - `python3 -m py_compile server.py remote_hermes.py hermes_transport.py`: pass.
+- `python3.11 -m compileall -q .`: pass after replacing five test-only
+  backslash-bearing f-string expressions with ordinary concatenation.
+- Python 3.11 focused 98-test command: pass after the CI repair.
 - `node --check public/app.js && node --check public/core.js`: pass.
 - `git diff --check`: pass.
 
@@ -154,6 +157,18 @@ unsupported remote mutation.
 
 - `python3 -m unittest discover -s tests`: pass, 688 tests with four expected
   platform-specific skips.
+- A local Python 3.11 full run reached all 688 tests but could not validate four
+  Google Calendar tests because that standalone interpreter lacks the
+  repository's `googleapiclient` dependency. Hosted CI installs requirements
+  before running and remains the authoritative Python 3.11 full-suite gate.
+
+### Hosted checks
+
+- GitHub Actions run 80 on PR 36 failed Python 3.11 compilation before tests:
+  five new privacy fixtures placed `\\u...` literals inside f-string
+  expressions, syntax that requires Python 3.12+. The fixtures now use
+  equivalent string concatenation and compile on Python 3.11.
+- Replacement hosted run: pending.
 
 ### Rendered or manual behavior
 
@@ -783,6 +798,7 @@ unsupported remote mutation.
 - Round fifty-eight compatibility/product reviewer: zero findings. A
   deferred-promise harness also confirmed that only the newest pending query
   launches and stale results never render.
+- Round-fifty-nine exact-head review of the Python 3.11 CI repair: pending.
 
 ## Documentation updates
 
