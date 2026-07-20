@@ -157,6 +157,14 @@ skill/toolset visibility remain mandatory beta work. Clarification handling is
 also mandatory, but remains a
 compatibility blocker until the HTTP API advertises a typed request/response
 capability.
+
+Remote approval responses are specifically blocked even when Hermes advertises
+its current approval endpoint. That mutation accepts a choice but no approval
+request ID, expected revision/hash, or exclusive responder lease, so Mentat
+cannot bind a displayed request to the exact upstream request that will be
+resolved. Mentat keeps the 2C safe-stop behavior until upstream exposes that
+binding plus a structured preview that is safe to show without leaking command
+text, credentials, or paths.
 Complete read-only profile discovery and API-key-authenticated Kanban are also
 mandatory, but are upstream blockers until Hermes exposes supported,
 capability-advertised server-to-server operations. Profile creation/deletion,
