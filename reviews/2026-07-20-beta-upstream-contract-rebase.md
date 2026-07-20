@@ -18,7 +18,7 @@ will inspect the same current upstream baseline for every proposed capability.
 | Exact stoppable continuation | [#68177](https://github.com/NousResearch/hermes-agent/pull/68177) | `0eb64f6bf45a7486bd8a4591d486dd9bf83e1077` | 56 focused Runs/session tests passed; Ruff, compile, and whitespace checks passed. |
 | Authenticated complete profile inventory | [#68190](https://github.com/NousResearch/hermes-agent/pull/68190) | `baeb9b2dcb4210ffd33a80fa3908e64e591357ce` | 224 API/multiplex tests passed; Ruff, compile, and whitespace checks passed. |
 | Revision-aware Kanban API | [#68200](https://github.com/NousResearch/hermes-agent/pull/68200) | `14491d16851c1b21d9c201dd9fc273d5f9f7d861` | Already rebased to this baseline; 245 Kanban/database and 212 API/multiplex tests passed; Ruff, compile, and whitespace checks passed. |
-| Bounded Runs inline images | [#68202](https://github.com/NousResearch/hermes-agent/pull/68202) | `ca611c8062c837ce2abe85eafd7d07ec7b306da3` | Based on this baseline; 256 Runs/session-image/API tests passed; Ruff, compile, and whitespace checks passed. |
+| Bounded Runs inline images | [#68202](https://github.com/NousResearch/hermes-agent/pull/68202) | `9f8964e03d4965dc3585ff70b5b90e7ef4abe945` | Based on this baseline; the milestone-wide review bounded image detail to `low`/`high`/`auto`; 257 Runs/session-image/API tests passed; Ruff, compile, and whitespace checks passed. |
 
 ## Release gate remains unchanged
 
