@@ -63,7 +63,7 @@ states.
 | AC-5 | Approval requests are visible but never auto-approved; Mentat stops the upstream run and reports the unsupported response state clearly. | Approval-event fail-closed tests | Pass locally |
 | AC-6 | Local argv/env/cwd/process/event/success behavior remains exact, while remote mode never resolves or launches the local CLI. | Existing local suite plus local-call/Popen negative tests | Pass locally |
 | AC-7 | Secrets, endpoints, upstream IDs/errors/headers, private paths, and unbounded payloads do not cross public/history/log surfaces. | Recursive absence and bounds tests | Pass locally |
-| AC-8 | Focused/full/static checks, supported hosted matrix, docs, and two independent adversarial reviews clear on the final diff. | Verification and review record | Pending |
+| AC-8 | Focused/full/static checks, supported hosted matrix, docs, and two independent adversarial reviews clear on the final diff. | Verification and review record | Pass |
 
 ### Constraints and recovery
 
@@ -172,6 +172,7 @@ states.
 | Command or action | Environment | Exit/result | Pass/fail/skip counts | Notes |
 | --- | --- | --- | --- | --- |
 | `python3 -m unittest discover -s tests -q` | macOS, Python 3.13 | Exit 0 | 638 passed, 4 skipped | Full repository suite after updating the completed-slice roadmap assertion; skips require native Windows behavior. |
+| GitHub Actions `29713752930` | Ubuntu, macOS, Windows; Python 3.11-3.13 | Success | 42 passed | Exact implementation commit `8c2f43b`; no failed jobs. |
 
 ### Rendered or manual behavior
 
@@ -223,15 +224,20 @@ states.
   inventory, mandatory upstream Kanban, and durable abrupt-crash run recovery
   remain.
 - User authorization and scope: standing approval recorded.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- Commit hash: `8c2f43b` (implementation).
+- Ready PR URL: `https://github.com/hazeion/agent-os/pull/31`.
 
 ## Outcome review
 
-- Classification: Pending.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending.
-- Remaining reviewer dissent: Pending.
-- Compatibility/migration/rollback concerns: Pending.
-- User decision: standing authorization requires completion and continuation.
+- Classification: Accepted for merge after exact-final-head hosted verification.
+- Acceptance criteria summary: AC-1 through AC-8 pass locally, in independent
+  review, and on the supported hosted matrix.
+- Potential bugs or untested paths: a live approved remote Hermes host is not
+  exercised in CI; abrupt-process-death recovery remains explicitly deferred.
+- Remaining reviewer dissent: None; both reviewers reported zero findings.
+- Compatibility/migration/rollback concerns: no data migration; local Console
+  behavior remains unchanged, and selecting the confirmed local connection is
+  the rollback path.
+- User decision: merge after the final evidence-only commit clears exact-head
+  hosted verification, then continue to the next approved slice.
 - Next slice authorized: Yes, after merge.
