@@ -3513,6 +3513,94 @@ def test_selected_connection(
     }
 
 
+def connection_diagnostics(
+    data_root: Path,
+    *,
+    client_factory: Callable[[str, str], RemoteHermesClient] = RemoteHermesClient,
+) -> dict[str, Any]:
+    """Return a fixed, secret-free health summary for the selected transport."""
+
+    try:
+        selected = load_connection(data_root)
+    except RemoteHermesError:
+        return {
+            "mode": "unavailable",
+            "status": "error",
+            "category": "unsupported",
+            "summary": "Hermes connection settings are unavailable.",
+        }
+
+    if selected.mode == "local":
+        return {
+            "mode": "local",
+            "status": "healthy",
+            "category": "local",
+            "label": selected.label,
+            "summary": "Mentat is using the local Hermes installation.",
+        }
+
+    try:
+        result = test_selected_connection(
+            data_root,
+            client_factory=client_factory,
+        )
+    except RemoteHermesError as exc:
+        if exc.code == "remote_authentication_failed":
+            category = "unauthenticated"
+            summary = "Remote Hermes rejected the saved API key."
+        elif exc.code == "remote_certificate_invalid":
+            category = "unreachable"
+            summary = "Mentat could not verify the secure remote connection."
+        elif exc.code in {"remote_timeout", "remote_unavailable"}:
+            category = "unreachable"
+            summary = "Remote Hermes is not reachable right now."
+        elif exc.code == "connection_changed":
+            category = "unavailable"
+            summary = "The Hermes connection changed during the health check."
+        else:
+            category = "unsupported"
+            summary = "Mentat rejected the remote Hermes health response."
+        return {
+            "mode": "remote",
+            "status": "error",
+            "category": category,
+            "label": selected.label,
+            "summary": summary,
+        }
+
+    discovery = result.get("discovery") if type(result) is dict else None
+    if (
+        type(discovery) is not dict
+        or discovery.get("trusted") is not True
+        or discovery.get("status") not in {"healthy", "degraded"}
+    ):
+        return {
+            "mode": "remote",
+            "status": "error",
+            "category": "unsupported",
+            "label": selected.label,
+            "summary": "Mentat rejected the remote Hermes health response.",
+        }
+    status = "degraded" if discovery.get("status") == "degraded" else "healthy"
+    summary = (
+        "Remote Hermes is connected but reports degraded readiness."
+        if status == "degraded"
+        else "Remote Hermes is connected and ready."
+    )
+    return {
+        "mode": "remote",
+        "status": status,
+        "category": status,
+        "label": selected.label,
+        "summary": summary,
+        "liveness": discovery.get("liveness"),
+        "version": discovery.get("version"),
+        "model": discovery.get("model"),
+        "readiness": dict(discovery.get("readiness") or {}),
+        "capabilities": list(discovery.get("capabilities") or []),
+    }
+
+
 def public_connection_payload(data_root: Path) -> dict[str, Any]:
     try:
         return {"status": "configured", "selection": load_connection(data_root).public_summary()}
@@ -3564,6 +3652,7 @@ __all__ = [
     "ConnectionSelection",
     "RemoteHermesClient",
     "RemoteHermesError",
+    "connection_diagnostics",
     "confirm_connection",
     "connection_path",
     "load_connection",

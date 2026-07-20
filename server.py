@@ -103,6 +103,7 @@ from hermes_transport import (
 from remote_hermes import (
     RemoteHermesError,
     SESSION_LIST_LIMIT as REMOTE_SESSION_LIST_LIMIT,
+    connection_diagnostics as remote_hermes_diagnostics,
     confirm_connection as confirm_remote_hermes_connection,
     preview_connection as preview_remote_hermes_connection,
     public_connection_payload,
@@ -1863,6 +1864,25 @@ def calendar_request_payload(query_string: str):
 
 def hermes_config():
     """Return a small public-safe summary without parsing raw credential config."""
+    connection = public_connection_payload(DATA_DIR)
+    if connection.get("status") == "unavailable":
+        return {
+            "mode": "unavailable",
+            "exists": None,
+            "summary": {},
+            "masked_config": "",
+            "error": "Hermes connection settings are unavailable.",
+        }
+    selection = connection.get("selection") or {}
+    if selection.get("mode") == "remote":
+        label = compact_text(selection.get("label"), max_length=80) or "Remote Hermes"
+        safe_summary = {"connection": label, "mode": "remote"}
+        return {
+            "mode": "remote",
+            "exists": True,
+            "summary": safe_summary,
+            "masked_config": json.dumps(safe_summary, indent=2),
+        }
     try:
         config_exists = CONFIG_PATH.exists()
     except OSError:
@@ -3231,7 +3251,15 @@ def health_context() -> HealthContext:
         file_mtime_iso=file_mtime_iso,
         human_bytes=human_bytes,
         clean_snippet=clean_snippet,
+        hermes_diagnostics=hermes_connection_diagnostics,
     )
+
+
+def hermes_connection_diagnostics():
+    """Bind a remote health probe to one selected connection revision."""
+
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        return remote_hermes_diagnostics(DATA_DIR)
 
 
 def health():

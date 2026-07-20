@@ -129,6 +129,14 @@ class FakeDiscoveryClient:
         }
 
 
+class DegradedDiscoveryClient(FakeDiscoveryClient):
+    def discover(self):
+        payload = super().discover()
+        payload["status"] = "degraded"
+        payload["readiness"] = {"config": "ok", "gateway": "degraded"}
+        return payload
+
+
 class RemoteHermesTests(unittest.TestCase):
     def setUp(self):
         FakeDiscoveryClient.calls = []
@@ -606,6 +614,64 @@ class RemoteHermesTests(unittest.TestCase):
         self.assertEqual(result["readiness"], {"config": "ok", "gateway": "ok"})
         self.assertEqual(result["capabilities"], ["chat_completions", "run_submission"])
         self.assertNotIn("future_secret_feature", serialized)
+
+    def test_connection_diagnostics_reports_local_healthy_without_network(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            result = remote_hermes.connection_diagnostics(
+                root,
+                client_factory=FakeDiscoveryClient,
+            )
+        self.assertEqual(result["mode"], "local")
+        self.assertEqual(result["status"], "healthy")
+        self.assertEqual(FakeDiscoveryClient.calls, [])
+
+    def test_connection_diagnostics_returns_only_bounded_remote_health(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            self._confirm(root)
+            result = remote_hermes.connection_diagnostics(
+                root,
+                client_factory=DegradedDiscoveryClient,
+            )
+        self.assertEqual(result["mode"], "remote")
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["category"], "degraded")
+        self.assertEqual(result["model"], "anthropic/claude-test")
+        serialized = json.dumps(result)
+        self.assertNotIn(DISTINCTIVE_SECRET, serialized)
+        self.assertNotIn("hermes.example", serialized)
+        self.assertNotIn("binding_id", serialized)
+
+    def test_connection_diagnostics_classifies_remote_failures_without_details(self):
+        class FailingClient(FakeDiscoveryClient):
+            failure_code = "remote_unavailable"
+
+            def discover(self):
+                raise remote_hermes.RemoteHermesError(self.failure_code)
+
+        cases = {
+            "remote_authentication_failed": "unauthenticated",
+            "remote_certificate_invalid": "unreachable",
+            "remote_timeout": "unreachable",
+            "remote_schema_unsupported": "unsupported",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            self._confirm(root)
+            for code, category in cases.items():
+                with self.subTest(code=code):
+                    FailingClient.failure_code = code
+                    result = remote_hermes.connection_diagnostics(
+                        root,
+                        client_factory=FailingClient,
+                    )
+                    self.assertEqual(result["status"], "error")
+                    self.assertEqual(result["category"], category)
+                    serialized = json.dumps(result)
+                    self.assertNotIn(code, serialized)
+                    self.assertNotIn(DISTINCTIVE_SECRET, serialized)
+                    self.assertNotIn("hermes.example", serialized)
 
     def test_short_single_label_origins_do_not_false_positive_as_reflections(self):
         for endpoint in ("https://a", "https://ok"):
