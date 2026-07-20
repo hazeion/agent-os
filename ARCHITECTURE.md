@@ -63,6 +63,14 @@ The stored credential and endpoint remain excluded from ordinary backup and
 are never returned from stored state or upstream responses; only the
 operator-supplied setup request, a public label, opaque binding, and minimized
 trusted discovery state may cross the browser boundary.
+Milestone 2E extends that fixed authenticated boundary with read-only remote
+session list, detail, and message operations. Upstream session IDs remain
+process-private behind random connection-bound aliases; browser payloads carry
+only bounded public metadata and user/assistant replay text. Hermes branch
+and compression projection is consumed at the list boundary; projected
+transcripts are labeled as partial because Hermes does not return ancestor
+turns, and any later message-identity change fails closed. Remote continuation
+remains unavailable until an exact stoppable capability is advertised.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other

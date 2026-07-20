@@ -553,7 +553,11 @@ class CiWorkflowContractTests(unittest.TestCase):
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
-            "remote session list, replay, and continuation",
+            "bounded Context Pack text",
+            ROADMAP.split("## Current next actions", 1)[1],
+        )
+        self.assertIn(
+            "remote session continuation unavailable",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertNotIn("Land the early CI guardrail", ROADMAP)

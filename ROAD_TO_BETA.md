@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
-Status: Milestone 2 in progress — 2A connection foundation complete
-Last updated: 2026-07-19
+Status: Milestone 2 in progress — 2A through 2C and 2E session visibility complete
+Last updated: 2026-07-20
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
@@ -83,9 +83,9 @@ The largest beta gaps are operational rather than feature gaps:
   source, or unified `mentat` command;
 - the early GitHub Actions matrix is in place, while later packaging, browser,
   dependency, and release gates remain outstanding;
-- the active runtime still routes Hermes work locally; Milestone 2A now
-  provides owner-only remote selection and bounded capability discovery, while
-  the transport adapter and feature parity remain outstanding;
+- the selected remote runtime supports plain default-profile Console runs plus
+  bounded read-only session history; richer inputs, continuation, and the
+  remaining mandatory parity capabilities are still outstanding;
 - complete remote profile discovery and API-key-authenticated Kanban require a
   supported upstream Hermes capability;
 - backup, restore, upgrade, and rollback are not yet a complete user workflow;
@@ -149,7 +149,7 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | In progress — 2A through 2C complete; approval response audited and blocked | 1 | Mandatory remote capabilities verified over HTTPS |
+| 2 | Secure remote Hermes parity | In progress — 2A through 2C and 2E session visibility complete; approval response and continuation blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
@@ -289,8 +289,11 @@ Work in order:
    **Milestone 2C implements one plain default-profile run, bounded events and
    status, cancellation, and safe stopping for approval requests. The 2D audit
    found that Hermes' response mutation has no exact request binding or safe
-   structured preview, so approval response remains an upstream blocker;
-   sessions remain.**
+   structured preview, so approval response remains an upstream blocker.
+   Milestone 2E adds bounded,
+   read-only remote session list and replay with private connection-bound
+   aliases; remote continuation remains blocked until Hermes advertises an
+   exact stoppable continuation capability.**
 6. Send only bounded Context Pack text and supported inline images; keep local
    paths private and degrade unsupported file/artifact transfers clearly.
 7. Add complete read-only profile discovery through a supported,
@@ -550,12 +553,13 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Continue Milestone 2 with remote session list, replay, and continuation
-   through exact authenticated capabilities. Keep approval response unavailable
-   until Hermes advertises an exact request binding and a structured preview
-   that is safe to display.
-2. Add bounded Context Pack text and supported inline image inputs without
+1. Continue Milestone 2 with bounded Context Pack text and supported inline
+   image inputs without
    transmitting local paths or enabling general file transfer.
+2. Keep remote session continuation unavailable until Hermes advertises an
+   exact stoppable continuation capability, and keep approval response
+   unavailable until Hermes advertises an exact request binding plus a
+   structured preview that is safe to display.
 3. Continue tracking the mandatory upstream Hermes capabilities for
    authenticated Kanban, complete read-only profile discovery, and
    clarification handling without implementing an unsafe substitute.

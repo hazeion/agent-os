@@ -82,6 +82,15 @@ _RUN_ENDPOINTS = {
     "run_events": ("GET", "/v1/runs/{run_id}/events", "run_events_sse"),
     "run_stop": ("POST", "/v1/runs/{run_id}/stop", "run_stop"),
 }
+_SESSION_ENDPOINTS = {
+    "sessions": ("GET", "/api/sessions"),
+    "session": ("GET", "/api/sessions/{session_id}"),
+    "session_messages": ("GET", "/api/sessions/{session_id}/messages"),
+}
+_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}\Z")
+SESSION_LIST_LIMIT = 12
+SESSION_MESSAGE_LIMIT = 500
+SESSION_CONTENT_LIMIT = 100_000
 _RUN_STATUSES = frozenset(
     {
         "queued",
@@ -1073,6 +1082,279 @@ class RemoteHermesClient:
             ),
         )
 
+    @staticmethod
+    def _validated_session_id(value: Any) -> str:
+        if not isinstance(value, str) or not _SESSION_ID.fullmatch(value):
+            raise RemoteHermesError("remote_session_schema_invalid")
+        return value
+
+    def _contains_private_session_text(self, value: Any, session_id: str) -> bool:
+        endpoint_parts = urlsplit(self.endpoint)
+        hostname = endpoint_parts.hostname or ""
+        private_hostname = "" if hostname in {"localhost", "127.0.0.1", "::1"} else hostname
+        distinctive_netloc = endpoint_parts.netloc if endpoint_parts.netloc != hostname else ""
+        return _contains_private_text(
+            value,
+            (
+                self.api_key,
+                self.endpoint,
+                private_hostname,
+                distinctive_netloc,
+                session_id,
+            ),
+        )
+
+    def _session_json_request(self, path: str) -> Mapping[str, Any]:
+        list_path = f"/api/sessions?limit={SESSION_LIST_LIMIT}&offset=0&include_children=false"
+        detail_path = re.fullmatch(r"/api/sessions/([A-Za-z0-9][A-Za-z0-9_.:-]{0,199})", path)
+        messages_path = re.fullmatch(
+            r"/api/sessions/([A-Za-z0-9][A-Za-z0-9_.:-]{0,199})/messages",
+            path,
+        )
+        if path != list_path and detail_path is None and messages_path is None:
+            raise RemoteHermesError("remote_path_not_allowed")
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "Mentat/remote-hermes-v1",
+        }
+        connection = self._connection()
+        try:
+            connection.request("GET", path, headers=headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            if 300 <= status <= 399:
+                raise RemoteHermesError("remote_redirect_refused")
+            if status in {401, 403}:
+                raise RemoteHermesError("remote_authentication_failed")
+            if status == 404 and (detail_path is not None or messages_path is not None):
+                raise RemoteHermesError("remote_session_not_found")
+            if status != 200:
+                raise RemoteHermesError("remote_session_unavailable")
+            content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().casefold()
+            if content_type not in {"application/json", "application/problem+json"}:
+                raise RemoteHermesError("remote_content_type_invalid")
+            declared = response.getheader("Content-Length")
+            if declared is not None:
+                try:
+                    if int(declared) < 0 or int(declared) > self.maximum_bytes:
+                        raise RemoteHermesError("remote_response_too_large")
+                except ValueError as exc:
+                    raise RemoteHermesError("remote_response_invalid") from exc
+            raw = response.read(self.maximum_bytes + 1)
+            if len(raw) > self.maximum_bytes:
+                raise RemoteHermesError("remote_response_too_large")
+            try:
+                payload = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+            except (UnicodeError, ValueError, RecursionError) as exc:
+                raise RemoteHermesError("remote_response_invalid") from exc
+            if type(payload) is not dict or len(payload) > 32:
+                raise RemoteHermesError("remote_response_invalid")
+            return payload
+        except RemoteHermesError:
+            raise
+        except ssl.SSLCertVerificationError as exc:
+            raise RemoteHermesError("remote_certificate_invalid") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RemoteHermesError("remote_timeout") from exc
+        except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+            raise RemoteHermesError("remote_unavailable") from exc
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _session_number(value: Any, *, integer: bool = False) -> int | float | None:
+        if value is None:
+            return None
+        if integer:
+            if type(value) is not int or not (0 <= value <= 10**9):
+                raise RemoteHermesError("remote_session_schema_invalid")
+            return value
+        if type(value) not in {int, float} or not math.isfinite(float(value)) or not (0 <= float(value) <= 10**10):
+            raise RemoteHermesError("remote_session_schema_invalid")
+        return float(value)
+
+    def _normalize_session(self, value: Any, *, expected_id: str | None = None) -> dict[str, Any]:
+        if type(value) is not dict or len(value) > 64:
+            raise RemoteHermesError("remote_session_schema_invalid")
+        session_id = self._validated_session_id(value.get("id"))
+        if expected_id is not None and session_id != expected_id:
+            raise RemoteHermesError("remote_session_binding_changed")
+        title = value.get("title")
+        if title is None:
+            title = "Untitled session"
+        if not isinstance(title, str) or not title.strip() or len(title) > 200 or "\x00" in title:
+            raise RemoteHermesError("remote_session_schema_invalid")
+        title = re.sub(r"\s+", " ", title).strip()
+        model = value.get("model")
+        if model is not None and (
+            not isinstance(model, str)
+            or not _SAFE_MODEL.fullmatch(model)
+            or model.startswith("/")
+            or ".." in model
+            or "://" in model
+            or "\\" in model
+        ):
+            raise RemoteHermesError("remote_session_schema_invalid")
+        normalized = {
+            "upstream_id": session_id,
+            "title": title,
+            "model": model,
+            "started_at": self._session_number(value.get("started_at")),
+            "ended_at": self._session_number(value.get("ended_at")),
+            "last_active": self._session_number(value.get("last_active")),
+            "message_count": self._session_number(value.get("message_count"), integer=True),
+            "tool_call_count": self._session_number(value.get("tool_call_count"), integer=True),
+            "input_tokens": self._session_number(value.get("input_tokens"), integer=True),
+            "output_tokens": self._session_number(value.get("output_tokens"), integer=True),
+        }
+        preview = value.get("preview")
+        if preview is None:
+            preview = ""
+        if not isinstance(preview, str) or len(preview) > 200 or "\x00" in preview:
+            raise RemoteHermesError("remote_session_schema_invalid")
+        normalized["preview"] = re.sub(r"\s+", " ", preview).strip()
+        normalized["status"] = "active" if normalized["ended_at"] is None else "ended"
+        lineage_root = value.get("_lineage_root_id")
+        if lineage_root is not None:
+            normalized["lineage_root_id"] = self._validated_session_id(lineage_root)
+        parent_id = value.get("parent_session_id")
+        if parent_id is not None:
+            normalized["parent_session_id"] = self._validated_session_id(parent_id)
+        cost = value.get("actual_cost_usd")
+        if cost is None:
+            cost = value.get("estimated_cost_usd")
+        if cost is not None:
+            if type(cost) not in {int, float} or not math.isfinite(float(cost)) or not (0 <= float(cost) <= 10**9):
+                raise RemoteHermesError("remote_session_schema_invalid")
+            normalized["estimated_cost_usd"] = float(cost)
+        public_fields = {
+            key: item
+            for key, item in normalized.items()
+            if key not in {"upstream_id", "lineage_root_id", "parent_session_id"}
+        }
+        identity_values = tuple(
+            item
+            for item in (
+                session_id,
+                normalized.get("lineage_root_id"),
+                normalized.get("parent_session_id"),
+            )
+            if isinstance(item, str)
+        )
+        if self._contains_private_session_text(public_fields, session_id) or _contains_private_text(
+            public_fields,
+            identity_values,
+        ):
+            raise RemoteHermesError("remote_private_reflection")
+        return normalized
+
+    def require_session_resource_capabilities(self) -> dict[str, Any]:
+        discovery = self.discover()
+        if "session_resources" not in set(discovery.get("capabilities") or ()):
+            raise RemoteHermesError("remote_session_capability_unavailable")
+        return discovery
+
+    def list_sessions(self) -> dict[str, Any]:
+        payload = self._session_json_request(
+            f"/api/sessions?limit={SESSION_LIST_LIMIT}&offset=0&include_children=false"
+        )
+        data = payload.get("data")
+        if (
+            payload.get("object") != "list"
+            or type(data) is not list
+            or len(data) > SESSION_LIST_LIMIT
+            or payload.get("limit") != SESSION_LIST_LIMIT
+            or payload.get("offset") != 0
+            or type(payload.get("has_more")) is not bool
+        ):
+            raise RemoteHermesError("remote_session_schema_invalid")
+        sessions = [self._normalize_session(item) for item in data]
+        session_ids = [item["upstream_id"] for item in sessions]
+        if len(set(session_ids)) != len(session_ids):
+            raise RemoteHermesError("remote_session_schema_invalid")
+        all_identity_values = tuple(
+            dict.fromkeys(
+                item
+                for session in sessions
+                for item in (
+                    session.get("upstream_id"),
+                    session.get("lineage_root_id"),
+                    session.get("parent_session_id"),
+                )
+                if isinstance(item, str)
+            )
+        )
+        for session in sessions:
+            public_fields = {
+                key: item
+                for key, item in session.items()
+                if key not in {"upstream_id", "lineage_root_id", "parent_session_id"}
+            }
+            if _contains_private_text(public_fields, all_identity_values):
+                raise RemoteHermesError("remote_private_reflection")
+        return {
+            "sessions": sessions,
+            "truncated": payload["has_more"],
+        }
+
+    def get_session(self, session_id: str) -> dict[str, Any]:
+        session_id = self._validated_session_id(session_id)
+        payload = self._session_json_request(f"/api/sessions/{session_id}")
+        if payload.get("object") != "hermes.session":
+            raise RemoteHermesError("remote_session_schema_invalid")
+        return self._normalize_session(payload.get("session"), expected_id=session_id)
+
+    def get_session_messages(
+        self,
+        session_id: str,
+        *,
+        structural_ids: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        session_id = self._validated_session_id(session_id)
+        if not isinstance(structural_ids, tuple) or len(structural_ids) > 40:
+            raise RemoteHermesError("remote_session_schema_invalid")
+        private_session_ids = tuple(
+            dict.fromkeys(
+                [session_id, *(self._validated_session_id(item) for item in structural_ids)]
+            )
+        )
+        payload = self._session_json_request(f"/api/sessions/{session_id}/messages")
+        data = payload.get("data")
+        if (
+            payload.get("object") != "list"
+            or type(data) is not list
+            or len(data) > SESSION_MESSAGE_LIMIT
+        ):
+            raise RemoteHermesError("remote_session_schema_invalid")
+        resolved_id = self._validated_session_id(payload.get("session_id"))
+        if resolved_id != session_id:
+            raise RemoteHermesError("remote_session_binding_changed")
+        messages: list[dict[str, Any]] = []
+        for item in data:
+            if type(item) is not dict or len(item) > 32:
+                raise RemoteHermesError("remote_session_schema_invalid")
+            role = item.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            content = item.get("content")
+            if not isinstance(content, str) or len(content) > SESSION_CONTENT_LIMIT or "\x00" in content:
+                raise RemoteHermesError("remote_session_schema_invalid")
+            message_session_id = item.get("session_id")
+            if message_session_id is not None and message_session_id != resolved_id:
+                raise RemoteHermesError("remote_session_binding_changed")
+            timestamp = self._session_number(item.get("timestamp"))
+            if self._contains_private_session_text(content, session_id) or _contains_private_text(
+                content,
+                private_session_ids,
+            ):
+                raise RemoteHermesError("remote_private_reflection")
+            messages.append({"role": role, "content": content, "timestamp": timestamp})
+        return messages
+
     def _run_json_request(
         self,
         method: str,
@@ -1435,6 +1717,11 @@ class RemoteHermesClient:
             item = endpoints.get(name)
             if type(item) is not dict or (item.get("method"), item.get("path")) != (method, path):
                 raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("session_resources") is True:
+            for name, expected in _SESSION_ENDPOINTS.items():
+                item = endpoints.get(name)
+                if type(item) is not dict or (item.get("method"), item.get("path")) != expected:
+                    raise RemoteHermesError("remote_schema_unsupported")
         model = _bounded_text(payload.get("model"), maximum=160)
         if not _SAFE_MODEL.fullmatch(model) or model.startswith("/") or ".." in model or "://" in model or "\\" in model:
             raise RemoteHermesError("remote_schema_unsupported")

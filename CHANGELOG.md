@@ -5,6 +5,10 @@ All notable changes to Mentat.
 ## 2026-07-20
 
 ### Added
+- Added capability-gated read-only remote session history using Hermes' exact
+  list, detail, and message endpoints. The existing Sessions UI can show a
+  bounded recent list, transcript, and replay while local SQLite behavior stays
+  unchanged in local mode.
 - Added capability-gated remote Agent Console turns for the selected Hermes
   host's default profile, including fixed run submission, bounded SSE progress,
   status reconciliation, usage metadata, and remote cancellation.
@@ -15,6 +19,15 @@ All notable changes to Mentat.
   and retained Console run summaries, with safe defaults for older history.
 
 ### Safety
+- Remote session identifiers remain process-private behind random aliases bound
+  to the selected connection. Mentat allowlists and bounds public metadata,
+  returns only user/assistant conversation text, labels compressed
+  latest-segment history as partial, and rejects stale aliases, changed
+  capabilities, changed message identity, private transport reflection,
+  malformed pagination, or uncertain identity.
+- Remote session continuation remains unavailable because the current Runs
+  input is not separately capability-advertised and the session-chat stream has
+  no matching public status/stop operation.
 - Audited remote approval responses and kept them unavailable: Hermes' current
   mutation has no request ID/revision/hash, so Mentat cannot prove that a
   user's confirmation still targets the displayed request. Approval requests

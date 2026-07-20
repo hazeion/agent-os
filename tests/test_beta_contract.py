@@ -107,10 +107,10 @@ class BetaContractTests(unittest.TestCase):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
         self.assertTrue(next_actions.lstrip().startswith("1. Continue Milestone 2"))
-        self.assertIn("remote session list, replay, and continuation", next_actions)
-        self.assertIn("Keep approval response unavailable", next_actions)
-        self.assertIn("exact authenticated capabilities", next_actions)
         self.assertIn("bounded Context Pack text", next_actions)
+        self.assertIn("remote session continuation unavailable", next_actions)
+        self.assertIn("exact stoppable continuation capability", next_actions)
+        self.assertIn("keep approval response", next_actions)
         self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 
