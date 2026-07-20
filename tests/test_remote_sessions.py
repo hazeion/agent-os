@@ -1275,7 +1275,9 @@ class RemoteSessionTests(unittest.TestCase):
         normalization_expansion = "\ufdfa" * remote_hermes.SESSION_CONTENT_LIMIT
         started = time.perf_counter()
         self.assertTrue(remote_hermes._contains_private_public_text(normalization_expansion))
-        self.assertLess(time.perf_counter() - started, 1.0)
+        # Windows Python 3.11 normalizes this pathological maximum-size input
+        # more slowly; keep a bounded cross-platform budget without flaking.
+        self.assertLess(time.perf_counter() - started, 2.0)
 
         varied_stem_dense = " ".join(f"api:{index:05d}" for index in range(10_000))
         started = time.perf_counter()

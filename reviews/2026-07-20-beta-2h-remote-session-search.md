@@ -168,7 +168,15 @@ unsupported remote mutation.
   five new privacy fixtures placed `\\u...` literals inside f-string
   expressions, syntax that requires Python 3.12+. The fixtures now use
   equivalent string concatenation and compile on Python 3.11.
-- Replacement hosted run: pending.
+- Replacement GitHub Actions run 81: Python 3.11 compilation repaired; one
+  Windows timing assertion failed as described below.
+- GitHub Actions run 81 confirmed the Python 3.11 syntax repair across the
+  matrix. One Windows 3.11 shard then measured the deliberately pathological
+  100,000-character NFKC expansion at 1.20 seconds against a 1.00-second test
+  budget. The rejection remained correct. That single maximum-input assertion
+  now uses a 2.00-second cross-platform budget; all other performance budgets
+  remain unchanged.
+- Post-timing-repair hosted rerun: pending.
 
 ### Rendered or manual behavior
 
@@ -798,7 +806,17 @@ unsupported remote mutation.
 - Round fifty-eight compatibility/product reviewer: zero findings. A
   deferred-promise harness also confirmed that only the newest pending query
   launches and stale results never render.
-- Round-fifty-nine exact-head review of the Python 3.11 CI repair: pending.
+- Round fifty-nine exact-head safety reviewer: one P3 evidence finding. The
+  test repair covered five fixtures while the log said four; both counts were
+  corrected. The compatibility reviewer found the fixture strings equivalent.
+- Round sixty exact-head reviewers: zero findings on `3c9faad` after correcting
+  the repair evidence from four fixtures to five.
+- Round sixty-one safety/privacy reviewer: zero findings. The compatibility
+  reviewer found one P3 stale hosted-check chronology entry; run 81 and the
+  post-timing-repair rerun state are now recorded separately.
+- Round sixty-two safety/privacy reviewer: zero findings. The compatibility
+  reviewer found one P3 stale Round-61 status in this record; this entry
+  replaces it with the completed finding and disposition.
 
 ## Documentation updates
 
