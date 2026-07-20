@@ -1,6 +1,6 @@
 # Feature Slice Review: Transport-Neutral Hermes Console Boundary
 
-Status: Implemented, locally verified, and independently reviewed; publication pending
+Status: Ready PR; implementation head hosted-green
 Slice: `beta-2b-transport-adapter`
 Date: `2026-07-20`
 Review log: `reviews/2026-07-20-beta-2b-transport-adapter.md`
@@ -49,7 +49,7 @@ selected remote connection can never fall through to the local CLI.
 | AC-4 | New and retained run summaries carry only validated `transport_mode` and opaque `connection_binding_id`; legacy history safely defaults to local. | Run-history round-trip and malformed-field tests | Pass |
 | AC-5 | Connection confirmation fails before mutation while any Console run is active; preview and connection testing remain available. | Route handler active-run tests | Pass |
 | AC-6 | No endpoint, credential, local path, environment, argv, or private process detail crosses run/public/history payloads. | Recursive secret/path absence tests | Pass |
-| AC-7 | Focused/full/static checks, supported hosted matrix, docs, and two independent adversarial reviews clear on the final diff. | Verification and review record | Pending |
+| AC-7 | Focused/full/static checks, supported hosted matrix, docs, and two independent adversarial reviews clear on the final diff. | Verification and review record | Pass |
 
 ### Constraints and recovery
 
@@ -152,6 +152,7 @@ selected remote connection can never fall through to the local CLI.
 | Command or action | Environment | Exit/result | Pass/fail/skip counts | Notes |
 | --- | --- | --- | --- | --- |
 | `python3 -m unittest discover -s tests -q` | macOS, Python 3.13 | 0 | 619 pass, 4 skip | Final corrected diff green. |
+| GitHub Actions `29711882800` | Linux, macOS, and Windows; Python 3.11-3.13 | Success | 42 pass | Exact implementation head `6dbded1e900d52c2213fe93dd8261dfa428302a7`. |
 
 ### Rendered or manual behavior
 
@@ -198,15 +199,20 @@ lock ordering repeatedly under slow discovery.
   closed for selected remote mode before remote execution exists.
 - Unresolved risks: mandatory remote run/session and upstream blockers remain.
 - User authorization and scope: standing approval recorded.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- Commit hash: `6dbded1e900d52c2213fe93dd8261dfa428302a7`.
+- Ready PR URL: <https://github.com/hazeion/agent-os/pull/30>.
 
 ## Outcome review
 
-- Classification: Pending.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending.
-- Remaining reviewer dissent: Pending.
-- Compatibility/migration/rollback concerns: Pending.
-- User decision: standing authorization requires completion and continuation.
+- Classification: Accepted for Milestone 2B.
+- Acceptance criteria summary: AC-1 through AC-7 pass.
+- Potential bugs or untested paths: no live model invocation in CI and no remote
+  execution path by design; those remain explicit 2C work.
+- Remaining reviewer dissent: none; both independent final reviews reported
+  zero findings.
+- Compatibility/migration/rollback concerns: local successful-run behavior is
+  preserved; older history defaults to the original local binding, explicitly
+  malformed metadata fails closed, and selecting local remains the rollback.
+- User decision: standing authorization accepts the reviewed outcome and
+  requires completion and continuation.
 - Next slice authorized: Yes, after merge.
