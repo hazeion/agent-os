@@ -302,9 +302,12 @@ Work in order:
    paths private and degrade unsupported file/artifact transfers clearly.
    **Milestone 2F sends one exact, bounded, private-snapshot Context Pack as
    path-free text through the stoppable Runs API. Direct files, artifacts, and
-   images fail clearly before submission. Inline images remain blocked because
-   current Hermes advertises them for chat/responses, not for the Runs
-   submission/status/stop lifecycle used by Agent Console.**
+   images fail clearly before submission. A bounded Runs-image contract is now
+   proposed upstream in Hermes PR #68202; images remain unavailable until it
+   is merged, released, advertised by the installed runtime, and verified over
+   Mentat's authenticated transport. Chat/Responses image support is not a
+   substitute for the Runs submission/status/stop lifecycle used by Agent
+   Console.**
 7. Show remote skills and toolsets only through supported, advertised,
    API-key-authenticated read-only endpoints. **Milestone 2G adds a bounded,
    connection-bound Settings inventory. It exposes only validated identifiers,
@@ -573,8 +576,9 @@ The release cannot be called public beta until all of the following are true:
 
 1. Continue Milestone 2 after bounded Context Pack text and remote
    skill/toolset visibility by keeping inline images unavailable until Hermes
-   advertises an exact image-input capability for the stoppable Runs lifecycle;
-   do not substitute chat/responses or enable general file transfer.
+   PR #68202 is merged, released, advertised by the installed runtime, and
+   verified as the exact image-input capability for the stoppable Runs
+   lifecycle; do not substitute chat/responses or enable general file transfer.
 2. Keep remote session continuation unavailable until Hermes advertises an
    exact stoppable continuation capability, and keep approval response
    unavailable until Hermes advertises an exact request binding plus a
