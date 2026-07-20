@@ -8,6 +8,7 @@ ROADMAP = (ROOT / "ROAD_TO_BETA.md").read_text(encoding="utf-8")
 ARCHITECTURE = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
 REMOTE_HERMES = (ROOT / "REMOTE_HERMES.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+APP_JS = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
 
 
 def section(text: str, start: str, end: str) -> str:
@@ -19,6 +20,10 @@ def normalized_section(text: str, start: str, end: str) -> str:
 
 
 class BetaContractTests(unittest.TestCase):
+    def test_remote_transcripts_render_as_escaped_plain_text(self):
+        self.assertIn("payload.plain_text === true", APP_JS)
+        self.assertIn("plainTextTranscript ? highlightHtml", APP_JS)
+
     def test_standard_mit_license_uses_approved_holder(self):
         self.assertTrue(LICENSE.startswith("MIT License\n"))
         self.assertIn("Copyright (c) 2026 Brandon Thomas", LICENSE)
@@ -138,7 +143,7 @@ class BetaContractTests(unittest.TestCase):
             "Durable Kanban delegation and follow-up",
         ):
             self.assertIn(required, REMOTE_HERMES)
-        self.assertIn("**Required**; upstream authenticated capability blocker", REMOTE_HERMES)
+        self.assertIn("**Required**; upstream API-server capability blocker", REMOTE_HERMES)
         self.assertIn("Clarification handling", REMOTE_HERMES)
         self.assertIn("**Graceful degradation**", REMOTE_HERMES)
 
@@ -167,8 +172,8 @@ class BetaContractTests(unittest.TestCase):
             "must never be returned to the browser",
         ):
             self.assertIn(requirement, normalized_contract)
-        self.assertIn("unauthenticated loopback plugin HTTP route", normalized_contract)
-        self.assertNotIn("behind dashboard session auth", normalized_contract)
+        self.assertIn("separate dashboard session-token boundary", normalized_contract)
+        self.assertIn("not the approved stable API-server bearer boundary", normalized_contract)
         normalized_architecture = " ".join(ARCHITECTURE.split())
         self.assertIn("never collects Hermes-owned provider/model credentials", normalized_architecture)
         self.assertIn("operator-supplied API key", normalized_architecture)

@@ -28,6 +28,7 @@ class HermesTransportError(RuntimeError):
         "remote_capability_inventory_unavailable": "This Hermes host does not support read-only skills and toolsets visibility.",
         "remote_capability_inventory_schema_invalid": "This Hermes host returned an unsupported skills or toolsets inventory.",
         "remote_capability_inventory_private": "This Hermes host returned unsafe skills or toolsets metadata.",
+        "remote_private_reflection": "Remote content was blocked by Mentat's content-safety checks.",
         "remote_approval_unsupported": "This remote run needs approval, which Mentat cannot answer yet.",
         "remote_run_failed": "The remote Hermes run failed.",
         "remote_submission_unverified": "Mentat could not verify whether the remote run started.",

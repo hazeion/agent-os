@@ -3080,8 +3080,8 @@ function renderMessageSearchResults(payload = {}, query = '') {
   const container = $('#message-search-results');
   if (!container) return;
   const term = (query || payload.query || '').trim();
-  if (term.length < 2) {
-    container.innerHTML = `<div class="empty">Type at least two characters to search Hermes message contents with read-only FTS.</div>`;
+  if (searchQueryLength(term) < 2) {
+    container.innerHTML = `<div class="empty">Type at least two characters to search Hermes messages. Remote search stays read-only and covers the recent sessions shown here.</div>`;
     return;
   }
   if (payload.error) {
@@ -3089,18 +3089,34 @@ function renderMessageSearchResults(payload = {}, query = '') {
     return;
   }
   const results = payload.results || [];
+  const coverage = payload.source === 'remote' && payload.coverage ? payload.coverage : null;
+  const coverageParts = [];
+  if (coverage) {
+    const sessionCount = Number(coverage.sessions_scanned) || 0;
+    const messageCount = Number(coverage.messages_scanned) || 0;
+    const compactedCount = Number(coverage.compacted_sessions) || 0;
+    coverageParts.push(`${sessionCount} recent ${sessionCount === 1 ? 'session' : 'sessions'}`);
+    coverageParts.push(`${messageCount} visible ${messageCount === 1 ? 'message' : 'messages'} searched`);
+    if (coverage.list_truncated) coverageParts.push(`${Number(coverage.session_limit) || 12}-session limit reached; older sessions may not be included`);
+    if (compactedCount > 0) coverageParts.push(`${compactedCount} compacted ${compactedCount === 1 ? 'transcript may' : 'transcripts may'} omit earlier turns`);
+    if (coverage.results_truncated) coverageParts.push(`showing the first ${Number(coverage.result_limit) || 20} matches`);
+  }
+  const coverageMarkup = coverageParts.length
+    ? `<div class="message-search-coverage mono">Remote coverage: ${escapeHtml(coverageParts.join(' · '))}.</div>`
+    : '';
   container.innerHTML = results.length ? `
-    <div class="message-search-head mono">${results.length} message matches for “${escapeHtml(term)}”</div>
+    <div class="message-search-head mono">${results.length} ${results.length === 1 ? 'message match' : 'message matches'} for “${escapeHtml(term)}”</div>
+    ${coverageMarkup}
     <div class="message-result-grid">
       ${results.map((result) => `
-        <button class="message-result" type="button" data-session-id="${escapeHtml(result.session_id)}" data-message-id="${escapeHtml(result.message_id)}" data-query="${escapeHtml(term)}">
+        <button class="message-result" type="button" data-session-id="${escapeHtml(result.session_id)}" data-message-id="${escapeHtml(result.message_id)}" data-query="${escapeHtml(term)}" data-match-text="${escapeHtml(result.match_text || '')}">
           <div class="item-title"><span>${escapeHtml(result.title || 'Untitled session')}</span><span class="pill">${escapeHtml(result.role || 'message')}</span></div>
-          <div class="item-desc">${highlightHtml(result.snippet || '', term)}</div>
+          <div class="item-desc">${highlightHtml(result.snippet || '', result.match_text || term)}</div>
           <div class="item-meta mono">${humanDate(result.timestamp)} · ${escapeHtml(result.source || 'session')} · msg ${escapeHtml(result.message_id)}</div>
         </button>
       `).join('')}
     </div>
-  ` : `<div class="empty">No message matches for “${escapeHtml(term)}”.</div>`;
+  ` : `${coverageMarkup}<div class="empty">No message matches for “${escapeHtml(term)}”.</div>`;
 }
 
 function renderHermesCapabilityInventory(payload = {}) {
@@ -3324,6 +3340,7 @@ function renderSessionDetail(payload = null, context = {}) {
   const targetId = Number(context.messageId || windowInfo.target_message_id || 0);
   const query = context.query || '';
   const totalVisible = windowInfo.total_visible ?? messages.length;
+  const plainTextTranscript = payload.plain_text === true;
   const visibleLabel = windowInfo.mode === 'latest_segment'
     ? `${messages.length} visible messages in the latest segment`
     : (windowInfo.truncated ? `${messages.length} of ${totalVisible} visible messages` : `${messages.length} visible messages`);
@@ -3336,7 +3353,7 @@ function renderSessionDetail(payload = null, context = {}) {
         return `
           <article id="message-${escapeHtml(message.id)}" class="message-card ${escapeHtml(message.role)} ${isTarget ? 'target-message' : ''}" data-message-id="${escapeHtml(message.id)}">
             <div class="message-meta mono">${escapeHtml(message.role)} · msg ${escapeHtml(message.id)} · ${humanDate(message.timestamp)}</div>
-            <div class="message-content markdown-body">${renderMarkdown(message.content || '', query)}</div>
+            <div class="message-content ${plainTextTranscript ? 'plain-text-message' : 'markdown-body'}">${plainTextTranscript ? highlightHtml(message.content || '', query) : renderMarkdown(message.content || '', query)}</div>
           </article>
         `;
       }).join('') : `<div class="empty">No user/assistant messages found for this session.</div>`}
@@ -4650,22 +4667,47 @@ async function refresh() {
   }
 }
 
+async function runMessageSearchRequest(request) {
+  if (state.messageSearchInFlight) {
+    state.messageSearchPending = request;
+    return;
+  }
+  state.messageSearchInFlight = true;
+  try {
+    const payload = await searchMessages(request.term);
+    if (request.generation !== state.messageSearchRequestGeneration) return;
+    renderMessageSearchResults(payload, request.term);
+  } catch (err) {
+    if (request.generation !== state.messageSearchRequestGeneration) return;
+    console.error(err);
+    renderMessageSearchResults({ error: err.message }, request.term);
+  } finally {
+    state.messageSearchInFlight = false;
+    const pendingRequest = state.messageSearchPending;
+    state.messageSearchPending = null;
+    if (
+      pendingRequest
+      && pendingRequest.generation === state.messageSearchRequestGeneration
+    ) {
+      void runMessageSearchRequest(pendingRequest);
+    }
+  }
+}
+
 function queueMessageSearch(query) {
   const term = (query || '').trim();
   clearTimeout(state.messageSearchTimer);
-  if (term.length < 2) {
+  const requestGeneration = state.messageSearchRequestGeneration + 1;
+  state.messageSearchRequestGeneration = requestGeneration;
+  state.messageSearchPending = null;
+  if (searchQueryLength(term) < 2) {
     renderMessageSearchResults({}, term);
     return;
   }
   const container = $('#message-search-results');
   if (container) container.innerHTML = `<div class="empty">Searching Hermes messages for “${escapeHtml(term)}”…</div>`;
-  state.messageSearchTimer = setTimeout(async () => {
-    try {
-      renderMessageSearchResults(await searchMessages(term), term);
-    } catch (err) {
-      console.error(err);
-      renderMessageSearchResults({ error: err.message }, term);
-    }
+  state.messageSearchTimer = setTimeout(() => {
+    void runMessageSearchRequest({ term, generation: requestGeneration });
   }, 250);
 }
 
@@ -5705,7 +5747,7 @@ $('#message-search-results').addEventListener('click', (event) => {
   const result = event.target.closest('.message-result');
   if (!result) return;
   const sessionId = result.dataset.sessionId;
-  if (sessionId) loadSessionDetail(sessionId, { messageId: result.dataset.messageId, query: result.dataset.query || state.sessionFilter });
+  if (sessionId) loadSessionDetail(sessionId, { messageId: result.dataset.messageId, query: result.dataset.matchText || result.dataset.query || state.sessionFilter });
 });
 
 

@@ -102,6 +102,7 @@ from hermes_transport import (
 )
 from remote_hermes import (
     RemoteHermesError,
+    SESSION_LIST_LIMIT as REMOTE_SESSION_LIST_LIMIT,
     confirm_connection as confirm_remote_hermes_connection,
     preview_connection as preview_remote_hermes_connection,
     public_connection_payload,
@@ -304,6 +305,7 @@ OBSIDIAN_NOTES_CACHE = {"key": None, "payload": None}
 SESSION_DETAIL_CACHE: dict[tuple, tuple[dict, int]] = {}
 SESSION_REPLAY_CACHE: dict[tuple, tuple[dict, int]] = {}
 REMOTE_SESSION_ALIAS_LIMIT = 256
+REMOTE_MESSAGE_SEARCH_RESULT_LIMIT = 20
 REMOTE_SESSION_ALIAS_LOCK = threading.RLock()
 REMOTE_SESSION_ALIASES: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {}
 REMOTE_SESSION_ALIAS_INDEX: dict[tuple[str, str], str] = {}
@@ -1913,13 +1915,69 @@ def fts_query(query: str) -> str | None:
     return " ".join(f"{term}*" for term in terms)
 
 
+def casefold_match_span(text: str, query: str) -> tuple[int, int] | None:
+    """Map a Unicode casefolded literal match back to the original text."""
+    folded_query = query.casefold()
+    if not folded_query:
+        return None
+    folded_hit = text.casefold().find(folded_query)
+    if folded_hit < 0:
+        return None
+    folded_end = folded_hit + len(folded_query)
+    folded_offset = 0
+    original_start = None
+    for index, char in enumerate(text):
+        folded_offset += len(char.casefold())
+        if original_start is None and folded_offset > folded_hit:
+            original_start = index
+        if original_start is not None and folded_offset >= folded_end:
+            return original_start, index + 1
+    return None
+
+
+def normalized_message_text(content: str | None) -> tuple[str, list[int]]:
+    """Collapse whitespace while retaining a map to the original message."""
+    original = content or ""
+    characters = []
+    original_indexes = []
+    for index, char in enumerate(original):
+        if char.isspace():
+            if characters and characters[-1] != " ":
+                characters.append(" ")
+                original_indexes.append(index)
+            continue
+        characters.append(char)
+        original_indexes.append(index)
+    if characters and characters[-1] == " ":
+        characters.pop()
+        original_indexes.pop()
+    return "".join(characters), original_indexes
+
+
+def message_match_text(content: str | None, query: str) -> str | None:
+    text, original_indexes = normalized_message_text(content)
+    normalized_query = re.sub(r"\s+", " ", query or "").strip()
+    span = casefold_match_span(text, normalized_query)
+    if span is None or not original_indexes:
+        return None
+    start, end = span
+    original = content or ""
+    return original[original_indexes[start] : original_indexes[end - 1] + 1]
+
+
 def message_excerpt(content: str | None, query: str, limit: int = 260) -> str:
     text = re.sub(r"\s+", " ", content or "").strip()
     if not text:
         return ""
-    terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_]+", query or "")]
-    lower = text.lower()
-    hits = [lower.find(term) for term in terms if term and lower.find(term) >= 0]
+    normalized_query = re.sub(r"\s+", " ", query or "").strip()
+    folded_text = text.casefold()
+    literal_span = casefold_match_span(text, normalized_query)
+    if literal_span is not None:
+        hits = [literal_span[0]]
+    else:
+        lower_text = text.lower()
+        terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_]+", normalized_query)]
+        hits = [lower_text.find(term) for term in terms if term and lower_text.find(term) >= 0]
     start = max(0, min(hits) - 80) if hits else 0
     excerpt = text[start : start + limit]
     if start > 0:
@@ -2697,6 +2755,9 @@ def sessions_payload(local_limit: int = 12):
 
 
 def selected_message_search(query: str):
+    query = clean_snippet(query, 120)
+    if len(query.strip()) < 2:
+        return {"query": query, "results": [], "count": 0}
     with HERMES_CONNECTION_OPERATION_LOCK:
         try:
             transport = hermes_console_transport()
@@ -2707,11 +2768,96 @@ def selected_message_search(query: str):
                 "error": "Hermes connection settings are unavailable.",
             }
         if transport.mode == "remote":
-            return {
-                "query": compact_text(query, max_length=120),
-                "results": [],
-                "error": "Remote session search is not available yet.",
-            }
+            try:
+                if not isinstance(transport, RemoteHermesConsoleTransport):
+                    raise HermesTransportError("transport_unavailable")
+                transport.revalidate(DATA_DIR)
+                transport.prepare_sessions()
+                listing = transport.list_sessions()
+                sessions = listing.get("sessions") or []
+                known_identity_ids = tuple(
+                    dict.fromkeys(
+                        item
+                        for session in sessions
+                        for item in (
+                            session.get("upstream_id"),
+                            session.get("lineage_root_id"),
+                            session.get("parent_session_id"),
+                        )
+                        if isinstance(item, str)
+                    )
+                )
+                if len(known_identity_ids) > 40:
+                    raise HermesTransportError("remote_session_schema_invalid")
+
+                result_limit = REMOTE_MESSAGE_SEARCH_RESULT_LIMIT
+                results = []
+                messages_scanned = 0
+                compacted_sessions = 0
+                results_truncated = False
+                for session in sessions:
+                    upstream_id = session.get("upstream_id")
+                    if not isinstance(upstream_id, str):
+                        raise HermesTransportError("remote_session_schema_invalid")
+                    public_session = _public_remote_session(
+                        transport.binding.binding_id,
+                        session,
+                        known_identity_ids=known_identity_ids,
+                        replace_structural_ids=True,
+                    )
+                    if public_session.get("history_partial"):
+                        compacted_sessions += 1
+                    messages = transport.get_session_messages(
+                        upstream_id,
+                        structural_ids=known_identity_ids,
+                    )
+                    for message_id, message in enumerate(messages, start=1):
+                        messages_scanned += 1
+                        content = message.get("content") or ""
+                        match_text = message_match_text(content, query)
+                        if match_text is None:
+                            continue
+                        if len(results) >= result_limit:
+                            results_truncated = True
+                            continue
+                        snippet = message_excerpt(content, query)
+                        results.append({
+                            "message_id": message_id,
+                            "session_id": public_session["id"],
+                            "title": public_session["title"],
+                            "source": "Remote Hermes",
+                            "role": message["role"],
+                            "timestamp": epoch_to_iso(message.get("timestamp")),
+                            "snippet": snippet,
+                            "match_text": match_text,
+                        })
+                transport.revalidate(DATA_DIR)
+                return {
+                    "query": query,
+                    "results": results,
+                    "count": len(results),
+                    "source": "remote",
+                    "read_only": True,
+                    "coverage": {
+                        "scope": "recent_sessions",
+                        "session_limit": REMOTE_SESSION_LIST_LIMIT,
+                        "sessions_scanned": len(sessions),
+                        "messages_scanned": messages_scanned,
+                        "list_truncated": listing.get("truncated") is True,
+                        "compacted_sessions": compacted_sessions,
+                        "result_limit": result_limit,
+                        "results_truncated": results_truncated,
+                    },
+                }
+            except HermesTransportError as exc:
+                payload, _status = _remote_session_error(exc)
+                return {
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "source": "remote",
+                    **payload,
+                }
         return search_messages(query)
 
 
@@ -2761,6 +2907,8 @@ def _remote_session_detail(transport: RemoteHermesConsoleTransport, alias: str) 
         for index, item in enumerate(messages, start=1)
     ]
     return {
+        "source": "remote",
+        "plain_text": True,
         "session": public_session,
         "message_window": {
             "mode": "latest_segment" if history_partial else "from_start",
