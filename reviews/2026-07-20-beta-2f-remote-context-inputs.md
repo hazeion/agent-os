@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Context Pack Inputs
 
-Status: Local verification and adversarial review complete; publication pending
+Status: Ready PR implementation matrix complete; final evidence publication pending
 Slice: `beta-2f-remote-context-inputs`
 Date: `2026-07-20`
 
@@ -128,6 +128,13 @@ gates remain in force.
   `scripts/browser_smoke.mjs`: pass.
 - `git diff --check`: pass.
 
+## Hosted verification
+
+- Ready PR `#34` published at implementation commit `8cf07dd`.
+- GitHub Actions run `29719150251`: all 42 supported-platform jobs passed
+  (macOS and Ubuntu on Python 3.11-3.13, plus all 36 Windows shards).
+- Final evidence-only head matrix pending.
+
 ## Independent review and publication
 
 Round 1 produced five actionable findings.
@@ -172,5 +179,5 @@ oldest grant and verifies that all other 127 grants remain live.
 
 Round 3 final exact-diff re-review completed after the capacity fix. Both the
 correctness/safety reviewer and compatibility/product reviewer returned
-`ZERO FINDINGS`. The local adversarial gate is complete; ready-PR publication
-and the hosted supported-platform matrix remain pending.
+`ZERO FINDINGS`. The local adversarial gate and implementation-head hosted
+matrix are complete; only the final evidence-only head matrix remains pending.
