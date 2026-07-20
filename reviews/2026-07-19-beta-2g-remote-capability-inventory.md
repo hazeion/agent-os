@@ -166,8 +166,8 @@ skill contents.
 - `scripts/browser_smoke.mjs` passed all 15 repository browser checks against a
   temporary loopback server, including navigation, task, calendar, Agents,
   Context Packs, and Console surfaces.
-- The available-remote state is covered by escaped static UI contract tests;
-  no private remote Hermes host was contacted for visual verification.
+- The available-remote state is covered by escaped static UI contracts and the
+  loopback fake-Hermes rendered fixture; no private remote host was contacted.
 
 ## Adversarial review
 
@@ -233,6 +233,13 @@ skill contents.
 - Result: all prior findings are resolved; no blocking dissent remains on the
   identifier-only implementation packet.
 
+### Round 5 — committed head
+
+- Exact reviewed commit: `afc0614f0a4dad3f7a0519fbce6efb9f4134b881`.
+- Safety/privacy reviewer: `ZERO FINDINGS`.
+- Compatibility/correctness reviewer: `ZERO FINDINGS`.
+- Result: the committed implementation head exactly matches the cleared packet.
+
 ## Documentation updates
 
 - Roadmap: records Milestone 2G as complete and keeps the remaining blockers
@@ -246,7 +253,7 @@ skill contents.
 ## Publication gate
 
 - Proposed files: `remote_hermes.py`, `hermes_transport.py`, `server.py`,
-  `public/core.js`, `public/index.html`, `public/app.js`, focused tests,
+  `public/core.js`, `public/index.html`, `public/app.js`, `public/styles.css`, focused tests,
   `ARCHITECTURE.md`, `REMOTE_HERMES.md`, `ROAD_TO_BETA.md`, `CHANGELOG.md`, and
   this review log. README is intentionally unchanged.
 - Branch and base: `agent/beta-2g-remote-capability-inventory` → `main`.
@@ -259,7 +266,8 @@ skill contents.
   installed Hermes 0.18.2 source/docs and deterministic HTTP fakes establish
   the schema contract. Hosted cross-platform verification remains pending.
 - User authorization and scope: standing authorization recorded above.
-- Commit hash: pending.
+- Implementation commit: `afc0614f0a4dad3f7a0519fbce6efb9f4134b881`.
+- Evidence commit: pending.
 - Ready PR URL: pending.
 
 ## Outcome review
