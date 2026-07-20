@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from hermes_transport import TransportBinding
 
 
 def profile_discovery():
@@ -66,9 +67,13 @@ class DashboardBehaviorTests(unittest.TestCase):
             "events": [],
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
+        transport = server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"),
+            command_path="/tmp/hermes",
+        )
         try:
             with patch.object(server.subprocess, "Popen", return_value=CompletedHermesProcess()) as popen:
-                server.run_hermes_agent(run_id, "/tmp/hermes")
+                server.run_hermes_agent(run_id, transport)
 
             command = popen.call_args.args[0]
             self.assertEqual(command[:6], ["/tmp/hermes", "-p", "default", "chat", "-q", "Continue this work"])
@@ -108,7 +113,11 @@ class DashboardBehaviorTests(unittest.TestCase):
             with patch.object(server, "HERMES_HOME", hermes_home), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()
             ) as popen:
-                server.run_hermes_agent(run_id, "/tmp/hermes")
+                transport = server.local_hermes_console_transport(
+                    TransportBinding("local", "Local Hermes", "local-default"),
+                    command_path="/tmp/hermes",
+                )
+                server.run_hermes_agent(run_id, transport)
 
         child_env = popen.call_args.kwargs["env"]
         self.assertEqual(child_env["PATH"].split(server.os.pathsep)[0], str(shared_bin))

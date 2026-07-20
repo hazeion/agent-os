@@ -34,6 +34,23 @@ def sample_run(run_id: str, created_at: str, **overrides) -> dict:
 
 
 class AgentRunHistoryTests(unittest.TestCase):
+    def test_save_rejects_explicitly_malformed_transport_binding(self):
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "history.json"
+            with self.assertRaisesRegex(ValueError, "transport binding"):
+                agent_run_history.save_run_summaries(
+                    path,
+                    [
+                        sample_run(
+                            "run_invalid_binding",
+                            "2026-07-10T12:00:00-07:00",
+                            transport_mode="remote",
+                            connection_binding_id="local-default",
+                        )
+                    ],
+                )
+            self.assertFalse(path.exists())
+
     def test_persisted_summaries_are_bounded_and_redact_common_secrets(self):
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "history.json"

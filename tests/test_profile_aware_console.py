@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from hermes_transport import TransportBinding
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,8 +74,12 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             "events": [],
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
+        transport = server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"),
+            command_path="/tmp/hermes",
+        )
         with patch.object(server.subprocess, "Popen", return_value=CompletedHermesProcess()) as popen:
-            server.run_hermes_agent(run_id, "/tmp/hermes")
+            server.run_hermes_agent(run_id, transport)
 
         command = popen.call_args.args[0]
         self.assertEqual(command[:6], ["/tmp/hermes", "-p", "randy", "chat", "-q", "Research this"])

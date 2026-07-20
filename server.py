@@ -33,6 +33,7 @@ from agent_run_history import (
     EVENT_RETENTION,
     EVENT_SCHEMA_VERSION,
     load_run_summaries,
+    normalize_transport_binding,
     save_run_summaries,
     secure_history_permissions,
 )
@@ -90,6 +91,13 @@ from hermes_provider_switching import (
 from hermes_profiles import discover_hermes_profiles
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, sanitize_public_text
+from hermes_transport import (
+    HermesConsoleTransport,
+    HermesTransportError,
+    LocalHermesConsoleTransport,
+    TransportBinding,
+    select_hermes_console_transport,
+)
 from remote_hermes import (
     RemoteHermesError,
     confirm_connection as confirm_remote_hermes_connection,
@@ -313,6 +321,10 @@ AGENT_MODEL_CATALOG_CACHE = {"key": None, "payload": None, "fetched_at": 0.0}
 AGENT_CONSOLE_RUNS: dict[str, dict] = {}
 AGENT_CONSOLE_PROCESSES: dict[str, subprocess.Popen] = {}
 AGENT_CONSOLE_LOCK = threading.RLock()
+# Serialize connection-bound summary/start/selection work without blocking run
+# events or cancellation during slow Hermes discovery. When both are needed,
+# acquire this lock before AGENT_CONSOLE_LOCK.
+HERMES_CONNECTION_OPERATION_LOCK = threading.RLock()
 AGENT_CONSOLE_ATTACHMENT_GC_STOP = threading.Event()
 AGENT_CONSOLE_ATTACHMENT_GC_INTERVAL_SECONDS = 30 * 60
 HERMES_PROFILE_CREATION_LOCK = threading.Lock()
@@ -354,7 +366,7 @@ def persist_agent_console_runs() -> bool:
                 data_root=DATA_DIR,
             )
         return True
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"Agent Console history could not be persisted: {compact_text(exc, max_length=500)}")
         return False
 
@@ -4303,6 +4315,31 @@ def hermes_shared_tirith_bin_dir() -> Path | None:
         return None
 
 
+def local_hermes_console_transport(
+    binding: TransportBinding,
+    *,
+    command_path: str | None = None,
+) -> LocalHermesConsoleTransport:
+    """Build the established local CLI adapter without exposing launch state."""
+
+    return LocalHermesConsoleTransport(
+        binding,
+        command_path=command_path if command_path is not None else hermes_command_path(),
+        hermes_home=HERMES_HOME,
+        cwd=BASE_DIR,
+        shared_bin=hermes_shared_tirith_bin_dir(),
+    )
+
+
+def hermes_console_transport() -> HermesConsoleTransport:
+    """Select Console transport from the owner-private connection record."""
+
+    return select_hermes_console_transport(
+        DATA_DIR,
+        local_builder=local_hermes_console_transport,
+    )
+
+
 def agent_console_profile(profile_id: str | None, discovery: dict | None = None) -> dict | None:
     """Resolve a public profile id without exposing or reading its filesystem path."""
     normalized = compact_text(profile_id, max_length=64).lower() or "default"
@@ -4915,7 +4952,53 @@ def agent_console_snapshot(run: dict) -> dict:
 
 
 def agent_console_payload():
-    command = hermes_command_path()
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        return _agent_console_payload_locked()
+
+
+def _agent_console_payload_locked():
+    """Build one Console summary while connection confirmation is excluded."""
+
+    with AGENT_CONSOLE_LOCK:
+        runs = sorted(AGENT_CONSOLE_RUNS.values(), key=lambda item: item.get("created_at") or "", reverse=True)
+        snapshots = [agent_console_snapshot(run) for run in runs[:12]]
+    active_run_id = next(
+        (
+            run["id"]
+            for run in snapshots
+            if run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES
+        ),
+        None,
+    )
+    try:
+        transport = hermes_console_transport()
+    except (HermesTransportError, RemoteHermesError):
+        return {
+            "agents": [],
+            "selected_agent_id": None,
+            "model_catalog": {"models": []},
+            "provider_inventory": {"providers": [], "capabilities": {"providers.switch": False}},
+            "runs": snapshots,
+            "active_run_id": active_run_id,
+            "local_only": True,
+            "transport": {"mode": "unavailable", "console_available": False},
+            "error": "Hermes connection settings are unavailable.",
+        }
+    if transport.mode == "remote":
+        return {
+            "agents": [],
+            "selected_agent_id": None,
+            "model_catalog": {"models": []},
+            "provider_inventory": {
+                "providers": [],
+                "capabilities": {"providers.switch": False},
+            },
+            "runs": snapshots,
+            "active_run_id": active_run_id,
+            "local_only": False,
+            "transport": transport.public_summary(),
+            "error": "Remote Agent Console is not available yet.",
+        }
     discovery = hermes_profiles_payload()
     profiles = discovery.get("profiles") or []
     selected_profile_id = discovery.get("active_profile") or "default"
@@ -4923,16 +5006,13 @@ def agent_console_payload():
         selected_profile_id = profiles[0].get("id") if profiles else "default"
     catalog = agent_console_model_catalog(selected_profile_id)
     provider_payload = agent_console_provider_inventory(selected_profile_id)
-    with AGENT_CONSOLE_LOCK:
-        runs = sorted(AGENT_CONSOLE_RUNS.values(), key=lambda item: item.get("created_at") or "", reverse=True)
-        snapshots = [agent_console_snapshot(run) for run in runs[:12]]
     return {
         "agents": [
             {
                 "id": profile.get("id"),
                 "name": profile.get("name") or profile.get("id"),
                 "description": profile.get("description") or "",
-                "available": bool(command),
+                "available": transport.console_available,
                 "model": profile.get("model") or "configured default",
                 "provider": profile.get("provider") or "",
                 "is_default": bool(profile.get("is_default")),
@@ -4943,7 +5023,7 @@ def agent_console_payload():
             "id": "default",
             "name": "Hermes · default",
             "description": "",
-            "available": bool(command),
+            "available": transport.console_available,
             "model": catalog.get("current_model") or agent_console_model("default", discovery),
             "provider": catalog.get("provider") or "",
             "is_default": True,
@@ -4952,9 +5032,10 @@ def agent_console_payload():
         "model_catalog": catalog,
         "provider_inventory": provider_payload,
         "runs": snapshots,
-        "active_run_id": next((run["id"] for run in snapshots if run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None),
+        "active_run_id": active_run_id,
         "local_only": True,
-        "error": None if command else "Hermes CLI was not found in the Mentat server environment.",
+        "transport": transport.public_summary(),
+        "error": None if transport.console_available else "Hermes CLI was not found in the Mentat server environment.",
     }
 
 
@@ -5062,7 +5143,7 @@ def attachment_execution_prompt(user_prompt: str, prepared: list[dict]) -> str:
     )
 
 
-def run_hermes_agent(run_id: str, command_path: str) -> None:
+def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
     with AGENT_CONSOLE_LOCK:
         run = AGENT_CONSOLE_RUNS.get(run_id)
         if not run:
@@ -5082,6 +5163,32 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
             except (ConsoleArtifactValidationError, OSError):
                 pass
             return
+        run_binding = normalize_transport_binding(
+            run.get("transport_mode"),
+            run.get("connection_binding_id"),
+            legacy_default=True,
+        )
+        selected_binding = (transport.mode, transport.binding.binding_id)
+        if run_binding != selected_binding:
+            run["status"] = "failed"
+            run["completed_at"] = now_iso()
+            run["error"] = "The Hermes connection changed before this run could start."
+            agent_console_event(
+                run,
+                "Hermes connection changed",
+                "error",
+                {"phase": "launch", "reason": "transport_binding_changed"},
+            )
+            persist_agent_console_runs()
+            try:
+                cleanup_run_export_directory(DATA_DIR, run_id)
+            except (ConsoleArtifactValidationError, OSError):
+                pass
+            try:
+                cleanup_run_input_directory(DATA_DIR, run_id)
+            except (ConsoleArtifactValidationError, OSError):
+                pass
+            return
         run["status"] = "running"
         run["started_at"] = now_iso()
         agent_console_event(run, "Starting Hermes CLI", "status", {"phase": "launch"})
@@ -5091,34 +5198,17 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
         profile_id = run.get("agent_id") or "default"
         image_path = run.get("_image_path")
 
-    command = [command_path, "-p", profile_id, "chat", "-q", prompt, "-Q", "--source", "mentat"]
-    if image_path:
-        command.extend(["--image", str(image_path)])
-    if session_id:
-        command.extend(["--resume", session_id])
-
-    env = os.environ.copy()
-    env["HERMES_HOME"] = str(HERMES_HOME)
-    env["PYTHONUNBUFFERED"] = "1"
-    shared_tirith_bin = hermes_shared_tirith_bin_dir()
-    if shared_tirith_bin is not None:
-        current_path = env.get("PATH") or ""
-        path_entries = current_path.split(os.pathsep) if current_path else []
-        if str(shared_tirith_bin) not in path_entries:
-            env["PATH"] = os.pathsep.join([str(shared_tirith_bin), *path_entries])
     started = time.monotonic()
     next_update = 2
     try:
-        process = subprocess.Popen(
-            command,
-            cwd=str(BASE_DIR),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+        transport.revalidate(DATA_DIR)
+        launch = transport.build_console_launch(
+            profile_id=profile_id,
+            prompt=prompt,
+            session_id=session_id,
+            image_path=Path(image_path) if image_path else None,
         )
+        process = transport.spawn_console(launch)
         with AGENT_CONSOLE_LOCK:
             AGENT_CONSOLE_PROCESSES[run_id] = process
             current = AGENT_CONSOLE_RUNS.get(run_id)
@@ -5167,19 +5257,27 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
                 current["response"] = response
                 agent_console_event(current, "Response complete", "complete", {"duration_seconds": current["duration_seconds"]})
             else:
-                error_text = re.sub(r"(?im)^\s*session_id:.*$", "", clean_agent_output(stderr, max_length=4_000)).strip()
                 current["status"] = "failed"
-                current["error"] = error_text or response or f"Hermes exited with status {process.returncode}."
+                current["error"] = f"Hermes exited with status {process.returncode}."
                 agent_console_event(current, "Hermes run failed", "error", {"return_code": process.returncode})
             persist_agent_console_runs()
         collect_agent_console_artifacts(run_id)
-    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+    except (
+        FileNotFoundError,
+        OSError,
+        subprocess.SubprocessError,
+        HermesTransportError,
+    ) as exc:
         with AGENT_CONSOLE_LOCK:
             current = AGENT_CONSOLE_RUNS.get(run_id)
             if current:
                 current["status"] = "failed"
                 current["completed_at"] = now_iso()
-                current["error"] = compact_text(exc, max_length=2_000)
+                current["error"] = (
+                    exc.public_message
+                    if isinstance(exc, HermesTransportError)
+                    else "Hermes could not be started."
+                )
                 agent_console_event(current, "Hermes could not be started", "error", {"phase": "launch"})
                 persist_agent_console_runs()
         collect_agent_console_artifacts(run_id)
@@ -5195,6 +5293,24 @@ def run_hermes_agent(run_id: str, command_path: str) -> None:
 def start_agent_console_run(payload):
     if not isinstance(payload, dict):
         return {"error": "Agent prompt payload must be a JSON object"}, 400
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        return _start_agent_console_run_locked(payload)
+
+
+def _start_agent_console_run_locked(payload):
+    try:
+        transport = hermes_console_transport()
+    except (HermesTransportError, RemoteHermesError):
+        return {
+            "error": "Hermes connection settings are unavailable.",
+            "error_code": "transport_unavailable",
+        }, 503
+    if transport.mode == "remote":
+        return {
+            "error": "Remote Agent Console is not available yet.",
+            "error_code": "remote_console_not_implemented",
+            "transport": transport.public_summary(),
+        }, 503
     requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
     if requested_agent_id == "hermes":
         requested_agent_id = "default"
@@ -5222,11 +5338,18 @@ def start_agent_console_run(payload):
     session_id = compact_text(payload.get("session_id"), max_length=200)
     if session_id and not re.fullmatch(r"[A-Za-z0-9_.:-]+", session_id):
         return {"error": "Invalid Hermes session ID"}, 400
-    command = hermes_command_path()
-    if not command:
-        return {"error": "Hermes CLI was not found in the Mentat server environment."}, 503
-
+    if not transport.console_available:
+        return {
+            "error": "Hermes CLI was not found in the Mentat server environment."
+        }, 503
     with AGENT_CONSOLE_LOCK:
+        try:
+            transport.revalidate(DATA_DIR)
+        except HermesTransportError:
+            return {
+                "error": "The Hermes connection changed. Review the Console and try again.",
+                "error_code": "transport_binding_changed",
+            }, 409
         if HERMES_PROFILE_CREATION_LOCK.locked():
             return {"error": "A Hermes profile is currently being changed."}, 409
         active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
@@ -5237,6 +5360,25 @@ def start_agent_console_run(payload):
                 item for item in AGENT_CONSOLE_RUNS.values()
                 if item.get("session_id") == session_id
             ]
+            selected_binding = (transport.mode, transport.binding.binding_id)
+            conflicting_connection = next(
+                (
+                    item
+                    for item in session_runs
+                    if normalize_transport_binding(
+                        item.get("transport_mode"),
+                        item.get("connection_binding_id"),
+                        legacy_default=True,
+                    )
+                    != selected_binding
+                ),
+                None,
+            )
+            if conflicting_connection:
+                return {
+                    "error": "This Hermes session belongs to a different connection. Start a new session instead.",
+                    "error_code": "session_connection_mismatch",
+                }, 409
             conflicting_session = next(
                 (item for item in session_runs if item.get("agent_id", "default") != agent_id),
                 None,
@@ -5296,6 +5438,8 @@ def start_agent_console_run(payload):
             "agent_id": agent_id,
             "agent_name": profile.get("name") or agent_id,
             "model": profile.get("model") or agent_console_model(agent_id, discovery),
+            "transport_mode": transport.mode,
+            "connection_binding_id": transport.binding.binding_id,
             "prompt": prompt,
             "attachments": [item["metadata"] for item in bound_attachments],
             "artifacts": [],
@@ -5337,7 +5481,12 @@ def start_agent_console_run(payload):
 
     with AGENT_CONSOLE_LOCK:
         snapshot = agent_console_snapshot(run)
-    worker = threading.Thread(target=run_hermes_agent, args=(run_id, command), daemon=True, name=f"mentat-{run_id}")
+    worker = threading.Thread(
+        target=run_hermes_agent,
+        args=(run_id, transport),
+        daemon=True,
+        name=f"mentat-{run_id}",
+    )
     worker.start()
     return {"ok": True, "run": snapshot}, 202
 
@@ -5520,8 +5669,24 @@ def preview_hermes_connection(payload=None):
 
 def select_hermes_connection(payload=None):
     try:
-        intent, token = _remote_connection_intent(payload, confirmation=True)
-        return confirm_remote_hermes_connection(DATA_DIR, intent, token), 200
+        with HERMES_CONNECTION_OPERATION_LOCK:
+            with AGENT_CONSOLE_LOCK:
+                active = next(
+                    (
+                        item
+                        for item in AGENT_CONSOLE_RUNS.values()
+                        if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES
+                    ),
+                    None,
+                )
+            if active:
+                return {
+                    "error": "Stop the active Hermes run before changing connection.",
+                    "error_code": "connection_change_active_run",
+                    "active_run_id": active.get("id"),
+                }, 409
+            intent, token = _remote_connection_intent(payload, confirmation=True)
+            return confirm_remote_hermes_connection(DATA_DIR, intent, token), 200
     except RemoteHermesError as exc:
         return public_remote_hermes_error(exc)
 
