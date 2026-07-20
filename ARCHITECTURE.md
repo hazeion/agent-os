@@ -113,8 +113,11 @@ Mentat itself or permit the browser to call Hermes directly.
 In the current local mode, Agent Console execution is globally single-run.
 Every run records its Hermes profile id, launches with a fixed
 `-p <profile>` selector, and may resume only a session already associated with
-that same profile. A future remote transport must preserve the single-run and
-profile/session binding without launching a local Hermes process.
+that same profile. `hermes_transport.py` owns the transport-neutral launch
+boundary: it preserves the exact local command/environment/process contract,
+binds retained runs to the selected opaque connection identity, and revalidates
+that identity before queue and launch. Its remote implementation deliberately
+advertises Console unavailable and can neither inspect nor launch local Hermes.
 
 ## Remote Hermes connection boundary
 
@@ -122,8 +125,9 @@ The approved public-beta direction is local Mentat connected to one active
 local or remote Hermes endpoint. The detailed capability matrix, upstream
 blockers, implementation order, and exit evidence live in
 [REMOTE_HERMES.md](REMOTE_HERMES.md). The connection/storage/discovery
-foundation is implemented, but the runtime does not route Hermes behavior
-through it and must not advertise remote parity or remote Console readiness yet.
+foundation and Agent Console transport boundary are implemented, but remote
+execution is not and Mentat must not advertise remote parity or remote Console
+readiness yet.
 
 The remote boundary has these architectural invariants:
 

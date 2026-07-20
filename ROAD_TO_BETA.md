@@ -281,7 +281,8 @@ Work in order:
    authentication, and feature discovery; complete active-profile inventory
    remains blocked on the capability in item 7.**
 4. Introduce a transport-neutral adapter boundary while preserving the existing
-   local Hermes behavior.
+   local Hermes behavior. **Milestone 2B foundation complete for Agent Console
+   launch selection and run binding.**
 5. Route Console conversations, sessions, runs, structured events, approvals,
    cancellation, and stopping through supported remote APIs. Add clarification
    handling only when Hermes advertises a typed request/response capability.
@@ -544,11 +545,11 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Continue Milestone 2 with a transport-neutral adapter that preserves the
-   established local Hermes behavior and binds later remote work to the new
-   opaque connection identity.
-2. Route Console and session behavior only through capability-advertised,
-   authenticated APIs after that adapter boundary is verified.
+1. Continue Milestone 2 by routing remote Console runs and structured events
+   through capability-advertised, authenticated APIs while preserving the
+   verified local transport behavior.
+2. Add remote approval, cancellation, stopping, and session behavior only with
+   exact connection/run binding and operation-specific verification.
 3. Continue tracking the mandatory upstream Hermes capabilities for
    authenticated Kanban, complete read-only profile discovery, and
    clarification handling without implementing an unsafe substitute.

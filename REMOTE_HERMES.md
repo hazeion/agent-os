@@ -1,6 +1,6 @@
 # Remote Hermes Capability Contract
 
-Status: Approved beta architecture; Milestone 2A connection foundation implemented
+Status: Approved beta architecture; Milestones 2A and 2B foundations implemented
 Approved: 2026-07-16
 
 ## Product boundary
@@ -17,9 +17,10 @@ the browser continues to call only its local Mentat origin. Hermes credentials
 must never be returned to the browser.
 
 This document defines the complete target contract. Mentat now has owner-only
-connection selection plus bounded authenticated health/capability discovery,
-but the active runtime still uses local Hermes until the transport adapter and
-mandatory remote feature paths are implemented.
+connection selection plus bounded authenticated health/capability discovery.
+Agent Console now selects a binding-aware local or remote transport, preserves
+the established local launch contract, and fails closed in remote mode until
+the mandatory remote feature paths are implemented.
 
 ## Beta capability classes
 
@@ -38,7 +39,7 @@ mandatory remote feature paths are implemented.
 | Public connection liveness | `remote_hermes.py` calls only fixed `/health` and treats the result as untrusted | Hermes documents unauthenticated `GET /health` as a cheap public liveness probe in its [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) | No authentication; response is untrusted liveness only | Bounded timeout/size/schema checks; never derive identity, readiness, or enabled features from this response | **Required** diagnostic; 2A foundation implemented |
 | Authenticated readiness and capability discovery | `remote_hermes.py` validates fixed `/health/detailed` and `/v1/capabilities` responses and returns an allowlisted summary | Hermes documents bearer-authenticated `GET /health/detailed` and machine-readable `GET /v1/capabilities` in its [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) | API-server bearer key over verified HTTPS | Validate schema/version, endpoint identity, advertised auth, bounded readiness, model, and capability set | **Required** foundation implemented; active-profile inventory remains blocked |
 | Hermes configuration and overview summary | `server.py` reads local `CONFIG_PATH` metadata and combines it with normalized profile/provider discovery | Remote health, capabilities, and model endpoints can supply bounded connection/profile/model status; remote configuration-file metadata is unnecessary | API-server bearer key; never request or expose raw remote configuration | Normalize an allowlisted summary and suppress upstream errors, paths, headers, and secret-shaped values | Safe connection/profile/model status is **Required**; file/configuration details remain local-only |
-| Agent Console conversation and streaming | `server.py` launches a profile-scoped local Hermes process with `subprocess.Popen` | Hermes documents Chat Completions, Responses, run submission, SSE events, approvals, and session chat in the [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) and [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) | API-server bearer key over verified HTTPS; key remains in Mentat's server process | Bind each run to the active endpoint and advertised profile; validate event schemas and terminal state; verify stop/approval results | **Required**; supported upstream, Mentat adapter needed |
+| Agent Console conversation and streaming | `hermes_transport.py` selects a binding-aware transport and preserves the profile-scoped local CLI launch; its remote implementation currently fails closed | Hermes documents Chat Completions, Responses, run submission, SSE events, approvals, and session chat in the [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) and [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) | API-server bearer key over verified HTTPS; key remains in Mentat's server process | Bind each run to the active endpoint and advertised profile; validate event schemas and terminal state; verify stop/approval results | **Required**; transport foundation implemented, remote run adapter needed |
 | Run status, progress, approval, cancellation, and stopping | `server.py` and `agent_run_history.py` track a local child process and Mentat-owned events | `/v1/runs`, run status, SSE events, approval, and stop are documented and advertised by `/v1/capabilities` | Same API-server bearer boundary | Capability match before action, exact live-run binding, idempotency where supported, and post-action status read-back | **Required**; supported upstream, Mentat adapter needed |
 | Clarification requests and responses | Local Console can retain and display bounded run interaction state | Hermes' [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) describes `clarify.request` for its TUI gateway, but the documented HTTP API does not advertise an equivalent clarification-response operation | No approved API-server bearer capability yet | Require a machine-readable request event, typed bounded response, exact run/request binding, and post-response status verification | **Required**; upstream/compatibility blocker |
 | Session list, replay, continuation, and search | `server.py` reads local Hermes `state.db`; Console resume is profile-bound | Hermes documents session list/messages/chat/fork endpoints and session continuity headers in the API server | API-server bearer key; no database access | Normalize bounded public metadata, bind endpoint/profile/session identity, reject stale or cross-endpoint resume | **Required**; supported in current upstream surface, compatibility probe needed |
@@ -56,10 +57,10 @@ mandatory remote feature paths are implemented.
 | Calendar, notes, planning, projects, tasks, search, themes, and reminders | Mentat-owned storage and integrations; Google Calendar is read-only | No Hermes access is required for the core feature behavior | Local Mentat boundary | Preserve existing local validation and mutation contracts | **Mentat-local** and available in both connection modes |
 | Google Calendar credential location | `server.py` currently resolves `google_token.json` below local `HERMES_HOME` | Not a remote Hermes API concern | Credentials must move to the future Mentat operator-data root rather than a remote Hermes host | Migration and read-only calendar verification in Milestone 1 | **Mentat-local**; storage coupling must be removed before remote beta |
 | Agent Pulse heartbeat observations | Project-owned `data/agents.json` and the local Mentat heartbeat endpoint | No Hermes API is required | Local Mentat boundary | Preserve observation-only semantics; never treat heartbeats as profile authority | **Mentat-local** |
-| Connection setup and local/remote runtime selection | `remote_hermes.py` stores one owner-only selection, rotates its opaque binding on authority changes, and exposes exact preview/confirmation plus safe same-origin server routes; local Hermes discovery remains in `scripts/mentat_setup.py` and `runtime_config.py` | Remote selection is Mentat-owned configuration; authenticated readiness/capabilities describe the selected remote | Owner-only Mentat operator configuration outside the install | Preserve local discovery, validate one explicit remote origin, and invalidate all endpoint-bound state on selection changes | **Required** 2A foundation implemented; Settings UI and runtime routing remain |
+| Connection setup and local/remote runtime selection | `remote_hermes.py` owns selection and binding rotation; `hermes_transport.py` selects the exact Console transport and revalidates before queue and launch | Remote selection is Mentat-owned configuration; authenticated readiness/capabilities describe the selected remote | Owner-only Mentat operator configuration outside the install | Preserve local discovery, validate one explicit remote origin, and invalidate all endpoint-bound state on selection changes | **Required** 2A/2B foundations implemented; Settings UI and remote feature routing remain |
 | Hermes diagnostics | `health_checks.py` probes the local runtime, profiles, paths, and integration health | Public `/health` supplies liveness only; authenticated `/health/detailed` and `/v1/capabilities` supply bounded remote readiness | Bearer auth required for trusted readiness/capability conclusions | Redact upstream details; distinguish unreachable, unauthenticated, degraded, unsupported, and healthy states without exposing paths or secrets | **Required**; remote diagnostics adapter needed |
 
-The inventory covers the current integration modules `remote_hermes.py`, `hermes_profiles.py`,
+The inventory covers the current integration modules `remote_hermes.py`, `hermes_transport.py`, `hermes_profiles.py`,
 `hermes_profile_creation.py`, `hermes_profile_identity.py`,
 `hermes_profile_deletion.py`, `hermes_provider_switching.py`,
 `hermes_skills.py`, `hermes_kanban.py`, the Hermes-backed paths in `server.py`,
@@ -154,6 +155,7 @@ in this order:
 1. connection configuration, secret storage, HTTPS validation, and bounded
    health/capability discovery; **Milestone 2A foundation implemented**;
 2. a transport-neutral Hermes adapter interface that preserves local behavior;
+   **Milestone 2B foundation implemented**;
 3. remote Console, run events, approvals, cancellation, and sessions, with
    clarification responses enabled only through a supported upstream
    capability;

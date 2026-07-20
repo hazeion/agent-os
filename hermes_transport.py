@@ -1,0 +1,242 @@
+"""Binding-aware transport boundary for Hermes Agent Console execution.
+
+Milestone 2B deliberately implements only the established local CLI transport.
+The remote adapter is an explicit fail-closed placeholder until reviewed remote
+run/session operations land in the next slice.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import os
+from pathlib import Path
+import re
+import subprocess
+from typing import Any, Callable
+
+from remote_hermes import RemoteHermesError, load_connection
+
+
+class HermesTransportError(RuntimeError):
+    """Bounded transport failure with no endpoint, credential, or local path."""
+
+    _MESSAGES = {
+        "transport_binding_changed": "The Hermes connection changed before this operation could start.",
+        "transport_unavailable": "Hermes connection settings are unavailable.",
+        "local_console_unavailable": "Hermes CLI was not found in the Mentat server environment.",
+        "remote_console_not_implemented": "Remote Agent Console is not available yet.",
+        "console_request_invalid": "The Hermes Console request is invalid.",
+    }
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+    @property
+    def public_message(self) -> str:
+        return self._MESSAGES.get(
+            self.code,
+            "Hermes transport is unavailable.",
+        )
+
+
+@dataclass(frozen=True)
+class TransportBinding:
+    mode: str
+    label: str
+    binding_id: str
+
+    def public_summary(
+        self,
+        *,
+        console_available: bool,
+        error_code: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "mode": self.mode,
+            "label": self.label,
+            "binding_id": self.binding_id,
+            "console_available": console_available,
+        }
+        if error_code:
+            payload["error_code"] = error_code
+        return payload
+
+
+@dataclass(frozen=True)
+class LocalConsoleLaunch:
+    command: tuple[str, ...]
+    cwd: str
+    env: dict[str, str]
+
+
+class HermesConsoleTransport:
+    """Transport-neutral Console interface bound to one selected authority."""
+
+    mode = "unavailable"
+    console_available = False
+    unavailable_code = "remote_console_not_implemented"
+
+    def __init__(self, binding: TransportBinding):
+        self.binding = binding
+
+    def public_summary(self) -> dict[str, Any]:
+        return self.binding.public_summary(
+            console_available=self.console_available,
+            error_code=None if self.console_available else self.unavailable_code,
+        )
+
+    def revalidate(self, data_root: Path) -> None:
+        try:
+            selected = load_connection(Path(data_root))
+        except RemoteHermesError as exc:
+            raise HermesTransportError("transport_unavailable") from exc
+        if (
+            selected.mode != self.binding.mode
+            or selected.label != self.binding.label
+            or selected.binding_id != self.binding.binding_id
+        ):
+            raise HermesTransportError("transport_binding_changed")
+
+    def build_console_launch(
+        self,
+        *,
+        profile_id: str,
+        prompt: str,
+        session_id: str | None,
+        image_path: Path | None,
+    ) -> LocalConsoleLaunch:
+        raise HermesTransportError(self.unavailable_code)
+
+    def spawn_console(self, launch: LocalConsoleLaunch):
+        raise HermesTransportError(self.unavailable_code)
+
+
+class RemoteHermesConsoleTransport(HermesConsoleTransport):
+    mode = "remote"
+    console_available = False
+    unavailable_code = "remote_console_not_implemented"
+
+
+class LocalHermesConsoleTransport(HermesConsoleTransport):
+    mode = "local"
+    unavailable_code = "local_console_unavailable"
+
+    def __init__(
+        self,
+        binding: TransportBinding,
+        *,
+        command_path: str | None,
+        hermes_home: Path,
+        cwd: Path,
+        shared_bin: Path | None = None,
+        popen_factory: Callable[..., Any] | None = None,
+    ):
+        super().__init__(binding)
+        self.command_path = str(command_path) if command_path else None
+        self.hermes_home = Path(hermes_home)
+        self.cwd = Path(cwd)
+        self.shared_bin = Path(shared_bin) if shared_bin is not None else None
+        self._popen_factory = popen_factory
+
+    @property
+    def console_available(self) -> bool:
+        return bool(self.command_path)
+
+    def build_console_launch(
+        self,
+        *,
+        profile_id: str,
+        prompt: str,
+        session_id: str | None,
+        image_path: Path | None,
+    ) -> LocalConsoleLaunch:
+        if not self.command_path:
+            raise HermesTransportError("local_console_unavailable")
+        if not isinstance(profile_id, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9_-]{0,63}",
+            profile_id,
+        ):
+            raise HermesTransportError("console_request_invalid")
+        if not isinstance(prompt, str) or not prompt:
+            raise HermesTransportError("console_request_invalid")
+        if session_id is not None and (
+            not isinstance(session_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9_.:-]+", session_id)
+        ):
+            raise HermesTransportError("console_request_invalid")
+
+        command = [
+            self.command_path,
+            "-p",
+            profile_id,
+            "chat",
+            "-q",
+            prompt,
+            "-Q",
+            "--source",
+            "mentat",
+        ]
+        if image_path is not None:
+            command.extend(["--image", str(image_path)])
+        if session_id:
+            command.extend(["--resume", session_id])
+
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(self.hermes_home)
+        env["PYTHONUNBUFFERED"] = "1"
+        if self.shared_bin is not None:
+            current_path = env.get("PATH") or ""
+            path_entries = current_path.split(os.pathsep) if current_path else []
+            if str(self.shared_bin) not in path_entries:
+                env["PATH"] = os.pathsep.join(
+                    [str(self.shared_bin), *path_entries]
+                )
+        return LocalConsoleLaunch(tuple(command), str(self.cwd), env)
+
+    def spawn_console(self, launch: LocalConsoleLaunch):
+        factory = self._popen_factory or subprocess.Popen
+        return factory(
+            list(launch.command),
+            cwd=launch.cwd,
+            env=launch.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+
+def select_hermes_console_transport(
+    data_root: Path,
+    *,
+    local_builder: Callable[[TransportBinding], LocalHermesConsoleTransport],
+) -> HermesConsoleTransport:
+    """Select exactly one adapter without touching local state in remote mode."""
+
+    selected = load_connection(Path(data_root))
+    binding = TransportBinding(
+        mode=selected.mode,
+        label=selected.label,
+        binding_id=selected.binding_id,
+    )
+    if selected.mode == "remote":
+        return RemoteHermesConsoleTransport(binding)
+    adapter = local_builder(binding)
+    if not isinstance(adapter, LocalHermesConsoleTransport):
+        raise HermesTransportError("local_console_unavailable")
+    if adapter.binding != binding:
+        raise HermesTransportError("transport_binding_changed")
+    return adapter
+
+
+__all__ = [
+    "HermesConsoleTransport",
+    "HermesTransportError",
+    "LocalConsoleLaunch",
+    "LocalHermesConsoleTransport",
+    "RemoteHermesConsoleTransport",
+    "TransportBinding",
+    "select_hermes_console_transport",
+]

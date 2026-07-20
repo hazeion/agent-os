@@ -2,6 +2,21 @@
 
 All notable changes to Mentat.
 
+## 2026-07-20
+
+### Added
+- Added a binding-aware Hermes Console transport boundary that keeps the local
+  CLI launch contract intact and gives later remote execution one typed entry
+  point.
+- Added validated transport mode and opaque connection binding metadata to new
+  and retained Console run summaries, with safe defaults for older history.
+
+### Safety
+- Selected remote mode now fails closed instead of inspecting or launching the
+  local Hermes CLI. Connection changes are blocked during active runs, bindings
+  are rechecked before queue and launch, and private launch errors or failed
+  child-process output stay out of browser and retained-history payloads.
+
 ## 2026-07-19
 
 ### Added
