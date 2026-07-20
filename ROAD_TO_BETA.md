@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 2 in progress — 2A through 2C and 2E through 2H complete
+Status: Milestone 2 in progress — 2A through 2C and 2E through 2I complete
 Last updated: 2026-07-20
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -149,7 +149,7 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | In progress — 2A through 2C and 2E through 2H complete; approval response and continuation blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
+| 2 | Secure remote Hermes parity | In progress — 2A through 2C and 2E through 2I complete; remaining upstream blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
@@ -318,7 +318,10 @@ Work in order:
    [REMOTE_HERMES.md](REMOTE_HERMES.md).
 10. Test endpoint changes, authentication failure, certificate failure,
    capability loss, timeouts, interrupted streams, stale confirmations,
-   partial failures, local fallback, upgrade, and rollback.
+   partial failures, local fallback, upgrade, and rollback. **Milestone 2I adds
+   transport-aware diagnostics: local mode keeps its existing checks, while
+   remote mode reports only bounded authenticated readiness and fixed
+   unreachable, unauthenticated, degraded, unsupported, or healthy states.**
 
 Exit criteria:
 

@@ -30,6 +30,7 @@ class HealthContext:
     file_mtime_iso: Callable[[Path], str | None]
     human_bytes: Callable[[int | float | None], str | None]
     clean_snippet: Callable[[str | None, int], str]
+    hermes_diagnostics: Callable[[], dict]
 
 
 def normalize_health_status(status: str | None) -> str:
@@ -351,6 +352,33 @@ def host_health(ctx: HealthContext, memory: dict | None, disk: dict):
     )
 
 
+def remote_hermes_health(ctx: HealthContext, diagnostics: dict):
+    status = diagnostics.get("status")
+    if status not in HEALTH_STATUS_RANK:
+        status = "error"
+    readiness = diagnostics.get("readiness")
+    if type(readiness) is not dict:
+        readiness = {}
+    capabilities = diagnostics.get("capabilities")
+    if type(capabilities) is not list:
+        capabilities = []
+    return make_health_subsystem(
+        ctx,
+        "remote_hermes",
+        "Remote Hermes",
+        status,
+        diagnostics.get("summary") or "Remote Hermes health is unavailable.",
+        mode=diagnostics.get("mode") or "unavailable",
+        category=diagnostics.get("category") or "unsupported",
+        label=ctx.clean_snippet(diagnostics.get("label"), 80),
+        liveness=diagnostics.get("liveness"),
+        version=ctx.clean_snippet(diagnostics.get("version"), 80),
+        model=ctx.clean_snippet(diagnostics.get("model"), 160),
+        readiness=readiness,
+        capabilities=capabilities,
+    )
+
+
 def health(ctx: HealthContext):
     if sys.platform.startswith("win"):
         disk = {
@@ -365,13 +393,30 @@ def health(ctx: HealthContext):
         root = str(ctx.base_dir.anchor or "/")
         disk = {root: disk_details(root, ctx)}
     memory = windows_memory(ctx)
-    subsystems = [
-        state_db_health(ctx),
-        config_health(ctx),
-        calendar_health(ctx),
-        cron_health(ctx),
-        host_health(ctx, memory, disk),
-    ]
+    try:
+        hermes_diagnostics = ctx.hermes_diagnostics()
+    except Exception:
+        hermes_diagnostics = {
+            "mode": "unavailable",
+            "status": "error",
+            "category": "unsupported",
+            "summary": "Hermes connection health is unavailable.",
+        }
+    local_mode = hermes_diagnostics.get("mode") == "local"
+    if local_mode:
+        subsystems = [
+            state_db_health(ctx),
+            config_health(ctx),
+            calendar_health(ctx),
+            cron_health(ctx),
+            host_health(ctx, memory, disk),
+        ]
+    else:
+        subsystems = [
+            remote_hermes_health(ctx, hermes_diagnostics),
+            calendar_health(ctx),
+            host_health(ctx, memory, disk),
+        ]
     status = worst_health_status(*(subsystem.get("status") for subsystem in subsystems))
     degraded_items = [item for item in subsystems if item.get("status") == "degraded"]
     error_items = [item for item in subsystems if item.get("status") == "error"]
@@ -382,14 +427,11 @@ def health(ctx: HealthContext):
     else:
         summary = "All monitored dashboard subsystems are healthy."
     state_db_item = next((item for item in subsystems if item.get("key") == "state_db"), {})
-    return {
+    payload = {
         "now": ctx.now_iso(),
         "status": status,
         "status_label": status_label(status),
         "summary": ctx.clean_snippet(summary, 240),
-        "hermes_home": str(ctx.hermes_home),
-        "state_db_exists": bool(state_db_item.get("exists")),
-        "state_db_size": state_db_item.get("size"),
         "memory": memory,
         "disk": disk,
         "status_counts": {
@@ -399,3 +441,10 @@ def health(ctx: HealthContext):
         },
         "subsystems": subsystems,
     }
+    if local_mode:
+        payload.update(
+            hermes_home=str(ctx.hermes_home),
+            state_db_exists=bool(state_db_item.get("exists")),
+            state_db_size=state_db_item.get("size"),
+        )
+    return payload

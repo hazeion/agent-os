@@ -92,6 +92,10 @@ whole search if any read or final connection check fails. The browser is told
 when the 12-session limit was reached and older sessions may not be included,
 or when compacted ancestor turns or additional matches were omitted; Mentat
 does not claim complete-history search.
+Milestone 2I makes diagnostics transport-aware. Local mode retains the existing
+Hermes file/runtime checks. Remote mode replaces them with one authenticated,
+bounded readiness summary and fixed failure categories; it does not return the
+endpoint, credential, binding ID, local Hermes paths, or raw upstream details.
 Remote browser-visible session titles, previews, and message text fail closed
 when they contain path-shaped slash/backslash tokens or credential-shaped
 assignments. Ordinary web URLs, numeric dates/fractions, and `A/B` abbreviations

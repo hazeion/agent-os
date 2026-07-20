@@ -3187,6 +3187,16 @@ function renderConfig(payload = {}) {
     return;
   }
   const rows = Object.entries(payload.summary || {});
+  if (payload.mode === 'remote') {
+    summary.innerHTML = `
+      <article class="item"><div class="item-title"><span>Remote agent connection</span><span class="pill">selected</span></div><div class="item-desc">Mentat keeps the API key private. Live readiness appears in Subsystem Health.</div></article>
+      ${rows.map(([key, value]) => `
+        <article class="item"><div class="item-title"><span>${escapeHtml(key.replaceAll('_', ' '))}</span><span class="pill">remote</span></div><div class="item-desc mono">${escapeHtml(value)}</div></article>
+      `).join('')}
+    `;
+    text.textContent = payload.masked_config || '{}';
+    return;
+  }
   summary.innerHTML = `
     <article class="item"><div class="item-title"><span>Configuration summary</span><span class="pill">${escapeHtml(payload.size || 'n/a')}</span></div><div class="item-meta mono">Modified ${humanDate(payload.modified_at)}</div></article>
     ${rows.length ? rows.map(([key, value]) => `
@@ -4541,7 +4551,10 @@ function renderHealth(payload = {}) {
   if (!summary) return;
   const subsystems = Array.isArray(payload.subsystems) ? payload.subsystems : [];
   summary.innerHTML = subsystems.length ? subsystems.map((item) => {
-    const meta = [item.path, item.size, item.modified_at].filter(Boolean).map((value) => escapeHtml(value)).join(' · ');
+    const metaValues = item.key === 'remote_hermes'
+      ? [item.label, item.version, item.model, item.category]
+      : [item.path, item.size, item.modified_at];
+    const meta = metaValues.filter(Boolean).map((value) => escapeHtml(value)).join(' · ');
     return `
       <article class="item health-item health-${escapeHtml(item.status || 'healthy')}">
         <div class="item-title">
