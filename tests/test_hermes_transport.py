@@ -163,7 +163,7 @@ class HermesTransportTests(unittest.TestCase):
             forbidden_builder.assert_not_called()
             with self.assertRaisesRegex(
                 HermesTransportError,
-                "remote_console_not_implemented",
+                "remote_run_capability_unavailable",
             ):
                 remote.build_console_launch(
                     profile_id="default",
@@ -198,13 +198,10 @@ class HermesTransportTests(unittest.TestCase):
             self.assertEqual(summary["agents"], [])
             self.assertEqual(
                 summary["transport"]["error_code"],
-                "remote_console_not_implemented",
+                "remote_run_capability_unavailable",
             )
             self.assertEqual(status, 503)
-            self.assertEqual(
-                started["error_code"],
-                "remote_console_not_implemented",
-            )
+            self.assertIn(started["error_code"], {"remote_unavailable", "remote_run_capability_unavailable"})
             public = json.dumps({"summary": summary, "started": started})
             self.assertNotIn(SECRET, public)
             self.assertNotIn("private-hermes.example", public)

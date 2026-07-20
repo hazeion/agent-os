@@ -1,8 +1,8 @@
-"""Owner-private remote Hermes selection and bounded API discovery.
+"""Owner-private remote Hermes selection, discovery, and fixed Runs operations.
 
-This module deliberately exposes no generic request method.  One validated
-operator-granted origin, three fixed read-only paths, and one private
-credential are the complete network authority for this foundation slice.
+This module deliberately exposes no generic request method. One validated
+operator-granted origin and one private credential authorize only the fixed
+discovery paths plus capability-gated run submission, status, SSE, and stop.
 """
 
 from __future__ import annotations
@@ -40,8 +40,14 @@ CONNECTION_SCHEMA_VERSION = 1
 CONNECTION_FILE_NAME = "remote-hermes-connection-v1.json"
 MAX_CONNECTION_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_RUN_EVENT_BYTES = 256 * 1024
+MAX_RUN_STREAM_BYTES = 4 * 1024 * 1024
+MAX_RUN_EVENTS = 5_000
+RUN_STREAM_READ_TIMEOUT_SECONDS = 35.0
+RUN_STREAM_MAX_SECONDS = 30 * 60.0
 DEFAULT_TIMEOUT_SECONDS = 5.0
 FIXED_PATHS = frozenset({"/health", "/health/detailed", "/v1/capabilities"})
+_RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
 _SAFE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+()-]{0,79}$")
 _SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/@-]{0,159}$")
 _KNOWN_BOOLEAN_FEATURES = frozenset(
@@ -70,6 +76,23 @@ _REQUIRED_ENDPOINTS = {
     "health": ("GET", "/health"),
     "health_detailed": ("GET", "/health/detailed"),
 }
+_RUN_ENDPOINTS = {
+    "runs": ("POST", "/v1/runs", "run_submission"),
+    "run_status": ("GET", "/v1/runs/{run_id}", "run_status"),
+    "run_events": ("GET", "/v1/runs/{run_id}/events", "run_events_sse"),
+    "run_stop": ("POST", "/v1/runs/{run_id}/stop", "run_stop"),
+}
+_RUN_STATUSES = frozenset(
+    {
+        "queued",
+        "running",
+        "waiting_for_approval",
+        "stopping",
+        "completed",
+        "failed",
+        "cancelled",
+    }
+)
 _CONFIRMATION_SECRET = os.urandom(32)
 _PREVIEW_TTL_SECONDS = 300.0
 _MAX_PREVIEW_GRANTS = 256
@@ -844,6 +867,30 @@ def _safe_shape(value: Any, *, depth: int = 0, budget: list[int] | None = None) 
     return False
 
 
+def _safe_root_string_shape(
+    value: Any,
+    *,
+    string_limits: Mapping[str, int],
+) -> bool:
+    """Apply larger limits only to named root strings in a bounded object."""
+    if type(value) is not dict or len(value) > 256:
+        return False
+    budget = [1024]
+    budget[0] -= 1
+    for key, item in value.items():
+        if not isinstance(key, str) or len(key) > 160:
+            return False
+        limit = string_limits.get(key)
+        if limit is not None:
+            budget[0] -= 1
+            if budget[0] < 0 or not isinstance(item, str) or len(item) > limit:
+                return False
+            continue
+        if not _safe_shape(item, depth=1, budget=budget):
+            return False
+    return True
+
+
 def _bounded_text(value: Any, *, maximum: int) -> str:
     if not isinstance(value, str):
         raise RemoteHermesError("remote_schema_unsupported")
@@ -920,16 +967,17 @@ class RemoteHermesClient:
         self.maximum_bytes = maximum_bytes
         self.connection_factory = connection_factory
 
-    def _connection(self):
+    def _connection(self, *, timeout_seconds: float | None = None):
         parsed = urlsplit(self.endpoint)
         host = parsed.hostname or ""
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        timeout = self.timeout_seconds if timeout_seconds is None else float(timeout_seconds)
         if self.connection_factory is not None:
             return self.connection_factory(
                 parsed.scheme,
                 host,
                 port,
-                self.timeout_seconds,
+                timeout,
             )
         if parsed.scheme == "https":
             context = ssl.create_default_context()
@@ -938,10 +986,10 @@ class RemoteHermesClient:
             return http.client.HTTPSConnection(
                 host,
                 port=port,
-                timeout=self.timeout_seconds,
+                timeout=timeout,
                 context=context,
             )
-        return http.client.HTTPConnection(host, port=port, timeout=self.timeout_seconds)
+        return http.client.HTTPConnection(host, port=port, timeout=timeout)
 
     def _request_json(self, path: str, *, authenticated: bool) -> Mapping[str, Any]:
         if path not in FIXED_PATHS:
@@ -983,6 +1031,327 @@ class RemoteHermesClient:
             if type(payload) is not dict or not _safe_shape(payload):
                 raise RemoteHermesError("remote_response_invalid")
             return payload
+        except RemoteHermesError:
+            raise
+        except ssl.SSLCertVerificationError as exc:
+            raise RemoteHermesError("remote_certificate_invalid") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RemoteHermesError("remote_timeout") from exc
+        except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+            raise RemoteHermesError("remote_unavailable") from exc
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _validated_run_id(value: Any) -> str:
+        if not isinstance(value, str) or not _RUN_ID.fullmatch(value):
+            raise RemoteHermesError("remote_run_schema_invalid")
+        return value
+
+    def _contains_private_run_text(self, value: Any, run_id: str) -> bool:
+        endpoint_parts = urlsplit(self.endpoint)
+        hostname = endpoint_parts.hostname or ""
+        private_hostname = (
+            "" if hostname in {"localhost", "127.0.0.1", "::1"} else hostname
+        )
+        distinctive_netloc = (
+            endpoint_parts.netloc
+            if endpoint_parts.netloc != hostname
+            else ""
+        )
+        return _contains_private_text(
+            value,
+            (
+                self.api_key,
+                self.endpoint,
+                private_hostname,
+                distinctive_netloc,
+                run_id,
+            ),
+        )
+
+    def _run_json_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        expected_status: int,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        run_path = re.fullmatch(r"/v1/runs/(run_[0-9a-f]{32})", path)
+        stop_path = re.fullmatch(r"/v1/runs/(run_[0-9a-f]{32})/stop", path)
+        allowed = (
+            (method == "POST" and path == "/v1/runs" and expected_status == 202 and body is not None)
+            or (method == "GET" and run_path is not None and expected_status == 200 and body is None)
+            or (method == "POST" and stop_path is not None and expected_status == 200 and body == {})
+        )
+        if not allowed:
+            raise RemoteHermesError("remote_path_not_allowed")
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "Mentat/remote-hermes-v1",
+        }
+        encoded: bytes | None = None
+        if body is not None:
+            try:
+                encoded = json.dumps(
+                    body,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise RemoteHermesError("remote_run_request_invalid") from exc
+            if len(encoded) > MAX_RESPONSE_BYTES:
+                raise RemoteHermesError("remote_run_request_invalid")
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(encoded))
+        connection = self._connection()
+        try:
+            if encoded is None:
+                connection.request(method, path, headers=headers)
+            else:
+                connection.request(method, path, body=encoded, headers=headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            if 300 <= status <= 399:
+                raise RemoteHermesError("remote_redirect_refused")
+            if status in {401, 403}:
+                raise RemoteHermesError("remote_authentication_failed")
+            if status != expected_status:
+                raise RemoteHermesError("remote_run_rejected")
+            content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().casefold()
+            if content_type not in {"application/json", "application/problem+json"}:
+                raise RemoteHermesError("remote_content_type_invalid")
+            declared = response.getheader("Content-Length")
+            if declared is not None:
+                try:
+                    if int(declared) < 0 or int(declared) > self.maximum_bytes:
+                        raise RemoteHermesError("remote_response_too_large")
+                except ValueError as exc:
+                    raise RemoteHermesError("remote_response_invalid") from exc
+            raw = response.read(self.maximum_bytes + 1)
+            if len(raw) > self.maximum_bytes:
+                raise RemoteHermesError("remote_response_too_large")
+            try:
+                payload = json.loads(
+                    raw.decode("utf-8"),
+                    parse_constant=_reject_json_constant,
+                )
+            except (UnicodeError, ValueError, RecursionError) as exc:
+                raise RemoteHermesError("remote_response_invalid") from exc
+            if not _safe_root_string_shape(payload, string_limits={"output": 200_000}):
+                raise RemoteHermesError("remote_response_invalid")
+            return payload
+        except RemoteHermesError:
+            raise
+        except ssl.SSLCertVerificationError as exc:
+            raise RemoteHermesError("remote_certificate_invalid") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RemoteHermesError("remote_timeout") from exc
+        except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+            raise RemoteHermesError("remote_unavailable") from exc
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    def require_console_run_capabilities(self) -> dict[str, Any]:
+        discovery = self.discover()
+        required = {"run_submission", "run_status", "run_events_sse", "run_stop"}
+        if not required.issubset(set(discovery.get("capabilities") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+        return discovery
+
+    def submit_run(self, user_input: str) -> dict[str, str]:
+        if (
+            not isinstance(user_input, str)
+            or not user_input.strip()
+            or len(user_input) > 20_000
+            or "\x00" in user_input
+        ):
+            raise RemoteHermesError("remote_run_request_invalid")
+        payload = self._run_json_request(
+            "POST",
+            "/v1/runs",
+            expected_status=202,
+            body={"input": user_input},
+        )
+        run_id = self._validated_run_id(payload.get("run_id"))
+        if payload.get("status") != "started":
+            raise RemoteHermesError("remote_run_schema_invalid")
+        return {"run_id": run_id, "status": "started"}
+
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        run_id = self._validated_run_id(run_id)
+        payload = self._run_json_request(
+            "GET",
+            f"/v1/runs/{run_id}",
+            expected_status=200,
+        )
+        if payload.get("object") != "hermes.run" or payload.get("run_id") != run_id:
+            raise RemoteHermesError("remote_run_schema_invalid")
+        status = payload.get("status")
+        if status not in _RUN_STATUSES:
+            raise RemoteHermesError("remote_run_schema_invalid")
+        normalized: dict[str, Any] = {"status": status}
+        if status == "completed":
+            output = payload.get("output")
+            if not isinstance(output, str) or len(output) > 200_000 or "\x00" in output:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            if self._contains_private_run_text(output, run_id):
+                raise RemoteHermesError("remote_private_reflection")
+            normalized["output"] = output
+        usage = payload.get("usage")
+        if usage is not None:
+            if type(usage) is not dict:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            clean_usage: dict[str, int] = {}
+            for name in ("input_tokens", "output_tokens", "total_tokens"):
+                value = usage.get(name)
+                if type(value) is not int or not (0 <= value <= 10**9):
+                    raise RemoteHermesError("remote_run_schema_invalid")
+                clean_usage[name] = value
+            normalized["usage"] = clean_usage
+        return normalized
+
+    def stop_run(self, run_id: str) -> dict[str, str]:
+        run_id = self._validated_run_id(run_id)
+        payload = self._run_json_request(
+            "POST",
+            f"/v1/runs/{run_id}/stop",
+            expected_status=200,
+            body={},
+        )
+        returned_run_id = payload.get("run_id")
+        if (
+            payload.get("status") != "stopping"
+            or (returned_run_id is not None and returned_run_id != run_id)
+        ):
+            raise RemoteHermesError("remote_run_schema_invalid")
+        return {"status": "stopping"}
+
+    def _normalize_run_event(self, payload: Mapping[str, Any], run_id: str) -> dict[str, Any]:
+        if payload.get("run_id") != run_id:
+            raise RemoteHermesError("remote_run_schema_invalid")
+        event_type = payload.get("event")
+        if event_type == "message.delta":
+            delta = payload.get("delta")
+            if not isinstance(delta, str) or len(delta) > 16_000 or "\x00" in delta:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            if self._contains_private_run_text(delta, run_id):
+                raise RemoteHermesError("remote_private_reflection")
+            return {"type": event_type, "delta": delta}
+        if event_type in {"tool.started", "tool.completed"}:
+            tool = payload.get("tool")
+            if not isinstance(tool, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", tool):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            if self._contains_private_run_text(tool, run_id):
+                raise RemoteHermesError("remote_private_reflection")
+            return {"type": event_type, "tool": tool}
+        if event_type == "reasoning.available":
+            return {"type": event_type}
+        if event_type == "approval.request":
+            return {"type": event_type}
+        if event_type in {"run.cancelled", "run.failed"}:
+            return {"type": event_type}
+        if event_type == "run.completed":
+            output = payload.get("output")
+            if not isinstance(output, str) or len(output) > 200_000 or "\x00" in output:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            if self._contains_private_run_text(output, run_id):
+                raise RemoteHermesError("remote_private_reflection")
+            return {"type": event_type, "output": output}
+        raise RemoteHermesError("remote_run_event_unsupported")
+
+    def iter_run_events(
+        self,
+        run_id: str,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ):
+        run_id = self._validated_run_id(run_id)
+        path = f"/v1/runs/{run_id}/events"
+        headers = {
+            "Accept": "text/event-stream",
+            "Authorization": f"Bearer {self.api_key}",
+            "Cache-Control": "no-cache",
+            "User-Agent": "Mentat/remote-hermes-v1",
+        }
+        connection = self._connection(timeout_seconds=RUN_STREAM_READ_TIMEOUT_SECONDS)
+        try:
+            connection.request("GET", path, headers=headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            if 300 <= status <= 399:
+                raise RemoteHermesError("remote_redirect_refused")
+            if status in {401, 403}:
+                raise RemoteHermesError("remote_authentication_failed")
+            if status != 200:
+                raise RemoteHermesError("remote_run_rejected")
+            content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().casefold()
+            if content_type != "text/event-stream":
+                raise RemoteHermesError("remote_content_type_invalid")
+            total_bytes = 0
+            event_count = 0
+            data_lines: list[bytes] = []
+            data_bytes = 0
+            deadline = time.monotonic() + RUN_STREAM_MAX_SECONDS
+            while True:
+                if time.monotonic() >= deadline:
+                    raise RemoteHermesError("remote_timeout")
+                if should_stop is not None and should_stop():
+                    break
+                line = response.readline(MAX_RUN_EVENT_BYTES + 2)
+                if not line:
+                    if data_lines:
+                        raise RemoteHermesError("remote_run_stream_invalid")
+                    break
+                total_bytes += len(line)
+                if total_bytes > MAX_RUN_STREAM_BYTES or len(line) > MAX_RUN_EVENT_BYTES + 1:
+                    raise RemoteHermesError("remote_response_too_large")
+                if should_stop is not None and should_stop():
+                    break
+                if line in {b"\n", b"\r\n"}:
+                    if not data_lines:
+                        continue
+                    raw = b"\n".join(data_lines)
+                    data_lines = []
+                    data_bytes = 0
+                    try:
+                        payload = json.loads(
+                            raw.decode("utf-8"),
+                            parse_constant=_reject_json_constant,
+                        )
+                    except (UnicodeError, ValueError, RecursionError) as exc:
+                        raise RemoteHermesError("remote_run_stream_invalid") from exc
+                    if not _safe_root_string_shape(
+                        payload,
+                        string_limits={"delta": 16_000, "output": 200_000},
+                    ):
+                        raise RemoteHermesError("remote_run_stream_invalid")
+                    event_count += 1
+                    if event_count > MAX_RUN_EVENTS:
+                        raise RemoteHermesError("remote_response_too_large")
+                    yield self._normalize_run_event(payload, run_id)
+                    continue
+                if line.startswith(b":"):
+                    continue
+                if line.startswith(b"data:"):
+                    item = line[5:].lstrip().rstrip(b"\r\n")
+                    data_lines.append(item)
+                    data_bytes += len(item)
+                    if data_bytes > MAX_RUN_EVENT_BYTES:
+                        raise RemoteHermesError("remote_response_too_large")
+                    continue
+                if line.startswith((b"event:", b"id:", b"retry:")):
+                    continue
+                raise RemoteHermesError("remote_run_stream_invalid")
         except RemoteHermesError:
             raise
         except ssl.SSLCertVerificationError as exc:
@@ -1059,6 +1428,12 @@ class RemoteHermesClient:
         for name, expected in _REQUIRED_ENDPOINTS.items():
             item = endpoints.get(name)
             if type(item) is not dict or (item.get("method"), item.get("path")) != expected:
+                raise RemoteHermesError("remote_schema_unsupported")
+        for name, (method, path, feature) in _RUN_ENDPOINTS.items():
+            if features.get(feature) is not True:
+                continue
+            item = endpoints.get(name)
+            if type(item) is not dict or (item.get("method"), item.get("path")) != (method, path):
                 raise RemoteHermesError("remote_schema_unsupported")
         model = _bounded_text(payload.get("model"), maximum=160)
         if not _SAFE_MODEL.fullmatch(model) or model.startswith("/") or ".." in model or "://" in model or "\\" in model:

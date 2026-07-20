@@ -107,9 +107,9 @@ class BetaContractTests(unittest.TestCase):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
         self.assertTrue(next_actions.lstrip().startswith("1. Continue Milestone 2"))
-        self.assertIn("remote Console runs", next_actions)
-        self.assertIn("verified local transport behavior", next_actions)
-        self.assertIn("capability-advertised", next_actions)
+        self.assertIn("remote sessions and approval responses", next_actions)
+        self.assertIn("exact authenticated capabilities", next_actions)
+        self.assertIn("bounded Context Pack text", next_actions)
         self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 

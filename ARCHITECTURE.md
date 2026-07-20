@@ -116,8 +116,9 @@ Every run records its Hermes profile id, launches with a fixed
 that same profile. `hermes_transport.py` owns the transport-neutral launch
 boundary: it preserves the exact local command/environment/process contract,
 binds retained runs to the selected opaque connection identity, and revalidates
-that identity before queue and launch. Its remote implementation deliberately
-advertises Console unavailable and can neither inspect nor launch local Hermes.
+that identity before queue and launch. Its remote implementation supports one
+plain default-profile turn through fixed Runs API operations and can neither
+inspect nor launch local Hermes.
 
 ## Remote Hermes connection boundary
 
@@ -125,9 +126,10 @@ The approved public-beta direction is local Mentat connected to one active
 local or remote Hermes endpoint. The detailed capability matrix, upstream
 blockers, implementation order, and exit evidence live in
 [REMOTE_HERMES.md](REMOTE_HERMES.md). The connection/storage/discovery
-foundation and Agent Console transport boundary are implemented, but remote
-execution is not and Mentat must not advertise remote parity or remote Console
-readiness yet.
+foundation, Agent Console transport boundary, and default-profile remote run
+lifecycle are implemented. Sessions, approval responses, content transfer,
+complete profile discovery, and Kanban remain incomplete, so Mentat must not
+advertise full remote parity yet.
 
 The remote boundary has these architectural invariants:
 
@@ -149,9 +151,10 @@ The remote boundary has these architectural invariants:
 8. local Mentat features continue to work when they do not depend on the failed
    or unavailable remote capability.
 
-Remote Console, sessions/runs, approvals/cancellation/stopping, and
-skill/toolset visibility have documented Hermes API surfaces and remain
-mandatory beta work. Clarification handling is also mandatory, but remains a
+Default-profile remote runs, bounded events/status, cancellation, and stopping
+use the documented Hermes Runs API. Sessions, approval responses, and
+skill/toolset visibility remain mandatory beta work. Clarification handling is
+also mandatory, but remains a
 compatibility blocker until the HTTP API advertises a typed request/response
 capability.
 Complete read-only profile discovery and API-key-authenticated Kanban are also
@@ -159,6 +162,12 @@ mandatory, but are upstream blockers until Hermes exposes supported,
 capability-advertised server-to-server operations. Profile creation/deletion,
 identity editing, provider administration, cron inventory, and advanced
 artifact transfer may degrade clearly in remote mode.
+
+Remote upstream run identifiers are process-private and are not retained in
+Console history. Graceful shutdown performs one stop attempt and bounded
+terminal read-back. After an abrupt process death, Mentat marks a restored
+remote summary interrupted and partial; durable upstream-run recovery is a
+separate storage/authority slice and is not implied by 2C.
 
 ## Agent Console file boundary
 

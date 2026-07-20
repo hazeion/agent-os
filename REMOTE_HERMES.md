@@ -1,6 +1,6 @@
 # Remote Hermes Capability Contract
 
-Status: Approved beta architecture; Milestones 2A and 2B foundations implemented
+Status: Approved beta architecture; Milestones 2A through 2C implemented
 Approved: 2026-07-16
 
 ## Product boundary
@@ -19,8 +19,13 @@ must never be returned to the browser.
 This document defines the complete target contract. Mentat now has owner-only
 connection selection plus bounded authenticated health/capability discovery.
 Agent Console now selects a binding-aware local or remote transport, preserves
-the established local launch contract, and fails closed in remote mode until
-the mandatory remote feature paths are implemented.
+the established local launch contract, and supports one plain default-profile
+remote run through fixed submission, event, status, and stop operations.
+Sessions, approval responses, content transfer, complete profile discovery, and
+Kanban remain later capability-gated work.
+Upstream run IDs remain process-private: graceful shutdown is reconciled, while
+an abrupt Mentat process death restores the local summary as interrupted and
+partial rather than claiming the remote run stopped.
 
 ## Beta capability classes
 
@@ -39,8 +44,8 @@ the mandatory remote feature paths are implemented.
 | Public connection liveness | `remote_hermes.py` calls only fixed `/health` and treats the result as untrusted | Hermes documents unauthenticated `GET /health` as a cheap public liveness probe in its [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) | No authentication; response is untrusted liveness only | Bounded timeout/size/schema checks; never derive identity, readiness, or enabled features from this response | **Required** diagnostic; 2A foundation implemented |
 | Authenticated readiness and capability discovery | `remote_hermes.py` validates fixed `/health/detailed` and `/v1/capabilities` responses and returns an allowlisted summary | Hermes documents bearer-authenticated `GET /health/detailed` and machine-readable `GET /v1/capabilities` in its [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) | API-server bearer key over verified HTTPS | Validate schema/version, endpoint identity, advertised auth, bounded readiness, model, and capability set | **Required** foundation implemented; active-profile inventory remains blocked |
 | Hermes configuration and overview summary | `server.py` reads local `CONFIG_PATH` metadata and combines it with normalized profile/provider discovery | Remote health, capabilities, and model endpoints can supply bounded connection/profile/model status; remote configuration-file metadata is unnecessary | API-server bearer key; never request or expose raw remote configuration | Normalize an allowlisted summary and suppress upstream errors, paths, headers, and secret-shaped values | Safe connection/profile/model status is **Required**; file/configuration details remain local-only |
-| Agent Console conversation and streaming | `hermes_transport.py` selects a binding-aware transport and preserves the profile-scoped local CLI launch; its remote implementation currently fails closed | Hermes documents Chat Completions, Responses, run submission, SSE events, approvals, and session chat in the [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) and [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) | API-server bearer key over verified HTTPS; key remains in Mentat's server process | Bind each run to the active endpoint and advertised profile; validate event schemas and terminal state; verify stop/approval results | **Required**; transport foundation implemented, remote run adapter needed |
-| Run status, progress, approval, cancellation, and stopping | `server.py` and `agent_run_history.py` track a local child process and Mentat-owned events | `/v1/runs`, run status, SSE events, approval, and stop are documented and advertised by `/v1/capabilities` | Same API-server bearer boundary | Capability match before action, exact live-run binding, idempotency where supported, and post-action status read-back | **Required**; supported upstream, Mentat adapter needed |
+| Agent Console conversation and streaming | `hermes_transport.py` selects a binding-aware transport, preserves the profile-scoped local CLI launch, and implements a default-profile remote Runs adapter | Hermes documents Chat Completions, Responses, run submission, SSE events, approvals, and session chat in the [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) and [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) | API-server bearer key over verified HTTPS; key remains in Mentat's server process | Bind each run to the active endpoint; validate event schemas and terminal state; never retry submission | **Required**; plain default-profile remote runs implemented, sessions and richer inputs pending |
+| Run status, progress, approval, cancellation, and stopping | `server.py` and `agent_run_history.py` normalize remote events/status and keep upstream run identity private | `/v1/runs`, run status, SSE events, approval, and stop are documented and advertised by `/v1/capabilities` | Same API-server bearer boundary | Capability match before action, exact live-run binding, one claimed stop attempt, and post-action status read-back | **Required**; status, progress, cancellation, and stopping implemented; approval requests stop safely while approval response remains pending |
 | Clarification requests and responses | Local Console can retain and display bounded run interaction state | Hermes' [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) describes `clarify.request` for its TUI gateway, but the documented HTTP API does not advertise an equivalent clarification-response operation | No approved API-server bearer capability yet | Require a machine-readable request event, typed bounded response, exact run/request binding, and post-response status verification | **Required**; upstream/compatibility blocker |
 | Session list, replay, continuation, and search | `server.py` reads local Hermes `state.db`; Console resume is profile-bound | Hermes documents session list/messages/chat/fork endpoints and session continuity headers in the API server | API-server bearer key; no database access | Normalize bounded public metadata, bind endpoint/profile/session identity, reject stale or cross-endpoint resume | **Required**; supported in current upstream surface, compatibility probe needed |
 | Read-only agent/profile discovery | `hermes_profiles.py` runs inside the local Hermes runtime; Kanban also supplies assignee/profile context | `/v1/models` identifies the endpoint's active profile/model, but does not document complete profile inventory; Kanban's `/api/plugins/kanban/profiles` is an unauthenticated loopback plugin HTTP route | The loopback plugin route has no approved remote authentication boundary; remote beta requires a new API-key-authenticated, capability-advertised inventory | Require a capability-advertised bounded profile inventory and reconcile it with the endpoint's active profile | **Required**; upstream blocker for complete inventory |
@@ -156,13 +161,14 @@ in this order:
    health/capability discovery; **Milestone 2A foundation implemented**;
 2. a transport-neutral Hermes adapter interface that preserves local behavior;
    **Milestone 2B foundation implemented**;
-3. remote Console, run events, approvals, cancellation, and sessions, with
-   clarification responses enabled only through a supported upstream
-   capability;
-4. bounded Context Pack text and supported image inputs;
-5. read-only profile discovery through a supported upstream capability;
-6. Kanban delegation and follow-up through a supported upstream capability;
-7. capability-gated degradation, compatibility, recovery, and cross-platform
+3. remote Console runs, bounded events/status, and cancellation;
+   **Milestone 2C implemented for the default profile**;
+4. approval responses and sessions, with clarification responses enabled only
+   through a supported upstream capability;
+5. bounded Context Pack text and supported image inputs;
+6. read-only profile discovery through a supported upstream capability;
+7. Kanban delegation and follow-up through a supported upstream capability;
+8. capability-gated degradation, compatibility, recovery, and cross-platform
    remote-parity tests.
 
 No later step may invent a workaround for a missing earlier capability.
