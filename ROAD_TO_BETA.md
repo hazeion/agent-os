@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 2 in progress — 2A through 2C and 2E session visibility complete
+Status: Milestone 2 in progress — 2A through 2C, 2E session visibility, and 2F remote Context Pack text complete
 Last updated: 2026-07-20
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -296,6 +296,11 @@ Work in order:
    exact stoppable continuation capability.**
 6. Send only bounded Context Pack text and supported inline images; keep local
    paths private and degrade unsupported file/artifact transfers clearly.
+   **Milestone 2F sends one exact, bounded, private-snapshot Context Pack as
+   path-free text through the stoppable Runs API. Direct files, artifacts, and
+   images fail clearly before submission. Inline images remain blocked because
+   current Hermes advertises them for chat/responses, not for the Runs
+   submission/status/stop lifecycle used by Agent Console.**
 7. Add complete read-only profile discovery through a supported,
    API-key-authenticated upstream capability.
 8. Add Kanban delegation and follow-up only after Hermes exposes the supported
@@ -553,9 +558,10 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Continue Milestone 2 with bounded Context Pack text and supported inline
-   image inputs without
-   transmitting local paths or enabling general file transfer.
+1. Continue Milestone 2 after bounded Context Pack text by keeping remote
+   inline images unavailable until Hermes advertises an exact image-input
+   capability for the stoppable Runs lifecycle; do not substitute
+   chat/responses or enable general file transfer.
 2. Keep remote session continuation unavailable until Hermes advertises an
    exact stoppable continuation capability, and keep approval response
    unavailable until Hermes advertises an exact request binding plus a

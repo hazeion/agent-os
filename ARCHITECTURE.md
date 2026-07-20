@@ -71,6 +71,13 @@ and compression projection is consumed at the list boundary; projected
 transcripts are labeled as partial because Hermes does not return ancestor
 turns, and any later message-identity change fails closed. Remote continuation
 remains unavailable until an exact stoppable capability is advertised.
+Milestone 2F adds one-use, process-private remote Context Pack grants. A grant
+binds the selected connection, current pack revision, and exact staged text
+snapshot ids; Mentat sends only bounded UTF-8 text with generic context labels.
+Local paths, filenames, blob metadata, and storage identities never enter the
+upstream request. Direct files and artifacts fail before submission. Images
+also fail clearly because Hermes currently documents them on chat/responses,
+not on the stoppable Runs lifecycle used by Agent Console.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other
@@ -222,6 +229,13 @@ relative paths. They never store note/file contents or absolute paths. Every use
 revalidates the references. Console use creates normal private staged snapshots;
 delegation use resolves bounded text into the exact preview and confirmation
 digest, so changed pack content must be previewed again.
+
+Remote Console use adds a short-lived random grant around those existing
+private snapshots. The grant is bound to one connection, pack revision, and
+ordered attachment-id set, and is consumed once. Mentat reads only validated
+text snapshots, applies fixed item and total limits, and constructs a
+path-free user-context block. A restart, expiry, connection change, pack edit,
+or attachment mismatch requires the operator to apply the pack again.
 
 Assistant-created artifacts are accepted only from a private per-run export
 directory named in trusted server-generated execution context. Mentat does not

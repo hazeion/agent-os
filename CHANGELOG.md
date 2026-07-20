@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-20
 
 ### Added
+- Added bounded remote Context Pack text for Agent Console. One short-lived
+  opaque grant binds the selected connection, current pack revision, and exact
+  private snapshots before Mentat sends path-free text to Hermes Runs.
 - Added capability-gated read-only remote session history using Hermes' exact
   list, detail, and message endpoints. The existing Sessions UI can show a
   bounded recent list, transcript, and replay while local SQLite behavior stays
@@ -19,6 +22,11 @@ All notable changes to Mentat.
   and retained Console run summaries, with safe defaults for older history.
 
 ### Safety
+- Remote Context Pack requests use generic context labels and fixed item,
+  total-context, and complete-prompt limits. Changed, expired, replayed, or
+  mismatched grants fail before submission. Direct files and artifacts remain
+  unavailable, and inline images fail clearly because Hermes does not yet
+  advertise image input for the stoppable Runs lifecycle.
 - Remote session identifiers remain process-private behind random aliases bound
   to the selected connection. Mentat allowlists and bounds public metadata,
   returns only user/assistant conversation text, labels compressed

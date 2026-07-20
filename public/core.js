@@ -89,6 +89,8 @@ const state = {
   agentConsoleEventCursors: {},
   agentConsoleCommandManifest: null,
   agentConsoleAttachments: [],
+  agentConsoleRemoteContext: null,
+  agentConsoleTransportBinding: '',
   agentConsoleAttachmentsUploading: false,
   agentConsoleAttachmentError: '',
   agentConsoleWorkspaceSearchTimer: null,

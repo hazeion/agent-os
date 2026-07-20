@@ -33,11 +33,29 @@ class AgentConsoleAttachmentUiTests(unittest.TestCase):
 
     def test_run_submission_binds_only_opaque_attachment_ids(self):
         submit = APP[APP.index("async function submitAgentConsolePrompt"):APP.index("function renderCrons")]
-        self.assertIn("if (!value && !state.agentConsoleAttachments.length) return", submit)
+        self.assertIn("if (!value && !state.agentConsoleAttachments.length && !state.agentConsoleRemoteContext) return", submit)
         self.assertIn("attachment_ids: state.agentConsoleAttachments.map((attachment) => attachment.id)", submit)
+        self.assertIn("remote_context_token: state.agentConsoleRemoteContext?.token", submit)
         self.assertIn("state.agentConsoleAttachments = []", submit)
         self.assertNotIn("content_url:", submit)
         self.assertNotIn("relative_path:", submit)
+
+    def test_remote_context_pack_uses_one_opaque_bound_grant_without_prompt_duplication(self):
+        apply_pack = APP[APP.index("async function applyContextPackToConsole"):APP.index("function renderContextPackEditor")]
+        reset = APP[APP.index("function clearAgentConsoleRemoteContext"):APP.index("function renderAgentConsoleAttachmentTray")]
+        self.assertIn("payload.remote_context_token", apply_pack)
+        self.assertIn("instructions_in_remote_context", apply_pack)
+        self.assertIn("state.agentConsoleAttachments = Array.from(payload.attachments", apply_pack)
+        self.assertIn("transport_binding", apply_pack)
+        self.assertIn("replacingRemoteContext", apply_pack)
+        self.assertIn("clearAgentConsoleRemoteContext({ removeAttachments: true })", apply_pack)
+        self.assertLess(
+            apply_pack.index("if (state.agentConsoleRemoteContext)"),
+            apply_pack.index("state.agentConsoleAttachmentsUploading = true"),
+        )
+        self.assertIn("removeAttachments", reset)
+        self.assertNotIn("relative_path", apply_pack)
+        self.assertNotIn("content_url", apply_pack)
 
     def test_attachment_previews_require_same_origin_server_urls(self):
         rendering = APP[APP.index("function safeAgentConsoleContentUrl"):APP.index("function renderAgentConsole(payload")]

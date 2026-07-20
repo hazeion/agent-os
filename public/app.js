@@ -2164,6 +2164,15 @@ async function copyRenderedCode(button) {
   }, 1600);
 }
 
+function clearAgentConsoleRemoteContext({ removeAttachments = false } = {}) {
+  const staged = state.agentConsoleRemoteContext;
+  if (removeAttachments && staged) {
+    const stagedIds = new Set(staged.attachment_ids || []);
+    state.agentConsoleAttachments = state.agentConsoleAttachments.filter((item) => !stagedIds.has(item.id));
+  }
+  state.agentConsoleRemoteContext = null;
+}
+
 function renderAgentConsoleAttachmentTray() {
   const tray = $('#agent-console-attachment-tray');
   if (!tray) return;
@@ -2303,6 +2312,7 @@ async function addAgentConsoleWorkspaceFile(rootId, relativePath) {
     if (status && !choice) status.textContent = 'Mentat rejected an unsafe workspace file selection.';
     return;
   }
+  clearAgentConsoleRemoteContext({ removeAttachments: true });
   state.agentConsoleAttachmentError = '';
   state.agentConsoleAttachmentsUploading = true;
   renderAgentConsoleWorkspaceResults({}, 'loading');
@@ -2336,6 +2346,7 @@ async function addAgentConsoleWorkspaceFile(rootId, relativePath) {
 async function addAgentConsoleFiles(files = []) {
   const status = $('#agent-console-form-status');
   if (!files.length || state.agentConsoleAttachmentsUploading) return;
+  clearAgentConsoleRemoteContext({ removeAttachments: true });
   state.agentConsoleAttachmentError = '';
   state.agentConsoleAttachmentsUploading = true;
   const attach = $('#agent-console-attach');
@@ -2381,6 +2392,18 @@ function renderAgentConsole(payload = {}) {
   const stateLabel = $('#agent-console-state');
   const presence = $('#agent-console-presence');
   if (!chat || !agentSelect) return;
+
+  if (payload.transport?.mode && payload.transport?.binding_id) {
+    const nextBinding = `${payload.transport.mode}:${payload.transport.binding_id}`;
+    if (
+      state.agentConsoleRemoteContext
+      && state.agentConsoleRemoteContext.transport_binding !== nextBinding
+    ) {
+      clearAgentConsoleRemoteContext({ removeAttachments: true });
+      renderAgentConsoleAttachmentTray();
+    }
+    state.agentConsoleTransportBinding = nextBinding;
+  }
 
   const agents = Array.isArray(payload.agents) ? payload.agents : state.agentConsoleAgents;
   const requestedAgentId = state.agentConsoleSelectedAgentId || agentSelect.value || payload.selected_agent_id || 'default';
@@ -2628,7 +2651,7 @@ async function submitAgentConsolePrompt() {
     if (status) status.textContent = 'Wait for attachments to finish uploading.';
     return;
   }
-  if (!value && !state.agentConsoleAttachments.length) return;
+  if (!value && !state.agentConsoleAttachments.length && !state.agentConsoleRemoteContext) return;
   if (value.startsWith('/')) {
     const [command, ...args] = value.split(/\s+/);
     const argument = args.join(' ').trim();
@@ -2670,9 +2693,11 @@ async function submitAgentConsolePrompt() {
       prompt: value,
       session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined,
       attachment_ids: state.agentConsoleAttachments.map((attachment) => attachment.id),
+      remote_context_token: state.agentConsoleRemoteContext?.token || undefined,
     });
     state.agentConsoleStartFresh = false;
     state.agentConsoleAttachments = [];
+    clearAgentConsoleRemoteContext();
     state.agentConsoleAttachmentError = '';
     prompt.value = '';
     resizeAgentConsolePrompt();
@@ -2680,6 +2705,10 @@ async function submitAgentConsolePrompt() {
     renderAgentConsole({ agents: state.agentConsoleAgents, runs: [payload.run, ...state.agentConsoleRuns].filter(Boolean) });
     if (status) status.textContent = '';
   } catch (err) {
+    if (state.agentConsoleRemoteContext) {
+      clearAgentConsoleRemoteContext({ removeAttachments: true });
+      renderAgentConsoleAttachmentTray();
+    }
     if (status) status.textContent = err.message;
   }
 }
@@ -4285,20 +4314,39 @@ async function applyContextPackToConsole(packId) {
   if (state.agentConsoleAttachmentsUploading) return;
   const pack = state.contextPacks.find((item) => item.id === packId);
   if (!pack) return;
-  if (state.agentConsoleAttachments.length + (pack.note_paths || []).length + (pack.workspace_files || []).length > 8) {
+  const replacingRemoteContext = state.agentConsoleTransportBinding.startsWith('remote:');
+  const existingAttachmentCount = replacingRemoteContext ? 0 : state.agentConsoleAttachments.length;
+  if (existingAttachmentCount + (pack.note_paths || []).length + (pack.workspace_files || []).length > 8) {
     if (status) status.textContent = 'Remove attachments before applying this context pack; Console accepts 8 total.';
     return;
+  }
+  if (state.agentConsoleRemoteContext) {
+    clearAgentConsoleRemoteContext({ removeAttachments: true });
+    renderAgentConsoleAttachmentTray();
   }
   state.agentConsoleAttachmentsUploading = true;
   renderAgentConsoleAttachmentTray();
   try {
     const payload = await stageContextPack(packId);
-    for (const attachment of payload.attachments || []) {
-      if (!state.agentConsoleAttachments.some((item) => item.id === attachment.id)) state.agentConsoleAttachments.push(attachment);
+    if (payload.remote_context_token) {
+      clearAgentConsoleRemoteContext({ removeAttachments: true });
+      state.agentConsoleAttachments = Array.from(payload.attachments || []);
+      state.agentConsoleRemoteContext = {
+        token: payload.remote_context_token,
+        attachment_ids: state.agentConsoleAttachments.map((item) => item.id),
+        transport_binding: `remote:${payload.transport_binding_id || ''}`,
+      };
+    } else {
+      clearAgentConsoleRemoteContext({ removeAttachments: true });
+      for (const attachment of payload.attachments || []) {
+        if (!state.agentConsoleAttachments.some((item) => item.id === attachment.id)) state.agentConsoleAttachments.push(attachment);
+      }
     }
     const prompt = $('#agent-console-prompt');
     const instructions = String(payload.instructions || '').trim();
-    if (prompt && instructions) prompt.value = [instructions, prompt.value.trim()].filter(Boolean).join('\n\n');
+    if (prompt && instructions && !payload.instructions_in_remote_context) {
+      prompt.value = [instructions, prompt.value.trim()].filter(Boolean).join('\n\n');
+    }
     setAgentConsoleAttachmentMenu(false);
     if (status) status.textContent = `${pack.name} staged with current private snapshots.`;
   } catch (err) {
@@ -4908,6 +4956,9 @@ $('#agent-console-attachment-tray')?.addEventListener('click', (event) => {
   const remove = event.target.closest('[data-remove-agent-console-attachment]');
   if (!remove) return;
   const id = remove.dataset.removeAgentConsoleAttachment || '';
+  if ((state.agentConsoleRemoteContext?.attachment_ids || []).includes(id)) {
+    clearAgentConsoleRemoteContext({ removeAttachments: true });
+  }
   state.agentConsoleAttachments = state.agentConsoleAttachments.filter((attachment) => attachment.id !== id);
   renderAgentConsoleAttachmentTray();
 });
