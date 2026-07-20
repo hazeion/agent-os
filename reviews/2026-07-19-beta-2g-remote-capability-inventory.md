@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Capability Inventory
 
-Status: In progress
+Status: Ready PR / hosted verified
 Slice: `beta-2g-remote-capability-inventory`
 Date: `2026-07-19`
 Review log: `reviews/2026-07-19-beta-2g-remote-capability-inventory.md`
@@ -44,7 +44,7 @@ skill contents.
 | AC-3 | Connection changes, capability loss, wrong endpoint contracts, malformed data, private reflection, oversized data, auth failure, and partial inventory failure fail closed. | Negative and binding tests | Complete |
 | AC-4 | Local mode performs no remote capability inventory call and keeps existing local Console/profile behavior. | Server/compatibility tests | Complete |
 | AC-5 | Settings presents readable counts and clear local, unsupported, loading, available, and unavailable states without stretched action controls. | UI contract and rendered browser checks | Complete |
-| AC-6 | Focused, full, static, two-reviewer, ready-PR, and hosted supported-platform gates pass. | Verification record | Pending |
+| AC-6 | Focused, full, static, two-reviewer, ready-PR, and hosted supported-platform gates pass. | Verification record | Complete |
 
 ### Constraints and recovery
 
@@ -240,6 +240,22 @@ skill contents.
 - Compatibility/correctness reviewer: `ZERO FINDINGS`.
 - Result: the committed implementation head exactly matches the cleared packet.
 
+### Round 6 — exact pre-push head
+
+- Exact reviewed commit: `2e0af8fec9f6564dd2cd6773ee21b9d23a2c5a02`.
+- Safety/privacy reviewer: `ZERO FINDINGS`.
+- Compatibility/correctness reviewer: `ZERO FINDINGS`.
+- Result: the implementation plus review evidence was clear for publication.
+
+## Hosted verification
+
+- Ready PR: [#35](https://github.com/hazeion/agent-os/pull/35).
+- Exact tested head: `2e0af8fec9f6564dd2cd6773ee21b9d23a2c5a02`.
+- GitHub Actions run:
+  [29722661411](https://github.com/hazeion/agent-os/actions/runs/29722661411).
+- Result: pass, 42 of 42 jobs across the supported Ubuntu, macOS, and Windows
+  Python matrix; no failures.
+
 ## Documentation updates
 
 - Roadmap: records Milestone 2G as complete and keeps the remaining blockers
@@ -264,18 +280,23 @@ skill contents.
   local/remote compatibility tests.
 - Unresolved risks: a live private remote host is not available to CI; the
   installed Hermes 0.18.2 source/docs and deterministic HTTP fakes establish
-  the schema contract. Hosted cross-platform verification remains pending.
+  the schema contract.
 - User authorization and scope: standing authorization recorded above.
 - Implementation commit: `afc0614f0a4dad3f7a0519fbce6efb9f4134b881`.
-- Evidence commit: pending.
-- Ready PR URL: pending.
+- Evidence commit: `2e0af8fec9f6564dd2cd6773ee21b9d23a2c5a02`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/35.
 
 ## Outcome review
 
-- Classification: pending.
-- Acceptance criteria summary: pending.
-- Potential bugs or untested paths: pending.
-- Remaining reviewer dissent: pending.
-- Compatibility/migration/rollback concerns: pending.
+- Classification: accepted.
+- Acceptance criteria summary: AC-1 through AC-6 are complete; focused, full,
+  static, rendered, adversarial-review, ready-PR, and hosted gates pass.
+- Potential bugs or untested paths: no live private remote host was contacted;
+  installed Hermes 0.18.2 contracts and deterministic fake HTTP responses cover
+  the supported schema and failure modes.
+- Remaining reviewer dissent: none.
+- Compatibility/migration/rollback concerns: this is read-only, adds no data
+  migration, preserves local behavior, and can be rolled back by reverting the
+  slice without changing Hermes or Mentat data.
 - User decision: standing authorization to continue after successful merge.
 - Next slice authorized: Yes, under the active Road to Beta goal.
