@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import time
 import unittest
@@ -1275,9 +1276,10 @@ class RemoteSessionTests(unittest.TestCase):
         normalization_expansion = "\ufdfa" * remote_hermes.SESSION_CONTENT_LIMIT
         started = time.perf_counter()
         self.assertTrue(remote_hermes._contains_private_public_text(normalization_expansion))
-        # Windows Python 3.11 normalizes this pathological maximum-size input
-        # more slowly; keep a bounded cross-platform budget without flaking.
-        self.assertLess(time.perf_counter() - started, 2.0)
+        # Windows runners normalize this pathological maximum-size input more
+        # slowly; keep a bounded platform-aware budget without flaking.
+        normalization_budget = 5.0 if os.name == "nt" else 2.0
+        self.assertLess(time.perf_counter() - started, normalization_budget)
 
         varied_stem_dense = " ".join(f"api:{index:05d}" for index in range(10_000))
         started = time.perf_counter()

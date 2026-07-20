@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Session Search
 
-Status: Hosted gates complete; merge pending
+Status: Merged; post-merge Windows timing hotfix in progress
 Slice: `beta-2h-remote-session-search`
 Date: `2026-07-20`
 Review log: `reviews/2026-07-20-beta-2h-remote-session-search.md`
@@ -178,6 +178,15 @@ unsupported remote mutation.
   remain unchanged.
 - Post-timing-repair GitHub Actions run 82: pass, all 42 supported-platform
   jobs on exact head `4a1386bec664fe86b1f88f6322d8ab3613e890c8`.
+- Final PR GitHub Actions run 83: pass, all 42 jobs on exact head
+  `89de3cf525e8576de0d4543c82cfc81f1d5b2d72`; PR 36 then merged as
+  `c93be35fa7e680fdfca408a97557f68649b36b20`.
+- The post-merge main run measured the same correct pathological NFKC
+  rejection at 2.55 and 2.57 seconds on Windows Python 3.12 and 3.13,
+  exceeding the uniform 2.00-second test budget. The other 40 jobs passed and
+  the production classifier remained unchanged. The
+  assertion now keeps a 2.00-second non-Windows budget and uses 5.00 seconds on
+  Windows runners; hotfix hosted verification is pending.
 
 ### Rendered or manual behavior
 
