@@ -21,6 +21,10 @@ class HermesTransportError(RuntimeError):
         "local_console_unavailable": "Hermes CLI was not found in the Mentat server environment.",
         "remote_console_not_implemented": "Remote Agent Console is not available yet.",
         "remote_run_capability_unavailable": "This Hermes host does not support remote Console runs.",
+        "remote_session_capability_unavailable": "This Hermes host does not support remote session history.",
+        "remote_session_not_found": "That remote session is no longer available.",
+        "remote_session_unavailable": "Remote session history is unavailable.",
+        "remote_session_alias_invalid": "That remote session selection is no longer valid.",
         "remote_approval_unsupported": "This remote run needs approval, which Mentat cannot answer yet.",
         "remote_run_failed": "The remote Hermes run failed.",
         "remote_submission_unverified": "Mentat could not verify whether the remote run started.",
@@ -125,6 +129,7 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         super().__init__(binding)
         self._client = client
         self._ready = False
+        self._sessions_ready = False
         self.model = "configured default"
 
     @property
@@ -143,6 +148,51 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
             "model": self.model,
             "capabilities": tuple(discovery.get("capabilities") or ()),
         }
+
+    @property
+    def session_visibility_available(self) -> bool:
+        return self._sessions_ready
+
+    def prepare_sessions(self) -> dict[str, Any]:
+        try:
+            discovery = self._client.require_session_resource_capabilities()
+        except RemoteHermesError as exc:
+            self._sessions_ready = False
+            raise HermesTransportError(exc.code) from exc
+        self._sessions_ready = True
+        return {"capabilities": tuple(discovery.get("capabilities") or ())}
+
+    def list_sessions(self) -> dict[str, Any]:
+        if not self._sessions_ready:
+            raise HermesTransportError("remote_session_capability_unavailable")
+        try:
+            return self._client.list_sessions()
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def get_session(self, remote_session_id: str) -> dict[str, Any]:
+        if not self._sessions_ready:
+            raise HermesTransportError("remote_session_capability_unavailable")
+        try:
+            return self._client.get_session(remote_session_id)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def get_session_messages(
+        self,
+        remote_session_id: str,
+        *,
+        structural_ids: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        if not self._sessions_ready:
+            raise HermesTransportError("remote_session_capability_unavailable")
+        try:
+            return self._client.get_session_messages(
+                remote_session_id,
+                structural_ids=structural_ids,
+            )
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
 
     def submit_run(self, prompt: str) -> dict[str, str]:
         if not self._ready:

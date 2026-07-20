@@ -65,6 +65,7 @@ const state = {
   selectedSessionDetailTab: 'replay',
   selectedSessionDetailPayload: null,
   selectedSessionDetailContext: null,
+  sessionDetailRequestGeneration: 0,
   activeView: 'today',
   messageSearchTimer: null,
   isRefreshing: false,

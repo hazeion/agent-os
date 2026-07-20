@@ -3009,6 +3009,27 @@ function renderSessions(payload = {}) {
   const filtered = state.sessions.filter((session) => sessionMatches(session, state.sessionFilter));
   const select = $('#session-select');
   if (!select) return;
+  if (payload.error) {
+    state.sessions = [];
+    state.selectedSessionId = '';
+    state.selectedSessionDetailPayload = null;
+    state.selectedSessionDetailContext = null;
+    state.sessionDetailRequestGeneration += 1;
+    select.innerHTML = `<option value="">${escapeHtml(payload.error)}</option>`;
+    select.disabled = true;
+    const detail = $('#session-detail');
+    if (detail) detail.innerHTML = `<div class="empty">${escapeHtml(payload.error)}</div>`;
+    return;
+  }
+  const selectedStillAvailable = state.sessions.some((session) => session.id === state.selectedSessionId);
+  if (state.selectedSessionId && !selectedStillAvailable) {
+    state.selectedSessionId = '';
+    state.selectedSessionDetailPayload = null;
+    state.selectedSessionDetailContext = null;
+    state.sessionDetailRequestGeneration += 1;
+    const detail = $('#session-detail');
+    if (detail) detail.innerHTML = `<div class="empty">Select a session to review the replay or transcript.</div>`;
+  }
   if (!filtered.length) {
     select.innerHTML = `<option value="">${state.sessionFilter ? 'No matching sessions' : 'No recent sessions available'}</option>`;
     select.disabled = true;
@@ -3221,10 +3242,12 @@ function renderSessionDetail(payload = null, context = {}) {
   const targetId = Number(context.messageId || windowInfo.target_message_id || 0);
   const query = context.query || '';
   const totalVisible = windowInfo.total_visible ?? messages.length;
-  const visibleLabel = windowInfo.truncated ? `${messages.length} of ${totalVisible} visible messages` : `${messages.length} visible messages`;
+  const visibleLabel = windowInfo.mode === 'latest_segment'
+    ? `${messages.length} visible messages in the latest segment`
+    : (windowInfo.truncated ? `${messages.length} of ${totalVisible} visible messages` : `${messages.length} visible messages`);
   const activeTab = state.selectedSessionDetailTab || 'replay';
   const transcriptHtml = `
-    ${windowInfo.truncated ? `<div class="conversation-window-note mono">${windowInfo.mode === 'around_target' ? 'Showing a focused window around the selected search match.' : 'Showing the first conversation window.'} ${escapeHtml(visibleLabel)}.</div>` : ''}
+    ${windowInfo.truncated ? `<div class="conversation-window-note mono">${escapeHtml(windowInfo.partial_reason || (windowInfo.mode === 'around_target' ? 'Showing a focused window around the selected search match.' : 'Showing the first conversation window.'))} ${escapeHtml(visibleLabel)}.</div>` : ''}
     <div class="message-list">
       ${messages.length ? messages.map((message) => {
         const isTarget = targetId && Number(message.id) === targetId;
@@ -3269,6 +3292,8 @@ function scrollDetailToMessage(messageId) {
 }
 
 async function loadSessionDetail(sessionId, options = {}) {
+  const requestGeneration = state.sessionDetailRequestGeneration + 1;
+  state.sessionDetailRequestGeneration = requestGeneration;
   state.selectedSessionId = sessionId;
   state.selectedSessionDetailTab = options.messageId ? 'transcript' : (state.selectedSessionDetailTab || 'replay');
   renderSessions({ sessions: state.sessions });
@@ -3279,11 +3304,13 @@ async function loadSessionDetail(sessionId, options = {}) {
       fetchSessionDetail(sessionId, options.messageId),
       fetchSessionReplay(sessionId),
     ]);
+    if (requestGeneration !== state.sessionDetailRequestGeneration || state.selectedSessionId !== sessionId) return;
     renderSessionDetail({ ...detailPayload, replay: replayPayload }, options);
     if (options.messageId) {
       requestAnimationFrame(() => scrollDetailToMessage(options.messageId));
     }
   } catch (err) {
+    if (requestGeneration !== state.sessionDetailRequestGeneration || state.selectedSessionId !== sessionId) return;
     console.error(err);
     if (detail) detail.innerHTML = `<div class="empty">Could not load session: ${escapeHtml(err.message)}</div>`;
   }

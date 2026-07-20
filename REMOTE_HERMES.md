@@ -21,8 +21,10 @@ connection selection plus bounded authenticated health/capability discovery.
 Agent Console now selects a binding-aware local or remote transport, preserves
 the established local launch contract, and supports one plain default-profile
 remote run through fixed submission, event, status, and stop operations.
-Sessions, content transfer, complete profile discovery, and Kanban remain later
-capability-gated work. Approval response was audited after 2C and remains
+Bounded read-only remote session list and replay now use the advertised session
+resource endpoints and process-private connection-bound aliases. Session
+continuation, content transfer, complete profile discovery, and Kanban remain
+later capability-gated work. Approval response was audited after 2C and remains
 blocked on an exact upstream request-binding capability and a structured safe
 preview.
 Upstream run IDs remain process-private: graceful shutdown is reconciled, while
@@ -49,7 +51,7 @@ partial rather than claiming the remote run stopped.
 | Agent Console conversation and streaming | `hermes_transport.py` selects a binding-aware transport, preserves the profile-scoped local CLI launch, and implements a default-profile remote Runs adapter | Hermes documents Chat Completions, Responses, run submission, SSE events, approvals, and session chat in the [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) and [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) | API-server bearer key over verified HTTPS; key remains in Mentat's server process | Bind each run to the active endpoint; validate event schemas and terminal state; never retry submission | **Required**; plain default-profile remote runs implemented, sessions and richer inputs pending |
 | Run status, progress, approval, cancellation, and stopping | `server.py` and `agent_run_history.py` normalize remote events/status and keep upstream run identity private | `/v1/runs`, run status, SSE events, approval, and stop are documented and advertised by `/v1/capabilities`; the current approval mutation accepts no request ID/revision/hash | Same API-server bearer boundary | Capability match before action, exact live-run/request binding, one claimed stop attempt, and post-action status read-back | **Required**; status, progress, cancellation, and stopping implemented; approval response audited and blocked, so requests stop safely |
 | Clarification requests and responses | Local Console can retain and display bounded run interaction state | Hermes' [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) describes `clarify.request` for its TUI gateway, but the documented HTTP API does not advertise an equivalent clarification-response operation | No approved API-server bearer capability yet | Require a machine-readable request event, typed bounded response, exact run/request binding, and post-response status verification | **Required**; upstream/compatibility blocker |
-| Session list, replay, continuation, and search | `server.py` reads local Hermes `state.db`; Console resume is profile-bound | Hermes documents session list/messages/chat/fork endpoints and session continuity headers in the API server | API-server bearer key; no database access | Normalize bounded public metadata, bind endpoint/profile/session identity, reject stale or cross-endpoint resume | **Required**; supported in current upstream surface, compatibility probe needed |
+| Session list, replay, continuation, and search | `server.py` preserves local `state.db` reads and routes selected remote history through `remote_hermes.py` | Hermes advertises exact session list/detail/messages endpoints; its list projects compression roots to current tips, while messages for those tips omit ancestor turns. Runs accepts a session ID without a distinct continuation capability, and session-chat streaming has no matching public status/stop operation | API-server bearer key; no remote database access; upstream IDs remain process-private | Normalize bounded user/assistant history, bind opaque aliases to the selected projected identity, label compressed history partial, and reject stale/cross-endpoint aliases or changed message identity | **Required**; bounded read-only list/replay implemented in 2E, continuation blocked pending an exact stoppable capability, remote search pending |
 | Read-only agent/profile discovery | `hermes_profiles.py` runs inside the local Hermes runtime; Kanban also supplies assignee/profile context | `/v1/models` identifies the endpoint's active profile/model, but does not document complete profile inventory; Kanban's `/api/plugins/kanban/profiles` is an unauthenticated loopback plugin HTTP route | The loopback plugin route has no approved remote authentication boundary; remote beta requires a new API-key-authenticated, capability-advertised inventory | Require a capability-advertised bounded profile inventory and reconcile it with the endpoint's active profile | **Required**; upstream blocker for complete inventory |
 | Profile creation | `hermes_profile_creation.py` and fixed Hermes profile operations | No API-key-authenticated profile-creation capability is advertised by the API server | No approved remote boundary | Exact preview, capability match, profile-bound confirmation, and verified refresh would be required | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Profile identity inspection and synchronization | `hermes_profile_identity.py` resolves local profile metadata and the managed `SOUL.md` block through Hermes APIs | No supported API-server identity capability is advertised | Direct remote `SOUL.md` access is prohibited | Existing revision-bound preview, confirmation, atomicity, verification, and rollback contract would still apply | **Graceful degradation**; remote unavailable unless upstream adds support |
@@ -165,8 +167,10 @@ in this order:
    **Milestone 2B foundation implemented**;
 3. remote Console runs, bounded events/status, and cancellation;
    **Milestone 2C implemented for the default profile**;
-4. remote session list, replay, and continuation through supported endpoints;
-   approval responses remain blocked until upstream provides an exact request
+4. remote session list and replay through supported endpoints; **Milestone 2E
+   read-only visibility implemented**. Continuation remains blocked until
+   upstream advertises an exact stoppable capability; approval responses remain
+   blocked until upstream provides an exact request
    binding and structured safe preview; clarification responses remain blocked
    until a typed capability exists;
 5. bounded Context Pack text and supported image inputs;

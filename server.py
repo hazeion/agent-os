@@ -302,6 +302,10 @@ CALENDAR_MAX_PAGES = 5
 OBSIDIAN_NOTES_CACHE = {"key": None, "payload": None}
 SESSION_DETAIL_CACHE: dict[tuple, tuple[dict, int]] = {}
 SESSION_REPLAY_CACHE: dict[tuple, tuple[dict, int]] = {}
+REMOTE_SESSION_ALIAS_LIMIT = 256
+REMOTE_SESSION_ALIAS_LOCK = threading.RLock()
+REMOTE_SESSION_ALIASES: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {}
+REMOTE_SESSION_ALIAS_INDEX: dict[tuple[str, str], str] = {}
 TASK_STATUS_VALUES = {"todo", "in progress", "waiting", "needs attention", "completed"}
 TASK_PRIORITY_VALUES = {"high", "medium", "low"}
 PROJECT_STATUS_VALUES = {"active", "paused", "archived"}
@@ -1309,7 +1313,7 @@ def agents_payload():
         return {"error": "agents.json must contain a list"}
 
     now = datetime.now().astimezone()
-    session_payload = recent_sessions(limit=AGENT_DERIVED_SESSIONS_LIMIT)
+    session_payload = sessions_payload(local_limit=AGENT_DERIVED_SESSIONS_LIMIT)
     session_agents = synthesize_live_session_agents(session_payload, now=now)
     merged = merge_agents_with_session_observations([agent for agent in agents if isinstance(agent, dict)], session_agents)
 
@@ -2505,6 +2509,358 @@ def recent_sessions(limit: int = 8):
         return {"exists": True, "source": str(STATE_DB), "error": str(exc), "sessions": []}
 
 
+def _remote_session_error(error: HermesTransportError) -> tuple[dict, int]:
+    if error.code in {"remote_session_alias_invalid", "remote_session_not_found"}:
+        status = 404
+    elif error.code in {"remote_session_capability_unavailable", "transport_unavailable"}:
+        status = 503
+    else:
+        status = 502
+    return {"error": error.public_message, "error_code": error.code}, status
+
+
+def _remote_session_alias(
+    binding_id: str,
+    upstream_id: str,
+    *,
+    history_partial: bool = False,
+    structural_ids: tuple[str, ...] = (),
+    replace_structural_ids: bool = False,
+) -> str:
+    key = (binding_id, upstream_id)
+    bounded_ids = tuple(dict.fromkeys((upstream_id, *structural_ids)))
+    if len(bounded_ids) > 40:
+        raise HermesTransportError("remote_session_schema_invalid")
+    with REMOTE_SESSION_ALIAS_LOCK:
+        existing = REMOTE_SESSION_ALIAS_INDEX.get(key)
+        if existing:
+            current = REMOTE_SESSION_ALIASES.get(existing)
+            if current is not None:
+                REMOTE_SESSION_ALIASES[existing] = (
+                    binding_id,
+                    upstream_id,
+                    bool(history_partial) if replace_structural_ids else bool(current[2] or history_partial),
+                    bounded_ids if replace_structural_ids else current[3],
+                )
+            return existing
+        while len(REMOTE_SESSION_ALIASES) >= REMOTE_SESSION_ALIAS_LIMIT:
+            stale_alias = next(iter(REMOTE_SESSION_ALIASES))
+            stale_binding = REMOTE_SESSION_ALIASES.pop(stale_alias)
+            stale_key = stale_binding[:2]
+            REMOTE_SESSION_ALIAS_INDEX.pop(stale_key, None)
+        alias = f"remote_session_{uuid4().hex}"
+        REMOTE_SESSION_ALIASES[alias] = (
+            binding_id,
+            upstream_id,
+            bool(history_partial),
+            bounded_ids,
+        )
+        REMOTE_SESSION_ALIAS_INDEX[key] = alias
+        return alias
+
+
+def _remote_session_id_for_alias(
+    binding_id: str,
+    alias: str,
+) -> tuple[str, bool, tuple[str, ...]]:
+    if not re.fullmatch(r"remote_session_[0-9a-f]{32}", alias or ""):
+        raise HermesTransportError("remote_session_alias_invalid")
+    with REMOTE_SESSION_ALIAS_LOCK:
+        binding = REMOTE_SESSION_ALIASES.get(alias)
+    if binding is None or binding[0] != binding_id:
+        raise HermesTransportError("remote_session_alias_invalid")
+    return binding[1], binding[2], binding[3]
+
+
+def _public_remote_session(
+    binding_id: str,
+    session: dict,
+    *,
+    known_identity_ids: tuple[str, ...] = (),
+    replace_structural_ids: bool = False,
+) -> dict:
+    upstream_id = session.get("upstream_id")
+    if not isinstance(upstream_id, str):
+        raise HermesTransportError("remote_session_unavailable")
+    history_partial = bool(
+        session.get("lineage_root_id")
+        and session.get("lineage_root_id") != upstream_id
+    )
+    alias = _remote_session_alias(
+        binding_id,
+        upstream_id,
+        history_partial=history_partial,
+        structural_ids=tuple(
+            item
+            for item in (
+                *known_identity_ids,
+                session.get("lineage_root_id"),
+                session.get("parent_session_id"),
+            )
+            if isinstance(item, str)
+        ),
+        replace_structural_ids=replace_structural_ids,
+    )
+    with REMOTE_SESSION_ALIAS_LOCK:
+        alias_binding = REMOTE_SESSION_ALIASES.get(alias)
+    history_partial = bool(alias_binding and alias_binding[2])
+    return {
+        "id": alias,
+        "title": session.get("title") or "Untitled session",
+        "source": "Remote Hermes",
+        "model": session.get("model"),
+        "started_at": epoch_to_iso(session.get("started_at")),
+        "ended_at": epoch_to_iso(session.get("ended_at")),
+        "last_active": epoch_to_iso(session.get("last_active")),
+        "message_count": session.get("message_count") or 0,
+        "tool_call_count": session.get("tool_call_count") or 0,
+        "input_tokens": session.get("input_tokens") or 0,
+        "output_tokens": session.get("output_tokens") or 0,
+        "estimated_cost_usd": session.get("estimated_cost_usd"),
+        "status": session.get("status") or "unknown",
+        "preview": session.get("preview") or "",
+        "history_partial": history_partial,
+    }
+
+
+def sessions_payload(local_limit: int = 12):
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        try:
+            transport = hermes_console_transport()
+        except (HermesTransportError, RemoteHermesError):
+            return {
+                "exists": None,
+                "source": "unavailable",
+                "sessions": [],
+                "error": "Hermes connection settings are unavailable.",
+            }
+        if transport.mode != "remote":
+            return recent_sessions(limit=local_limit)
+        if not isinstance(transport, RemoteHermesConsoleTransport):
+            return {
+                "exists": None,
+                "source": "unavailable",
+                "sessions": [],
+                "error": "Hermes connection settings are unavailable.",
+            }
+        try:
+            transport.revalidate(DATA_DIR)
+            transport.prepare_sessions()
+            result = transport.list_sessions()
+            transport.revalidate(DATA_DIR)
+            internal_sessions = result.get("sessions") or []
+            known_identity_ids = tuple(
+                dict.fromkeys(
+                    item
+                    for session in internal_sessions
+                    for item in (
+                        session.get("upstream_id"),
+                        session.get("lineage_root_id"),
+                        session.get("parent_session_id"),
+                    )
+                    if isinstance(item, str)
+                )
+            )
+            sessions = [
+                _public_remote_session(
+                    transport.binding.binding_id,
+                    item,
+                    known_identity_ids=known_identity_ids,
+                    replace_structural_ids=True,
+                )
+                for item in internal_sessions
+            ]
+            return {
+                "exists": True,
+                "source": "remote",
+                "read_only": True,
+                "truncated": result.get("truncated") is True,
+                "sessions": sessions,
+            }
+        except HermesTransportError as exc:
+            payload, _status = _remote_session_error(exc)
+            return {
+                "exists": None,
+                "source": "remote",
+                "sessions": [],
+                **payload,
+            }
+
+
+def selected_message_search(query: str):
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        try:
+            transport = hermes_console_transport()
+        except (HermesTransportError, RemoteHermesError):
+            return {
+                "query": compact_text(query, max_length=120),
+                "results": [],
+                "error": "Hermes connection settings are unavailable.",
+            }
+        if transport.mode == "remote":
+            return {
+                "query": compact_text(query, max_length=120),
+                "results": [],
+                "error": "Remote session search is not available yet.",
+            }
+        return search_messages(query)
+
+
+def _remote_session_detail(transport: RemoteHermesConsoleTransport, alias: str) -> dict:
+    upstream_id, history_partial, structural_ids = _remote_session_id_for_alias(
+        transport.binding.binding_id,
+        alias,
+    )
+    session = transport.get_session(upstream_id)
+    current_detail_ids = tuple(
+        item
+        for item in (
+            session.get("lineage_root_id"),
+            session.get("parent_session_id"),
+        )
+        if isinstance(item, str)
+    )
+    structural_ids = tuple(
+        dict.fromkeys(
+            (
+                *current_detail_ids,
+                *structural_ids,
+            )
+        )
+    )
+    if len(structural_ids) > 40:
+        raise HermesTransportError("remote_session_schema_invalid")
+    messages = transport.get_session_messages(
+        upstream_id,
+        structural_ids=structural_ids,
+    )
+    transport.revalidate(DATA_DIR)
+    public_session = _public_remote_session(transport.binding.binding_id, session)
+    if public_session["id"] != alias:
+        raise HermesTransportError("remote_session_alias_invalid")
+    public_session["history_partial"] = history_partial
+    public_messages = [
+        {
+            "id": index,
+            "role": item["role"],
+            "content": item["content"],
+            "tool_name": None,
+            "timestamp": epoch_to_iso(item.get("timestamp")),
+            "token_count": None,
+            "finish_reason": None,
+        }
+        for index, item in enumerate(messages, start=1)
+    ]
+    return {
+        "session": public_session,
+        "message_window": {
+            "mode": "latest_segment" if history_partial else "from_start",
+            "target_message_id": None,
+            "returned": len(public_messages),
+            "total_visible": len(public_messages),
+            "truncated": history_partial,
+            "partial_reason": (
+                "Earlier turns were compacted by Hermes and are not returned by this endpoint."
+                if history_partial
+                else None
+            ),
+        },
+        "messages": public_messages,
+    }
+
+
+def selected_session_detail(session_id: str, target_message_id: str | None = None):
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        try:
+            transport = hermes_console_transport()
+        except (HermesTransportError, RemoteHermesError):
+            return {"error": "Hermes connection settings are unavailable."}, 503
+        if transport.mode != "remote":
+            return session_detail(session_id, target_message_id)
+        if target_message_id and not re.fullmatch(r"\d+", str(target_message_id)):
+            return {"error": "Invalid target message id"}, 400
+        try:
+            if not isinstance(transport, RemoteHermesConsoleTransport):
+                raise HermesTransportError("transport_unavailable")
+            transport.revalidate(DATA_DIR)
+            transport.prepare_sessions()
+            return _remote_session_detail(transport, session_id), 200
+        except HermesTransportError as exc:
+            return _remote_session_error(exc)
+
+
+def _remote_replay(detail: dict) -> dict:
+    session = detail["session"]
+    messages = detail["messages"]
+    user_messages = [item for item in messages if item.get("role") == "user"]
+    assistant_messages = [item for item in messages if item.get("role") == "assistant"]
+    visible_initial = clean_snippet(user_messages[0]["content"], 480) if user_messages else "No visible user request captured."
+    initial = (
+        f"Earlier turns were compacted by Hermes. Latest visible request: {visible_initial}"
+        if detail.get("message_window", {}).get("truncated")
+        else visible_initial
+    )
+    final = clean_snippet(assistant_messages[-1]["content"], 480) if assistant_messages else "No final assistant outcome captured yet."
+    status = "completed" if session.get("ended_at") else "unknown"
+    return {
+        "status": status,
+        "purpose": "review_debugging",
+        "read_only": True,
+        "summary": {
+            "title": session.get("title") or "Untitled session",
+            "source": "Remote Hermes",
+            "model": session.get("model"),
+            "started_at": session.get("started_at"),
+            "ended_at": session.get("ended_at"),
+            "message_count": session.get("message_count") or len(messages),
+            "tool_call_count": session.get("tool_call_count") or 0,
+            "usage": {
+                "input_tokens": session.get("input_tokens") or 0,
+                "output_tokens": session.get("output_tokens") or 0,
+                "total_tokens": (session.get("input_tokens") or 0) + (session.get("output_tokens") or 0),
+                "estimated_cost_usd": session.get("estimated_cost_usd"),
+            },
+            "actions_detected": 0,
+            "blockers_detected": 0,
+        },
+        "user_intent": {
+            "initial": initial,
+            "steering": [clean_snippet(item["content"], 320) for item in user_messages[1:9]],
+        },
+        "actions": [],
+        "action_counts": {},
+        "blockers": [],
+        "outcome": {"status": status, "summary": final},
+        "files": [],
+        "verification": [],
+        "related_tasks": [],
+        "suggestions": ["Review this remote conversation as a read-only trace."],
+    }
+
+
+def selected_session_replay(session_id: str, _target_message_id: str | None = None):
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        try:
+            transport = hermes_console_transport()
+        except (HermesTransportError, RemoteHermesError):
+            return {"error": "Hermes connection settings are unavailable."}, 503
+        if transport.mode != "remote":
+            return session_replay(session_id, _target_message_id)
+        try:
+            if not isinstance(transport, RemoteHermesConsoleTransport):
+                raise HermesTransportError("transport_unavailable")
+            transport.revalidate(DATA_DIR)
+            transport.prepare_sessions()
+            detail = _remote_session_detail(transport, session_id)
+            return {
+                "session_id": session_id,
+                "source": "remote",
+                "replay": _remote_replay(detail),
+            }, 200
+        except HermesTransportError as exc:
+            return _remote_session_error(exc)
+
+
 def session_detail(session_id: str, target_message_id: str | None = None):
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", session_id or ""):
         return {"error": "Invalid session id"}, 400
@@ -2800,7 +3156,7 @@ def overview():
     tasks = read_json_file("tasks.json", [])
     attention = read_json_file("attention.json", [])
     crons = read_cron_jobs()
-    sessions = recent_sessions(limit=5)
+    sessions = sessions_payload(local_limit=5)
     dashboard = read_json_file("dashboard.json", {})
 
     if not isinstance(dashboard, dict):
@@ -3804,7 +4160,7 @@ def unified_search(query: str) -> dict:
 
     tasks = read_json_file("tasks.json", [])
     projects = read_json_file("projects.json", [])
-    session_payload = recent_sessions(limit=50)
+    session_payload = sessions_payload(local_limit=50)
     notes_payload = obsidian_notes()
     cached_calendar = CALENDAR_CACHE.get("payload")
     calendar_items = cached_calendar.get("items", []) if isinstance(cached_calendar, dict) else read_json_file("calendar.json", [])
@@ -6414,7 +6770,7 @@ API_ROUTES = {
     "/api/agent-console/commands": command_manifest_payload,
     "/api/obsidian-notes": obsidian_notes,
     "/api/hermes/crons": cron_jobs_payload,
-    "/api/hermes/sessions": lambda: recent_sessions(limit=12),
+    "/api/hermes/sessions": sessions_payload,
     "/api/hermes/config": hermes_config,
     "/api/hermes/profiles": hermes_profiles_payload,
     "/api/hermes/skills/catalog": hermes_skill_catalog_payload,
@@ -6427,8 +6783,8 @@ API_ROUTES = {
 GET_ROUTES = {
     re.compile(r"^/api/agent-console/runs/([^/]+)$"): agent_console_run_payload,
     re.compile(r"^/api/hermes/profiles/([^/]+)/identity$"): hermes_profile_identity_payload,
-    re.compile(r"^/api/hermes/sessions/([^/]+)/replay$"): session_replay,
-    re.compile(r"^/api/hermes/sessions/([^/]+)$"): session_detail,
+    re.compile(r"^/api/hermes/sessions/([^/]+)/replay$"): selected_session_replay,
+    re.compile(r"^/api/hermes/sessions/([^/]+)$"): selected_session_detail,
 }
 
 
@@ -6665,7 +7021,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/hermes/search":
             try:
                 query = parse_qs(parsed.query).get("q", [""])[0]
-                self.send_json(search_messages(query))
+                self.send_json(selected_message_search(query))
             except Exception as exc:
                 self.log_internal_error("Hermes search", exc)
                 self.send_json({"error": "Hermes search is unavailable."}, status=500)
