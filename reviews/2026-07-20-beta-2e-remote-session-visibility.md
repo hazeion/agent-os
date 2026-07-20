@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Session Visibility
 
-Status: Local verification and independent review complete; publication and hosted matrix pending
+Status: Successful; ready PR and hosted implementation matrix complete
 Slice: `beta-2e-remote-session-visibility`
 Date: `2026-07-20`
 
@@ -53,7 +53,7 @@ session behavior.
 | AC-4 | Messages are limited to bounded user/assistant text; non-conversation roles are omitted, while malformed conversation content, reasoning, and tool arguments never cross the public boundary. | Schema/bounds tests | Complete |
 | AC-5 | Local session behavior and remote 2C run/cancel/safe-stop behavior remain unchanged. | Compatibility/full suite | Complete |
 | AC-6 | Remote continuation remains unavailable before submission and no session mutation route is added. | Negative route/UI tests | Complete |
-| AC-7 | Static/focused/full checks, two reviewers, docs, and hosted supported matrix pass. | Verification record | Pending |
+| AC-7 | Static/focused/full checks, two reviewers, docs, and hosted supported matrix pass. | Verification record | Complete |
 
 ## Upstream evidence
 
@@ -115,6 +115,12 @@ session behavior.
 - `python3 -m compileall -q .` plus `node --check` for `public/core.js`,
   `public/app.js`, and `scripts/browser_smoke.mjs`: pass.
 - `git diff --check`: pass.
+
+## Hosted verification
+
+- Ready PR `#33` published at implementation commit `a5885c8`.
+- GitHub Actions run `29717574858`: all 42 supported-platform jobs passed
+  (macOS and Ubuntu on Python 3.11-3.13, plus all 36 Windows shards).
 
 ## Independent review and publication
 
