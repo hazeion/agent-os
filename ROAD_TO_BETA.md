@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
-Status: Milestone 1 complete — 1A through 1F complete
-Last updated: 2026-07-18
+Status: Milestone 2 in progress — 2A connection foundation complete
+Last updated: 2026-07-19
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
@@ -83,8 +83,9 @@ The largest beta gaps are operational rather than feature gaps:
   source, or unified `mentat` command;
 - the early GitHub Actions matrix is in place, while later packaging, browser,
   dependency, and release gates remain outstanding;
-- the runtime currently assumes Hermes is installed locally and has no remote
-  connection, capability-discovery, or server-side credential boundary;
+- the active runtime still routes Hermes work locally; Milestone 2A now
+  provides owner-only remote selection and bounded capability discovery, while
+  the transport adapter and feature parity remain outstanding;
 - complete remote profile discovery and API-key-authenticated Kanban require a
   supported upstream Hermes capability;
 - backup, restore, upgrade, and rollback are not yet a complete user workflow;
@@ -148,7 +149,7 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | Not started | 1 | Mandatory remote capabilities verified over HTTPS |
+| 2 | Secure remote Hermes parity | In progress — 2A connection foundation complete | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
@@ -267,14 +268,18 @@ weakening either product's capability, credential, or verification boundaries.
 Work in order:
 
 1. Store one active connection selection and its API credential in the
-   owner-only operator-data boundary created by Milestone 1.
+   owner-only operator-data boundary created by Milestone 1. **Milestone 2A
+   foundation complete.**
 2. Add a bounded server-side HTTPS client that rejects credentials in URLs,
    cross-origin redirects, invalid certificates, unbounded responses, and
-   unsupported capability schemas.
+   unsupported capability schemas. **Milestone 2A foundation complete for the
+   fixed discovery paths.**
 3. Treat public health only as untrusted liveness; discover trusted readiness,
    version, active-profile, authentication, and feature capabilities through
    authenticated responses without returning the API key or upstream response
-   details to the browser.
+   details to the browser. **Milestone 2A implements readiness, version, model,
+   authentication, and feature discovery; complete active-profile inventory
+   remains blocked on the capability in item 7.**
 4. Introduce a transport-neutral adapter boundary while preserving the existing
    local Hermes behavior.
 5. Route Console conversations, sessions, runs, structured events, approvals,
@@ -539,14 +544,14 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Begin Milestone 2 by using the completed owner-only private boundary for the
-   future remote Hermes endpoint and API credential without adding either
-   secret to ordinary backup, browser payloads, logs, or diagnostics.
-2. Define and test the bounded server-side HTTPS connection/capability boundary
-   before routing any Hermes behavior through it.
-3. Track the mandatory upstream Hermes capabilities for authenticated Kanban,
-   complete read-only profile discovery, and clarification handling without
-   implementing an unsafe substitute.
+1. Continue Milestone 2 with a transport-neutral adapter that preserves the
+   established local Hermes behavior and binds later remote work to the new
+   opaque connection identity.
+2. Route Console and session behavior only through capability-advertised,
+   authenticated APIs after that adapter boundary is verified.
+3. Continue tracking the mandatory upstream Hermes capabilities for
+   authenticated Kanban, complete read-only profile discovery, and
+   clarification handling without implementing an unsafe substitute.
 4. After the data-root and remote-parity milestones, design the native
    installer formats, runtime strategy, signing boundary, and `pipx` fallback
    in Milestone 3 rather than choosing tooling prematurely.

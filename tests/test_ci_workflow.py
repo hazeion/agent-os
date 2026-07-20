@@ -549,11 +549,11 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertIn("Implemented by `.github/workflows/ci.yml`", ROADMAP)
         self.assertIn("all nine OS/Python combinations", ROADMAP)
         self.assertIn(
-            "Begin Milestone 2",
+            "Continue Milestone 2",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
-            "bounded server-side HTTPS connection/capability boundary",
+            "transport-neutral adapter",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertNotIn("Land the early CI guardrail", ROADMAP)

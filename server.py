@@ -90,6 +90,14 @@ from hermes_provider_switching import (
 from hermes_profiles import discover_hermes_profiles
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, sanitize_public_text
+from remote_hermes import (
+    RemoteHermesError,
+    confirm_connection as confirm_remote_hermes_connection,
+    preview_connection as preview_remote_hermes_connection,
+    public_connection_payload,
+    public_error as public_remote_hermes_error,
+    test_selected_connection as test_remote_hermes_connection,
+)
 from task_planning import TASK_PLANNING_FIELDS, validate_task_planning
 from runtime_config import (
     AppConfig,
@@ -5483,6 +5491,50 @@ def handle_post_route(path: str, payload=None):
     return {"error": "Not found"}, 404
 
 
+def hermes_connection_payload():
+    """Return only the browser-safe active connection summary."""
+
+    return public_connection_payload(DATA_DIR)
+
+
+def _remote_connection_intent(payload, *, confirmation: bool) -> tuple[dict, str | None]:
+    if type(payload) is not dict:
+        raise RemoteHermesError("connection_payload_invalid")
+    allowed = {"mode", "label", "endpoint", "api_key"}
+    if confirmation:
+        allowed.add("confirmation_token")
+    if set(payload) - allowed:
+        raise RemoteHermesError("connection_payload_invalid")
+    token = payload.get("confirmation_token") if confirmation else None
+    intent = {key: payload.get(key) for key in ("mode", "label", "endpoint", "api_key")}
+    return intent, token
+
+
+def preview_hermes_connection(payload=None):
+    try:
+        intent, _ = _remote_connection_intent(payload, confirmation=False)
+        return preview_remote_hermes_connection(DATA_DIR, intent).public_summary(), 200
+    except RemoteHermesError as exc:
+        return public_remote_hermes_error(exc)
+
+
+def select_hermes_connection(payload=None):
+    try:
+        intent, token = _remote_connection_intent(payload, confirmation=True)
+        return confirm_remote_hermes_connection(DATA_DIR, intent, token), 200
+    except RemoteHermesError as exc:
+        return public_remote_hermes_error(exc)
+
+
+def test_hermes_connection(payload=None):
+    try:
+        if payload is not None and payload != {}:
+            raise RemoteHermesError("connection_payload_invalid")
+        return test_remote_hermes_connection(DATA_DIR), 200
+    except RemoteHermesError as exc:
+        return public_remote_hermes_error(exc)
+
+
 POST_ROUTES = [
     (re.compile(r"^/api/attention/([^/]+)/resolve$"), resolve_attention_item, False),
     (re.compile(r"^/api/agents/heartbeat$"), upsert_agent_heartbeat, True),
@@ -5523,6 +5575,9 @@ POST_ROUTES = [
     (re.compile(r"^/api/hermes/profiles$"), create_hermes_profile, True),
     (re.compile(r"^/api/hermes/crons/([^/]+)/trigger/preview$"), preview_cron_trigger, True),
     (re.compile(r"^/api/hermes/crons/([^/]+)/trigger$"), trigger_confirmed_cron, True),
+    (re.compile(r"^/api/hermes/connection/preview$"), preview_hermes_connection, True),
+    (re.compile(r"^/api/hermes/connection$"), select_hermes_connection, True),
+    (re.compile(r"^/api/hermes/connection/test$"), test_hermes_connection, True),
 ]
 
 
@@ -5545,6 +5600,7 @@ API_ROUTES = {
     "/api/hermes/profiles": hermes_profiles_payload,
     "/api/hermes/skills/catalog": hermes_skill_catalog_payload,
     "/api/hermes/kanban/capabilities": kanban_capabilities_payload,
+    "/api/hermes/connection": hermes_connection_payload,
     "/api/health": health,
 }
 

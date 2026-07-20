@@ -106,16 +106,24 @@ class BetaContractTests(unittest.TestCase):
         ):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
-        self.assertTrue(next_actions.lstrip().startswith("1. Begin Milestone 2"))
-        self.assertIn("remote Hermes endpoint and API credential", next_actions)
-        self.assertIn("bounded server-side HTTPS connection/capability boundary", next_actions)
+        self.assertTrue(next_actions.lstrip().startswith("1. Continue Milestone 2"))
+        self.assertIn("transport-neutral adapter", next_actions)
+        self.assertIn("capability-advertised", next_actions)
         self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 
     def test_docs_do_not_claim_native_installers_already_exist(self):
-        self.assertIn("Native installers are required for the public beta but are not implemented yet", README)
-        self.assertIn("source-checkout instructions remain the current install path", README)
-        self.assertIn("You need Python 3.11 through 3.13", README)
+        normalized_readme = " ".join(README.replace(">", "").split())
+        self.assertIn("native installers are still on the way", normalized_readme)
+        self.assertIn("## Quick start", README)
+        self.assertIn("[Python 3.11–3.13]", README)
+        for first_run_step in (
+            "git clone https://github.com/hazeion/agent-os.git",
+            "python -m pip install -r requirements.txt",
+            "python scripts/mentat_setup.py",
+            "./run.sh",
+        ):
+            self.assertIn(first_run_step, README)
 
     def test_remote_contract_records_required_parity_and_safe_degradation(self):
         for required in (
@@ -143,6 +151,7 @@ class BetaContractTests(unittest.TestCase):
         })
         for adapter in adapters:
             self.assertIn(f"`{adapter}`", REMOTE_HERMES)
+        self.assertIn("`remote_hermes.py`", REMOTE_HERMES)
 
     def test_remote_security_boundary_is_fail_closed(self):
         normalized_contract = " ".join(REMOTE_HERMES.split())
@@ -166,7 +175,7 @@ class BetaContractTests(unittest.TestCase):
         link = "[REMOTE_HERMES.md](REMOTE_HERMES.md)"
         self.assertIn(link, ROADMAP)
         self.assertIn(link, ARCHITECTURE)
-        self.assertIn(link, README)
+        self.assertIn("(REMOTE_HERMES.md)", README)
 
     def test_roadmap_uses_verified_ready_pull_requests(self):
         self.assertIn("ready pull request", ROADMAP)

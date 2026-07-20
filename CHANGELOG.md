@@ -2,6 +2,29 @@
 
 All notable changes to Mentat.
 
+## 2026-07-19
+
+### Added
+- Added the Milestone 2A remote Hermes foundation: one owner-only local/remote
+  connection record, exact preview and confirmation, binding rotation when
+  connection authority changes, and a fixed-path server-only discovery client.
+- Added bounded public-health, authenticated detailed-health, and capability
+  discovery with verified TLS, no redirects or ambient proxy behavior, strict
+  response limits, schema validation, and secret-free browser summaries.
+- Added loopback-only routes to inspect, preview, select, and test the active
+  connection. Existing Console and Hermes behavior remains local until the
+  transport adapter lands.
+
+### Changed
+- Simplified the README into a quick, friendly first-user setup guide and moved
+  advanced implementation detail to the focused architecture and roadmap docs.
+
+### Safety
+- Keeps the remote endpoint and API key out of tracked files, ordinary backups,
+  logs, diagnostics, and browser responses. Failed probes do not change the
+  active selection; uncertain commits roll back exactly or report a bounded
+  partial failure.
+
 ## 2026-07-18
 
 ### Added

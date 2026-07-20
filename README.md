@@ -4,68 +4,34 @@
 
 # Mentat
 
-Mentat is a local-first dashboard for planning work and getting things done with
-Hermes agents.
+Mentat is a local web dashboard for planning projects, managing tasks, and
+working with [Hermes Agent](https://hermes-agent.nousresearch.com/).
 
-It brings your tasks, named agents, Console conversations, delegated work,
-sessions, notes, and calendar context into one calm workspace. Mentat is useful
-today, but still actively evolving.
+I built Mentat because I wanted one friendly place to organize my projects and
+let an agent help move the work forward. It runs on your computer and opens in
+your browser.
 
-## What can Mentat do?
+> Mentat is actively evolving. It is ready to explore, but native installers
+> are still on the way.
 
-- Plan your day, capture tasks, set reminders, and track recurring or blocked
-  work.
-- Chat with a named Hermes agent and keep its profile, role, model, and sessions
-  together.
-- Attach images, text, code, or safe workspace files to a Console prompt, then
-  view code, previews, and generated artifacts in the conversation.
-- Reuse Context Packs that combine standard instructions, Obsidian notes, and
-  safe workspace files for Console prompts or reviewed delegation context.
-- Delegate durable tasks through Hermes Kanban and review results, questions,
-  retries, and revisions from Mentat.
-- Browse read-only Hermes sessions and cron inventory.
-- Search Obsidian notes, scan a full read-only Google Calendar week, and use the
-  Agent Pulse live heartbeat registry.
-- Choose from compact, soft-light, and popular editor-inspired color themes.
+## What can it do?
 
-## A small, local stack
-
-Mentat uses:
-
-- a Python server;
-- a static HTML, CSS, and vanilla JavaScript frontend;
-- local JSON for project-owned tasks and settings;
-- private SQLite metadata and content-addressed blobs for Console files.
-
-There is currently **no npm install step**.
-
-Hermes profiles are the canonical agent identities. Mentat uses supported,
-validated Hermes operations for agent control and keeps provider/model
-credentials in Hermes. The future remote-connection API key will be
-Mentat-owned, server-only operator configuration stored outside the install.
-
-## Remote Hermes direction
-
-The public-beta contract keeps Mentat installed locally and bound to loopback,
-while allowing one active local or operator-managed remote Hermes endpoint.
-Remote mode is not implemented yet. Its mandatory feature set, HTTPS/API-key
-boundary, safe degradation rules, and upstream Kanban, profile-discovery, and
-clarification blockers are documented in
-[REMOTE_HERMES.md](REMOTE_HERMES.md).
-
-Mentat will not expose its own dashboard to the network, send a Hermes API key
-to the browser, mount a remote Hermes home, or use SSH and undocumented APIs as
-substitutes for supported capabilities.
+- Plan your day and keep projects, tasks, reminders, and recurring work tidy.
+- Chat with named Hermes agents and keep their sessions together.
+- Delegate longer-running work through Hermes Kanban.
+- Attach files and reuse Context Packs in agent conversations.
+- Search connected Obsidian notes and view Google Calendar events read-only.
+- Pick a comfortable light, dark, or editor-inspired theme.
 
 ## Quick start
 
-Native installers are required for the public beta but are not implemented yet.
-Until the packaging and installer milestones are complete, the following
-source-checkout instructions remain the current install path.
+You need:
 
-You need Python 3.11 through 3.13. Install and configure
-[Hermes Agent](https://hermes-agent.nousresearch.com/) if you want agent,
-session, provider, and delegation features.
+- [Python 3.11–3.13](https://www.python.org/downloads/)
+- [Git](https://git-scm.com/downloads)
+- [Hermes Agent](https://hermes-agent.nousresearch.com/) for agent features
+
+Open a terminal and run:
 
 ```bash
 git clone https://github.com/hazeion/agent-os.git
@@ -75,188 +41,60 @@ python scripts/mentat_setup.py
 ./run.sh
 ```
 
-Open [http://localhost:8888](http://localhost:8888).
+Then open [http://localhost:8888](http://localhost:8888). That's it! 🎉
 
-If your system uses `python3`, substitute it for `python` in the commands above.
-On Windows, run `run.bat` instead of `./run.sh`. The setup wizard creates only
-local, gitignored configuration and never writes credentials.
+On Windows, use `run.bat` instead of `./run.sh`. If your computer does not
+recognize `python`, try `python3` (macOS/Linux) or `py` (Windows).
 
-### Start without the setup wizard
+The setup helper stores its settings locally and does not ask for or save your
+provider credentials. Hermes continues to manage those.
 
-For the basic local dashboard:
+## Starting and stopping
 
-```bash
-python "$(pwd)/server.py"
-```
-
-On Windows:
-
-```bat
-python server.py
-```
-
-## Useful commands
+After the first setup, start Mentat from its folder:
 
 ```bash
-./status.sh                         # check the managed server
-./stop.sh                           # stop it
-python server.py --print-config     # show effective configuration
-python server.py --data-dir "/path/to/mentat-data" --preview-legacy-migration
-python server.py --data-dir "/path/to/mentat-data" --confirm-legacy-migration TOKEN_FROM_PREVIEW
-python -m unittest discover -s tests -v
+./run.sh
 ```
 
-Windows users can use `status.bat` and `stop.bat`.
-
-Mentat listens only on loopback addresses such as `localhost` and `127.0.0.1`.
-Use `./run.sh --port 8890` if port 8888 is busy.
-
-## Configuration
-
-The shared defaults live in `mentat.toml`. Run the setup wizard to create
-`mentat.local.toml` and optional local environment files.
-
-Common overrides include:
-
-- `MENTAT_PORT`
-- `MENTAT_HOST` (loopback only)
-- `MENTAT_DATA_DIR`
-- `HERMES_HOME`
-- `OBSIDIAN_VAULT_PATH`
-- `MENTAT_CONFIG`
-
-Command-line values override environment variables, which override local and
-shared configuration files.
-
-The source checkout currently keeps `data_dir = "data"` in the shared config.
-The approved installed-app target, platform defaults, complete mutable-path
-inventory, missing-only seed rules, and migration/backup safety boundary are in
-[DATA_LAYOUT.md](DATA_LAYOUT.md). Milestone 1A documents and tests that contract.
-Milestone 1B resolves the approved platform default for config-less
-installs, preserves the tracked development override, exposes a non-sensitive
-source label in `--print-config`, and supplies bounded preflight plus
-lock-protected, owner-only, missing-only seed initialization. A clean installed
-launch can initialize before ordinary runtime writes, while legacy checkout
-data, conflicts, links, invalid files, and raced destinations fail closed.
-Milestone 1C adds explicit CLI preview and token-confirmation for the nine
-durable JSON slots, using legacy files or explicit packaged-seed fallbacks,
-with a verified migration backup, locked revalidation, missing-only
-publication, safe interruption resume, source
-preservation, and a verified completion receipt. Use the same `--data-dir` and,
-if supplied, `--legacy-data-dir` for preview and confirmation. Milestone 1D
-adds a fixed owner-only sidecar schema manifest, current metadata for clean
-installs, explicit backed-up version-0 to version-1 bootstrap, and startup
-refusal for newer unsupported versions. Existing unversioned roots remain
-supported until explicitly upgraded. If preview reports `recovery_required`,
-confirm that exact token to discard only the revalidated orphan schema
-temporary, then preview again:
+Useful commands:
 
 ```bash
-python server.py --data-dir "/path/to/mentat-data" --preview-schema-migration
-python server.py --data-dir "/path/to/mentat-data" --confirm-schema-migration TOKEN_FROM_PREVIEW
+./status.sh    # Is Mentat running?
+./stop.sh      # Stop Mentat
 ```
 
-Milestone 1E adds durable JSON and private Console backup/restore. Retained
-Console history, a WAL-safe SQLite snapshot filtered to retained run
-references, and exactly the referenced ready blobs are captured with the nine
-schema-governed JSON documents under one shared lock. Runtime uploads, exports,
-input/workspace snapshots, credentials, logs, caches, and nested backups remain
-excluded. Version-1 JSON-only archives remain restorable without changing the
-destination's private Console state.
+Windows users can run `run.bat`, `status.bat`, and `stop.bat` instead. If port
+8888 is busy, start Mentat with `./run.sh --port 8890` and open
+`http://localhost:8890`.
 
-```bash
-python server.py --data-dir "/path/to/mentat-data" --create-backup
-python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v2-ID.zip"
-python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v2-ID.zip"
-```
+## A few good things to know
 
-Existing Console state below legacy `runtime/` paths must be moved explicitly;
-the preview is read-only and confirmation is bound to the exact source. The
-legacy source is preserved after the verified destination and completion
-receipt are published:
+- Mentat stays on your computer and listens only on local addresses.
+- There is no npm install step—the frontend is plain HTML, CSS, and JavaScript.
+- Mentat does not directly edit Hermes' core files.
+- Remote Hermes setup is still being built, so use local Hermes for agent
+  features today.
+- Calendar events, Obsidian note contents, Hermes sessions, and cron jobs are
+  read-only in Mentat.
 
-```bash
-python server.py --data-dir "/path/to/mentat-data" --preview-private-migration
-python server.py --data-dir "/path/to/mentat-data" --confirm-private-migration TOKEN_FROM_PREVIEW
-```
+## Want the technical details?
 
-Unified installed CLI commands and installer behavior remain separate roadmap work.
-`--print-config` and every preview mode remain side-effect-free.
+You do not need these documents to use Mentat, but they are here if you want to
+dig deeper:
 
-## A few important boundaries
-
-Mentat is a local control plane, not a general editor for Hermes internals.
-
-- Personal planning belongs to Mentat tasks.
-- Named agent identity belongs to Hermes profiles.
-- Agent Console is for interactive work; Hermes Kanban is the durable
-  delegation path.
-- Hermes sessions, cron inventory, Google Calendar, and Obsidian note content
-  remain read-only.
-- Mutations use fixed capabilities, validation, preview, confirmation, locking,
-  and read-back verification.
-- Secrets, local storage paths, and blob identifiers are not exposed to the
-  browser.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full capability and safety
-contract.
-
-## Project map
-
-```text
-server.py                    Local HTTP server and workflow orchestration
-data_layout.py               Data-root resolver, preflight, and safe initializer
-data_migration.py            Previewed, backed-up legacy JSON migration
-data_schema.py               Durable JSON schema manifest and migration
-public/                      Static dashboard UI
-data/                        Public-safe project-owned seed data
-<data-root>/private/         Durable, owner-only Console state
-<data-root>/runtime/         Ephemeral private execution and lifecycle state
-DATA_LAYOUT.md               Approved target data-root and migration contract
-hermes_*.py                  Capability-scoped Hermes adapters
-agent_console_*.py           Console files, artifacts, and run support
-task_planning.py             Planning validation and recurrence
-scripts/mentat_setup.py      Local setup wizard
-mentat.toml                  Shared configuration defaults
-ARCHITECTURE.md              Capability and mutation contract
-REMOTE_HERMES.md             Remote capability matrix and trust boundary
-ROAD_TO_BETA.md              Ordered public-beta milestones and exit evidence
-tests/                       Unit and contract tests
-```
+- [Architecture and safety boundaries](ARCHITECTURE.md)
+- [Data storage, migration, and backups](DATA_LAYOUT.md)
+- [Public beta roadmap](ROAD_TO_BETA.md)
+- [Remote Hermes plans](REMOTE_HERMES.md)
+- [Recent changes](CHANGELOG.md)
 
 ## Contributing
 
-Keep changes small, local-first, and easy to understand. Please avoid direct
-writes to Hermes core files and keep tracked fixtures free of personal data,
-paths, credentials, and real message history.
+Contributions are welcome. Keep changes small, local-first, and easy to
+understand. The [contributor guide](AGENTS.md) explains the project boundaries
+and verification steps.
 
-Before handing off a change, run:
-
-```bash
-python -m py_compile server.py
-python -m unittest discover -s tests -v
-```
-
-Developer guidance lives in [AGENTS.md](AGENTS.md). Recent changes are in
-[CHANGELOG.md](CHANGELOG.md). Mentat is licensed under the [MIT License](LICENSE).
-
-## Project status
-
-Mentat is under active development. The current goal is a practical local tool
-that stays friendly to new contributors while its workflows mature. If you find
-something rough, an issue or a focused pull request is welcome.
-
-The ordered release plan, milestone dependencies, and public-beta acceptance
-criteria live in [ROAD_TO_BETA.md](ROAD_TO_BETA.md). The beta contract is
-approved: macOS and Windows are tier one, Linux is preview, Python 3.11 through
-3.13 is supported, and signed native installers plus a supported `pipx` path
-are required release channels. Those artifacts do not exist yet. The early CI
-guardrail, Milestone 1A data-layout contract, Milestone 1B resolver/preflight/
-initializer, and Milestone 1C legacy durable-JSON migration are complete.
-Durable JSON schema evolution and its bounded backup/restore foundation are
-complete. Durable private Console migration and its consistent retained
-history/SQLite/referenced-blob backup unit are also complete. Upgrade and
-application-only uninstall/reinstall preservation coverage now proves that
-changed packaged defaults do not overwrite the external data root. Milestone 1
-is complete; secure remote-Hermes parity is next, while installer mechanics
-remain in Milestone 3.
+Mentat is made by a single developer, is licensed under the
+[MIT License](LICENSE), and is still finding its feet. If you find a rough edge,
+feel free to open an issue or a focused pull request.

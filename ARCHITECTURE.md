@@ -56,6 +56,13 @@ trees whose seeds differ, requires a verified pre-upgrade backup, removes only
 the application tree, and reconnects a reinstall to the unchanged durable JSON
 and retained private Console consistency unit. Installer mechanics remain a
 separate Milestone 3 boundary.
+Milestone 2A adds one versioned owner-only remote-connection record below
+`<data-root>/private/`, exact state-bound preview/confirmation, binding rotation
+when authority changes, and a fixed-path server-only health/capability client.
+The stored credential and endpoint remain excluded from ordinary backup and
+are never returned from stored state or upstream responses; only the
+operator-supplied setup request, a public label, opaque binding, and minimized
+trusted discovery state may cross the browser boundary.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other
@@ -114,8 +121,9 @@ profile/session binding without launching a local Hermes process.
 The approved public-beta direction is local Mentat connected to one active
 local or remote Hermes endpoint. The detailed capability matrix, upstream
 blockers, implementation order, and exit evidence live in
-[REMOTE_HERMES.md](REMOTE_HERMES.md). The current runtime has not implemented
-this transport and must not advertise remote readiness yet.
+[REMOTE_HERMES.md](REMOTE_HERMES.md). The connection/storage/discovery
+foundation is implemented, but the runtime does not route Hermes behavior
+through it and must not advertise remote parity or remote Console readiness yet.
 
 The remote boundary has these architectural invariants:
 

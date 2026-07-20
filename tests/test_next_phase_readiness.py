@@ -20,9 +20,8 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn("activeView === 'projects'", refresh_block)
 
     def test_readme_documents_no_premature_frontend_build_step(self):
-        self.assertIn("static HTML, CSS, and vanilla JavaScript", README)
-        self.assertIn("There is currently **no npm install step**", README)
-        self.assertIn("Agent Pulse live heartbeat registry", README)
+        self.assertIn("There is no npm install step", README)
+        self.assertIn("plain HTML, CSS, and JavaScript", README)
 
     def test_dashboard_identity_is_project_owned_not_hardcoded(self):
         self.assertIn('read_json_file("dashboard.json", {})', SERVER)
