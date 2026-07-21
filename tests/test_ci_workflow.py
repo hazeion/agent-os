@@ -557,11 +557,11 @@ class CiWorkflowContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, lowered)
 
-    def test_project_records_describe_only_the_early_guardrail(self):
+    def test_project_records_distinguish_early_guardrail_from_later_gates(self):
         self.assertIn("Implemented by `.github/workflows/ci.yml`", ROADMAP)
         self.assertIn("all nine OS/Python combinations", ROADMAP)
         self.assertIn(
-            "Keep the six remote contracts capability-gated",
+            "Run the mandatory remote contract matrix",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
@@ -569,10 +569,15 @@ class CiWorkflowContractTests(unittest.TestCase):
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
-            "Milestone 3",
+            "signed numbered-RC workflow",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertNotIn("Land the early CI guardrail", ROADMAP)
+        self.assertNotIn("branch-protection configuration remain in Milestone 4", ROADMAP)
+        self.assertIn(
+            "later Milestone 4 workflows now implement those gates",
+            " ".join(ROADMAP.split()),
+        )
         self.assertIn("Added the early GitHub Actions guardrail", CHANGELOG)
         self.assertIn("does not yet add packaging", CHANGELOG)
 

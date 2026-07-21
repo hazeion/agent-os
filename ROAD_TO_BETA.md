@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
-Status: Milestone 2 complete against the verified `mentat-beta-contracts` Hermes runtime
-Last updated: 2026-07-20
+Status: Repository implementation complete through Milestone 8; public beta remains externally gated
+Last updated: 2026-07-21
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
@@ -73,22 +73,26 @@ Mentat already has a strong product and safety foundation:
 - pinned runtime dependencies and a substantial unit/contract test suite;
 - public-safe tracked fixtures and gitignored private runtime artifacts.
 
-The largest beta gaps are operational rather than feature gaps:
+Repository implementation now covers the beta product and its release path:
 
-- clean installed layouts initialize the platform root from immutable seeds;
-  legacy durable JSON and private Console state migrate explicitly; schema,
-  backup/restore, application-upgrade, and application-only uninstall
-  preservation boundaries are implemented and tested;
-- there is no installable Python package, native installer, product version
-  source, or unified `mentat` command;
-- the early GitHub Actions matrix is in place, while later packaging, browser,
-  dependency, and release gates remain outstanding;
-- the verified remote runtime supports its active profile, bounded session
-  history and continuation, request-bound interactions, bounded image input,
-  and authenticated revisioned Kanban; other runtimes stay capability-gated;
-- backup, restore, upgrade, and rollback are not yet a complete user workflow;
-- public trust and support documents are incomplete;
-- the release and external-tester process has not been rehearsed.
+- durable operator data, migration, schema, backup/restore, upgrade, and
+  uninstall-preservation boundaries are implemented and tested;
+- the versioned package, unified `mentat` CLI, native installer definitions,
+  and source compatibility wrappers are implemented;
+- CI covers the supported OS/Python matrix, package and native artifact smoke,
+  browser smoke, dependencies, secrets, and protected signed release assembly;
+- the maintained Hermes runtime supplies the mandatory remote contracts on the
+  live loopback fixture, and the client enforces the tested HTTPS boundary;
+  a real remote HTTPS deployment still needs interoperability evidence;
+- public trust, privacy, security, support, diagnostics, tester, recovery, and
+  release instructions are in place; and
+- protected tooling can create an immutable signed RC and promote its exact
+  attested bytes after the remaining real-world gates pass.
+
+The remaining gaps are external execution evidence: a real remote HTTPS Hermes
+matrix, protected signing and release configuration, a real signed RC, another
+person's clean-platform and recovery rehearsal, the limited external cohort,
+and final publication.
 
 ## How roadmap work is organized
 
@@ -135,11 +139,10 @@ pull requests and pushes to `main`. It covers all nine OS/Python combinations:
 macOS, Windows, and Ubuntu with Python 3.11, 3.12, and 3.13. The guardrail is
 complete only when its GitHub-hosted matrix is green.
 
-Packaging, release artifacts, dependency scanning, browser release gates, and
-branch-protection configuration remain in Milestone 4 after the installable
-product work in Milestone 3. Keeping those later gates separate lets this early
-guardrail catch cross-platform path regressions while the Milestone 1 data-root
-work is still small.
+This early workflow originally excluded packaging, release artifacts,
+dependency scanning, and browser release gates. The later Milestone 4 workflows
+now implement those gates. Protected signing/release configuration and exact
+signed-RC evidence remain external Milestone 6 work.
 
 ## Milestone map
 
@@ -147,13 +150,13 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | Complete for the verified maintained fork; upstream releases need fresh compatibility evidence | 1 | Mandatory remote capabilities verified over HTTPS |
-| 3 | Installable product, native installers, and CLI | In progress | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
-| 4 | Automated quality gate | In progress | 3 | Required CI green on the supported matrix |
+| 2 | Secure remote Hermes parity | Repository/client complete for the maintained fork; live remote HTTPS interoperability pending | 1 | Mandatory contracts live-verified on loopback; HTTPS enforcement tested; live HTTPS endpoint pending |
+| 3 | Installable product, native installers, and CLI | Repository tooling complete; signed clean-machine evidence remains in 6 | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
+| 4 | Automated quality gate | Repository and hosted PR gates complete; protected signed evidence remains in 6 | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Complete | 0, 3, 4 | Public policies, diagnostics, and issue path |
-| 6 | Release-candidate rehearsal | In progress — repository tooling; signed rehearsal externally gated | 1–5 | Reproducible tagged RC with rollback drill |
-| 7 | Limited external beta | Not started | 6 | Tester acceptance window completed |
-| 8 | Public beta release | Not started | 7 | Published beta artifacts and release notes |
+| 6 | Release-candidate rehearsal | Repository tooling complete; signed rehearsal externally gated | 1–5 | Reproducible tagged RC with rollback drill |
+| 7 | Limited external beta | Repository kit complete; external cohort not started | 6 | Tester acceptance window completed |
+| 8 | Public beta release | Repository promotion complete; publication blocked by 6 and 7 | 7 | Published beta artifacts and release notes |
 
 ## Milestone 0 — Lock the beta contract
 
@@ -557,22 +560,22 @@ Exit criteria:
 
 The release cannot be called public beta until all of the following are true:
 
-- [ ] The beta contract and license are approved.
-- [ ] User data lives outside the application/install directory by default.
-- [ ] Legacy data migration is previewed, backed up, and tested.
-- [ ] Backup, restore, upgrade, rollback, and uninstall preservation work.
-- [ ] A versioned package and unified CLI install cleanly through the supported
+- [x] The beta contract and license are approved.
+- [x] User data lives outside the application/install directory by default.
+- [x] Legacy data migration is previewed, backed up, and tested.
+- [x] Backup, restore, upgrade, rollback, and uninstall preservation work.
+- [x] A versioned package and unified CLI install cleanly through the supported
   `pipx` channel.
 - [ ] A signed and notarized native installer for macOS and a signed native
   installer for Windows pass clean-install, upgrade, rollback, and uninstall-
   preservation checks.
-- [ ] Required CI is green on the supported platform/Python matrix.
+- [x] Required CI is green on the supported platform/Python matrix.
 - [ ] One remote Hermes endpoint can provide every mandatory capability over
   verified HTTPS without exposing its API credential.
-- [ ] Remote Kanban and read-only profile discovery use supported,
+- [x] Remote Kanban and read-only profile discovery use supported,
   capability-advertised authentication surfaces.
-- [ ] Missing Hermes, Google Calendar, or Obsidian degrades safely and clearly.
-- [ ] Security, privacy, contributing, support, and known-limitations documents
+- [x] Missing Hermes, Google Calendar, or Obsidian degrades safely and clearly.
+- [x] Security, privacy, contributing, support, and known-limitations documents
   are public.
 - [ ] Release artifacts, checksums, notes, and rollback instructions are
   reproducible.
@@ -593,11 +596,18 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Keep the six remote contracts capability-gated. This Milestone 2 exit is
-   verified against the maintained `mentat-beta-contracts` Hermes runtime;
-   support for an upstream release needs fresh compatibility evidence.
-2. After the data-root and remote-parity milestones, design the native
-   installer formats, runtime strategy, signing boundary, and `pipx` fallback
-   in Milestone 3 rather than choosing tooling prematurely.
-3. Do not begin a dependent slice while an earlier data-safety or release
-   blocker remains open.
+1. Run the mandatory remote contract matrix against one real operator-managed
+   Hermes HTTPS endpoint with API-key authentication and certificate
+   verification.
+2. Configure the protected `beta-release` environment, signing credentials,
+   release immutability, and final-tag update/deletion protection; then run the
+   signed numbered-RC workflow.
+3. Have another person complete the exact clean Intel Mac, Apple Silicon with
+   Rosetta, Windows, `pipx`, upgrade, backup/restore, rollback, and
+   uninstall-preservation rehearsal against that immutable RC.
+4. Run the privacy-safe limited cohort to its documented exit criteria, close
+   the public redacted exit summary, then dispatch the protected exact-byte
+   promotion and open the support window.
+5. Keep non-verified Hermes releases capability-gated; support beyond the
+   maintained `mentat-beta-contracts` runtime needs fresh compatibility
+   evidence.
