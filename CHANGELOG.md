@@ -2,6 +2,13 @@
 
 All notable changes to Mentat.
 
+## 2026-07-21
+
+### Added
+- Added a concise limited-beta tester checklist, privacy-safe structured
+  feedback form, and maintainer cohort runbook without claiming external
+  results or storing participant data in Git.
+
 ## 2026-07-20
 
 ### Added

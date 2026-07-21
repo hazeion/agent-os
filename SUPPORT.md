@@ -15,6 +15,10 @@ There is no final public-beta release yet. Signed release candidates are
 prereleases used for the rehearsal; the README source setup remains available
 for the current development build.
 
+Invited testers can use the short [limited beta checklist](BETA_TESTING.md)
+once the signed release rehearsal is complete. Active cohort problems and safe
+workarounds appear in [known beta issues](KNOWN_ISSUES.md).
+
 ## Known limitations
 
 - Mentat is not a hosted service and does not support remote browser access or
