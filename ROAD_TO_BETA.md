@@ -501,11 +501,20 @@ Work in order:
 5. Ship small release candidates through the same gated process.
 6. Keep a visible known-issues list and close the loop with testers.
 
+Repository preparation status: the tester checklist, privacy-safe feedback
+form, and maintainer cohort runbook are implemented. The cohort has not started;
+Milestone 6's protected signed rehearsal and second-person platform evidence
+remain the entry gate.
+
 Exit criteria:
 
 - at least 10 external testers have used Mentat for roughly two weeks;
 - supported-platform installation succeeds without maintainer intervention for
-  the large majority of testers;
+  at least 80% of testers who begin an install; product-caused blocks,
+  post-start install dropouts, and help-assisted installs remain in the
+  denominator and are not successes; Intel Mac native, Apple Silicon with
+  Rosetta native, Windows native, and supported `pipx` each have at least one
+  no-help success, while first-workflow outcomes are measured separately;
 - backup and recovery have been exercised outside the maintainer environment;
 - the mandatory remote capability set has been exercised outside the
   maintainer environment;
