@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sys
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -1249,6 +1250,9 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertLess(time.perf_counter() - started, 1.0)
 
     def test_public_text_validation_is_bounded_for_maximum_slash_free_text(self):
+        # Hosted macOS Intel runners are consistently slower on these maximum-
+        # size delimiter scans; retain a tight, platform-aware bounded budget.
+        validation_budget = 2.0 if sys.platform == "darwin" else 1.0
         safe_then_sensitive = (
             ("x" * 140)
             + " Secret sauce=ok\n"
@@ -1264,12 +1268,12 @@ class RemoteSessionTests(unittest.TestCase):
             with self.subTest(prefix=value[:8]):
                 started = time.perf_counter()
                 self.assertFalse(remote_hermes._contains_private_public_text(value))
-                self.assertLess(time.perf_counter() - started, 1.0)
+                self.assertLess(time.perf_counter() - started, validation_budget)
 
         delimiter_dense = ":" * remote_hermes.SESSION_CONTENT_LIMIT
         started = time.perf_counter()
         self.assertFalse(remote_hermes._contains_private_public_text(delimiter_dense))
-        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertLess(time.perf_counter() - started, validation_budget)
 
         for delimiter_value in (
             ("a:" * (remote_hermes.SESSION_CONTENT_LIMIT // 2)),
@@ -1279,7 +1283,7 @@ class RemoteSessionTests(unittest.TestCase):
         ):
             started = time.perf_counter()
             self.assertFalse(remote_hermes._contains_private_public_text(delimiter_value))
-            self.assertLess(time.perf_counter() - started, 1.0)
+            self.assertLess(time.perf_counter() - started, validation_budget)
 
         normalization_expansion = "\ufdfa" * remote_hermes.SESSION_CONTENT_LIMIT
         started = time.perf_counter()
@@ -1292,7 +1296,7 @@ class RemoteSessionTests(unittest.TestCase):
         varied_stem_dense = " ".join(f"api:{index:05d}" for index in range(10_000))
         started = time.perf_counter()
         self.assertFalse(remote_hermes._contains_private_public_text(varied_stem_dense))
-        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertLess(time.perf_counter() - started, validation_budget)
 
         varied_alpha_stems = " ".join(
             f"api:{chr(97 + (index // 26) % 26)}{chr(97 + index % 26)}"
@@ -1300,7 +1304,7 @@ class RemoteSessionTests(unittest.TestCase):
         )
         started = time.perf_counter()
         self.assertFalse(remote_hermes._contains_private_public_text(varied_alpha_stems))
-        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertLess(time.perf_counter() - started, validation_budget)
 
         punctuation = ("!", "?", ";", ", ")
         varied_punctuation_stems = "".join(
@@ -1312,7 +1316,7 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertFalse(remote_hermes._contains_private_public_text(
             varied_punctuation_stems
         ))
-        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertLess(time.perf_counter() - started, validation_budget)
 
         varied_api_words = "".join(
             f"api{chr(97 + (index // 26) % 26)}{chr(97 + index % 26)}:ok;"
@@ -1320,12 +1324,12 @@ class RemoteSessionTests(unittest.TestCase):
         )
         started = time.perf_counter()
         self.assertFalse(remote_hermes._contains_private_public_text(varied_api_words))
-        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertLess(time.perf_counter() - started, validation_budget)
 
         dotted_host_like = ("segment." * 12_499) + "com:443"
         started = time.perf_counter()
         self.assertTrue(remote_hermes._contains_private_public_text(dotted_host_like))
-        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertLess(time.perf_counter() - started, validation_budget)
 
         benign_config = "\n".join(f"option_{index}=enabled" for index in range(600))
         self.assertFalse(remote_hermes._contains_private_public_text(benign_config))
