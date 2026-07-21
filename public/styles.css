@@ -1168,6 +1168,9 @@ h1, h2, h3, p { margin: 0; }
   letter-spacing: .04em;
   padding: 6px 10px;
   text-transform: uppercase;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 .mini-button:hover { border-color: rgba(157,124,255,.55); }
 .task-filter-strip {

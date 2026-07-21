@@ -11,8 +11,9 @@ I built Mentat because I wanted one friendly place to organize my projects and
 let an agent help move the work forward. It runs on your computer and opens in
 your browser.
 
-> Mentat is actively evolving. It is ready to explore, but native installers
-> are still on the way.
+> Mentat is actively evolving. The current development build is ready to
+> explore; native installers are still on the way and will be signed for the
+> public beta.
 
 ## What can it do?
 
@@ -30,6 +31,10 @@ You need:
 - [Python 3.11–3.13](https://www.python.org/downloads/)
 - [Git](https://git-scm.com/downloads)
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) for agent features
+
+Before installing, take a quick look at [supported platforms and known
+limitations](SUPPORT.md). macOS and Windows are the tier-one beta platforms;
+Linux is a preview.
 
 Open a terminal and run:
 
@@ -86,6 +91,8 @@ dig deeper:
 
 - [Architecture and safety boundaries](ARCHITECTURE.md)
 - [Data storage, migration, and backups](DATA_LAYOUT.md)
+- [Privacy](PRIVACY.md) and [security reporting](SECURITY.md)
+- [Beta support and known limitations](SUPPORT.md)
 - [Public beta roadmap](ROAD_TO_BETA.md)
 - [Remote Hermes plans](REMOTE_HERMES.md)
 - [Recent changes](CHANGELOG.md)
@@ -93,8 +100,8 @@ dig deeper:
 ## Contributing
 
 Contributions are welcome. Keep changes small, local-first, and easy to
-understand. The [contributor guide](AGENTS.md) explains the project boundaries
-and verification steps.
+understand. The [contributor guide](CONTRIBUTING.md) gets you started, and the
+[repository guide](AGENTS.md) explains the deeper project boundaries.
 
 Mentat is made by a single developer, is licensed under the
 [MIT License](LICENSE), and is still finding its feet. If you find a rough edge,

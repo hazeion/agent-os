@@ -5,6 +5,11 @@ All notable changes to Mentat.
 ## 2026-07-20
 
 ### Added
+- Added public beta security, privacy, support, contribution, conduct, and issue
+  guidance, including a private vulnerability-reporting path and clear
+  pre-install platform and support expectations.
+- Added a user-initiated redacted diagnostics ZIP and a compact Settings help
+  area with the Mentat version, docs, bug-reporting, and diagnostics actions.
 - Added read-only remote message search across the same bounded 12 recent
   sessions shown in Agents. Matches open the existing transcript through
   private Mentat aliases, and the UI explains when the session limit was
@@ -29,6 +34,10 @@ All notable changes to Mentat.
   and retained Console run summaries, with safe defaults for older history.
 
 ### Safety
+- Diagnostics are generated in memory from fixed version, platform-category,
+  install-type, and health-status fields. They never collect logs, environment
+  variables, credentials, endpoints, personal content, local paths, hostnames,
+  usernames, or blob identifiers.
 - Remote message search reads only the exact advertised session list/message
   endpoints, returns at most 20 escaped user/assistant snippets, and exposes no
   upstream session IDs. Any failed session read or changed connection discards

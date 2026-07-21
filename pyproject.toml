@@ -46,6 +46,7 @@ py-modules = [
   "data_layout",
   "data_migration",
   "data_schema",
+  "diagnostics_bundle",
   "health_checks",
   "hermes_kanban",
   "hermes_profile_creation",

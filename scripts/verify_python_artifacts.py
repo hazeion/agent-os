@@ -27,7 +27,7 @@ EGG_INFO = "mentat_local.egg-info"
 PUBLIC_MODULES = {
     "agent_console_artifacts", "agent_console_attachments", "agent_run_history",
     "command_manifest", "data_backup_restore", "data_layout", "data_migration",
-    "data_schema", "health_checks", "hermes_kanban", "hermes_profile_creation",
+    "data_schema", "diagnostics_bundle", "health_checks", "hermes_kanban", "hermes_profile_creation",
     "hermes_profile_deletion", "hermes_profile_identity", "hermes_profiles",
     "hermes_provider_switching", "hermes_skills", "hermes_transport", "json_store",
     "mentat_db", "mentat_lifecycle", "private_console_migration",

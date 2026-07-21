@@ -150,7 +150,7 @@ work is still small.
 | 2 | Secure remote Hermes parity | Complete for the verified maintained fork; upstream releases need fresh compatibility evidence | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | In progress | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | In progress | 3 | Required CI green on the supported matrix |
-| 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
+| 5 | Trust and support readiness | Complete | 0, 3, 4 | Public policies, diagnostics, and issue path |
 | 6 | Release-candidate rehearsal | Not started | 1–5 | Reproducible tagged RC with rollback drill |
 | 7 | Limited external beta | Not started | 6 | Tester acceptance window completed |
 | 8 | Public beta release | Not started | 7 | Published beta artifacts and release notes |
@@ -420,6 +420,12 @@ CI reference: [Building and testing Python with GitHub Actions](https://docs.git
 
 Goal: make it clear how Mentat handles data, security reports, contributions,
 and beta support.
+
+Status: **Complete 2026-07-20.** Public trust and support documents, focused
+issue routes, the private security-advisory path, fixed redacted diagnostics,
+and in-app help actions are implemented, tested, browser-verified, and cleared
+by two independent adversarial reviews. Signed release artifacts remain governed
+by Milestones 4 and 6 rather than this support slice.
 
 Work in order:
 

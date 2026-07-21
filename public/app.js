@@ -4543,6 +4543,8 @@ function renderHealth(payload = {}) {
   const pill = $('#health-status-pill');
   const summary = $('#health-summary');
   const status = payload.status || 'healthy';
+  const versionLabel = $('#mentat-version');
+  if (versionLabel) versionLabel.textContent = payload.display_version || 'version unavailable';
   const statusLabel = payload.status_label || (status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : 'Healthy');
   const dotClass = status === 'healthy' ? 'healthy' : 'degraded';
   if (dot) dot.className = `dot ${dotClass}`;
@@ -4573,6 +4575,44 @@ function renderHealth(payload = {}) {
       </article>
     `;
   }).join('') : `<div class="empty">No subsystem health checks returned.</div>`;
+}
+
+async function downloadDiagnosticsBundle() {
+  const button = $('#download-diagnostics');
+  const status = $('#diagnostics-status');
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'Preparing a private, redacted bundle…';
+  try {
+    const response = await fetch(endpoints.diagnosticsBundle, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/zip' },
+    });
+    if (!response.ok) {
+      let message = 'Mentat could not create the diagnostics bundle.';
+      try {
+        const payload = await response.json();
+        if (payload?.error) message = payload.error;
+      } catch (_err) {
+        // Keep the bounded fallback when an intermediary returns a non-JSON error.
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'mentat-diagnostics.zip';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    if (status) status.textContent = 'Diagnostics downloaded. You can attach the ZIP to a bug report.';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function ensureProjectsLoaded() {
@@ -4852,6 +4892,8 @@ $('#enable-reminders-button')?.addEventListener('click', async () => {
   button.textContent = permission === 'granted' ? 'Reminders Enabled' : 'Use In-App Reminders';
   renderAndNotifyReminders(state.tasks);
 });
+
+$('#download-diagnostics')?.addEventListener('click', () => void downloadDiagnosticsBundle());
 
 $('#focus-task-list').addEventListener('change', (event) => {
   const projectSelect = event.target.closest('#today-project-select');

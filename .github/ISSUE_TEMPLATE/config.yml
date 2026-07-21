@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/hazeion/agent-os/security/advisories/new
+    about: Report vulnerabilities privately. Do not put security details in a public issue.
+  - name: Setup and beta support
+    url: https://github.com/hazeion/agent-os/blob/main/SUPPORT.md
+    about: Check supported platforms, setup requirements, and known limitations.

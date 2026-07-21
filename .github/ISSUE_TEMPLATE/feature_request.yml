@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest one focused improvement for Mentat.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would this help you do?
+      description: Start with the project or task-management problem, not just the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would a friendly solution look like?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today?
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Safety check
+      options:
+        - label: This request does not include credentials or private user content.
+          required: true
