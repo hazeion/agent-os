@@ -118,7 +118,11 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null
           /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8898
-          wait "$launcher_pid"
+          wait "$launcher_pid" || true
+          if curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null; then
+            echo 'Mentat remained healthy after stop' >&2
+            exit 1
+          fi
           test -f "$MENTAT_DATA_DIR/tasks.json"
           sudo rm -rf /Applications/Mentat.app
           sudo pkgutil --forget dev.mentat.local

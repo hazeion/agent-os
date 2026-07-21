@@ -172,6 +172,12 @@ strategy and two independent adversarial reviews pass.
   the result. `PackageInfo` reports `relocatable="false"`, install location
   `/`, an exact `./Applications/Mentat.app` bundle path, and no relocation
   targets.
+- The sixth run passed macOS install, upgrade, health, and verified stop. Its
+  launcher then returned the expected SIGTERM-derived status (`241`), which
+  `bash -e` treated as a smoke failure. Both unsigned and protected macOS
+  smokes now tolerate the terminated launcher's wait status only after a
+  successful stop command, then independently require the health endpoint to
+  be unavailable.
 
 ## Review findings
 
