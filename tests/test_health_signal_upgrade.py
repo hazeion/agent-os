@@ -24,6 +24,10 @@ class HealthSignalUpgradeTests(unittest.TestCase):
             subsystem_keys,
             {"state_db", "config", "calendar", "cron", "host_resources"},
         )
+        self.assertNotIn("hermes_home", payload)
+        self.assertNotIn("state_db_exists", payload)
+        self.assertNotIn("state_db_size", payload)
+        self.assertTrue(all("path" not in item for item in payload["subsystems"]))
 
     def test_overall_health_matches_worst_subsystem(self):
         payload = server.health()

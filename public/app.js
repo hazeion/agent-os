@@ -4547,7 +4547,8 @@ function renderHealth(payload = {}) {
   const dotClass = status === 'healthy' ? 'healthy' : 'degraded';
   if (dot) dot.className = `dot ${dotClass}`;
   if (label) {
-    label.textContent = `${statusLabel} · ${payload.summary || 'No subsystem summary available.'}`;
+    const version = payload.display_version ? `Mentat ${payload.display_version} · ` : '';
+    label.textContent = `${version}${statusLabel} · ${payload.summary || 'No subsystem summary available.'}`;
     label.title = label.textContent;
   }
   if (pill) {
@@ -4559,7 +4560,7 @@ function renderHealth(payload = {}) {
   summary.innerHTML = subsystems.length ? subsystems.map((item) => {
     const metaValues = item.key === 'remote_hermes'
       ? [item.label, item.version, item.model, item.category]
-      : [item.path, item.size, item.modified_at];
+      : [item.size, item.modified_at];
     const meta = metaValues.filter(Boolean).map((value) => escapeHtml(value)).join(' · ');
     return `
       <article class="item health-item health-${escapeHtml(item.status || 'healthy')}">

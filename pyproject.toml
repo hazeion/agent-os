@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mentat-local"
+dynamic = ["version"]
+description = "A friendly local dashboard for Hermes-powered projects and tasks."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Hazeion" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Web Environment",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+  "google-api-python-client==2.194.0",
+  "google-auth==2.49.2",
+  "requests==2.33.0",
+  "tzdata==2026.3",
+]
+
+[project.scripts]
+mentat = "mentat.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "mentat.version.__version__" }
+
+[tool.setuptools]
+packages = ["mentat"]
+py-modules = [
+  "agent_console_artifacts",
+  "agent_console_attachments",
+  "agent_run_history",
+  "command_manifest",
+  "data_backup_restore",
+  "data_layout",
+  "data_migration",
+  "data_schema",
+  "health_checks",
+  "hermes_kanban",
+  "hermes_profile_creation",
+  "hermes_profile_deletion",
+  "hermes_profile_identity",
+  "hermes_profiles",
+  "hermes_provider_switching",
+  "hermes_skills",
+  "hermes_transport",
+  "json_store",
+  "mentat_db",
+  "mentat_lifecycle",
+  "private_console_migration",
+  "private_console_unit",
+  "private_state",
+  "remote_hermes",
+  "runtime_config",
+  "server",
+  "task_planning",
+]
+
+[tool.setuptools.data-files]
+"share/mentat/public" = [
+  "public/app.js",
+  "public/core.js",
+  "public/index.html",
+  "public/mentat-logo.png",
+  "public/styles.css",
+]
+"share/mentat/data" = [
+  "data/agent_messages.json",
+  "data/agents.json",
+  "data/attention.json",
+  "data/calendar.json",
+  "data/context_packs.json",
+  "data/dashboard.json",
+  "data/email.json",
+  "data/projects.json",
+  "data/tasks.json",
+]

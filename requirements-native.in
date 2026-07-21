@@ -1,0 +1,15 @@
+# Direct native build inputs. Compile on each supported platform with
+# pip-tools 7.6.0 and hashes before changing a public release toolchain.
+-r requirements.txt
+build==1.3.0
+pyinstaller==6.21.0
+wheel==0.47.0
+# Include both platform-specific PyInstaller helpers in the shared lock. They
+# and build's Windows-only color helper are pure Python and harmless on the
+# other build host. Keeping them explicit makes one exact, hash-checked input
+# valid for both trusted native jobs even when the lock is compiled on macOS.
+colorama==0.4.6
+macholib==1.16.4
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
+setuptools==80.9.0

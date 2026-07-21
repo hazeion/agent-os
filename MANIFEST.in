@@ -1,0 +1,24 @@
+include README.md LICENSE requirements.txt mentat.toml
+include requirements-native.txt
+include requirements-native.in
+include requirements-native.lock
+include scripts/build_native.py
+recursive-include packaging *.md *.py *.spec *.iss
+include public/app.js
+include public/core.js
+include public/index.html
+include public/mentat-logo.png
+include public/styles.css
+include data/agent_messages.json
+include data/agents.json
+include data/attention.json
+include data/calendar.json
+include data/context_packs.json
+include data/dashboard.json
+include data/email.json
+include data/projects.json
+include data/tasks.json
+prune data/private
+prune data/runtime
+prune tests
+global-exclude __pycache__ *.py[cod]
