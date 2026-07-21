@@ -86,6 +86,8 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("choco list --local-only --exact innosetup --limit-output", workflow)
         self.assertNotIn("VersionInfo.ProductVersion", workflow)
         self.assertGreaterEqual(workflow.count("-Wait -PassThru"), 3)
+        self.assertIn('pkgbuild --root "$fixture_root" --install-location /', workflow)
+        self.assertIn("Mentat CLI survived uninstall", workflow)
         self.assertIn("python scripts/build_native.py", workflow)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("unsigned", workflow)

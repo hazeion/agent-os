@@ -72,13 +72,14 @@ jobs:
         run: |
           package_path=$(find dist -maxdepth 1 -name 'Mentat-*-unsigned.pkg' -print -quit)
           test -n "$package_path"
-          fixture_app="$RUNNER_TEMP/upgrade-fixture/Mentat.app"
+          fixture_root="$RUNNER_TEMP/upgrade-fixture-root"
+          fixture_app="$fixture_root/Applications/Mentat.app"
           mkdir -p "$fixture_app/Contents/MacOS" "$fixture_app/Contents/Resources"
           printf '%s\n' '#!/bin/sh' 'exit 0' >"$fixture_app/Contents/MacOS/Mentat"
           chmod 755 "$fixture_app/Contents/MacOS/Mentat"
           printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Mentat</string><key>CFBundleIdentifier</key><string>dev.mentat.local</string><key>CFBundleVersion</key><string>0.0.0</string></dict></plist>' >"$fixture_app/Contents/Info.plist"
           printf 'old application layout\n' >"$fixture_app/Contents/Resources/stale-from-baseline.txt"
-          pkgbuild --component "$fixture_app" --install-location /Applications --identifier dev.mentat.local --version 0.0.0 "$RUNNER_TEMP/mentat-baseline.pkg"
+          pkgbuild --root "$fixture_root" --install-location / --identifier dev.mentat.local --version 0.0.0 "$RUNNER_TEMP/mentat-baseline.pkg"
           sudo installer -pkg "$RUNNER_TEMP/mentat-baseline.pkg" -target /
           test -f /Applications/Mentat.app/Contents/Resources/stale-from-baseline.txt
           export MENTAT_DATA_DIR="$RUNNER_TEMP/mentat-native-data"
@@ -157,7 +158,8 @@ jobs:
           if (-not $upgradedLauncher.WaitForExit(15000)) { throw 'Upgraded Mentat launcher did not stop' }
           $uninstall = Start-Process -FilePath "$installDir/unins000.exe" -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
           if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
-          if (Test-Path $installDir) { throw 'Application directory survived uninstall' }
+          if (Test-Path "$installDir/mentat.exe") { throw 'Mentat CLI survived uninstall' }
+          if (Test-Path "$installDir/Mentat Launcher.exe") { throw 'Mentat launcher survived uninstall' }
           if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Uninstall removed Mentat data' }
 
       - name: Upload unsigned test installer

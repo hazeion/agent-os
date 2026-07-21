@@ -156,6 +156,12 @@ strategy and two independent adversarial reviews pass.
   installer before checking its output. All unsigned and protected Windows
   installer/uninstaller smokes now use `Start-Process -Wait -PassThru` and
   validate the resulting process exit code.
+- The fourth run completed Windows install, health, stop, and uninstall but
+  showed that Inno may leave an empty application directory. The smoke now
+  requires both installed executables to be gone while still verifying that
+  operator data remains. Its macOS fixture package also now uses an explicit
+  root containing `Applications/Mentat.app`, avoiding ambiguous component
+  placement while preserving the real current-package upgrade test.
 
 ## Review findings
 
