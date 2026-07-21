@@ -5,6 +5,10 @@ All notable changes to Mentat.
 ## 2026-07-21
 
 ### Added
+- Added a protected public-beta promotion path that verifies and republishes
+  the immutable tested RC identity, GitHub asset digests, and attestation;
+  preserves pre-tag recovery evidence; and requires a closed public Milestone 7
+  exit summary with checked, candidate-bound attestations.
 - Added a concise limited-beta tester checklist, privacy-safe structured
   feedback form, and maintainer cohort runbook without claiming external
   results or storing participant data in Git.

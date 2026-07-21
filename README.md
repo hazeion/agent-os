@@ -26,15 +26,42 @@ your browser.
 
 ## Quick start
 
-You need:
+The easiest route is a signed build from the
+[Mentat releases page](https://github.com/hazeion/agent-os/releases). There is
+no final public beta yet, so native installers are still on the way. If you are
+helping test a signed candidate, use the exact release link you received.
+
+- **macOS:** download the signed `.pkg`, check `SHA256SUMS`, run the installer,
+  then open Mentat from Applications. The first build is Intel; Apple Silicon
+  needs Rosetta.
+- **Windows:** download the signed `.exe`, check its SHA-256 value, and run it.
+- **pipx:** copy the wheel URL from that release, then run:
+
+```bash
+pipx install WHEEL_URL
+mentat setup
+mentat start
+```
+
+For the checksum, run `shasum -a 256 FILE` on macOS or
+`Get-FileHash FILE -Algorithm SHA256` in Windows PowerShell, then compare the
+result with `SHA256SUMS` from the same release.
+
+Mentat opens at [http://localhost:8888](http://localhost:8888). You will need a
+supported [Hermes Agent](https://hermes-agent.nousresearch.com/) runtime for
+agent features.
+
+Before installing, glance at [supported platforms and known limitations](SUPPORT.md).
+
+## Try the development build
+
+Until a signed build is available, you can run Mentat from source. You need:
 
 - [Python 3.11–3.13](https://www.python.org/downloads/)
 - [Git](https://git-scm.com/downloads)
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) for agent features
 
-Before installing, take a quick look at [supported platforms and known
-limitations](SUPPORT.md). macOS and Windows are the tier-one beta platforms;
-Linux is a preview.
+macOS and Windows are the tier-one beta platforms; Linux is a preview.
 
 Open a terminal and run:
 

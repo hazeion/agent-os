@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Exact beta tag to create after both signed installers pass
+        description: Exact numbered RC tag to create after both signed installers pass
         required: true
         type: string
 
@@ -28,6 +28,11 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
+
+      - name: Validate numbered release candidate tag
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python scripts/release_rehearsal.py validate-rc-tag "$RELEASE_TAG"
 
       - name: Verify exact commit checks
         env:
@@ -343,6 +348,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: beta-release
     permissions:
+      attestations: read
       contents: write
     steps:
       - name: Verify every protected release job
@@ -376,6 +382,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python scripts/release_rehearsal.py validate-rc-tag "$RELEASE_TAG"
           python scripts/release_rehearsal.py build \
             --artifact-dir release-input \
             --output-dir release-bundle \
@@ -433,3 +440,19 @@ jobs:
             --prerelease \
             --title "Mentat $RELEASE_TAG" \
             --notes-file release-archive/RELEASE_NOTES.md
+
+      - name: Verify immutable prerelease identity and attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '{assets: [.assets[] | {digest, name, size}], draft, html_url, immutable, prerelease, tag_name}' \
+            > candidate-release.json
+          python scripts/public_beta_promotion.py verify-release \
+            --bundle-dir release-archive \
+            --release-snapshot candidate-release.json \
+            --release-tag "$RELEASE_TAG" \
+            --prerelease
+          gh release verify "$RELEASE_TAG"

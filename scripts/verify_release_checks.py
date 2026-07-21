@@ -41,7 +41,7 @@ def _fetch(url: str, headers: dict[str, str]) -> dict:
 
 def main() -> int:
     repository = os.environ.get("GITHUB_REPOSITORY", "")
-    sha = os.environ.get("GITHUB_SHA", "")
+    sha = os.environ.get("RELEASE_SOURCE_SHA") or os.environ.get("GITHUB_SHA", "")
     api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     token = os.environ.get("GITHUB_TOKEN", "")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):

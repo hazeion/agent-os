@@ -44,6 +44,12 @@ def validate_release_tag(tag: str) -> str:
     )
 
 
+def validate_rc_tag(tag: str) -> str:
+    if RC_TAG_PATTERN.fullmatch(tag):
+        return tag
+    raise ValueError(f"release candidate tag must be {DISPLAY_VERSION}-rc.N")
+
+
 def validate_source_sha(source_sha: str) -> str:
     if not SOURCE_SHA_PATTERN.fullmatch(source_sha):
         raise ValueError("source SHA must be exactly 40 lowercase hexadecimal characters")
@@ -183,6 +189,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     validate = commands.add_parser("validate-tag", help="Validate one beta or RC tag.")
     validate.add_argument("release_tag")
+    validate_rc = commands.add_parser("validate-rc-tag", help="Validate one numbered RC tag.")
+    validate_rc.add_argument("release_tag")
     bundle = commands.add_parser("build", help="Create release checksums, manifest, and notes.")
     bundle.add_argument("--artifact-dir", type=Path, required=True)
     bundle.add_argument("--output-dir", type=Path, required=True)
@@ -196,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "validate-tag":
             validate_release_tag(args.release_tag)
+        elif args.command == "validate-rc-tag":
+            validate_rc_tag(args.release_tag)
         else:
             build_bundle(
                 args.artifact_dir,

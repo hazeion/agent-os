@@ -539,6 +539,12 @@ Work in order:
 6. Review beta health on a regular cadence and publish follow-up versions
    through the same release gate.
 
+Repository preparation status: the protected promotion verifies the immutable
+RC identity, GitHub asset digests and attestation, then reuses those exact
+tested assets. It creates the final tag at that candidate commit and preserves
+recovery evidence before publication. Dispatch remains blocked until Milestones
+6 and 7 are complete and their external evidence is accepted.
+
 Exit criteria:
 
 - every public artifact matches a tested release candidate;
