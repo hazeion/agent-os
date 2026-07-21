@@ -2516,11 +2516,17 @@ function renderAgentConsole(payload = {}) {
     const response = run.response || artifactCards ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${run.response ? renderMarkdown(run.response) : ''}${artifactCards}</div>${responseExcerpt}</div>` : '';
     const errorExcerpt = run.error_truncated || storedSummaryLabel ? `<span class="mono">${run.error_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const error = run.error ? `<div class="agent-console-log-row agent-console-log-error"><span class="mono">${run.status === 'cancelled' ? 'Stopped' : 'Error'}</span><div class="message-content">${escapeHtml(run.error)}</div>${errorExcerpt}</div>` : '';
+    const request = run.action_required || {};
+    const requestActions = request.kind === 'approval'
+      ? `<div class="agent-console-log-row agent-console-log-status approval"><span class="mono">Approval</span><div class="message-content"><strong>${escapeHtml(request.preview?.title || 'Remote action needs approval')}</strong><p>${escapeHtml(request.preview?.summary || '')}</p><div class="compact-actions"><button type="button" class="mini-button" data-agent-console-approval="once" data-agent-console-run="${escapeHtml(run.id)}" data-agent-console-request="${escapeHtml(request.request_id || '')}">Allow once</button><button type="button" class="mini-button" data-agent-console-approval="deny" data-agent-console-run="${escapeHtml(run.id)}" data-agent-console-request="${escapeHtml(request.request_id || '')}">Deny</button></div></div></div>`
+      : request.kind === 'clarification'
+        ? `<div class="agent-console-log-row agent-console-log-status clarification"><span class="mono">Question</span><div class="message-content"><strong>${escapeHtml(request.prompt?.question || 'Remote Hermes needs an answer')}</strong>${request.prompt?.type === 'text' ? `<label class="sr-only" for="agent-console-answer-${escapeHtml(run.id)}">Your answer</label><textarea id="agent-console-answer-${escapeHtml(run.id)}" class="agent-console-clarification-text" rows="3" maxlength="2000" placeholder="Type your answer"></textarea><div class="compact-actions"><button type="button" class="mini-button" data-agent-console-clarification-text="true" data-agent-console-run="${escapeHtml(run.id)}" data-agent-console-request="${escapeHtml(request.request_id || '')}">Send answer</button></div>` : (request.prompt?.choices || []).map((choice) => `<button type="button" class="mini-button" data-agent-console-clarification="${escapeHtml(choice.id)}" data-agent-console-run="${escapeHtml(run.id)}" data-agent-console-request="${escapeHtml(request.request_id || '')}">${escapeHtml(choice.label)}</button>`).join('')}</div></div>`
+        : '';
     const inputAttachments = Array.isArray(run.attachments) ? run.attachments : Array.isArray(run.input_attachments) ? run.input_attachments : [];
     const attachmentCards = inputAttachments.length
       ? `<section class="agent-console-run-attachment-context" aria-label="Files used as prompt context"><span class="mono">Used as prompt context · ${inputAttachments.length} file${inputAttachments.length === 1 ? '' : 's'}</span><div class="agent-console-run-attachments">${agentConsoleAttachmentCards(inputAttachments)}</div></section>`
       : '';
-    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}${attachmentCards}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${response}${error}</section>`;
+    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}${attachmentCards}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${requestActions}${response}${error}</section>`;
   }).join('') : `<div class="agent-console-empty mono">${escapeHtml(payload.error || (available ? 'Hermes ready.' : 'Hermes CLI unavailable.'))}</div>`;
   if (wasNearBottom || activeRun) chat.scrollTop = chat.scrollHeight;
   scheduleAgentConsolePoll(Boolean(activeRun));
@@ -5142,6 +5148,36 @@ $('#agent-console-stop')?.addEventListener('click', async () => {
     const payload = await stopAgentConsoleRun(state.agentConsoleRunId);
     renderAgentConsole({ agents: state.agentConsoleAgents, runs: state.agentConsoleRuns.map((run) => run.id === payload.run?.id ? payload.run : run) });
   } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+});
+
+$('#agent-console-chat')?.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-agent-console-approval], [data-agent-console-clarification], [data-agent-console-clarification-text]');
+  if (!button) return;
+  const runId = button.dataset.agentConsoleRun || '';
+  const requestId = button.dataset.agentConsoleRequest || '';
+  const approval = button.dataset.agentConsoleApproval;
+  const clarification = button.dataset.agentConsoleClarification;
+  const textClarification = button.dataset.agentConsoleClarificationText === 'true';
+  const status = $('#agent-console-form-status');
+  if (!runId || !requestId) return;
+  button.disabled = true;
+  const textAnswer = textClarification ? document.querySelector(`#agent-console-answer-${CSS.escape(runId)}`)?.value.trim() : '';
+  if (textClarification && !textAnswer) {
+    if (status) status.textContent = 'Type an answer first.';
+    button.disabled = false;
+    return;
+  }
+  if (status) status.textContent = approval ? 'Sending your approval response…' : 'Sending your answer…';
+  try {
+    const payload = await respondToAgentConsoleRequest(runId, approval
+      ? { confirmed: true, kind: 'approval', request_id: requestId, choice: approval }
+      : { confirmed: true, kind: 'clarification', request_id: requestId, response: textClarification ? { type: 'text', text: textAnswer } : { type: 'choice', choice_id: clarification } });
+    renderAgentConsole({ agents: state.agentConsoleAgents, runs: state.agentConsoleRuns.map((run) => run.id === payload.run?.id ? payload.run : run) });
+    if (status) status.textContent = '';
+  } catch (err) {
+    button.disabled = false;
     if (status) status.textContent = err.message;
   }
 });

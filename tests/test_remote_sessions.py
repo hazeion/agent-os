@@ -119,6 +119,12 @@ class FakeSessionClient:
     def require_session_resource_capabilities(self):
         return {"capabilities": ["session_resources"]}
 
+    def require_console_run_capabilities(self):
+        return {
+            "model": "anthropic/claude-test",
+            "capabilities": ["run_submission", "run_status", "run_events_sse", "run_stop"],
+        }
+
     def list_sessions(self):
         self.listed += 1
         return {"sessions": [{**session_record(), "upstream_id": UPSTREAM_ID}], "truncated": False}
@@ -465,12 +471,14 @@ class RemoteSessionTests(unittest.TestCase):
         detail.assert_called_once_with("local", None)
         replay.assert_called_once_with("local", None)
 
-    def test_remote_continuation_remains_rejected_before_submission(self):
+    def test_remote_continuation_rejects_an_untrusted_or_stale_alias(self):
         adapter = RemoteHermesConsoleTransport(
             TransportBinding("remote", "Remote workshop", "b" * 32),
             client=FakeSessionClient(),
         )
-        with patch.object(server, "hermes_console_transport", return_value=adapter):
+        with patch.object(server, "hermes_console_transport", return_value=adapter), patch.object(
+            adapter, "revalidate"
+        ):
             payload, status = server.start_agent_console_run({
                 "agent_id": "default",
                 "prompt": "Continue",

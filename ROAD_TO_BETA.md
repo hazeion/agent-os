@@ -1,6 +1,6 @@
 # Mentat Road to Beta
 
-Status: Milestone 2 in progress — 2A through 2C and 2E through 2I complete
+Status: Milestone 2 complete against the verified `mentat-beta-contracts` Hermes runtime
 Last updated: 2026-07-20
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
@@ -83,11 +83,9 @@ The largest beta gaps are operational rather than feature gaps:
   source, or unified `mentat` command;
 - the early GitHub Actions matrix is in place, while later packaging, browser,
   dependency, and release gates remain outstanding;
-- the selected remote runtime supports plain default-profile Console runs plus
-  bounded read-only session history; richer inputs, continuation, and the
-  remaining mandatory parity capabilities are still outstanding;
-- complete remote profile discovery and API-key-authenticated Kanban require a
-  supported upstream Hermes capability;
+- the verified remote runtime supports its active profile, bounded session
+  history and continuation, request-bound interactions, bounded image input,
+  and authenticated revisioned Kanban; other runtimes stay capability-gated;
 - backup, restore, upgrade, and rollback are not yet a complete user workflow;
 - public trust and support documents are incomplete;
 - the release and external-tester process has not been rehearsed.
@@ -149,7 +147,7 @@ work is still small.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | In progress — 2A through 2C and 2E through 2I complete; remaining upstream blockers recorded | 1 | Mandatory remote capabilities verified over HTTPS |
+| 2 | Secure remote Hermes parity | Complete for the verified maintained fork; upstream releases need fresh compatibility evidence | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | Not started | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
@@ -279,7 +277,7 @@ Work in order:
    authenticated responses without returning the API key or upstream response
    details to the browser. **Milestone 2A implements readiness, version, model,
    authentication, and feature discovery; complete active-profile inventory
-   remains blocked on the capability in item 7.**
+   is capability-gated and verified.**
 4. Introduce a transport-neutral adapter boundary while preserving the existing
    local Hermes behavior. **Milestone 2B foundation complete for Agent Console
    launch selection and run binding.**
@@ -287,27 +285,22 @@ Work in order:
    cancellation, and stopping through supported remote APIs. Add clarification
    handling only when Hermes advertises a typed request/response capability.
    **Milestone 2C implements one plain default-profile run, bounded events and
-   status, cancellation, and safe stopping for approval requests. The 2D audit
-   found that Hermes' response mutation has no exact request binding or safe
-   structured preview, so approval response remains an upstream blocker.
+   status, cancellation, safe stopping, exact approval responses, and typed
+   clarification responses when the authenticated contract is advertised.
    Milestone 2E adds bounded,
    read-only remote session list and replay with private connection-bound
    aliases. Milestone 2H searches user/assistant text across that same complete
    visible 12-session window, returns at most 20 safe snippets, and labels when
    the session limit was reached or compacted/additional matches are excluded;
-   remote continuation
-   remains blocked until Hermes advertises an exact stoppable continuation
-   capability.**
+   remote continuation is available only from a fresh exact, stoppable
+   descriptor.**
 6. Send only bounded Context Pack text and supported inline images; keep local
    paths private and degrade unsupported file/artifact transfers clearly.
    **Milestone 2F sends one exact, bounded, private-snapshot Context Pack as
-   path-free text through the stoppable Runs API. Direct files, artifacts, and
-   images fail clearly before submission. A bounded Runs-image contract is now
-   proposed upstream in Hermes PR #68202; images remain unavailable until it
-   is merged, released, advertised by the installed runtime, and verified over
-   Mentat's authenticated transport. Chat/Responses image support is not a
-   substitute for the Runs submission/status/stop lifecycle used by Agent
-   Console.**
+   path-free text through the stoppable Runs API. Direct files and artifacts
+   fail clearly before submission. Supported runtimes may accept up to four
+   validated private-snapshot image data URLs; chat/Responses image support is
+   never substituted for the Runs submission/status/stop lifecycle.**
 7. Show remote skills and toolsets only through supported, advertised,
    API-key-authenticated read-only endpoints. **Milestone 2G adds a bounded,
    connection-bound Settings inventory. It exposes only validated identifiers,
@@ -315,10 +308,10 @@ Work in order:
    skill contents, paths, tool names, configured-provider details, and raw or
    partial upstream results.**
 8. Add complete read-only profile discovery through a supported,
-   API-key-authenticated upstream capability.
-9. Add Kanban delegation and follow-up only after Hermes exposes the supported
+   API-key-authenticated capability. **Complete inventory is verified.**
+9. Add Kanban delegation and follow-up only through the supported,
    authenticated, revision-aware capability required by
-   [REMOTE_HERMES.md](REMOTE_HERMES.md).
+   [REMOTE_HERMES.md](REMOTE_HERMES.md). **Verified for the connected runtime.**
 10. Test endpoint changes, authentication failure, certificate failure,
    capability loss, timeouts, interrupted streams, stale confirmations,
    partial failures, local fallback, upgrade, and rollback. **Milestone 2I adds
@@ -574,21 +567,11 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Continue Milestone 2 after bounded Context Pack text and remote
-   skill/toolset visibility by keeping inline images unavailable until Hermes
-   PR #68202 is merged, released, advertised by the installed runtime, and
-   verified as the exact image-input capability for the stoppable Runs
-   lifecycle; do not substitute chat/responses or enable general file transfer.
-2. Keep remote session continuation unavailable until Hermes advertises an
-   exact stoppable continuation capability, and keep approval response
-   unavailable until Hermes advertises an exact request binding plus a
-   structured preview that is safe to display.
-3. With read-only skills and toolsets now visible, continue tracking the
-   remaining mandatory upstream Hermes capabilities for
-   authenticated Kanban, complete read-only profile discovery, and
-   clarification handling without implementing an unsafe substitute.
-4. After the data-root and remote-parity milestones, design the native
+1. Keep the six remote contracts capability-gated. This Milestone 2 exit is
+   verified against the maintained `mentat-beta-contracts` Hermes runtime;
+   support for an upstream release needs fresh compatibility evidence.
+2. After the data-root and remote-parity milestones, design the native
    installer formats, runtime strategy, signing boundary, and `pipx` fallback
    in Milestone 3 rather than choosing tooling prematurely.
-5. Do not begin a dependent slice while an earlier data-safety or release
+3. Do not begin a dependent slice while an earlier data-safety or release
    blocker remains open.

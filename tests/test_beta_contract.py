@@ -111,11 +111,9 @@ class BetaContractTests(unittest.TestCase):
         ):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
-        self.assertTrue(next_actions.lstrip().startswith("1. Continue Milestone 2"))
-        self.assertIn("bounded Context Pack text", next_actions)
-        self.assertIn("remote session continuation unavailable", next_actions)
-        self.assertIn("exact stoppable continuation capability", next_actions)
-        self.assertIn("keep approval response", next_actions)
+        self.assertTrue(next_actions.lstrip().startswith("1. Keep the six remote contracts capability-gated"))
+        self.assertIn("mentat-beta-contracts", next_actions)
+        self.assertIn("Milestone 3", next_actions)
         self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 
@@ -143,7 +141,8 @@ class BetaContractTests(unittest.TestCase):
             "Durable Kanban delegation and follow-up",
         ):
             self.assertIn(required, REMOTE_HERMES)
-        self.assertIn("**Required**; upstream API-server capability blocker", REMOTE_HERMES)
+        self.assertIn("request-bound approval", REMOTE_HERMES)
+        self.assertIn("revisioned and idempotent Kanban", REMOTE_HERMES)
         self.assertIn("Clarification handling", REMOTE_HERMES)
         self.assertIn("**Graceful degradation**", REMOTE_HERMES)
 

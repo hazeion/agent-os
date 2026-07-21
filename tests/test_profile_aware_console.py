@@ -47,6 +47,11 @@ class CompletedHermesProcess:
 
 
 class ProfileAwareConsoleTests(unittest.TestCase):
+    def local_console(self):
+        return server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
+        )
+
     def tearDown(self):
         server.AGENT_CONSOLE_RUNS.clear()
         server.AGENT_CONSOLE_PROCESSES.clear()
@@ -55,6 +60,8 @@ class ProfileAwareConsoleTests(unittest.TestCase):
     def test_console_payload_exposes_normalized_profiles(self):
         with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
             server, "hermes_profiles_payload", return_value=profile_discovery()
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(server, "agent_console_model_catalog", return_value={"profile_id": "default", "models": []}):
             payload = server.agent_console_payload()
 
@@ -78,7 +85,9 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             TransportBinding("local", "Local Hermes", "local-default"),
             command_path="/tmp/hermes",
         )
-        with patch.object(server.subprocess, "Popen", return_value=CompletedHermesProcess()) as popen:
+        with patch.object(transport, "revalidate"), patch.object(
+            server.subprocess, "Popen", return_value=CompletedHermesProcess()
+        ) as popen:
             server.run_hermes_agent(run_id, transport)
 
         command = popen.call_args.args[0]
@@ -93,8 +102,13 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             "session_id": "session_shared",
             "created_at": "2026-07-10T12:00:00-07:00",
         }
+        transport = self.local_console()
         with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
             server, "hermes_command_path", return_value="/tmp/hermes"
+        ), patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ), patch.object(
+            transport, "revalidate"
         ):
             payload, status = server.start_agent_console_run({
                 "agent_id": "randy",
@@ -115,9 +129,14 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             "session_id": "session_randy_owned",
             "created_at": "2026-07-11T12:00:00-07:00",
         }
+        transport = self.local_console()
         with patch.object(
             server, "hermes_profiles_payload", return_value=profile_discovery()
         ), patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ), patch.object(
+            transport, "revalidate"
+        ), patch.object(
             server.threading, "Thread"
         ) as worker:
             unknown, unknown_status = server.start_agent_console_run(

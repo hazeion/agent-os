@@ -12,7 +12,8 @@ import server
 
 class HealthSignalUpgradeTests(unittest.TestCase):
     def test_health_payload_reports_subsystems_and_overall_status(self):
-        payload = server.health()
+        with patch.object(server, "remote_hermes_diagnostics", return_value={"mode": "local"}):
+            payload = server.health()
         self.assertIn("status", payload)
         self.assertIn(payload["status"], {"healthy", "degraded", "error"})
         self.assertIsInstance(payload.get("subsystems"), list)

@@ -17,11 +17,18 @@ def profile_discovery():
 
 
 class DashboardBehaviorTests(unittest.TestCase):
+    def local_console(self):
+        return server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
+        )
+
     def write_json(self, root: Path, name: str, payload) -> None:
         (root / name).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     def test_agent_console_only_accepts_hermes_and_requires_a_prompt(self):
-        with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()):
+        with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
+        ):
             invalid_agent, invalid_agent_status = server.start_agent_console_run({"agent_id": "shell", "prompt": "hello"})
             missing_prompt, missing_prompt_status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "  "})
 
@@ -32,9 +39,14 @@ class DashboardBehaviorTests(unittest.TestCase):
 
     def test_agent_console_starts_a_managed_hermes_run(self):
         server.AGENT_CONSOLE_RUNS.clear()
+        transport = self.local_console()
         try:
             with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
                 server, "hermes_command_path", return_value="/tmp/hermes"
+            ), patch.object(
+                server, "hermes_console_transport", return_value=transport
+            ), patch.object(
+                transport, "revalidate"
             ), patch.object(
                 server, "agent_console_model", return_value="test/model"
             ), patch.object(server.threading, "Thread") as worker:
@@ -72,7 +84,9 @@ class DashboardBehaviorTests(unittest.TestCase):
             command_path="/tmp/hermes",
         )
         try:
-            with patch.object(server.subprocess, "Popen", return_value=CompletedHermesProcess()) as popen:
+            with patch.object(transport, "revalidate"), patch.object(
+                server.subprocess, "Popen", return_value=CompletedHermesProcess()
+            ) as popen:
                 server.run_hermes_agent(run_id, transport)
 
             command = popen.call_args.args[0]
@@ -117,7 +131,8 @@ class DashboardBehaviorTests(unittest.TestCase):
                     TransportBinding("local", "Local Hermes", "local-default"),
                     command_path="/tmp/hermes",
                 )
-                server.run_hermes_agent(run_id, transport)
+                with patch.object(transport, "revalidate"):
+                    server.run_hermes_agent(run_id, transport)
 
         child_env = popen.call_args.kwargs["env"]
         self.assertEqual(child_env["PATH"].split(server.os.pathsep)[0], str(shared_bin))

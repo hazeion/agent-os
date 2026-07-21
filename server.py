@@ -8,6 +8,7 @@ remains allowlisted.
 
 from __future__ import annotations
 
+import base64
 import ctypes
 from copy import deepcopy
 import hashlib
@@ -53,6 +54,7 @@ from agent_console_attachments import (
     garbage_collect as garbage_collect_console_attachments,
     get_attachment,
     list_run_attachments,
+    read_attachment_bytes,
     read_attachment_text,
     release_attachment,
     reconcile_startup as reconcile_console_attachments,
@@ -91,7 +93,7 @@ from hermes_provider_switching import (
 )
 from hermes_profiles import discover_hermes_profiles
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
-from hermes_kanban import HermesKanbanAdapter, sanitize_public_text
+from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
 from hermes_transport import (
     HermesConsoleTransport,
     HermesTransportError,
@@ -108,6 +110,8 @@ from remote_hermes import (
     preview_connection as preview_remote_hermes_connection,
     public_connection_payload,
     public_error as public_remote_hermes_error,
+    load_connection as load_remote_hermes_connection,
+    RemoteHermesClient,
     test_selected_connection as test_remote_hermes_connection,
 )
 from task_planning import TASK_PLANNING_FIELDS, validate_task_planning
@@ -332,7 +336,7 @@ REMOTE_CONSOLE_STOP_VERIFY_SECONDS = 10
 REMOTE_CONSOLE_POLL_INTERVAL_SECONDS = 1.0
 REMOTE_CONSOLE_SHUTDOWN_WAIT_SECONDS = 6.0
 MAX_JSON_BODY_BYTES = 256_000
-AGENT_CONSOLE_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+AGENT_CONSOLE_ACTIVE_STATUSES = {"queued", "running", "cancelling", "waiting_for_approval", "waiting_for_clarification"}
 HERMES_KANBAN_LOCK = threading.RLock()
 AGENT_MODEL_CATALOG_TTL_SECONDS = 120
 AGENT_MODEL_CATALOG_CACHE = {"key": None, "payload": None, "fetched_at": 0.0}
@@ -3598,7 +3602,12 @@ def delete_confirmed_task(task_id: str, payload):
     return update_json_file("tasks.json", [], mutator)
 
 
-def kanban_adapter() -> HermesKanbanAdapter:
+def kanban_adapter() -> HermesKanbanAdapter | RemoteHermesKanbanAdapter:
+    selection = load_remote_hermes_connection(DATA_DIR)
+    if selection.mode == "remote":
+        return RemoteHermesKanbanAdapter(
+            RemoteHermesClient(selection.endpoint or "", selection.api_key or "")
+        )
     return HermesKanbanAdapter(hermes_command_path())
 
 
@@ -3703,6 +3712,7 @@ def remote_delegation_revision(remote: dict) -> dict:
         "run_status": latest_run.get("status"),
         "outcome": latest_run.get("outcome"),
         "completed_at": task.get("completed_at"),
+        "revision": remote.get("revision"),
     }
 
 
@@ -3962,7 +3972,7 @@ def delegate_confirmed_task(task_id: str, payload):
             remote_task.get("title") != (task.get("title") or task_id),
             remote_task.get("body") != intent["context"],
             remote_task.get("assignee") != intent["profile_id"],
-            remote_task.get("workspace_kind") != intent["workspace"],
+            remote_task.get("workspace_kind") not in {"", None, intent["workspace"]},
         )):
             return {
                 "error": "Hermes returned an existing task that does not match the confirmed delegation.",
@@ -4127,17 +4137,31 @@ def execute_confirmed_delegation_action(task_id: str, payload):
             delegation.update({"state": "completed", "review_state": "accepted", "updated_at": now_iso()})
             task_updates = {"status": "completed", "planning_state": "done", "needs_attention": False, "review_required": False, "completed_at": now_iso()}
         else:
-            if action == "reply":
+            remote_revision = latest_remote.get("revision")
+            remote_key = f"mentat-{task_id}-{uuid4().hex[:20]}"
+            if action == "reply" and isinstance(adapter, RemoteHermesKanbanAdapter):
+                result = adapter.mutate_task(board, remote_id, "reply", expected_revision=remote_revision, idempotency_key=remote_key, body=note, author="mentat")
+            elif action == "reply":
                 result = adapter.reply_task(board, remote_id, note)
+            elif action == "retry" and isinstance(adapter, RemoteHermesKanbanAdapter):
+                result = adapter.mutate_task(board, remote_id, "retry", expected_revision=remote_revision, idempotency_key=remote_key, reason="Retried from Mentat")
             elif action == "retry":
                 result = adapter.retry_task(board, remote_id)
+            elif action == "stop" and isinstance(adapter, RemoteHermesKanbanAdapter):
+                result = adapter.mutate_task(board, remote_id, "terminate", expected_revision=remote_revision, idempotency_key=remote_key, reason="Stopped from Mentat")
             elif action == "stop":
                 result = adapter.terminate_task(board, remote_id)
+            elif action == "mark_blocked" and isinstance(adapter, RemoteHermesKanbanAdapter):
+                result = adapter.mutate_task(board, remote_id, "block", expected_revision=remote_revision, idempotency_key=remote_key, reason=note, kind="needs_input")
+                task_updates = {"planning_state": "blocked", "needs_attention": True}
             elif action == "mark_blocked":
                 result = adapter.block_task(board, remote_id, note)
                 task_updates = {"planning_state": "blocked", "needs_attention": True}
             else:
-                commented = adapter.comment_task(board, remote_id, f"Revision requested from Mentat: {note}")
+                if isinstance(adapter, RemoteHermesKanbanAdapter):
+                    commented = adapter.mutate_task(board, remote_id, "comment", expected_revision=remote_revision, idempotency_key=remote_key, body=f"Revision requested from Mentat: {note}", author="mentat")
+                else:
+                    commented = adapter.comment_task(board, remote_id, f"Revision requested from Mentat: {note}")
                 if not commented.get("ok"):
                     result = commented
                 else:
@@ -5112,6 +5136,36 @@ def hermes_python_path() -> str | None:
 
 def hermes_profiles_payload() -> dict:
     """Return normalized profile capabilities without exposing Hermes paths or secrets."""
+    selection = load_remote_hermes_connection(DATA_DIR)
+    if selection.mode == "remote":
+        try:
+            profiles = RemoteHermesKanbanAdapter(
+                RemoteHermesClient(selection.endpoint or "", selection.api_key or "")
+            ).client.read_profiles()
+        except RemoteHermesError:
+            return {"status": "unavailable", "active_profile": None, "profiles": [], "capabilities": {}}
+        active_profile = next((item["id"] for item in profiles if item["is_active"]), None)
+        return {
+            "status": "available",
+            "active_profile": active_profile,
+            "profiles": [
+                {
+                    "id": item["id"],
+                    "name": item["id"],
+                    "available": bool(item["served"]),
+                    "is_default": bool(item["is_default"]),
+                    "is_active": bool(item["is_active"]),
+                    "served": bool(item["served"]),
+                }
+                for item in profiles
+            ],
+            "capabilities": {
+                "profiles.read": True,
+                "profiles.create": False,
+                "profiles.delete": False,
+                "profiles.identity": False,
+            },
+        }
     return discover_hermes_profiles(
         hermes_python_path(),
         HERMES_HOME,
@@ -5741,20 +5795,34 @@ def _agent_console_payload_locked():
                 "transport": transport.public_summary(),
                 "error": exc.public_message,
             }
+        try:
+            profiles = transport.read_profiles()
+        except HermesTransportError as exc:
+            if exc.code != "remote_profile_capability_unavailable":
+                return {
+                    "agents": [], "selected_agent_id": None,
+                    "model_catalog": {"models": []},
+                    "provider_inventory": {"providers": [], "capabilities": {"providers.switch": False}},
+                    "runs": snapshots, "active_run_id": active_run_id, "local_only": False,
+                    "transport": transport.public_summary(), "error": exc.public_message,
+                }
+            profiles = [{"id": "default", "is_default": True, "is_active": True, "served": True}]
         model = remote.get("model") or "configured default"
+        agents = [{
+            "id": profile["id"],
+            "name": profile["id"],
+            "description": "Available through the selected remote Hermes host",
+            "available": profile["served"],
+            "model": model,
+            "provider": "",
+            "is_default": profile["is_default"],
+        } for profile in profiles]
+        selected = next((profile["id"] for profile in profiles if profile["is_active"] and profile["served"]), None)
         return {
-            "agents": [{
-                "id": "default",
-                "name": transport.binding.label,
-                "description": "Selected remote Hermes host",
-                "available": True,
-                "model": model,
-                "provider": "",
-                "is_default": True,
-            }],
-            "selected_agent_id": "default",
+            "agents": agents,
+            "selected_agent_id": selected,
             "model_catalog": {
-                "profile_id": "default",
+                "profile_id": selected,
                 "current_model": model,
                 "models": [],
                 "capabilities": {"providers.switch": False},
@@ -5887,6 +5955,34 @@ def prepare_agent_console_attachments(raw_ids) -> tuple[list[dict], str | None]:
             "path": path,
         })
     return prepared, None
+
+
+def remote_console_image_inputs(raw_ids) -> tuple[list[dict], list[str], str | None]:
+    """Read validated private image snapshots into bounded Runs data URLs."""
+    prepared, error = prepare_agent_console_attachments(raw_ids)
+    if error:
+        return [], [], error
+    if any(item["metadata"].get("kind") != "image" for item in prepared):
+        return [], [], "Remote Console attachments accept text through a Context Pack only."
+    if len(prepared) > 4:
+        return [], [], "Remote Hermes accepts at most four image attachments per Console turn."
+    data_urls: list[str] = []
+    for item in prepared:
+        metadata = item["metadata"]
+        mime_type = str(metadata.get("mime_type") or "")
+        if mime_type not in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+            return [], [], "That image type is not supported by remote Hermes."
+        try:
+            fresh_metadata, payload = read_attachment_bytes(DATA_DIR, item["id"])
+        except AttachmentError:
+            return [], [], "One of the selected image attachments is unavailable."
+        if fresh_metadata.get("kind") != "image" or fresh_metadata.get("mime_type") != mime_type:
+            return [], [], "One of the selected image attachments changed."
+        item["metadata"] = public_console_attachment(fresh_metadata)
+        if not payload or len(payload) > 5 * 1024 * 1024:
+            return [], [], "Each remote image must be 5 MB or smaller."
+        data_urls.append(f"data:{mime_type};base64,{base64.b64encode(payload).decode('ascii')}")
+    return prepared, data_urls, None
 
 
 def attachment_execution_prompt(user_prompt: str, prepared: list[dict]) -> str:
@@ -6074,7 +6170,7 @@ def _remote_console_status_until_terminal(
         status = transport.get_run(remote_run_id)
         if status.get("status") in {"completed", "failed", "cancelled"}:
             return status
-        if status.get("status") == "waiting_for_approval" and return_on_approval:
+        if status.get("status") in {"waiting_for_approval", "waiting_for_clarification"} and return_on_approval:
             with AGENT_CONSOLE_LOCK:
                 current = AGENT_CONSOLE_RUNS.get(run_id)
                 cancelling = bool(current and current.get("status") == "cancelling")
@@ -6131,7 +6227,7 @@ def _request_remote_console_stop_once(
 
 
 def _apply_remote_console_event(run_id: str, event: dict) -> bool:
-    """Apply one normalized upstream event; return True for approval wait."""
+    """Apply one normalized upstream event; only a stop request ends streaming."""
 
     event_type = event.get("type")
     with AGENT_CONSOLE_LOCK:
@@ -6161,14 +6257,45 @@ def _apply_remote_console_event(run_id: str, event: dict) -> bool:
         elif event_type == "reasoning.available":
             agent_console_event(run, "Remote Hermes is reasoning", "status", {"phase": "reasoning"})
         elif event_type == "approval.request":
+            if not all(key in event for key in ("request_id", "preview", "choices")):
+                agent_console_event(
+                    run,
+                    "Remote approval could not be verified; stopping safely",
+                    "error",
+                    {"phase": "approval", "reason": "approval_contract_invalid"},
+                )
+                persist_agent_console_runs()
+                return True
+            run["action_required"] = {
+                "kind": "approval",
+                "request_id": event["request_id"],
+                "preview": event["preview"],
+                "choices": event["choices"],
+            }
+            run["status"] = "waiting_for_approval"
             agent_console_event(
                 run,
-                "Remote run needs approval; stopping safely",
-                "error",
-                {"phase": "approval", "reason": "approval_response_unavailable"},
+                "Remote run needs your approval",
+                "approval",
+                {"phase": "approval", "choices": event["choices"]},
             )
             persist_agent_console_runs()
-            return True
+            return False
+        elif event_type == "clarify.request":
+            run["action_required"] = {
+                "kind": "clarification",
+                "request_id": event["request_id"],
+                "prompt": event["prompt"],
+            }
+            run["status"] = "waiting_for_clarification"
+            agent_console_event(
+                run,
+                "Remote run needs your answer",
+                "clarification",
+                {"phase": "clarification", "type": event["prompt"]["type"]},
+            )
+            persist_agent_console_runs()
+            return False
         elif event_type in {"run.completed", "run.failed", "run.cancelled"}:
             agent_console_event(
                 run,
@@ -6195,6 +6322,7 @@ def run_remote_hermes_agent(
     submission_attempted = False
     recovery_attempted = False
     approval_unavailable = False
+    resuming = False
     terminal: dict | None = None
     try:
         with AGENT_CONSOLE_LOCK:
@@ -6217,6 +6345,10 @@ def run_remote_hermes_agent(
                 return
             if run.get("status") != "queued":
                 return
+            existing_remote_id = run.get("_remote_run_id")
+            if isinstance(existing_remote_id, str) and run.get("_remote_transport") is transport:
+                remote_run_id = existing_remote_id
+                resuming = True
             run["status"] = "running"
             run["started_at"] = now_iso()
             prompt = run.get("_execution_prompt") or run.get("prompt") or ""
@@ -6224,18 +6356,31 @@ def run_remote_hermes_agent(
             persist_agent_console_runs()
 
         transport.revalidate(DATA_DIR)
-        submission_attempted = True
-        submitted = transport.submit_run(prompt)
-        remote_run_id = submitted["run_id"]
-        with AGENT_CONSOLE_LOCK:
-            current = AGENT_CONSOLE_RUNS.get(run_id)
-            if not current:
-                return
-            current["_remote_run_id"] = remote_run_id
-            current["_remote_transport"] = transport
-            agent_console_event(current, "Remote Hermes is working", "status", {"phase": "inference"})
-            cancelling = current.get("status") != "running"
-            persist_agent_console_runs()
+        if not resuming:
+            submission_attempted = True
+            submitted = transport.submit_run(
+                prompt,
+                continuation=run.get("_remote_continuation"),
+                image_data_urls=run.get("_remote_image_data_urls"),
+            )
+            remote_run_id = submitted["run_id"]
+            with AGENT_CONSOLE_LOCK:
+                current = AGENT_CONSOLE_RUNS.get(run_id)
+                if not current:
+                    return
+                current["_remote_run_id"] = remote_run_id
+                current["_remote_transport"] = transport
+                agent_console_event(current, "Remote Hermes is working", "status", {"phase": "inference"})
+                cancelling = current.get("status") != "running"
+                persist_agent_console_runs()
+        else:
+            with AGENT_CONSOLE_LOCK:
+                current = AGENT_CONSOLE_RUNS.get(run_id)
+                if not current:
+                    return
+                agent_console_event(current, "Remote Hermes resumed", "status", {"phase": "resumed"})
+                cancelling = current.get("status") != "running"
+                persist_agent_console_runs()
         if cancelling:
             _request_remote_console_stop_once(run_id, transport, remote_run_id)
 
@@ -6272,20 +6417,22 @@ def run_remote_hermes_agent(
         except HermesTransportError as exc:
             stream_error = exc
             terminal = None
-        if (terminal or {}).get("status") == "waiting_for_approval":
+        if (terminal or {}).get("status") in {"waiting_for_approval", "waiting_for_clarification"}:
+            waiting_status = terminal["status"]
+            with AGENT_CONSOLE_LOCK:
+                current = AGENT_CONSOLE_RUNS.get(run_id)
+                action = current.get("action_required") if current else None
+                if current and isinstance(action, dict) and (
+                    (waiting_status == "waiting_for_approval" and action.get("kind") == "approval")
+                    or (waiting_status == "waiting_for_clarification" and action.get("kind") == "clarification")
+                ):
+                    current["status"] = waiting_status
+                    persist_agent_console_runs()
+                    return
             approval_unavailable = True
-            _apply_remote_console_event(run_id, {"type": "approval.request"})
             recovery_attempted = True
-            try:
-                _request_remote_console_stop_once(run_id, transport, remote_run_id)
-                terminal = _remote_console_status_until_terminal(
-                    run_id,
-                    transport,
-                    remote_run_id,
-                    wait_seconds=REMOTE_CONSOLE_STOP_VERIFY_SECONDS,
-                )
-            except HermesTransportError:
-                terminal = None
+            _request_remote_console_stop_once(run_id, transport, remote_run_id)
+            terminal = _remote_console_status_until_terminal(run_id, transport, remote_run_id, wait_seconds=REMOTE_CONSOLE_STOP_VERIFY_SECONDS)
         if terminal is None and not recovery_attempted:
             recovery_attempted = True
             try:
@@ -6319,6 +6466,7 @@ def run_remote_hermes_agent(
             current["completed_at"] = now_iso()
             current["duration_seconds"] = round(time.monotonic() - started, 1)
             status = (terminal or {}).get("status")
+            current.pop("action_required", None)
             if approval_unavailable:
                 current["status"] = "failed"
                 current["response"] = ""
@@ -6343,7 +6491,10 @@ def run_remote_hermes_agent(
             current.pop("_remote_run_id", None)
             current.pop("_remote_transport", None)
             current.pop("_remote_partial", None)
+            current.pop("_remote_continuation", None)
+            current.pop("_remote_image_data_urls", None)
             current.pop("_remote_stop_attempted", None)
+            current.pop("_remote_response_claim", None)
             persist_agent_console_runs()
     except (HermesTransportError, OSError, TypeError, ValueError) as exc:
         recovery_terminal: dict | None = None
@@ -6363,12 +6514,13 @@ def run_remote_hermes_agent(
                 recovery_terminal = None
         with AGENT_CONSOLE_LOCK:
             current = AGENT_CONSOLE_RUNS.get(run_id)
-            if current:
+            if current and current.get("status") not in {"waiting_for_approval", "waiting_for_clarification"}:
                 if current.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES:
                     return
                 current["status"] = "failed"
                 current["completed_at"] = now_iso()
                 current["response"] = ""
+                current.pop("action_required", None)
                 if submission_attempted and remote_run_id is None:
                     current["partial"] = True
                     current["error"] = HermesTransportError(
@@ -6385,17 +6537,23 @@ def run_remote_hermes_agent(
                 current.pop("_remote_run_id", None)
                 current.pop("_remote_transport", None)
                 current.pop("_remote_partial", None)
+                current.pop("_remote_continuation", None)
+                current.pop("_remote_image_data_urls", None)
                 current.pop("_remote_stop_attempted", None)
+                current.pop("_remote_response_claim", None)
                 agent_console_event(current, "Remote Hermes run could not be verified", "error", {"phase": "remote"})
                 persist_agent_console_runs()
     finally:
         with AGENT_CONSOLE_LOCK:
             current = AGENT_CONSOLE_RUNS.get(run_id)
-            if current:
+            if current and current.get("status") not in {"waiting_for_approval", "waiting_for_clarification"}:
                 current.pop("_remote_run_id", None)
                 current.pop("_remote_transport", None)
                 current.pop("_remote_partial", None)
+                current.pop("_remote_continuation", None)
+                current.pop("_remote_image_data_urls", None)
                 current.pop("_remote_stop_attempted", None)
+                current.pop("_remote_response_claim", None)
             AGENT_CONSOLE_REMOTE_WORKERS.pop(run_id, None)
 
 
@@ -6406,10 +6564,6 @@ def _start_remote_agent_console_run(
     requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
     if requested_agent_id == "hermes":
         requested_agent_id = "default"
-    if requested_agent_id != "default":
-        return {"error": "Remote profile selection is not available yet."}, 409
-    if payload.get("session_id") not in (None, ""):
-        return {"error": "Remote session continuation is not available yet."}, 409
     if payload.get("artifact_ids") not in (None, []) or payload.get("artifacts") not in (None, []):
         return {"error": "Remote artifact transfer is not available."}, 409
     raw_attachment_ids = payload.get("attachment_ids")
@@ -6424,27 +6578,6 @@ def _start_remote_agent_console_run(
     context_token = str(payload.get("remote_context_token") or "")
     if context_token and not REMOTE_CONTEXT_TOKEN_PATTERN.fullmatch(context_token):
         return {"error": "The remote Context Pack grant is invalid. Apply it again."}, 400
-    if attachment_ids and not context_token:
-        image_selected = False
-        for attachment_id in attachment_ids:
-            try:
-                metadata = get_attachment(DATA_DIR, attachment_id)
-            except AttachmentError:
-                metadata = None
-            image_selected = image_selected or bool(metadata and metadata.get("kind") == "image")
-        if image_selected:
-            return {
-                "error": (
-                    "Remote inline images are unavailable because this Hermes Runs API "
-                    "does not advertise supported image input."
-                )
-            }, 409
-        return {
-            "error": (
-                "Remote Console attachments accept text files only through a staged Context Pack; "
-                "direct file transfer is unavailable."
-            )
-        }, 409
     prompt = str(payload.get("prompt") or "").strip()
     if not prompt and context_token:
         prompt = "Use the staged Context Pack to complete the request."
@@ -6489,6 +6622,42 @@ def _start_remote_agent_console_run(
             "error_code": exc.code,
             "transport": transport.public_summary(),
         }, 503
+    try:
+        profiles = transport.read_profiles()
+    except HermesTransportError as exc:
+        if exc.code != "remote_profile_capability_unavailable":
+            return {"error": exc.public_message, "error_code": exc.code}, 503
+        profiles = [{"id": "default", "is_default": True, "is_active": True, "served": True}]
+    profile = next(
+        (
+            item for item in profiles
+            if item.get("id") == requested_agent_id and item.get("served") is True and item.get("is_active") is True
+        ),
+        None,
+    )
+    if profile is None:
+        return {"error": "Remote Hermes can run only its active served profile."}, 409
+    remote_continuation: dict | None = None
+    remote_session_alias = compact_text(payload.get("session_id"), max_length=200)
+    if remote_session_alias:
+        try:
+            upstream_session_id, _partial, _structural_ids = _remote_session_id_for_alias(
+                transport.binding.binding_id,
+                remote_session_alias,
+            )
+            remote_continuation = transport.get_continuation_descriptor(upstream_session_id)
+        except HermesTransportError as exc:
+            return {"error": exc.public_message, "error_code": exc.code}, 409
+    direct_images: list[dict] = []
+    remote_image_data_urls: list[str] | None = None
+    if attachment_ids and not context_token:
+        direct_images, remote_image_data_urls, attachment_error = remote_console_image_inputs(list(attachment_ids))
+        if attachment_error:
+            return {"error": attachment_error}, 409
+        if "run_inline_images" not in set(remote.get("capabilities") or ()):
+            return {"error": "This remote Hermes runtime does not advertise safe Runs image input."}, 409
+    if remote_continuation is not None and remote_image_data_urls is not None:
+        return {"error": "Remote Hermes cannot combine a session continuation with image input."}, 409
     if not remote_context_binding_is_current(context_binding):
         return {
             "error": "This Context Pack changed. Apply it again before sending."
@@ -6517,7 +6686,7 @@ def _start_remote_agent_console_run(
         run_id = f"run_{uuid4().hex[:14]}"
         bound_context: list[dict] = []
         try:
-            for ordinal, item in enumerate(prepared_context):
+            for ordinal, item in enumerate([*prepared_context, *direct_images]):
                 bound = bind_run_attachment(
                     DATA_DIR,
                     item["id"],
@@ -6534,8 +6703,8 @@ def _start_remote_agent_console_run(
             }, 409
         run = {
             "id": run_id,
-            "agent_id": "default",
-            "agent_name": transport.binding.label,
+            "agent_id": requested_agent_id,
+            "agent_name": requested_agent_id,
             "model": remote.get("model") or "configured default",
             "transport_mode": "remote",
             "connection_binding_id": transport.binding.binding_id,
@@ -6543,7 +6712,7 @@ def _start_remote_agent_console_run(
             "attachments": [item["metadata"] for item in bound_context],
             "artifacts": [],
             "status": "queued",
-            "session_id": None,
+            "session_id": remote_session_alias or None,
             "response": "",
             "error": "",
             "events": [],
@@ -6552,8 +6721,10 @@ def _start_remote_agent_console_run(
             "started_at": None,
             "completed_at": None,
             "_execution_prompt": execution_prompt,
+            "_remote_continuation": remote_continuation,
+            "_remote_image_data_urls": remote_image_data_urls,
         }
-        agent_console_event(run, "Prompt queued for remote Hermes", "queued", {"agent_id": "default"})
+        agent_console_event(run, "Prompt queued for remote Hermes", "queued", {"agent_id": requested_agent_id})
         AGENT_CONSOLE_RUNS[run_id] = run
         trim_agent_console_runs_locked()
         persist_agent_console_runs()
@@ -6575,6 +6746,87 @@ def start_agent_console_run(payload):
         return {"error": "Agent prompt payload must be a JSON object"}, 400
     with HERMES_CONNECTION_OPERATION_LOCK:
         return _start_agent_console_run_locked(payload)
+
+
+def respond_to_remote_console_action(run_id: str, payload):
+    """Submit one operator-confirmed response to the exact pending remote request."""
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        return {"error": "Review the request and confirm the response before sending it."}, 400
+    with AGENT_CONSOLE_LOCK:
+        run = AGENT_CONSOLE_RUNS.get(run_id)
+        if not run or run.get("transport_mode") != "remote" or run.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES:
+            return {"error": "That remote Console run is no longer active."}, 409
+        action = run.get("action_required") if isinstance(run.get("action_required"), dict) else None
+        remote_run_id = run.get("_remote_run_id")
+        transport = run.get("_remote_transport")
+        if not action or not isinstance(remote_run_id, str) or not isinstance(transport, RemoteHermesConsoleTransport):
+            return {"error": "There is no current remote request to answer."}, 409
+        expected_kind = action.get("kind")
+        request_id = action.get("request_id")
+    if payload.get("kind") != expected_kind or payload.get("request_id") != request_id:
+        return {"error": "The remote request changed. Review the current request again."}, 409
+    if expected_kind == "approval":
+        choice = compact_text(payload.get("choice"), max_length=16).lower()
+        if choice not in {"once", "deny"} or choice not in action.get("choices", []):
+            return {"error": "Choose Allow once or Deny for this exact request."}, 400
+        response = None
+    elif expected_kind == "clarification":
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            return {"error": "A structured clarification response is required."}, 400
+        prompt = action.get("prompt") if isinstance(action.get("prompt"), dict) else {}
+        if prompt.get("type") == "choice":
+            choices = prompt.get("choices") if isinstance(prompt.get("choices"), list) else []
+            choice_ids = {item.get("id") for item in choices if isinstance(item, dict)}
+            if response.get("type") != "choice" or response.get("choice_id") not in choice_ids:
+                return {"error": "Choose one of the current remote options."}, 400
+        elif prompt.get("type") == "text":
+            answer = response.get("text")
+            if response.get("type") != "text" or not isinstance(answer, str) or not answer.strip() or len(answer) > 2_000 or "\x00" in answer:
+                return {"error": "Provide a short answer to the current remote question."}, 400
+        else:
+            return {"error": "The remote question could not be verified."}, 409
+    else:
+        return {"error": "That remote request type is not supported."}, 409
+    with AGENT_CONSOLE_LOCK:
+        current = AGENT_CONSOLE_RUNS.get(run_id)
+        if (
+            not current
+            or current.get("action_required", {}).get("request_id") != request_id
+            or current.get("_remote_response_claim") is not None
+        ):
+            return {"error": "That remote request is already being answered or changed."}, 409
+        current["_remote_response_claim"] = request_id
+    try:
+        transport.revalidate(DATA_DIR)
+        if expected_kind == "approval":
+            transport.respond_to_approval(remote_run_id, request_id, choice)
+        else:
+            transport.respond_to_clarification(remote_run_id, request_id, response)
+        verified = transport.get_run(remote_run_id)
+    except HermesTransportError as exc:
+        return {"error": exc.public_message, "error_code": exc.code}, 502
+    if verified.get("status") != "running":
+        return {"error": "Hermes accepted the response but the run could not be verified as resumed.", "partial": True}, 502
+    with AGENT_CONSOLE_LOCK:
+        current = AGENT_CONSOLE_RUNS.get(run_id)
+        if current and current.get("action_required", {}).get("request_id") == request_id and current.get("_remote_response_claim") == request_id:
+            current.pop("action_required", None)
+            current.pop("_remote_response_claim", None)
+            current["status"] = "queued"
+            agent_console_event(current, "Remote response verified", "status", {"phase": expected_kind})
+            persist_agent_console_runs()
+            snapshot = agent_console_snapshot(current)
+            worker = threading.Thread(
+                target=run_remote_hermes_agent,
+                args=(run_id, transport),
+                daemon=True,
+                name=f"mentat-{run_id}",
+            )
+            AGENT_CONSOLE_REMOTE_WORKERS[run_id] = worker
+            worker.start()
+            return {"ok": True, "run": snapshot}, 200
+    return {"error": "The remote response was accepted but Mentat could not update the run state.", "partial": True}, 502
 
 
 def _start_agent_console_run_locked(payload):
@@ -7262,6 +7514,7 @@ POST_ROUTES = [
     (re.compile(r"^/api/agent-messages$"), create_agent_message, True),
     (re.compile(r"^/api/agent-messages/([^/]+)/state$"), update_agent_message_state, True),
     (re.compile(r"^/api/agent-console/runs$"), start_agent_console_run, True),
+    (re.compile(r"^/api/agent-console/runs/([^/]+)/response$"), respond_to_remote_console_action, True),
     (re.compile(r"^/api/agent-console/workspace-attachments$"), create_workspace_attachment, True),
     (re.compile(r"^/api/agent-console/models/refresh$"), refresh_agent_console_models, True),
     (re.compile(r"^/api/agent-console/provider/preview$"), preview_agent_console_provider_switch, True),

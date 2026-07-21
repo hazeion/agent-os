@@ -56,6 +56,7 @@ FIXED_PATHS = frozenset(
         "/v1/capabilities",
         "/v1/skills",
         "/v1/toolsets",
+        "/v1/profiles",
     }
 )
 _RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
@@ -72,6 +73,22 @@ _KNOWN_BOOLEAN_FEATURES = frozenset(
         "run_events_sse",
         "run_stop",
         "run_approval_response",
+        "run_approval_request_binding",
+        "run_approval_structured_preview",
+        "run_clarification_response",
+        "run_clarification_request_binding",
+        "clarification_events",
+        "run_session_continuation",
+        "run_session_continuation_exact_revision",
+        "run_session_continuation_stoppable",
+        "run_inline_images",
+        "profile_inventory",
+        "profile_inventory_complete",
+        "profile_inventory_requires_api_key",
+        "kanban_api",
+        "kanban_api_revisioned",
+        "kanban_api_idempotency",
+        "kanban_api_requires_api_key",
         "tool_progress_events",
         "approval_events",
         "session_resources",
@@ -102,6 +119,25 @@ _CAPABILITY_INVENTORY_ENDPOINTS = {
     "skills": ("GET", "/v1/skills"),
     "toolsets": ("GET", "/v1/toolsets"),
 }
+_PROFILE_INVENTORY_ENDPOINT = ("GET", "/v1/profiles")
+_CONTINUATION_ENDPOINT = ("GET", "/v1/sessions/{session_id}/continuation")
+_APPROVAL_ENDPOINT = ("POST", "/v1/runs/{run_id}/approval")
+_CLARIFICATION_ENDPOINT = ("POST", "/v1/runs/{run_id}/clarification")
+_KANBAN_ENDPOINTS = {
+    "kanban_boards": ("GET", "/v1/kanban/boards"),
+    "kanban_profiles": ("GET", "/v1/kanban/profiles?board={board}"),
+    "kanban_tasks": ("GET", "/v1/kanban/tasks?board={board}"),
+    "kanban_task": ("GET", "/v1/kanban/tasks/{task_id}?board={board}"),
+    "kanban_task_create": ("POST", "/v1/kanban/tasks?board={board}"),
+    "kanban_task_action": ("POST", "/v1/kanban/tasks/{task_id}/actions?board={board}"),
+}
+_APPROVAL_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_CLARIFICATION_REQUEST_ID = re.compile(r"clarify_[A-Za-z0-9_-]{1,120}\Z")
+_CONTINUATION_REVISION = re.compile(r"sessionrev_[0-9a-f]{64}\Z")
+_KANBAN_REVISION = re.compile(r"kanbanrev_[0-9a-f]{64}\Z")
+_KANBAN_IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}\Z")
+_KANBAN_BOARD = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+_KANBAN_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 MAX_REMOTE_SKILLS = 500
 MAX_REMOTE_TOOLSETS = 128
 MAX_REMOTE_TOOLS_PER_TOOLSET = 256
@@ -3017,6 +3053,140 @@ class RemoteHermesClient:
             except Exception:
                 pass
 
+    def _contract_json_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        expected_status: int = 200,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        """Call one prevalidated contract path without exposing generic HTTP."""
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "Mentat/remote-hermes-v1",
+        }
+        encoded: bytes | None = None
+        if body is not None:
+            try:
+                encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise RemoteHermesError("remote_run_request_invalid") from exc
+            if len(encoded) > MAX_RESPONSE_BYTES:
+                raise RemoteHermesError("remote_run_request_invalid")
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(encoded))
+        connection = self._connection()
+        try:
+            if encoded is None:
+                connection.request(method, path, headers=headers)
+            else:
+                connection.request(method, path, body=encoded, headers=headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            if 300 <= status <= 399:
+                raise RemoteHermesError("remote_redirect_refused")
+            if status in {401, 403}:
+                raise RemoteHermesError("remote_authentication_failed")
+            if status != expected_status:
+                raise RemoteHermesError("remote_run_rejected")
+            content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().casefold()
+            if content_type not in {"application/json", "application/problem+json"}:
+                raise RemoteHermesError("remote_content_type_invalid")
+            declared = response.getheader("Content-Length")
+            if declared is not None:
+                try:
+                    if int(declared) < 0 or int(declared) > self.maximum_bytes:
+                        raise RemoteHermesError("remote_response_too_large")
+                except ValueError as exc:
+                    raise RemoteHermesError("remote_response_invalid") from exc
+            raw = response.read(self.maximum_bytes + 1)
+            if len(raw) > self.maximum_bytes:
+                raise RemoteHermesError("remote_response_too_large")
+            try:
+                payload = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+            except (UnicodeError, ValueError, RecursionError) as exc:
+                raise RemoteHermesError("remote_response_invalid") from exc
+            if type(payload) is not dict or not _safe_shape(payload):
+                raise RemoteHermesError("remote_response_invalid")
+            return payload
+        except RemoteHermesError:
+            raise
+        except ssl.SSLCertVerificationError as exc:
+            raise RemoteHermesError("remote_certificate_invalid") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RemoteHermesError("remote_timeout") from exc
+        except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+            raise RemoteHermesError("remote_unavailable") from exc
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    def _require_features(self, *required: str) -> None:
+        capabilities = self._trusted_capabilities()
+        if not set(required).issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+
+    def get_continuation_descriptor(self, session_id: str) -> dict[str, Any]:
+        session_id = self._validated_session_id(session_id)
+        self._require_features("run_session_continuation", "run_session_continuation_exact_revision", "run_session_continuation_stoppable")
+        payload = self._contract_json_request("GET", f"/v1/sessions/{session_id}/continuation")
+        if (
+            payload.get("object") != "hermes.session.continuation"
+            or payload.get("version") != 1
+            or self._validated_session_id(payload.get("session_id")) != session_id
+            or not isinstance(payload.get("revision"), str)
+            or not _CONTINUATION_REVISION.fullmatch(payload["revision"])
+        ):
+            raise RemoteHermesError("remote_session_schema_invalid")
+        return {"version": 1, "session_id": session_id, "revision": payload["revision"]}
+
+    def submit_continuation(self, user_input: str, descriptor: Mapping[str, Any]) -> dict[str, str]:
+        if not isinstance(descriptor, Mapping):
+            raise RemoteHermesError("remote_run_request_invalid")
+        session_id = self._validated_session_id(descriptor.get("session_id"))
+        revision = descriptor.get("revision")
+        if descriptor.get("version") != 1 or not isinstance(revision, str) or not _CONTINUATION_REVISION.fullmatch(revision):
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_session_continuation", "run_session_continuation_exact_revision", "run_session_continuation_stoppable")
+        return self._submit_run_payload(user_input, {"version": 1, "session_id": session_id, "revision": revision})
+
+    def respond_to_approval(self, run_id: str, request_id: str, choice: str) -> dict[str, Any]:
+        run_id = self._validated_run_id(run_id)
+        if not isinstance(request_id, str) or not _APPROVAL_REQUEST_ID.fullmatch(request_id) or choice not in {"once", "deny"}:
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_approval_response", "run_approval_request_binding", "run_approval_structured_preview")
+        payload = self._contract_json_request("POST", f"/v1/runs/{run_id}/approval", body={"request_id": request_id, "choice": choice})
+        if payload.get("object") != "hermes.run.approval_response" or payload.get("run_id") != run_id or payload.get("request_id") != request_id or payload.get("choice") != choice or type(payload.get("resolved")) is not int or payload["resolved"] < 1:
+            raise RemoteHermesError("remote_run_schema_invalid")
+        return {"request_id": request_id, "choice": choice, "resolved": payload["resolved"]}
+
+    def respond_to_clarification(self, run_id: str, request_id: str, response: Mapping[str, Any]) -> dict[str, Any]:
+        run_id = self._validated_run_id(run_id)
+        if not isinstance(request_id, str) or not _CLARIFICATION_REQUEST_ID.fullmatch(request_id) or not isinstance(response, Mapping):
+            raise RemoteHermesError("remote_run_request_invalid")
+        response_type = response.get("type")
+        if response_type == "choice":
+            choice_id = response.get("choice_id")
+            if not isinstance(choice_id, str) or not re.fullmatch(r"choice-[1-4]", choice_id):
+                raise RemoteHermesError("remote_run_request_invalid")
+            body_response = {"type": "choice", "choice_id": choice_id}
+        elif response_type == "text":
+            text = response.get("text")
+            if not isinstance(text, str) or not text.strip() or len(text) > 2_000 or "\x00" in text:
+                raise RemoteHermesError("remote_run_request_invalid")
+            body_response = {"type": "text", "text": text.strip()}
+        else:
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_clarification_response", "run_clarification_request_binding", "clarification_events")
+        payload = self._contract_json_request("POST", f"/v1/runs/{run_id}/clarification", body={"request_id": request_id, "response": body_response})
+        if payload.get("object") != "hermes.run.clarification_response" or payload.get("run_id") != run_id or payload.get("request_id") != request_id or payload.get("type") != response_type:
+            raise RemoteHermesError("remote_run_schema_invalid")
+        return {"request_id": request_id, "type": response_type, **({"choice_id": body_response["choice_id"]} if response_type == "choice" else {})}
+
     def require_console_run_capabilities(self) -> dict[str, Any]:
         discovery = self.discover()
         required = {"run_submission", "run_status", "run_events_sse", "run_stop"}
@@ -3024,7 +3194,25 @@ class RemoteHermesClient:
             raise RemoteHermesError("remote_run_capability_unavailable")
         return discovery
 
-    def submit_run(self, user_input: str) -> dict[str, str]:
+    def require_kanban_capabilities(self) -> dict[str, Any]:
+        """Return trusted capabilities only when the fixed Kanban contract is complete."""
+        capabilities = self._trusted_capabilities()
+        required = {
+            "kanban_api",
+            "kanban_api_revisioned",
+            "kanban_api_idempotency",
+            "kanban_api_requires_api_key",
+        }
+        if not required.issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+        return capabilities
+
+    def _submit_run_payload(
+        self,
+        user_input: str,
+        continuation: Mapping[str, Any] | None = None,
+        images: list[dict[str, Any]] | None = None,
+    ) -> dict[str, str]:
         if (
             not isinstance(user_input, str)
             or not user_input.strip()
@@ -3032,16 +3220,105 @@ class RemoteHermesClient:
             or "\x00" in user_input
         ):
             raise RemoteHermesError("remote_run_request_invalid")
+        body: dict[str, Any] = {"input": user_input}
+        if continuation is not None:
+            body["continuation"] = dict(continuation)
+        if images is not None:
+            body["input"] = [{"type": "input_text", "text": user_input}, *images]
         payload = self._run_json_request(
             "POST",
             "/v1/runs",
             expected_status=202,
-            body={"input": user_input},
+            body=body,
         )
         run_id = self._validated_run_id(payload.get("run_id"))
         if payload.get("status") != "started":
             raise RemoteHermesError("remote_run_schema_invalid")
         return {"run_id": run_id, "status": "started"}
+
+    def submit_run(self, user_input: str) -> dict[str, str]:
+        return self._submit_run_payload(user_input)
+
+    def submit_run_with_images(self, user_input: str, image_data_urls: list[str]) -> dict[str, str]:
+        if not isinstance(image_data_urls, list) or not (1 <= len(image_data_urls) <= 4):
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_inline_images")
+        images: list[dict[str, Any]] = []
+        total_bytes = 0
+        for value in image_data_urls:
+            if not isinstance(value, str) or len(value) > 7_000_000:
+                raise RemoteHermesError("remote_run_request_invalid")
+            match = re.fullmatch(r"data:(image/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})", value)
+            if match is None:
+                raise RemoteHermesError("remote_run_request_invalid")
+            encoded = match.group(2)
+            padding = 2 if encoded.endswith("==") else 1 if encoded.endswith("=") else 0
+            decoded_size = (len(encoded) * 3) // 4 - padding
+            if decoded_size <= 0 or decoded_size > 5 * 1024 * 1024:
+                raise RemoteHermesError("remote_run_request_invalid")
+            total_bytes += decoded_size
+            if total_bytes > 20 * 1024 * 1024:
+                raise RemoteHermesError("remote_run_request_invalid")
+            images.append({"type": "input_image", "image_url": value, "detail": "auto"})
+        return self._submit_run_payload(user_input, images=images)
+
+    def read_profiles(self) -> list[dict[str, Any]]:
+        capabilities = self._trusted_capabilities()
+        if not {"profile_inventory", "profile_inventory_complete", "profile_inventory_requires_api_key"}.issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+        payload = self._request_json("/v1/profiles", authenticated=True, root_list_limits={"data": 1_000})
+        if payload.get("object") != "list" or payload.get("version") != 1 or payload.get("complete") is not True or not isinstance(payload.get("active_profile"), str) or not isinstance(payload.get("data"), list):
+            raise RemoteHermesError("remote_schema_unsupported")
+        profiles: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        active_count = 0
+        for item in payload["data"]:
+            if type(item) is not dict or set(item) != {"id", "object", "is_default", "is_active", "served"}:
+                raise RemoteHermesError("remote_schema_unsupported")
+            profile_id = item.get("id")
+            if not isinstance(profile_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", profile_id) or profile_id in seen or item.get("object") != "hermes.profile" or type(item.get("is_default")) is not bool or type(item.get("is_active")) is not bool or type(item.get("served")) is not bool:
+                raise RemoteHermesError("remote_schema_unsupported")
+            seen.add(profile_id)
+            active_count += int(item["is_active"])
+            profiles.append({"id": profile_id, "is_default": item["is_default"], "is_active": item["is_active"], "served": item["served"]})
+        if (
+            not profiles
+            or active_count != 1
+            or payload["active_profile"] not in seen
+            or not any(item["id"] == payload["active_profile"] and item["is_active"] for item in profiles)
+            or sum(int(item["is_default"]) for item in profiles) != 1
+        ):
+            raise RemoteHermesError("remote_schema_unsupported")
+        return profiles
+
+    def kanban_request(
+        self,
+        operation: str,
+        *,
+        board: str | None = None,
+        task_id: str | None = None,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        """Execute only one named revisioned Kanban operation."""
+        self._require_features("kanban_api", "kanban_api_revisioned", "kanban_api_idempotency", "kanban_api_requires_api_key")
+        if operation == "boards" and board is None and task_id is None and body is None:
+            return self._contract_json_request("GET", "/v1/kanban/boards")
+        if not isinstance(board, str) or not _KANBAN_BOARD.fullmatch(board):
+            raise RemoteHermesError("remote_run_request_invalid")
+        suffix = f"?board={board}"
+        if operation == "profiles" and task_id is None and body is None:
+            return self._contract_json_request("GET", "/v1/kanban/profiles" + suffix)
+        if operation == "tasks" and task_id is None and body is None:
+            return self._contract_json_request("GET", "/v1/kanban/tasks" + suffix)
+        if operation == "create" and task_id is None and isinstance(body, Mapping):
+            return self._contract_json_request("POST", "/v1/kanban/tasks" + suffix, body=body)
+        if not isinstance(task_id, str) or not _KANBAN_TASK_ID.fullmatch(task_id):
+            raise RemoteHermesError("remote_run_request_invalid")
+        if operation == "task" and body is None:
+            return self._contract_json_request("GET", f"/v1/kanban/tasks/{task_id}" + suffix)
+        if operation == "action" and isinstance(body, Mapping):
+            return self._contract_json_request("POST", f"/v1/kanban/tasks/{task_id}/actions" + suffix, body=body)
+        raise RemoteHermesError("remote_path_not_allowed")
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         run_id = self._validated_run_id(run_id)
@@ -3113,7 +3390,49 @@ class RemoteHermesClient:
         if event_type == "reasoning.available":
             return {"type": event_type}
         if event_type == "approval.request":
-            return {"type": event_type}
+            request_id = payload.get("request_id")
+            preview = payload.get("preview")
+            choices = payload.get("choices")
+            if (
+                not isinstance(request_id, str)
+                or not _APPROVAL_REQUEST_ID.fullmatch(request_id)
+                or type(preview) is not dict
+                or set(preview) != {"version", "category", "title", "summary", "risk_labels"}
+                or preview.get("version") != 1
+                or not all(isinstance(preview.get(key), str) and 1 <= len(preview[key]) <= 500 and "\x00" not in preview[key] for key in ("category", "title", "summary"))
+                or not isinstance(preview.get("risk_labels"), list)
+                or len(preview["risk_labels"]) > 8
+                or not all(isinstance(label, str) and 1 <= len(label) <= 120 and "\x00" not in label for label in preview["risk_labels"])
+                or not isinstance(choices, list)
+                or not {"once", "deny"}.issubset(set(choices))
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            if any(self._contains_private_run_text(value, run_id) or _contains_private_public_text(value) for value in (
+                preview["category"], preview["title"], preview["summary"], *preview["risk_labels"]
+            )):
+                raise RemoteHermesError("remote_private_reflection")
+            return {"type": event_type, "request_id": request_id, "preview": dict(preview), "choices": [choice for choice in ("once", "deny") if choice in choices]}
+        if event_type == "clarify.request":
+            request_id = payload.get("request_id")
+            prompt = payload.get("prompt")
+            if not isinstance(request_id, str) or not _CLARIFICATION_REQUEST_ID.fullmatch(request_id) or type(prompt) is not dict or prompt.get("version") != 1 or prompt.get("type") not in {"choice", "text"} or not isinstance(prompt.get("question"), str) or not prompt["question"].strip() or len(prompt["question"]) > 2_000 or "\x00" in prompt["question"]:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            normalized_prompt: dict[str, Any] = {"version": 1, "type": prompt["type"], "question": prompt["question"]}
+            if prompt["type"] == "choice":
+                choices = prompt.get("choices")
+                if not isinstance(choices, list) or not (1 <= len(choices) <= 4):
+                    raise RemoteHermesError("remote_run_schema_invalid")
+                normalized_choices = []
+                for choice in choices:
+                    if type(choice) is not dict or set(choice) != {"id", "label"} or not isinstance(choice.get("id"), str) or not re.fullmatch(r"choice-[1-4]", choice["id"]) or not isinstance(choice.get("label"), str) or not choice["label"].strip() or len(choice["label"]) > 500 or "\x00" in choice["label"]:
+                        raise RemoteHermesError("remote_run_schema_invalid")
+                    normalized_choices.append({"id": choice["id"], "label": choice["label"]})
+                normalized_prompt["choices"] = normalized_choices
+            if any(self._contains_private_run_text(value, run_id) or _contains_private_public_text(value) for value in (
+                normalized_prompt["question"], *(choice["label"] for choice in normalized_prompt.get("choices", []))
+            )):
+                raise RemoteHermesError("remote_private_reflection")
+            return {"type": event_type, "request_id": request_id, "prompt": normalized_prompt}
         if event_type in {"run.cancelled", "run.failed"}:
             return {"type": event_type}
         if event_type == "run.completed":
@@ -3304,6 +3623,48 @@ class RemoteHermesClient:
             ) == expected
             for name, expected in _CAPABILITY_INVENTORY_ENDPOINTS.items()
         )
+        if features.get("profile_inventory") is True:
+            if (
+                features.get("profile_inventory_version") != 1
+                or features.get("profile_inventory_complete") is not True
+                or features.get("profile_inventory_requires_api_key") is not True
+                or type(endpoints.get("profiles")) is not dict
+                or (endpoints["profiles"].get("method"), endpoints["profiles"].get("path")) != _PROFILE_INVENTORY_ENDPOINT
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_session_continuation") is True:
+            if (
+                features.get("run_session_continuation_version") != 1
+                or features.get("run_session_continuation_exact_revision") is not True
+                or features.get("run_session_continuation_stoppable") is not True
+                or type(endpoints.get("session_continuation")) is not dict
+                or (endpoints["session_continuation"].get("method"), endpoints["session_continuation"].get("path")) != _CONTINUATION_ENDPOINT
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_approval_response") is True:
+            if features.get("run_approval_request_binding") is not True or features.get("run_approval_structured_preview") is not True or features.get("run_approval_preview_version") != 1 or type(endpoints.get("run_approval")) is not dict or (endpoints["run_approval"].get("method"), endpoints["run_approval"].get("path")) != _APPROVAL_ENDPOINT:
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_clarification_response") is True:
+            if features.get("run_clarification_request_binding") is not True or features.get("clarification_events") is not True or features.get("run_clarification_prompt_version") != 1 or type(endpoints.get("run_clarification")) is not dict or (endpoints["run_clarification"].get("method"), endpoints["run_clarification"].get("path")) != _CLARIFICATION_ENDPOINT:
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_inline_images") is True:
+            image_endpoint = endpoints.get("run_inline_images")
+            if (
+                features.get("run_inline_images_version") != 1
+                or features.get("run_inline_images_data_urls_only") is not True
+                or features.get("run_inline_images_max_count") != 4
+                or features.get("run_inline_images_max_bytes") != 5 * 1024 * 1024
+                or type(image_endpoint) is not dict
+                or (image_endpoint.get("method"), image_endpoint.get("path"), image_endpoint.get("version"), image_endpoint.get("image_transport"), image_endpoint.get("max_count"), image_endpoint.get("max_bytes_per_image")) != ("POST", "/v1/runs", 1, "data_url_only", 4, 5 * 1024 * 1024)
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("kanban_api") is True:
+            if features.get("kanban_api_version") != 1 or features.get("kanban_api_revisioned") is not True or features.get("kanban_api_idempotency") is not True or features.get("kanban_api_requires_api_key") is not True:
+                raise RemoteHermesError("remote_schema_unsupported")
+            for name, expected in _KANBAN_ENDPOINTS.items():
+                item = endpoints.get(name)
+                if type(item) is not dict or (item.get("method"), item.get("path")) != expected:
+                    raise RemoteHermesError("remote_schema_unsupported")
         model = _bounded_text(payload.get("model"), maximum=160)
         if not _SAFE_MODEL.fullmatch(model) or model.startswith("/") or ".." in model or "://" in model or "\\" in model:
             raise RemoteHermesError("remote_schema_unsupported")
