@@ -12,4 +12,4 @@ colorama==0.4.6
 macholib==1.16.4
 pefile==2024.8.26
 pywin32-ctypes==0.2.3
-setuptools==80.9.0
+setuptools==83.0.0

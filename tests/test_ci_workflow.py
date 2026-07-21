@@ -26,12 +26,12 @@ class CiWorkflowContractTests(unittest.TestCase):
     def test_declares_the_complete_os_and_python_matrix(self):
         workflow = self.workflow()
 
-        for runner in ("ubuntu-latest", "macos-latest"):
+        for runner in ("ubuntu-24.04", "macos-15-intel"):
             self.assertEqual(workflow.count(f"          - {runner}"), 1)
         for version in ("3.11", "3.12", "3.13"):
             self.assertEqual(workflow.count(f'          - "{version}"'), 2)
         self.assertIn("runs-on: ${{ matrix.os }}", workflow)
-        self.assertEqual(workflow.count("runs-on: windows-latest"), 1)
+        self.assertEqual(workflow.count("runs-on: windows-2025"), 1)
         self.assertIn("python-version: ${{ matrix.python-version }}", workflow)
         self.assertEqual(workflow.count("fail-fast: false"), 2)
         self.assertIn(
@@ -42,7 +42,7 @@ class CiWorkflowContractTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "windows-latest / Python ${{ matrix.python-version }} / "
+            "windows-2025 / Python ${{ matrix.python-version }} / "
             "group ${{ matrix.group }}",
             workflow,
         )
@@ -52,11 +52,23 @@ class CiWorkflowContractTests(unittest.TestCase):
     def test_uses_fixed_official_toolchain_actions_and_pinned_dependencies(self):
         workflow = self.workflow()
 
-        self.assertIn("uses: actions/checkout@v6", workflow)
+        checkout = (
+            "uses: actions/checkout@"
+            "8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1"
+        )
+        setup_python = (
+            "uses: actions/setup-python@"
+            "a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0"
+        )
+        setup_node = (
+            "uses: actions/setup-node@"
+            "53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0"
+        )
+        self.assertIn(checkout, workflow)
         self.assertIn("persist-credentials: false", workflow)
-        self.assertIn("uses: actions/setup-python@v6", workflow)
-        self.assertIn("uses: actions/setup-node@v7", workflow)
-        self.assertIn("node-version: 24", workflow)
+        self.assertIn(setup_python, workflow)
+        self.assertIn(setup_node, workflow)
+        self.assertIn("node-version: 24.18.0", workflow)
         self.assertIn("python -m pip install -r requirements.txt", workflow)
         action_uses = [
             line.strip()
@@ -66,12 +78,12 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertEqual(
             action_uses,
             [
-                "uses: actions/checkout@v6",
-                "uses: actions/setup-python@v6",
-                "uses: actions/setup-node@v7",
-                "uses: actions/checkout@v6",
-                "uses: actions/setup-python@v6",
-                "uses: actions/setup-node@v7",
+                checkout,
+                setup_python,
+                setup_node,
+                checkout,
+                setup_python,
+                setup_node,
             ],
         )
 

@@ -2,6 +2,11 @@ name: Signed beta artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact beta tag to create after both signed installers pass
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,9 +16,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-source:
+    name: Verify protected release source
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify exact commit checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/verify_release_checks.py
+
   macos:
     name: Signed and notarized macOS package
     if: github.ref == 'refs/heads/main' && github.ref_protected
+    needs:
+      - release-source
     runs-on: macos-15-intel
     environment: beta-release
     steps:
@@ -146,6 +171,8 @@ jobs:
   windows:
     name: Signed Windows installer
     if: github.ref == 'refs/heads/main' && github.ref_protected
+    needs:
+      - release-source
     runs-on: windows-2025
     environment: beta-release
     steps:
@@ -260,3 +287,48 @@ jobs:
           }
           Remove-Item "$env:RUNNER_TEMP/mentat-signing.pfx" -Force -ErrorAction SilentlyContinue
           Remove-Item $thumbprintPath -Force -ErrorAction SilentlyContinue
+
+  release:
+    name: Signed release and tag required
+    if: ${{ always() }}
+    needs:
+      - release-source
+      - macos
+      - windows
+    runs-on: ubuntu-24.04
+    environment: beta-release
+    permissions:
+      contents: write
+    steps:
+      - name: Verify every protected release job
+        env:
+          SOURCE_RESULT: ${{ needs.release-source.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: |
+          test "$SOURCE_RESULT" = success
+          test "$MACOS_RESULT" = success
+          test "$WINDOWS_RESULT" = success
+
+      - name: Check out exact signed revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+
+      - name: Create the validated beta tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          expected_tag=$(python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION)')
+          test "$RELEASE_TAG" = "$expected_tag"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release tag already exists' >&2
+            exit 1
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag --annotate "$RELEASE_TAG" --message "Mentat $RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
