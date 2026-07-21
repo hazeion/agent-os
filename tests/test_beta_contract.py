@@ -111,9 +111,11 @@ class BetaContractTests(unittest.TestCase):
         ):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
-        self.assertTrue(next_actions.lstrip().startswith("1. Keep the six remote contracts capability-gated"))
+        self.assertTrue(next_actions.lstrip().startswith("1. Run the mandatory remote contract matrix"))
         self.assertIn("mentat-beta-contracts", next_actions)
-        self.assertIn("Milestone 3", next_actions)
+        self.assertIn("signed numbered-RC workflow", next_actions)
+        self.assertIn("limited cohort", next_actions)
+        self.assertIn("protected exact-byte", next_actions)
         self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 
@@ -129,6 +131,38 @@ class BetaContractTests(unittest.TestCase):
             "./run.sh",
         ):
             self.assertIn(first_run_step, README)
+
+    def test_roadmap_separates_repository_readiness_from_external_release_gates(self):
+        baseline = normalized_section(ROADMAP, "## Current baseline", "## How roadmap work is organized")
+        milestone_map = normalized_section(ROADMAP, "## Milestone map", "## Milestone 0")
+        done = section(ROADMAP, "## Public beta definition of done", "## Work intentionally deferred")
+        next_actions = ROADMAP.split("## Current next actions", 1)[1]
+
+        self.assertIn("Repository implementation complete through Milestone 8", ROADMAP)
+        self.assertIn("remaining gaps are external execution evidence", baseline)
+        self.assertNotIn("there is no installable Python package", baseline.lower())
+        self.assertIn("Repository tooling complete; signed clean-machine evidence remains in 6", milestone_map)
+        self.assertIn("Repository kit complete; external cohort not started", milestone_map)
+        self.assertIn("Repository promotion complete; publication blocked by 6 and 7", milestone_map)
+        self.assertIn("Repository tooling complete; signed rehearsal externally gated", milestone_map)
+        self.assertEqual(done.count("- [x]"), 9)
+        self.assertEqual(done.count("- [ ]"), 5)
+        for unfinished in (
+            "- [ ] A signed and notarized native installer for macOS",
+            "- [ ] Release artifacts, checksums, notes, and rollback instructions",
+            "- [ ] The limited external beta meets its cohort",
+            "- [ ] There are no unresolved P0 or P1 issues",
+            "- [ ] One remote Hermes endpoint can provide every mandatory capability",
+        ):
+            self.assertIn(unfinished, done)
+        for required in (
+            "release immutability",
+            "real operator-managed",
+            "another person",
+            "limited cohort",
+            "protected exact-byte",
+        ):
+            self.assertIn(required, next_actions)
 
     def test_remote_contract_records_required_parity_and_safe_degradation(self):
         for required in (
