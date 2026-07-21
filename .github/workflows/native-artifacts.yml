@@ -79,7 +79,10 @@ jobs:
           chmod 755 "$fixture_app/Contents/MacOS/Mentat"
           printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Mentat</string><key>CFBundleIdentifier</key><string>dev.mentat.local</string><key>CFBundleVersion</key><string>0.0.0</string></dict></plist>' >"$fixture_app/Contents/Info.plist"
           printf 'old application layout\n' >"$fixture_app/Contents/Resources/stale-from-baseline.txt"
-          pkgbuild --root "$fixture_root" --install-location / --identifier dev.mentat.local --version 0.0.0 "$RUNNER_TEMP/mentat-baseline.pkg"
+          fixture_components="$RUNNER_TEMP/mentat-baseline-components.plist"
+          pkgbuild --analyze --root "$fixture_root" "$fixture_components"
+          COMPONENT_PLIST="$fixture_components" python -c 'import os, pathlib, plistlib; path = pathlib.Path(os.environ["COMPONENT_PLIST"]); items = plistlib.loads(path.read_bytes()); assert items and all(isinstance(item, dict) for item in items); [item.__setitem__("BundleIsRelocatable", False) for item in items]; path.write_bytes(plistlib.dumps(items, sort_keys=False))'
+          pkgbuild --root "$fixture_root" --component-plist "$fixture_components" --install-location / --identifier dev.mentat.local --version 0.0.0 "$RUNNER_TEMP/mentat-baseline.pkg"
           sudo installer -pkg "$RUNNER_TEMP/mentat-baseline.pkg" -target /
           test -f /Applications/Mentat.app/Contents/Resources/stale-from-baseline.txt
           export MENTAT_DATA_DIR="$RUNNER_TEMP/mentat-native-data"

@@ -162,6 +162,16 @@ strategy and two independent adversarial reviews pass.
   operator data remains. Its macOS fixture package also now uses an explicit
   root containing `Applications/Mentat.app`, avoiding ambiguous component
   placement while preserving the real current-package upgrade test.
+- Windows passed the complete fifth remote native job. The macOS fixture then
+  exposed that component packages are relocatable by default and can target an
+  existing build-tree bundle instead of `/Applications`. Both unsigned and
+  signed macOS packages now use an explicit `Applications/Mentat.app` root and
+  a generated component plist with `BundleIsRelocatable=false`; the synthetic
+  baseline uses the same exact-location contract.
+- Repackaged the hash-locked local app with the final generator and expanded
+  the result. `PackageInfo` reports `relocatable="false"`, install location
+  `/`, an exact `./Applications/Mentat.app` bundle path, and no relocation
+  targets.
 
 ## Review findings
 

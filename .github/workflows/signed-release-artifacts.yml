@@ -78,7 +78,13 @@ jobs:
           display_version=$(python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION.removeprefix("v"))')
           rm "$unsigned_package"
           signed_package="dist/Mentat-${display_version}-macos-x86_64-signed.pkg"
-          pkgbuild --component dist/Mentat.app --install-location /Applications --identifier dev.mentat.local --version "$package_version" --sign "$MAC_INSTALLER_IDENTITY" "$signed_package"
+          package_root="$RUNNER_TEMP/mentat-signed-package-root"
+          mkdir -p "$package_root/Applications"
+          ditto dist/Mentat.app "$package_root/Applications/Mentat.app"
+          component_plist="$RUNNER_TEMP/mentat-signed-components.plist"
+          pkgbuild --analyze --root "$package_root" "$component_plist"
+          COMPONENT_PLIST="$component_plist" python -c 'import os, pathlib, plistlib; path = pathlib.Path(os.environ["COMPONENT_PLIST"]); items = plistlib.loads(path.read_bytes()); assert items and all(isinstance(item, dict) for item in items); [item.__setitem__("BundleIsRelocatable", False) for item in items]; path.write_bytes(plistlib.dumps(items, sort_keys=False))'
+          pkgbuild --root "$package_root" --component-plist "$component_plist" --install-location / --identifier dev.mentat.local --version "$package_version" --sign "$MAC_INSTALLER_IDENTITY" "$signed_package"
           codesign --verify --deep --strict --verbose=2 dist/Mentat.app
           pkgutil --check-signature "$signed_package"
 

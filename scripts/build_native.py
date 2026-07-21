@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,20 +50,37 @@ def build_macos_installer(dist_dir: Path) -> Path:
         raise RuntimeError("PyInstaller did not produce Mentat.app")
     architecture = platform.machine().lower() or "unknown"
     output = dist_dir / f"Mentat-{DISPLAY_VERSION.removeprefix('v')}-macos-{architecture}-unsigned.pkg"
-    run(
-        [
-            "pkgbuild",
-            "--component",
-            str(app),
-            "--install-location",
-            "/Applications",
-            "--identifier",
-            "dev.mentat.local",
-            "--version",
-            __version__,
-            str(output),
-        ]
-    )
+    with tempfile.TemporaryDirectory(prefix="mentat-pkg-", dir=dist_dir.parent) as temporary:
+        package_root = Path(temporary) / "root"
+        installed_app = package_root / "Applications" / "Mentat.app"
+        installed_app.parent.mkdir(parents=True)
+        shutil.copytree(app, installed_app, symlinks=True)
+        component_plist = Path(temporary) / "components.plist"
+        run(["pkgbuild", "--analyze", "--root", str(package_root), str(component_plist)])
+        components = plistlib.loads(component_plist.read_bytes())
+        if not isinstance(components, list) or not components or any(
+            not isinstance(component, dict) for component in components
+        ):
+            raise RuntimeError("pkgbuild produced invalid component metadata")
+        for component in components:
+            component["BundleIsRelocatable"] = False
+        component_plist.write_bytes(plistlib.dumps(components, sort_keys=False))
+        run(
+            [
+                "pkgbuild",
+                "--root",
+                str(package_root),
+                "--component-plist",
+                str(component_plist),
+                "--install-location",
+                "/",
+                "--identifier",
+                "dev.mentat.local",
+                "--version",
+                __version__,
+                str(output),
+            ]
+        )
     return output
 
 
