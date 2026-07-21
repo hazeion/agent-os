@@ -65,6 +65,7 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("-r requirements.txt", requirements)
         self.assertIn("pyinstaller==6.21.0", requirements)
         self.assertIn("pyinstaller==6.21.0", lock)
+        self.assertIn("colorama==0.4.6", lock)
         self.assertIn("pefile==2024.8.26", lock)
         self.assertIn("pywin32-ctypes==0.2.3", lock)
         self.assertIn("--hash=sha256:", lock)

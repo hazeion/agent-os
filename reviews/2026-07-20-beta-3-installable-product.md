@@ -140,6 +140,12 @@ strategy and two independent adversarial reviews pass.
   package contain exactly five public assets and nine seed JSON files. Its
   path-free health payload and explicit start/stop lifecycle passed on
   loopback port 8897.
+- PR #51's first Windows 2025 run exposed a platform-specific lock omission:
+  `build==1.3.0` requires Colorama only on Windows, so the macOS-generated lock
+  had not included it. Added explicit `colorama==0.4.6` input with both PyPI
+  artifact hashes and a contract assertion; hash-locked dry-run resolution and
+  all 17 packaging tests pass locally. Remote Windows re-verification is
+  pending the follow-up commit.
 
 ## Review findings
 
