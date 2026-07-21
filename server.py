@@ -30,6 +30,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from mentat.version import DISPLAY_VERSION, __version__
+from diagnostics_bundle import build_diagnostics_bundle, redact_health_payload
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
 from agent_run_history import (
     EVENT_RETENTION,
@@ -3267,8 +3268,23 @@ def hermes_connection_diagnostics():
         return remote_hermes_diagnostics(DATA_DIR)
 
 
-def health():
+LAST_DIAGNOSTICS_HEALTH = {"overall": "unavailable", "subsystems": []}
+
+
+def current_health_payload() -> dict:
     return build_health_payload(health_context())
+
+
+def health():
+    global LAST_DIAGNOSTICS_HEALTH
+    payload = current_health_payload()
+    LAST_DIAGNOSTICS_HEALTH = redact_health_payload(payload)
+    return payload
+
+
+def diagnostics_health_snapshot() -> dict:
+    """Return the last already-sanitized dashboard health without new I/O."""
+    return deepcopy(LAST_DIAGNOSTICS_HEALTH)
 
 
 
@@ -7636,6 +7652,29 @@ class Handler(BaseHTTPRequestHandler):
             self.log_internal_error("JSON response transmission", exc)
             return False
 
+    def send_diagnostics_bundle(self, body: bytes) -> bool:
+        """Send the generated redacted ZIP without persisting it to disk."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", "attachment; filename=mentat-diagnostics.zip")
+            self.send_header("Cache-Control", "private, no-store")
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return True
+        except ConnectionError:
+            self.close_connection = True
+            return False
+        except Exception as exc:
+            self.close_connection = True
+            self.log_internal_error("diagnostics response transmission", exc)
+            return False
+
     def send_error_once(self, status: int, message: str | None = None) -> bool:
         """Send one HTTP error without retrying a partially committed response."""
         try:
@@ -7877,6 +7916,18 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if not self.local_api_request_is_allowed():
             self.send_json({"error": "Mentat mutations are available only from this local dashboard origin."}, status=403)
+            return
+        if parsed.path == "/api/diagnostics/bundle":
+            try:
+                body = build_diagnostics_bundle(
+                    version=__version__,
+                    display_version=DISPLAY_VERSION,
+                    health=diagnostics_health_snapshot(),
+                )
+                self.send_diagnostics_bundle(body)
+            except Exception as exc:
+                self.log_internal_error("diagnostics bundle generation", exc)
+                self.send_json({"error": "Mentat could not create the diagnostics bundle."}, status=500)
             return
         if parsed.path == "/api/agent-console/attachments":
             try:

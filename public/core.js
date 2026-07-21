@@ -30,6 +30,7 @@ const endpoints = {
   hermesCapabilities: '/api/hermes/capabilities',
   notes: '/api/obsidian-notes',
   health: '/api/health',
+  diagnosticsBundle: '/api/diagnostics/bundle',
   unifiedSearch: '/api/search',
 };
 

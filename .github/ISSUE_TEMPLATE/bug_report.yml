@@ -1,0 +1,50 @@
+name: Bug report
+description: Tell us what went wrong in Mentat.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! For a possible security issue, stop here and use the private security advisory link in the issue chooser. Never post credentials or private content.
+  - type: input
+    id: version
+    attributes:
+      label: Mentat version
+      description: Find this in Settings → Help & Diagnostics.
+      placeholder: v0.1.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [macOS, Windows, Linux preview]
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe what you expected and what happened instead. Redact personal content.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open…\n2. Click…\n3. See…"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Drag in the ZIP from Settings → Download Diagnostics if it helps. Do not attach unrestricted logs.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed credentials, private conversations, note contents, and other personal data.
+          required: true

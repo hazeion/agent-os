@@ -15,6 +15,7 @@ if (basename(browserRuntimeRoot) !== 'browser-smoke-runtime') {
 const ownedRuntimeDir = resolve(browserRuntimeRoot, `run-${process.pid}`);
 const runtimeDir = resolve(ownedRuntimeDir, 'profile');
 const calendarScreenshotPath = resolve(ownedRuntimeDir, 'calendar-week-smoke.png');
+const settingsScreenshotPath = resolve(ownedRuntimeDir, 'settings-diagnostics-smoke.png');
 const chromeCandidates = [
   process.env.CHROME_PATH,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -202,7 +203,17 @@ async function main() {
     const contextPacksVisible = await client.eval(`Boolean(document.querySelector('#context-pack-list') && document.querySelector('#create-context-pack') && document.querySelector('#context-pack-dialog'))`);
     if (!contextPacksVisible) throw new Error('Context Packs workspace smoke failed');
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'structured event render', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace'] }, null, 2));
+    await client.eval(`document.querySelector('[data-view="settings"]').click()`);
+    await waitFor(() => client.eval('document.querySelector("#view-settings.active") !== null'), 'Settings view');
+    await waitFor(() => client.eval(`document.querySelector('#mentat-version')?.textContent.startsWith('v0.1.0')`), 'Mentat version display');
+    const supportActionsVisible = await client.eval(`Boolean(document.querySelector('#download-diagnostics') && document.querySelector('a[href*="issues/new?template=bug_report.yml"]') && document.querySelector('a[href$="#quick-start"]'))`);
+    if (!supportActionsVisible) throw new Error('Settings support actions smoke failed');
+    const diagnosticsDownloadSafe = await client.eval(`fetch('/api/diagnostics/bundle', { method: 'POST', headers: { Accept: 'application/zip' } }).then(async (response) => { const bytes = new Uint8Array(await response.arrayBuffer()); return response.status === 200 && response.headers.get('content-type') === 'application/zip' && response.headers.get('content-disposition') === 'attachment; filename=mentat-diagnostics.zip' && bytes[0] === 80 && bytes[1] === 75; })`);
+    if (!diagnosticsDownloadSafe) throw new Error('Redacted diagnostics download smoke failed');
+    const settingsScreenshot = await client.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
+    writeFileSync(settingsScreenshotPath, settingsScreenshot.data, 'base64');
+
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'structured event render', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
     if (chrome && !chrome.killed) chrome.kill();
