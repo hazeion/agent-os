@@ -288,6 +288,50 @@ jobs:
           Remove-Item "$env:RUNNER_TEMP/mentat-signing.pfx" -Force -ErrorAction SilentlyContinue
           Remove-Item $thumbprintPath -Force -ErrorAction SilentlyContinue
 
+  python-package:
+    name: Verified Python release artifacts
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    needs:
+      - release-source
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify trusted source revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements-native.lock
+            requirements-quality.lock
+
+      - name: Install pinned package tools
+        run: |
+          python -m pip install --require-hashes -r requirements-native.lock
+          python -m pip install --require-hashes -r requirements-quality.lock
+
+      - name: Build and verify exact Python artifacts
+        run: |
+          python -m build --no-isolation
+          python scripts/verify_python_artifacts.py dist
+
+      - name: Upload verified Python artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-python-release
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: Signed release and tag required
     if: ${{ always() }}
@@ -295,6 +339,7 @@ jobs:
       - release-source
       - macos
       - windows
+      - python-package
     runs-on: ubuntu-24.04
     environment: beta-release
     permissions:
@@ -305,10 +350,12 @@ jobs:
           SOURCE_RESULT: ${{ needs.release-source.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
+          PYTHON_RESULT: ${{ needs.python-package.result }}
         run: |
           test "$SOURCE_RESULT" = success
           test "$MACOS_RESULT" = success
           test "$WINDOWS_RESULT" = success
+          test "$PYTHON_RESULT" = success
 
       - name: Check out exact signed revision
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -316,14 +363,50 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: true
 
+      - name: Download every protected artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: mentat-*
+          path: release-input
+          merge-multiple: true
+
+      - name: Build reproducible release metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python scripts/release_rehearsal.py build \
+            --artifact-dir release-input \
+            --output-dir release-bundle \
+            --release-tag "$RELEASE_TAG" \
+            --source-sha "$GITHUB_SHA"
+
+      - name: Preserve the exact release recovery bundle
+        shell: bash
+        run: |
+          mkdir release-archive
+          cp release-input/Mentat-*-macos-x86_64-signed.pkg release-archive/
+          cp release-input/Mentat-*-windows-x64.exe release-archive/
+          cp release-input/*.whl release-input/*.tar.gz release-archive/
+          cp release-bundle/SHA256SUMS release-bundle/release-manifest.json release-bundle/RELEASE_NOTES.md release-archive/
+          test "$(find release-archive -maxdepth 1 -type f | wc -l | tr -d ' ')" = 7
+          cd release-archive
+          sha256sum --check SHA256SUMS
+
+      - name: Upload exact release recovery bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-release-recovery-bundle
+          path: release-archive/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Create the validated beta tag
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          expected_tag=$(python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION)')
-          test "$RELEASE_TAG" = "$expected_tag"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
             echo 'Release tag already exists' >&2
             exit 1
@@ -332,3 +415,21 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git tag --annotate "$RELEASE_TAG" --message "Mentat $RELEASE_TAG"
           git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Publish the immutable prerelease bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            release-archive/Mentat-*-macos-x86_64-signed.pkg \
+            release-archive/Mentat-*-windows-x64.exe \
+            release-archive/*.whl \
+            release-archive/*.tar.gz \
+            release-archive/SHA256SUMS \
+            release-archive/release-manifest.json \
+            --verify-tag \
+            --prerelease \
+            --title "Mentat $RELEASE_TAG" \
+            --notes-file release-archive/RELEASE_NOTES.md

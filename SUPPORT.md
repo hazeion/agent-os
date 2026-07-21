@@ -5,14 +5,15 @@ response time.
 
 ## Supported setup
 
-- **Tier one:** current macOS and Windows releases
+- **Tier one:** current macOS and Windows releases. The first macOS candidate
+  is Intel; Apple Silicon requires Rosetta and must pass the release rehearsal.
 - **Preview:** Linux, covered by CI but not yet promised at the same level
 - **Python fallback:** Python 3.11–3.13 with Git and a supported Hermes runtime
 - **Access:** one local operator; Mentat stays bound to loopback
 
-Signed native installers are required for the public beta but are not published
-yet. Until then, the README source setup is the supported way to try the current
-development build.
+There is no final public-beta release yet. Signed release candidates are
+prereleases used for the rehearsal; the README source setup remains available
+for the current development build.
 
 ## Known limitations
 
@@ -24,6 +25,8 @@ development build.
 - Google Calendar, Obsidian notes, Hermes sessions, and Hermes cron inventory
   are read-only. Mentat does not queue or edit cron jobs.
 - Updates are manual. Make a backup before upgrading.
+- The first macOS package is `x86_64`; a native Apple Silicon package is not
+  available in this beta candidate.
 - Native signing/notarization and public release-channel settings remain release
   gates; they are not bypassed by source builds.
 

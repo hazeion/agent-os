@@ -109,7 +109,19 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("if: ${{ always() }}", workflow)
         self.assertIn("MACOS_RESULT: ${{ needs.macos.result }}", workflow)
         self.assertIn("WINDOWS_RESULT: ${{ needs.windows.result }}", workflow)
+        self.assertIn("PYTHON_RESULT: ${{ needs.python-package.result }}", workflow)
+        self.assertIn("python scripts/release_rehearsal.py build", workflow)
+        self.assertIn("gh release create", workflow)
+        self.assertIn("name: mentat-release-recovery-bundle", workflow)
+        self.assertIn("sha256sum --check SHA256SUMS", workflow)
+        self.assertIn("--verify-tag", workflow)
+        self.assertIn("--prerelease", workflow)
+        self.assertIn("actions/download-artifact@634f93c", workflow)
         self.assertIn('git push origin "refs/tags/$RELEASE_TAG"', workflow)
+        self.assertLess(
+            workflow.index("python scripts/release_rehearsal.py build"),
+            workflow.index('git push origin "refs/tags/$RELEASE_TAG"'),
+        )
 
     def test_release_check_payload_requires_every_stable_success(self):
         sha = "a" * 40

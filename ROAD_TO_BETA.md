@@ -151,7 +151,7 @@ work is still small.
 | 3 | Installable product, native installers, and CLI | In progress | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | In progress | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Complete | 0, 3, 4 | Public policies, diagnostics, and issue path |
-| 6 | Release-candidate rehearsal | Not started | 1–5 | Reproducible tagged RC with rollback drill |
+| 6 | Release-candidate rehearsal | In progress — repository tooling; signed rehearsal externally gated | 1–5 | Reproducible tagged RC with rollback drill |
 | 7 | Limited external beta | Not started | 6 | Tester acceptance window completed |
 | 8 | Public beta release | Not started | 7 | Published beta artifacts and release notes |
 
@@ -469,6 +469,11 @@ Work in order:
 6. Restore a backup into a clean install and compare the expected data.
 7. Test uninstall/reinstall while preserving operator data.
 8. Practice revoking or replacing a bad release without hiding its history.
+
+Repository tooling status: deterministic four-artifact checksums, manifest,
+release notes, numbered-RC validation, protected prerelease assembly, and the
+public recovery checklist are implemented. Completion still requires the
+protected signed run and another person's clean tier-one rehearsal evidence.
 
 Exit criteria:
 

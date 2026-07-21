@@ -29,3 +29,13 @@ logs, diagnostics, or browser-visible state.
 The native lock is generated from `requirements-native.in` with pip-tools
 7.6.0. It includes the pure-Python helpers for both native platforms so the
 same hash-checked dependency set is used on macOS and Windows.
+
+## Release candidates
+
+The protected **Signed beta artifacts** workflow builds the signed native
+installers and verified Python package from one exact `main` commit. It then
+creates checksums, a manifest, short release notes, and a numbered prerelease.
+
+Before sharing one, complete [the release rehearsal](../RELEASE_REHEARSAL.md).
+Keep a bad candidate visible as withdrawn and replace it with the next RC
+number; never move or delete its tag.

@@ -5,6 +5,11 @@ All notable changes to Mentat.
 ## 2026-07-20
 
 ### Added
+- Added deterministic release-candidate checksums, manifest, and release notes,
+  plus a short clean-install, upgrade, backup, restore, rollback, and
+  uninstall-preservation rehearsal checklist.
+- Added a protected Python package job and final prerelease assembly gate beside
+  the signed macOS and Windows artifact jobs.
 - Added public beta security, privacy, support, contribution, conduct, and issue
   guidance, including a private vulnerability-reporting path and clear
   pre-install platform and support expectations.

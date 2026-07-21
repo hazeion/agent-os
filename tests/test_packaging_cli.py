@@ -120,9 +120,9 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("environment: beta-release", workflow)
         self.assertEqual(
             workflow.count("github.ref == 'refs/heads/main' && github.ref_protected"),
-            3,
+            4,
         )
-        self.assertEqual(workflow.count("Verify trusted source revision"), 2)
+        self.assertEqual(workflow.count("Verify trusted source revision"), 3)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("notarytool submit", workflow)
         self.assertIn("stapler validate", workflow)
@@ -138,11 +138,18 @@ class PackagingContractTests(unittest.TestCase):
         self.assertNotIn("pkgbuild --component dist/Mentat.app", workflow)
         self.assertIn("Smoke the exact signed Windows installer", workflow)
         self.assertIn("Signed release and tag required", workflow)
+        self.assertIn("Verified Python release artifacts", workflow)
+        self.assertIn("python scripts/verify_python_artifacts.py dist", workflow)
+        self.assertIn("release-bundle/SHA256SUMS", workflow)
+        self.assertIn("release-bundle/release-manifest.json", workflow)
+        self.assertIn("Upload exact release recovery bundle", workflow)
+        self.assertIn("retention-days: 14", workflow)
         self.assertIn('git push origin "refs/tags/$RELEASE_TAG"', workflow)
         self.assertIn("if: always()", workflow)
         self.assertNotIn("actions/checkout@v", workflow)
         self.assertNotIn("actions/setup-python@v", workflow)
         self.assertNotIn("actions/upload-artifact@v", workflow)
+        self.assertNotIn("actions/download-artifact@v", workflow)
 
     def test_native_installers_use_platform_data_safe_install_locations(self):
         windows = (ROOT / "packaging" / "windows" / "Mentat.iss").read_text(encoding="utf-8")
