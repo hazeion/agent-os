@@ -132,13 +132,13 @@ jobs:
           & $compiler /DMyAppVersion=0.0.0 "/DMyAppSourceDir=$baselineSource" "/DMyAppOutputDir=$baselineDir" packaging/windows/Mentat.iss
           if ($LASTEXITCODE -ne 0) { throw "Baseline installer build failed: $LASTEXITCODE" }
           $baselineInstaller = Get-ChildItem "$baselineDir/Mentat-*-windows-x64.exe" | Select-Object -First 1
-          & $baselineInstaller.FullName /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
-          if ($LASTEXITCODE -ne 0) { throw "Installer failed: $LASTEXITCODE" }
+          $baselineInstall = Start-Process -FilePath $baselineInstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir") -Wait -PassThru
+          if ($baselineInstall.ExitCode -ne 0) { throw "Installer failed: $($baselineInstall.ExitCode)" }
           if (-not (Test-Path "$installDir/stale-from-baseline.txt")) { throw 'Baseline fixture did not install' }
           New-Item -ItemType Directory -Force $env:MENTAT_DATA_DIR | Out-Null
           Set-Content -Path "$env:MENTAT_DATA_DIR/upgrade-sentinel.txt" -Value 'preserve me'
-          & $installer.FullName /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
-          if ($LASTEXITCODE -ne 0) { throw "Upgrade install failed: $LASTEXITCODE" }
+          $upgradeInstall = Start-Process -FilePath $installer.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir") -Wait -PassThru
+          if ($upgradeInstall.ExitCode -ne 0) { throw "Upgrade install failed: $($upgradeInstall.ExitCode)" }
           if (-not (Test-Path "$env:MENTAT_DATA_DIR/upgrade-sentinel.txt")) { throw 'Upgrade removed Mentat data' }
           if (Test-Path "$installDir/stale-from-baseline.txt") { throw 'Upgrade retained stale application files' }
           $upgradedLauncher = Start-Process -FilePath "$installDir/mentat.exe" -ArgumentList @('start', '--port', '8896') -PassThru
@@ -155,8 +155,8 @@ jobs:
           if (-not $upgradedHealthy) { throw 'Upgraded Mentat did not become healthy' }
           & "$installDir/mentat.exe" stop --port 8896
           if (-not $upgradedLauncher.WaitForExit(15000)) { throw 'Upgraded Mentat launcher did not stop' }
-          & "$installDir/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) { throw "Uninstaller failed: $LASTEXITCODE" }
+          $uninstall = Start-Process -FilePath "$installDir/unins000.exe" -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstall.ExitCode)" }
           if (Test-Path $installDir) { throw 'Application directory survived uninstall' }
           if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Uninstall removed Mentat data' }
 

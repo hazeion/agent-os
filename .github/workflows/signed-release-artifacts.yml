@@ -210,8 +210,8 @@ jobs:
           $installer = Get-ChildItem 'dist/installer/Mentat-*-windows-x64.exe' | Select-Object -First 1
           $installDir = Join-Path $env:RUNNER_TEMP 'MentatSignedApp'
           $env:MENTAT_DATA_DIR = Join-Path $env:RUNNER_TEMP 'mentat-signed-data'
-          & $installer.FullName /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
-          if ($LASTEXITCODE -ne 0) { throw "Signed installer failed: $LASTEXITCODE" }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Signed installer failed: $($install.ExitCode)" }
           $launcher = Start-Process -FilePath "$installDir/mentat.exe" -ArgumentList @('start', '--port', '8898') -PassThru
           $healthy = $false
           for ($attempt = 0; $attempt -lt 30; $attempt++) {
@@ -227,8 +227,8 @@ jobs:
           & "$installDir/mentat.exe" stop --port 8898
           if (-not $launcher.WaitForExit(15000)) { throw 'Signed Mentat launcher did not stop' }
           if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Signed install did not initialize data' }
-          & "$installDir/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) { throw "Signed uninstaller failed: $LASTEXITCODE" }
+          $uninstall = Start-Process -FilePath "$installDir/unins000.exe" -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Signed uninstaller failed: $($uninstall.ExitCode)" }
           if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Signed uninstall removed Mentat data' }
 
       - name: Upload signed Windows installer

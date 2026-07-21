@@ -151,6 +151,11 @@ strategy and two independent adversarial reviews pass.
   supplying 6.7.1. Replaced the unreliable executable-resource check in both
   native workflows with an exact local Chocolatey package assertion while
   retaining the executable existence check.
+- The third Windows run built and inspected the installer successfully, then
+  exposed a smoke-test race: PowerShell did not wait for Inno's GUI-subsystem
+  installer before checking its output. All unsigned and protected Windows
+  installer/uninstaller smokes now use `Start-Process -Wait -PassThru` and
+  validate the resulting process exit code.
 
 ## Review findings
 
