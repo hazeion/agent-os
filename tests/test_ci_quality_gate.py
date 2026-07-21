@@ -160,7 +160,7 @@ class CiQualityGateTests(unittest.TestCase):
             "results": {
                 "safe.py": [{
                     "type": "Secret Keyword",
-                    "hashed_secret": "reviewed",
+                    "hashed_secret": "reviewed",  # pragma: allowlist secret
                     "line_number": 1,
                 }]
             }
@@ -169,12 +169,12 @@ class CiQualityGateTests(unittest.TestCase):
             "results": {
                 "safe.py": [{
                     "type": "Secret Keyword",
-                    "hashed_secret": "reviewed",
+                    "hashed_secret": "reviewed",  # pragma: allowlist secret
                     "line_number": 4,
                 }],
                 "new.py": [{
                     "type": "Private Key",
-                    "hashed_secret": "new-fingerprint",
+                    "hashed_secret": "new-fingerprint",  # pragma: allowlist secret
                     "line_number": 9,
                 }],
             }
@@ -184,7 +184,7 @@ class CiQualityGateTests(unittest.TestCase):
         )
         current["results"]["safe.py"].append({
             "type": "Secret Keyword",
-            "hashed_secret": "reviewed",
+            "hashed_secret": "reviewed",  # pragma: allowlist secret
             "line_number": 12,
         })
         self.assertIn(

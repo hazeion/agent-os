@@ -104,6 +104,10 @@ must not weaken its protected context or introduce credentials into PR jobs.
   plugin does not expose repository ruleset or environment-setting mutations.
 - Final browser smoke passed all 15 checks and removed its process-owned runtime
   child before the temporary loopback Mentat server was stopped.
+- PR #52 Quality gates run #1 passed package/pipx and browser jobs but failed
+  because the newly tracked scanner unit test contained synthetic fingerprint
+  values. Added narrow `detect-secrets` allowlist comments to those exact test
+  fixture lines; the tracked-file scan and focused tests then passed locally.
 
 ## Publication
 
