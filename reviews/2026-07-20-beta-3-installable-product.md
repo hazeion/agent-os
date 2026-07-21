@@ -178,6 +178,12 @@ strategy and two independent adversarial reviews pass.
   smokes now tolerate the terminated launcher's wait status only after a
   successful stop command, then independently require the health endpoint to
   be unavailable.
+- GitHub CI run 29802193178 (#118) passed on final implementation commit
+  `5332a7f`.
+- GitHub Native artifact smoke run 29802193145 (#7) passed on that same commit:
+  both `macos-15-intel` and `windows-2025` built the unsigned artifacts and
+  completed install, upgrade, health, stop, uninstall/application removal,
+  stale-code removal, and external-data preservation checks.
 
 ## Review findings
 
@@ -218,6 +224,7 @@ strategy and two independent adversarial reviews pass.
 ## Publication
 
 - The review-clean implementation slice is ready for a pull request so the
-  remote unsigned native workflow can produce runner evidence.
+  remote unsigned native workflow can produce runner evidence. PR #51 now has
+  that green fixed-runner evidence.
 - Do not publish beta installers as trusted release artifacts until the
   protected signed workflow succeeds with the required repository controls.
