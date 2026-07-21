@@ -83,6 +83,8 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("windows-2025", workflow)
         self.assertIn('python-version: "3.13.14"', workflow)
         self.assertIn("Expected Inno Setup 6.7.1", workflow)
+        self.assertIn("choco list --local-only --exact innosetup --limit-output", workflow)
+        self.assertNotIn("VersionInfo.ProductVersion", workflow)
         self.assertIn("python scripts/build_native.py", workflow)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("unsigned", workflow)

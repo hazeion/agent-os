@@ -146,6 +146,11 @@ strategy and two independent adversarial reviews pass.
   artifact hashes and a contract assertion; hash-locked dry-run resolution and
   all 17 packaging tests pass locally. Remote Windows re-verification is
   pending the follow-up commit.
+- The next Windows run passed the repaired lock, then showed that Inno Setup's
+  executable resource reports `0.0.0.0` despite the fixed runner manifest
+  supplying 6.7.1. Replaced the unreliable executable-resource check in both
+  native workflows with an exact local Chocolatey package assertion while
+  retaining the executable existence check.
 
 ## Review findings
 

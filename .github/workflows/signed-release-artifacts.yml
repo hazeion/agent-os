@@ -164,8 +164,10 @@ jobs:
         run: |
           $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
           if (-not (Test-Path $compiler)) { throw 'Inno Setup 6 compiler missing' }
-          $version = (Get-Item $compiler).VersionInfo.ProductVersion
-          if (-not $version.StartsWith('6.7.1')) { throw "Expected Inno Setup 6.7.1, found $version" }
+          $package = choco list --local-only --exact innosetup --limit-output
+          if ($LASTEXITCODE -ne 0 -or $package -notcontains 'innosetup|6.7.1') {
+            throw "Expected Inno Setup 6.7.1 from the fixed runner image"
+          }
 
       - name: Build Windows application bundle
         run: python scripts/build_native.py --bundle-only
