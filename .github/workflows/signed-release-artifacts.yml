@@ -1,0 +1,250 @@
+name: Signed beta artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-beta-artifacts
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: Signed and notarized macOS package
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: macos-15-intel
+    environment: beta-release
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify trusted source revision
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: requirements-native.lock
+
+      - name: Install pinned build dependencies
+        run: python -m pip install --require-hashes -r requirements-native.lock
+
+      - name: Build and inspect unsigned macOS content
+        shell: bash
+        run: |
+          python scripts/build_native.py
+          test "$(find dist/Mentat.app/Contents/Resources/public -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5
+          test "$(find dist/Mentat.app/Contents/Resources/data -maxdepth 1 -type f | wc -l | tr -d ' ')" = 9
+          test ! -e dist/Mentat.app/Contents/Resources/data/private
+          test ! -e dist/Mentat.app/Contents/Resources/data/runtime
+
+      - name: Import protected signing identities
+        shell: bash
+        env:
+          MAC_CERTIFICATES_BASE64: ${{ secrets.MAC_CERTIFICATES_BASE64 }}
+          MAC_CERTIFICATES_PASSWORD: ${{ secrets.MAC_CERTIFICATES_PASSWORD }}
+          MAC_KEYCHAIN_PASSWORD: ${{ secrets.MAC_KEYCHAIN_PASSWORD }}
+        run: |
+          python -c 'import base64, os, pathlib; pathlib.Path(os.environ["RUNNER_TEMP"], "mentat-signing.p12").write_bytes(base64.b64decode(os.environ["MAC_CERTIFICATES_BASE64"]))'
+          security create-keychain -p "$MAC_KEYCHAIN_PASSWORD" "$RUNNER_TEMP/mentat-signing.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/mentat-signing.keychain-db"
+          security unlock-keychain -p "$MAC_KEYCHAIN_PASSWORD" "$RUNNER_TEMP/mentat-signing.keychain-db"
+          security import "$RUNNER_TEMP/mentat-signing.p12" -x -k "$RUNNER_TEMP/mentat-signing.keychain-db" -P "$MAC_CERTIFICATES_PASSWORD" -T /usr/bin/codesign -T /usr/bin/pkgbuild
+          security list-keychains -d user -s "$RUNNER_TEMP/mentat-signing.keychain-db"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MAC_KEYCHAIN_PASSWORD" "$RUNNER_TEMP/mentat-signing.keychain-db"
+
+      - name: Build and sign macOS package
+        shell: bash
+        env:
+          MAC_APPLICATION_IDENTITY: ${{ secrets.MAC_APPLICATION_IDENTITY }}
+          MAC_INSTALLER_IDENTITY: ${{ secrets.MAC_INSTALLER_IDENTITY }}
+        run: |
+          find dist/Mentat.app/Contents -type f -print0 | while IFS= read -r -d '' candidate; do
+            if file "$candidate" | grep -q 'Mach-O'; then
+              codesign --force --options runtime --timestamp --sign "$MAC_APPLICATION_IDENTITY" "$candidate"
+            fi
+          done
+          codesign --force --options runtime --timestamp --sign "$MAC_APPLICATION_IDENTITY" dist/Mentat.app
+          unsigned_package=$(find dist -maxdepth 1 -name 'Mentat-*-unsigned.pkg' -print -quit)
+          test -n "$unsigned_package"
+          package_version=$(python -c 'from mentat.version import __version__; print(__version__)')
+          display_version=$(python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION.removeprefix("v"))')
+          rm "$unsigned_package"
+          signed_package="dist/Mentat-${display_version}-macos-x86_64-signed.pkg"
+          pkgbuild --component dist/Mentat.app --install-location /Applications --identifier dev.mentat.local --version "$package_version" --sign "$MAC_INSTALLER_IDENTITY" "$signed_package"
+          codesign --verify --deep --strict --verbose=2 dist/Mentat.app
+          pkgutil --check-signature "$signed_package"
+
+      - name: Notarize and staple macOS package
+        shell: bash
+        env:
+          MAC_NOTARY_APPLE_ID: ${{ secrets.MAC_NOTARY_APPLE_ID }}
+          MAC_NOTARY_PASSWORD: ${{ secrets.MAC_NOTARY_PASSWORD }}
+          MAC_NOTARY_TEAM_ID: ${{ secrets.MAC_NOTARY_TEAM_ID }}
+        run: |
+          signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
+          xcrun notarytool submit "$signed_package" --apple-id "$MAC_NOTARY_APPLE_ID" --password "$MAC_NOTARY_PASSWORD" --team-id "$MAC_NOTARY_TEAM_ID" --wait
+          xcrun stapler staple "$signed_package"
+          xcrun stapler validate "$signed_package"
+          spctl --assess --type execute --verbose=2 dist/Mentat.app
+          spctl --assess --type install --verbose=2 "$signed_package"
+
+      - name: Smoke the exact signed macOS package
+        shell: bash
+        run: |
+          signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
+          sudo installer -pkg "$signed_package" -target /
+          export MENTAT_DATA_DIR="$RUNNER_TEMP/mentat-signed-data"
+          /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8898 >"$RUNNER_TEMP/mentat-signed.log" 2>&1 &
+          launcher_pid=$!
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null
+          /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8898
+          wait "$launcher_pid"
+          test -f "$MENTAT_DATA_DIR/tasks.json"
+          sudo rm -rf /Applications/Mentat.app
+          sudo pkgutil --forget dev.mentat.local
+          test -f "$MENTAT_DATA_DIR/tasks.json"
+
+      - name: Upload signed macOS package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-macos-signed-notarized
+          path: dist/Mentat-*-signed.pkg
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/mentat-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/mentat-signing.p12"
+
+  windows:
+    name: Signed Windows installer
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: windows-2025
+    environment: beta-release
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify trusted source revision
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'Checked-out revision does not match dispatch revision' }
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: requirements-native.lock
+
+      - name: Install pinned build dependencies
+        run: python -m pip install --require-hashes -r requirements-native.lock
+
+      - name: Verify pinned Windows installer compiler
+        shell: pwsh
+        run: |
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path $compiler)) { throw 'Inno Setup 6 compiler missing' }
+          $version = (Get-Item $compiler).VersionInfo.ProductVersion
+          if (-not $version.StartsWith('6.7.1')) { throw "Expected Inno Setup 6.7.1, found $version" }
+
+      - name: Build Windows application bundle
+        run: python scripts/build_native.py --bundle-only
+
+      - name: Import protected signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'mentat-signing.pfx'
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable:$false
+          Set-Content -Path "$env:RUNNER_TEMP/mentat-signing-thumbprint" -Value $certificate.Thumbprint -NoNewline
+
+      - name: Sign application and build signed installer
+        shell: pwsh
+        run: |
+          $thumbprint = Get-Content "$env:RUNNER_TEMP/mentat-signing-thumbprint"
+          $signTool = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin/*/x64/signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          $applicationExecutables = @('dist/Mentat/Mentat Launcher.exe', 'dist/Mentat/mentat.exe')
+          foreach ($executable in $applicationExecutables) {
+            & $signTool.FullName sign /sha1 $thumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 $executable
+            & $signTool.FullName verify /pa /all /v $executable
+          }
+          $version = python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION.removeprefix("v"))'
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          $sourceDir = (Resolve-Path 'dist/Mentat').Path
+          $outputDir = (New-Item -ItemType Directory -Force 'dist/installer').FullName
+          & $compiler "/DMyAppVersion=$version" "/DMyAppSourceDir=$sourceDir" "/DMyAppOutputDir=$outputDir" packaging/windows/Mentat.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed: $LASTEXITCODE" }
+          $installer = Get-ChildItem 'dist/installer/Mentat-*-windows-x64.exe' | Select-Object -First 1
+          & $signTool.FullName sign /sha1 $thumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 $installer.FullName
+          & $signTool.FullName verify /pa /all /v $installer.FullName
+
+      - name: Smoke the exact signed Windows installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'dist/installer/Mentat-*-windows-x64.exe' | Select-Object -First 1
+          $installDir = Join-Path $env:RUNNER_TEMP 'MentatSignedApp'
+          $env:MENTAT_DATA_DIR = Join-Path $env:RUNNER_TEMP 'mentat-signed-data'
+          & $installer.FullName /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "Signed installer failed: $LASTEXITCODE" }
+          $launcher = Start-Process -FilePath "$installDir/mentat.exe" -ArgumentList @('start', '--port', '8898') -PassThru
+          $healthy = $false
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            try {
+              Invoke-RestMethod -Uri 'http://127.0.0.1:8898/api/health' | Out-Null
+              $healthy = $true
+              break
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          if (-not $healthy) { throw 'Signed Mentat installer did not become healthy' }
+          & "$installDir/mentat.exe" stop --port 8898
+          if (-not $launcher.WaitForExit(15000)) { throw 'Signed Mentat launcher did not stop' }
+          if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Signed install did not initialize data' }
+          & "$installDir/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          if ($LASTEXITCODE -ne 0) { throw "Signed uninstaller failed: $LASTEXITCODE" }
+          if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Signed uninstall removed Mentat data' }
+
+      - name: Upload signed Windows installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-windows-signed
+          path: dist/installer/Mentat-*-windows-x64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove signing material
+        if: always()
+        shell: pwsh
+        run: |
+          $thumbprintPath = "$env:RUNNER_TEMP/mentat-signing-thumbprint"
+          if (Test-Path $thumbprintPath) {
+            $thumbprint = Get-Content $thumbprintPath
+            Remove-Item "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
+          }
+          Remove-Item "$env:RUNNER_TEMP/mentat-signing.pfx" -Force -ErrorAction SilentlyContinue
+          Remove-Item $thumbprintPath -Force -ErrorAction SilentlyContinue

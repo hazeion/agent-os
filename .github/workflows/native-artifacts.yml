@@ -1,0 +1,169 @@
+name: Native artifact smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }} unsigned installer
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15-intel
+          - windows-2025
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-native.txt
+            requirements-native.lock
+
+      - name: Install pinned native build dependencies
+        run: python -m pip install --require-hashes -r requirements-native.lock
+
+      - name: Verify pinned Windows installer compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path $compiler)) { throw 'Inno Setup 6 compiler missing' }
+          $version = (Get-Item $compiler).VersionInfo.ProductVersion
+          if (-not $version.StartsWith('6.7.1')) { throw "Expected Inno Setup 6.7.1, found $version" }
+
+      - name: Build unsigned native test installer
+        run: python scripts/build_native.py
+
+      - name: Verify macOS artifact shape
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          test -d dist/Mentat.app
+          test -f dist/Mentat-*-macos-*-unsigned.pkg
+          test -f dist/Mentat.app/Contents/Resources/public/index.html
+          test -f dist/Mentat.app/Contents/Resources/data/tasks.json
+          test ! -e dist/Mentat.app/Contents/Resources/data/private
+          test ! -e dist/Mentat.app/Contents/Resources/data/runtime
+
+      - name: Smoke install, run, and uninstall on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          package_path=$(find dist -maxdepth 1 -name 'Mentat-*-unsigned.pkg' -print -quit)
+          test -n "$package_path"
+          fixture_app="$RUNNER_TEMP/upgrade-fixture/Mentat.app"
+          mkdir -p "$fixture_app/Contents/MacOS" "$fixture_app/Contents/Resources"
+          printf '%s\n' '#!/bin/sh' 'exit 0' >"$fixture_app/Contents/MacOS/Mentat"
+          chmod 755 "$fixture_app/Contents/MacOS/Mentat"
+          printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Mentat</string><key>CFBundleIdentifier</key><string>dev.mentat.local</string><key>CFBundleVersion</key><string>0.0.0</string></dict></plist>' >"$fixture_app/Contents/Info.plist"
+          printf 'old application layout\n' >"$fixture_app/Contents/Resources/stale-from-baseline.txt"
+          pkgbuild --component "$fixture_app" --install-location /Applications --identifier dev.mentat.local --version 0.0.0 "$RUNNER_TEMP/mentat-baseline.pkg"
+          sudo installer -pkg "$RUNNER_TEMP/mentat-baseline.pkg" -target /
+          test -f /Applications/Mentat.app/Contents/Resources/stale-from-baseline.txt
+          export MENTAT_DATA_DIR="$RUNNER_TEMP/mentat-native-data"
+          mkdir -p "$MENTAT_DATA_DIR"
+          printf 'preserve me\n' >"$MENTAT_DATA_DIR/upgrade-sentinel.txt"
+          sudo installer -pkg "$package_path" -target /
+          test -f "$MENTAT_DATA_DIR/upgrade-sentinel.txt"
+          test ! -e /Applications/Mentat.app/Contents/Resources/stale-from-baseline.txt
+          /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8896 >"$RUNNER_TEMP/mentat-native-upgrade.log" 2>&1 &
+          upgraded_launcher_pid=$!
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8896/api/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8896/api/health >/dev/null
+          /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8896
+          wait "$upgraded_launcher_pid"
+          sudo rm -rf /Applications/Mentat.app
+          sudo pkgutil --forget dev.mentat.local
+          test ! -e /Applications/Mentat.app
+          test -f "$MENTAT_DATA_DIR/tasks.json"
+          test -f "$MENTAT_DATA_DIR/upgrade-sentinel.txt"
+          ! pkgutil --pkgs | grep -Fx dev.mentat.local
+
+      - name: Verify Windows artifact shape
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist/Mentat/Mentat Launcher.exe')) { throw 'Mentat launcher missing' }
+          if (-not (Test-Path 'dist/Mentat/mentat.exe')) { throw 'Mentat console CLI missing' }
+          if (-not (Test-Path 'dist/installer/Mentat-*-windows-x64.exe')) { throw 'Windows installer missing' }
+          if (-not (Test-Path 'dist/Mentat/_internal/public/index.html')) { throw 'Static UI missing' }
+          if (-not (Test-Path 'dist/Mentat/_internal/data/tasks.json')) { throw 'Public seed data missing' }
+          if (Test-Path 'dist/Mentat/_internal/data/private') { throw 'Private data entered artifact' }
+          if (Test-Path 'dist/Mentat/_internal/data/runtime') { throw 'Runtime data entered artifact' }
+
+      - name: Smoke install, run, and uninstall on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'dist/installer/Mentat-*-windows-x64.exe' | Select-Object -First 1
+          $installDir = Join-Path $env:RUNNER_TEMP 'MentatApp'
+          $env:MENTAT_DATA_DIR = Join-Path $env:RUNNER_TEMP 'mentat-native-data'
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          $baselineSource = Join-Path $env:RUNNER_TEMP 'mentat-baseline-source'
+          New-Item -ItemType Directory -Force $baselineSource | Out-Null
+          Set-Content -Path "$baselineSource/stale-from-baseline.txt" -Value 'old application layout'
+          $baselineDir = Join-Path $env:RUNNER_TEMP 'mentat-baseline'
+          & $compiler /DMyAppVersion=0.0.0 "/DMyAppSourceDir=$baselineSource" "/DMyAppOutputDir=$baselineDir" packaging/windows/Mentat.iss
+          if ($LASTEXITCODE -ne 0) { throw "Baseline installer build failed: $LASTEXITCODE" }
+          $baselineInstaller = Get-ChildItem "$baselineDir/Mentat-*-windows-x64.exe" | Select-Object -First 1
+          & $baselineInstaller.FullName /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "Installer failed: $LASTEXITCODE" }
+          if (-not (Test-Path "$installDir/stale-from-baseline.txt")) { throw 'Baseline fixture did not install' }
+          New-Item -ItemType Directory -Force $env:MENTAT_DATA_DIR | Out-Null
+          Set-Content -Path "$env:MENTAT_DATA_DIR/upgrade-sentinel.txt" -Value 'preserve me'
+          & $installer.FullName /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "Upgrade install failed: $LASTEXITCODE" }
+          if (-not (Test-Path "$env:MENTAT_DATA_DIR/upgrade-sentinel.txt")) { throw 'Upgrade removed Mentat data' }
+          if (Test-Path "$installDir/stale-from-baseline.txt") { throw 'Upgrade retained stale application files' }
+          $upgradedLauncher = Start-Process -FilePath "$installDir/mentat.exe" -ArgumentList @('start', '--port', '8896') -PassThru
+          $upgradedHealthy = $false
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            try {
+              Invoke-RestMethod -Uri 'http://127.0.0.1:8896/api/health' | Out-Null
+              $upgradedHealthy = $true
+              break
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          if (-not $upgradedHealthy) { throw 'Upgraded Mentat did not become healthy' }
+          & "$installDir/mentat.exe" stop --port 8896
+          if (-not $upgradedLauncher.WaitForExit(15000)) { throw 'Upgraded Mentat launcher did not stop' }
+          & "$installDir/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          if ($LASTEXITCODE -ne 0) { throw "Uninstaller failed: $LASTEXITCODE" }
+          if (Test-Path $installDir) { throw 'Application directory survived uninstall' }
+          if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Uninstall removed Mentat data' }
+
+      - name: Upload unsigned test installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-${{ runner.os }}-unsigned
+          path: |
+            dist/*.pkg
+            dist/installer/*.exe
+          if-no-files-found: error
+          retention-days: 7

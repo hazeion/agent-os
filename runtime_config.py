@@ -49,6 +49,22 @@ from data_layout import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+INSTALLED_ASSET_ROOT = Path(sys.prefix) / "share" / "mentat"
+
+
+def bundled_asset_dir(name: str) -> Path:
+    """Locate source-checkout or wheel-installed read-only product assets."""
+
+    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
+        native_path = Path(sys.executable).resolve().parent.parent / "Resources" / name
+        if native_path.is_dir() and not native_path.is_symlink():
+            return native_path
+    source_path = BASE_DIR / name
+    if source_path.is_dir():
+        return source_path
+    return INSTALLED_ASSET_ROOT / name
+
+
 DEFAULT_CONFIG_FILE = BASE_DIR / "mentat.toml"
 LOCAL_CONFIG_FILE = BASE_DIR / "mentat.local.toml"
 LEGACY_DEFAULT_CONFIG_FILE = BASE_DIR / ("agent" "-os.toml")
@@ -59,7 +75,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8888
 DEFAULT_APP_NAME = "Mentat"
 DEFAULT_OBSIDIAN_VAULT = Path.home() / "Documents" / "Obsidian Vault"
-PACKAGED_SEED_DIR = BASE_DIR / "data"
+PACKAGED_SEED_DIR = bundled_asset_dir("data")
 PATH_SETTING_KEYS = {"data_dir", "public_dir", "hermes_home", "obsidian_vault"}
 
 
@@ -678,6 +694,8 @@ def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
     dashboard_config = config_doc.get("dashboard") if isinstance(config_doc.get("dashboard"), dict) else {}
 
     host = first_nonempty(getattr(cli_args, "host", None), env_value("HOST"), server_config.get("host")) or DEFAULT_HOST
+    if host.strip().lower() == "localhost":
+        host = DEFAULT_HOST
     port = parse_port(
         first_nonempty(getattr(cli_args, "port", None), env_value("PORT"), server_config.get("port"), DEFAULT_PORT),
         source="Mentat port",
@@ -690,7 +708,12 @@ def load_app_config(cli_args: argparse.Namespace | None = None) -> AppConfig:
     )
     data_dir = data_resolution.path
     public_dir = resolve_path(
-        first_nonempty(getattr(cli_args, "public_dir", None), env_value("PUBLIC_DIR"), paths_config.get("public_dir"), BASE_DIR / "public"),
+        first_nonempty(
+            getattr(cli_args, "public_dir", None),
+            env_value("PUBLIC_DIR"),
+            paths_config.get("public_dir"),
+            bundled_asset_dir("public"),
+        ),
         base_dir=BASE_DIR,
     )
     hermes_home = resolve_path(

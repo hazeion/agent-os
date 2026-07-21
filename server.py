@@ -29,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from mentat.version import DISPLAY_VERSION, __version__
 from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_health_payload
 from agent_run_history import (
     EVENT_RETENTION,
@@ -7568,7 +7569,7 @@ GET_ROUTES = {
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Mentat/0.1"
+    server_version = f"Mentat/{__version__}"
 
     def log_message(self, fmt, *args):
         """Log requests without ever breaking HTTP responses.
@@ -7996,17 +7997,16 @@ if __name__ == "__main__":
     attachment_gc_thread.start()
     server = server_class_for_host(HOST)((HOST, PORT), Handler)
     launcher_pid = start_launcher_watch(server)
-    state_path = write_runtime_state()
-    print(f"Mentat listening on {HOST}:{PORT}")
+    write_runtime_state()
+    print(f"Mentat {DISPLAY_VERSION} listening on {HOST}:{PORT}")
     print(f"Browser URL: {browser_url(HOST, PORT)}")
-    print(f"Config files: {[str(path) for path in APP_CONFIG.config_files] or ['built-in defaults only']}")
-    print(f"Data dir: {DATA_DIR}")
-    print(f"Runtime state: {state_path}")
+    print(f"Configuration: {'local overrides loaded' if APP_CONFIG.config_files else 'built-in defaults'}")
+    print("Local data storage: ready")
     if launcher_pid is not None:
         print(f"Launcher PID watch: {launcher_pid}")
     print(f"Managed ports: {managed_server_ports(PORT)}")
-    print(f"Hermes home: {HERMES_HOME}")
-    print(f"Obsidian vault: {OBSIDIAN_VAULT}")
+    print("Hermes integration: configured")
+    print("Obsidian integration: configured")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
