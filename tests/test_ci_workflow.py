@@ -549,15 +549,15 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertIn("Implemented by `.github/workflows/ci.yml`", ROADMAP)
         self.assertIn("all nine OS/Python combinations", ROADMAP)
         self.assertIn(
-            "Continue Milestone 2",
+            "Keep the six remote contracts capability-gated",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
-            "bounded Context Pack text",
+            "mentat-beta-contracts",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
-            "remote session continuation unavailable",
+            "Milestone 3",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertNotIn("Land the early CI guardrail", ROADMAP)

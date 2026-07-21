@@ -28,6 +28,7 @@ class HermesTransportError(RuntimeError):
         "remote_capability_inventory_unavailable": "This Hermes host does not support read-only skills and toolsets visibility.",
         "remote_capability_inventory_schema_invalid": "This Hermes host returned an unsupported skills or toolsets inventory.",
         "remote_capability_inventory_private": "This Hermes host returned unsafe skills or toolsets metadata.",
+        "remote_profile_capability_unavailable": "This Hermes host does not support complete read-only profile discovery.",
         "remote_private_reflection": "Remote content was blocked by Mentat's content-safety checks.",
         "remote_approval_unsupported": "This remote run needs approval, which Mentat cannot answer yet.",
         "remote_run_failed": "The remote Hermes run failed.",
@@ -204,11 +205,50 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
-    def submit_run(self, prompt: str) -> dict[str, str]:
+    def submit_run(
+        self,
+        prompt: str,
+        *,
+        continuation: dict[str, Any] | None = None,
+        image_data_urls: list[str] | None = None,
+    ) -> dict[str, str]:
         if not self._ready:
             raise HermesTransportError(self.unavailable_code)
         try:
+            if continuation is not None and image_data_urls is not None:
+                raise HermesTransportError("console_request_invalid")
+            if continuation is not None:
+                return self._client.submit_continuation(prompt, continuation)
+            if image_data_urls is not None:
+                return self._client.submit_run_with_images(prompt, image_data_urls)
             return self._client.submit_run(prompt)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def get_continuation_descriptor(self, remote_session_id: str) -> dict[str, Any]:
+        try:
+            return self._client.get_continuation_descriptor(remote_session_id)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def respond_to_approval(self, remote_run_id: str, request_id: str, choice: str) -> dict[str, Any]:
+        try:
+            return self._client.respond_to_approval(remote_run_id, request_id, choice)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def respond_to_clarification(self, remote_run_id: str, request_id: str, response: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self._client.respond_to_clarification(remote_run_id, request_id, response)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def read_profiles(self) -> list[dict[str, Any]]:
+        try:
+            method = getattr(self._client, "read_profiles", None)
+            if not callable(method):
+                raise HermesTransportError("remote_profile_capability_unavailable")
+            return method()
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 

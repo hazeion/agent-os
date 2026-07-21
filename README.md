@@ -73,8 +73,9 @@ Windows users can run `run.bat`, `status.bat`, and `stop.bat` instead. If port
 - Mentat stays on your computer and listens only on local addresses.
 - There is no npm install step—the frontend is plain HTML, CSS, and JavaScript.
 - Mentat does not directly edit Hermes' core files.
-- Remote Hermes setup is still being built, so use local Hermes for agent
-  features today.
+- Mentat works great with local Hermes. If you connect a supported remote
+  Hermes runtime, Mentat checks what it can safely do and keeps unavailable
+  controls out of your way.
 - Calendar events, Obsidian note contents, Hermes sessions, and cron jobs are
   read-only in Mentat.
 

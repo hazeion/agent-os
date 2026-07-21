@@ -190,7 +190,7 @@ class RemoteContextInputTests(unittest.TestCase):
                 self.assertEqual(client.discovery_calls, 0)
                 self.assertEqual(client.submitted, [])
 
-    def test_direct_text_image_and_artifact_transfer_degrade_before_discovery(self):
+    def test_direct_text_and_artifact_transfer_degrade_and_images_require_the_exact_capability(self):
         client = FakeContextClient()
         adapter = self.adapter(client)
         text, _ = server.create_agent_console_attachment(
@@ -204,8 +204,8 @@ class RemoteContextInputTests(unittest.TestCase):
             content=PNG,
         )
         cases = (
-            ({"attachment_ids": [text["attachment"]["id"]]}, "direct file transfer"),
-            ({"attachment_ids": [image["attachment"]["id"]]}, "inline images"),
+            ({"attachment_ids": [text["attachment"]["id"]]}, "text through a context pack only"),
+            ({"attachment_ids": [image["attachment"]["id"]]}, "safe runs image input"),
             ({"artifact_ids": ["artifact_" + ("a" * 32)]}, "artifact transfer"),
         )
         for extra, message in cases:
@@ -217,7 +217,10 @@ class RemoteContextInputTests(unittest.TestCase):
                 })
                 self.assertEqual(status, 409)
                 self.assertIn(message, response["error"].lower())
-        self.assertEqual(client.discovery_calls, 0)
+        # The console capability discovery is now required before a remote
+        # start. Text and artifacts still fail closed; an image needs the exact
+        # advertised Runs image capability rather than a generic upload route.
+        self.assertEqual(client.discovery_calls, 2)
         self.assertEqual(client.submitted, [])
 
     def test_large_snapshot_is_deterministically_truncated_and_total_overflow_fails(self):

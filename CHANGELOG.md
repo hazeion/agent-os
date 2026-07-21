@@ -45,26 +45,24 @@ All notable changes to Mentat.
 - Remote Context Pack requests use generic context labels and fixed item,
   total-context, and complete-prompt limits. Changed, expired, replayed, or
   mismatched grants fail before submission. Direct files and artifacts remain
-  unavailable, and inline images fail clearly because Hermes does not yet
-  advertise image input for the stoppable Runs lifecycle.
+  unavailable; supported runtimes may accept only validated, bounded image
+  data URLs for the stoppable Runs lifecycle.
 - Remote session identifiers remain process-private behind random aliases bound
   to the selected connection. Mentat allowlists and bounds public metadata,
   returns only user/assistant conversation text, labels compressed
   latest-segment history as partial, and rejects stale aliases, changed
   capabilities, changed message identity, private transport reflection,
   malformed pagination, or uncertain identity.
-- Remote session continuation remains unavailable because the current Runs
-  input is not separately capability-advertised and the session-chat stream has
-  no matching public status/stop operation.
-- Audited remote approval responses and kept them unavailable: Hermes' current
-  mutation has no request ID/revision/hash, so Mentat cannot prove that a
-  user's confirmation still targets the displayed request. Approval requests
-  continue to stop the bound run safely until upstream adds exact binding and
-  a structured privacy-safe preview.
+- Added verified, exact remote continuation, profile inventory, approval,
+  clarification, inline-image, and revisioned Kanban contracts for runtimes
+  that advertise the complete supported capability set.
+- Remote approval and clarification replies now require the verified exact
+  request-binding contracts. Runs wait for a verified operator response, then
+  resume without submitting a second prompt; unsupported or malformed requests
+  still stop safely.
 - Remote runs now require the exact advertised Runs API endpoints, remain bound
   to one opaque connection identity, never retry submission, and issue at most
-  one stop attempt. Interrupted streams reconcile through status; approval
-  requests stop safely because approval responses are not supported yet.
+  one stop attempt. Interrupted streams reconcile through status.
 - Graceful shutdown performs bounded remote stop/read-back. Abrupt process
   death is reported as an interrupted partial run; upstream run IDs are not
   persisted in this slice.

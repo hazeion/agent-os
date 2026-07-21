@@ -38,6 +38,8 @@ reasoning_effort: high
                 ],
             }
             with patch.object(server, "CONFIG_PATH", path), patch.object(
+                server, "public_connection_payload", return_value={"status": "not_configured", "selection": {"mode": "local"}}
+            ), patch.object(
                 server, "hermes_profiles_payload", return_value=discovery
             ):
                 payload = server.hermes_config()
@@ -61,6 +63,8 @@ model:
             path = Path(tmpdir) / "config.yaml"
             path.write_text(config, encoding="utf-8")
             with patch.object(server, "CONFIG_PATH", path), patch.object(
+                server, "public_connection_payload", return_value={"status": "not_configured", "selection": {"mode": "local"}}
+            ), patch.object(
                 server,
                 "hermes_profiles_payload",
                 return_value={"status": "available", "profiles": []},
@@ -74,6 +78,8 @@ model:
             path = Path(tmpdir) / "config.yaml"
             path.write_text("credential: must-not-leak\n", encoding="utf-8")
             with patch.object(server, "CONFIG_PATH", path), patch.object(
+                server, "public_connection_payload", return_value={"status": "not_configured", "selection": {"mode": "local"}}
+            ), patch.object(
                 server,
                 "hermes_profiles_payload",
                 return_value={"status": "unavailable", "profiles": []},

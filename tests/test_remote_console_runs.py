@@ -143,6 +143,8 @@ class FakeRunClient:
         }
         self.submitted = []
         self.stopped = []
+        self.approvals = []
+        self.clarifications = []
 
     def require_console_run_capabilities(self):
         if isinstance(self.capabilities, Exception):
@@ -173,6 +175,16 @@ class FakeRunClient:
         self.assert_run_id(run_id)
         self.stopped.append(run_id)
         return {"status": "stopping"}
+
+    def respond_to_approval(self, run_id, request_id, choice):
+        self.assert_run_id(run_id)
+        self.approvals.append((request_id, choice))
+        return {"request_id": request_id, "choice": choice, "resolved": 1}
+
+    def respond_to_clarification(self, run_id, request_id, response):
+        self.assert_run_id(run_id)
+        self.clarifications.append((request_id, dict(response)))
+        return {"request_id": request_id, "type": response["type"]}
 
     @staticmethod
     def assert_run_id(run_id):
@@ -310,6 +322,95 @@ class RemoteConsoleRunTests(unittest.TestCase):
             else:
                 with self.assertRaises(remote_hermes.RemoteHermesError):
                     stop_client.stop_run(REMOTE_RUN_ID)
+
+    def test_verified_extension_contracts_use_only_fixed_bound_requests(self):
+        capabilities = capability_payload(
+            profile_inventory=True,
+            profile_inventory_version=1,
+            profile_inventory_complete=True,
+            profile_inventory_requires_api_key=True,
+            run_session_continuation=True,
+            run_session_continuation_version=1,
+            run_session_continuation_exact_revision=True,
+            run_session_continuation_stoppable=True,
+            run_approval_response=True,
+            run_approval_request_binding=True,
+            run_approval_structured_preview=True,
+            run_approval_preview_version=1,
+            run_clarification_response=True,
+            run_clarification_request_binding=True,
+            clarification_events=True,
+            run_clarification_prompt_version=1,
+            run_inline_images=True,
+            run_inline_images_version=1,
+            run_inline_images_data_urls_only=True,
+            run_inline_images_max_count=4,
+            run_inline_images_max_bytes=5 * 1024 * 1024,
+        )
+        capabilities["endpoints"].update({
+            "profiles": {"method": "GET", "path": "/v1/profiles"},
+            "session_continuation": {"method": "GET", "path": "/v1/sessions/{session_id}/continuation"},
+            "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+            "run_clarification": {"method": "POST", "path": "/v1/runs/{run_id}/clarification"},
+            "run_inline_images": {"method": "POST", "path": "/v1/runs", "version": 1, "image_transport": "data_url_only", "max_count": 4, "max_bytes_per_image": 5 * 1024 * 1024},
+        })
+        session_id = "session_" + "b" * 32
+        revision = "sessionrev_" + "c" * 64
+        approval_id = "approval_1"
+        clarification_id = "clarify_1"
+        image = "data:image/png;base64,AA=="
+        queue = ResponseQueue([
+            FakeResponse(200, capabilities),
+            FakeResponse(200, {"object": "list", "version": 1, "complete": True, "active_profile": "default", "data": [{"id": "default", "object": "hermes.profile", "is_default": True, "is_active": True, "served": True}]}),
+            FakeResponse(200, capabilities),
+            FakeResponse(200, {"object": "hermes.session.continuation", "version": 1, "session_id": session_id, "revision": revision}),
+            FakeResponse(200, capabilities),
+            FakeResponse(202, {"run_id": REMOTE_RUN_ID, "status": "started"}),
+            FakeResponse(200, capabilities),
+            FakeResponse(200, {"object": "hermes.run.approval_response", "run_id": REMOTE_RUN_ID, "request_id": approval_id, "choice": "once", "resolved": 1}),
+            FakeResponse(200, capabilities),
+            FakeResponse(200, {"object": "hermes.run.clarification_response", "run_id": REMOTE_RUN_ID, "request_id": clarification_id, "type": "text"}),
+            FakeResponse(200, capabilities),
+            FakeResponse(202, {"run_id": REMOTE_RUN_ID, "status": "started"}),
+        ])
+        client = remote_hermes.RemoteHermesClient(ENDPOINT, SECRET, connection_factory=queue)
+
+        self.assertEqual(client.read_profiles()[0]["id"], "default")
+        descriptor = client.get_continuation_descriptor(session_id)
+        self.assertEqual(client.submit_continuation("Continue safely", descriptor)["status"], "started")
+        self.assertEqual(client.respond_to_approval(REMOTE_RUN_ID, approval_id, "once")["choice"], "once")
+        self.assertEqual(client.respond_to_clarification(REMOTE_RUN_ID, clarification_id, {"type": "text", "text": "Use the safe option"})["type"], "text")
+        self.assertEqual(client.submit_run_with_images("Inspect", [image])["status"], "started")
+        self.assertEqual(
+            [(call["method"], call["path"]) for call in queue.calls],
+            [
+                ("GET", "/v1/capabilities"), ("GET", "/v1/profiles"),
+                ("GET", "/v1/capabilities"), ("GET", f"/v1/sessions/{session_id}/continuation"),
+                ("GET", "/v1/capabilities"), ("POST", "/v1/runs"),
+                ("GET", "/v1/capabilities"), ("POST", f"/v1/runs/{REMOTE_RUN_ID}/approval"),
+                ("GET", "/v1/capabilities"), ("POST", f"/v1/runs/{REMOTE_RUN_ID}/clarification"),
+                ("GET", "/v1/capabilities"), ("POST", "/v1/runs"),
+            ],
+        )
+        self.assertEqual(json.loads(queue.calls[5]["body"].decode("utf-8"))["continuation"], descriptor)
+        self.assertEqual(json.loads(queue.calls[7]["body"].decode("utf-8")), {"request_id": approval_id, "choice": "once"})
+        self.assertEqual(json.loads(queue.calls[9]["body"].decode("utf-8"))["response"]["text"], "Use the safe option")
+        self.assertEqual(json.loads(queue.calls[11]["body"].decode("utf-8"))["input"][1]["image_url"], image)
+
+    def test_interactive_events_reject_private_reflection_before_reaching_the_browser(self):
+        client = remote_hermes.RemoteHermesClient(ENDPOINT, SECRET, connection_factory=ResponseQueue([]))
+        approval = {
+            "event": "approval.request", "run_id": REMOTE_RUN_ID, "request_id": "approval_1",
+            "preview": {"version": 1, "category": "write", "title": "Save", "summary": "password=private-value", "risk_labels": []},
+            "choices": ["once", "deny"],
+        }
+        clarification = {
+            "event": "clarify.request", "run_id": REMOTE_RUN_ID, "request_id": "clarify_1",
+            "prompt": {"version": 1, "type": "choice", "question": "Choose", "choices": [{"id": "choice-1", "label": "/private/path"}]},
+        }
+        for event in (approval, clarification):
+            with self.subTest(event=event["event"]), self.assertRaisesRegex(remote_hermes.RemoteHermesError, "remote_private_reflection"):
+                client._normalize_run_event(event, REMOTE_RUN_ID)
 
     def test_sse_events_are_bounded_normalized_and_hide_upstream_identity(self):
         long_delta = "d" * 5_000
@@ -660,6 +761,80 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertIn("approval", run["error"].lower())
         self.assertEqual(client.stopped, [REMOTE_RUN_ID])
 
+    def test_verified_approval_waits_for_operator_and_resumes_without_resubmission(self):
+        client = FakeRunClient(
+            events=[{
+                "type": "approval.request", "request_id": "approval_1",
+                "preview": {"version": 1, "category": "write", "title": "Save note", "summary": "Save the reviewed note", "risk_labels": ["write"]},
+                "choices": ["once", "deny"],
+            }],
+            statuses=[{"status": "waiting_for_approval"}, {"status": "running"}],
+        )
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_remote_waiting_approval"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id, "agent_id": "default", "agent_name": "Remote workshop",
+            "model": "anthropic/claude-test", "transport_mode": "remote",
+            "connection_binding_id": "b" * 32, "prompt": "Needs approval", "status": "queued",
+            "session_id": None, "response": "", "error": "", "events": [], "created_at": "2026-07-20T00:00:00-07:00",
+        }
+        with patch.object(adapter, "revalidate"), patch.object(server, "persist_agent_console_runs"):
+            server.run_remote_hermes_agent(run_id, adapter)
+            waiting = server.AGENT_CONSOLE_RUNS[run_id]
+            self.assertEqual(waiting["status"], "waiting_for_approval")
+            self.assertEqual(client.stopped, [])
+            with patch.object(server.threading, "Thread") as worker:
+                response, status = server.respond_to_remote_console_action(run_id, {
+                    "confirmed": True, "kind": "approval", "request_id": "approval_1", "choice": "once",
+                })
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual(client.approvals, [("approval_1", "once")])
+        self.assertEqual(client.submitted, ["Needs approval"])
+        self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["status"], "queued")
+        worker.return_value.start.assert_called_once_with()
+
+    def test_clarification_response_must_match_the_current_prompt(self):
+        client = FakeRunClient(statuses=[])
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_remote_waiting_choice"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id, "transport_mode": "remote", "connection_binding_id": "b" * 32,
+            "status": "waiting_for_clarification", "events": [], "_remote_run_id": REMOTE_RUN_ID,
+            "_remote_transport": adapter,
+            "action_required": {"kind": "clarification", "request_id": "clarify_1", "prompt": {"version": 1, "type": "choice", "question": "Proceed?", "choices": [{"id": "choice-1", "label": "Yes"}]}},
+        }
+        with patch.object(adapter, "revalidate"):
+            response, status = server.respond_to_remote_console_action(run_id, {
+                "confirmed": True, "kind": "clarification", "request_id": "clarify_1",
+                "response": {"type": "choice", "choice_id": "choice-2"},
+            })
+        self.assertEqual(status, 400)
+        self.assertIn("current remote options", response["error"])
+        self.assertEqual(client.clarifications, [])
+
+    def test_response_stays_pending_when_hermes_has_not_verified_resume(self):
+        client = FakeRunClient(statuses=[{"status": "waiting_for_approval"}])
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_remote_response_pending"
+        action = {"kind": "approval", "request_id": "approval_1", "preview": {"version": 1}, "choices": ["once", "deny"]}
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id, "transport_mode": "remote", "connection_binding_id": "b" * 32,
+            "status": "waiting_for_approval", "events": [], "_remote_run_id": REMOTE_RUN_ID,
+            "_remote_transport": adapter, "action_required": action,
+        }
+        with patch.object(adapter, "revalidate"):
+            response, status = server.respond_to_remote_console_action(run_id, {
+                "confirmed": True, "kind": "approval", "request_id": "approval_1", "choice": "once",
+            })
+        self.assertEqual(status, 502)
+        self.assertTrue(response["partial"])
+        self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["action_required"], action)
+        self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["status"], "waiting_for_approval")
+
     def test_interrupted_stream_surfaces_approval_status_and_verifies_true_terminal(self):
         client = FakeRunClient(
             events=[remote_hermes.RemoteHermesError("remote_timeout")],
@@ -987,6 +1162,8 @@ class RemoteConsoleRunTests(unittest.TestCase):
             ({"agent_id": "default", "prompt": "Work", "session_id": "session_1"}, "session"),
         )
         with patch.object(server, "hermes_console_transport", return_value=adapter), patch.object(
+            adapter, "revalidate"
+        ), patch.object(
             server,
             "persist_agent_console_runs",
         ):

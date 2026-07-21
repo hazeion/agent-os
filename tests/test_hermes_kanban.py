@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from types import SimpleNamespace
 
-from hermes_kanban import CAPABILITY_KEYS, HermesKanbanAdapter
+from hermes_kanban import CAPABILITY_KEYS, HermesKanbanAdapter, RemoteHermesKanbanAdapter
 
 
 HELP = """usage: hermes kanban {boards,list,show,assignees,runs,create,assign,comment,promote,block,unblock,reclaim}"""
@@ -192,6 +192,43 @@ class MutationTests(unittest.TestCase):
         payload = adapter.list_tasks("default")
         self.assertEqual(payload["error"]["code"], "runtime_timeout")
         self.assertTrue(payload["partial"])
+
+
+class RemoteAdapterTests(unittest.TestCase):
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def require_kanban_capabilities(self):
+            return {"features": ["kanban_api", "kanban_api_revisioned", "kanban_api_idempotency", "kanban_api_requires_api_key"]}
+
+        def kanban_request(self, operation, **kwargs):
+            self.calls.append((operation, kwargs))
+            if operation == "boards":
+                return {"object": "list", "version": 1, "complete": True, "data": [{"id": "default", "object": "hermes.kanban.board", "name": "Default", "archived": False, "is_current": True}]}
+            return {
+                "object": "hermes.kanban.task_detail", "version": 1, "board": "default", "revision": "kanbanrev_" + "a" * 64,
+                "task": {"id": "task_1", "object": "hermes.kanban.task", "title": "Remote", "body": "Safe", "assignee": "default", "status": "ready", "priority": 0, "created_by": "api_server", "created_at": 1, "started_at": None, "completed_at": None, "result": "", "block_kind": None, "block_recurrences": 0},
+                "comments": [], "runs": [], "events": [], "truncated": {"comments": False, "runs": False, "events": False}, "parents": [], "children": [],
+            }
+
+    def test_remote_adapter_uses_exact_mutation_revision_and_idempotency_key(self):
+        client = self.Client()
+        adapter = RemoteHermesKanbanAdapter(client)
+        self.assertTrue(adapter.detect_capabilities()["capabilities"]["tasks.create"])
+        self.assertTrue(adapter.list_boards()["ok"])
+        result = adapter.mutate_task("default", "task_1", "reply", expected_revision="kanbanrev_" + "a" * 64, idempotency_key="mentat-test-key-0001", body="Safe reply", author="mentat")
+        self.assertTrue(result["ok"])
+        operation, kwargs = client.calls[-1]
+        self.assertEqual(operation, "action")
+        self.assertEqual(kwargs["body"]["expected_revision"], "kanbanrev_" + "a" * 64)
+        self.assertEqual(kwargs["body"]["idempotency_key"], "mentat-test-key-0001")
+
+    def test_remote_adapter_rejects_unbound_mutation_before_remote_call(self):
+        client = self.Client()
+        result = RemoteHermesKanbanAdapter(client).mutate_task("default", "task_1", "reply", expected_revision="old", idempotency_key="short", body="No")
+        self.assertFalse(result["ok"])
+        self.assertEqual(client.calls, [])
 
 
 if __name__ == "__main__":

@@ -260,6 +260,12 @@ class HermesTransportTests(unittest.TestCase):
             side_effect=slow_profiles,
         ), patch.object(
             server,
+            "hermes_console_transport",
+            return_value=server.local_hermes_console_transport(
+                TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
+            ),
+        ), patch.object(
+            server,
             "agent_console_model_catalog",
             return_value={"profile_id": "default", "models": []},
         ), patch.object(

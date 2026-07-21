@@ -496,6 +496,10 @@ async function startAgentConsoleRun(payload) {
   return sendJson(`${endpoints.agentConsole}/runs`, payload, { method: 'POST' });
 }
 
+async function respondToAgentConsoleRequest(id, payload) {
+  return sendJson(`${endpoints.agentConsole}/runs/${encodeURIComponent(id)}/response`, payload, { method: 'POST' });
+}
+
 async function uploadAgentConsoleAttachment(file) {
   if (!(file instanceof File)) throw new Error('Choose a file to attach.');
   return api(endpoints.agentConsoleAttachments, {

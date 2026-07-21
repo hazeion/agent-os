@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import hermes_profiles
+from remote_hermes import ConnectionSelection
 import server
 
 
@@ -131,6 +132,8 @@ class HermesProfileDiscoveryTests(unittest.TestCase):
     def test_server_exposes_profile_discovery_route_through_adapter(self):
         expected = {"schema_version": 1, "status": "available", "profiles": []}
         with patch.object(server, "hermes_python_path", return_value="/opt/hermes/python"), patch.object(
+            server, "load_remote_hermes_connection", return_value=ConnectionSelection("local", "Local Hermes", None, None, "local-default")
+        ), patch.object(
             server, "discover_hermes_profiles", return_value=expected
         ) as discover:
             payload = server.API_ROUTES["/api/hermes/profiles"]()
