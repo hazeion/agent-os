@@ -3,6 +3,9 @@ name: Native artifact smoke
 on:
   workflow_dispatch:
   pull_request:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -178,3 +181,15 @@ jobs:
             dist/installer/*.exe
           if-no-files-found: error
           retention-days: 7
+
+  required:
+    name: Native artifacts required
+    if: ${{ always() }}
+    needs:
+      - build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify native artifact smoke
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: test "$BUILD_RESULT" = success

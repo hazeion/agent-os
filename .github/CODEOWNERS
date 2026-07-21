@@ -1,0 +1,7 @@
+# Release gates and reviewed secret fingerprints require the project owner.
+/.github/CODEOWNERS @hazeion
+/.github/workflows/ @hazeion
+/.secrets.baseline @hazeion
+/scripts/check_tracked_secrets.py @hazeion
+/scripts/verify_release_checks.py @hazeion
+/scripts/verify_python_artifacts.py @hazeion

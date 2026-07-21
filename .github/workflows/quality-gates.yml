@@ -1,0 +1,181 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-package:
+    name: Python package and installed lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: requirements-native.lock
+
+      - name: Install hash-locked build environment
+        run: |
+          python -m pip install --require-hashes -r requirements-native.lock
+          python -m pip install --require-hashes -r requirements-quality.lock
+
+      - name: Build and verify exact artifacts
+        run: |
+          python -m build --no-isolation --sdist --wheel --outdir dist
+          python scripts/verify_python_artifacts.py dist
+
+      - name: Exercise pipx installed lifecycle
+        shell: bash
+        run: |
+          smoke_root="$RUNNER_TEMP/mentat-package-smoke"
+          export PIPX_HOME="$smoke_root/pipx-home"
+          export PIPX_BIN_DIR="$smoke_root/bin"
+          python -m pipx install dist/*.whl
+          "$PIPX_BIN_DIR/mentat" --version
+          "$PIPX_BIN_DIR/mentat" setup --data-dir "$smoke_root/data" --port 8894
+          "$PIPX_BIN_DIR/mentat" doctor --data-dir "$smoke_root/data" --port 8894
+          "$PIPX_BIN_DIR/mentat" start --data-dir "$smoke_root/data" --port 8894 >"$RUNNER_TEMP/mentat-package.log" 2>&1 &
+          launcher_pid=$!
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8894/api/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8894/api/health >/dev/null
+          "$PIPX_BIN_DIR/mentat" stop --data-dir "$smoke_root/data" --port 8894
+          wait "$launcher_pid" || true
+          if curl --fail --silent http://127.0.0.1:8894/api/health >/dev/null; then
+            echo 'Installed Mentat remained healthy after stop' >&2
+            exit 1
+          fi
+          test -f "$smoke_root/data/tasks.json"
+
+      - name: Upload verified Python artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-python-package
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  browser-smoke:
+    name: Browser smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+
+      - name: Install pinned runtime dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run loopback browser smoke
+        shell: bash
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          MENTAT_BASE_URL: http://127.0.0.1:8895
+          MENTAT_BROWSER_DEBUG_PORT: "9335"
+          MENTAT_BROWSER_RUNTIME_DIR: ${{ runner.temp }}/browser-smoke-runtime
+        run: |
+          export MENTAT_DATA_DIR="$RUNNER_TEMP/mentat-browser-data"
+          python server.py --data-dir "$MENTAT_DATA_DIR" --port 8895 >"$RUNNER_TEMP/mentat-browser.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            python -m mentat stop --data-dir "$MENTAT_DATA_DIR" --port 8895 >/dev/null 2>&1 || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8895/api/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8895/api/health >/dev/null
+          node scripts/browser_smoke.mjs
+          git diff --exit-code -- data/agents.json
+
+  security-scan:
+    name: Dependency and secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: requirements-quality.lock
+
+      - name: Install hash-locked audit tools
+        run: python -m pip install --require-hashes -r requirements-quality.lock
+
+      - name: Audit runtime and native dependencies
+        run: |
+          python -m pip_audit -r requirements.txt --strict --progress-spinner off
+          python -m pip_audit -r requirements-native.lock --strict --progress-spinner off
+
+      - name: Scan tracked files for new secret candidates
+        run: python scripts/check_tracked_secrets.py
+
+  required:
+    name: Quality gates required
+    if: ${{ always() }}
+    needs:
+      - python-package
+      - browser-smoke
+      - security-scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify quality gates
+        env:
+          PACKAGE_RESULT: ${{ needs.python-package.result }}
+          BROWSER_RESULT: ${{ needs.browser-smoke.result }}
+          SECURITY_RESULT: ${{ needs.security-scan.result }}
+        run: |
+          test "$PACKAGE_RESULT" = success
+          test "$BROWSER_RESULT" = success
+          test "$SECURITY_RESULT" = success

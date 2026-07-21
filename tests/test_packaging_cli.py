@@ -118,7 +118,10 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertIn("environment: beta-release", workflow)
-        self.assertEqual(workflow.count("github.ref == 'refs/heads/main' && github.ref_protected"), 2)
+        self.assertEqual(
+            workflow.count("github.ref == 'refs/heads/main' && github.ref_protected"),
+            3,
+        )
         self.assertEqual(workflow.count("Verify trusted source revision"), 2)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("notarytool submit", workflow)
@@ -134,6 +137,8 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn('item.__setitem__("BundleIsRelocatable", False)', workflow)
         self.assertNotIn("pkgbuild --component dist/Mentat.app", workflow)
         self.assertIn("Smoke the exact signed Windows installer", workflow)
+        self.assertIn("Signed release and tag required", workflow)
+        self.assertIn('git push origin "refs/tags/$RELEASE_TAG"', workflow)
         self.assertIn("if: always()", workflow)
         self.assertNotIn("actions/checkout@v", workflow)
         self.assertNotIn("actions/setup-python@v", workflow)

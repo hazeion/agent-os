@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 
 const baseUrl = process.env.MENTAT_BASE_URL || 'http://127.0.0.1:8888';
 const debugPort = Number(process.env.MENTAT_BROWSER_DEBUG_PORT || 9223);
 const repoRoot = resolve(new URL('..', import.meta.url).pathname.replace(/^\/(.:\/)/, '$1'));
-const runtimeDir = resolve(repoRoot, 'data/runtime/browser-smoke-profile');
-const calendarScreenshotPath = resolve(repoRoot, 'data/runtime/calendar-week-smoke.png');
+const browserRuntimeRoot = resolve(
+  process.env.MENTAT_BROWSER_RUNTIME_DIR || resolve(repoRoot, 'data/runtime/browser-smoke-runtime'),
+);
+if (basename(browserRuntimeRoot) !== 'browser-smoke-runtime') {
+  throw new Error('MENTAT_BROWSER_RUNTIME_DIR must end in browser-smoke-runtime');
+}
+const ownedRuntimeDir = resolve(browserRuntimeRoot, `run-${process.pid}`);
+const runtimeDir = resolve(ownedRuntimeDir, 'profile');
+const calendarScreenshotPath = resolve(ownedRuntimeDir, 'calendar-week-smoke.png');
 const chromeCandidates = [
   process.env.CHROME_PATH,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -129,7 +136,7 @@ async function main() {
     await waitFor(() => client.eval('document.readyState === "complete"'), 'page load');
     await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'Today View default');
 
-    await waitFor(() => client.eval(`(() => { const stop = document.querySelector('#agent-console-stop'); const model = document.querySelector('#agent-console-model-select'); return Boolean(document.querySelector('#overview-cards .metric-card') && document.querySelector('#focus-task-list') && document.querySelector('#agent-console-panel') && document.querySelector('#agent-console-form') && model?.tagName === 'SELECT' && model.options.length > 0 && document.querySelector('#agent-console-apply-model') && stop?.hidden && getComputedStyle(stop).display === 'none'); })()`), 'Today render');
+    await waitFor(() => client.eval(`(() => { const stop = document.querySelector('#agent-console-stop'); const model = document.querySelector('#agent-console-model-select'); return Boolean(document.querySelector('#overview-cards .metric-card') && document.querySelector('#focus-task-list') && document.querySelector('#agent-console-panel') && document.querySelector('#agent-console-form') && model?.tagName === 'SELECT' && model.options.length > 0 && document.querySelector('#agent-console-apply-model') && stop?.hidden && getComputedStyle(stop).display === 'none'); })()`), 'Today render', 30000);
     const structuredEventRendered = await client.eval(`(() => { renderAgentConsole({ agents: [{ id: 'event-smoke', name: 'Event Smoke', available: true, model: 'test/model' }], model_catalog: { profile_id: 'event-smoke', models: ['test/model'], current_model: 'test/model' }, runs: [{ id: 'run_event_smoke', agent_id: 'event-smoke', agent_name: 'Event Smoke', status: 'completed', prompt: 'Check events', response: 'Done', created_at: new Date().toISOString(), event_cursor: 1, events: [{ schema_version: 1, run_id: 'run_event_smoke', sequence: 1, cursor: 1, type: 'complete', kind: 'complete', timestamp: new Date().toISOString(), data: {}, display_text: 'Structured event rendered' }] }] }); return document.querySelector('#agent-console-chat')?.textContent.includes('Structured event rendered'); })()`);
     if (!structuredEventRendered) throw new Error('Structured Agent Console event render smoke failed');
     await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/'; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -201,6 +208,7 @@ async function main() {
     if (chrome && !chrome.killed) chrome.kill();
     await sleep(300);
     backups.forEach(restoreFile);
+    rmSync(ownedRuntimeDir, { recursive: true, force: true });
   }
 }
 

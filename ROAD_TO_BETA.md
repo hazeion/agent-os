@@ -149,7 +149,7 @@ work is still small.
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
 | 2 | Secure remote Hermes parity | Complete for the verified maintained fork; upstream releases need fresh compatibility evidence | 1 | Mandatory remote capabilities verified over HTTPS |
 | 3 | Installable product, native installers, and CLI | In progress | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
-| 4 | Automated quality gate | Not started | 3 | Required CI green on the supported matrix |
+| 4 | Automated quality gate | In progress | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Not started | 0, 3, 4 | Public policies, diagnostics, and issue path |
 | 6 | Release-candidate rehearsal | Not started | 1–5 | Reproducible tagged RC with rollback drill |
 | 7 | Limited external beta | Not started | 6 | Tester acceptance window completed |
