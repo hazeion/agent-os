@@ -1,0 +1,61 @@
+name: Milestone 7 exit summary
+description: Publish the redacted aggregate evidence for a completed limited beta.
+title: "[Beta exit]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maintainer-only release record. Publish aggregate results and public issue links only. Never include participant identities, credentials, endpoints, hostnames, IP addresses, private content, or unrestricted logs.
+  - type: input
+    id: candidate
+    attributes:
+      label: Exact tested RC tag and source commit
+      placeholder: v0.1.0-beta.1-rc.1 at 40-character commit
+    validations:
+      required: true
+  - type: textarea
+    id: cohort
+    attributes:
+      label: Cohort window and coverage
+      description: Give aggregate invited, started, completed, platform, channel, and Hermes-experience counts.
+    validations:
+      required: true
+  - type: textarea
+    id: install
+    attributes:
+      label: Installation and first-workflow results
+      description: Include the no-help numerator/denominator, overall rate, four required strata, and separate time-bucket results.
+    validations:
+      required: true
+  - type: textarea
+    id: recovery
+    attributes:
+      label: Migration, backup, and recovery results
+      description: Aggregate assigned, passed, pass-with-help, blocked, and not-run counts.
+    validations:
+      required: true
+  - type: textarea
+    id: remote
+    attributes:
+      label: Remote matrix v1 results
+      description: Aggregate every required row by exact Mentat RC and verified Hermes build.
+    validations:
+      required: true
+  - type: textarea
+    id: issues
+    attributes:
+      label: Issues and repeated confusion
+      description: Give P0/P1/P2/P3 counts, safe public links, and the product or documentation action taken.
+    validations:
+      required: true
+  - type: checkboxes
+    id: exit
+    attributes:
+      label: Exit attestation
+      options:
+        - label: At least 10 external testers used Mentat for roughly two weeks and every Milestone 7 exit criterion passed.
+          required: true
+        - label: No unresolved P0 or P1 issue remains.
+          required: true
+        - label: This issue contains only aggregate, redacted, public-safe evidence.
+          required: true

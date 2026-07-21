@@ -9,6 +9,7 @@ from scripts.release_rehearsal import (
     build_bundle,
     expected_artifacts,
     validate_release_tag,
+    validate_rc_tag,
     validate_source_sha,
 )
 
@@ -33,6 +34,10 @@ class ReleaseRehearsalTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError, msg=tag):
                 validate_release_tag(tag)
+        self.assertEqual(validate_rc_tag("v0.1.0-beta.1-rc.12"), "v0.1.0-beta.1-rc.12")
+        for tag in ("v0.1.0-beta.1", "v0.1.0-beta.1-rc.0"):
+            with self.assertRaises(ValueError, msg=tag):
+                validate_rc_tag(tag)
 
     def test_source_sha_is_exact_lowercase_hex(self):
         self.assertEqual(validate_source_sha("a" * 40), "a" * 40)
