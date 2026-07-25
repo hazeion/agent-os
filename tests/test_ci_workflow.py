@@ -561,11 +561,11 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertIn("Implemented by `.github/workflows/ci.yml`", ROADMAP)
         self.assertIn("all nine OS/Python combinations", ROADMAP)
         self.assertIn(
-            "Run the mandatory remote contract matrix",
+            "Configure the protected `beta-release` environment",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
-            "mentat-beta-contracts",
+            "real operator-managed",
             ROADMAP.split("## Current next actions", 1)[1],
         )
         self.assertIn(
