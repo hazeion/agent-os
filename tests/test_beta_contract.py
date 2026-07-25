@@ -111,8 +111,12 @@ class BetaContractTests(unittest.TestCase):
         ):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
-        self.assertTrue(next_actions.lstrip().startswith("1. Run the mandatory remote contract matrix"))
-        self.assertIn("mentat-beta-contracts", next_actions)
+        self.assertTrue(
+            next_actions.lstrip().startswith(
+                "1. Configure the protected `beta-release` environment"
+            )
+        )
+        self.assertIn("real operator-managed", next_actions)
         self.assertIn("signed numbered-RC workflow", next_actions)
         self.assertIn("limited cohort", next_actions)
         self.assertIn("protected exact-byte", next_actions)

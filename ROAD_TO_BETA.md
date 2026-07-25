@@ -604,18 +604,15 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Run the mandatory remote contract matrix against one real operator-managed
-   Hermes HTTPS endpoint with API-key authentication and certificate
-   verification.
-2. Configure the protected `beta-release` environment, signing credentials,
+1. Configure the protected `beta-release` environment, signing credentials,
    release immutability, and final-tag update/deletion protection; then run the
    signed numbered-RC workflow.
-3. Have another person complete the exact clean Intel Mac, Apple Silicon with
+2. Have another person complete the exact clean Intel Mac, Apple Silicon with
    Rosetta, Windows, `pipx`, upgrade, backup/restore, rollback, and
    uninstall-preservation rehearsal against that immutable RC.
-4. Run the privacy-safe limited cohort to its documented exit criteria, close
+3. Run the privacy-safe limited cohort to its documented exit criteria, close
    the public redacted exit summary, then dispatch the protected exact-byte
    promotion and open the support window.
-5. Keep non-verified Hermes releases capability-gated; support beyond the
-   maintained `mentat-beta-contracts` runtime needs fresh compatibility
-   evidence.
+4. Keep the completed real operator-managed Hermes HTTPS matrix as the
+   maintained compatibility baseline. Support beyond that verified runtime
+   needs fresh capability evidence.
