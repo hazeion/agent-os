@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
 Status: Repository implementation complete through Milestone 8; public beta remains externally gated
-Last updated: 2026-07-21
+Last updated: 2026-07-24
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
@@ -89,10 +89,9 @@ Repository implementation now covers the beta product and its release path:
 - protected tooling can create an immutable signed RC and promote its exact
   attested bytes after the remaining real-world gates pass.
 
-The remaining gaps are external execution evidence: a real remote HTTPS Hermes
-matrix, protected signing and release configuration, a real signed RC, another
-person's clean-platform and recovery rehearsal, the limited external cohort,
-and final publication.
+The remaining gaps are external execution evidence: protected signing and
+release configuration, a real signed RC, another person's clean-platform and
+recovery rehearsal, the limited external cohort, and final publication.
 
 ## How roadmap work is organized
 
@@ -150,7 +149,7 @@ signed-RC evidence remain external Milestone 6 work.
 | --- | --- | --- | --- | --- |
 | 0 | Beta contract | Complete | — | Approved release, support, distribution, severity, and feedback contract |
 | 1 | Durable user data | Complete — 1A through 1F | 0 | Upgrade/uninstall preservation tests |
-| 2 | Secure remote Hermes parity | Repository/client complete for the maintained fork; live remote HTTPS interoperability pending | 1 | Mandatory contracts live-verified on loopback; HTTPS enforcement tested; live HTTPS endpoint pending |
+| 2 | Secure remote Hermes parity | Complete for the maintained Hermes `0.19.0` contract | 1 | Mandatory contracts live-verified over authenticated, certificate-verified HTTPS |
 | 3 | Installable product, native installers, and CLI | Repository tooling complete; signed clean-machine evidence remains in 6 | 2 | Fresh native and `pipx` installs plus lifecycle smoke tests |
 | 4 | Automated quality gate | Repository and hosted PR gates complete; protected signed evidence remains in 6 | 3 | Required CI green on the supported matrix |
 | 5 | Trust and support readiness | Complete | 0, 3, 4 | Public policies, diagnostics, and issue path |
@@ -321,6 +320,15 @@ Work in order:
    transport-aware diagnostics: local mode keeps its existing checks, while
    remote mode reports only bounded authenticated readiness and fixed
    unreachable, unauthenticated, degraded, unsupported, or healthy states.**
+
+Maintainer exit evidence: on 2026-07-24, Mentat exercised the mandatory
+surface against an operator-managed Hermes `0.19.0` runtime over authenticated,
+certificate-verified HTTPS. The live matrix covered Console submission and
+streaming, approval, clarification, continuation, session replay/search,
+profiles, skills/toolsets, Context Packs, supported images, stopping,
+cancellation races, and revision-bound Kanban creation and result acceptance.
+Unsafe or disruptive failure paths remain covered by the focused automated
+matrix. External-cohort evidence remains Milestone 7 work.
 
 Exit criteria:
 
@@ -570,7 +578,7 @@ The release cannot be called public beta until all of the following are true:
   installer for Windows pass clean-install, upgrade, rollback, and uninstall-
   preservation checks.
 - [x] Required CI is green on the supported platform/Python matrix.
-- [ ] One remote Hermes endpoint can provide every mandatory capability over
+- [x] One remote Hermes endpoint can provide every mandatory capability over
   verified HTTPS without exposing its API credential.
 - [x] Remote Kanban and read-only profile discovery use supported,
   capability-advertised authentication surfaces.

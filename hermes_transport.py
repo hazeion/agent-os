@@ -32,6 +32,8 @@ class HermesTransportError(RuntimeError):
         "remote_private_reflection": "Remote content was blocked by Mentat's content-safety checks.",
         "remote_approval_unsupported": "This remote run needs approval, which Mentat cannot answer yet.",
         "remote_run_failed": "The remote Hermes run failed.",
+        "remote_run_rejected": "The remote Hermes host rejected this Console request.",
+        "remote_run_request_invalid": "The remote Hermes Console request is invalid.",
         "remote_submission_unverified": "Mentat could not verify whether the remote run started.",
         "remote_stop_unverified": "Mentat could not verify that the remote run stopped.",
         "console_request_invalid": "The Hermes Console request is invalid.",

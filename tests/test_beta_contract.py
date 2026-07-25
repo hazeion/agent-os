@@ -145,14 +145,14 @@ class BetaContractTests(unittest.TestCase):
         self.assertIn("Repository kit complete; external cohort not started", milestone_map)
         self.assertIn("Repository promotion complete; publication blocked by 6 and 7", milestone_map)
         self.assertIn("Repository tooling complete; signed rehearsal externally gated", milestone_map)
-        self.assertEqual(done.count("- [x]"), 9)
-        self.assertEqual(done.count("- [ ]"), 5)
+        self.assertEqual(done.count("- [x]"), 10)
+        self.assertEqual(done.count("- [ ]"), 4)
         for unfinished in (
             "- [ ] A signed and notarized native installer for macOS",
             "- [ ] Release artifacts, checksums, notes, and rollback instructions",
             "- [ ] The limited external beta meets its cohort",
             "- [ ] There are no unresolved P0 or P1 issues",
-            "- [ ] One remote Hermes endpoint can provide every mandatory capability",
+            "- [x] One remote Hermes endpoint can provide every mandatory capability",
         ):
             self.assertIn(unfinished, done)
         for required in (

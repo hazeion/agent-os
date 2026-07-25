@@ -335,6 +335,17 @@ REMOTE_CONTEXT_CONTENT_LIMIT = 12_000
 REMOTE_CONTEXT_TOKEN_PATTERN = re.compile(r"context_[0-9a-f]{32}\Z")
 REMOTE_CONSOLE_RECONCILE_SECONDS = 60
 REMOTE_CONSOLE_STOP_VERIFY_SECONDS = 10
+REMOTE_SUBMISSION_UNCERTAIN_CODES = frozenset(
+    {
+        "remote_timeout",
+        "remote_unavailable",
+        "remote_content_type_invalid",
+        "remote_response_too_large",
+        "remote_response_invalid",
+        "remote_run_schema_invalid",
+        "remote_submission_unverified",
+    }
+)
 REMOTE_CONSOLE_POLL_INTERVAL_SECONDS = 1.0
 REMOTE_CONSOLE_SHUTDOWN_WAIT_SECONDS = 6.0
 MAX_JSON_BODY_BYTES = 256_000
@@ -4024,30 +4035,51 @@ def delegate_confirmed_task(task_id: str, payload):
 
 
 def refresh_task_delegation(task_id: str, payload=None):
-    task = task_record(task_id)
-    if task is None:
-        return {"error": f"Task not found: {task_id}"}, 404
-    delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else None
-    if not delegation or not delegation.get("kanban_task_id"):
-        return {"error": "Task has no Hermes delegation."}, 409
-    remote = kanban_adapter().get_task(delegation.get("board_id") or "default", delegation["kanban_task_id"])
-    if not remote.get("ok"):
-        failed = dict(delegation)
-        failed.update({"sync_state": "error", "updated_at": now_iso()})
-        saved, _ = persist_task_delegation(task_id, failed)
-        return {"error": remote.get("error", {}).get("message") or "Hermes delegation refresh failed.", "task": saved}, 502
-    synchronized = synchronized_delegation(delegation, remote)
-    updates = {}
-    if synchronized.get("state") == "ready_for_review":
-        updates = {"planning_state": "review", "review_required": True, "needs_attention": True}
-    elif synchronized.get("state") == "needs_input":
-        updates = {"planning_state": "blocked", "needs_attention": True}
-    elif synchronized.get("state") in {"queued", "running"}:
-        updates = {"planning_state": "waiting"}
-    saved, error = persist_task_delegation(task_id, synchronized, task_updates=updates)
-    if error:
-        return {"error": error}, 500
-    return {"ok": True, "task": saved, "delegation": synchronized, "remote": remote}, 200
+    with HERMES_KANBAN_LOCK:
+        task = task_record(task_id)
+        if task is None:
+            return {"error": f"Task not found: {task_id}"}, 404
+        delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else None
+        if not delegation or not delegation.get("kanban_task_id"):
+            return {"error": "Task has no Hermes delegation."}, 409
+        remote = kanban_adapter().get_task(
+            delegation.get("board_id") or "default",
+            delegation["kanban_task_id"],
+        )
+        if not remote.get("ok"):
+            failed = dict(delegation)
+            failed.update({"sync_state": "error", "updated_at": now_iso()})
+            saved, _ = persist_task_delegation(task_id, failed)
+            return {
+                "error": remote.get("error", {}).get("message")
+                or "Hermes delegation refresh failed.",
+                "task": saved,
+            }, 502
+        synchronized = synchronized_delegation(delegation, remote)
+        updates = {}
+        if synchronized.get("state") == "ready_for_review":
+            updates = {
+                "planning_state": "review",
+                "review_required": True,
+                "needs_attention": True,
+            }
+        elif synchronized.get("state") == "needs_input":
+            updates = {"planning_state": "blocked", "needs_attention": True}
+        elif synchronized.get("state") in {"queued", "running"}:
+            updates = {"planning_state": "waiting"}
+        saved, error = persist_task_delegation(
+            task_id,
+            synchronized,
+            task_updates=updates,
+        )
+        if error:
+            return {"error": error}, 500
+        return {
+            "ok": True,
+            "task": saved,
+            "delegation": synchronized,
+            "remote": remote,
+        }, 200
 
 
 DELEGATION_ACTIONS = {"accept", "reply", "retry", "stop", "request_revision", "mark_blocked"}
@@ -4068,13 +4100,25 @@ DELEGATION_ACTION_STATES = {
 }
 
 
+def delegation_action_binding(delegation: dict) -> dict:
+    return {
+        "profile_id": delegation.get("profile_id"),
+        "board_id": delegation.get("board_id") or "default",
+        "kanban_task_id": delegation.get("kanban_task_id"),
+    }
+
+
 def preview_delegation_action(task_id: str, payload):
     if not isinstance(payload, dict):
         return {"error": "Action payload must be a JSON object"}, 400
-    task = task_record(task_id)
-    if task is None:
+    local_task = task_record(task_id)
+    if local_task is None:
         return {"error": f"Task not found: {task_id}"}, 404
-    delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else None
+    delegation = (
+        local_task.get("delegation")
+        if isinstance(local_task.get("delegation"), dict)
+        else None
+    )
     if not delegation:
         return {"error": "Task has no Hermes delegation."}, 409
     adapter = kanban_adapter()
@@ -4082,7 +4126,7 @@ def preview_delegation_action(task_id: str, payload):
     if not remote.get("ok"):
         return {"error": "Hermes delegation state is unavailable; refresh before acting."}, 409
     delegation = synchronized_delegation(delegation, remote)
-    task = {**task, "delegation": delegation}
+    task = {**local_task, "delegation": delegation}
     remote_revision = remote_delegation_revision(remote)
     action = compact_text(payload.get("action"), max_length=40).lower()
     note = str(payload.get("note") or "").strip()
@@ -4101,7 +4145,12 @@ def preview_delegation_action(task_id: str, payload):
         missing = [capability for capability in required_capabilities if not capabilities.get(capability)]
         if missing:
             return {"error": "This Hermes runtime does not support the requested delegation action."}, 409
-    intent = {"action": action, "note": note, "delegation": delegation, "remote_revision": remote_revision}
+    intent = {
+        "action": action,
+        "note": note,
+        "delegation_binding": delegation_action_binding(delegation),
+        "remote_revision": remote_revision,
+    }
     labels = {
         "accept": "Accept the result and complete the Mentat task.",
         "reply": "Append a task-level reply in Hermes Kanban.",
@@ -4113,7 +4162,11 @@ def preview_delegation_action(task_id: str, payload):
     return {
         "ok": True,
         "requires_confirmation": True,
-        "confirmation_id": delegation_confirmation("delegation_action", task, intent),
+        "confirmation_id": delegation_confirmation(
+            "delegation_action",
+            local_task,
+            intent,
+        ),
         "task": task,
         "action": action,
         "note": note,
@@ -4143,7 +4196,11 @@ def execute_confirmed_delegation_action(task_id: str, payload):
         expected_local = {key: value for key, value in task.items() if key != "delegation"}
         current_local = {key: value for key, value in (current_task or {}).items() if key != "delegation"}
         current_delegation = (current_task or {}).get("delegation") if isinstance((current_task or {}).get("delegation"), dict) else {}
-        if current_local != expected_local or current_delegation.get("kanban_task_id") != remote_id:
+        if (
+            current_local != expected_local
+            or delegation_action_binding(current_delegation)
+            != delegation_action_binding(delegation)
+        ):
             return {"error": "Mentat task or delegation changed after preview; preview the action again."}, 409
         latest_remote = adapter.get_task(board, remote_id)
         if not latest_remote.get("ok"):
@@ -6484,6 +6541,12 @@ def run_remote_hermes_agent(
             current["duration_seconds"] = round(time.monotonic() - started, 1)
             status = (terminal or {}).get("status")
             current.pop("action_required", None)
+            terminal_session_id = (terminal or {}).get("session_id")
+            if isinstance(terminal_session_id, str):
+                current["session_id"] = _remote_session_alias(
+                    transport.binding.binding_id,
+                    terminal_session_id,
+                )
             if approval_unavailable:
                 current["status"] = "failed"
                 current["response"] = ""
@@ -6538,7 +6601,15 @@ def run_remote_hermes_agent(
                 current["completed_at"] = now_iso()
                 current["response"] = ""
                 current.pop("action_required", None)
-                if submission_attempted and remote_run_id is None:
+                submission_uncertain = (
+                    submission_attempted
+                    and remote_run_id is None
+                    and (
+                        not isinstance(exc, HermesTransportError)
+                        or exc.code in REMOTE_SUBMISSION_UNCERTAIN_CODES
+                    )
+                )
+                if submission_uncertain:
                     current["partial"] = True
                     current["error"] = HermesTransportError(
                         "remote_submission_unverified"
@@ -6558,7 +6629,12 @@ def run_remote_hermes_agent(
                 current.pop("_remote_image_data_urls", None)
                 current.pop("_remote_stop_attempted", None)
                 current.pop("_remote_response_claim", None)
-                agent_console_event(current, "Remote Hermes run could not be verified", "error", {"phase": "remote"})
+                event_text = (
+                    "Remote Hermes run could not be verified"
+                    if submission_uncertain or current.get("partial")
+                    else "Remote Hermes request failed safely"
+                )
+                agent_console_event(current, event_text, "error", {"phase": "remote"})
                 persist_agent_console_runs()
     finally:
         with AGENT_CONSOLE_LOCK:

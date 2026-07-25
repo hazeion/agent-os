@@ -2,6 +2,28 @@
 
 All notable changes to Mentat.
 
+## 2026-07-24
+
+### Fixed
+- Remote Console runs now retain a safe connection-bound session alias, so a
+  fresh completed run can continue in the same Hermes session without exposing
+  the upstream session ID.
+- Clarification runs now accept Hermes' advertised
+  `waiting_for_clarification` status instead of failing after the question
+  appears.
+- Supported remote image requests now use a dedicated bounded outbound limit
+  instead of the smaller response-size limit, and deterministic request
+  rejections no longer claim that a run may have started.
+- Kanban follow-up confirmations now bind persisted Mentat task state and the
+  exact remote revision without including a newly generated sync timestamp.
+
+### Verified
+- Completed the mandatory maintained-runtime matrix against Hermes `0.19.0`
+  over authenticated, certificate-verified HTTPS, including Console
+  interactions, continuation, sessions/search, profiles, skills/toolsets,
+  Context Packs, images, stopping, cancellation races, and revision-bound
+  Kanban creation and result acceptance.
+
 ## 2026-07-21
 
 ### Added
