@@ -1,7 +1,8 @@
 # Remote Hermes Capability Contract
 
-Status: Approved beta architecture; Milestones 2A through 2C and 2E through 2I implemented; remaining mandatory capability blockers recorded
+Status: Approved beta architecture; mandatory maintained-runtime contract live-verified over HTTPS
 Approved: 2026-07-16
+Maintainer verification: 2026-07-24 against Hermes `0.19.0`
 
 ## Product boundary
 
@@ -58,7 +59,7 @@ partial rather than claiming the remote run stopped.
 | Run status, progress, approval, cancellation, and stopping | `server.py` and `agent_run_history.py` normalize remote events/status and keep upstream run identity private | Fixed Runs, status, SSE, stop, and request-bound approval endpoints are capability-advertised by the verified runtime | Same API-server bearer boundary | Capability match before action, exact live-run/request binding, one claimed stop attempt, and post-action status read-back | **Required**; approval choices are enabled only with the exact bound-preview contract |
 | Clarification requests and responses | `server.py` retains bounded run interaction state and posts a typed response through `hermes_transport.py` | The verified runtime advertises a typed request/response endpoint with exact request binding | API-server bearer key | Require a machine-readable request event, typed bounded response, exact run/request binding, and post-response status verification | **Required** for the verified runtime; unavailable without the contract |
 | Session list, replay, continuation, and search | `server.py` preserves local `state.db` reads and routes selected remote history through `remote_hermes.py` | The verified runtime advertises an exact revision-bound, stoppable continuation descriptor as well as session reads | API-server bearer key; no remote database access; upstream IDs remain process-private | Normalize bounded user/assistant history, bind opaque aliases to the selected projected identity, label compressed history partial, require a fresh exact continuation descriptor | **Required**; continuation is enabled only with that exact capability |
-| Read-only agent/profile discovery | `hermes_profiles.py` runs inside the local Hermes runtime; Kanban also supplies assignee/profile context | `/v1/models` identifies the endpoint's active profile/model, and current Hermes can route a known profile through `/p/<profile>/...`, but it does not advertise a complete profile inventory. Kanban's `/api/plugins/kanban/profiles` uses the separate dashboard session-token boundary | The dashboard session token is not the approved stable API-server bearer boundary; remote beta requires a new API-key-authenticated, capability-advertised inventory | Require a capability-advertised bounded profile inventory and reconcile it with the endpoint's active profile | **Required**; upstream blocker for complete inventory |
+| Read-only agent/profile discovery | `hermes_profiles.py` runs inside the local Hermes runtime; the remote adapter uses only the advertised profile inventory | The verified runtime advertises a complete API-key-authenticated profile inventory | API-server bearer key; no direct profile-file access. The separate dashboard session-token boundary is not the approved stable API-server bearer boundary | Require a capability-advertised bounded complete inventory and reconcile it with the endpoint's active profile | **Required**; live-verified for the maintained `0.19.0` contract |
 | Profile creation | `hermes_profile_creation.py` and fixed Hermes profile operations | No API-key-authenticated profile-creation capability is advertised by the API server | No approved remote boundary | Exact preview, capability match, profile-bound confirmation, and verified refresh would be required | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Profile identity inspection and synchronization | `hermes_profile_identity.py` resolves local profile metadata and the managed `SOUL.md` block through Hermes APIs | No supported API-server identity capability is advertised | Direct remote `SOUL.md` access is prohibited | Existing revision-bound preview, confirmation, atomicity, verification, and rollback contract would still apply | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Profile deletion | `hermes_profile_deletion.py` calls the supported local Hermes profile API | No supported API-server deletion capability is advertised | No approved remote boundary | Existing exact preview, active-run exclusion, confirmation, and post-delete discovery would still apply | **Graceful degradation**; remote unavailable unless upstream adds support |
@@ -210,6 +211,13 @@ Remote Hermes support is ready for external beta only when:
 - logs, diagnostics, browser responses, and backups remain secret-free; and
 - interruption, timeout, authentication failure, capability change, and
   upgrade/rollback cases have automated coverage.
+
+The maintainer matrix met these technical criteria on 2026-07-24 against one
+operator-managed Hermes `0.19.0` endpoint over authenticated,
+certificate-verified HTTPS. This does not replace the separate signed-RC,
+clean-platform, or external-cohort gates in `ROAD_TO_BETA.md`. Other Hermes
+builds remain capability-driven: Mentat enables only the exact advertised
+contract and fails closed when a required piece is missing.
 
 This contract relies only on documented Hermes surfaces. Hermes' own
 [security policy](https://github.com/NousResearch/hermes-agent/security)

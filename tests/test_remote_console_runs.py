@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -257,6 +258,7 @@ class RemoteConsoleRunTests(unittest.TestCase):
                     {
                         "object": "hermes.run",
                         "run_id": REMOTE_RUN_ID,
+                        "session_id": "session_" + ("d" * 32),
                         "status": "completed",
                         "output": "Finished safely",
                         "usage": {
@@ -283,6 +285,7 @@ class RemoteConsoleRunTests(unittest.TestCase):
 
         self.assertEqual(submitted["run_id"], REMOTE_RUN_ID)
         self.assertEqual(terminal["status"], "completed")
+        self.assertEqual(terminal["session_id"], "session_" + ("d" * 32))
         self.assertEqual(terminal["usage"]["total_tokens"], 12)
         self.assertEqual(stopped, {"status": "stopping"})
         self.assertEqual(
@@ -304,6 +307,80 @@ class RemoteConsoleRunTests(unittest.TestCase):
 
         with self.assertRaisesRegex(remote_hermes.RemoteHermesError, "remote_path_not_allowed"):
             client._run_json_request("DELETE", "/v1/runs", expected_status=200)
+
+        for status, expected_error in (
+            (400, "remote_run_rejected"),
+            (429, "remote_submission_unverified"),
+            (500, "remote_submission_unverified"),
+            (502, "remote_submission_unverified"),
+        ):
+            status_queue = ResponseQueue([FakeResponse(status, {})])
+            with self.subTest(status=status), self.assertRaisesRegex(
+                remote_hermes.RemoteHermesError,
+                expected_error,
+            ):
+                remote_hermes.RemoteHermesClient(
+                    ENDPOINT,
+                    SECRET,
+                    connection_factory=status_queue,
+                ).submit_run("Status classification")
+
+        waiting_queue = ResponseQueue([
+            FakeResponse(
+                200,
+                {
+                    "object": "hermes.run",
+                    "run_id": REMOTE_RUN_ID,
+                    "session_id": "session_" + ("d" * 32),
+                    "status": "waiting_for_clarification",
+                },
+            )
+        ])
+        waiting = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=waiting_queue,
+        ).get_run(REMOTE_RUN_ID)
+        self.assertEqual(waiting["status"], "waiting_for_clarification")
+
+        no_session_queue = ResponseQueue([
+            FakeResponse(
+                200,
+                {
+                    "object": "hermes.run",
+                    "run_id": REMOTE_RUN_ID,
+                    "status": "running",
+                },
+            )
+        ])
+        without_session = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=no_session_queue,
+        ).get_run(REMOTE_RUN_ID)
+        self.assertEqual(without_session, {"status": "running"})
+
+        for invalid_session_id in (None, "", "/private/session", "session\nchanged"):
+            invalid_queue = ResponseQueue([
+                FakeResponse(
+                    200,
+                    {
+                        "object": "hermes.run",
+                        "run_id": REMOTE_RUN_ID,
+                        "session_id": invalid_session_id,
+                        "status": "running",
+                    },
+                )
+            ])
+            with self.subTest(invalid_session_id=invalid_session_id), self.assertRaisesRegex(
+                remote_hermes.RemoteHermesError,
+                "remote_run_schema_invalid",
+            ):
+                remote_hermes.RemoteHermesClient(
+                    ENDPOINT,
+                    SECRET,
+                    connection_factory=invalid_queue,
+                ).get_run(REMOTE_RUN_ID)
 
         for returned_id, accepted in (
             (REMOTE_RUN_ID, True),
@@ -358,7 +435,10 @@ class RemoteConsoleRunTests(unittest.TestCase):
         revision = "sessionrev_" + "c" * 64
         approval_id = "approval_1"
         clarification_id = "clarify_1"
-        image = "data:image/png;base64,AA=="
+        image = (
+            "data:image/png;base64,"
+            + base64.b64encode(b"a" * 300_000).decode("ascii")
+        )
         queue = ResponseQueue([
             FakeResponse(200, capabilities),
             FakeResponse(200, {"object": "list", "version": 1, "complete": True, "active_profile": "default", "data": [{"id": "default", "object": "hermes.profile", "is_default": True, "is_active": True, "served": True}]}),
@@ -396,6 +476,10 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertEqual(json.loads(queue.calls[7]["body"].decode("utf-8")), {"request_id": approval_id, "choice": "once"})
         self.assertEqual(json.loads(queue.calls[9]["body"].decode("utf-8"))["response"]["text"], "Use the safe option")
         self.assertEqual(json.loads(queue.calls[11]["body"].decode("utf-8"))["input"][1]["image_url"], image)
+        self.assertGreater(
+            len(queue.calls[11]["body"]),
+            remote_hermes.MAX_RESPONSE_BYTES,
+        )
 
     def test_interactive_events_reject_private_reflection_before_reaching_the_browser(self):
         client = remote_hermes.RemoteHermesClient(ENDPOINT, SECRET, connection_factory=ResponseQueue([]))
@@ -457,6 +541,7 @@ class RemoteConsoleRunTests(unittest.TestCase):
             FakeResponse(200, {
                 "object": "hermes.run",
                 "run_id": REMOTE_RUN_ID,
+                "session_id": "session_" + ("d" * 32),
                 "status": "completed",
                 "output": output,
             })
@@ -472,6 +557,7 @@ class RemoteConsoleRunTests(unittest.TestCase):
             FakeResponse(200, {
                 "object": "hermes.run",
                 "run_id": REMOTE_RUN_ID,
+                "session_id": "session_" + ("d" * 32),
                 "status": "completed",
                 "output": "x" * 200_001,
             })
@@ -488,6 +574,7 @@ class RemoteConsoleRunTests(unittest.TestCase):
                 FakeResponse(200, {
                     "object": "hermes.run",
                     "run_id": REMOTE_RUN_ID,
+                    "session_id": "session_" + ("d" * 32),
                     "status": "completed",
                     "output": f"reflected {reflected}",
                 })
@@ -503,6 +590,7 @@ class RemoteConsoleRunTests(unittest.TestCase):
             FakeResponse(200, {
                 "object": "hermes.run",
                 "run_id": REMOTE_RUN_ID,
+                "session_id": "session_" + ("d" * 32),
                 "status": "completed",
                 "output": "Connected to hermes",
             })
@@ -625,6 +713,48 @@ class RemoteConsoleRunTests(unittest.TestCase):
             self.assertNotIn(private, public)
             self.assertNotIn(private, history)
 
+    def test_completed_remote_run_projects_session_for_safe_continuation(self):
+        upstream_session_id = "session_" + ("d" * 32)
+        client = FakeRunClient(
+            events=[{"type": "run.completed", "output": "Complete"}],
+            statuses=[
+                {
+                    "status": "completed",
+                    "session_id": upstream_session_id,
+                    "output": "Complete",
+                    "usage": None,
+                }
+            ],
+        )
+        adapter = self.adapter(client)
+        with patch.object(adapter, "revalidate"), patch.object(
+            server,
+            "hermes_console_transport",
+            return_value=adapter,
+        ), patch.object(server.threading, "Thread") as worker, patch.object(
+            server,
+            "persist_agent_console_runs",
+        ):
+            payload, status = server.start_agent_console_run(
+                {"agent_id": "default", "prompt": "Remote work"}
+            )
+            run_id = payload["run"]["id"]
+            server.run_remote_hermes_agent(run_id, adapter)
+
+        self.assertEqual(status, 202)
+        worker.return_value.start.assert_called_once_with()
+        public = server.agent_console_snapshot(server.AGENT_CONSOLE_RUNS[run_id])
+        alias = public["session_id"]
+        self.assertRegex(alias, r"^remote_session_[0-9a-f]{32}$")
+        self.assertNotIn(upstream_session_id, json.dumps(public))
+        resolved, partial, structural_ids = server._remote_session_id_for_alias(
+            adapter.binding.binding_id,
+            alias,
+        )
+        self.assertEqual(resolved, upstream_session_id)
+        self.assertFalse(partial)
+        self.assertEqual(structural_ids, (upstream_session_id,))
+
     def test_interrupted_stream_reconciles_from_status_without_resubmission(self):
         client = FakeRunClient(
             events=[remote_hermes.RemoteHermesError("remote_timeout")],
@@ -729,6 +859,49 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertTrue(run["partial"])
         self.assertIn("whether", run["error"].lower())
         self.assertEqual(client.submitted, ["Maybe accepted"])
+
+    def test_deterministic_submission_rejection_is_not_marked_partial(self):
+        class RejectedSubmitClient(FakeRunClient):
+            def submit_run(self, prompt):
+                self.submitted.append(prompt)
+                raise remote_hermes.RemoteHermesError(
+                    "remote_run_request_invalid"
+                )
+
+        client = RejectedSubmitClient()
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_rejected_submit"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "default",
+            "agent_name": "Remote workshop",
+            "model": "anthropic/claude-test",
+            "transport_mode": "remote",
+            "connection_binding_id": "b" * 32,
+            "prompt": "Definitely rejected",
+            "status": "queued",
+            "session_id": None,
+            "response": "",
+            "error": "",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+        }
+        with patch.object(adapter, "revalidate"), patch.object(
+            server,
+            "persist_agent_console_runs",
+        ):
+            server.run_remote_hermes_agent(run_id, adapter)
+
+        run = server.AGENT_CONSOLE_RUNS[run_id]
+        self.assertEqual(run["status"], "failed")
+        self.assertFalse(run.get("partial", False))
+        self.assertIn("invalid", run["error"].lower())
+        self.assertEqual(
+            run["events"][-1]["display_text"],
+            "Remote Hermes request failed safely",
+        )
+        self.assertEqual(client.submitted, ["Definitely rejected"])
 
     def test_approval_event_stops_and_fails_without_auto_approval(self):
         client = FakeRunClient(

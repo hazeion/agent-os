@@ -43,6 +43,7 @@ CONNECTION_SCHEMA_VERSION = 1
 CONNECTION_FILE_NAME = "remote-hermes-connection-v1.json"
 MAX_CONNECTION_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_REMOTE_RUN_REQUEST_BYTES = 28 * 1024 * 1024
 MAX_RUN_EVENT_BYTES = 256 * 1024
 MAX_RUN_STREAM_BYTES = 4 * 1024 * 1024
 MAX_RUN_EVENTS = 5_000
@@ -352,6 +353,7 @@ _RUN_STATUSES = frozenset(
         "queued",
         "running",
         "waiting_for_approval",
+        "waiting_for_clarification",
         "stopping",
         "completed",
         "failed",
@@ -2998,7 +3000,7 @@ class RemoteHermesClient:
                 ).encode("utf-8")
             except (TypeError, ValueError, UnicodeError) as exc:
                 raise RemoteHermesError("remote_run_request_invalid") from exc
-            if len(encoded) > MAX_RESPONSE_BYTES:
+            if len(encoded) > MAX_REMOTE_RUN_REQUEST_BYTES:
                 raise RemoteHermesError("remote_run_request_invalid")
             headers["Content-Type"] = "application/json"
             headers["Content-Length"] = str(len(encoded))
@@ -3015,6 +3017,20 @@ class RemoteHermesClient:
             if status in {401, 403}:
                 raise RemoteHermesError("remote_authentication_failed")
             if status != expected_status:
+                if method == "POST" and path == "/v1/runs":
+                    deterministic_rejection = status in {
+                        400,
+                        404,
+                        405,
+                        413,
+                        415,
+                        422,
+                    }
+                    raise RemoteHermesError(
+                        "remote_run_rejected"
+                        if deterministic_rejection
+                        else "remote_submission_unverified"
+                    )
                 raise RemoteHermesError("remote_run_rejected")
             content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().casefold()
             if content_type not in {"application/json", "application/problem+json"}:
@@ -3333,6 +3349,13 @@ class RemoteHermesClient:
         if status not in _RUN_STATUSES:
             raise RemoteHermesError("remote_run_schema_invalid")
         normalized: dict[str, Any] = {"status": status}
+        if "session_id" in payload:
+            try:
+                normalized["session_id"] = self._validated_session_id(
+                    payload.get("session_id")
+                )
+            except RemoteHermesError as exc:
+                raise RemoteHermesError("remote_run_schema_invalid") from exc
         if status == "completed":
             output = payload.get("output")
             if not isinstance(output, str) or len(output) > 200_000 or "\x00" in output:

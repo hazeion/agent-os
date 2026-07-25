@@ -1,8 +1,8 @@
 # Feature Slice Review: Real Hermes Milestone 2 contract integration
 
-Status: Ready to publish; GitHub CLI authentication required  
-Slice: `beta-2-real-hermes-contracts`  
-Date: `2026-07-20`  
+Status: Merged in PR #50; real HTTPS follow-up verified 2026-07-24
+Slice: `beta-2-real-hermes-contracts`
+Date: `2026-07-20`
 Review log: `reviews/2026-07-20-beta-2-real-hermes-contracts.md`
 
 ## Slice contract
@@ -220,15 +220,21 @@ syntax checks and focused UI contract tests pass.
 - Unresolved risks: the live runtime is a user-maintained fork; external beta
   distribution still needs the documented supported-runtime decision.
 - User authorization and scope: standing authorization recorded above.
-- Commit hash: Pending GitHub CLI authentication.
-- Ready PR URL: Pending GitHub CLI authentication.
+- Commit hash: `9e20a88`.
+- Ready PR: #50, merged as `cbfdb3b`.
 
 ## Outcome review
 
-- Classification: Pending.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending.
-- Remaining reviewer dissent: Pending.
-- Compatibility/migration/rollback concerns: Pending.
-- User decision: Pending.
-- Next slice authorized: No.
+- Classification: Accepted and merged.
+- Acceptance criteria summary: the six capability-gated contracts passed the
+  original focused and full-suite gates; the later real HTTPS matrix confirms
+  the maintained Hermes `0.19.0` runtime interoperates through the WebUI.
+- Potential bugs or untested paths: the 2026-07-24 follow-up found and fixed
+  continuation alias projection, clarification status normalization, the
+  outbound image-size ceiling, deterministic rejection wording, and Kanban
+  follow-up timestamp binding.
+- Remaining reviewer dissent: none after the recorded re-review rounds.
+- Compatibility/migration/rollback concerns: other Hermes versions remain
+  capability-driven and fail closed when the exact contract is unavailable.
+- User decision: approved and merged.
+- Next slice authorized: yes, under the standing Road-to-Beta authorization.
