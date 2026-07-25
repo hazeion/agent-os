@@ -37,6 +37,9 @@ const endpoints = {
 const state = {
   sessions: [],
   tasks: [],
+  overviewCards: {},
+  homeCalendar: {},
+  homeCrons: {},
   taskDeletionPreview: null,
   taskDeletionRequestToken: 0,
   projects: [],
@@ -76,7 +79,7 @@ const state = {
   isRefreshing: false,
   needsRefresh: false,
   hasBootstrapped: false,
-  currentTheme: 'compact-dark',
+  currentTheme: 'emerald',
   agentConsoleRuns: [],
   agentConsoleAgents: [],
   agentConsoleModels: [],
