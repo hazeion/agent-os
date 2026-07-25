@@ -190,6 +190,8 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("api://AzureADTokenExchange", signing_guide)
         self.assertIn("Entity type: **Environment**", signing_guide)
         self.assertIn("service principal exists", normalized_signing_guide)
+        self.assertIn("**Selected branches and tags**", signing_guide)
+        self.assertIn("exactly one allowed branch: `main`", normalized_signing_guide)
         for name in (
             "MAC_CERTIFICATES_BASE64",
             "MAC_CERTIFICATES_PASSWORD",
