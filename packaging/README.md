@@ -37,5 +37,7 @@ installers and verified Python package from one exact `main` commit. It then
 creates checksums, a manifest, short release notes, and a numbered prerelease.
 
 Before sharing one, complete [the release rehearsal](../RELEASE_REHEARSAL.md).
+The one-time Apple and Azure setup is in
+[the signing guide](../RELEASE_SIGNING.md).
 Keep a bad candidate visible as withdrawn and replace it with the next RC
 number; never move or delete its tag.

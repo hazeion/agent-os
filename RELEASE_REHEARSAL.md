@@ -9,8 +9,9 @@ Rosetta.
 
 1. Confirm `main` is protected and CI, native artifacts, and quality gates pass.
 2. Confirm the release-tag rule blocks tag updates and deletion.
-3. Confirm the protected `beta-release` environment has the macOS and Windows
-   signing credentials and an approver.
+3. Complete [RELEASE_SIGNING.md](RELEASE_SIGNING.md), then confirm the
+   protected `beta-release` environment has all Apple secrets, Azure Artifact
+   Signing variables, and an approver.
 4. Write down the exact legacy-checkout commit and previous package tag used as
    upgrade baselines. For the first RC, use reviewed non-private fixture data.
 5. Run **Signed beta artifacts** on `main` with the next tag, such as
