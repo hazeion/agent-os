@@ -23,6 +23,7 @@ PUBLIC_ASSETS = (
     "core.js",
     "index.html",
     "mentat-logo.png",
+    "mentat-mark-emerald.png",
     "styles.css",
 )
 datas = [(str(ROOT / "public" / name), "public") for name in PUBLIC_ASSETS]

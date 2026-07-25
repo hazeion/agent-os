@@ -38,7 +38,8 @@ PUBLIC_PACKAGES = {"mentat"}
 PUBLIC_DATA_FILES = {
     "share/mentat/public": {
         "public/app.js", "public/core.js", "public/index.html",
-        "public/mentat-logo.png", "public/styles.css",
+        "public/mentat-logo.png", "public/mentat-mark-emerald.png",
+        "public/styles.css",
     },
     "share/mentat/data": {
         "data/agent_messages.json", "data/agents.json", "data/attention.json",
