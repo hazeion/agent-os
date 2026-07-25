@@ -117,7 +117,8 @@ explains the Entra federation flow.
 Before the first candidate, confirm:
 
 - the `main` ruleset requires pull requests and the stable checks;
-- `beta-release` requires a reviewer and accepts protected branches only;
+- `beta-release` requires a reviewer and uses **Selected branches and tags**
+  with exactly one allowed branch: `main`;
 - the `v0.1.0-beta.*` tag ruleset blocks tag updates, deletion, and force
   pushes;
 - the environment contains exactly the seven Apple secrets and six Azure
