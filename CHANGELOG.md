@@ -4,6 +4,11 @@ All notable changes to Mentat.
 
 ## 2026-07-24
 
+### Changed
+- Updated protected Windows release signing to Azure Artifact Signing with
+  short-lived GitHub OIDC, and added a concise Apple/Azure maintainer setup
+  guide for the first signed release candidate.
+
 ### Fixed
 - Remote Console runs now retain a safe connection-bound session alias, so a
   fresh completed run can continue in the same Hermes session without exposing

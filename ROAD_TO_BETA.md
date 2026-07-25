@@ -81,9 +81,9 @@ Repository implementation now covers the beta product and its release path:
   and source compatibility wrappers are implemented;
 - CI covers the supported OS/Python matrix, package and native artifact smoke,
   browser smoke, dependencies, secrets, and protected signed release assembly;
-- the maintained Hermes runtime supplies the mandatory remote contracts on the
-  live loopback fixture, and the client enforces the tested HTTPS boundary;
-  a real remote HTTPS deployment still needs interoperability evidence;
+- the maintained Hermes `0.19.0` runtime supplies the mandatory remote
+  contracts, live-verified through an operator-managed WSL host over
+  authenticated, certificate-verified Tailscale HTTPS;
 - public trust, privacy, security, support, diagnostics, tester, recovery, and
   release instructions are in place; and
 - protected tooling can create an immutable signed RC and promote its exact
@@ -604,9 +604,9 @@ The release cannot be called public beta until all of the following are true:
 
 ## Current next actions
 
-1. Configure the protected `beta-release` environment, signing credentials,
-   release immutability, and final-tag update/deletion protection; then run the
-   signed numbered-RC workflow.
+1. Configure the protected `beta-release` environment using the concise
+   [Apple and Azure signing setup](RELEASE_SIGNING.md).
+   Confirm release immutability and final-tag protection, then run the signed numbered-RC workflow.
 2. Have another person complete the exact clean Intel Mac, Apple Silicon with
    Rosetta, Windows, `pipx`, upgrade, backup/restore, rollback, and
    uninstall-preservation rehearsal against that immutable RC.

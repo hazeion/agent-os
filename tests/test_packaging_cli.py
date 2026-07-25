@@ -115,6 +115,9 @@ class PackagingContractTests(unittest.TestCase):
         workflow = (
             ROOT / ".github" / "workflows" / "signed-release-artifacts.yml"
         ).read_text(encoding="utf-8")
+        signing_guide = (ROOT / "RELEASE_SIGNING.md").read_text(encoding="utf-8")
+        normalized_signing_guide = " ".join(signing_guide.split())
+        rehearsal = (ROOT / "RELEASE_REHEARSAL.md").read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertIn("environment: beta-release", workflow)
@@ -129,9 +132,37 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("spctl --assess --type execute", workflow)
         self.assertIn("security import", workflow)
         self.assertIn(" -x -k ", workflow)
+        self.assertIn('MAC_KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"', workflow)
+        self.assertNotIn("secrets.MAC_KEYCHAIN_PASSWORD", workflow)
         self.assertIn("signtool.exe", workflow.lower())
-        self.assertIn("Import-PfxCertificate", workflow)
-        self.assertIn("mentat-signing-thumbprint", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn(
+            "azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43",
+            workflow,
+        )
+        self.assertEqual(
+            workflow.count(
+                "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82"
+            ),
+            2,
+        )
+        self.assertIn("vars.AZURE_ARTIFACT_SIGNING_ENDPOINT", workflow)
+        self.assertIn("timestamp-rfc3161: http://timestamp.acs.microsoft.com", workflow)
+        self.assertIn(
+            '& $signTool.FullName verify /pa /all /v $executable\n'
+            '            if ($LASTEXITCODE -ne 0) { throw "Application '
+            'signature verification failed: $executable" }',
+            workflow,
+        )
+        self.assertIn(
+            '& $signTool.FullName verify /pa /all /v $installer.FullName\n'
+            '          if ($LASTEXITCODE -ne 0) { throw "Installer signature '
+            'verification failed: $($installer.FullName)" }',
+            workflow,
+        )
+        self.assertNotIn("WINDOWS_CERTIFICATE_BASE64", workflow)
+        self.assertNotIn("WINDOWS_CERTIFICATE_PASSWORD", workflow)
+        self.assertNotIn("Import-PfxCertificate", workflow)
         self.assertIn("Smoke the exact signed macOS package", workflow)
         self.assertIn("Mentat remained healthy after stop", workflow)
         self.assertIn('item.__setitem__("BundleIsRelocatable", False)', workflow)
@@ -150,6 +181,31 @@ class PackagingContractTests(unittest.TestCase):
         self.assertNotIn("actions/setup-python@v", workflow)
         self.assertNotIn("actions/upload-artifact@v", workflow)
         self.assertNotIn("actions/download-artifact@v", workflow)
+        self.assertIn("[RELEASE_SIGNING.md](RELEASE_SIGNING.md)", rehearsal)
+        self.assertIn(
+            "repo:hazeion/agent-os:environment:beta-release",
+            signing_guide,
+        )
+        self.assertIn("https://token.actions.githubusercontent.com", signing_guide)
+        self.assertIn("api://AzureADTokenExchange", signing_guide)
+        self.assertIn("Entity type: **Environment**", signing_guide)
+        self.assertIn("service principal exists", normalized_signing_guide)
+        for name in (
+            "MAC_CERTIFICATES_BASE64",
+            "MAC_CERTIFICATES_PASSWORD",
+            "MAC_APPLICATION_IDENTITY",
+            "MAC_INSTALLER_IDENTITY",
+            "MAC_NOTARY_APPLE_ID",
+            "MAC_NOTARY_PASSWORD",
+            "MAC_NOTARY_TEAM_ID",
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_ARTIFACT_SIGNING_ENDPOINT",
+            "AZURE_ARTIFACT_SIGNING_ACCOUNT",
+            "AZURE_ARTIFACT_SIGNING_PROFILE",
+        ):
+            self.assertIn(f"`{name}`", signing_guide)
 
     def test_native_installers_use_platform_data_safe_install_locations(self):
         windows = (ROOT / "packaging" / "windows" / "Mentat.iss").read_text(encoding="utf-8")
