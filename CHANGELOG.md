@@ -16,6 +16,8 @@ All notable changes to Mentat.
   rejections no longer claim that a run may have started.
 - Kanban follow-up confirmations now bind persisted Mentat task state and the
   exact remote revision without including a newly generated sync timestamp.
+- Browser smoke gives Chrome a bounded startup window on slower CI runners and
+  waits for browser shutdown before removing its private profile directory.
 
 ### Verified
 - Completed the mandatory maintained-runtime matrix against Hermes `0.19.0`

@@ -245,6 +245,17 @@ all passing with four platform-specific full-suite skips.
 Both reviewers cleared the corrected code and evidence with no remaining
 findings after one final mechanical count correction.
 
+### Publication CI follow-up
+
+GitHub's Browser smoke job reproduced a runner-only Chrome startup timeout
+twice while its package and secret/dependency siblings passed. The smoke
+harness now supplies the low-shared-memory flag, gives only Chrome startup a
+bounded 30-second window, waits up to five seconds for graceful browser exit
+before a bounded force-stop fallback, and retries private-profile cleanup.
+`node --check`, all 9 CI-quality contract tests, and the complete local
+loopback browser smoke pass. Both reviewers cleared this exact follow-up with
+no findings before merge.
+
 ## Documentation updates
 
 - Roadmap: records Milestone 2 complete for the maintained Hermes `0.19.0`

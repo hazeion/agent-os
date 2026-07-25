@@ -33,6 +33,20 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+async function stopChild(child) {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise((resolveExit) => child.once('exit', resolveExit));
+  child.kill();
+  await Promise.race([exited, sleep(5000)]);
+  if (child.exitCode === null) {
+    child.kill('SIGKILL');
+    await Promise.race([
+      new Promise((resolveExit) => child.once('exit', resolveExit)),
+      sleep(1000),
+    ]);
+  }
+}
+
 async function jsonFetch(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
@@ -114,6 +128,7 @@ async function main() {
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${runtimeDir}`,
       '--disable-gpu',
+      '--disable-dev-shm-usage',
       '--no-first-run',
       '--no-default-browser-check',
       baseUrl,
@@ -122,7 +137,7 @@ async function main() {
     const page = await waitFor(async () => {
       const pages = await jsonFetch(`http://127.0.0.1:${debugPort}/json/list`);
       return pages.find((item) => item.type === 'page' && item.webSocketDebuggerUrl);
-    }, 'Chrome debug page');
+    }, 'Chrome debug page', 30000);
 
     const ws = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((resolveOpen, rejectOpen) => {
@@ -216,10 +231,14 @@ async function main() {
     console.log(JSON.stringify({ ok: true, baseUrl, checks: ['today render', 'agent console controls', 'structured event render', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
-    if (chrome && !chrome.killed) chrome.kill();
-    await sleep(300);
+    await stopChild(chrome);
     backups.forEach(restoreFile);
-    rmSync(ownedRuntimeDir, { recursive: true, force: true });
+    rmSync(ownedRuntimeDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 200,
+    });
   }
 }
 
