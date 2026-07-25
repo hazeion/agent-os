@@ -1,6 +1,6 @@
 # Feature Slice Review: Real HTTPS Hermes interoperability matrix
 
-Status: Accepted; ready to publish
+Status: Published in ready PR #58
 Slice: `beta-2-real-https-matrix`
 Date: `2026-07-24`
 Review log: `reviews/2026-07-24-beta-2-real-https-matrix.md`
@@ -275,8 +275,8 @@ findings after one final mechanical count correction.
   external-cohort, and final-promotion gates remain intentionally open.
 - User authorization and scope: standing Road-to-Beta authorization recorded
   above.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- Reviewed implementation commit: `4936a3d`.
+- Ready PR: [#58](https://github.com/hazeion/agent-os/pull/58).
 
 ## Outcome review
 
