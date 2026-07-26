@@ -180,6 +180,9 @@ MAX_PUBLIC_URL_QUERY_FIELDS = 64
 _SECRET_TOKEN_TEXT = re.compile(
     r"(?i)(?:\bbearer\s+\S+|\b(?:sk-(?:proj-)?|gh[pousr]_|AKIA)[A-Z0-9_-]{8,})"
 )
+_ASCII_CREDENTIAL_MARKER = re.compile(
+    r"(?i)(?:key|credentials?|password|passwd|secret|token|authorization)"
+)
 _CREDENTIAL_LABELS = (
     "apikey",
     "accesskey",
@@ -2633,14 +2636,28 @@ def _overlength_human_candidate_is_safe(
 def _secret_shaped_text(value: str) -> bool:
     if _SECRET_TOKEN_TEXT.search(value):
         return True
+    # The detailed grammar below protects punctuation-, prose-, and
+    # identifier-shaped credential labels. None of its ASCII credential
+    # candidates can exist without one of these marker terms, so avoid the
+    # expensive per-token candidate scan in that case. The delimiter walk must
+    # still run because it also rejects private host/port and bracket shapes.
+    # Unicode text retains the full path because NFKC may reveal a marker.
+    scan_credential_candidates = (
+        not value.isascii()
+        or _ASCII_CREDENTIAL_MARKER.search(value) is not None
+    )
     identifier_characters = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
-    human_stem_positions = _human_credential_candidate_positions(value)
-    compound_boundary_positions = {
-        position
-        for match in _HUMAN_COMPOUND_PATTERN.finditer(value)
-        for position in range(match.start(), match.end())
-        if value[position] in ":=\r\n.,;?!…—–"
-    }
+    if scan_credential_candidates:
+        human_stem_positions = _human_credential_candidate_positions(value)
+        compound_boundary_positions = {
+            position
+            for match in _HUMAN_COMPOUND_PATTERN.finditer(value)
+            for position in range(match.start(), match.end())
+            if value[position] in ":=\r\n.,;?!…—–"
+        }
+    else:
+        human_stem_positions = []
+        compound_boundary_positions = set()
     human_stem_cursor = 0
     latest_human_stem = -161
     human_clause_start = 0
