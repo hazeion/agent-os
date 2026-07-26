@@ -329,9 +329,6 @@ class HermesTransportTests(unittest.TestCase):
                     server.select_hermes_connection(
                         {
                             "mode": "local",
-                            "label": "Local Hermes",
-                            "endpoint": None,
-                            "api_key": None,
                             "confirmation_token": "test-token",
                         }
                     ),

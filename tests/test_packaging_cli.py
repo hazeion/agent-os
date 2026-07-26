@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import health_checks
+import remote_hermes
 import runtime_config
 import server
 from data_layout import SEED_FILE_NAMES
@@ -294,6 +295,185 @@ class CliTests(unittest.TestCase):
             cli._forward_runtime_arguments(args),
             ["--config", "example.toml", "--port", "8891"],
         )
+
+    def test_connection_cli_has_no_api_key_value_argument(self):
+        parser = cli.build_parser()
+        self.assertNotIn(
+            "--api-key",
+            {
+                option
+                for action in parser._actions
+                for option in action.option_strings
+            },
+        )
+        configured = parser.parse_args(
+            [
+                "connection",
+                "configure-remote",
+                "--endpoint",
+                "https://hermes.example",
+                "--api-key-env",
+                "MENTAT_REMOTE_HERMES_API_KEY",
+            ]
+        )
+        self.assertFalse(hasattr(configured, "api_key"))
+
+    def test_connection_status_and_two_step_local_confirmation_are_secret_free(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "operator-data"
+            status_output = io.StringIO()
+            with redirect_stdout(status_output):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "connection",
+                            "status",
+                            "--data-dir",
+                            str(data_root),
+                        ]
+                    ),
+                    0,
+                )
+            status = json.loads(status_output.getvalue())
+            self.assertEqual(status["selection"]["mode"], "local")
+            self.assertFalse(status["selection"]["remembered_remote"])
+            self.assertNotIn(str(data_root), status_output.getvalue())
+
+            preview_output = io.StringIO()
+            with patch.object(cli.sys.stdin, "isatty", return_value=False):
+                with redirect_stdout(preview_output):
+                    self.assertEqual(
+                        cli.main(
+                            [
+                                "connection",
+                                "use",
+                                "local",
+                                "--data-dir",
+                                str(data_root),
+                            ]
+                        ),
+                        3,
+                    )
+            preview = json.loads(preview_output.getvalue())
+            token = preview["confirmation_token"]
+            self.assertRegex(token, r"^[0-9a-f]{64}$")
+            confirmed_output = io.StringIO()
+            with patch.object(cli, "_connection_server_running", return_value=False):
+                with redirect_stdout(confirmed_output):
+                    self.assertEqual(
+                        cli.main(
+                            [
+                                "connection",
+                                "use",
+                                "local",
+                                "--data-dir",
+                                str(data_root),
+                                "--confirm",
+                                token,
+                            ]
+                        ),
+                        0,
+                    )
+            confirmed = json.loads(confirmed_output.getvalue())
+            self.assertTrue(confirmed["ok"])
+            self.assertEqual(confirmed["selection"]["mode"], "local")
+
+    def test_connection_mutation_refuses_while_server_is_running(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "operator-data"
+            preview = remote_hermes.preview_remembered_connection(data_root, "local")
+            token = remote_hermes.offline_confirmation_token(preview)
+            output = io.StringIO()
+            with patch.object(cli, "_connection_server_running", return_value=True):
+                with patch.object(
+                    remote_hermes,
+                    "confirm_remembered_connection",
+                    side_effect=AssertionError("must not mutate"),
+                ):
+                    with redirect_stdout(output):
+                        self.assertEqual(
+                            cli.main(
+                                [
+                                    "connection",
+                                    "use",
+                                    "local",
+                                    "--data-dir",
+                                    str(data_root),
+                                    "--confirm",
+                                    token,
+                                ]
+                            ),
+                            2,
+                        )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(
+                payload["error_code"],
+                "connection_change_server_running",
+            )
+
+    def test_configure_remote_reads_environment_and_never_prints_private_values(self):
+        secret = "cli-remote-secret-NEVER-PRINT-12345"
+        endpoint = "https://private-hermes.example"
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "operator-data"
+            argv = [
+                "connection",
+                "configure-remote",
+                "--endpoint",
+                endpoint,
+                "--label",
+                "Workshop remote",
+                "--api-key-env",
+                "MENTAT_REMOTE_HERMES_API_KEY",
+                "--data-dir",
+                str(data_root),
+            ]
+            preview_output = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"MENTAT_REMOTE_HERMES_API_KEY": secret},
+            ):
+                with patch.object(cli.sys.stdin, "isatty", return_value=False):
+                    with redirect_stdout(preview_output):
+                        self.assertEqual(cli.main(argv), 3)
+            serialized = preview_output.getvalue()
+            self.assertNotIn(secret, serialized)
+            self.assertNotIn(endpoint, serialized)
+            self.assertNotIn(str(data_root), serialized)
+            token = json.loads(serialized)["confirmation_token"]
+
+            result = {
+                "status": "selected",
+                "selection": {
+                    "mode": "remote",
+                    "label": "Workshop remote",
+                    "binding_id": "b" * 32,
+                    "configured": True,
+                },
+                "discovery": {"trusted": True, "status": "healthy"},
+            }
+            confirmed_output = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"MENTAT_REMOTE_HERMES_API_KEY": secret},
+            ):
+                with patch.object(
+                    cli,
+                    "_connection_server_running",
+                    return_value=False,
+                ):
+                    with patch.object(
+                        remote_hermes,
+                        "confirm_connection_from_source",
+                        return_value=result,
+                    ):
+                        with redirect_stdout(confirmed_output):
+                            self.assertEqual(
+                                cli.main([*argv, "--confirm", token]),
+                                0,
+                            )
+            self.assertNotIn(secret, confirmed_output.getvalue())
+            self.assertNotIn(endpoint, confirmed_output.getvalue())
 
     def test_doctor_output_does_not_include_private_paths(self):
         with tempfile.TemporaryDirectory() as temporary:

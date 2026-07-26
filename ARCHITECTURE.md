@@ -146,7 +146,9 @@ Unsupported capabilities and unknown Hermes versions fail closed. Mentat never
 constructs a shell command from browser text and never collects Hermes-owned
 provider/model credentials or authentication-file contents. The sole remote
 connection credential is the operator-supplied API key governed by the
-owner-only, server-side boundary below.
+owner-only, server-side boundary below. Mentat's connection record stores only
+a credential-source reference; the key is resolved from a validated environment
+variable or owner-only env file.
 
 Mentat is an unauthenticated local application and must bind only to a loopback
 host. Non-loopback serving of Mentat is not a deployment option under this
@@ -182,9 +184,10 @@ transfer remain incomplete, so Mentat must not advertise full remote parity.
 The remote boundary has these architectural invariants:
 
 1. the operator explicitly supplies an HTTPS endpoint and API credential;
-2. the credential is used only by Mentat's server and remains outside tracked
-   files, URLs, browser storage/payloads, diagnostics, backups that are not
-   secret-aware, and logs;
+2. setup and CLI accept only a credential-source reference, never an API-key
+   value argument; the key is used only by Mentat's server and remains outside
+   the connection record, tracked files, URLs, browser storage/payloads,
+   diagnostics, backups that are not secret-aware, and logs;
 3. public health is treated only as untrusted liveness; authenticated readiness
    and machine-readable capabilities are validated before Mentat enables a
    dependent feature;
