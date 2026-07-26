@@ -332,15 +332,17 @@ connections.
   publication gate after reviewing the exact commit, push, and ready-PR plan.
 - Implementation commit hashes: Mentat
   `b3e6889944562a760bf4df7b644b27fbb2cbaede`; Hermes
-  `0d1607606d5b7708d2519ff425f31fe2977182b9`.
+  `fbd5e42c29b783cba739b959c47b091b17561375`. The Hermes commit was
+  metadata-only amended after publication to replace a machine-local author
+  address with the repository owner's GitHub noreply identity.
 - Ready PR URLs: Mentat
   `https://github.com/hazeion/agent-os/pull/64`; Hermes
   `https://github.com/hazeion/hermes-agent/pull/2`.
 
 ## Outcome review
 
-- Classification: Successful implementation, verified and awaiting
-  publication approval.
+- Classification: Successful implementation, verified, and published as
+  ready pull requests.
 - Acceptance criteria summary: AC-1 through AC-7 verified.
 - Potential bugs or untested paths: no live paid-provider run was required;
   process-restart replay and remote provider mutation remain deliberately out
