@@ -10,7 +10,14 @@ from unittest.mock import patch
 import zipfile
 
 from data_backup_restore import create_durable_backup
-from private_state import private_state_lock
+import json_store
+from private_state import (
+    CONNECTION_SERVER_RESERVATION_NAME,
+    mentat_server_active,
+    private_state_lock,
+    release_mentat_server,
+    reserve_mentat_server,
+)
 import remote_hermes
 import runtime_config
 import server
@@ -254,17 +261,23 @@ class RemoteHermesTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual(result[0].mode, "remote")
 
-    def test_confirm_writes_owner_only_secret_and_returns_only_safe_metadata(self):
+    def test_confirm_separates_owner_only_secret_from_connection_metadata(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
             result = self._confirm(root)
             path = remote_hermes.connection_path(root)
+            credential_path = remote_hermes.connection_credential_path(root)
             self.assertTrue(path.is_file())
+            self.assertTrue(credential_path.is_file())
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(credential_path.stat().st_mode), 0o600)
                 self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
             raw = path.read_text(encoding="utf-8")
-            self.assertIn(DISTINCTIVE_SECRET, raw)
+            self.assertNotIn(DISTINCTIVE_SECRET, raw)
+            self.assertIn(DISTINCTIVE_SECRET, credential_path.read_text(encoding="utf-8"))
+            self.assertIn('"schema_version": 2', raw)
+            self.assertIn('"kind": "private_env_file"', raw)
             self.assertNotIn(DISTINCTIVE_SECRET, json.dumps(result))
             self.assertNotIn("endpoint", result["selection"])
             selected = remote_hermes.load_connection(root)
@@ -516,6 +529,455 @@ class RemoteHermesTests(unittest.TestCase):
             self.assertEqual(result["selection"]["mode"], "local")
             self.assertNotEqual(second, result["selection"]["binding_id"])
             self.assertEqual(FakeDiscoveryClient.calls, calls_before)
+
+    def test_local_selection_retains_and_retests_one_remembered_remote(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            remote_binding = self._confirm(root)["selection"]["binding_id"]
+            local_preview = remote_hermes.preview_remembered_connection(root, "local")
+            local = remote_hermes.confirm_remembered_connection(
+                root,
+                "local",
+                local_preview.confirmation_token,
+                client_factory=FakeDiscoveryClient,
+            )
+            state = remote_hermes.load_connection_state(root)
+            self.assertEqual(local["selection"]["mode"], "local")
+            self.assertIsNotNone(state.remote)
+            self.assertEqual(state.remote.label, "Workshop Hermes")
+            self.assertNotEqual(local["selection"]["binding_id"], remote_binding)
+
+            calls_before = len(FakeDiscoveryClient.calls)
+            tested = remote_hermes.test_connection_mode(
+                root,
+                "remote",
+                client_factory=FakeDiscoveryClient,
+            )
+            self.assertEqual(tested["status"], "verified")
+            self.assertEqual(remote_hermes.load_connection(root).mode, "local")
+            self.assertEqual(len(FakeDiscoveryClient.calls), calls_before + 1)
+
+            remote_preview = remote_hermes.preview_remembered_connection(root, "remote")
+            selected = remote_hermes.confirm_remembered_connection(
+                root,
+                "remote",
+                remote_preview.confirmation_token,
+                client_factory=FakeDiscoveryClient,
+            )
+            self.assertEqual(selected["selection"]["mode"], "remote")
+            self.assertEqual(
+                remote_hermes.load_connection(root).endpoint,
+                "https://hermes.example",
+            )
+
+    def test_environment_and_owner_only_env_file_sources_are_resolved_server_side(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            with patch.dict(
+                os.environ,
+                {"MENTAT_REMOTE_HERMES_API_KEY": DISTINCTIVE_SECRET},
+            ):
+                source = remote_hermes.credential_source_from_values(
+                    "environment",
+                    name="MENTAT_REMOTE_HERMES_API_KEY",
+                )
+                preview = remote_hermes.preview_connection_from_source(
+                    root,
+                    label="Environment remote",
+                    endpoint="https://hermes.example",
+                    credential_source=source,
+                )
+                result = remote_hermes.confirm_connection_from_source(
+                    root,
+                    label="Environment remote",
+                    endpoint="https://hermes.example",
+                    credential_source=source,
+                    confirmation_token=preview.confirmation_token,
+                    client_factory=FakeDiscoveryClient,
+                )
+            self.assertEqual(result["selection"]["mode"], "remote")
+            record = remote_hermes.connection_path(root).read_text(encoding="utf-8")
+            self.assertNotIn(DISTINCTIVE_SECRET, record)
+            self.assertIn('"kind": "environment"', record)
+
+            env_file = Path(temporary) / "remote.env"
+            env_file.write_text(
+                f"MENTAT_REMOTE_HERMES_API_KEY={json.dumps(DISTINCTIVE_SECRET)}\n",
+                encoding="utf-8",
+            )
+            env_file.chmod(0o600)
+            file_source = remote_hermes.credential_source_from_values(
+                "env_file",
+                path=str(env_file),
+            )
+            preview = remote_hermes.preview_connection_from_source(
+                root,
+                label="File remote",
+                endpoint="https://hermes.example",
+                credential_source=file_source,
+            )
+            result = remote_hermes.confirm_connection_from_source(
+                root,
+                label="File remote",
+                endpoint="https://hermes.example",
+                credential_source=file_source,
+                confirmation_token=preview.confirmation_token,
+                client_factory=FakeDiscoveryClient,
+            )
+            self.assertEqual(result["selection"]["label"], "File remote")
+            self.assertNotIn(str(env_file), json.dumps(result))
+            self.assertNotIn(DISTINCTIVE_SECRET, json.dumps(result))
+
+    def test_unsafe_missing_or_malformed_env_files_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            source_path = Path(temporary) / "remote.env"
+            source = remote_hermes.credential_source_from_values(
+                "env_file",
+                path=str(source_path),
+            )
+            cases = ("missing", "broad", "symlink", "malformed")
+            for case in cases:
+                with self.subTest(case=case):
+                    source_path.unlink(missing_ok=True)
+                    target = Path(temporary) / "target.env"
+                    target.unlink(missing_ok=True)
+                    if case == "broad":
+                        source_path.write_text(
+                            f"MENTAT_REMOTE_HERMES_API_KEY={DISTINCTIVE_SECRET}\n",
+                            encoding="utf-8",
+                        )
+                        source_path.chmod(0o644)
+                    elif case == "symlink":
+                        target.write_text(
+                            f"MENTAT_REMOTE_HERMES_API_KEY={DISTINCTIVE_SECRET}\n",
+                            encoding="utf-8",
+                        )
+                        target.chmod(0o600)
+                        source_path.symlink_to(target)
+                    elif case == "malformed":
+                        source_path.write_text(
+                            "MENTAT_REMOTE_HERMES_API_KEY=too short\n",
+                            encoding="utf-8",
+                        )
+                        source_path.chmod(0o600)
+                    with self.assertRaises(remote_hermes.RemoteHermesError):
+                        remote_hermes.preview_connection_from_source(
+                            root,
+                            label="Remote",
+                            endpoint="https://hermes.example",
+                            credential_source=source,
+                        )
+                    self.assertEqual(
+                        remote_hermes.load_connection_state(root).mode,
+                        "local",
+                    )
+
+    def test_schema_v1_remote_migrates_key_to_private_env_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            private = root / "private"
+            private.mkdir(mode=0o700)
+            path = remote_hermes.connection_path(root)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "mode": "remote",
+                        "label": "Legacy remote",
+                        "binding_id": "a" * 32,
+                        "endpoint": "https://hermes.example",
+                        "api_key": DISTINCTIVE_SECRET,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            path.chmod(0o600)
+            selected = remote_hermes.load_connection(root)
+            self.assertEqual(selected.mode, "remote")
+            self.assertEqual(selected.api_key, DISTINCTIVE_SECRET)
+            record = path.read_text(encoding="utf-8")
+            credential = remote_hermes.connection_credential_path(root)
+            self.assertIn('"schema_version": 2', record)
+            self.assertNotIn(DISTINCTIVE_SECRET, record)
+            self.assertIn(
+                DISTINCTIVE_SECRET,
+                credential.read_text(encoding="utf-8"),
+            )
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(credential.stat().st_mode), 0o600)
+
+    def test_server_first_reservation_blocks_inflight_offline_commit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            payload = self._remote_payload()
+            preview = remote_hermes.preview_connection(root, payload)
+            reservation_written = threading.Event()
+            allow_reservation_commit = threading.Event()
+            reserve_errors = []
+            confirm_errors = []
+            original_write = json_store.write_json_atomic
+
+            def blocking_reservation_write(path, *args, **kwargs):
+                result = original_write(path, *args, **kwargs)
+                if Path(path).name == CONNECTION_SERVER_RESERVATION_NAME:
+                    reservation_written.set()
+                    self.assertTrue(allow_reservation_commit.wait(timeout=2))
+                return result
+
+            def reserve():
+                try:
+                    reserve_mentat_server(root)
+                except Exception as exc:
+                    reserve_errors.append(exc)
+
+            def confirm():
+                try:
+                    remote_hermes.confirm_connection(
+                        root,
+                        payload,
+                        preview.confirmation_token,
+                        require_server_stopped=True,
+                        client_factory=FakeDiscoveryClient,
+                    )
+                except Exception as exc:
+                    confirm_errors.append(exc)
+
+            with patch.object(
+                json_store,
+                "write_json_atomic",
+                side_effect=blocking_reservation_write,
+            ):
+                reserve_thread = threading.Thread(target=reserve)
+                reserve_thread.start()
+                self.assertTrue(reservation_written.wait(timeout=2))
+                confirm_thread = threading.Thread(target=confirm)
+                confirm_thread.start()
+                self.assertTrue(confirm_thread.is_alive())
+                allow_reservation_commit.set()
+                reserve_thread.join(timeout=2)
+                confirm_thread.join(timeout=2)
+            try:
+                self.assertFalse(reserve_errors)
+                self.assertEqual(len(confirm_errors), 1)
+                self.assertIsInstance(
+                    confirm_errors[0],
+                    remote_hermes.RemoteHermesError,
+                )
+                self.assertEqual(
+                    confirm_errors[0].code,
+                    "connection_change_server_running",
+                )
+                self.assertTrue(mentat_server_active(root))
+                self.assertEqual(remote_hermes.load_connection_state(root).mode, "local")
+            finally:
+                release_mentat_server(root)
+
+    def test_mutation_first_commit_finishes_before_startup_reservation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            payload = self._remote_payload()
+            preview = remote_hermes.preview_connection(root, payload)
+            mutation_holds_lock = threading.Event()
+            allow_mutation_commit = threading.Event()
+            confirm_results = []
+            errors = []
+
+            def paused_server_check(_root):
+                mutation_holds_lock.set()
+                self.assertTrue(allow_mutation_commit.wait(timeout=2))
+                return False
+
+            def confirm():
+                try:
+                    confirm_results.append(
+                        remote_hermes.confirm_connection(
+                            root,
+                            payload,
+                            preview.confirmation_token,
+                            require_server_stopped=True,
+                            client_factory=FakeDiscoveryClient,
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+
+            def reserve():
+                try:
+                    reserve_mentat_server(root)
+                except Exception as exc:
+                    errors.append(exc)
+
+            with patch.object(
+                remote_hermes,
+                "mentat_server_active",
+                side_effect=paused_server_check,
+            ):
+                confirm_thread = threading.Thread(target=confirm)
+                confirm_thread.start()
+                self.assertTrue(mutation_holds_lock.wait(timeout=2))
+                reserve_thread = threading.Thread(target=reserve)
+                reserve_thread.start()
+                self.assertTrue(reserve_thread.is_alive())
+                allow_mutation_commit.set()
+                confirm_thread.join(timeout=2)
+                reserve_thread.join(timeout=2)
+            try:
+                self.assertFalse(errors)
+                self.assertEqual(
+                    confirm_results[0]["selection"]["mode"],
+                    "remote",
+                )
+                self.assertEqual(remote_hermes.load_connection(root).mode, "remote")
+                self.assertTrue(mentat_server_active(root))
+            finally:
+                release_mentat_server(root)
+
+    def test_live_server_blocks_automatic_schema_v1_migration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            private = root / "private"
+            private.mkdir(mode=0o700)
+            path = remote_hermes.connection_path(root)
+            legacy = {
+                "schema_version": 1,
+                "mode": "remote",
+                "label": "Legacy remote",
+                "binding_id": "a" * 32,
+                "endpoint": "https://hermes.example",
+                "api_key": DISTINCTIVE_SECRET,
+            }
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            path.chmod(0o600)
+            reserve_mentat_server(root)
+            try:
+                public = remote_hermes.public_connection_payload(root)
+                self.assertEqual(public["status"], "unavailable")
+                self.assertEqual(
+                    public["error_code"],
+                    "connection_migration_server_running",
+                )
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), legacy)
+                self.assertFalse(remote_hermes.connection_credential_path(root).exists())
+            finally:
+                release_mentat_server(root)
+
+    def test_local_connection_test_requires_a_verified_cli_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            with self.assertRaisesRegex(
+                remote_hermes.RemoteHermesError,
+                "local_connection_unavailable",
+            ):
+                remote_hermes.test_connection_mode(
+                    root,
+                    "local",
+                    local_probe=lambda: (_ for _ in ()).throw(
+                        remote_hermes.RemoteHermesError(
+                            "local_connection_unavailable"
+                        )
+                    ),
+                )
+            result = remote_hermes.test_connection_mode(
+                root,
+                "local",
+                local_probe=lambda: {
+                    "trusted": True,
+                    "platform": "hermes-agent",
+                    "readiness": {"cli": "ok"},
+                },
+            )
+            self.assertEqual(result["status"], "verified")
+            self.assertEqual(result["discovery"]["readiness"], {"cli": "ok"})
+
+    def test_public_connection_payload_uses_one_consistent_snapshot(self):
+        state = remote_hermes.ConnectionState(
+            "local",
+            "Local Hermes",
+            remote_hermes.RememberedRemote(
+                "Remembered",
+                "https://hermes.example",
+                remote_hermes.CredentialSource(
+                    "environment",
+                    "MENTAT_REMOTE_HERMES_API_KEY",
+                ),
+            ),
+            "a" * 32,
+        )
+        selection = remote_hermes.ConnectionSelection(
+            "local",
+            "Local Hermes",
+            None,
+            None,
+            "a" * 32,
+        )
+        with patch.object(
+            remote_hermes,
+            "_load_state_and_selection",
+            return_value=(state, selection),
+        ) as snapshot:
+            payload = remote_hermes.public_connection_payload(Path("/not-read"))
+        snapshot.assert_called_once_with(Path("/not-read"))
+        self.assertEqual(payload["selection"]["mode"], "local")
+        self.assertEqual(payload["selection"]["binding_id"], "a" * 32)
+        self.assertEqual(
+            payload["selection"]["remembered_remote_label"],
+            "Remembered",
+        )
+
+    def test_missing_active_environment_key_never_falls_back_to_local(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            with patch.dict(
+                os.environ,
+                {"MENTAT_REMOTE_HERMES_API_KEY": DISTINCTIVE_SECRET},
+            ):
+                source = remote_hermes.credential_source_from_values(
+                    "environment",
+                    name="MENTAT_REMOTE_HERMES_API_KEY",
+                )
+                preview = remote_hermes.preview_connection_from_source(
+                    root,
+                    label="Remote",
+                    endpoint="https://hermes.example",
+                    credential_source=source,
+                )
+                remote_hermes.confirm_connection_from_source(
+                    root,
+                    label="Remote",
+                    endpoint="https://hermes.example",
+                    credential_source=source,
+                    confirmation_token=preview.confirmation_token,
+                    client_factory=FakeDiscoveryClient,
+                )
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(
+                    remote_hermes.RemoteHermesError,
+                    "connection_credential_unavailable",
+                ):
+                    remote_hermes.load_connection(root)
+                self.assertEqual(
+                    json.loads(
+                        remote_hermes.connection_path(root).read_text(
+                            encoding="utf-8"
+                        )
+                    )["mode"],
+                    "remote",
+                )
+                preview = remote_hermes.preview_remembered_connection(
+                    root,
+                    "local",
+                )
+                selected = remote_hermes.confirm_remembered_connection(
+                    root,
+                    "local",
+                    preview.confirmation_token,
+                    client_factory=FakeDiscoveryClient,
+                )
+                self.assertEqual(selected["selection"]["mode"], "local")
+                self.assertIsNotNone(
+                    remote_hermes.load_connection_state(root).remote,
+                )
 
     def test_unchanged_selection_is_verified_without_rewriting_secret_file(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -886,7 +1348,8 @@ class RemoteHermesTests(unittest.TestCase):
     def test_server_routes_never_echo_credential_or_endpoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
-            payload = self._remote_payload()
+            self._confirm(root)
+            payload = {"mode": "local"}
             with patch.object(server, "DATA_DIR", root):
                 preview, preview_status = server.preview_hermes_connection(payload)
                 self.assertEqual(preview_status, 200)
@@ -907,7 +1370,15 @@ class RemoteHermesTests(unittest.TestCase):
                 self.assertEqual(result_status, 200)
                 self.assertNotIn(DISTINCTIVE_SECRET, json.dumps(result))
                 confirm.assert_called_once()
-                self.assertEqual(confirm.call_args.args[1]["api_key"], DISTINCTIVE_SECRET)
+                self.assertEqual(confirm.call_args.args[1], "local")
+                rejected, rejected_status = server.preview_hermes_connection(
+                    {
+                        "mode": "remote",
+                        "api_key": DISTINCTIVE_SECRET,
+                    }
+                )
+                self.assertEqual(rejected_status, 400)
+                self.assertNotIn(DISTINCTIVE_SECRET, json.dumps(rejected))
             self.assertIn("/api/hermes/connection", server.API_ROUTES)
             route_patterns = [pattern.pattern for pattern, _handler, _payload in server.POST_ROUTES]
             self.assertIn(r"^/api/hermes/connection/preview$", route_patterns)

@@ -2,6 +2,30 @@
 
 All notable changes to Mentat.
 
+## 2026-07-26
+
+### Added
+- Added setup-wizard and installed CLI workflows for configuring, testing, and
+  selecting local Hermes or one remembered remote endpoint.
+- Added `mentat connection status`, `test`, `use`, and `configure-remote` with
+  interactive confirmation and exact two-step non-interactive confirmation.
+
+### Changed
+- Remote connection records now keep only a credential-source reference. API
+  keys resolve from a named environment variable or owner-only env file.
+- Existing schema-v1 embedded remote keys migrate to a separate owner-only
+  private env file while retaining the selected connection.
+
+### Safety
+- CLI connection mutations refuse to run while Mentat is active, remote
+  activation probes authenticated readiness/capabilities before commit, failed
+  operations restore the prior selection, and browser connection requests no
+  longer accept API-key values.
+- Server startup and offline connection changes now share a cross-process
+  reservation, closing startup races and preventing live schema migration.
+- `mentat connection test local` now verifies that the supported Hermes CLI can
+  execute instead of treating a saved local label as proof of readiness.
+
 ## 2026-07-25
 
 ### Added

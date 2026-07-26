@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 import mentat_lifecycle as lifecycle
+from private_state import connection_server_reservation_path, mentat_server_active
 import server
 
 
@@ -98,6 +99,67 @@ class LocalServerLifecycleTests(unittest.TestCase):
             self.assertIsNone(server.configured_launcher_pid())
         with patch.dict(server.os.environ, {"MENTAT_LAUNCHER_PID": str(server.os.getpid())}, clear=False):
             self.assertIsNone(server.configured_launcher_pid())
+
+    def test_dashboard_cleanup_always_releases_connection_reservation(self):
+        for failing_step in ("stop_runs", "server_close", "runtime_state"):
+            with self.subTest(failing_step=failing_step), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir) / "operator-data"
+                root.mkdir(mode=0o700)
+                public = Path(tmpdir) / "public"
+                fake_server = MagicMock()
+                fake_server.serve_forever.return_value = None
+                if failing_step == "server_close":
+                    fake_server.server_close.side_effect = RuntimeError(
+                        "server close failed"
+                    )
+                stop_effect = (
+                    RuntimeError("run cleanup failed")
+                    if failing_step == "stop_runs"
+                    else None
+                )
+                clear_effect = (
+                    RuntimeError("runtime cleanup failed")
+                    if failing_step == "runtime_state"
+                    else None
+                )
+                with patch.object(server, "DATA_DIR", root), patch.object(
+                    server, "PUBLIC_DIR", public
+                ), patch.object(
+                    server,
+                    "load_remote_hermes_connection_state",
+                ), patch.object(
+                    server, "load_agent_console_runs"
+                ), patch.object(
+                    server, "maintain_agent_console_attachments"
+                ), patch.object(
+                    server.threading.Thread, "start"
+                ), patch.object(
+                    server,
+                    "server_class_for_host",
+                    return_value=lambda *_args: fake_server,
+                ), patch.object(
+                    server, "start_launcher_watch", return_value=None
+                ), patch.object(
+                    server, "write_runtime_state"
+                ), patch.object(
+                    server,
+                    "stop_agent_console_processes",
+                    side_effect=stop_effect,
+                ) as stop_runs, patch.object(
+                    server,
+                    "clear_runtime_state",
+                    side_effect=clear_effect,
+                ) as clear_state:
+                    with self.assertRaises(RuntimeError):
+                        server.serve_dashboard()
+
+                stop_runs.assert_called_once_with()
+                fake_server.server_close.assert_called_once_with()
+                clear_state.assert_called_once_with()
+                self.assertFalse(
+                    connection_server_reservation_path(root).exists()
+                )
+                self.assertFalse(mentat_server_active(root))
 
     def test_cleanup_does_not_kill_listener_tracked_only_by_stale_runtime_state(self):
         with TemporaryDirectory() as tmpdir:

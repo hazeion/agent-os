@@ -32,6 +32,9 @@ availability issues, but there is no guaranteed response-time SLA.
 - A configured remote Hermes endpoint is a separate trust boundary. Mentat
   makes server-to-server HTTPS requests to the operator-supplied endpoint. The
   operator is responsible for trusting and securing that runtime.
+- Remote Hermes API keys are loaded only from a selected environment variable
+  or owner-only env file. They are not accepted as CLI values or browser
+  requests and are excluded from normal backups and diagnostics.
 - Hermes owns provider credentials and authentication. Mentat does not expose
   credential values to the browser.
 

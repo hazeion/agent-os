@@ -44,6 +44,8 @@ from private_state import (
     console_root as private_console_root,
     history_path as private_history_path,
     private_state_lock,
+    release_mentat_server,
+    reserve_mentat_server,
 )
 from agent_console_attachments import (
     MAX_IMAGE_BYTES as AGENT_CONSOLE_MAX_IMAGE_BYTES,
@@ -108,11 +110,12 @@ from remote_hermes import (
     RemoteHermesError,
     SESSION_LIST_LIMIT as REMOTE_SESSION_LIST_LIMIT,
     connection_diagnostics as remote_hermes_diagnostics,
-    confirm_connection as confirm_remote_hermes_connection,
-    preview_connection as preview_remote_hermes_connection,
+    confirm_remembered_connection as confirm_remote_hermes_connection,
+    preview_remembered_connection as preview_remote_hermes_connection,
     public_connection_payload,
     public_error as public_remote_hermes_error,
     load_connection as load_remote_hermes_connection,
+    load_connection_state as load_remote_hermes_connection_state,
     RemoteHermesClient,
     test_selected_connection as test_remote_hermes_connection,
 )
@@ -7934,20 +7937,22 @@ def hermes_capability_inventory_payload():
 def _remote_connection_intent(payload, *, confirmation: bool) -> tuple[dict, str | None]:
     if type(payload) is not dict:
         raise RemoteHermesError("connection_payload_invalid")
-    allowed = {"mode", "label", "endpoint", "api_key"}
+    allowed = {"mode"}
     if confirmation:
         allowed.add("confirmation_token")
     if set(payload) - allowed:
         raise RemoteHermesError("connection_payload_invalid")
     token = payload.get("confirmation_token") if confirmation else None
-    intent = {key: payload.get(key) for key in ("mode", "label", "endpoint", "api_key")}
-    return intent, token
+    return {"mode": payload.get("mode")}, token
 
 
 def preview_hermes_connection(payload=None):
     try:
         intent, _ = _remote_connection_intent(payload, confirmation=False)
-        return preview_remote_hermes_connection(DATA_DIR, intent).public_summary(), 200
+        return preview_remote_hermes_connection(
+            DATA_DIR,
+            intent.get("mode"),
+        ).public_summary(), 200
     except RemoteHermesError as exc:
         return public_remote_hermes_error(exc)
 
@@ -7971,7 +7976,11 @@ def select_hermes_connection(payload=None):
                     "active_run_id": active.get("id"),
                 }, 409
             intent, token = _remote_connection_intent(payload, confirmation=True)
-            return confirm_remote_hermes_connection(DATA_DIR, intent, token), 200
+            return confirm_remote_hermes_connection(
+                DATA_DIR,
+                intent.get("mode"),
+                token,
+            ), 200
     except RemoteHermesError as exc:
         return public_remote_hermes_error(exc)
 
@@ -8482,6 +8491,67 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Mentat could not complete this mutation."}, status=500)
 
 
+def serve_dashboard() -> None:
+    """Run one reserved dashboard process and always release its reservation."""
+
+    try:
+        # Complete a legacy connection migration before publishing the startup
+        # reservation. A concurrent offline mutation either finishes first (and
+        # this process observes it) or sees the reservation and fails closed.
+        load_remote_hermes_connection_state(DATA_DIR)
+    except RemoteHermesError:
+        # Invalid/unavailable connection state remains visible through the
+        # existing bounded diagnostics instead of blocking the planning UI.
+        pass
+    reserve_mentat_server(DATA_DIR)
+    server = None
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+        load_agent_console_runs()
+        try:
+            maintain_agent_console_attachments(startup=True)
+        except Exception:
+            print("Agent Console attachment cleanup will retry after startup.")
+        AGENT_CONSOLE_ATTACHMENT_GC_STOP.clear()
+        attachment_gc_thread = threading.Thread(
+            target=agent_console_attachment_gc_loop,
+            daemon=True,
+            name="mentat-attachment-gc",
+        )
+        attachment_gc_thread.start()
+        server = server_class_for_host(HOST)((HOST, PORT), Handler)
+        launcher_pid = start_launcher_watch(server)
+        write_runtime_state()
+        print(f"Mentat {DISPLAY_VERSION} listening on {HOST}:{PORT}")
+        print(f"Browser URL: {browser_url(HOST, PORT)}")
+        print(f"Configuration: {'local overrides loaded' if APP_CONFIG.config_files else 'built-in defaults'}")
+        print("Local data storage: ready")
+        if launcher_pid is not None:
+            print(f"Launcher PID watch: {launcher_pid}")
+        print(f"Managed ports: {managed_server_ports(PORT)}")
+        print("Hermes integration: configured")
+        print("Obsidian integration: configured")
+        print("Press Ctrl+C to stop.")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nStopping Mentat.")
+    finally:
+        try:
+            AGENT_CONSOLE_ATTACHMENT_GC_STOP.set()
+            try:
+                stop_agent_console_processes()
+            finally:
+                try:
+                    if server is not None:
+                        server.server_close()
+                finally:
+                    clear_runtime_state()
+        finally:
+            release_mentat_server(DATA_DIR)
+
+
 if __name__ == "__main__":
     cli_args = parse_cli_args()
     apply_runtime_config(load_app_config(cli_args))
@@ -8513,39 +8583,8 @@ if __name__ == "__main__":
         print(startup_error)
         raise SystemExit(2)
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
-    load_agent_console_runs()
     try:
-        maintain_agent_console_attachments(startup=True)
-    except Exception:
-        print("Agent Console attachment cleanup will retry after startup.")
-    AGENT_CONSOLE_ATTACHMENT_GC_STOP.clear()
-    attachment_gc_thread = threading.Thread(
-        target=agent_console_attachment_gc_loop,
-        daemon=True,
-        name="mentat-attachment-gc",
-    )
-    attachment_gc_thread.start()
-    server = server_class_for_host(HOST)((HOST, PORT), Handler)
-    launcher_pid = start_launcher_watch(server)
-    write_runtime_state()
-    print(f"Mentat {DISPLAY_VERSION} listening on {HOST}:{PORT}")
-    print(f"Browser URL: {browser_url(HOST, PORT)}")
-    print(f"Configuration: {'local overrides loaded' if APP_CONFIG.config_files else 'built-in defaults'}")
-    print("Local data storage: ready")
-    if launcher_pid is not None:
-        print(f"Launcher PID watch: {launcher_pid}")
-    print(f"Managed ports: {managed_server_ports(PORT)}")
-    print("Hermes integration: configured")
-    print("Obsidian integration: configured")
-    print("Press Ctrl+C to stop.")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopping Mentat.")
-    finally:
-        AGENT_CONSOLE_ATTACHMENT_GC_STOP.set()
-        stop_agent_console_processes()
-        server.server_close()
-        clear_runtime_state()
+        serve_dashboard()
+    except OSError as exc:
+        print(f"Mentat could not reserve its local server runtime: {compact_text(exc, max_length=240)}")
+        raise SystemExit(2)

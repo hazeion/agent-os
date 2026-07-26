@@ -47,7 +47,8 @@ python scripts/mentat_setup.py
 ./run.sh
 ```
 
-Press Enter to accept the setup helper's recommended values. Then open
+Press Enter to accept the setup helper's recommended local values, or choose a
+supported remote Hermes connection when prompted. Then open
 [http://localhost:8888](http://localhost:8888). That's it! 🎉
 
 On Windows, replace the virtual-environment and launch commands above with:
@@ -64,8 +65,10 @@ Mentat works as a project planner without Hermes. Install and set up
 [Hermes Agent](https://hermes-agent.nousresearch.com/) to use chat, delegation,
 sessions, and other agent features.
 
-The setup helper stores settings only on your computer. It does not ask for or
-save provider credentials; Hermes continues to manage those.
+The setup helper stores settings only on your computer. Hermes continues to
+manage provider credentials. A remote server key is read only from an
+environment variable or owner-only env file; see the
+[remote Hermes guide](REMOTE_HERMES.md#operator-experience-local-and-remote-selection).
 
 If you were invited to test a signed release candidate, use the exact release
 link and instructions from the invitation instead. See [Beta Support](SUPPORT.md)

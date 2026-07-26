@@ -19,8 +19,10 @@ share them as carefully as any other personal file.
 - **Hermes:** Local sessions and supported metadata are read for the dashboard.
   If you select a remote Hermes runtime, Mentat stores the connection endpoint
   and sends requested agent work to it over HTTPS. Hermes owns provider
-  credentials; Mentat stores the remote API key only in its private connection
-  record and never returns it to the browser, diagnostics, or normal backups.
+  credentials. Mentat stores only a remote-key source reference in its private
+  connection record and reads the key from an environment variable or
+  owner-only env file. It never returns the endpoint, source, or key to the
+  browser, diagnostics, or normal backups.
 - **Google Calendar:** Calendar access is read-only. Mentat can create or link a
   Mentat task from an event, but does not edit the calendar event.
 - **Obsidian:** Mentat reads validated Markdown notes from the configured vault.
