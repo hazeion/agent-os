@@ -4,15 +4,16 @@ Thanks for helping keep Mentat users safe.
 
 ## Supported versions
 
-During beta, security fixes target the newest published `0.1.x` beta only. Old
-source snapshots and unreleased branches are not supported release channels.
+Once public beta releases begin, security fixes will target the newest `0.1.x`
+beta. Until then, `main` is a development build rather than a supported release
+channel.
 
 ## Report a vulnerability privately
 
 Please use [GitHub's private security advisory form](https://github.com/hazeion/agent-os/security/advisories/new).
 Do not open a public issue for a possible vulnerability.
 
-Include the affected Mentat version, a short impact description, safe steps to
+Include the Mentat version or commit, a short impact description, safe steps to
 reproduce it, and a redacted diagnostics bundle if useful. Never include API
 keys, credentials, private conversations, note contents, or other personal
 data.

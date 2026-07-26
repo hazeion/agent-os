@@ -596,6 +596,11 @@ The release cannot be called public beta until all of the following are true:
   Mentat-operated relay;
 - authentication, multi-user accounts, or multi-tenancy;
 - automatic updates;
+- a guided first-run/setup choice and Settings control for selecting the active
+  local Hermes runtime or configuring one remote Hermes endpoint. This must use
+  the existing preview, explicit confirmation, active-run blocking, connection
+  verification, and bound-state invalidation rules; it must never expose the
+  remote API credential to the browser;
 - telemetry or analytics by default;
 - Hermes cron write controls without upstream atomic capabilities;
 - general Hermes configuration, soul, skill-content, credential, or MCP

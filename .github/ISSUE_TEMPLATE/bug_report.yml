@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report! For a possible security issue, stop here and use the private security advisory link in the issue chooser. Never post credentials or private content.
+        Thanks for helping improve Mentat! For a possible security issue, stop here and use the private security advisory link in the issue chooser. Never post credentials or private content.
   - type: input
     id: version
     attributes:
@@ -20,6 +20,20 @@ body:
     attributes:
       label: Platform
       options: [macOS, Windows, Linux preview]
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: How did you run Mentat?
+      options: [Source checkout, macOS release candidate, Windows release candidate, pipx release candidate]
+    validations:
+      required: true
+  - type: dropdown
+    id: hermes_connection
+    attributes:
+      label: Hermes connection
+      options: [Local Hermes, Remote Hermes, No Hermes, Not sure]
     validations:
       required: true
   - type: textarea
