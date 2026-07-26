@@ -157,6 +157,8 @@ class DashboardBehaviorTests(unittest.TestCase):
         }
         with patch.object(
             server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
             payload, status = server.preview_agent_console_provider_switch(
                 {
@@ -188,6 +190,8 @@ class DashboardBehaviorTests(unittest.TestCase):
         }
         with patch.object(
             server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
             payload, status = server.preview_agent_console_provider_switch(
                 {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}

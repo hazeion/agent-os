@@ -3504,6 +3504,20 @@ class RemoteHermesClient:
                 if type(value) is not int or not (0 <= value <= 10**9):
                     raise RemoteHermesError("remote_run_schema_invalid")
                 clean_usage[name] = value
+            context_tokens = usage.get("context_tokens")
+            context_length = usage.get("context_length")
+            if context_tokens is not None or context_length is not None:
+                if (
+                    type(context_tokens) is not int
+                    or type(context_length) is not int
+                    or not (0 <= context_tokens <= context_length <= 10**9)
+                    or context_length == 0
+                ):
+                    context_tokens = None
+                    context_length = None
+                else:
+                    clean_usage["context_tokens"] = context_tokens
+                    clean_usage["context_length"] = context_length
             normalized["usage"] = clean_usage
         return normalized
 
@@ -3540,9 +3554,31 @@ class RemoteHermesClient:
                 raise RemoteHermesError("remote_run_schema_invalid")
             if self._contains_private_run_text(tool, run_id):
                 raise RemoteHermesError("remote_private_reflection")
-            return {"type": event_type, "tool": tool}
+            return {
+                "type": event_type,
+                "tool": tool,
+                "summary": (
+                    f"Using {tool}"
+                    if event_type == "tool.started"
+                    else f"Finished {tool}"
+                ),
+            }
         if event_type == "reasoning.available":
-            return {"type": event_type}
+            summary = payload.get("summary")
+            safe_summaries = {
+                "Running verification checks",
+                "Preparing a scoped change",
+                "Inspecting relevant context",
+                "Planning the next action",
+                "Analyzing the latest result",
+                "Reasoning about the next action",
+            }
+            if summary is not None and summary not in safe_summaries:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            return {
+                "type": event_type,
+                "summary": summary or "Reasoning about the next action",
+            }
         if event_type == "approval.request":
             request_id = payload.get("request_id")
             preview = payload.get("preview")
