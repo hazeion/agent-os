@@ -70,6 +70,65 @@ manage provider credentials. A remote server key is read only from an
 environment variable or owner-only env file; see the
 [remote Hermes guide](REMOTE_HERMES.md#operator-experience-local-and-remote-selection).
 
+### Connect to a remote Hermes
+
+There are two small pieces: turn on the API server in your Hermes fork, then
+give Mentat the same key.
+
+On the **remote Hermes computer**, add this to `~/.hermes/.env`:
+
+```bash
+API_SERVER_ENABLED=true
+API_SERVER_HOST=127.0.0.1
+API_SERVER_PORT=8642
+API_SERVER_KEY=replace-with-a-long-random-key
+```
+
+Generate a strong key with `openssl rand -hex 32`, save it in the file above,
+and restart `hermes gateway`. Put the local API server behind a trusted HTTPS
+address such as `https://hermes.example.com`. Mentat intentionally rejects
+ordinary remote HTTP, and port 8642 should not be exposed directly to the
+internet.
+
+On the **Mentat computer**, create an owner-only file such as
+`~/.config/mentat/remote-hermes.env` containing the same key:
+
+```bash
+MENTAT_REMOTE_HERMES_API_KEY="paste-the-same-key-here"
+```
+
+On macOS or Linux, protect it with
+`chmod 600 ~/.config/mentat/remote-hermes.env`. On Windows, keep the file in a
+folder accessible only to your account. Then stop Mentat and connect:
+
+```bash
+./stop.sh
+python -m mentat connection configure-remote \
+  --endpoint https://hermes.example.com \
+  --label "Remote Hermes" \
+  --api-key-file ~/.config/mentat/remote-hermes.env
+python -m mentat connection test remote
+./run.sh
+```
+
+Use the HTTPS address without `/v1`. Mentat shows the planned change and asks
+before saving it.
+
+Later, switching is quick—stop Mentat, choose the connection, and start it
+again:
+
+```bash
+./stop.sh
+python -m mentat connection use local    # Use Hermes on this computer
+python -m mentat connection use remote   # Use the remembered remote
+./run.sh
+```
+
+Only run the `use local` or `use remote` line you want. Windows users can use
+`stop.bat` and `run.bat`; the `python -m mentat connection ...` commands stay
+the same. For TLS, firewall, and recovery details, see the
+[remote Hermes guide](REMOTE_HERMES.md#operator-experience-local-and-remote-selection).
+
 If you were invited to test a signed release candidate, use the exact release
 link and instructions from the invitation instead. See [Beta Support](SUPPORT.md)
 for current platform and compatibility notes.
