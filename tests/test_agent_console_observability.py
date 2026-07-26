@@ -87,30 +87,34 @@ class AgentConsoleObservabilityTests(unittest.TestCase):
             self.assertIn("cannot also resume", rejected["error"])
 
     def test_local_launch_uses_private_structured_telemetry_files(self):
-        adapter = LocalHermesConsoleTransport(
-            TransportBinding("local", "Local Hermes", "local-default"),
-            command_path="/opt/hermes/bin/hermes",
-            hermes_home=Path("/private/hermes"),
-            cwd=ROOT,
-        )
-        launch = adapter.build_console_launch(
-            profile_id="default",
-            prompt="Inspect the project",
-            session_id=None,
-            image_path=None,
-            usage_path=Path("/private/run/usage.json"),
-            progress_path=Path("/private/run/progress.jsonl"),
-        )
-        self.assertNotIn("--usage-file", launch.command)
-        self.assertNotIn("--progress-file", launch.command)
-        self.assertEqual(
-            launch.env["MENTAT_HERMES_USAGE_FILE"],
-            "/private/run/usage.json",
-        )
-        self.assertEqual(
-            launch.env["MENTAT_HERMES_PROGRESS_FILE"],
-            "/private/run/progress.jsonl",
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            private_root = Path(temporary).resolve()
+            usage_path = private_root / "run" / "usage.json"
+            progress_path = private_root / "run" / "progress.jsonl"
+            adapter = LocalHermesConsoleTransport(
+                TransportBinding("local", "Local Hermes", "local-default"),
+                command_path="/opt/hermes/bin/hermes",
+                hermes_home=private_root / "hermes",
+                cwd=ROOT,
+            )
+            launch = adapter.build_console_launch(
+                profile_id="default",
+                prompt="Inspect the project",
+                session_id=None,
+                image_path=None,
+                usage_path=usage_path,
+                progress_path=progress_path,
+            )
+            self.assertNotIn("--usage-file", launch.command)
+            self.assertNotIn("--progress-file", launch.command)
+            self.assertEqual(
+                launch.env["MENTAT_HERMES_USAGE_FILE"],
+                str(usage_path),
+            )
+            self.assertEqual(
+                launch.env["MENTAT_HERMES_PROGRESS_FILE"],
+                str(progress_path),
+            )
 
     def test_progress_tail_waits_for_complete_lines_and_drops_unsafe_records(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -144,32 +144,40 @@ class HermesTransportTests(unittest.TestCase):
         adapter = self.local_adapter(
             TransportBinding("local", "Local Hermes", "local-default")
         )
-        usage_path = Path("/private/run/usage.json")
-        progress_path = Path("/private/run/progress.jsonl")
-        launch = adapter.build_console_launch(
-            profile_id="default",
-            prompt="Observe this run",
-            session_id=None,
-            image_path=None,
-            usage_path=usage_path,
-            progress_path=progress_path,
-        )
-        self.assertEqual(
-            launch.command,
-            (
-                str(adapter.command_path),
-                "-p",
-                "default",
-                "chat",
-                "-q",
-                "Observe this run",
-                "-Q",
-                "--source",
-                "mentat",
-            ),
-        )
-        self.assertEqual(launch.env["MENTAT_HERMES_USAGE_FILE"], str(usage_path))
-        self.assertEqual(launch.env["MENTAT_HERMES_PROGRESS_FILE"], str(progress_path))
+        with tempfile.TemporaryDirectory() as temporary:
+            private_root = Path(temporary).resolve()
+            usage_path = private_root / "run" / "usage.json"
+            progress_path = private_root / "run" / "progress.jsonl"
+            launch = adapter.build_console_launch(
+                profile_id="default",
+                prompt="Observe this run",
+                session_id=None,
+                image_path=None,
+                usage_path=usage_path,
+                progress_path=progress_path,
+            )
+            self.assertEqual(
+                launch.command,
+                (
+                    str(adapter.command_path),
+                    "-p",
+                    "default",
+                    "chat",
+                    "-q",
+                    "Observe this run",
+                    "-Q",
+                    "--source",
+                    "mentat",
+                ),
+            )
+            self.assertEqual(
+                launch.env["MENTAT_HERMES_USAGE_FILE"],
+                str(usage_path),
+            )
+            self.assertEqual(
+                launch.env["MENTAT_HERMES_PROGRESS_FILE"],
+                str(progress_path),
+            )
 
     def test_selector_is_binding_aware_and_remote_never_builds_local(self):
         with tempfile.TemporaryDirectory() as temporary:

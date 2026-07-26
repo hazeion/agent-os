@@ -25,7 +25,8 @@ DIST_NAME = f"mentat_local-{__version__}"
 DIST_INFO = f"{DIST_NAME}.dist-info"
 EGG_INFO = "mentat_local.egg-info"
 PUBLIC_MODULES = {
-    "agent_console_artifacts", "agent_console_attachments", "agent_run_history",
+    "agent_console_artifacts", "agent_console_attachments", "agent_console_telemetry",
+    "agent_run_history",
     "command_manifest", "data_backup_restore", "data_layout", "data_migration",
     "data_schema", "diagnostics_bundle", "health_checks", "hermes_kanban", "hermes_profile_creation",
     "hermes_profile_deletion", "hermes_profile_identity", "hermes_profiles",

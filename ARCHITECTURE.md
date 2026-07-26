@@ -70,7 +70,8 @@ only bounded public metadata and user/assistant replay text. Hermes branch
 and compression projection is consumed at the list boundary; projected
 transcripts are labeled as partial because Hermes does not return ancestor
 turns, and any later message-identity change fails closed. Remote continuation
-remains unavailable until an exact stoppable capability is advertised.
+is enabled only when the maintained runtime advertises the exact stoppable,
+revision-bound capability.
 Milestone 2F adds one-use, process-private remote Context Pack grants. A grant
 binds the selected connection, current pack revision, and exact staged text
 snapshot ids; Mentat sends only bounded UTF-8 text with generic context labels.
@@ -160,8 +161,9 @@ that same profile. `hermes_transport.py` owns the transport-neutral launch
 boundary: it preserves the exact local command/environment/process contract,
 binds retained runs to the selected opaque connection identity, and revalidates
 that identity before queue and launch. Its remote implementation supports one
-plain default-profile turn through fixed Runs API operations and can neither
-inspect nor launch local Hermes.
+profile-scoped turn through fixed Runs API operations, reads only the advertised
+complete profile/runtime inventories, and can neither inspect nor launch local
+Hermes.
 
 ## Remote Hermes connection boundary
 
@@ -171,9 +173,11 @@ blockers, implementation order, and exit evidence live in
 [REMOTE_HERMES.md](REMOTE_HERMES.md). The connection/storage/discovery
 foundation, Agent Console transport boundary, default-profile remote run
 lifecycle, read-only sessions, bounded Context Pack text, and remote
-skill/toolset visibility are implemented. Approval responses, clarification,
-continuation, complete profile discovery, Kanban, and richer content transfer
-remain incomplete, so Mentat must not advertise full remote parity yet.
+skill/toolset visibility are implemented. Exact approval and clarification
+responses, continuation, complete profile discovery, revisioned Kanban, and
+bounded image transfer are enabled only when their complete advertised
+contracts are present. Remote provider/model mutation and general file/artifact
+transfer remain incomplete, so Mentat must not advertise full remote parity.
 
 The remote boundary has these architectural invariants:
 
@@ -195,26 +199,26 @@ The remote boundary has these architectural invariants:
 8. local Mentat features continue to work when they do not depend on the failed
    or unavailable remote capability.
 
-Default-profile remote runs, bounded events/status, cancellation, and stopping
-use the documented Hermes Runs API. Read-only session replay and remote
-skill/toolset visibility use their separately advertised authenticated GET
-surfaces. Approval responses and continuation remain mandatory beta work.
-Clarification handling is also mandatory, but remains a
-compatibility blocker until the HTTP API advertises a typed request/response
-capability.
+Remote runs, bounded events/status, cancellation, stopping, approval, and
+clarification use the documented Hermes Runs API only when each exact
+capability is advertised. Mentat keeps one SSE subscription open while a run
+waits for an operator response. Hermes assigns monotonic event IDs and retains
+a bounded in-memory journal; a real reconnect supplies the last verified event
+ID and receives only later events. Run status returns the current sanitized,
+request-bound pending action as the authoritative recovery path if its event
+was missed. Mentat never guesses or replays a stale response.
 
-Remote approval responses are specifically blocked even when Hermes advertises
-its current approval endpoint. That mutation accepts a choice but no approval
-request ID, expected revision/hash, or exclusive responder lease, so Mentat
-cannot bind a displayed request to the exact upstream request that will be
-resolved. Mentat keeps the 2C safe-stop behavior until upstream exposes that
-binding plus a structured preview that is safe to show without leaking command
-text, credentials, or paths.
-Complete read-only profile discovery and API-key-authenticated Kanban are also
-mandatory, but are upstream blockers until Hermes exposes supported,
-capability-advertised server-to-server operations. Profile creation/deletion,
-identity editing, provider administration, cron inventory, and advanced
-artifact transfer may degrade clearly in remote mode.
+Hermes may also advertise a complete API-key-authenticated profile runtime
+inventory containing only profile ID, current provider ID, and current model
+ID. Mentat uses it to show the selected remote agent's current runtime on load
+and after relevant lifecycle events. Active-run runtime events take precedence.
+These values are read-only in remote mode: visibility does not grant provider
+mutation authority. Provider-switch preview and apply handlers revalidate the
+selected transport under the connection-operation lock and reject every
+non-local binding before local inventory or mutation code runs. Profile
+creation/deletion, identity editing, remote
+provider administration, cron inventory, and advanced artifact transfer may
+degrade clearly in remote mode.
 
 Remote upstream run identifiers are process-private and are not retained in
 Console history. Graceful shutdown performs one stop attempt and bounded
@@ -393,10 +397,11 @@ a result. Deep Hermes message search remains a separate read-only endpoint.
 
 ## Provider switching boundary
 
-Provider discovery and selection are scoped to the selected Hermes profile. The
-current adapter runs locally; remote mode may expose these controls only when a
-supported endpoint advertises equivalent authenticated inventory, mutation,
-verification, and rollback behavior.
+Provider discovery and selection are scoped to the selected Hermes profile.
+The current mutation adapter runs locally. Remote mode may display the
+capability-advertised current provider/model identity, but keeps mutation
+controls disabled unless a future endpoint advertises equivalent authenticated
+inventory, mutation, verification, and rollback behavior.
 Mentat obtains picker context from Hermes through `load_picker_context()` and
 builds the selectable inventory with
 `build_models_payload(..., explicit_only=True, picker_hints=True)`. The browser
@@ -490,6 +495,12 @@ otherwise it says the context measurement is unavailable. Cumulative billing
 tokens must never be substituted for active context usage. Remote Runs may
 provide the same optional fields and safe progress summaries through their
 versioned response/event contracts.
+
+For remote runs, the upstream Hermes event sequence is separately verified
+before Mentat projects events into that local history. Approval and
+clarification waits remain active states and do not close the upstream stream.
+Reconnect replay is bounded and in-memory; current pending-action status is the
+fail-closed recovery source when retained history is unavailable.
 
 Agent Console slash commands come from Mentat's versioned, project-owned safe
 command manifest. Each entry declares its dashboard handler, arguments,

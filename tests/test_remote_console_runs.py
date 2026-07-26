@@ -4,7 +4,10 @@ import base64
 import json
 import os
 from pathlib import Path
+import queue
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -146,6 +149,8 @@ class FakeRunClient:
         self.stopped = []
         self.approvals = []
         self.clarifications = []
+        self.iter_calls = 0
+        self.last_event_ids = []
 
     def require_console_run_capabilities(self):
         if isinstance(self.capabilities, Exception):
@@ -156,8 +161,10 @@ class FakeRunClient:
         self.submitted.append(prompt)
         return {"run_id": REMOTE_RUN_ID, "status": "started"}
 
-    def iter_run_events(self, run_id, *, should_stop=None):
+    def iter_run_events(self, run_id, *, should_stop=None, last_event_id=None):
         self.assert_run_id(run_id)
+        self.iter_calls += 1
+        self.last_event_ids.append(last_event_id)
         for event in self.events:
             if should_stop is not None and should_stop():
                 break
@@ -186,6 +193,18 @@ class FakeRunClient:
         self.assert_run_id(run_id)
         self.clarifications.append((request_id, dict(response)))
         return {"request_id": request_id, "type": response["type"]}
+
+    def read_profiles(self):
+        return [
+            {"id": "default", "is_default": True, "is_active": True, "served": True},
+            {"id": "researcher", "is_default": False, "is_active": False, "served": True},
+        ]
+
+    def read_profile_runtimes(self):
+        return {
+            "default": {"provider": "openai-codex", "model": "gpt-5.6"},
+            "researcher": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        }
 
     @staticmethod
     def assert_run_id(run_id):
@@ -602,6 +621,232 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertEqual(normalized[-1]["output"], long_output)
         self.assertEqual(queue.timeouts, [remote_hermes.RUN_STREAM_READ_TIMEOUT_SECONDS])
 
+    def test_replay_cursor_is_authenticated_and_sequences_are_verified(self):
+        capabilities = capability_payload(
+            run_event_replay=True,
+            run_event_replay_version=1,
+        )
+        events = [
+            {
+                "event": "runtime.updated",
+                "run_id": REMOTE_RUN_ID,
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+                "sequence": 3,
+                "event_id": 3,
+            },
+            {
+                "event": "run.completed",
+                "run_id": REMOTE_RUN_ID,
+                "output": "done",
+                "sequence": 4,
+                "event_id": 4,
+            },
+        ]
+        raw = b"".join(
+            f"id: {event['sequence']}\ndata: {json.dumps(event)}\n\n".encode("utf-8")
+            for event in events
+        )
+        responses = ResponseQueue([
+            FakeResponse(200, {"status": "ok"}),
+            FakeResponse(200, health_payload()),
+            FakeResponse(200, capabilities),
+            FakeResponse(
+                200,
+                raw,
+                content_type="text/event-stream",
+                headers={"Content-Length": None},
+            ),
+        ])
+        client = remote_hermes.RemoteHermesClient(
+            ENDPOINT, SECRET, connection_factory=responses
+        )
+        client.require_console_run_capabilities()
+        normalized = list(
+            client.iter_run_events(REMOTE_RUN_ID, last_event_id=2)
+        )
+        self.assertEqual([event["sequence"] for event in normalized], [3, 4])
+        self.assertEqual(
+            normalized[0]["runtime"],
+            {
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+            },
+        )
+        self.assertEqual(responses.calls[-1]["headers"]["Last-Event-ID"], "2")
+        self.assertEqual(
+            responses.calls[-1]["headers"]["Authorization"],
+            f"Bearer {SECRET}",
+        )
+
+    def test_legacy_approval_ack_is_normalized_for_status_reconciliation(self):
+        raw = (
+            b"id: 1\n"
+            + b"data: "
+            + json.dumps({
+                "event": "approval.responded",
+                "run_id": REMOTE_RUN_ID,
+                "choice": "once",
+                "resolved": 1,
+                "sequence": 1,
+                "event_id": 1,
+            }).encode()
+            + b"\n\n"
+        )
+        responses = ResponseQueue([
+            FakeResponse(
+                200,
+                raw,
+                content_type="text/event-stream",
+                headers={"Content-Length": None},
+            )
+        ])
+        client = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=responses,
+        )
+        client._trusted_feature_cache = frozenset({"run_event_replay"})
+
+        events = list(client.iter_run_events(REMOTE_RUN_ID, last_event_id=0))
+
+        self.assertEqual(events, [{
+            "type": "approval.responded",
+            "choice": "once",
+            "resolved": 1,
+            "legacy_unbound": True,
+            "sequence": 1,
+        }])
+
+    def test_pending_action_status_and_runtime_are_strictly_normalized(self):
+        capabilities = capability_payload(
+            run_pending_action_status=True,
+            run_pending_action_status_version=1,
+            run_runtime_identity=True,
+            run_runtime_identity_version=1,
+        )
+        pending = {
+            "version": 1,
+            "kind": "approval",
+            "request_id": "approval_2",
+            "preview": {
+                "version": 1,
+                "category": "write",
+                "title": "Save note",
+                "summary": "Save the reviewed note",
+                "risk_labels": ["write"],
+            },
+            "choices": ["once", "deny"],
+        }
+        responses = ResponseQueue([
+            FakeResponse(200, {"status": "ok"}),
+            FakeResponse(200, health_payload()),
+            FakeResponse(200, capabilities),
+            FakeResponse(200, {
+                "object": "hermes.run",
+                "run_id": REMOTE_RUN_ID,
+                "status": "waiting_for_approval",
+                "runtime": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4",
+                },
+                "pending_action": pending,
+            }),
+        ])
+        client = remote_hermes.RemoteHermesClient(
+            ENDPOINT, SECRET, connection_factory=responses
+        )
+        client.require_console_run_capabilities()
+        status = client.get_run(REMOTE_RUN_ID)
+        self.assertEqual(status["pending_action"], pending)
+        self.assertEqual(status["runtime"]["provider"], "openrouter")
+        self.assertNotIn(REMOTE_RUN_ID, json.dumps(status))
+
+    def test_remote_profile_runtime_inventory_is_complete_and_secret_free(self):
+        capabilities = capability_payload(
+            profile_runtime_inventory=True,
+            profile_runtime_inventory_version=1,
+            profile_runtime_inventory_complete=True,
+            profile_runtime_inventory_requires_api_key=True,
+        )
+        capabilities["endpoints"]["profile_runtimes"] = {
+            "method": "GET",
+            "path": "/v1/profile-runtimes",
+        }
+        responses = ResponseQueue([
+            FakeResponse(200, capabilities),
+            FakeResponse(200, {
+                "object": "hermes.profile_runtime.list",
+                "version": 1,
+                "complete": True,
+                "data": [
+                    {
+                        "profile_id": "default",
+                        "provider": "openai-codex",
+                        "model": "gpt-5.6",
+                    },
+                    {
+                        "profile_id": "researcher",
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-sonnet-4",
+                    },
+                ],
+            }),
+        ])
+        client = remote_hermes.RemoteHermesClient(
+            ENDPOINT, SECRET, connection_factory=responses
+        )
+        runtimes = client.read_profile_runtimes()
+        self.assertEqual(runtimes["researcher"]["provider"], "openrouter")
+        self.assertNotIn(SECRET, json.dumps(runtimes))
+
+    def test_remote_console_load_and_agent_refresh_show_read_only_runtime(self):
+        capabilities = {
+            "model": "configured fallback",
+            "capabilities": [
+                "run_submission",
+                "run_status",
+                "run_events_sse",
+                "run_stop",
+                "profile_runtime_inventory",
+            ],
+        }
+        client = FakeRunClient(capabilities=capabilities)
+        adapter = self.adapter(client)
+        with patch.object(
+            server,
+            "hermes_console_transport",
+            return_value=adapter,
+        ):
+            console = server.agent_console_payload()
+            refreshed, status = server.refresh_agent_console_models({
+                "agent_id": "researcher",
+            })
+
+        default = next(
+            agent for agent in console["agents"] if agent["id"] == "default"
+        )
+        self.assertEqual(default["provider"], "openai-codex")
+        self.assertEqual(default["model"], "gpt-5.6")
+        self.assertTrue(console["provider_inventory"]["read_only"])
+        self.assertFalse(
+            console["provider_inventory"]["capabilities"]["providers.switch"]
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(refreshed["agent_id"], "researcher")
+        self.assertEqual(
+            refreshed["provider_inventory"]["current_provider"],
+            "openrouter",
+        )
+        self.assertEqual(
+            refreshed["provider_inventory"]["current_model"],
+            "anthropic/claude-sonnet-4",
+        )
+        self.assertTrue(refreshed["provider_inventory"]["read_only"])
+        self.assertFalse(
+            refreshed["provider_inventory"]["capabilities"]["providers.switch"]
+        )
+
     def test_completed_status_accepts_declared_output_bound_not_generic_metadata_bound(self):
         output = "result" * 1_000
         queue = ResponseQueue([
@@ -679,6 +924,8 @@ class RemoteConsoleRunTests(unittest.TestCase):
             b"data: " + json.dumps({"event": "message.delta", "run_id": REMOTE_RUN_ID, "delta": "host " + ENDPOINT.split("//", 1)[1]}).encode() + b"\n\n",
             b"data: " + json.dumps({"event": "message.delta", "run_id": REMOTE_RUN_ID, "delta": REMOTE_RUN_ID}).encode() + b"\n\n",
             b"data: " + json.dumps({"event": "tool.started", "run_id": REMOTE_RUN_ID, "tool": REMOTE_RUN_ID}).encode() + b"\n\n",
+            b"data: " + json.dumps({"event": "runtime.updated", "run_id": REMOTE_RUN_ID, "provider": "openrouter", "model": "sk-proj-" + ("a" * 32)}).encode() + b"\n\n",
+            b"data: " + json.dumps({"event": "runtime.updated", "run_id": REMOTE_RUN_ID, "provider": "openrouter", "model": "openai/sk-proj-" + ("a" * 32)}).encode() + b"\n\n",
         )
         for raw in payloads:
             with self.subTest(raw=raw[:30]):
@@ -1054,6 +1301,428 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertEqual(client.submitted, ["Needs approval"])
         self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["status"], "queued")
         worker.return_value.start.assert_called_once_with()
+
+    def test_one_stream_survives_approval_then_clarification_until_completion(self):
+        class InteractiveRunClient(FakeRunClient):
+            def __init__(self):
+                super().__init__()
+                self.stream_events = queue.Queue()
+                self.stream_started = threading.Event()
+                self.current_status = {"status": "running"}
+                self.stream_events.put({
+                    "type": "approval.request",
+                    "request_id": "approval_1",
+                    "preview": {
+                        "version": 1,
+                        "category": "write",
+                        "title": "Save note",
+                        "summary": "Save the reviewed note",
+                        "risk_labels": ["write"],
+                    },
+                    "choices": ["once", "deny"],
+                })
+
+            def iter_run_events(self, run_id, *, should_stop=None, last_event_id=None):
+                self.assert_run_id(run_id)
+                self.iter_calls += 1
+                self.last_event_ids.append(last_event_id)
+                self.stream_started.set()
+                while should_stop is None or not should_stop():
+                    event = self.stream_events.get(timeout=2)
+                    yield event
+                    if event.get("type") in {"run.completed", "run.failed", "run.cancelled"}:
+                        return
+
+            def get_run(self, run_id):
+                self.assert_run_id(run_id)
+                return dict(self.current_status)
+
+            def respond_to_approval(self, run_id, request_id, choice):
+                result = super().respond_to_approval(run_id, request_id, choice)
+                self.current_status = {"status": "running"}
+                self.stream_events.put({
+                    "type": "approval.responded",
+                    "request_id": request_id,
+                    "choice": choice,
+                    "resolved": 1,
+                })
+                self.stream_events.put({
+                    "type": "clarify.request",
+                    "request_id": "clarify_1",
+                    "prompt": {
+                        "version": 1,
+                        "type": "choice",
+                        "question": "Which format?",
+                        "choices": [
+                            {"id": "choice-1", "label": "Markdown"},
+                            {"id": "choice-2", "label": "Plain text"},
+                        ],
+                    },
+                })
+                return result
+
+            def respond_to_clarification(self, run_id, request_id, response):
+                result = super().respond_to_clarification(
+                    run_id,
+                    request_id,
+                    response,
+                )
+                self.stream_events.put({
+                    "type": "clarify.responded",
+                    "request_id": request_id,
+                    "response_type": response["type"],
+                })
+                self.current_status = {
+                    "status": "completed",
+                    "output": "Saved as Markdown.",
+                }
+                self.stream_events.put({
+                    "type": "run.completed",
+                    "output": "Saved as Markdown.",
+                })
+                return result
+
+        def wait_for_status(run_id, expected):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with server.AGENT_CONSOLE_LOCK:
+                    current = server.AGENT_CONSOLE_RUNS.get(run_id, {})
+                    if current.get("status") == expected:
+                        return dict(current)
+                time.sleep(0.01)
+            self.fail(f"run did not reach {expected}")
+
+        client = InteractiveRunClient()
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_remote_persistent_interactions"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "default",
+            "agent_name": "Remote workshop",
+            "model": "anthropic/claude-test",
+            "transport_mode": "remote",
+            "connection_binding_id": "b" * 32,
+            "prompt": "Save this note",
+            "status": "queued",
+            "session_id": None,
+            "response": "",
+            "error": "",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+        }
+        worker = threading.Thread(
+            target=server.run_remote_hermes_agent,
+            args=(run_id, adapter),
+            daemon=True,
+        )
+        with patch.object(adapter, "revalidate"), patch.object(
+            server,
+            "persist_agent_console_runs",
+        ):
+            worker.start()
+            self.assertTrue(client.stream_started.wait(1))
+            wait_for_status(run_id, "waiting_for_approval")
+            response, status = server.respond_to_remote_console_action(run_id, {
+                "confirmed": True,
+                "kind": "approval",
+                "request_id": "approval_1",
+                "choice": "once",
+            })
+            self.assertEqual(status, 200)
+            self.assertTrue(response["ok"])
+            clarification = wait_for_status(run_id, "waiting_for_clarification")
+            self.assertEqual(
+                clarification["action_required"]["request_id"],
+                "clarify_1",
+            )
+            response, status = server.respond_to_remote_console_action(run_id, {
+                "confirmed": True,
+                "kind": "clarification",
+                "request_id": "clarify_1",
+                "response": {"type": "choice", "choice_id": "choice-1"},
+            })
+            self.assertEqual(status, 200)
+            self.assertTrue(response["ok"])
+            worker.join(2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(client.iter_calls, 1)
+        self.assertEqual(client.submitted, ["Save this note"])
+        self.assertEqual(client.approvals, [("approval_1", "once")])
+        self.assertEqual(
+            client.clarifications,
+            [("clarify_1", {"type": "choice", "choice_id": "choice-1"})],
+        )
+        self.assertEqual(
+            server.AGENT_CONSOLE_RUNS[run_id]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            server.AGENT_CONSOLE_RUNS[run_id]["response"],
+            "Saved as Markdown.",
+        )
+
+    def test_dropped_replay_stream_reconnects_from_cursor_without_resubmission(self):
+        class ReconnectingRunClient(FakeRunClient):
+            def __init__(self):
+                super().__init__(
+                    capabilities={
+                        "model": "anthropic/claude-test",
+                        "capabilities": [
+                            "run_submission",
+                            "run_status",
+                            "run_events_sse",
+                            "run_event_replay",
+                            "run_stop",
+                        ],
+                    }
+                )
+                self.current_status = {"status": "running"}
+
+            def iter_run_events(self, run_id, *, should_stop=None, last_event_id=None):
+                self.assert_run_id(run_id)
+                self.iter_calls += 1
+                self.last_event_ids.append(last_event_id)
+                if self.iter_calls == 1:
+                    yield {
+                        "type": "tool.started",
+                        "tool": "web_search",
+                        "sequence": 1,
+                    }
+                    return
+                self.current_status = {
+                    "status": "completed",
+                    "output": "Recovered after reconnect.",
+                }
+                yield {
+                    "type": "run.completed",
+                    "output": "Recovered after reconnect.",
+                    "sequence": 2,
+                }
+
+            def get_run(self, run_id):
+                self.assert_run_id(run_id)
+                return dict(self.current_status)
+
+        client = ReconnectingRunClient()
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_remote_replay_reconnect"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "default",
+            "agent_name": "Remote workshop",
+            "provider": "",
+            "model": "",
+            "transport_mode": "remote",
+            "connection_binding_id": "b" * 32,
+            "prompt": "Continue after a dropped stream",
+            "status": "queued",
+            "session_id": None,
+            "response": "",
+            "error": "",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+        }
+        with patch.object(adapter, "revalidate"), patch.object(
+            server, "persist_agent_console_runs"
+        ):
+            server.run_remote_hermes_agent(run_id, adapter)
+
+        self.assertEqual(client.iter_calls, 2)
+        self.assertEqual(client.last_event_ids, [0, 1])
+        self.assertEqual(client.submitted, ["Continue after a dropped stream"])
+        self.assertEqual(client.stopped, [])
+        self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["status"], "completed")
+        self.assertEqual(
+            server.AGENT_CONSOLE_RUNS[run_id]["response"],
+            "Recovered after reconnect.",
+        )
+
+    def test_duplicate_only_replay_does_not_reset_bounded_reconnect_attempts(self):
+        class DuplicateReplayClient(FakeRunClient):
+            def __init__(self):
+                super().__init__(
+                    capabilities={
+                        "model": "anthropic/claude-test",
+                        "capabilities": [
+                            "run_submission",
+                            "run_status",
+                            "run_events_sse",
+                            "run_event_replay",
+                            "run_stop",
+                        ],
+                    }
+                )
+                self.status_calls = 0
+
+            def iter_run_events(self, run_id, *, should_stop=None, last_event_id=None):
+                self.assert_run_id(run_id)
+                self.iter_calls += 1
+                self.last_event_ids.append(last_event_id)
+                yield {
+                    "type": "tool.started",
+                    "tool": "web_search",
+                    "sequence": 1,
+                }
+
+            def get_run(self, run_id):
+                self.assert_run_id(run_id)
+                self.status_calls += 1
+                if self.status_calls <= 2:
+                    return {"status": "running"}
+                return {
+                    "status": "completed",
+                    "output": "Completed after bounded duplicate replay.",
+                }
+
+        client = DuplicateReplayClient()
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_remote_duplicate_replay"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "default",
+            "agent_name": "Remote workshop",
+            "provider": "openrouter",
+            "model": "anthropic/claude-test",
+            "transport_mode": "remote",
+            "connection_binding_id": "b" * 32,
+            "prompt": "Do not reconnect forever",
+            "status": "queued",
+            "session_id": None,
+            "response": "",
+            "error": "",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+            "_remote_event_cursor": 1,
+            "_remote_run_id": REMOTE_RUN_ID,
+            "_remote_transport": adapter,
+        }
+        with patch.object(adapter, "revalidate"), patch.object(
+            server, "persist_agent_console_runs"
+        ), patch.object(
+            server, "REMOTE_CONSOLE_STREAM_RECONNECT_ATTEMPTS", 1
+        ):
+            server.run_remote_hermes_agent(run_id, adapter)
+
+        self.assertEqual(client.iter_calls, 2)
+        self.assertEqual(client.last_event_ids, [1, 1])
+        self.assertEqual(client.submitted, [])
+        self.assertEqual(client.stopped, [])
+        self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["status"], "completed")
+
+    def test_replay_sequence_must_begin_immediately_after_cursor_zero(self):
+        run_id = "run_remote_sequence_prefix"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "status": "running",
+            "events": [],
+            "_remote_event_cursor": 0,
+        }
+        with patch.object(server, "persist_agent_console_runs"):
+            should_stop = server._apply_remote_console_event(run_id, {
+                "type": "tool.started",
+                "tool": "web_search",
+                "sequence": 2,
+            })
+        self.assertTrue(should_stop)
+        self.assertEqual(
+            server.AGENT_CONSOLE_RUNS[run_id]["_remote_event_cursor"],
+            0,
+        )
+        self.assertIn(
+            "continuity could not be verified",
+            server.AGENT_CONSOLE_RUNS[run_id]["events"][-1]["message"],
+        )
+
+    def test_legacy_approval_ack_reconciles_authoritative_status(self):
+        class LegacyAckClient(FakeRunClient):
+            def __init__(self):
+                super().__init__(
+                    events=[
+                        {
+                            "type": "approval.request",
+                            "request_id": "approval_legacy",
+                            "preview": {
+                                "version": 1,
+                                "category": "protected_action",
+                                "title": "Protected action approval",
+                                "summary": "Hermes stopped an action that requires explicit approval.",
+                                "risk_labels": [],
+                            },
+                            "choices": ["once", "deny"],
+                            "sequence": 1,
+                        },
+                        {
+                            "type": "approval.responded",
+                            "choice": "once",
+                            "resolved": 1,
+                            "legacy_unbound": True,
+                            "sequence": 2,
+                        },
+                        {
+                            "type": "run.completed",
+                            "output": "Resolved by a legacy controller.",
+                            "sequence": 3,
+                        },
+                    ],
+                    capabilities={
+                        "model": "anthropic/claude-test",
+                        "capabilities": [
+                            "run_submission",
+                            "run_status",
+                            "run_events_sse",
+                            "run_event_replay",
+                            "run_pending_action_status",
+                            "run_stop",
+                        ],
+                    },
+                )
+                self.status_calls = 0
+
+            def get_run(self, run_id):
+                self.assert_run_id(run_id)
+                self.status_calls += 1
+                if self.status_calls == 1:
+                    return {"status": "running"}
+                return {
+                    "status": "completed",
+                    "output": "Resolved by a legacy controller.",
+                }
+
+        client = LegacyAckClient()
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_remote_legacy_ack"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "default",
+            "agent_name": "Remote workshop",
+            "provider": "",
+            "model": "",
+            "transport_mode": "remote",
+            "connection_binding_id": "b" * 32,
+            "prompt": "Wait for an external approval",
+            "status": "queued",
+            "session_id": None,
+            "response": "",
+            "error": "",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+        }
+        with patch.object(adapter, "revalidate"), patch.object(
+            server, "persist_agent_console_runs"
+        ):
+            server.run_remote_hermes_agent(run_id, adapter)
+
+        self.assertEqual(client.stopped, [])
+        self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["status"], "completed")
+        self.assertNotIn(
+            "action_required",
+            server.AGENT_CONSOLE_RUNS[run_id],
+        )
 
     def test_clarification_response_must_match_the_current_prompt(self):
         client = FakeRunClient(statuses=[])

@@ -58,11 +58,18 @@ FIXED_PATHS = frozenset(
         "/v1/skills",
         "/v1/toolsets",
         "/v1/profiles",
+        "/v1/profile-runtimes",
     }
 )
 _RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
 _SAFE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+()-]{0,79}$")
 _SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/@-]{0,159}$")
+_RUNTIME_SECRET_PREFIX = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-|AIza|AKIA|ASIA|eyJ)"
+)
+_RUNTIME_SECRET_SEGMENT = re.compile(
+    r"(?i)(?:^|[./_:@-])(?:api.?key|secret|token|password|passwd|bearer|authorization)(?:$|[./_:@-])"
+)
 _KNOWN_BOOLEAN_FEATURES = frozenset(
     {
         "chat_completions",
@@ -72,6 +79,9 @@ _KNOWN_BOOLEAN_FEATURES = frozenset(
         "run_submission",
         "run_status",
         "run_events_sse",
+        "run_event_replay",
+        "run_pending_action_status",
+        "run_runtime_identity",
         "run_stop",
         "run_approval_response",
         "run_approval_request_binding",
@@ -86,6 +96,9 @@ _KNOWN_BOOLEAN_FEATURES = frozenset(
         "profile_inventory",
         "profile_inventory_complete",
         "profile_inventory_requires_api_key",
+        "profile_runtime_inventory",
+        "profile_runtime_inventory_complete",
+        "profile_runtime_inventory_requires_api_key",
         "kanban_api",
         "kanban_api_revisioned",
         "kanban_api_idempotency",
@@ -121,6 +134,7 @@ _CAPABILITY_INVENTORY_ENDPOINTS = {
     "toolsets": ("GET", "/v1/toolsets"),
 }
 _PROFILE_INVENTORY_ENDPOINT = ("GET", "/v1/profiles")
+_PROFILE_RUNTIME_INVENTORY_ENDPOINT = ("GET", "/v1/profile-runtimes")
 _CONTINUATION_ENDPOINT = ("GET", "/v1/sessions/{session_id}/continuation")
 _APPROVAL_ENDPOINT = ("POST", "/v1/runs/{run_id}/approval")
 _CLARIFICATION_ENDPOINT = ("POST", "/v1/runs/{run_id}/clarification")
@@ -2334,6 +2348,14 @@ def _reject_json_constant(_value: str):
     raise ValueError("non-finite JSON number")
 
 
+def _runtime_identifier_contains_secret_shape(value: str) -> bool:
+    return (
+        _RUNTIME_SECRET_PREFIX.search(value) is not None
+        or _RUNTIME_SECRET_SEGMENT.search(value) is not None
+        or _secret_shaped_text(value)
+    )
+
+
 class RemoteHermesClient:
     """Fixed-purpose client for public health and authenticated discovery."""
 
@@ -2355,6 +2377,7 @@ class RemoteHermesClient:
         self.timeout_seconds = float(timeout_seconds)
         self.maximum_bytes = maximum_bytes
         self.connection_factory = connection_factory
+        self._trusted_feature_cache: frozenset[str] = frozenset()
 
     def _connection(self, *, timeout_seconds: float | None = None):
         parsed = urlsplit(self.endpoint)
@@ -3307,6 +3330,53 @@ class RemoteHermesClient:
             raise RemoteHermesError("remote_schema_unsupported")
         return profiles
 
+    def read_profile_runtimes(self) -> dict[str, dict[str, str]]:
+        capabilities = self._trusted_capabilities()
+        required = {
+            "profile_runtime_inventory",
+            "profile_runtime_inventory_complete",
+            "profile_runtime_inventory_requires_api_key",
+        }
+        if not required.issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+        payload = self._request_json(
+            "/v1/profile-runtimes",
+            authenticated=True,
+            root_list_limits={"data": 1_000},
+        )
+        if (
+            payload.get("object") != "hermes.profile_runtime.list"
+            or payload.get("version") != 1
+            or payload.get("complete") is not True
+            or not isinstance(payload.get("data"), list)
+        ):
+            raise RemoteHermesError("remote_schema_unsupported")
+        runtimes: dict[str, dict[str, str]] = {}
+        for item in payload["data"]:
+            if type(item) is not dict or set(item) != {"profile_id", "provider", "model"}:
+                raise RemoteHermesError("remote_schema_unsupported")
+            profile_id = item.get("profile_id")
+            provider = item.get("provider")
+            model = item.get("model")
+            if (
+                not isinstance(profile_id, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", profile_id)
+                or profile_id in runtimes
+                or not isinstance(provider, str)
+                or (provider and _INVENTORY_IDENTIFIER.fullmatch(provider) is None)
+                or not isinstance(model, str)
+                or (model and _SAFE_MODEL.fullmatch(model) is None)
+                or _runtime_identifier_contains_secret_shape(provider)
+                or _runtime_identifier_contains_secret_shape(model)
+                or self._contains_private_inventory_text(provider)
+                or self._contains_private_inventory_text(model)
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+            runtimes[profile_id] = {"provider": provider, "model": model}
+        if "default" not in runtimes:
+            raise RemoteHermesError("remote_schema_unsupported")
+        return runtimes
+
     def kanban_request(
         self,
         operation: str,
@@ -3338,6 +3408,7 @@ class RemoteHermesClient:
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         run_id = self._validated_run_id(run_id)
+        features = set(self._trusted_feature_cache)
         payload = self._run_json_request(
             "GET",
             f"/v1/runs/{run_id}",
@@ -3349,6 +3420,66 @@ class RemoteHermesClient:
         if status not in _RUN_STATUSES:
             raise RemoteHermesError("remote_run_schema_invalid")
         normalized: dict[str, Any] = {"status": status}
+        runtime = payload.get("runtime")
+        if runtime is not None:
+            if (
+                "run_runtime_identity" not in features
+                or type(runtime) is not dict
+                or set(runtime) != {"provider", "model"}
+                or not isinstance(runtime.get("provider"), str)
+                or _INVENTORY_IDENTIFIER.fullmatch(runtime["provider"]) is None
+                or not isinstance(runtime.get("model"), str)
+                or _SAFE_MODEL.fullmatch(runtime["model"]) is None
+                or _runtime_identifier_contains_secret_shape(runtime["provider"])
+                or _runtime_identifier_contains_secret_shape(runtime["model"])
+                or self._contains_private_run_text(runtime, run_id)
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            normalized["runtime"] = dict(runtime)
+        pending_action = payload.get("pending_action")
+        waiting_kind = {
+            "waiting_for_approval": "approval",
+            "waiting_for_clarification": "clarification",
+        }.get(status)
+        if pending_action is not None:
+            if (
+                "run_pending_action_status" not in features
+                or waiting_kind is None
+                or type(pending_action) is not dict
+                or pending_action.get("version") != 1
+                or pending_action.get("kind") != waiting_kind
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            if waiting_kind == "approval":
+                event_payload = {
+                    "event": "approval.request",
+                    "run_id": run_id,
+                    "request_id": pending_action.get("request_id"),
+                    "preview": pending_action.get("preview"),
+                    "choices": pending_action.get("choices"),
+                }
+            else:
+                event_payload = {
+                    "event": "clarify.request",
+                    "run_id": run_id,
+                    "request_id": pending_action.get("request_id"),
+                    "prompt": pending_action.get("prompt"),
+                }
+            action_event = self._normalize_run_event(event_payload, run_id)
+            normalized["pending_action"] = {
+                "version": 1,
+                "kind": waiting_kind,
+                **{
+                    key: value
+                    for key, value in action_event.items()
+                    if key != "type"
+                },
+            }
+        elif (
+            waiting_kind is not None
+            and "run_pending_action_status" in features
+        ):
+            raise RemoteHermesError("remote_run_schema_invalid")
         if "session_id" in payload:
             try:
                 normalized["session_id"] = self._validated_session_id(
@@ -3492,6 +3623,72 @@ class RemoteHermesClient:
             )):
                 raise RemoteHermesError("remote_private_reflection")
             return {"type": event_type, "request_id": request_id, "prompt": normalized_prompt}
+        if event_type == "approval.responded":
+            request_id = payload.get("request_id")
+            choice = payload.get("choice")
+            resolved = payload.get("resolved")
+            if (
+                (
+                    request_id is not None
+                    and (
+                        not isinstance(request_id, str)
+                        or _APPROVAL_REQUEST_ID.fullmatch(request_id) is None
+                    )
+                )
+                or choice not in {"once", "session", "always", "deny"}
+                or type(resolved) is not int
+                or resolved < 1
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            normalized_response = {
+                "type": event_type,
+                "choice": choice,
+                "resolved": resolved,
+            }
+            if request_id is None:
+                normalized_response["legacy_unbound"] = True
+            else:
+                normalized_response["request_id"] = request_id
+            return normalized_response
+        if event_type == "clarify.responded":
+            request_id = payload.get("request_id")
+            response_type = payload.get("type")
+            if (
+                not isinstance(request_id, str)
+                or _CLARIFICATION_REQUEST_ID.fullmatch(request_id) is None
+                or response_type not in {"choice", "text"}
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            normalized_response = {
+                "type": event_type,
+                "request_id": request_id,
+                "response_type": response_type,
+            }
+            if response_type == "choice":
+                choice_id = payload.get("choice_id")
+                if not isinstance(choice_id, str) or re.fullmatch(r"choice-[1-4]", choice_id) is None:
+                    raise RemoteHermesError("remote_run_schema_invalid")
+                normalized_response["choice_id"] = choice_id
+            return normalized_response
+        if event_type == "runtime.updated":
+            provider = payload.get("provider")
+            model = payload.get("model")
+            if (
+                not isinstance(provider, str)
+                or _INVENTORY_IDENTIFIER.fullmatch(provider) is None
+                or not isinstance(model, str)
+                or _SAFE_MODEL.fullmatch(model) is None
+                or _runtime_identifier_contains_secret_shape(provider)
+                or _runtime_identifier_contains_secret_shape(model)
+                or self._contains_private_run_text(
+                    {"provider": provider, "model": model}, run_id
+                )
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            return {
+                "type": event_type,
+                "runtime": {"provider": provider, "model": model},
+            }
         if event_type in {"run.cancelled", "run.failed"}:
             return {"type": event_type}
         if event_type == "run.completed":
@@ -3508,8 +3705,19 @@ class RemoteHermesClient:
         run_id: str,
         *,
         should_stop: Callable[[], bool] | None = None,
+        last_event_id: int | None = None,
     ):
         run_id = self._validated_run_id(run_id)
+        replay_enabled = "run_event_replay" in self._trusted_feature_cache
+        if (
+            last_event_id is not None
+            and (
+                not replay_enabled
+                or type(last_event_id) is not int
+                or not (0 <= last_event_id <= 10**10 - 1)
+            )
+        ):
+            raise RemoteHermesError("remote_run_request_invalid")
         path = f"/v1/runs/{run_id}/events"
         headers = {
             "Accept": "text/event-stream",
@@ -3517,6 +3725,8 @@ class RemoteHermesClient:
             "Cache-Control": "no-cache",
             "User-Agent": "Mentat/remote-hermes-v1",
         }
+        if last_event_id is not None:
+            headers["Last-Event-ID"] = str(last_event_id)
         connection = self._connection(timeout_seconds=RUN_STREAM_READ_TIMEOUT_SECONDS)
         try:
             connection.request("GET", path, headers=headers)
@@ -3535,6 +3745,7 @@ class RemoteHermesClient:
             event_count = 0
             data_lines: list[bytes] = []
             data_bytes = 0
+            event_id: int | None = None
             deadline = time.monotonic() + RUN_STREAM_MAX_SECONDS
             while True:
                 if time.monotonic() >= deadline:
@@ -3572,7 +3783,22 @@ class RemoteHermesClient:
                     event_count += 1
                     if event_count > MAX_RUN_EVENTS:
                         raise RemoteHermesError("remote_response_too_large")
-                    yield self._normalize_run_event(payload, run_id)
+                    normalized = self._normalize_run_event(payload, run_id)
+                    if replay_enabled:
+                        sequence = payload.get("sequence")
+                        payload_event_id = payload.get("event_id")
+                        if (
+                            event_id is None
+                            or type(sequence) is not int
+                            or type(payload_event_id) is not int
+                            or event_id != sequence
+                            or sequence != payload_event_id
+                            or sequence <= 0
+                        ):
+                            raise RemoteHermesError("remote_run_stream_invalid")
+                        normalized["sequence"] = sequence
+                    yield normalized
+                    event_id = None
                     continue
                 if line.startswith(b":"):
                     continue
@@ -3583,7 +3809,17 @@ class RemoteHermesClient:
                     if data_bytes > MAX_RUN_EVENT_BYTES:
                         raise RemoteHermesError("remote_response_too_large")
                     continue
-                if line.startswith((b"event:", b"id:", b"retry:")):
+                if line.startswith(b"id:"):
+                    raw_id = line[3:].strip()
+                    if (
+                        not replay_enabled
+                        or not raw_id
+                        or re.fullmatch(rb"(?:0|[1-9][0-9]{0,9})", raw_id) is None
+                    ):
+                        raise RemoteHermesError("remote_run_stream_invalid")
+                    event_id = int(raw_id)
+                    continue
+                if line.startswith((b"event:", b"retry:")):
                     continue
                 raise RemoteHermesError("remote_run_stream_invalid")
         except RemoteHermesError:
@@ -3691,6 +3927,25 @@ class RemoteHermesClient:
                 or (endpoints["profiles"].get("method"), endpoints["profiles"].get("path")) != _PROFILE_INVENTORY_ENDPOINT
             ):
                 raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("profile_runtime_inventory") is True:
+            if (
+                features.get("profile_runtime_inventory_version") != 1
+                or features.get("profile_runtime_inventory_complete") is not True
+                or features.get("profile_runtime_inventory_requires_api_key") is not True
+                or type(endpoints.get("profile_runtimes")) is not dict
+                or (
+                    endpoints["profile_runtimes"].get("method"),
+                    endpoints["profile_runtimes"].get("path"),
+                )
+                != _PROFILE_RUNTIME_INVENTORY_ENDPOINT
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_event_replay") is True and features.get("run_event_replay_version") != 1:
+            raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_pending_action_status") is True and features.get("run_pending_action_status_version") != 1:
+            raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_runtime_identity") is True and features.get("run_runtime_identity_version") != 1:
+            raise RemoteHermesError("remote_schema_unsupported")
         if features.get("run_session_continuation") is True:
             if (
                 features.get("run_session_continuation_version") != 1
@@ -3732,6 +3987,7 @@ class RemoteHermesClient:
             for name in _KNOWN_BOOLEAN_FEATURES
             if features.get(name) is True
         )
+        self._trusted_feature_cache = frozenset(supported)
         return {
             "model": model,
             "features": supported,

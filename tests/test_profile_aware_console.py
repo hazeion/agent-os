@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import server
 from hermes_transport import TransportBinding
@@ -195,6 +195,8 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         with patch.object(
             server, "agent_console_profile", return_value={"id": "randy", "name": "randy"}
         ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
+        ), patch.object(
             server, "agent_console_provider_inventory", side_effect=[before, verified]
         ), patch.object(
             server, "apply_provider_switch", return_value=({"ok": True}, "")
@@ -225,6 +227,46 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             cwd=server.BASE_DIR,
         )
 
+    def test_remote_connection_rejects_direct_provider_preview_and_apply(self):
+        remote_transport = MagicMock()
+        remote_transport.mode = "remote"
+        payload = {
+            "agent_id": "randy",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4",
+            "confirmed": True,
+            "confirmation_id": "provider_switch_untrusted",
+        }
+
+        with patch.object(
+            server,
+            "hermes_console_transport",
+            return_value=remote_transport,
+        ), patch.object(
+            server,
+            "agent_console_provider_inventory",
+        ) as inventory, patch.object(
+            server,
+            "apply_provider_switch",
+        ) as apply:
+            preview, preview_status = (
+                server.preview_agent_console_provider_switch(payload)
+            )
+            result, status = server.switch_agent_console_provider(payload)
+
+        self.assertEqual(preview_status, 409)
+        self.assertEqual(status, 409)
+        self.assertEqual(
+            preview["error_code"],
+            "remote_provider_switch_unsupported",
+        )
+        self.assertEqual(
+            result["error_code"],
+            "remote_provider_switch_unsupported",
+        )
+        inventory.assert_not_called()
+        apply.assert_not_called()
+
     def test_frontend_routes_managed_profile_to_console(self):
         self.assertIn("data-use-hermes-profile", APP_JS)
         self.assertIn("state.agentConsoleSelectedAgentId", APP_JS)
@@ -232,6 +274,33 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         self.assertIn("async function refreshAgentConsoleModels(agentId", CORE_JS)
         self.assertIn("async function previewAgentConsoleProvider(provider, model, agentId", CORE_JS)
         self.assertIn("async function switchAgentConsoleProvider(provider, model, agentId", CORE_JS)
+
+    def test_frontend_runtime_refresh_is_read_only_and_stale_response_safe(self):
+        self.assertIn("agentConsoleRuntimeRequestGeneration", CORE_JS)
+        self.assertIn("Loading current provider and model", APP_JS)
+        self.assertIn(
+            "requestGeneration !== state.agentConsoleRuntimeRequestGeneration",
+            APP_JS,
+        )
+        self.assertIn(
+            "requestedAgentId !== state.agentConsoleSelectedAgentId",
+            APP_JS,
+        )
+        self.assertIn("providerInventory.read_only && runtimeProvider", APP_JS)
+        self.assertIn(
+            "const selectedActiveRun = selectedRuns.find(agentConsoleRunIsActive)",
+            APP_JS,
+        )
+        self.assertIn(
+            "selectedActiveRun?.provider && selectedActiveRun?.model",
+            APP_JS,
+        )
+        self.assertNotIn("const runtimeRun = activeRun || latestRun", APP_JS)
+        self.assertIn(
+            "providerSelect.disabled = !available || !providerSwitchAvailable",
+            APP_JS,
+        )
+        self.assertIn("silent: true", APP_JS)
 
 
 if __name__ == "__main__":
