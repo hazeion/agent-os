@@ -44,8 +44,26 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("include requirements-native.lock", manifest)
         for name in SEED_FILE_NAMES:
             self.assertIn(f"include data/{name}", manifest)
-        for name in ("app.js", "core.js", "index.html", "mentat-logo.png", "styles.css"):
+        for name in (
+            "app.js",
+            "core.js",
+            "index.html",
+            "mentat-logo.png",
+            "mentat-mark-emerald.png",
+            "styles.css",
+        ):
             self.assertIn(f"include public/{name}", manifest)
+
+    def test_emerald_mark_is_in_every_static_asset_inventory(self):
+        asset = "mentat-mark-emerald.png"
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        spec = (ROOT / "packaging" / "mentat.spec").read_text(encoding="utf-8")
+        verifier = (
+            ROOT / "scripts" / "verify_python_artifacts.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(f"public/{asset}", pyproject)
+        self.assertIn(f'"{asset}"', spec)
+        self.assertIn(f"public/{asset}", verifier)
 
     def test_native_definitions_read_or_receive_the_single_version_source(self):
         spec = (ROOT / "packaging" / "mentat.spec").read_text(encoding="utf-8")
