@@ -157,6 +157,12 @@ class RemoteHermesTests(unittest.TestCase):
             root.chmod(0o700)
         return root
 
+    def _owner_only(self, path: Path, *, directory: bool) -> None:
+        if os.name == "nt":
+            remote_hermes._windows_set_owner_only(path, directory=directory)
+        else:
+            path.chmod(0o700 if directory else 0o600)
+
     def _remote_payload(self, **updates):
         payload = {
             "mode": "remote",
@@ -605,7 +611,7 @@ class RemoteHermesTests(unittest.TestCase):
                 f"MENTAT_REMOTE_HERMES_API_KEY={json.dumps(DISTINCTIVE_SECRET)}\n",
                 encoding="utf-8",
             )
-            env_file.chmod(0o600)
+            self._owner_only(env_file, directory=False)
             file_source = remote_hermes.credential_source_from_values(
                 "env_file",
                 path=str(env_file),
@@ -678,6 +684,7 @@ class RemoteHermesTests(unittest.TestCase):
             root = self._root(temporary)
             private = root / "private"
             private.mkdir(mode=0o700)
+            self._owner_only(private, directory=True)
             path = remote_hermes.connection_path(root)
             path.write_text(
                 json.dumps(
@@ -692,7 +699,7 @@ class RemoteHermesTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            path.chmod(0o600)
+            self._owner_only(path, directory=False)
             selected = remote_hermes.load_connection(root)
             self.assertEqual(selected.mode, "remote")
             self.assertEqual(selected.api_key, DISTINCTIVE_SECRET)
@@ -838,6 +845,7 @@ class RemoteHermesTests(unittest.TestCase):
             root = self._root(temporary)
             private = root / "private"
             private.mkdir(mode=0o700)
+            self._owner_only(private, directory=True)
             path = remote_hermes.connection_path(root)
             legacy = {
                 "schema_version": 1,
@@ -848,7 +856,7 @@ class RemoteHermesTests(unittest.TestCase):
                 "api_key": DISTINCTIVE_SECRET,
             }
             path.write_text(json.dumps(legacy), encoding="utf-8")
-            path.chmod(0o600)
+            self._owner_only(path, directory=False)
             reserve_mentat_server(root)
             try:
                 public = remote_hermes.public_connection_payload(root)

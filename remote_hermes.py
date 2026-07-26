@@ -4929,6 +4929,12 @@ def _confirm_preview(
                                     parent_fd=parent_fd,
                                     maximum_bytes=MAX_CONNECTION_BYTES,
                                 )
+                                if os.name == "nt":
+                                    _windows_set_owner_only(path, directory=False)
+                                if not _verify_owner_private(path, directory=False):
+                                    raise OSError(
+                                        "connection rollback privacy could not be verified"
+                                    )
                             elif _entry_exists(path, parent_fd):
                                 _unlink_connection(path, parent_fd)
                             if private_api_key is not None:
