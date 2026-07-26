@@ -125,7 +125,7 @@ class BetaContractTests(unittest.TestCase):
 
     def test_docs_do_not_claim_native_installers_already_exist(self):
         normalized_readme = " ".join(README.replace(">", "").split())
-        self.assertIn("native installers are still on the way", normalized_readme)
+        self.assertIn("There is no public installer yet", normalized_readme)
         self.assertIn("## Quick start", README)
         self.assertIn("[Python 3.11–3.13]", README)
         for first_run_step in (

@@ -4,7 +4,11 @@
 
 ## How was it checked?
 
-<!-- List focused checks and the full test suite result. -->
+<!-- List the checks you ran. "Not run (docs only)" is fine when appropriate. -->
+
+## Anything still open?
+
+<!-- Note known limits, follow-up work, or write "Nothing." -->
 
 ## Safety and privacy
 

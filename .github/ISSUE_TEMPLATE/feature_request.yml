@@ -3,6 +3,10 @@ description: Suggest one focused improvement for Mentat.
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! A short, real example helps us understand what would make Mentat nicer to use.
   - type: textarea
     id: problem
     attributes:

@@ -11,9 +11,8 @@ I built Mentat because I wanted one friendly place to organize my projects and
 let an agent help move the work forward. It runs on your computer and opens in
 your browser.
 
-> Mentat is actively evolving. The current development build is ready to
-> explore; native installers are still on the way and will be signed for the
-> public beta.
+> Mentat is actively evolving. You can run the development build today; signed
+> installers will arrive with the public beta.
 
 ## What can it do?
 
@@ -26,60 +25,51 @@ your browser.
 
 ## Quick start
 
-The easiest route is a signed build from the
-[Mentat releases page](https://github.com/hazeion/agent-os/releases). There is
-no final public beta yet, so native installers are still on the way. If you are
-helping test a signed candidate, use the exact release link you received.
-
-- **macOS:** download the signed `.pkg`, check `SHA256SUMS`, run the installer,
-  then open Mentat from Applications. The first build is Intel; Apple Silicon
-  needs Rosetta.
-- **Windows:** download the signed `.exe`, check its SHA-256 value, and run it.
-- **pipx:** copy the wheel URL from that release, then run:
-
-```bash
-pipx install WHEEL_URL
-mentat setup
-mentat start
-```
-
-For the checksum, run `shasum -a 256 FILE` on macOS or
-`Get-FileHash FILE -Algorithm SHA256` in Windows PowerShell, then compare the
-result with `SHA256SUMS` from the same release.
-
-Mentat opens at [http://localhost:8888](http://localhost:8888). You will need a
-supported [Hermes Agent](https://hermes-agent.nousresearch.com/) runtime for
-agent features.
-
-Before installing, glance at [supported platforms and known limitations](SUPPORT.md).
-
-## Try the development build
-
-Until a signed build is available, you can run Mentat from source. You need:
+There is no public installer yet, so the current way to try Mentat is from
+source. You need:
 
 - [Python 3.11–3.13](https://www.python.org/downloads/)
 - [Git](https://git-scm.com/downloads)
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) for agent features
 
 macOS and Windows are the tier-one beta platforms; Linux is a preview.
+Before you begin, check the [supported platforms and known limitations](SUPPORT.md).
 
 Open a terminal and run:
 
 ```bash
 git clone https://github.com/hazeion/agent-os.git
 cd agent-os
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 python scripts/mentat_setup.py
 ./run.sh
 ```
 
-Then open [http://localhost:8888](http://localhost:8888). That's it! 🎉
+Press Enter to accept the setup helper's recommended values. Then open
+[http://localhost:8888](http://localhost:8888). That's it! 🎉
 
-On Windows, use `run.bat` instead of `./run.sh`. If your computer does not
-recognize `python`, try `python3` (macOS/Linux) or `py` (Windows).
+On Windows, replace the virtual-environment and launch commands above with:
 
-The setup helper stores its settings locally and does not ask for or save your
-provider credentials. Hermes continues to manage those.
+```bat
+py -m venv .venv
+.venv\Scripts\activate
+python -m pip install -r requirements.txt
+python scripts\mentat_setup.py
+run.bat
+```
+
+Mentat works as a project planner without Hermes. Install and set up
+[Hermes Agent](https://hermes-agent.nousresearch.com/) to use chat, delegation,
+sessions, and other agent features.
+
+The setup helper stores settings only on your computer. It does not ask for or
+save provider credentials; Hermes continues to manage those.
+
+If you were invited to test a signed release candidate, use the exact release
+link and instructions from the invitation instead. See [Beta Support](SUPPORT.md)
+for current platform and compatibility notes.
 
 ## Starting and stopping
 
@@ -105,9 +95,8 @@ Windows users can run `run.bat`, `status.bat`, and `stop.bat` instead. If port
 - Mentat stays on your computer and listens only on local addresses.
 - There is no npm install step—the frontend is plain HTML, CSS, and JavaScript.
 - Mentat does not directly edit Hermes' core files.
-- Mentat works great with local Hermes. If you connect a supported remote
-  Hermes runtime, Mentat checks what it can safely do and keeps unavailable
-  controls out of your way.
+- Mentat can use local Hermes or a supported remote Hermes server. It checks
+  available capabilities and hides actions that cannot be completed safely.
 - Calendar events, Obsidian note contents, Hermes sessions, and cron jobs are
   read-only in Mentat.
 
@@ -120,8 +109,8 @@ dig deeper:
 - [Data storage, migration, and backups](DATA_LAYOUT.md)
 - [Privacy](PRIVACY.md) and [security reporting](SECURITY.md)
 - [Beta support and known limitations](SUPPORT.md)
-- [Public beta roadmap](ROAD_TO_BETA.md)
-- [Remote Hermes plans](REMOTE_HERMES.md)
+- [Public beta status and roadmap](ROAD_TO_BETA.md)
+- [Remote Hermes contract](REMOTE_HERMES.md)
 - [Recent changes](CHANGELOG.md)
 
 ## Contributing
