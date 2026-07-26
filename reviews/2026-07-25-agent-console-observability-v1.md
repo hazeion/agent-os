@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console observability v1
 
-Status: Awaiting Publication Approval
+Status: Published for Review
 Slice: `agent-console-observability-v1`
 Date: `2026-07-25`
 Review log: `reviews/2026-07-25-agent-console-observability-v1.md`
@@ -267,10 +267,11 @@ activity visible and trustworthy for both local and remote Hermes runs.
 - Unresolved risks: full Hermes regression remains dependent on upstream CI
   because the local suite's first ACP approval test has an unchanged-checkout
   platform failure.
-- User authorization and scope: awaiting the required fresh publication
-  approval after final files, tests, review findings, and risks were summarized.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- User authorization and scope: approved after the final files, tests, review
+  findings, and remaining platform limitation were summarized.
+- Implementation commits: Mentat `a0f3e38`; Hermes `39b5da05a`.
+- Ready PRs: Mentat <https://github.com/hazeion/agent-os/pull/63>;
+  Hermes <https://github.com/hazeion/hermes-agent/pull/1>.
 
 ## Outcome review
 
@@ -283,5 +284,6 @@ activity visible and trustworthy for both local and remote Hermes runs.
 - Remaining reviewer dissent: none.
 - Compatibility/migration/rollback concerns: no migration planned; optional
   fields must degrade safely.
-- User decision: awaiting fresh commit/push/ready-PR approval.
+- User decision: approved commit, push, and ready PR publication for both
+  coordinated branches.
 - Next slice authorized: No
