@@ -138,6 +138,9 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         self._ready = False
         self._sessions_ready = False
         self.model = "configured default"
+        self.event_replay_available = False
+        self.pending_action_status_available = False
+        self.runtime_identity_available = False
 
     @property
     def console_available(self) -> bool:
@@ -150,6 +153,10 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
             self._ready = False
             raise HermesTransportError(exc.code) from exc
         self.model = str(discovery.get("model") or "configured default")
+        capabilities = set(discovery.get("capabilities") or ())
+        self.event_replay_available = "run_event_replay" in capabilities
+        self.pending_action_status_available = "run_pending_action_status" in capabilities
+        self.runtime_identity_available = "run_runtime_identity" in capabilities
         self._ready = True
         return {
             "model": self.model,
@@ -254,6 +261,15 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
+    def read_profile_runtimes(self) -> dict[str, dict[str, str]]:
+        try:
+            method = getattr(self._client, "read_profile_runtimes", None)
+            if not callable(method):
+                raise HermesTransportError("remote_profile_capability_unavailable")
+            return method()
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
     def get_run(self, remote_run_id: str) -> dict[str, Any]:
         try:
             return self._client.get_run(remote_run_id)
@@ -265,12 +281,13 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         remote_run_id: str,
         *,
         should_stop: Callable[[], bool] | None = None,
+        last_event_id: int | None = None,
     ):
         try:
-            yield from self._client.iter_run_events(
-                remote_run_id,
-                should_stop=should_stop,
-            )
+            kwargs = {"should_stop": should_stop}
+            if last_event_id is not None:
+                kwargs["last_event_id"] = last_event_id
+            yield from self._client.iter_run_events(remote_run_id, **kwargs)
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
