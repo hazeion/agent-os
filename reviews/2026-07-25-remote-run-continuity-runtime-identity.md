@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Run Continuity and Runtime Identity
 
-Status: Verified — awaiting publication approval  
+Status: Published — ready pull requests open
 Slice: `remote-run-continuity-runtime-identity`  
 Date: `2026-07-25`  
 Review log: `reviews/2026-07-25-remote-run-continuity-runtime-identity.md`
@@ -328,10 +328,14 @@ connections.
   assignment redaction is explicitly same-line and cannot enumerate every
   possible sensitive-value format; the unrelated macOS protected-temp-path
   test prevents a clean repository-wide Hermes result.
-- User authorization and scope: implementation approved; publication approval
-  must still be requested after verification and review.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- User authorization and scope: the user explicitly continued past the
+  publication gate after reviewing the exact commit, push, and ready-PR plan.
+- Implementation commit hashes: Mentat
+  `b3e6889944562a760bf4df7b644b27fbb2cbaede`; Hermes
+  `0d1607606d5b7708d2519ff425f31fe2977182b9`.
+- Ready PR URLs: Mentat
+  `https://github.com/hazeion/agent-os/pull/64`; Hermes
+  `https://github.com/hazeion/hermes-agent/pull/2`.
 
 ## Outcome review
 
@@ -346,6 +350,6 @@ connections.
 - Compatibility/migration/rollback concerns: new remote contracts remain
   separately capability-gated; disabling advertisement restores the prior
   fail-closed behavior, and no durable migration is required.
-- User decision: implementation and test strategy approved; commit/push/ready
-  PR publication awaits explicit confirmation.
+- User decision: implementation, test strategy, and commit/push/ready-PR
+  publication approved and completed.
 - Next slice authorized: No.
