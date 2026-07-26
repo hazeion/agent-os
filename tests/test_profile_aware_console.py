@@ -78,6 +78,8 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             "prompt": "Research this",
             "session_id": None,
             "status": "queued",
+            "starts_new_session": False,
+            "new_session_state": "pending",
             "events": [],
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
@@ -93,6 +95,15 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertEqual(command[:6], ["/tmp/hermes", "-p", "randy", "chat", "-q", "Research this"])
         self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["session_id"], "session_randy_1")
+        self.assertTrue(server.AGENT_CONSOLE_RUNS[run_id]["starts_new_session"])
+        self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["new_session_state"], "started")
+        self.assertEqual(
+            sum(
+                event["type"] == "session.started"
+                for event in server.AGENT_CONSOLE_RUNS[run_id]["events"]
+            ),
+            1,
+        )
 
     def test_start_rejects_cross_profile_session_resume(self):
         server.AGENT_CONSOLE_RUNS["run_default"] = {
@@ -183,6 +194,8 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         }
         with patch.object(
             server, "agent_console_profile", return_value={"id": "randy", "name": "randy"}
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(
             server, "agent_console_provider_inventory", side_effect=[before, verified]
         ), patch.object(

@@ -472,9 +472,32 @@ Agent Console progress is exposed as versioned, structured Mentat events. Event
 sequence numbers are monotonic within a run and double as polling cursors. The
 browser requests only events newer than its cursor and merges them into its local
 run view; the full-run response remains available for compatibility and recovery.
-Events describe Mentat-owned lifecycle transitions only. Mentat does not parse
-unstable native Hermes output into synthetic tool-call events, and it does not
-require a streaming transport for this local-first contract.
+Mentat-owned lifecycle events include a durable `session.started` boundary only
+after an explicitly fresh local run launches or a remote run is accepted.
+
+Local Hermes tool progress arrives through an optional, private, run-scoped
+JSONL channel owned and pre-created by Mentat runtime storage. Mentat passes the
+paths through optional environment variables so an older Hermes runtime keeps
+the exact legacy command and safely ignores them. Mentat validates the file
+boundary, schema, monotonic sequence, type, count, size, and tool identifier
+before projecting an event. It never derives reasoning status from assistant
+text; a local `reasoning.available` phase is accepted only when Hermes reports
+that the provider supplied a genuine reasoning field, and its summary is fixed.
+Mentat never parses native CLI stdout/stderr into tool events or returns raw
+reasoning, tool arguments, tool results, paths, or secrets. The source file is
+deleted with the run's private input workspace. On platforms without secure
+directory-descriptor/no-follow writes, this optional local detail channel fails
+closed and the Console retains its generic lifecycle status and unavailable
+context state.
+
+Completed runs may also receive a private structured usage report. Billing
+totals remain separate from `context_tokens` (the last actual prompt size) and
+`context_length` (the active model window). The UI calculates a percentage only
+when both exact non-negative integers are present and internally consistent;
+otherwise it says the context measurement is unavailable. Cumulative billing
+tokens must never be substituted for active context usage. Remote Runs may
+provide the same optional fields and safe progress summaries through their
+versioned response/event contracts.
 
 For remote runs, the upstream Hermes event sequence is separately verified
 before Mentat projects events into that local history. Approval and

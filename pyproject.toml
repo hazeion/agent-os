@@ -40,6 +40,7 @@ packages = ["mentat"]
 py-modules = [
   "agent_console_artifacts",
   "agent_console_attachments",
+  "agent_console_telemetry",
   "agent_run_history",
   "command_manifest",
   "data_backup_restore",

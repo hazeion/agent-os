@@ -76,6 +76,11 @@ from agent_console_artifacts import (
     workspace_file_reference,
     read_workspace_text_context,
 )
+from agent_console_telemetry import (
+    ProgressTail,
+    prepare_local_telemetry_paths,
+    read_usage as read_local_console_usage,
+)
 from command_manifest import command_manifest_payload
 from json_store import (
     _durable_mutation_lock,
@@ -6117,6 +6122,8 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
             return
         if run.get("status") == "cancelling":
             run["status"] = "cancelled"
+            if run.get("new_session_state") == "pending":
+                run["new_session_state"] = "failed"
             run["completed_at"] = now_iso()
             run["error"] = "Run stopped by operator."
             agent_console_event(run, "Run stopped", "cancelled", {"reason": "operator_cancelled"})
@@ -6167,13 +6174,19 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
 
     started = time.monotonic()
     next_update = 2
+    telemetry_tail: ProgressTail | None = None
+    usage_path: Path | None = None
     try:
         transport.revalidate(DATA_DIR)
+        progress_path, usage_path = prepare_local_telemetry_paths(DATA_DIR, run_id)
+        telemetry_tail = ProgressTail(progress_path)
         launch = transport.build_console_launch(
             profile_id=profile_id,
             prompt=prompt,
             session_id=session_id,
             image_path=Path(image_path) if image_path else None,
+            usage_path=usage_path,
+            progress_path=progress_path,
         )
         process = transport.spawn_console(launch)
         with AGENT_CONSOLE_LOCK:
@@ -6188,6 +6201,29 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
                 stdout, stderr = process.communicate(timeout=1)
                 break
             except subprocess.TimeoutExpired:
+                if telemetry_tail is not None:
+                    try:
+                        progress_events = telemetry_tail.poll()
+                    except ValueError:
+                        progress_events = []
+                        telemetry_tail = None
+                    if progress_events:
+                        with AGENT_CONSOLE_LOCK:
+                            current = AGENT_CONSOLE_RUNS.get(run_id)
+                            if current:
+                                for progress_event in progress_events:
+                                    data = {
+                                        key: progress_event[key]
+                                        for key in ("tool", "duration_ms")
+                                        if key in progress_event
+                                    }
+                                    agent_console_event(
+                                        current,
+                                        progress_event["summary"],
+                                        progress_event["type"],
+                                        data,
+                                    )
+                                persist_agent_console_runs()
                 elapsed = int(time.monotonic() - started)
                 if elapsed < next_update:
                     continue
@@ -6214,7 +6250,43 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
             parsed_session_id = parse_hermes_session_id(stderr)
             if parsed_session_id:
                 current["session_id"] = parsed_session_id
+                if current.get("new_session_state") == "pending":
+                    current["new_session_state"] = "started"
+                    current["starts_new_session"] = True
+                    agent_console_event(
+                        current,
+                        "New Hermes session started",
+                        "session.started",
+                        {"phase": "session"},
+                    )
             response = clean_agent_output(stdout)
+            if telemetry_tail is not None:
+                try:
+                    progress_events = telemetry_tail.poll()
+                except ValueError:
+                    progress_events = []
+                for progress_event in progress_events:
+                    data = {
+                        key: progress_event[key]
+                        for key in ("tool", "duration_ms")
+                        if key in progress_event
+                    }
+                    agent_console_event(
+                        current,
+                        progress_event["summary"],
+                        progress_event["type"],
+                        data,
+                    )
+            try:
+                current["usage"] = (
+                    read_local_console_usage(usage_path)
+                    if usage_path is not None
+                    else None
+                )
+            except (OSError, ValueError):
+                current["usage"] = None
+            if current.get("new_session_state") == "pending":
+                current["new_session_state"] = "failed"
             if current.get("status") == "cancelling":
                 current["status"] = "cancelled"
                 current["error"] = "Run stopped by operator."
@@ -6239,6 +6311,8 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
             current = AGENT_CONSOLE_RUNS.get(run_id)
             if current:
                 current["status"] = "failed"
+                if current.get("new_session_state") == "pending":
+                    current["new_session_state"] = "failed"
                 current["completed_at"] = now_iso()
                 current["error"] = (
                     exc.public_message
@@ -6369,19 +6443,24 @@ def _apply_remote_console_event(run_id: str, event: dict) -> bool:
         if event_type == "tool.started":
             agent_console_event(
                 run,
-                f"Using {event.get('tool')}",
+                event.get("summary") or f"Using {event.get('tool')}",
                 "tool.started",
                 {"tool": event.get("tool")},
             )
         elif event_type == "tool.completed":
             agent_console_event(
                 run,
-                f"Finished {event.get('tool')}",
+                event.get("summary") or f"Finished {event.get('tool')}",
                 "tool.completed",
                 {"tool": event.get("tool")},
             )
         elif event_type == "reasoning.available":
-            agent_console_event(run, "Remote Hermes is reasoning", "status", {"phase": "reasoning"})
+            agent_console_event(
+                run,
+                event.get("summary") or "Reasoning about the next action",
+                "reasoning.available",
+                {"phase": "reasoning"},
+            )
         elif event_type == "approval.request":
             if not all(key in event for key in ("request_id", "preview", "choices")):
                 agent_console_event(
@@ -6570,6 +6649,8 @@ def run_remote_hermes_agent(
                 raise HermesTransportError("transport_binding_changed")
             if run.get("status") == "cancelling":
                 run["status"] = "cancelled"
+                if run.get("new_session_state") == "pending":
+                    run["new_session_state"] = "failed"
                 run["completed_at"] = now_iso()
                 run["error"] = "Run stopped by operator."
                 agent_console_event(run, "Run stopped", "cancelled", {"reason": "operator_cancelled"})
@@ -6602,6 +6683,15 @@ def run_remote_hermes_agent(
                     return
                 current["_remote_run_id"] = remote_run_id
                 current["_remote_transport"] = transport
+                if current.get("new_session_state") == "pending":
+                    current["new_session_state"] = "started"
+                    current["starts_new_session"] = True
+                    agent_console_event(
+                        current,
+                        "New Hermes session started",
+                        "session.started",
+                        {"phase": "session"},
+                    )
                 agent_console_event(current, "Remote Hermes is working", "status", {"phase": "inference"})
                 cancelling = current.get("status") != "running"
                 persist_agent_console_runs()
@@ -6846,6 +6936,8 @@ def run_remote_hermes_agent(
                 if current.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES:
                     return
                 current["status"] = "failed"
+                if current.get("new_session_state") == "pending":
+                    current["new_session_state"] = "failed"
                 current["completed_at"] = now_iso()
                 current["response"] = ""
                 current.pop("action_required", None)
@@ -6902,6 +6994,7 @@ def _start_remote_agent_console_run(
     payload: dict,
     transport: RemoteHermesConsoleTransport,
 ):
+    start_new_session = payload.get("start_new_session", False)
     requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
     if requested_agent_id == "hermes":
         requested_agent_id = "default"
@@ -7058,6 +7151,8 @@ def _start_remote_agent_console_run(
             "artifacts": [],
             "status": "queued",
             "session_id": remote_session_alias or None,
+            "starts_new_session": False,
+            "new_session_state": "pending" if start_new_session else None,
             "response": "",
             "error": "",
             "events": [],
@@ -7237,6 +7332,11 @@ def respond_to_remote_console_action(run_id: str, payload):
 
 
 def _start_agent_console_run_locked(payload):
+    start_new_session = payload.get("start_new_session", False)
+    if type(start_new_session) is not bool:
+        return {"error": "start_new_session must be true or false."}, 400
+    if start_new_session and payload.get("session_id") not in (None, ""):
+        return {"error": "A new session cannot also resume an existing session."}, 400
     try:
         transport = hermes_console_transport()
     except (HermesTransportError, RemoteHermesError):
@@ -7385,6 +7485,8 @@ def _start_agent_console_run_locked(payload):
             "artifacts": [],
             "status": "queued",
             "session_id": session_id or None,
+            "starts_new_session": False,
+            "new_session_state": "pending" if start_new_session else None,
             "response": "",
             "error": "",
             "events": [],

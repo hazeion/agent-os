@@ -284,6 +284,8 @@ class RemoteConsoleRunTests(unittest.TestCase):
                             "input_tokens": 4,
                             "output_tokens": 8,
                             "total_tokens": 12,
+                            "context_tokens": 24000,
+                            "context_length": 128000,
                         },
                     },
                 ),
@@ -306,6 +308,8 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertEqual(terminal["status"], "completed")
         self.assertEqual(terminal["session_id"], "session_" + ("d" * 32))
         self.assertEqual(terminal["usage"]["total_tokens"], 12)
+        self.assertEqual(terminal["usage"]["context_tokens"], 24000)
+        self.assertEqual(terminal["usage"]["context_length"], 128000)
         self.assertEqual(stopped, {"status": "stopping"})
         self.assertEqual(
             [(call["method"], call["path"]) for call in queue.calls],
@@ -418,6 +422,69 @@ class RemoteConsoleRunTests(unittest.TestCase):
             else:
                 with self.assertRaises(remote_hermes.RemoteHermesError):
                     stop_client.stop_run(REMOTE_RUN_ID)
+
+    def test_malformed_optional_remote_context_is_omitted_not_promoted(self):
+        queue = ResponseQueue([
+            FakeResponse(
+                200,
+                {
+                    "object": "hermes.run",
+                    "run_id": REMOTE_RUN_ID,
+                    "status": "completed",
+                    "output": "Finished safely",
+                    "usage": {
+                        "input_tokens": 4,
+                        "output_tokens": 8,
+                        "total_tokens": 12,
+                        "context_tokens": 24000,
+                        "context_length": "private-or-invalid",
+                    },
+                },
+            )
+        ])
+        terminal = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=queue,
+        ).get_run(REMOTE_RUN_ID)
+        self.assertEqual(
+            terminal["usage"],
+            {"input_tokens": 4, "output_tokens": 8, "total_tokens": 12},
+        )
+
+    def test_remote_reasoning_summary_must_be_allowlisted(self):
+        client = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=ResponseQueue([]),
+        )
+        normalized = client._normalize_run_event(
+            {
+                "event": "reasoning.available",
+                "run_id": REMOTE_RUN_ID,
+                "summary": "Running verification checks",
+            },
+            REMOTE_RUN_ID,
+        )
+        self.assertEqual(
+            normalized,
+            {
+                "type": "reasoning.available",
+                "summary": "Running verification checks",
+            },
+        )
+        with self.assertRaisesRegex(
+            remote_hermes.RemoteHermesError,
+            "remote_run_schema_invalid",
+        ):
+            client._normalize_run_event(
+                {
+                    "event": "reasoning.available",
+                    "run_id": REMOTE_RUN_ID,
+                    "summary": "token=private",
+                },
+                REMOTE_RUN_ID,
+            )
 
     def test_verified_extension_contracts_use_only_fixed_bound_requests(self):
         capabilities = capability_payload(
@@ -942,7 +1009,11 @@ class RemoteConsoleRunTests(unittest.TestCase):
             "persist_agent_console_runs",
         ):
             payload, status = server.start_agent_console_run(
-                {"agent_id": "default", "prompt": "Remote work"}
+                {
+                    "agent_id": "default",
+                    "prompt": "Remote work",
+                    "start_new_session": True,
+                }
             )
             run_id = payload["run"]["id"]
             server.run_remote_hermes_agent(run_id, adapter)
@@ -954,6 +1025,12 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertEqual(run["response"], "Complete")
         self.assertEqual(run["usage"]["total_tokens"], 8)
         self.assertEqual(client.submitted, ["Remote work"])
+        self.assertTrue(run["starts_new_session"])
+        self.assertEqual(run["new_session_state"], "started")
+        self.assertEqual(
+            sum(event["type"] == "session.started" for event in run["events"]),
+            1,
+        )
         public = json.dumps(server.agent_console_snapshot(run))
         history = json.dumps(agent_run_history.summarize_run(run))
         for private in (REMOTE_RUN_ID, ENDPOINT, SECRET):
@@ -1023,6 +1100,8 @@ class RemoteConsoleRunTests(unittest.TestCase):
             "prompt": "Recover",
             "status": "queued",
             "session_id": None,
+            "starts_new_session": False,
+            "new_session_state": "pending",
             "response": "",
             "error": "",
             "events": [],
@@ -1093,6 +1172,8 @@ class RemoteConsoleRunTests(unittest.TestCase):
             "prompt": "Maybe accepted",
             "status": "queued",
             "session_id": None,
+            "starts_new_session": False,
+            "new_session_state": "pending",
             "response": "",
             "error": "",
             "events": [],
@@ -1106,6 +1187,12 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertTrue(run["partial"])
         self.assertIn("whether", run["error"].lower())
         self.assertEqual(client.submitted, ["Maybe accepted"])
+        self.assertFalse(run["starts_new_session"])
+        self.assertEqual(run["new_session_state"], "failed")
+        self.assertFalse(any(
+            event["type"] == "session.started"
+            for event in run["events"]
+        ))
 
     def test_deterministic_submission_rejection_is_not_marked_partial(self):
         class RejectedSubmitClient(FakeRunClient):

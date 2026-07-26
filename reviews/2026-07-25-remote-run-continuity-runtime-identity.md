@@ -1,8 +1,8 @@
 # Feature Slice Review: Remote Run Continuity and Runtime Identity
 
 Status: Published — ready pull requests open
-Slice: `remote-run-continuity-runtime-identity`  
-Date: `2026-07-25`  
+Slice: `remote-run-continuity-runtime-identity`
+Date: `2026-07-25`
 Review log: `reviews/2026-07-25-remote-run-continuity-runtime-identity.md`
 
 ## Slice contract
