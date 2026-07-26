@@ -2,6 +2,34 @@
 
 All notable changes to Mentat.
 
+## 2026-07-25
+
+### Added
+- Added capability-gated, cursor-based replay for remote Hermes Runs events,
+  exact pending approval/clarification recovery from run status, and effective
+  provider/model runtime events.
+- Added a complete authenticated read-only remote profile runtime inventory so
+  Agent Console can show the selected profile's current provider and model.
+
+### Changed
+- Remote approval and clarification waits now keep the normal SSE connection
+  open. Multiple interactive pauses resume on the same run worker and stream;
+  a genuine interruption reconnects automatically from the last verified
+  cursor without resubmitting the run.
+- Agent Console clears stale runtime values while changing agents, rejects
+  out-of-order refresh responses, and refreshes provider/model identity after
+  relevant run, response, session, and connection lifecycle events. Remote
+  selectors show the current values but remain disabled.
+
+### Safety
+- Replay journals and subscriber queues are count- and byte-bounded, sequenced,
+  normalized to a public allowlist, and process-local. Raw tool previews and
+  reasoning bodies are omitted. Invalid, ahead, expired, duplicated, or gapped
+  event cursors fail closed.
+- Pending actions remain bound to the exact request ID, and provider/model
+  payloads reject URLs, paths, secret-shaped identifiers, endpoint reflection,
+  and malformed or partial inventories.
+
 ## 2026-07-24
 
 ### Changed

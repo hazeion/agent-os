@@ -89,6 +89,8 @@ const state = {
   agentConsoleProviderPreview: null,
   agentConsoleProviderPreviewSource: 'console',
   agentConsoleSelectedModel: '',
+  agentConsoleRuntimeLoading: false,
+  agentConsoleRuntimeRequestGeneration: 0,
   agentConsoleSelectedAgentId: '',
   agentConsoleRunId: '',
   agentConsoleSessionId: '',
