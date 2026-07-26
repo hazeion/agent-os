@@ -3145,10 +3145,34 @@ function renderAgentConsole(payload = {}) {
   const visibleRuns = [...selectedRuns].slice(0, 10).reverse();
   chat.innerHTML = visibleRuns.length ? visibleRuns.map((run) => {
     const runAgentName = run.agent_name || selectedAgent.name || 'Hermes';
-    const events = (run.events || []).map((event) => `
+    const startsNewSession = Boolean(
+      run.starts_new_session
+      || (run.events || []).some((event) => event.type === 'session.started' || event.kind === 'session.started')
+    );
+    const sessionDivider = startsNewSession
+      ? '<div class="agent-console-session-divider" role="separator" aria-label="New Hermes session started"><span aria-hidden="true">New Hermes session started</span></div>'
+      : '';
+    const events = (run.events || []).filter(
+      (event) => event.type !== 'session.started' && event.kind !== 'session.started'
+    ).map((event) => {
+      const eventType = event.type || event.kind || 'status';
+      const eventSource = eventType.startsWith('tool.')
+        ? 'Tool'
+        : eventType === 'reasoning.available'
+          ? 'Thinking'
+          : runAgentName;
+      const eventText = String(event.display_text || event.message || 'Working');
+      const eventContent = eventType === 'reasoning.available' && eventText.length > 100
+        ? `<details class="agent-console-reasoning-detail">
+            <summary aria-label="Show full reasoning summary">${escapeHtml(eventText.slice(0, 100))}...</summary>
+            <div>${escapeHtml(eventText)}</div>
+          </details>`
+        : `<span>${escapeHtml(eventText)}</span>`;
+      return `
       <div class="agent-console-log-row agent-console-log-status ${escapeHtml(event.kind || 'status')}">
-        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(event.display_text || event.message || 'Working')}</span>
-      </div>`).join('');
+        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(eventSource)}</span>${eventContent}
+      </div>`;
+    }).join('');
     const workingLabel = run.status === 'cancelling'
       ? 'Stopping'
       : run.status === 'waiting_for_approval'
@@ -3157,13 +3181,27 @@ function renderAgentConsole(payload = {}) {
           ? 'Waiting for clarification'
           : 'Working';
     const working = agentConsoleRunIsActive(run) ? `
-      <div class="agent-console-log-row agent-console-working" role="status"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(workingLabel)}</span></div>` : '';
+      <div class="agent-console-log-row agent-console-working"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(workingLabel)}</span></div>` : '';
     const storedSummaryLabel = run.persisted_summary ? 'Stored summary' : '';
     const promptExcerpt = run.prompt_truncated || storedSummaryLabel ? `<span class="mono">${run.prompt_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const responseExcerpt = run.response_truncated || storedSummaryLabel ? `<span class="mono">${run.response_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const outputArtifacts = Array.isArray(run.artifacts) ? run.artifacts : Array.isArray(run.output_artifacts) ? run.output_artifacts : [];
     const artifactCards = agentConsoleArtifactCards(outputArtifacts);
-    const response = run.response || artifactCards ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${run.response ? renderMarkdown(run.response) : ''}${artifactCards}</div>${responseExcerpt}</div>` : '';
+    const contextTokens = run.usage?.context_tokens;
+    const contextLength = run.usage?.context_length;
+    const contextAvailable = Number.isInteger(contextTokens)
+      && Number.isInteger(contextLength)
+      && contextTokens >= 0
+      && contextLength > 0
+      && contextTokens <= contextLength;
+    const contextPercent = contextAvailable ? Math.round((contextTokens / contextLength) * 1000) / 10 : null;
+    const contextUsage = ['completed', 'failed', 'cancelled'].includes(run.status)
+      ? `<div class="agent-console-context-usage mono" aria-label="${contextAvailable ? `Context window ${humanNumber(contextTokens)} of ${humanNumber(contextLength)} tokens used, ${contextPercent}% used` : 'Context window usage unavailable'}">
+          <span><strong>${contextAvailable ? humanNumber(contextTokens) : 'Unavailable'}</strong> context tokens used</span>
+          <span><strong>${contextAvailable ? humanNumber(contextLength) : 'Unavailable'}</strong> total context window${contextAvailable ? ` · ${contextPercent}% used` : ''}</span>
+        </div>`
+      : '';
+    const response = run.response || artifactCards || contextUsage ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${run.response ? renderMarkdown(run.response) : ''}${artifactCards}${contextUsage}</div>${responseExcerpt}</div>` : '';
     const errorExcerpt = run.error_truncated || storedSummaryLabel ? `<span class="mono">${run.error_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const error = run.error ? `<div class="agent-console-log-row agent-console-log-error"><span class="mono">${run.status === 'cancelled' ? 'Stopped' : 'Error'}</span><div class="message-content">${escapeHtml(run.error)}</div>${errorExcerpt}</div>` : '';
     const request = run.action_required || {};
@@ -3176,7 +3214,7 @@ function renderAgentConsole(payload = {}) {
     const attachmentCards = inputAttachments.length
       ? `<section class="agent-console-run-attachment-context" aria-label="Files used as prompt context"><span class="mono">Used as prompt context · ${inputAttachments.length} file${inputAttachments.length === 1 ? '' : 's'}</span><div class="agent-console-run-attachments">${agentConsoleAttachmentCards(inputAttachments)}</div></section>`
       : '';
-    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}${attachmentCards}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${requestActions}${response}${error}</section>`;
+    return `<section class="agent-console-turn">${sessionDivider}<div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}${attachmentCards}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${requestActions}${response}${error}</section>`;
   }).join('') : `<div class="agent-console-empty mono">${escapeHtml(payload.error || (available ? 'Hermes ready.' : 'Hermes CLI unavailable.'))}</div>`;
   if (wasNearBottom || activeRun) chat.scrollTop = chat.scrollHeight;
   renderHomeLiveAgents();
@@ -3333,7 +3371,7 @@ async function submitAgentConsolePrompt() {
     } else if (definition.handler === 'agent_console.new_session') {
       state.agentConsoleSessionId = '';
       state.agentConsoleStartFresh = true;
-      if (status) status.textContent = 'New Hermes session ready.';
+      if (status) status.textContent = 'Next prompt starts a new Hermes session.';
     } else if (definition.handler === 'agent_console.show_help') {
       const help = agentConsoleCommands().map((item) => `${item.command} — ${item.description}`).join('; ');
       if (status) status.textContent = `Dashboard commands: ${help}.`;
@@ -3345,10 +3383,12 @@ async function submitAgentConsolePrompt() {
   }
   if (status) status.textContent = 'Sending to Hermes…';
   try {
+    const startingFresh = state.agentConsoleStartFresh;
     const payload = await startAgentConsoleRun({
       agent_id: $('#agent-console-agent')?.value || state.agentConsoleSelectedAgentId || 'default',
       prompt: value,
       session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined,
+      start_new_session: startingFresh,
       attachment_ids: state.agentConsoleAttachments.map((attachment) => attachment.id),
       remote_context_token: state.agentConsoleRemoteContext?.token || undefined,
     });
@@ -5894,7 +5934,7 @@ $('#agent-console-new-session')?.addEventListener('click', () => {
   state.agentConsoleSessionId = '';
   state.agentConsoleStartFresh = true;
   const status = $('#agent-console-form-status');
-  if (status) status.textContent = 'New Hermes session ready.';
+  if (status) status.textContent = 'Next prompt starts a new Hermes session.';
   $('#agent-console-prompt')?.focus();
 });
 $('#agent-console-stop')?.addEventListener('click', async () => {

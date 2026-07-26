@@ -116,6 +116,8 @@ class HermesConsoleTransport:
         prompt: str,
         session_id: str | None,
         image_path: Path | None,
+        usage_path: Path | None = None,
+        progress_path: Path | None = None,
     ) -> LocalConsoleLaunch:
         raise HermesTransportError(self.unavailable_code)
 
@@ -313,6 +315,8 @@ class LocalHermesConsoleTransport(HermesConsoleTransport):
         prompt: str,
         session_id: str | None,
         image_path: Path | None,
+        usage_path: Path | None = None,
+        progress_path: Path | None = None,
     ) -> LocalConsoleLaunch:
         if not self.command_path:
             raise HermesTransportError("local_console_unavailable")
@@ -344,10 +348,19 @@ class LocalHermesConsoleTransport(HermesConsoleTransport):
             command.extend(["--image", str(image_path)])
         if session_id:
             command.extend(["--resume", session_id])
-
         env = os.environ.copy()
         env["HERMES_HOME"] = str(self.hermes_home)
         env["PYTHONUNBUFFERED"] = "1"
+        for name, path in (
+            ("MENTAT_HERMES_USAGE_FILE", usage_path),
+            ("MENTAT_HERMES_PROGRESS_FILE", progress_path),
+        ):
+            if path is None:
+                continue
+            normalized_path = Path(path)
+            if not normalized_path.is_absolute() or "\x00" in str(normalized_path):
+                raise HermesTransportError("console_request_invalid")
+            env[name] = str(normalized_path)
         if self.shared_bin is not None:
             current_path = env.get("PATH") or ""
             path_entries = current_path.split(os.pathsep) if current_path else []
