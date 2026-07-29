@@ -37,7 +37,7 @@ def lifecycle_state_path(config: server.AppConfig) -> Path:
 
 
 def managed_ports(primary_port: int) -> list[int]:
-    return sorted({int(primary_port), 8888, 8890})
+    return [int(primary_port)]
 
 
 def parse_netstat_listeners(output: str) -> list[Listener]:
@@ -259,7 +259,8 @@ def identify_listener(
     command_cache: dict[int, str],
 ) -> tuple[bool, list[str], str]:
     reasons: list[str] = []
-    if state_pid is not None and listener.pid == state_pid:
+    state_matches = state_pid is not None and listener.pid == state_pid
+    if state_matches:
         reasons.append("matches_runtime_state")
 
     commandline = command_cache.setdefault(listener.pid, process_commandline(listener.pid))
@@ -275,10 +276,10 @@ def identify_listener(
     if probe_matches:
         reasons.append("overview_probe")
 
-    # Runtime state is only a hint: PIDs can be reused after Mentat exits. Never
-    # terminate a listener unless the live process or HTTP response independently
-    # identifies it as Mentat.
-    return command_matches or probe_matches, reasons, commandline
+    # A matching command path is strong ownership evidence. Runtime state alone
+    # is not: PIDs can be reused. A probe is therefore authoritative only when
+    # it corroborates the PID recorded by this exact Mentat data root.
+    return command_matches or (state_matches and probe_matches), reasons, commandline
 
 
 def kill_pid(pid: int) -> tuple[bool, str]:
@@ -332,7 +333,7 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
     command_cache: dict[int, str] = {}
 
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
-        is_mentat, reasons, commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
+        is_mentat, reasons, _commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
         if is_mentat:
             if listener.pid in killed_pids:
                 actions.append(
@@ -341,7 +342,6 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
                         "pid": listener.pid,
                         "action": "already_killed",
                         "reasons": reasons,
-                        "command_line": commandline,
                     }
                 )
                 continue
@@ -352,7 +352,6 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
                     "pid": listener.pid,
                     "action": "killed" if ok else "kill_failed",
                     "reasons": reasons,
-                    "command_line": commandline,
                     "message": message,
                 }
             )
@@ -372,17 +371,16 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
                 "pid": listener.pid,
                 "action": action,
                 "reasons": reasons,
-                "command_line": commandline,
             }
         )
 
     if state_path.exists() and (state_pid is None or state_pid in killed_pids or not any(listener.pid == state_pid for listener in listeners)):
         remove_runtime_state(state_path)
-        actions.append({"action": "cleared_runtime_state", "path": str(state_path), "state_pid": state_pid})
+        actions.append({"action": "cleared_runtime_state", "state_pid": state_pid})
 
     if not listeners and state_path.exists():
         remove_runtime_state(state_path)
-        actions.append({"action": "cleared_runtime_state", "path": str(state_path), "state_pid": state_pid})
+        actions.append({"action": "cleared_runtime_state", "state_pid": state_pid})
 
     if not listeners and not actions:
         actions.append({"action": "no_managed_listeners", "ports": ports})
@@ -391,7 +389,6 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
         "ok": not blocked,
         "config_port": config.port,
         "managed_ports": ports,
-        "state_path": str(state_path),
         "actions": actions,
     }
 
@@ -405,22 +402,18 @@ def status_report(config: server.AppConfig) -> dict:
     state_pid = state.get("pid") if isinstance(state.get("pid"), int) else None
     items = []
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
-        is_mentat, reasons, commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
+        is_mentat, reasons, _commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
         items.append(
             {
                 "port": listener.port,
                 "pid": listener.pid,
-                "local_address": listener.local_address,
                 "is_mentat": is_mentat,
                 "reasons": reasons,
-                "command_line": commandline,
             }
         )
     return {
         "config_port": config.port,
         "managed_ports": managed_ports(config.port),
-        "state_path": str(state_path),
-        "runtime_state": state,
         "listeners": items,
     }
 

@@ -45,9 +45,14 @@ the existing post-submission status and stop verification.
 - Draft upstream pull request:
   [NousResearch/hermes-agent#68202](https://github.com/NousResearch/hermes-agent/pull/68202)
 - Fork branch: `hazeion:feat/http-runs-inline-images` at
-  `ca611c8062c837ce2abe85eafd7d07ec7b306da3`, based on upstream `main`
+  `9f8964e03d4965dc3585ff70b5b90e7ef4abe945`, based on upstream `main`
   `67e73ae95899c57b9b9134b4b10a2520dffd0a16`.
-- Focused Runs, session-image, and API-server suite: 256 tests passed.
+- The Milestone 2-wide adversarial pass found and fixed an inherited free-form
+  image-detail field. Runs now accepts only the fixed `low`, `high`, or `auto`
+  values, with a regression proving unrestricted text is rejected before run
+  allocation.
+- Focused Runs, session-image, and API-server suite after that fix: 257 tests
+  passed.
 - Ruff, Python compilation, and whitespace checks passed.
 - The isolated Hermes worktree had no installed `website/node_modules`, so the
   Docusaurus build was not run locally. The draft remains subject to upstream

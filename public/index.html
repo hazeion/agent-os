@@ -3,144 +3,292 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Mentat · Mission Control</title>
-  <link rel="icon" type="image/png" href="/mentat-logo.png" />
+  <title>Mentat</title>
+  <link rel="icon" type="image/png" href="/mentat-mark-emerald.png" />
   <script>
     (() => {
-      const key = 'mentat-theme';
-      const allowed = new Set([
-        'compact-dark', 'catppuccin', 'nord', 'aurora', 'tokyo-night',
+      const themeKey = 'mentat-theme';
+      const shellKey = 'mentat-ui-shell-v1';
+      const contrastKey = 'mentat-contrast-v1';
+      const allowedThemes = new Set([
+        'emerald', 'compact-dark', 'catppuccin', 'nord', 'aurora', 'tokyo-night',
         'gruvbox-dark', 'dracula', 'one-dark', 'solarized-dark', 'light',
         'github-light', 'gruvbox-light', 'solarized-light',
         'catppuccin-latte', 'rose-pine-dawn',
       ]);
-      let theme = 'compact-dark';
+      const allowedShells = new Set(['emerald', 'classic']);
+      const allowedContrastPreferences = new Set(['standard', 'high']);
+      let theme = 'emerald';
+      let shell = 'emerald';
+      let contrastPreference = 'system';
       try {
-        const saved = localStorage.getItem(key);
-        if (allowed.has(saved)) theme = saved;
+        const savedTheme = localStorage.getItem(themeKey);
+        const savedShell = localStorage.getItem(shellKey);
+        const savedContrast = localStorage.getItem(contrastKey);
+        if (allowedThemes.has(savedTheme)) theme = savedTheme;
+        if (allowedShells.has(savedShell)) shell = savedShell;
+        if (allowedContrastPreferences.has(savedContrast)) contrastPreference = savedContrast;
       } catch {}
+      const systemHighContrast = contrastPreference === 'system'
+        && typeof matchMedia === 'function'
+        && matchMedia('(prefers-contrast: more)').matches;
       document.documentElement.dataset.theme = theme;
+      document.documentElement.dataset.uiShell = shell;
+      document.documentElement.dataset.contrastPreference = contrastPreference;
+      document.documentElement.dataset.contrast = contrastPreference === 'high' || systemHighContrast
+        ? 'high'
+        : 'standard';
     })();
   </script>
-  <link rel="stylesheet" href="/styles.css?v=context-packs-2" />
+  <link rel="stylesheet" href="/styles.css?v=emerald-shell-1" />
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="grid-bg" aria-hidden="true"></div>
 
   <div class="app-shell">
-    <aside class="sidebar" aria-label="Mentat navigation">
+    <aside class="sidebar" id="mentat-sidebar" aria-label="Mentat navigation">
       <div class="brand-block">
         <div class="brand-mark mentat-brand" role="img" aria-label="Mentat portrait logo">
-          <img class="mentat-brand-image" src="/mentat-logo.png" alt="" aria-hidden="true" />
+          <img class="mentat-brand-image" src="/mentat-mark-emerald.png" alt="" aria-hidden="true" />
         </div>
         <div>
           <div class="brand-name" id="brand-name">Mentat</div>
-          <div class="brand-subtitle">Local Command</div>
+          <div class="brand-subtitle">Planning workspace</div>
         </div>
+        <button class="mobile-nav-close" id="mobile-nav-close" type="button" aria-label="Close navigation">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
       </div>
 
-      <nav class="nav-groups">
-        <section>
-          <div class="nav-label">Workspace</div>
-          <button class="nav-item active" type="button" data-view="today" aria-label="Today View"><span>✦</span><span>Today View</span></button>
-          <button class="nav-item" type="button" data-view="agents" aria-label="Agents / Sessions"><span>◉</span><span>Agents / Sessions</span></button>
-          <button class="nav-item" type="button" data-view="calendar" aria-label="Calendar"><span>◷</span><span>Calendar</span></button>
+      <nav class="nav-groups" id="primary-navigation" aria-label="Primary navigation">
+        <section aria-labelledby="workspace-nav-label">
+          <div class="nav-label" id="workspace-nav-label">Workspace</div>
+          <button class="nav-item active" type="button" data-view="today" aria-label="Home" aria-current="page">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="m3.5 10.5 8.5-7 8.5 7v9a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"></path><path d="M9 21v-7h6v7"></path></svg></span>
+            <span>Home</span>
+          </button>
+          <button class="nav-item" type="button" data-view="agents" aria-label="Agents and Sessions">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="9" cy="8" r="3"></circle><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 5.5a3 3 0 0 1 0 5.5M17 14a5 5 0 0 1 3.5 4.8"></path></svg></span>
+            <span>Agents &amp; Sessions</span>
+          </button>
+          <button class="nav-item" type="button" data-view="calendar" aria-label="Calendar">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M8 3v4M16 3v4M3 10h18"></path></svg></span>
+            <span>Calendar</span>
+          </button>
         </section>
-        <section>
-          <div class="nav-label">Focus</div>
-          <button class="nav-item" type="button" data-view="projects" aria-label="Projects / Tasks"><span>▦</span><span>Projects / Tasks</span></button>
-          <button class="nav-item" type="button" data-view="notes" aria-label="Notes"><span>☰</span><span>Notes</span></button>
+        <section aria-labelledby="focus-nav-label">
+          <div class="nav-label" id="focus-nav-label">Focus</div>
+          <button class="nav-item" type="button" data-view="projects" aria-label="Projects and Tasks">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M3 7.5h7l2-2h9v14H3z"></path><path d="M7 11h10M7 15h7"></path></svg></span>
+            <span>Projects &amp; Tasks</span>
+          </button>
+          <button class="nav-item" type="button" data-view="notes" aria-label="Notes and Context">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M5 3h10l4 4v14H5z"></path><path d="M15 3v5h5M8 12h8M8 16h8"></path></svg></span>
+            <span>Notes &amp; Context</span>
+          </button>
         </section>
-        <section>
-          <div class="nav-label">System</div>
-          <button class="nav-item" type="button" data-view="settings" aria-label="Settings"><span>⚙</span><span>Settings</span></button>
+        <section aria-labelledby="system-nav-label">
+          <div class="nav-label" id="system-nav-label">System</div>
+          <button class="nav-item" type="button" data-view="settings" aria-label="Settings">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"></path></svg></span>
+            <span>Settings</span>
+          </button>
         </section>
       </nav>
 
-      <div class="sidebar-footer">
-        <div class="status-line"><span id="health-dot" class="dot stale"></span><span id="health-label">Starting…</span></div>
+      <div class="sidebar-footer" role="group" aria-label="System status details" tabindex="0">
+        <div class="status-line"><span id="health-dot" class="dot stale"></span><span id="health-label" role="status" aria-live="polite" aria-atomic="true">Starting…</span></div>
         <div class="mono small">Refresh: <span id="refresh-rate">30s</span></div>
         <div class="mono small">Updated: <span id="last-updated">—</span></div>
       </div>
     </aside>
+    <div class="shell-overlay nav-backdrop" id="shell-overlay" aria-hidden="true" hidden></div>
 
-    <main class="command-surface">
+    <main class="command-surface" id="main-content" tabindex="-1">
       <header class="command-header">
-        <div>
+        <button
+          class="mobile-nav-toggle"
+          id="navigation-toggle"
+          type="button"
+          aria-label="Open navigation"
+          aria-controls="mentat-sidebar"
+          aria-expanded="false"
+        >
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M4 7h16M4 12h16M4 17h16"></path>
+            </svg>
+          </span>
+        </button>
+        <div class="topbar-context">
           <h1 class="hero-title" data-text="Hello Operator">Hello Operator</h1>
-          <p>Day-centered command surface for attention, active work, agents, sessions, notes, and calendar context.</p>
         </div>
         <div class="header-actions">
+          <button class="connection-status-button" type="button" data-home-open-view="settings" aria-label="Open Hermes connection settings">
+            <span class="dot stale" id="connection-mode-dot" aria-hidden="true"></span>
+            <span id="connection-mode-label">Checking Hermes</span>
+          </button>
           <div class="global-search-wrap">
-            <label class="search-shell" aria-label="Search dashboard">
-              <span>⌕</span>
+            <label class="search-shell" aria-label="Search Mentat">
+              <span class="search-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg></span>
               <input id="global-search" type="search" placeholder="Search tasks, sessions, notes…" role="combobox" aria-autocomplete="list" aria-controls="global-search-results" aria-expanded="false" />
             </label>
             <div id="global-search-results" class="global-search-results" role="listbox" aria-label="Dashboard search results" hidden></div>
           </div>
+          <span class="operator-avatar" id="operator-avatar" aria-label="Current operator">OP</span>
         </div>
       </header>
 
-      <section class="metric-grid" id="overview-cards"></section>
-
       <section class="view active" id="view-today" data-view-panel="today">
-        <section class="today-grid">
-          <section class="panel command-card" id="today-active-work-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Open Queue / Next Moves</h2>
+        <section class="home-operations-grid" id="home-operations-dashboard" aria-label="Mentat operations overview">
+          <section class="panel command-card home-focus-panel" id="today-active-work-panel">
+            <div class="panel-head home-panel-head">
+              <div class="home-panel-heading">
+                <span class="home-panel-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+                </span>
+                <div>
+                  <h2>Operational focus</h2>
+                  <p class="panel-subtitle">Your top priorities for today.</p>
+                </div>
               </div>
-              <button class="mini-button" type="button" id="enable-reminders-button">Enable Reminders</button>
+              <div class="home-completion" aria-label="Today's completion">
+                <div>
+                  <span>Completion</span>
+                  <strong id="home-focus-completion">0%</strong>
+                  <small id="home-focus-completion-label">No Today plan</small>
+                </div>
+                <span
+                  class="home-completion-ring"
+                  id="home-focus-completion-ring"
+                  role="progressbar"
+                  aria-label="No tasks are planned for today"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow="0"
+                ></span>
+              </div>
             </div>
-            <form id="quick-capture-form" class="quick-capture-form">
-              <input id="quick-capture-title" name="title" type="text" maxlength="160" required placeholder="Quickly add a task for today…" aria-label="Quickly add a task for today" />
-              <select id="quick-capture-project" name="project" aria-label="Quick capture project"></select>
-              <button class="action-button" type="submit">Add</button>
-            </form>
-            <div id="quick-capture-status" class="task-editor-status mono" role="status"></div>
+            <div id="focus-task-list" class="home-focus-list"></div>
             <div id="reminder-list" class="reminder-list"></div>
-            <div id="focus-task-list" class="stack"></div>
+            <div class="home-panel-footer">
+              <a class="mini-button" href="#today-calendar-panel">Open today schedule</a>
+              <details class="home-utility-disclosure">
+                <summary>Quick add</summary>
+                <div class="home-utility-popover">
+                  <form id="quick-capture-form" class="quick-capture-form">
+                    <input id="quick-capture-title" name="title" type="text" maxlength="160" required placeholder="Add a task for today…" aria-label="Add a task for today" />
+                    <select id="quick-capture-project" name="project" aria-label="Quick capture project"></select>
+                    <button class="action-button" type="submit">Add</button>
+                  </form>
+                  <div id="quick-capture-status" class="task-editor-status mono" role="status"></div>
+                </div>
+              </details>
+              <details class="home-utility-disclosure" id="today-completed-panel">
+                <summary>Completed work</summary>
+                <div id="completed-list" class="stack horizontal-stack home-completed-list"></div>
+              </details>
+            </div>
           </section>
 
-          <section class="panel command-card" id="today-calendar-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Today &amp; Next Events</h2>
-                <p class="panel-subtitle">Calendar context remains read-only; task planning stays in Mentat.</p>
+          <section class="panel command-card home-live-agents-panel" id="home-live-agents-panel">
+            <div class="panel-head home-panel-head">
+              <div class="home-panel-heading">
+                <span class="home-panel-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false"><circle cx="8" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3 19a5 5 0 0 1 10 0M13 18a4 4 0 0 1 7.5 0"></path></svg>
+                </span>
+                <div>
+                  <h2>Live agents</h2>
+                  <p class="panel-subtitle">Active sessions and agent status.</p>
+                </div>
               </div>
+              <button class="mini-button" type="button" data-home-open-view="agents">View all agents</button>
             </div>
-            <div id="calendar-list" class="stack"></div>
+            <div id="home-live-agent-list" class="home-live-agent-list">
+              <div class="empty">Loading Hermes agents…</div>
+            </div>
+            <details class="home-review-disclosure" id="agent-activity-panel">
+              <summary>
+                <span>Agent activity &amp; review</span>
+                <span id="agent-activity-summary" class="detail-context-label mono">Loading activity…</span>
+              </summary>
+              <div id="agent-activity-list" class="agent-activity-list" role="status" aria-live="polite"></div>
+            </details>
           </section>
 
-          <section class="panel command-card span-2 agent-activity-panel" id="agent-activity-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Agent Activity &amp; Review</h2>
-                <p class="panel-subtitle">Running work, questions that need you, and results ready for review.</p>
+          <section class="panel command-card home-today-panel" id="today-calendar-panel">
+            <div class="panel-head home-panel-head">
+              <div class="home-panel-heading">
+                <span class="home-panel-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false"><rect x="3.5" y="5" width="17" height="15.5" rx="2"></rect><path d="M8 3v4M16 3v4M3.5 10h17"></path></svg>
+                </span>
+                <div>
+                  <h2>Today</h2>
+                  <p class="panel-subtitle" id="home-schedule-date">Loading schedule…</p>
+                </div>
               </div>
-              <span id="agent-activity-summary" class="detail-context-label mono">Loading activity…</span>
+              <div class="panel-controls home-schedule-actions">
+                <button class="mini-button" type="button" id="enable-reminders-button">Enable reminders</button>
+                <button class="mini-button" type="button" data-home-open-view="calendar">Open calendar</button>
+              </div>
             </div>
-            <div id="agent-activity-list" class="agent-activity-list" role="status" aria-live="polite"></div>
+            <div id="calendar-list" class="home-schedule" aria-live="polite"></div>
           </section>
 
-          <section class="panel command-card span-2" id="agent-console-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Agent Console</h2>
+          <div class="home-context-stack">
+            <section class="panel command-card home-projects-panel" id="home-projects-panel">
+              <div class="panel-head home-panel-head">
+                <div class="home-panel-heading">
+                  <span class="home-panel-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false"><path d="M3.5 7h6l2-2h9v14h-17z"></path><path d="M7 11h10"></path></svg>
+                  </span>
+                  <div>
+                    <h2>Projects</h2>
+                    <p class="panel-subtitle">Active portfolio overview.</p>
+                  </div>
+                </div>
+                <button class="mini-button" type="button" data-home-open-view="projects">View all projects</button>
               </div>
-            </div>
+              <div id="home-project-stats" class="home-project-stats"></div>
+              <div id="home-project-queue" class="home-project-queue"></div>
+            </section>
+
+            <section class="panel command-card home-crons-panel" id="home-crons-panel">
+              <div class="panel-head home-panel-head">
+                <div class="home-panel-heading">
+                  <span class="home-panel-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7.5V12l3.2 2"></path></svg>
+                  </span>
+                  <div>
+                    <h2>Scheduled automations</h2>
+                    <p class="panel-subtitle">Read-only Hermes CRON inventory.</p>
+                  </div>
+                </div>
+                <button class="mini-button" type="button" data-home-open-view="agents" data-home-target="#cron-monitor-panel">View monitor</button>
+              </div>
+              <div id="home-cron-list" class="home-cron-list" role="status" aria-live="polite">
+                <div class="empty">Loading scheduled automations…</div>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel command-card home-console-panel" id="agent-console-panel">
             <div class="agent-console">
-              <div class="agent-console-toolbar">
+              <div class="agent-console-command-bar">
+                <div class="home-console-heading">
+                  <span class="home-console-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+                  <div>
+                    <h2>Agent Console</h2>
+                    <p class="panel-subtitle">Direct a single agent.</p>
+                  </div>
+                </div>
                 <label class="agent-console-select-shell" for="agent-console-agent">
                   <span class="detail-context-label mono">Agent</span>
                   <select id="agent-console-agent" class="agent-console-select" aria-label="Agent">
                     <option value="hermes">Hermes</option>
-                  </select>
-                </label>
-                <label class="agent-console-select-shell" for="agent-console-provider-select">
-                  <span class="detail-context-label mono">Provider</span>
-                  <select id="agent-console-provider-select" class="agent-console-select" aria-label="Authenticated Hermes provider">
-                    <option value="">Loading authenticated providers…</option>
                   </select>
                 </label>
                 <label class="agent-console-select-shell" for="agent-console-model-select">
@@ -149,68 +297,70 @@
                     <option value="">Loading active models…</option>
                   </select>
                 </label>
-                <button class="mini-button" type="button" id="agent-console-apply-model">Review Change</button>
-                <div class="agent-console-identity mono">
+                <form id="agent-console-form" class="agent-console-form">
+                  <div class="agent-console-input-wrap">
+                    <div id="agent-console-attachment-tray" class="agent-console-attachment-tray" aria-live="polite" hidden></div>
+                    <div class="agent-console-composer-row">
+                      <button class="agent-console-attach" type="button" id="agent-console-attach" aria-label="Attach files" aria-expanded="false" aria-controls="agent-console-attachment-menu" title="Attach files">+</button>
+                      <textarea id="agent-console-prompt" name="prompt" rows="1" maxlength="20000" placeholder="Ask your agent something…" aria-label="Prompt Hermes" autocomplete="off"></textarea>
+                    </div>
+                    <div id="agent-console-attachment-menu" class="agent-console-attachment-menu" hidden>
+                      <div id="agent-console-attachment-choices">
+                        <button type="button" data-agent-console-upload>Upload image or text file</button>
+                        <button type="button" data-agent-console-workspace>Choose from workspace</button>
+                        <button type="button" data-agent-console-context-packs>Use a context pack</button>
+                        <span class="mono">Images, text, and source code</span>
+                      </div>
+                      <section id="agent-console-context-pack-picker" class="agent-console-workspace-picker" aria-label="Choose a context pack" hidden>
+                        <div class="agent-console-workspace-head">
+                          <strong>Context packs</strong>
+                          <button type="button" data-agent-console-context-pack-back aria-label="Back to attachment choices">×</button>
+                        </div>
+                        <div id="agent-console-context-pack-results" class="agent-console-workspace-results" role="listbox" aria-live="polite"></div>
+                      </section>
+                      <section id="agent-console-workspace-picker" class="agent-console-workspace-picker" aria-label="Choose a workspace file" hidden>
+                        <div class="agent-console-workspace-head">
+                          <strong>Workspace files</strong>
+                          <button type="button" data-agent-console-workspace-back aria-label="Back to attachment choices">×</button>
+                        </div>
+                        <div class="agent-console-workspace-search" role="search">
+                          <input id="agent-console-workspace-query" type="search" maxlength="200" placeholder="Search relative paths…" aria-label="Search workspace files" autocomplete="off" />
+                          <button type="button" data-agent-console-workspace-search>Search</button>
+                        </div>
+                        <div id="agent-console-workspace-results" class="agent-console-workspace-results" role="listbox" aria-live="polite">
+                          <div class="agent-console-workspace-state mono">Search configured workspace roots.</div>
+                        </div>
+                      </section>
+                    </div>
+                    <input id="agent-console-file-input" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,text/plain,text/markdown,text/csv,application/json,application/xml,text/xml,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.zsh,.toml,.yaml,.yml,.sql,.rs,.go,.java,.c,.h,.cpp,.hpp,.rb,.php" tabindex="-1" hidden />
+                    <div id="agent-console-command-menu" class="agent-console-command-menu" hidden></div>
+                  </div>
+                  <button class="action-button agent-console-send" type="submit" aria-label="Send prompt">Send</button>
+                  <button class="mini-button agent-console-stop" type="button" id="agent-console-stop" hidden>Stop</button>
+                </form>
+                <div class="agent-console-identity mono home-console-state">
                   <span class="agent-console-presence" id="agent-console-presence" aria-hidden="true"></span>
                   <span id="agent-console-state">Checking Hermes…</span>
                 </div>
-                <button class="mini-button" type="button" id="agent-console-new-session">New Session</button>
               </div>
-              <div id="agent-console-chat" class="agent-console-chat" role="log" aria-live="polite" aria-label="Hermes conversation and run status">
-                <div class="agent-console-empty mono">Waiting for Hermes status…</div>
-              </div>
-              <form id="agent-console-form" class="agent-console-form">
-                <div class="agent-console-input-wrap">
-                  <div id="agent-console-attachment-tray" class="agent-console-attachment-tray" aria-live="polite" hidden></div>
-                  <div class="agent-console-composer-row">
-                    <button class="agent-console-attach" type="button" id="agent-console-attach" aria-label="Attach files" aria-expanded="false" aria-controls="agent-console-attachment-menu" title="Attach files">+</button>
-                    <textarea id="agent-console-prompt" name="prompt" rows="1" maxlength="20000" placeholder="Prompt Hermes…" aria-label="Prompt Hermes" autocomplete="off"></textarea>
-                  </div>
-                  <div id="agent-console-attachment-menu" class="agent-console-attachment-menu" hidden>
-                    <div id="agent-console-attachment-choices">
-                      <button type="button" data-agent-console-upload>Upload image or text file</button>
-                      <button type="button" data-agent-console-workspace>Choose from workspace</button>
-                      <button type="button" data-agent-console-context-packs>Use a context pack</button>
-                      <span class="mono">Images, text, and source code</span>
-                    </div>
-                    <section id="agent-console-context-pack-picker" class="agent-console-workspace-picker" aria-label="Choose a context pack" hidden>
-                      <div class="agent-console-workspace-head">
-                        <strong>Context packs</strong>
-                        <button type="button" data-agent-console-context-pack-back aria-label="Back to attachment choices">×</button>
-                      </div>
-                      <div id="agent-console-context-pack-results" class="agent-console-workspace-results" role="listbox" aria-live="polite"></div>
-                    </section>
-                    <section id="agent-console-workspace-picker" class="agent-console-workspace-picker" aria-label="Choose a workspace file" hidden>
-                      <div class="agent-console-workspace-head">
-                        <strong>Workspace files</strong>
-                        <button type="button" data-agent-console-workspace-back aria-label="Back to attachment choices">×</button>
-                      </div>
-                      <div class="agent-console-workspace-search" role="search">
-                        <input id="agent-console-workspace-query" type="search" maxlength="200" placeholder="Search relative paths…" aria-label="Search workspace files" autocomplete="off" />
-                        <button type="button" data-agent-console-workspace-search>Search</button>
-                      </div>
-                      <div id="agent-console-workspace-results" class="agent-console-workspace-results" role="listbox" aria-live="polite">
-                        <div class="agent-console-workspace-state mono">Search configured workspace roots.</div>
-                      </div>
-                    </section>
-                  </div>
-                  <input id="agent-console-file-input" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,text/plain,text/markdown,text/csv,application/json,application/xml,text/xml,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.zsh,.toml,.yaml,.yml,.sql,.rs,.go,.java,.c,.h,.cpp,.hpp,.rb,.php" tabindex="-1" hidden />
-                  <div id="agent-console-command-menu" class="agent-console-command-menu" hidden></div>
-                </div>
-                <button class="action-button agent-console-send" type="submit">Send</button>
-                <button class="mini-button agent-console-stop" type="button" id="agent-console-stop" hidden>Stop</button>
-              </form>
               <div id="agent-console-form-status" class="agent-console-form-status mono" aria-live="polite"></div>
+              <details class="agent-console-details" id="agent-console-details">
+                <summary>Console history &amp; provider settings</summary>
+                <div class="agent-console-toolbar">
+                  <label class="agent-console-select-shell" for="agent-console-provider-select">
+                    <span class="detail-context-label mono">Provider</span>
+                    <select id="agent-console-provider-select" class="agent-console-select" aria-label="Authenticated Hermes provider">
+                      <option value="">Loading authenticated providers…</option>
+                    </select>
+                  </label>
+                  <button class="mini-button" type="button" id="agent-console-apply-model">Review change</button>
+                  <button class="mini-button" type="button" id="agent-console-new-session">New session</button>
+                </div>
+                <div id="agent-console-chat" class="agent-console-chat" role="region" aria-live="off" aria-label="Hermes conversation and run status">
+                  <div class="agent-console-empty mono">Waiting for Hermes status…</div>
+                </div>
+              </details>
             </div>
-          </section>
-
-          <section class="panel command-card span-2" id="today-completed-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Completed Work</h2>
-              </div>
-            </div>
-            <div id="completed-list" class="stack horizontal-stack"></div>
           </section>
         </section>
       </section>
@@ -496,6 +646,7 @@
               <span class="mono">Active theme</span>
               <select id="theme-select" class="theme-select">
                 <optgroup label="Dark themes">
+                  <option value="emerald">Emerald</option>
                   <option value="compact-dark">Compact Dark</option>
                   <option value="catppuccin">Catppuccin Mocha</option>
                   <option value="nord">Nord</option>
@@ -518,6 +669,37 @@
             </label>
             <div id="theme-preview-grid" class="theme-preview-grid" aria-label="Mentat theme choices"></div>
           </div>
+          <div class="appearance-controls" aria-describedby="appearance-controls-help">
+            <label class="theme-select-shell" for="shell-select">
+              <span class="mono">Interface layout</span>
+              <select id="shell-select" class="theme-select">
+                <option value="emerald">Emerald</option>
+                <option value="classic">Classic</option>
+              </select>
+            </label>
+            <label class="theme-select-shell" for="contrast-select">
+              <span class="mono">Contrast</span>
+              <select id="contrast-select" class="theme-select">
+                <option value="system">Use system setting</option>
+                <option value="standard">Standard</option>
+                <option value="high">High Contrast</option>
+              </select>
+            </label>
+          </div>
+          <p class="section-copy" id="appearance-controls-help">Layout and contrast preferences apply across Mentat. The system contrast option follows your device setting.</p>
+          <div class="section-divider"></div>
+          <div class="panel-head compact-head">
+            <div>
+              <h2>Help &amp; Diagnostics</h2>
+              <p class="section-copy">Mentat <span id="mentat-version">version loading…</span>. Need a hand or found a rough edge?</p>
+            </div>
+            <div class="panel-controls">
+              <a class="mini-button" href="https://github.com/hazeion/agent-os#quick-start" target="_blank" rel="noopener noreferrer">Open Docs</a>
+              <a class="mini-button" href="https://github.com/hazeion/agent-os/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer">Report a Bug</a>
+              <button class="mini-button" type="button" id="download-diagnostics">Download Diagnostics</button>
+            </div>
+          </div>
+          <p id="diagnostics-status" class="section-copy" role="status" aria-live="polite">The bundle contains redacted system and health details only—no logs, paths, credentials, or personal content.</p>
           <div class="section-divider"></div>
           <div class="panel-head compact-head">
             <div>
@@ -799,7 +981,7 @@
     </div>
   </dialog>
 
-  <script src="/core.js?v=context-packs-2"></script>
-  <script src="/app.js?v=context-packs-2"></script>
+  <script src="/core.js?v=emerald-shell-1"></script>
+  <script src="/app.js?v=emerald-shell-1"></script>
 </body>
 </html>
