@@ -2,6 +2,16 @@
 
 All notable changes to Mentat.
 
+## 2026-07-29
+
+### Changed
+- Agent Console now keeps its always-visible transcript between the Agent /
+  Provider / Model selector row and the prompt composer.
+- Removed the redundant runtime banner and repeated provider/model status text.
+  Verified switches continue to appear as transcript notices.
+- Runtime reconciliation remains available only when needed through a compact
+  `Retry check` action alongside New session and Show tools.
+
 ## 2026-07-28
 
 ### Added

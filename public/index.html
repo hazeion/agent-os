@@ -305,6 +305,28 @@
                     </select>
                   </label>
                 </div>
+                <section class="agent-console-transcript" id="agent-console-transcript" aria-label="Agent Console transcript">
+                  <div class="agent-console-transcript-head">
+                    <div class="agent-console-identity mono home-console-state">
+                      <span class="agent-console-presence" id="agent-console-presence" aria-hidden="true"></span>
+                      <span id="agent-console-state">Checking Hermes…</span>
+                    </div>
+                    <div class="agent-console-toolbar">
+                      <button class="mini-button" type="button" id="agent-console-new-session">New session</button>
+                      <button class="mini-button" type="button" id="agent-console-tool-toggle" aria-pressed="false">Show tools</button>
+                      <button class="mini-button agent-console-runtime-refresh" type="button" id="agent-console-runtime-refresh" hidden>Retry check</button>
+                    </div>
+                  </div>
+                  <div id="agent-console-form-status" class="agent-console-form-status mono" aria-live="polite"></div>
+                  <div id="agent-console-tool-activity-banner" class="agent-console-tool-activity-banner mono" aria-hidden="true" hidden>
+                    <span class="agent-console-working-mark"><i></i><i></i><i></i></span>
+                    <span id="agent-console-tool-activity-text">Agent is using tools</span><span class="agent-console-tool-dots"></span>
+                  </div>
+                  <div id="agent-console-tool-live-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+                  <div id="agent-console-chat" class="agent-console-chat" role="region" aria-live="off" aria-label="Hermes conversation and run status">
+                    <div class="agent-console-empty mono">Waiting for Hermes status…</div>
+                  </div>
+                </section>
                 <form id="agent-console-form" class="agent-console-form">
                   <div class="agent-console-input-wrap">
                     <div id="agent-console-attachment-tray" class="agent-console-attachment-tray" aria-live="polite" hidden></div>
@@ -346,29 +368,7 @@
                   <button class="action-button agent-console-send" type="submit" aria-label="Send prompt">Send</button>
                   <button class="mini-button agent-console-stop" type="button" id="agent-console-stop" hidden>Stop</button>
                 </form>
-                <div class="agent-console-identity mono home-console-state">
-                  <span class="agent-console-presence" id="agent-console-presence" aria-hidden="true"></span>
-                  <span id="agent-console-state">Checking Hermes…</span>
-                </div>
-                <button class="mini-button agent-console-runtime-refresh" type="button" id="agent-console-runtime-refresh" hidden>Retry runtime check</button>
               </div>
-              <div id="agent-console-form-status" class="agent-console-form-status mono" aria-live="polite"></div>
-              <div id="agent-console-runtime-banner" class="agent-console-runtime-banner mono" hidden></div>
-              <div id="agent-console-tool-activity-banner" class="agent-console-tool-activity-banner mono" aria-hidden="true" hidden>
-                <span class="agent-console-working-mark"><i></i><i></i><i></i></span>
-                <span id="agent-console-tool-activity-text">Agent is using tools</span><span class="agent-console-tool-dots"></span>
-              </div>
-              <div id="agent-console-tool-live-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
-              <details class="agent-console-details" id="agent-console-details">
-                <summary>Console history</summary>
-                <div class="agent-console-toolbar">
-                  <button class="mini-button" type="button" id="agent-console-new-session">New session</button>
-                  <button class="mini-button" type="button" id="agent-console-tool-toggle" aria-pressed="false">Show tools</button>
-                </div>
-                <div id="agent-console-chat" class="agent-console-chat" role="region" aria-live="off" aria-label="Hermes conversation and run status">
-                  <div class="agent-console-empty mono">Waiting for Hermes status…</div>
-                </div>
-              </details>
             </div>
           </section>
         </section>

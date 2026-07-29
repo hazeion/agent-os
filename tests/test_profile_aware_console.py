@@ -604,7 +604,7 @@ class ProfileAwareConsoleTests(unittest.TestCase):
 
     def test_frontend_runtime_refresh_is_read_only_and_stale_response_safe(self):
         self.assertIn("agentConsoleRuntimeRequestGeneration", CORE_JS)
-        self.assertIn("Loading current provider and model", APP_JS)
+        self.assertIn("Checking Hermes runtime", APP_JS)
         self.assertIn(
             "requestGeneration !== state.agentConsoleRuntimeRequestGeneration",
             APP_JS,

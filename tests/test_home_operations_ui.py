@@ -143,7 +143,7 @@ class HomeOperationsUiTests(unittest.TestCase):
         self.assertIn("Math.min(100 - width, naturalLeft)", schedule)
         self.assertNotIn("endHour = startHour + 12", schedule)
 
-    def test_compact_console_preserves_functional_mounts_in_accessible_disclosure(self):
+    def test_compact_console_places_visible_transcript_above_prompt(self):
         console = INDEX[
             INDEX.index('id="agent-console-panel"')
             : INDEX.index('id="view-agents"')
@@ -164,17 +164,20 @@ class HomeOperationsUiTests(unittest.TestCase):
         ):
             self.assertEqual(console.count(f'id="{element_id}"'), 1, element_id)
         self.assertEqual(console.count("agent-console-send"), 1)
-        details_start = console.index('id="agent-console-details"')
+        transcript_start = console.index('id="agent-console-transcript"')
         runtime_row = console[
             console.index('<div class="agent-console-runtime-row">')
-            : console.index('id="agent-console-form"')
+            : transcript_start
         ]
         self.assertLess(runtime_row.index('id="agent-console-agent"'), runtime_row.index('id="agent-console-provider-select"'))
         self.assertLess(runtime_row.index('id="agent-console-provider-select"'), runtime_row.index('id="agent-console-model-select"'))
-        self.assertLess(console.index('id="agent-console-provider-select"'), details_start)
-        self.assertLess(console.index('id="agent-console-model-select"'), console.index('id="agent-console-form"'))
-        self.assertLess(details_start, console.index('id="agent-console-chat"'))
-        self.assertIn("<summary>Console history</summary>", console)
+        self.assertLess(console.index('id="agent-console-provider-select"'), transcript_start)
+        self.assertLess(console.index('id="agent-console-model-select"'), transcript_start)
+        self.assertLess(transcript_start, console.index('id="agent-console-chat"'))
+        self.assertLess(console.index('id="agent-console-chat"'), console.index('id="agent-console-form"'))
+        self.assertNotIn('id="agent-console-details"', console)
+        self.assertNotIn("<summary>Console history</summary>", console)
+        self.assertNotIn('id="agent-console-runtime-banner"', console)
         self.assertNotIn('id="agent-console-apply-model"', console)
 
     def test_home_grid_matches_reference_and_stacks_in_reading_order(self):
@@ -207,6 +210,18 @@ class HomeOperationsUiTests(unittest.TestCase):
         ]
         self.assertIn(".home-schedule-event", phone)
         self.assertIn("max-width: none", phone)
+
+    def test_mobile_agent_console_does_not_reserve_retired_history_rows(self):
+        mobile = CSS[
+            CSS.index("@media (max-width: 760px)")
+            : CSS.index("@media (max-width: 640px)", CSS.index("@media (max-width: 760px)"))
+        ]
+        console = mobile[
+            mobile.index(".agent-console {")
+            : mobile.index(".agent-console-toolbar")
+        ]
+        self.assertIn("grid-template-rows: auto", console)
+        self.assertNotIn("300px", console)
 
     def test_home_disclosures_are_panel_bounded_when_open(self):
         operations = CSS[

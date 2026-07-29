@@ -509,11 +509,13 @@ directory-descriptor/no-follow writes, this optional local detail channel fails
 closed and the Console retains its generic lifecycle status and unavailable
 context state.
 
-Detailed tool events are hidden by default. While the selected run has one or
-more outstanding tools, an always-visible animated summary remains outside the
-collapsed Console history. A persistent live region announces only inactive
-to active and active to inactive transitions for the selected
-transport/profile; concurrent tool counts do not repeat the announcement.
+Detailed tool events are hidden by default. The Console transcript remains
+visible between the runtime selectors and prompt composer. While the selected
+run has one or more outstanding tools, an animated summary remains visible in
+the transcript header above the detailed rows. A persistent live region
+announces only inactive-to-active and active-to-inactive transitions for the
+selected transport/profile; concurrent tool counts do not repeat the
+announcement.
 
 Completed runs may also receive a private structured usage report. Billing
 totals remain separate from `context_tokens` (the last actual prompt size) and

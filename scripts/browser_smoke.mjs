@@ -273,6 +273,37 @@ async function main() {
     ) {
       throw new Error(`Classic Home rollback layout failed: ${JSON.stringify(classicHomeLayout)}`);
     }
+    await setViewport(client, 390, 844);
+    const classicMobileConsole = await client.eval(`(() => {
+      const consoleGrid = document.querySelector('#agent-console-panel .agent-console')?.getBoundingClientRect();
+      const commandBar = document.querySelector('#agent-console-panel .agent-console-command-bar')?.getBoundingClientRect();
+      const selectors = document.querySelector('.agent-console-runtime-row')?.getBoundingClientRect();
+      const transcript = document.querySelector('#agent-console-transcript')?.getBoundingClientRect();
+      const composer = document.querySelector('#agent-console-form')?.getBoundingClientRect();
+      return {
+        shell: document.documentElement.dataset.uiShell,
+        ordered: Boolean(
+          selectors
+          && transcript
+          && composer
+          && selectors.bottom <= transcript.top + 1
+          && transcript.bottom <= composer.top + 1
+        ),
+        trailingGap: consoleGrid && commandBar
+          ? Math.max(0, consoleGrid.bottom - commandBar.bottom)
+          : null,
+        overflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - innerWidth,
+      };
+    })()`);
+    if (
+      classicMobileConsole.shell !== 'classic'
+      || !classicMobileConsole.ordered
+      || classicMobileConsole.trailingGap === null
+      || classicMobileConsole.trailingGap > 2
+      || classicMobileConsole.overflow > 1
+    ) {
+      throw new Error(`Classic mobile Agent Console layout failed: ${JSON.stringify(classicMobileConsole)}`);
+    }
 
     await client.eval(`(() => {
       localStorage.setItem('mentat-theme', 'emerald');
@@ -426,21 +457,34 @@ async function main() {
       writeFileSync(homeScreenshotPath, homeScreenshot.data, 'base64');
       await setViewport(client, 1440, 1000);
     }
-    const consoleDisclosure = await client.eval(`(() => {
-      const details = document.querySelector('#agent-console-details');
-      const summary = details?.querySelector('summary');
-      summary?.click();
-      const opened = Boolean(details?.open && document.querySelector('#agent-console-chat')?.getClientRects().length);
-      summary?.click();
+    const consoleLayout = await client.eval(`(() => {
+      const selectors = document.querySelector('.agent-console-runtime-row')?.getBoundingClientRect();
+      const transcript = document.querySelector('#agent-console-transcript')?.getBoundingClientRect();
+      const composer = document.querySelector('#agent-console-form')?.getBoundingClientRect();
       return {
-        opened,
-        closed: !details?.open,
+        ordered: Boolean(
+          selectors
+          && transcript
+          && composer
+          && selectors.bottom <= transcript.top + 1
+          && transcript.bottom <= composer.top + 1
+        ),
+        transcriptVisible: Boolean(document.querySelector('#agent-console-chat')?.getClientRects().length),
         composerVisible: Boolean(document.querySelector('#agent-console-prompt')?.getClientRects().length),
         stateVisible: Boolean(document.querySelector('#agent-console-state')?.getClientRects().length),
+        disclosureRemoved: !document.querySelector('#agent-console-details'),
+        redundantBannerRemoved: !document.querySelector('#agent-console-runtime-banner'),
       };
     })()`);
-    if (!consoleDisclosure.opened || !consoleDisclosure.closed || !consoleDisclosure.composerVisible || !consoleDisclosure.stateVisible) {
-      throw new Error(`Compact Agent Console disclosure failed: ${JSON.stringify(consoleDisclosure)}`);
+    if (
+      !consoleLayout.ordered
+      || !consoleLayout.transcriptVisible
+      || !consoleLayout.composerVisible
+      || !consoleLayout.stateVisible
+      || !consoleLayout.disclosureRemoved
+      || !consoleLayout.redundantBannerRemoved
+    ) {
+      throw new Error(`Agent Console vertical layout failed: ${JSON.stringify(consoleLayout)}`);
     }
     const homeRuntimeContracts = await client.eval(`(async () => {
       const originalTasks = state.tasks;
@@ -775,7 +819,6 @@ async function main() {
     if (!structuredEventRendered) throw new Error('Structured Agent Console event render smoke failed');
     const hiddenToolState = await client.eval(`(() => {
       state.agentConsoleShowTools = false;
-      document.querySelector('#agent-console-details').open = false;
       renderAgentConsole({
         agents: [{ id: 'tool-smoke', name: 'Tool Smoke', available: true, provider: 'alpha', model: 'alpha-one' }],
         provider_inventory: {
@@ -798,7 +841,7 @@ async function main() {
       const chat = document.querySelector('#agent-console-chat')?.textContent || '';
       return {
         detailsHidden: !chat.includes('Using browser.search'),
-        historyClosed: !document.querySelector('#agent-console-details').open,
+        transcriptVisible: document.querySelector('#agent-console-chat')?.getClientRects().length > 0,
         activityVisible: document.querySelector('#agent-console-tool-activity-banner')?.getClientRects().length > 0,
         activityText: document.querySelector('#agent-console-tool-activity-banner')?.textContent || '',
         toggleLabel: document.querySelector('#agent-console-tool-toggle')?.textContent,
@@ -811,7 +854,7 @@ async function main() {
     })()`);
     if (
       !hiddenToolState.detailsHidden
-      || !hiddenToolState.historyClosed
+      || !hiddenToolState.transcriptVisible
       || !hiddenToolState.activityVisible
       || !hiddenToolState.activityText.includes('Tool Smoke is using tools')
       || hiddenToolState.toggleLabel !== 'Show tools'
@@ -824,7 +867,6 @@ async function main() {
       throw new Error(`Default-hidden tool activity contract failed: ${JSON.stringify(hiddenToolState)}`);
     }
     const shownToolState = await client.eval(`(() => {
-      document.querySelector('#agent-console-details').open = true;
       document.querySelector('#agent-console-tool-toggle').click();
       const chat = document.querySelector('#agent-console-chat')?.textContent || '';
       return {
@@ -966,7 +1008,6 @@ async function main() {
       state.agentConsoleSelectedModel = '';
       state.agentConsoleRuntimeUnresolved = false;
       state.agentConsoleRuntimeLoading = false;
-      document.querySelector('#agent-console-details').open = false;
       renderAgentConsole({
         agents: [{ id: 'runtime-smoke', name: 'Runtime Smoke', available: true, provider: 'legacy', model: 'legacy-one' }],
         provider_inventory: {
@@ -997,8 +1038,7 @@ async function main() {
       || !confirmedOutsideInventory.providerDisabled
       || confirmedOutsideInventory.model !== 'legacy-one'
       || !confirmedOutsideInventory.modelDisabled
-      || !confirmedOutsideInventory.state.includes('legacy · legacy-one · ready')
-      || confirmedOutsideInventory.state.includes('beta · beta-first · ready')
+      || confirmedOutsideInventory.state !== 'Ready'
     ) {
       throw new Error(`Confirmed runtime outside selectable inventory failed: ${JSON.stringify(confirmedOutsideInventory)}`);
     }
@@ -1107,8 +1147,8 @@ async function main() {
       sendDisabled: document.querySelector('#agent-console-form .agent-console-send')?.disabled,
     }))()`);
     if (
-      !pendingRuntimeState.state.includes('alpha · alpha-one · switching to beta · beta-first')
-      || pendingRuntimeState.state.includes('beta · beta-first · ready')
+      !pendingRuntimeState.state.includes('Switching runtime')
+      || pendingRuntimeState.state.includes('Ready')
       || !pendingRuntimeState.providerDisabled
       || !pendingRuntimeState.modelDisabled
       || !pendingRuntimeState.promptDisabled
@@ -1126,8 +1166,7 @@ async function main() {
       provider: document.querySelector('#agent-console-provider-select')?.value,
       model: document.querySelector('#agent-console-model-select')?.value,
       mutationUnlocked: !state.agentConsoleRuntimeMutationInFlight,
-      bannerVisible: document.querySelector('#agent-console-runtime-banner')?.getClientRects().length > 0,
-      banner: document.querySelector('#agent-console-runtime-banner')?.textContent || '',
+      bannerCount: document.querySelectorAll('#agent-console-runtime-banner').length,
       noticeAfterRetainedRun: document.querySelector('#agent-console-chat')?.lastElementChild?.classList.contains('agent-console-runtime-notice'),
     }))()`);
     if (
@@ -1138,8 +1177,7 @@ async function main() {
       || providerSwitchState.provider !== 'beta'
       || providerSwitchState.model !== 'beta-first'
       || !providerSwitchState.mutationUnlocked
-      || !providerSwitchState.bannerVisible
-      || !providerSwitchState.banner.includes('Runtime switched to beta · beta-first')
+      || providerSwitchState.bannerCount !== 0
       || !providerSwitchState.noticeAfterRetainedRun
     ) {
       throw new Error(`Immediate provider switch contract failed: ${JSON.stringify(providerSwitchState)}`);
@@ -1233,7 +1271,7 @@ async function main() {
       provider: document.querySelector('#agent-console-provider-select')?.value,
       model: document.querySelector('#agent-console-model-select')?.value,
       state: document.querySelector('#agent-console-state')?.textContent || '',
-      bannerHidden: document.querySelector('#agent-console-runtime-banner')?.hidden,
+      bannerCount: document.querySelectorAll('#agent-console-runtime-banner').length,
       newBindingNotice: state.agentConsoleRuntimeNotices.some((notice) => (
         notice.transport_binding === state.agentConsoleTransportBinding
         && notice.provider === 'beta'
@@ -1243,8 +1281,8 @@ async function main() {
     if (
       transportRaceState.provider !== 'gamma'
       || transportRaceState.model !== 'gamma-one'
-      || !transportRaceState.state.includes('gamma · gamma-one · ready')
-      || !transportRaceState.bannerHidden
+      || !transportRaceState.state.includes('Ready')
+      || transportRaceState.bannerCount !== 0
       || transportRaceState.newBindingNotice
     ) {
       throw new Error(`A-B-A old transport runtime result was not discarded: ${JSON.stringify(transportRaceState)}`);
@@ -1305,25 +1343,28 @@ async function main() {
     const unresolvedRuntimeState = await client.eval(`(() => ({
       state: document.querySelector('#agent-console-state')?.textContent || '',
       status: document.querySelector('#agent-console-form-status')?.textContent || '',
-      bannerVisible: document.querySelector('#agent-console-runtime-banner')?.getClientRects().length > 0,
+      bannerCount: document.querySelectorAll('#agent-console-runtime-banner').length,
       promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
       sendDisabled: document.querySelector('#agent-console-form .agent-console-send')?.disabled,
       attachDisabled: document.querySelector('#agent-console-attach')?.disabled,
       providerDisabled: document.querySelector('#agent-console-provider-select')?.disabled,
       modelDisabled: document.querySelector('#agent-console-model-select')?.disabled,
       retryVisible: document.querySelector('#agent-console-runtime-refresh')?.getClientRects().length > 0,
+      retryCompact: document.querySelector('#agent-console-runtime-refresh')?.getBoundingClientRect().width
+        < document.querySelector('#agent-console-transcript')?.getBoundingClientRect().width / 2,
       switchCallCount: window.__runtimeSwitchCalls.length,
     }))()`);
     if (
       !unresolvedRuntimeState.state.includes('Runtime verification required')
       || !unresolvedRuntimeState.status.includes('Retry the runtime check')
-      || !unresolvedRuntimeState.bannerVisible
+      || unresolvedRuntimeState.bannerCount !== 0
       || !unresolvedRuntimeState.promptDisabled
       || !unresolvedRuntimeState.sendDisabled
       || !unresolvedRuntimeState.attachDisabled
       || !unresolvedRuntimeState.providerDisabled
       || !unresolvedRuntimeState.modelDisabled
       || !unresolvedRuntimeState.retryVisible
+      || !unresolvedRuntimeState.retryCompact
     ) {
       throw new Error(`Unverified runtime did not fail closed: ${JSON.stringify(unresolvedRuntimeState)}`);
     }
@@ -1371,7 +1412,7 @@ async function main() {
         model: document.querySelector('#agent-console-model-select')?.value,
         promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
         retryHidden: document.querySelector('#agent-console-runtime-refresh')?.hidden,
-        staleBannerHidden: document.querySelector('#agent-console-runtime-banner')?.hidden,
+        bannerCount: document.querySelectorAll('#agent-console-runtime-banner').length,
         switchCallCount: window.__runtimeSwitchCalls.length,
       };
     })()`);
@@ -1381,7 +1422,7 @@ async function main() {
       || retryRuntimeState.model !== 'gamma-one'
       || retryRuntimeState.promptDisabled
       || !retryRuntimeState.retryHidden
-      || !retryRuntimeState.staleBannerHidden
+      || retryRuntimeState.bannerCount !== 0
       || retryRuntimeState.switchCallCount !== unresolvedRuntimeState.switchCallCount
     ) {
       throw new Error(`Explicit runtime reconciliation failed: ${JSON.stringify(retryRuntimeState)}`);
@@ -1526,7 +1567,7 @@ async function main() {
       || !agentRefreshState.pending.sendDisabled
       || !agentRefreshState.pending.attachDisabled
       || !agentRefreshState.pending.newSessionDisabled
-      || !agentRefreshState.pending.state.includes('Loading current provider and model')
+      || !agentRefreshState.pending.state.includes('Checking Hermes runtime')
       || !agentRefreshState.incidentalSameProfile.loading
       || !agentRefreshState.incidentalSameProfile.promptDisabled
       || !agentRefreshState.incidentalSameProfile.sendDisabled
@@ -1602,7 +1643,7 @@ async function main() {
       staleAgentRefreshState.provider !== 'delta'
       || staleAgentRefreshState.model !== 'delta-one'
       || staleAgentRefreshState.unresolved
-      || !staleAgentRefreshState.state.includes('delta · delta-one · ready')
+      || staleAgentRefreshState.state !== 'Ready'
     ) {
       throw new Error(`Stale agent runtime read overwrote the new binding: ${JSON.stringify(staleAgentRefreshState)}`);
     }
@@ -1678,7 +1719,7 @@ async function main() {
       staleRetryRefreshState.provider !== 'epsilon'
       || staleRetryRefreshState.model !== 'epsilon-one'
       || staleRetryRefreshState.unresolved
-      || !staleRetryRefreshState.state.includes('epsilon · epsilon-one · ready')
+      || staleRetryRefreshState.state !== 'Ready'
     ) {
       throw new Error(`Stale retry runtime read overwrote the new binding: ${JSON.stringify(staleRetryRefreshState)}`);
     }
@@ -2021,7 +2062,7 @@ async function main() {
     );
     await setViewport(client, 1440, 1000);
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'saved shell reload', 'theme and contrast reload', 'Classic Home rollback geometry', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'compact Agent Console disclosure', 'six-view responsive matrix', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'saved shell reload', 'theme and contrast reload', 'Classic Home rollback geometry', 'Classic mobile Agent Console geometry', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
     await stopChild(chrome);
