@@ -32,7 +32,7 @@ class TaskDeletionTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_tasks(root, tasks)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 preview, preview_status = server.preview_task_deletion("task_remove")
                 payload, status = server.delete_confirmed_task(
                     "task_remove",
@@ -59,7 +59,7 @@ class TaskDeletionTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_tasks(root, [original])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 preview, _ = server.preview_task_deletion("task_review")
                 changed = {**original, "title": "Changed title"}
                 self.write_tasks(root, [changed])
@@ -80,7 +80,7 @@ class TaskDeletionTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_tasks(root, [])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 unconfirmed, unconfirmed_status = server.delete_confirmed_task(
                     "task_missing", {}
                 )
@@ -99,7 +99,7 @@ class TaskDeletionTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_tasks(root, duplicate_tasks)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 preview, preview_status = server.preview_task_deletion("task_duplicate")
                 payload, status = server.delete_confirmed_task(
                     "task_duplicate",
@@ -124,7 +124,7 @@ class TaskDeletionTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_tasks(root, tasks)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.preview_task_deletion("task-parent")
         self.assertEqual(status, 409)
         self.assertEqual(payload["dependent_task_ids"], ["task-child"])

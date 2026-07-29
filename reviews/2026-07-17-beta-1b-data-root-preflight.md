@@ -1,6 +1,6 @@
 # Feature Slice Review: Resolve and Preflight the Platform Data Root
 
-Status: In progress
+Status: Successful
 Slice: `beta-1b-data-root-preflight`
 Date: `2026-07-17`
 Review log: `reviews/2026-07-17-beta-1b-data-root-preflight.md`
@@ -313,11 +313,12 @@ were reconciled as single fixes:
 
 ## Outcome review
 
-- Classification: In progress.
+- Classification: Successful.
 - Acceptance criteria summary: AC-1 through AC-8 pass locally, independently,
   and on the complete hosted OS/Python matrix.
 - Potential bugs or untested paths: Writable initialization and migration remain deferred.
 - Remaining reviewer dissent: None.
 - Compatibility/migration/rollback concerns: No filesystem mutations in this slice.
-- User decision: Pending.
-- Next slice authorized: No.
+- User decision: Accepted on 2026-07-18; the owner authorized completion of
+  Milestone 1B and all implementation/review steps for the next bounded slice.
+- Next slice authorized: Milestone 1B-B data-root initialization.

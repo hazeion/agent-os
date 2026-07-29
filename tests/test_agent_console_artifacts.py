@@ -50,7 +50,7 @@ class AgentConsoleArtifactTests(unittest.TestCase):
         self.assertNotIn("prompt", inspect.signature(artifacts.build_execution_context).parameters)
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "data"
-            owned = root / "runtime" / "blobs"
+            owned = root / "private" / "console" / "blobs"
             owned.mkdir(parents=True)
             input_file = owned / "sha256.txt"
             input_file.write_text("review me", encoding="utf-8")
@@ -82,7 +82,7 @@ class AgentConsoleArtifactTests(unittest.TestCase):
             self.skipTest("symlinks unavailable")
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "data"
-            blobs = root / "runtime" / "blobs"
+            blobs = root / "private" / "console" / "blobs"
             blobs.mkdir(parents=True)
             target = blobs / "target.txt"
             target.write_text("content", encoding="utf-8")
@@ -98,7 +98,7 @@ class AgentConsoleArtifactTests(unittest.TestCase):
     def test_image_execution_context_uses_private_extension_bearing_snapshot(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "data"
-            blobs = root / "runtime" / "blobs"
+            blobs = root / "private" / "console" / "blobs"
             blobs.mkdir(parents=True)
             source = blobs / "extensionless-image"
             source.write_bytes(PNG_BYTES)

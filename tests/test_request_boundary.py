@@ -107,6 +107,75 @@ class RequestBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(instance.send_json.call_args.kwargs["status"], 201)
 
+    def test_diagnostics_post_uses_local_boundary_before_generating_bundle(self):
+        instance = self.handler(headers=self.local_headers())
+        instance.path = "/api/diagnostics/bundle"
+        instance.send_diagnostics_bundle = Mock()
+        instance.send_json = Mock()
+        with patch.object(
+            server,
+            "diagnostics_health_snapshot",
+            return_value={"overall": "healthy", "subsystems": []},
+        ) as snapshot, patch.object(server, "health") as live_health, patch.object(
+            server, "build_diagnostics_bundle", return_value=b"safe-zip"
+        ) as build:
+            instance.do_POST()
+
+        snapshot.assert_called_once_with()
+        live_health.assert_not_called()
+        build.assert_called_once()
+        instance.send_diagnostics_bundle.assert_called_once_with(b"safe-zip")
+        instance.send_json.assert_not_called()
+
+        rejected = self.handler(headers=self.local_headers(Origin="https://attacker.example"))
+        rejected.path = "/api/diagnostics/bundle"
+        rejected.send_diagnostics_bundle = Mock()
+        rejected.send_json = Mock()
+        with patch.object(server, "build_diagnostics_bundle") as rejected_build:
+            rejected.do_POST()
+        rejected_build.assert_not_called()
+        self.assertEqual(rejected.send_json.call_args.kwargs["status"], 403)
+
+    def test_diagnostics_response_is_a_nonsniffable_private_download(self):
+        instance = self.handler(headers=self.local_headers())
+        instance.wfile = BytesIO()
+        instance.send_response = Mock()
+        captured = {}
+        instance.send_header = lambda name, value: captured.__setitem__(name, value)
+        instance.end_headers = Mock()
+
+        instance.send_diagnostics_bundle(b"safe-zip")
+
+        self.assertEqual(instance.wfile.getvalue(), b"safe-zip")
+        self.assertEqual(captured["Content-Type"], "application/zip")
+        self.assertEqual(captured["Content-Disposition"], "attachment; filename=mentat-diagnostics.zip")
+        self.assertEqual(captured["Cache-Control"], "private, no-store")
+        self.assertEqual(captured["Cross-Origin-Resource-Policy"], "same-origin")
+        self.assertEqual(captured["X-Content-Type-Options"], "nosniff")
+
+    def test_health_cache_keeps_only_the_redacted_fixed_snapshot(self):
+        raw = {
+            "status": "error",
+            "summary": "private conversation /Users/operator sk-secret",
+            "subsystems": [
+                {"key": "cron", "status": "error", "summary": "private cron details"},
+                {"key": "remote_hermes", "status": "healthy", "endpoint": "https://private.example"},
+            ],
+        }
+        with patch.object(server, "current_health_payload", return_value=raw):
+            self.assertIs(server.health(), raw)
+
+        self.assertEqual(
+            server.diagnostics_health_snapshot(),
+            {
+                "overall": "error",
+                "subsystems": [
+                    {"key": "cron", "status": "error"},
+                    {"key": "remote_hermes", "status": "healthy"},
+                ],
+            },
+        )
+
     def test_attachment_content_is_streamed_with_safe_headers(self):
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "blob"

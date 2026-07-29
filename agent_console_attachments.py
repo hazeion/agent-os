@@ -18,7 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Collection
 
-from mentat_db import connect, ensure_private_runtime_dir, transaction
+from mentat_db import (
+    connect,
+    ensure_private_console_dir,
+    ensure_private_runtime_dir,
+    transaction,
+)
+from private_state import synchronized_private_state
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -295,16 +301,16 @@ def _validate_content(name: str, data: bytes, supplied_type: str | None) -> tupl
 
 
 def _blobs_root(data_dir: Path) -> Path:
-    runtime = ensure_private_runtime_dir(data_dir)
-    root = runtime / "blobs" / "sha256"
-    cursor = runtime
+    private = ensure_private_console_dir(data_dir)
+    root = private / "blobs" / "sha256"
+    cursor = private
     for part in ("blobs", "sha256"):
         cursor = cursor / part
         if cursor.is_symlink():
             raise AttachmentStorageError("Attachment blob directory must not be a symlink")
         cursor.mkdir(mode=0o700, exist_ok=True)
         if cursor.resolve(strict=True).parent != cursor.parent.resolve(strict=True):
-            raise AttachmentStorageError("Attachment blob directory escapes private runtime storage")
+            raise AttachmentStorageError("Attachment blob directory escapes durable private storage")
         if os.name != "nt":
             cursor.chmod(0o700, follow_symlinks=False)
     return root.resolve(strict=True)
@@ -419,6 +425,7 @@ def _public_metadata(row: sqlite3.Row) -> dict:
     }
 
 
+@synchronized_private_state
 def create_attachment(
     data_dir: Path,
     *,
@@ -520,6 +527,7 @@ def create_attachment(
         connection.close()
 
 
+@synchronized_private_state
 def get_attachment(data_dir: Path, attachment_id: str) -> dict | None:
     """Return browser-safe metadata without a filesystem path or storage key."""
     identifier = _validate_attachment_id(attachment_id)
@@ -531,6 +539,7 @@ def get_attachment(data_dir: Path, attachment_id: str) -> dict | None:
         connection.close()
 
 
+@synchronized_private_state
 def resolve_blob_path(
     data_dir: Path,
     attachment_id: str,
@@ -563,6 +572,119 @@ def resolve_blob_path(
         connection.close()
 
 
+@synchronized_private_state
+def read_attachment_bytes(
+    data_dir: Path,
+    attachment_id: str,
+    *,
+    allowed_states: Collection[str] | None = None,
+) -> tuple[dict, bytes]:
+    """Read one exact attachment blob without following a filesystem link."""
+
+    identifier = _validate_attachment_id(attachment_id)
+    states = frozenset(allowed_states or AVAILABLE_STATES)
+    if not states or not states <= ATTACHMENT_STATES:
+        raise AttachmentValidationError("Invalid attachment state allowlist")
+    connection = connect(data_dir)
+    try:
+        row = connection.execute(
+            "SELECT a.*, b.state AS blob_state, b.storage_key, b.sha256 AS blob_sha256, "
+            "b.byte_size AS blob_byte_size FROM attachments a "
+            "LEFT JOIN blobs b ON b.id = a.blob_id WHERE a.id = ?",
+            (identifier,),
+        ).fetchone()
+        if row is None:
+            raise AttachmentNotFound("Attachment not found")
+        if row["state"] not in states or row["blob_state"] != "ready":
+            raise AttachmentUnavailable("Attachment is not available")
+        expected_size = int(row["byte_size"])
+        expected_sha256 = str(row["blob_sha256"] or "")
+        if int(row["blob_byte_size"] or -1) != expected_size or not _SHA256_PATTERN.fullmatch(expected_sha256):
+            raise AttachmentStorageError("Attachment blob metadata is invalid")
+        path = _safe_blob_path(_blobs_root(data_dir), str(row["storage_key"]), require_exists=True)
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode) or details.st_size != expected_size:
+                raise AttachmentStorageError("Attachment blob content changed")
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = -1
+                payload = handle.read(expected_size + 1)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(payload) != expected_size or hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise AttachmentStorageError("Attachment blob content changed")
+        return _public_metadata(row), payload
+    finally:
+        connection.close()
+
+
+@synchronized_private_state
+def read_attachment_text(
+    data_dir: Path,
+    attachment_id: str,
+    *,
+    allowed_states: Collection[str] | None = None,
+) -> tuple[dict, str]:
+    """Read one exact UTF-8 text blob after state, type, size, and digest checks."""
+
+    identifier = _validate_attachment_id(attachment_id)
+    states = frozenset(allowed_states or AVAILABLE_STATES)
+    if not states or not states <= ATTACHMENT_STATES:
+        raise AttachmentValidationError("Invalid attachment state allowlist")
+    connection = connect(data_dir)
+    try:
+        row = connection.execute(
+            "SELECT a.*, b.state AS blob_state, b.storage_key, b.sha256 AS blob_sha256, "
+            "b.byte_size AS blob_byte_size FROM attachments a "
+            "LEFT JOIN blobs b ON b.id = a.blob_id WHERE a.id = ?",
+            (identifier,),
+        ).fetchone()
+        if row is None:
+            raise AttachmentNotFound("Attachment not found")
+        if row["state"] not in states or row["blob_state"] != "ready":
+            raise AttachmentUnavailable("Attachment is not available")
+        if row["kind"] != "text":
+            raise AttachmentValidationError("Attachment is not text")
+        expected_size = int(row["byte_size"])
+        expected_sha256 = str(row["blob_sha256"] or "")
+        if int(row["blob_byte_size"] or -1) != expected_size or not _SHA256_PATTERN.fullmatch(expected_sha256):
+            raise AttachmentStorageError("Attachment blob metadata is invalid")
+        path = _safe_blob_path(
+            _blobs_root(data_dir),
+            str(row["storage_key"]),
+            require_exists=True,
+        )
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode) or details.st_size != expected_size:
+                raise AttachmentStorageError("Attachment blob content changed")
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = -1
+                payload = handle.read(expected_size + 1)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(payload) != expected_size or hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise AttachmentStorageError("Attachment blob content changed")
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AttachmentValidationError("Attachment text is not UTF-8") from exc
+        if "\x00" in text:
+            raise AttachmentValidationError("Attachment text contains unsupported content")
+        return _public_metadata(row), text
+    finally:
+        connection.close()
+
+
+@synchronized_private_state
 def bind_run_attachment(
     data_dir: Path,
     attachment_id: str,
@@ -617,6 +739,7 @@ def bind_run_attachment(
         connection.close()
 
 
+@synchronized_private_state
 def list_run_attachments(
     data_dir: Path,
     run_id: str,
@@ -649,6 +772,7 @@ def list_run_attachments(
         connection.close()
 
 
+@synchronized_private_state
 def release_attachment(
     data_dir: Path,
     attachment_id: str,
@@ -683,6 +807,7 @@ def release_attachment(
         connection.close()
 
 
+@synchronized_private_state
 def unbind_run_attachments(
     data_dir: Path,
     run_id: str,
@@ -740,6 +865,7 @@ def unbind_run_attachments(
         connection.close()
 
 
+@synchronized_private_state
 def garbage_collect(
     data_dir: Path,
     *,
@@ -867,6 +993,7 @@ def garbage_collect(
         connection.close()
 
 
+@synchronized_private_state
 def reconcile_startup(
     data_dir: Path,
     *,
