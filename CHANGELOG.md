@@ -2,6 +2,30 @@
 
 All notable changes to Mentat.
 
+## 2026-07-28
+
+### Added
+- Added capability-gated provider/model switching for served profiles on a
+  remote Hermes host through its exact authenticated version-one runtime read
+  and switch endpoints.
+- Agent Console now exposes validated remote provider/model choices through
+  the existing selectors when every revision, idempotency, and active-run
+  safety capability is advertised.
+
+### Safety
+- Remote preview binds the selected connection, profile, current and target
+  runtime pairs, and upstream revision. Apply holds the existing
+  connection/profile locks, excludes an active run for the target profile,
+  re-reads state, and sends one server-generated idempotency key without
+  retrying an uncertain mutation.
+- Mentat fresh-reads the resulting runtime. A verified mismatch triggers at
+  most one revision-bound rollback and one rollback verification only when the
+  fresh state retains the revision acknowledged by the switch response. A
+  later revision is treated as a concurrent change and is never overwritten;
+  malformed, private-shaped, stale, unavailable, unserved, active, and
+  unverifiable results fail closed with bounded public errors. Older or partial
+  hosts remain read-only, and local switching behavior is unchanged.
+
 ## 2026-07-26
 
 ### Added
