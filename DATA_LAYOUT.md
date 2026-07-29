@@ -1,12 +1,22 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1A contract approved
+Status: Milestone 1 durable-data boundary complete through 1F upgrade/uninstall preservation coverage
 
 This document defines where Mentat-owned state belongs for the public beta. It
-is a contract-only milestone: it does not change the current runtime default,
-move operator data, add a dependency, or implement initialization, migration,
-backup, restore, or installer behavior. Those changes begin in Milestone 1B and
-must preserve this boundary.
+began as the contract-only Milestone 1A. Milestone 1B implements deterministic
+path resolution, bounded read-only preflight, owner-only directory creation,
+and missing-only packaged-seed initialization. Milestone 1C implements an
+explicit, previewed, migration-specific-backup workflow for the nine durable
+JSON documents. It does not change the source-checkout runtime default, move
+private/runtime data, add a dependency, or implement general restore or
+installer behavior. Milestone 1D versions those unchanged JSON shapes through
+one sidecar manifest and explicit bootstrap migration. Milestone 1E-A adds the
+first general backup/restore format for that same fixed durable JSON set.
+Milestone 1E-B adds the durable private Console move, exact legacy migration,
+and WAL-safe retained history/SQLite/referenced-blob consistency unit.
+Milestone 1F proves that versioned application replacement and application-only
+uninstall/reinstall preserve that external durable boundary without choosing an
+installer format.
 
 ## Principles
 
@@ -31,7 +41,7 @@ layout is:
 | Target | Class and policy | Ordinary backup policy |
 | --- | --- | --- |
 | `<data-root>/*.json` | Durable project-owned operator state. After legacy preflight, each missing file is initialized from its corresponding immutable packaged seed. | Included. |
-| `<data-root>/private/` | Durable private state, including Console history, SQLite metadata, content-addressed blobs, and the future remote Hermes endpoint and API credential. Owner-only permissions are required where the platform supports them. | The consistent Console set is included; credentials and connection secrets are excluded. |
+| `<data-root>/private/` | Durable private state, including Console history, SQLite metadata, content-addressed blobs, the remote Hermes connection definition, and a migrated legacy remote credential when applicable. Owner-only permissions are required where the platform supports them. | The consistent Console set is included; connection definitions, credentials, and connection secrets are excluded. |
 | `<data-root>/runtime/` | Ephemeral process state, uploads, input/export directories, and snapshots. It is private and may be reconciled or collected. | Excluded. |
 | `<data-root>/backups/` | Validated, versioned migration or operator backups. Backups are created only through bounded workflows and are not runtime scratch space. | Excluded to prevent recursive backups. |
 | `<data-root>/cache/` | Rebuildable state. Deletion may reduce performance but must not destroy operator work. | Excluded. |
@@ -44,8 +54,8 @@ browser.
 
 ## Platform defaults and override precedence
 
-When no explicit data-root override exists, the resolver implemented in
-Milestone 1B must use:
+When no explicit data-root override exists, the read-only resolver implemented
+in Milestone 1B-A uses:
 
 | Platform | Default data root | Support level |
 | --- | --- | --- |
@@ -54,10 +64,10 @@ Milestone 1B must use:
 | Linux | `$XDG_DATA_HOME/Mentat` when `XDG_DATA_HOME` is valid and non-empty; otherwise `~/.local/share/Mentat` | Preview |
 
 The exact precedence is `--data-dir` → `MENTAT_DATA_DIR` →
-`[paths].data_dir` in TOML → platform default. Relative TOML paths continue to
-resolve from the file that declares them. An explicit extra config file may
-participate at the existing TOML configuration layer, but it does not outrank
-CLI or environment values.
+`AGENT_OS_DATA_DIR` → `[paths].data_dir` in TOML → platform default. Relative
+TOML paths continue to resolve from the file that declares them. An explicit
+extra config file may participate at the existing TOML configuration layer,
+but it does not outrank CLI or environment values.
 
 Linux XDG base selection occurs inside the lowest-priority platform-default
 layer; it does not outrank a Mentat-specific override. During the compatibility
@@ -66,9 +76,11 @@ and `MENTAT_DATA_DIR` outranks `AGENT_OS_DATA_DIR`. An invalid, relative, or
 empty `XDG_DATA_HOME` does not become the base; the resolver uses the documented
 fallback instead.
 
-The shared source-checkout `mentat.toml` may keep its current `data_dir =
-"data"` development override until Milestone 1B deliberately changes runtime
-behavior. Installed distributions must not ship that override as their default.
+The shared source-checkout `mentat.toml` keeps its current `data_dir = "data"`
+development override until a later writable Milestone 1 slice deliberately
+changes runtime behavior. A config-less load now selects the platform default
+without creating it. Installed distributions must not ship the source-checkout
+override as their default.
 
 ## Immutable packaged seeds and durable JSON
 
@@ -111,10 +123,11 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 
 | Current surface | Target class | Notes |
 | --- | --- | --- |
-| `data/runtime/agent-console-runs.json` | `<data-root>/private/` | Redacted retained Console history; durable according to its retention policy. |
-| `data/runtime/mentat.sqlite3` plus its WAL/SHM files | `<data-root>/private/` | Attachment, blob, and run-reference metadata with schema-version checks. |
-| `data/runtime/blobs/sha256/` | `<data-root>/private/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
-| Future remote connection selection and credential | `<data-root>/private/` | Server-only, owner-only, and excluded from ordinary backups and diagnostics. |
+| Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | Redacted retained Console history; durable according to its retention policy. |
+| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, and run-reference metadata; live WAL/SHM remain SQLite-owned beside the database. |
+| Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
+| Remote connection selection | `<data-root>/private/remote-hermes-connection-v1.json` | Schema-v2, server-only, owner-only, and atomically replaced. Stores the active mode, local label, one remembered remote label/endpoint, binding ID, and credential-source reference—but no API-key value. The historical filename is retained for compatible migration. A missing record means local mode. |
+| Migrated legacy remote credential | `<data-root>/private/remote-hermes-credential.env` | Owner-only, server-only env file created only when migrating the former schema-v1 embedded credential or by a trusted internal compatibility operation. New setup should reference an operator-owned environment variable or owner-only env file instead. |
 
 The private class is durable but not public. Paths, storage keys, hashes,
 credentials, and private file bytes remain server-side and must not become
@@ -198,7 +211,25 @@ file writes or copying external secrets into Mentat.
 
 ## Initialization contract
 
-Milestone 1B initialization must:
+Milestone 1B-A implements the read-only portion of this contract: it resolves
+one root, validates the fixed nine-file seed inventory, and reports existing,
+initialization-ready, migration-required, conflict, development-override, or
+unsafe states. Known documents must be regular, have the expected current
+top-level list/object shape, and be no larger than 16 MiB. Component checks
+reject symlinks and Windows reparse points; POSIX file reads use no-follow
+descriptor walking after normalizing only the standard macOS system aliases.
+It neither creates nor modifies filesystem entries. `--print-config` uses only
+this read-only path and remains side-effect-free.
+
+Milestone 1B-B implements the writable initialization portion. A config-less
+installed launch now initializes before lifecycle cleanup, Console
+reconciliation, or runtime-state writes. A source checkout that keeps the
+tracked `data_dir = "data"` override remains a no-op development layout. If a
+source checkout explicitly selects the platform default, its repo-local data is
+reserved as legacy state and startup fails closed for the later migration
+workflow instead of hiding it behind fresh seeds.
+
+The initializer:
 
 1. resolve one data root using the approved precedence;
 2. detect supported legacy state before copying any packaged seed;
@@ -213,12 +244,48 @@ Milestone 1B initialization must:
 8. avoid dirtying the package, installation, or Git checkout; and
 9. leave an interrupted temporary copy distinguishable and safe to reconcile.
 
-Legacy detection and destination reservation occur before any durable JSON
-initialization. A source-checkout operator who explicitly keeps the repo-local
+Execution uses a persistent owner-only `.mentat-initialization.lock`, repeats
+the complete preflight after acquiring the operating-system file lock, and
+creates the six approved directory classes with owner-only POSIX modes. Each
+missing seed is read through the bounded no-follow boundary, written and synced
+to a same-directory `.<name>.mentat-init-<nonce>.tmp`, then published with an
+atomic hard-link operation that fails if the destination appeared. The
+temporary link is removed after success or an ordinary caught failure. A
+process interruption may leave the distinctly named temporary file; fixed-name
+preflight ignores it and a repeat run can safely complete the missing seed.
+
+The target must not be an ancestor or descendant of the packaged seed root;
+exact equality is the only development no-op. Existing filesystem identity and
+conservative Darwin case-folding and Unicode normalization prevent an aliased
+macOS override from bypassing that rule. Nearest existing ancestors are also
+walked and compared by filesystem identity before an existing alias or missing
+suffix is accepted. Only proven filesystem identity or exact native path
+equality establishes the development no-op; conservative aliases otherwise
+fail closed as overlap.
+Existing lock files must be
+single-link regular files owned by the current POSIX operator before Mentat
+changes their mode or writes a Windows lock byte. Windows initialization pins
+every data-root component with non-delete-sharing, no-reparse handles while
+opening the lock and temporary files with final-component reparse protection;
+this prevents a junction substitution from redirecting the write boundary.
+Windows lock contention uses an explicit bounded 120-second wait instead of
+the CRT's shorter implicit retry window.
+
+On Windows, no-reparse, non-delete-sharing handle chains also pin the packaged
+seed root and any distinct existing legacy root from the first preflight
+through seed reads and final verification. The seed-file open still protects
+its final component. Directory guards request only traverse and read-attributes
+access—never directory-list access—so Windows enforces the omitted
+delete-sharing permission against rename as well as deletion without rejecting
+a traverse-only ancestor. A junction or directory substitution therefore
+cannot redirect a validated packaged read between inspection and copying.
+
+Legacy detection and destination reservation occur before any ordinary durable
+JSON initialization. A source-checkout operator who explicitly keeps the repo-local
 data override may continue using it; selecting the new platform root must not
-silently hide legacy work behind fresh seeds. A later migration slice may define
-a provenance-verified pristine-seed replacement rule, but only with exact
-preview, backup, confirmation, locked revalidation, and destination verification.
+silently hide legacy work behind fresh seeds. A later schema or merge slice may
+define additional provenance or merge rules, but only with exact preview, backup,
+confirmation, locked revalidation, and destination verification.
 
 Repeat startup is idempotent. It does not refresh, merge, or normalize existing
 operator files merely because the packaged seed differs.
@@ -254,6 +321,160 @@ verify what happened, and either safely resume an explicitly supported step or
 fail closed with recovery instructions. It must not infer success from a
 partially populated destination.
 
+Milestone 1C implements that migration contract for the fixed nine-file,
+currently unversioned JSON inventory only. Its public preview names every
+document, whether the source is legacy or a packaged-seed fallback, the
+destination filename, the `durable_operator` classification, the
+`unversioned-json-v1` schema label, the action, and the excluded private runtime
+class. It deliberately returns no filesystem paths, file content, hashes, or
+backup names. The opaque token binds the exact roots, source bytes,
+classifications, exclusions, expected-empty initial destination, and protocol
+version. Root binding uses exact normalized absolute spellings, not a
+case-folded overlap key. Legacy and packaged-fallback source snapshots require
+single-link regular files so a hard link cannot import bytes from outside the
+selected roots.
+
+Execution shares the initialization lock and repeats the full preview after
+locking. It durably publishes and validates a versioned ZIP under `backups/`
+before publishing the first destination, records a fixed reservation under
+`config/`, copies only to missing destinations, verifies every byte, preserves
+the legacy source, and writes a completion receipt last. A matching interrupted
+reservation can resume verified copies; a changed source, backup, reservation,
+partial destination, linked control, or raced operator destination fails
+closed. Ordinary startup suppresses legacy detection only when the receipt and
+immutable backup evidence verify and every live destination remains a safe,
+owner-only document with the supported top-level shape. Later legitimate task,
+project, setting, and Context Pack mutations do not invalidate the receipt.
+Those atomic writes establish the replacement file's mode before commit. A
+process interruption may leave an exact per-document writer temporary; a
+completed receipt ignores it only when it remains bounded, owner-only,
+single-link, and regular, while lookalikes or unsafe entries fail closed.
+Receipt recognition runs under the shared initialization lock and a pinned
+target identity; a substituted path fails closed and is never seed-initialized.
+After validating the receipt, startup also establishes or revalidates the data
+root and all six required directory boundaries while the root remains pinned:
+missing directories are created, broad POSIX modes are tightened where
+supported, and files, symbolic links, or reparse points fail closed. The root
+identity and receipt are checked again before startup accepts completion.
+An incomplete reservation, promoted backup, or exact migration temporary blocks
+startup for every selected data-root source until the operator re-runs preview.
+
+The migration is an explicit CLI operation and never runs during ordinary
+startup. Substitute the intended installed data root and, when needed, an
+alternate legacy checkout directory:
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --preview-legacy-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-legacy-migration TOKEN_FROM_PREVIEW
+```
+
+Add `--legacy-data-dir "/path/to/checkout/data"` to both commands when the
+source is not this checkout's `data/` directory. Re-run the preview after any conflict or
+state change. A `resume_required` preview returns the same state-bound token
+only when the reservation, backup, and partial copies still verify. The source
+is intentionally retained; no cleanup command is authorized by this slice.
+
+Milestone 1D implements schema versioning without wrapping or rewriting the
+nine consumer-visible JSON documents. A missing manifest means supported legacy
+document version 0. A clean all-seed initialization records version 1 in the
+owner-only `config/data-schema.json` sidecar. Existing version-0 roots remain
+readable until the operator explicitly upgrades them, so an update does not
+silently mutate operator state.
+
+The explicit schema preview lists every fixed document's from/to version and
+action plus the excluded private/runtime classes. Its opaque token binds the
+exact target spelling, live bytes, ordered step, and expected missing manifest,
+while public output contains no paths, content, hashes, backup names, or secret
+metadata. Confirmation re-previews beneath the shared pinned-root lock, creates
+and verifies an owner-only versioned ZIP before publishing metadata, and then
+atomically publishes the missing manifest. A matching interrupted backup can
+resume only when its bytes exactly match the deterministic archive. An exact,
+owner-only orphan manifest/backup temporary produces a bounded
+`recovery_required` preview; confirming that state-bound plan removes only the
+revalidated non-authoritative temporary, after which the operator previews the
+migration again. Changed data, invalid artifacts, multiple/lookalike
+temporaries, or a raced manifest fail closed. The recognized publication state
+may be either a pre-link temporary or the exact same-inode, two-link
+temporary/final pair left after missing-only promotion; confirmation always
+removes only the temporary name.
+Inventory covers the complete root/config/backup reserved namespace before a
+recoverable state is selected, so an exact temporary cannot mask a lookalike in
+another category. At confirmation, enumeration, bounded reads, promotion-pair
+checks, unlink, and absence verification all remain relative to the same pinned
+root/child descriptors; a renamed root cannot redirect recovery to a replacement.
+After unlink, the complete pinned inventory must equal its confirmation-bound
+pre-state minus exactly that temporary, and any promoted final must retain the
+same inode and bytes, before reconciliation can be reported. The resulting
+`ready`, exact `resume_required`, or fully valid `already_current` state and all
+nine confirmation-bound live bytes must also verify; any failure after deletion
+is reported as partial, never as an untouched block.
+
+Clean initialization records a hidden, owner-only fresh-schema reservation
+before the first seed copy. Retry completes that reservation after a partial
+copy or after all copies but before manifest publication; a pre-existing
+version-0 root without the reservation is never inferred to be fresh merely
+because its bytes equal packaged seeds. The reservation is removed only after
+the current manifest verifies. Exact reservation writer temporaries are
+reconciled under the same pinned lock. Exact seed and fresh-manifest pre-link or
+same-inode post-link publication states are reconciled before copying resumes,
+and the reservation is removed last only after every live document, required
+artifact, and absence of fresh-init temporaries verifies.
+The same complete pinned inventory is repeated before each fresh reconciliation,
+manifest publication, and final reservation removal.
+Fresh schema finalization now occurs before the layout initializer releases its
+root descriptor and cross-process lock. The final data preflight, exact allowed
+schema transition, and selected-path identity are checked again before startup
+can report success. The guarded root's device/file identity is carried across
+the final reacquisition, so a different inode with the same schema status is
+not accepted.
+
+Normal top-level JSON reads and writes take the same process-reentrant,
+cross-process mutation lock before any per-file lock, so nested writers cannot
+invert the lock order and the
+backup and metadata checkpoint cannot race a dashboard task/project/settings
+write. The configured root remains an absolute lexical spelling rather than a
+symlink-resolved destination, and lock acquisition walks every component without
+following redirects (with only the platform's trusted macOS aliases normalized).
+The server preserves that spelling through its allowlisted child handoff. On
+POSIX the outer lock's pinned root descriptor is reused for the JSON read,
+temporary creation, and atomic replace; on Windows the guarded handle chain is
+retained. The source development override omits the on-disk lock for lower-level
+JSON helpers, while server reads and writes retain it so they cannot race a
+restore; both retain process-local ordering, component validation, and pinned I/O. A
+substituted final root or ancestor is never written and cannot
+claim success. The manifest records the ordered
+`durable-json-v0-to-v1` identity step
+and immutable backup evidence. Later legitimate JSON mutations remain valid as
+long as every live document stays fixed-inventory, owner-only, single-link,
+bounded, valid JSON with its supported top-level shape. The writer opens each
+file without following its final entry, validates the private regular-file
+boundary, bounds reads and serialized output, enforces the fixed top-level type,
+and refuses nested development-to-installed lock-mode escalation. Product reads
+use the same guarded root and policy; installed mutations never infer a missing
+durable document from an empty default. Atomic writes retain and verify the
+temporary's exact bytes and identity through commit, verify the committed entry,
+and remove every uncommitted temporary on failure. Startup performs a
+read-only schema gate before layout repair, lifecycle, or runtime/private
+writes, then validates the manifest and backup under the pinned lock. A current
+schema with a missing or unsafe document therefore fails closed instead of
+being seed-repaired. Valid current roots still traverse the locked layout
+initializer so every required private/runtime/backup/cache/log/config directory
+is created or hardened and redirected boundaries are refused. A
+newer manifest format or per-document version is read and refused distinctly
+before temporary/reservation classification; Mentat never attempts a
+best-effort downgrade or an older recovery mutation.
+
+Use the same installed data root for preview and confirmation:
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --preview-schema-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-schema-migration TOKEN_FROM_PREVIEW
+```
+
+This schema-specific recovery ZIP is not the later general backup/restore
+product. Private SQLite evolution, arbitrary restore, and JSON record-shape
+changes remain outside Milestone 1D.
+
 ## Backup and restore contract
 
 Backups are versioned, bounded, validated snapshots written below
@@ -277,7 +498,7 @@ Every target class has this explicit ordinary-backup policy:
 
 The Console consistency unit must not capture a live SQLite file with unmatched
 WAL/SHM state or copy the database, history, and blobs at unrelated points in
-time. Staged/unreferenced scratch is excluded. The future remote Hermes endpoint
+time. Staged/unreferenced scratch is excluded. The remote Hermes endpoint
 and API credential, tokens, and other credentials are excluded from ordinary
 backups even though their private storage is durable. A future secret-aware
 export would require a separately approved encrypted design.
@@ -287,6 +508,68 @@ a pre-restore recovery backup, confirmation bound to the preview, locked atomic
 replacement, and post-restore schema/integrity verification. A newer unsupported
 backup fails closed. Runtime scratch, caches, logs, browser storage, and external
 Hermes/Obsidian/Google state are not restored as operator data.
+
+Milestone 1E-A implements the schema-governed durable-operator portion of this
+contract. Milestone 1E-B extends the current deterministic owner-only format as
+`mentat-backup-v2-<id>.zip`, with one canonical manifest, the nine fixed
+`data/*.json` entries, canonical retained history, a supported-schema SQLite
+snapshot captured through SQLite's backup API and pruned to retained run
+references, and exactly the verified ready blobs referenced by that snapshot.
+The manifest records format and data-schema versions, classifications, sizes,
+integrity metadata, and every excluded class. It contains no absolute paths,
+credentials, unreferenced/staged Console bytes, runtime state, caches, logs, browser state,
+external state, or nested backup files. Backup creation holds the shared pinned
+data-root mutation lock, validates current schema and exact live bytes, publishes
+missing-only below `backups/`, verifies the committed archive, and rechecks that
+the source did not change. Restore parsing validates the single-disk end record,
+exact entry count, and a tight central-directory bound before constructing a ZIP
+reader; JSON trees are decoded one document at a time for shape validation and
+discarded rather than retained with the raw snapshot.
+
+Restore accepts that exact canonical version-2 archive and the prior canonical
+version-1 JSON-only format on an initialized
+current-schema target. Preview is read-only, reports replace/unchanged actions,
+refuses newer or malformed input, and binds an opaque token to the safe archive
+identity and bytes plus exact target identity and live bytes. Confirmation
+revalidates beneath the shared pinned-root lock, imports exact source evidence,
+publishes a validated backup of the pre-restore documents, and records an
+owner-only reservation before any live replacement. Every document replacement
+is exact, size/type validated, owner-only, atomic, and post-commit verified. A
+recognized interrupted state may resume only while the selected source,
+internal evidence, recovery archive, reservation, and every live document still
+match the token-bound old-or-new set. Unknown state fails closed, and startup
+blocks while any reservation or restore temporary remains. An exact uncommitted
+temporary has its own previewed, confirmed cleanup path and is never silently
+deleted.
+
+For version 2, private restore exchanges a complete staged Console directory,
+keeps the old directory until new-state verification, and resumes only exact
+recognized old/new/staged states. Version-1 restore preserves the current
+private Console unit. The current schema manifest and its bootstrap evidence stay at the destination:
+they describe the supported document schema and remain valid across legitimate
+document mutations. Migration receipts, schema backups, and all excluded
+directories are not replaced. A clean-install recovery initializes the target
+layout and current schema first, then runs restore. Version 2 completes the
+private Console consistency unit; version 1 remains a supported JSON-only
+legacy format.
+
+Current source-checkout CLI form (the unified installed `mentat backup` and
+`mentat restore` commands remain Milestone 3):
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --create-backup
+python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v2-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v2-ID.zip"
+```
+
+Legacy private Console state is never moved silently. Preview and confirmation
+use the same configured data root; confirmation preserves the runtime source,
+publishes the verified private destination, and writes its receipt last:
+
+```bash
+python server.py --data-dir "/path/to/mentat-data" --preview-private-migration
+python server.py --data-dir "/path/to/mentat-data" --confirm-private-migration TOKEN_FROM_PREVIEW
+```
 
 ## Secret and privacy boundary
 
@@ -299,10 +582,15 @@ credential there, and reports a bounded error without paths or private content.
 On an unsupported filesystem, privacy-dependent features remain unavailable
 until an approved secure boundary exists; the implementation must not silently
 degrade to broader access.
-The future remote Hermes endpoint and API credential remain server-side and are
-excluded from browser payloads, browser storage, tracked files, logs,
-diagnostics, crash text, ordinary backups, and test fixtures. Error messages and
-audit records may contain only bounded, normalized, secret-free identifiers.
+The remote Hermes endpoint and API credential remain server-side. Setup and CLI
+accept only endpoint metadata plus a credential-source reference; the API-key
+value is read from the selected environment variable or owner-only env file and
+is never accepted in browser requests. Mentat never returns either private
+endpoint or credential data in browser payloads sourced from stored state or
+upstream responses. They
+are excluded from browser storage, tracked files, logs, diagnostics, crash
+text, ordinary backups, and test fixtures. Error messages and audit records may
+contain only bounded, normalized, secret-free identifiers.
 
 Tracked seeds and documentation remain public-safe. They must not contain real
 operator names, local paths, account identifiers, tokens, private messages, or
@@ -310,13 +598,24 @@ runtime history.
 
 ## Implementation sequence
 
-- Milestone 1A (this slice): canonical inventory and tested contract only.
-- Milestone 1B: platform-aware resolver, installed/source-checkout configuration
-  behavior, owner-only directory creation, and missing-only initialization.
-- Later bounded slices: legacy migration, schema evolution, backup/restore, and
-  installer/uninstall preservation, each with its own approved contract and
-  failure-path evidence.
+- Milestone 1A: canonical inventory and tested contract only; complete.
+- Milestone 1B-A: platform-aware resolver, source labels, and bounded read-only
+  seed/legacy/conflict preflight; complete without filesystem writes.
+- Milestone 1B-B: owner-only directory creation, packaged-seed loading, and
+  lock-protected missing-only initialization; complete.
+- Milestone 1C: previewed, migration-backed, locked legacy durable-JSON copying,
+  interruption resume, and completion receipt; complete.
+- Milestone 1D: sidecar schema versioning, explicit backed-up version-0
+  bootstrap, coordinated durable writes, and forward-version refusal; complete.
+- Milestone 1E-A: fixed durable-operator JSON backup and previewed restore with
+  pre-restore recovery evidence and interruption resume; complete.
+- Milestone 1E-B: private-state movement and consistent private backup;
+  implemented with its approved contract and failure-path evidence.
+- Milestone 1F: versioned application-tree replacement, verified pre-upgrade
+  backup, changed-seed non-overwrite, application-only uninstall, and reinstall
+  preservation coverage across durable JSON and retained private Console state;
+  complete without selecting installer tooling.
 
-Until Milestone 1B lands, the source checkout continues using the current
-repo-local `data/` default. Documentation must describe that as current behavior,
-not as the installed public-beta layout.
+The source checkout continues using the current repo-local `data/` override.
+Documentation must describe that as development behavior, not as the installed
+public-beta layout.

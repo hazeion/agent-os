@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -81,7 +82,7 @@ class TaskDelegationTests(unittest.TestCase):
         (self.root / "projects.json").write_text(json.dumps([{"id": "project-1", "name": "Mentat"}]), encoding="utf-8")
         self.adapter = FakeKanban()
         self.patches = [
-            patch.object(server, "DATA_DIR", self.root),
+            patch.object(server, "DATA_DIR", self.root), patch.object(server, "CONFIGURED_DATA_DIR", self.root),
             patch.object(server, "kanban_adapter", return_value=self.adapter),
             patch.object(server, "hermes_profiles_payload", return_value={"status": "available", "profiles": [{"id": "researcher"}]}),
         ]
@@ -139,10 +140,25 @@ class TaskDelegationTests(unittest.TestCase):
         tasks[0]["delegation"]["state"] = "ready_for_review"
         (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
         self.adapter.remote_status = "review"
-        action_preview, _ = server.preview_delegation_action("task-1", {"action": "accept"})
-        payload, status = server.execute_confirmed_delegation_action("task-1", {
-            "action": "accept", "confirmed": True, "confirmation_id": action_preview["confirmation_id"]
-        })
+        timestamp_counter = [0]
+
+        def advancing_timestamp():
+            timestamp_counter[0] += 1
+            return f"2026-07-24T17:40:{timestamp_counter[0]:02d}-07:00"
+
+        with patch.object(server, "now_iso", side_effect=advancing_timestamp):
+            action_preview, _ = server.preview_delegation_action(
+                "task-1",
+                {"action": "accept"},
+            )
+            payload, status = server.execute_confirmed_delegation_action(
+                "task-1",
+                {
+                    "action": "accept",
+                    "confirmed": True,
+                    "confirmation_id": action_preview["confirmation_id"],
+                },
+            )
         self.assertEqual(status, 200)
         self.assertEqual(payload["task"]["status"], "completed")
         self.assertEqual(payload["delegation"]["review_state"], "accepted")
@@ -188,6 +204,49 @@ class TaskDelegationTests(unittest.TestCase):
 
         self.assertEqual(action_status, 409)
         self.assertIn("unavailable while delegated work is running", payload["error"])
+
+    def test_action_rechecks_stable_delegation_binding_inside_lock(self):
+        preview, _ = server.preview_task_delegation("task-1", self.intent())
+        server.delegate_confirmed_task(
+            "task-1",
+            {
+                **self.intent(),
+                "confirmed": True,
+                "confirmation_id": preview["confirmation_id"],
+            },
+        )
+        self.adapter.remote_status = "review"
+        action_preview, status = server.preview_delegation_action(
+            "task-1",
+            {"action": "accept"},
+        )
+        self.assertEqual(status, 200)
+        current = json.loads(
+            (self.root / "tasks.json").read_text(encoding="utf-8")
+        )[0]
+
+        for changed_field, changed_value in (
+            ("board_id", "changed-board"),
+            ("profile_id", "changed-profile"),
+        ):
+            changed = deepcopy(current)
+            changed["delegation"][changed_field] = changed_value
+            with self.subTest(changed_field=changed_field), patch.object(
+                server,
+                "task_record",
+                side_effect=[deepcopy(current), changed],
+            ):
+                payload, action_status = server.execute_confirmed_delegation_action(
+                    "task-1",
+                    {
+                        "action": "accept",
+                        "confirmed": True,
+                        "confirmation_id": action_preview["confirmation_id"],
+                    },
+                )
+
+            self.assertEqual(action_status, 409)
+            self.assertIn("changed after preview", payload["error"])
 
     def test_activity_groups_linked_tasks_by_decision_state(self):
         tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))

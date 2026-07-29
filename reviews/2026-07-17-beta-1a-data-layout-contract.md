@@ -1,6 +1,6 @@
 # Feature Slice Review: Define the Milestone 1A Data Layout Contract
 
-Status: Paused — awaiting publication approval
+Status: Complete
 Slice: `beta-1a-data-layout-contract`
 Date: `2026-07-17`
 Review log: `reviews/2026-07-17-beta-1a-data-layout-contract.md`
@@ -252,17 +252,22 @@ data before any runtime default, migration, backup, or installer behavior change
 - Unresolved risks: No blocking slice risk. Runtime resolver, initialization,
   migration, backup/restore, and cross-platform execution remain deliberately
   unimplemented and require later reviewed slices.
-- User authorization and scope: Not yet requested.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- User authorization and scope: Approved publication, hosted-CI verification,
+  and merge of the complete Milestone 1A slice.
+- Commit hash: `ae9eee...` on the feature branch; squash merge
+  `c598981add1fef4a0a64451639e75e8b19d942a4` on `main`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/20
+- Hosted verification: GitHub Actions run `29618935872`; all nine OS/Python
+  matrix jobs passed.
 
 ## Outcome review
 
-- Classification: In progress.
-- Acceptance criteria summary: AC-1 through AC-8 passed locally; publication and
-  hosted CI remain pending approval.
+- Classification: Successful.
+- Acceptance criteria summary: AC-1 through AC-8 passed locally and in the
+  required hosted matrix; PR #20 was merged to `main`.
 - Potential bugs or untested paths: Runtime implementation remains deferred.
 - Remaining reviewer dissent: None; both final reviewers reported no findings.
 - Compatibility/migration/rollback concerns: No runtime mutation in this slice.
-- User decision: Pending.
-- Next slice authorized: No.
+- User decision: Accepted the outcome and authorized Milestone 1B planning.
+- Next slice authorized: Yes — bounded Milestone 1B-A resolver/read-only
+  preflight planning and implementation.

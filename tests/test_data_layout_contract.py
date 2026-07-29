@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -9,16 +10,35 @@ ARCHITECTURE = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 ROADMAP = (ROOT / "ROAD_TO_BETA.md").read_text(encoding="utf-8")
 RUNTIME_CONFIG = (ROOT / "runtime_config.py").read_text(encoding="utf-8")
+DATA_MIGRATION = (ROOT / "data_migration.py").read_text(encoding="utf-8")
+DATA_SCHEMA = (ROOT / "data_schema.py").read_text(encoding="utf-8")
 SHARED_CONFIG = (ROOT / "mentat.toml").read_text(encoding="utf-8")
 REQUIREMENTS = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
 
 class DataLayoutContractTests(unittest.TestCase):
-    def test_canonical_contract_is_explicitly_contract_only(self):
+    def test_canonical_contract_distinguishes_read_only_from_writable_work(self):
+        normalized = " ".join(CONTRACT.split())
         self.assertTrue(CONTRACT_PATH.exists())
-        self.assertIn("Status: Milestone 1A contract approved", CONTRACT)
-        self.assertIn("does not change the current runtime default", CONTRACT)
-        self.assertIn("Milestone 1B", CONTRACT)
+        self.assertIn(
+            "Status: Milestone 1 durable-data boundary complete through 1F",
+            CONTRACT,
+        )
+        self.assertIn("Milestone 1B implements deterministic", normalized)
+        self.assertIn("Milestone 1C implements an explicit", normalized)
+        self.assertIn("Milestone 1D versions those unchanged JSON shapes", normalized)
+        self.assertIn(
+            "Milestone 1F proves that versioned application replacement",
+            normalized,
+        )
+        self.assertIn("`--print-config` uses only this read-only path", normalized)
+        self.assertIn(
+            "config-less installed launch now initializes before lifecycle cleanup",
+            normalized,
+        )
+        self.assertIn("no larger than 16 MiB", CONTRACT)
+        self.assertIn("Milestone 1B-B", CONTRACT)
+        self.assertIn("atomic hard-link operation that fails if the destination appeared", normalized)
 
     def test_all_tracked_seed_json_and_target_classes_are_defined(self):
         seed_names = sorted(path.name for path in (ROOT / "data").glob("*.json"))
@@ -89,8 +109,8 @@ class DataLayoutContractTests(unittest.TestCase):
 
         normalized = " ".join(CONTRACT.split())
         precedence = (
-            "`--data-dir` → `MENTAT_DATA_DIR` → `[paths].data_dir` in TOML "
-            "→ platform default"
+            "`--data-dir` → `MENTAT_DATA_DIR` → `AGENT_OS_DATA_DIR` → "
+            "`[paths].data_dir` in TOML → platform default"
         )
         self.assertIn(precedence, normalized)
         self.assertIn("`MENTAT_DATA_DIR` outranks `AGENT_OS_DATA_DIR`", normalized)
@@ -116,7 +136,8 @@ class DataLayoutContractTests(unittest.TestCase):
     def test_private_and_secret_boundaries_are_explicit(self):
         normalized = " ".join(CONTRACT.split())
         self.assertIn("owner-only permissions", normalized)
-        self.assertIn("future remote Hermes endpoint and API credential", normalized)
+        self.assertIn("remote Hermes endpoint and API credential", normalized)
+        self.assertIn("`<data-root>/private/remote-hermes-connection-v1.json`", CONTRACT)
         self.assertIn("read-back verification of owner-only access", normalized)
         self.assertIn("before any private or secret-bearing content is written", normalized)
         self.assertIn("fails closed", normalized)
@@ -153,16 +174,39 @@ class DataLayoutContractTests(unittest.TestCase):
         ):
             self.assertIn(consistency_rule, backup_section)
 
-    def test_primary_docs_link_the_contract_without_claiming_implementation(self):
+    def test_primary_docs_link_the_contract_and_bound_the_implementation(self):
+        normalized_roadmap = re.sub(r"\s*/\s*", "/", " ".join(ROADMAP.split()))
         link = "[DATA_LAYOUT.md](DATA_LAYOUT.md)"
         self.assertIn(link, ARCHITECTURE)
-        self.assertIn(link, README)
+        self.assertIn("(DATA_LAYOUT.md)", README)
         self.assertIn(link, ROADMAP)
-        self.assertIn("Milestone 1A contract complete", ROADMAP)
-        self.assertIn("Begin Milestone 1B", ROADMAP)
-        self.assertIn("| 1 | Durable user data | In progress — 1A complete |", ROADMAP)
+        self.assertIn("Milestone 1A contract, Milestone 1B", ROADMAP)
+        self.assertIn("Milestone 1C legacy durable-JSON migration", normalized_roadmap)
+        self.assertIn("Milestone 1D schema versioning", normalized_roadmap)
+        self.assertIn("Milestone 1E-A durable-JSON backup/restore complete", normalized_roadmap)
+        self.assertIn(
+            "Milestone 1E-B durable private Console migration/backup/restore and "
+            "Milestone 1F application-upgrade/uninstall preservation coverage "
+            "are also complete.",
+            normalized_roadmap,
+        )
+        self.assertIn(
+            "| 1 | Durable user data | Complete — 1A through 1F |",
+            ROADMAP,
+        )
 
-        self.assertIn('BASE_DIR / "data"', RUNTIME_CONFIG)
+        self.assertIn("from data_layout import", RUNTIME_CONFIG)
+        self.assertIn("resolve_data_root", RUNTIME_CONFIG)
+        self.assertIn("initialize_data_root", RUNTIME_CONFIG)
+        self.assertIn("migration_startup_status", RUNTIME_CONFIG)
+        self.assertIn("preview_legacy_migration", DATA_MIGRATION)
+        self.assertIn("migrate_legacy_data", DATA_MIGRATION)
+        self.assertIn("preview_schema_migration", DATA_SCHEMA)
+        self.assertIn("migrate_data_schema", DATA_SCHEMA)
+        self.assertIn("schema_status_under_lock", RUNTIME_CONFIG)
+        self.assertIn("restore_startup_status", RUNTIME_CONFIG)
+        self.assertIn("_pinned_root_identity", RUNTIME_CONFIG)
+        self.assertIn("data_dir_source=data_resolution.source", RUNTIME_CONFIG)
         self.assertIn('data_dir = "data"', SHARED_CONFIG)
         self.assertNotIn("platformdirs", REQUIREMENTS.lower())
 
