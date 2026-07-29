@@ -55,6 +55,9 @@ class DependencyManifestTests(unittest.TestCase):
         self.assertSetEqual(required_packages, {"google-api-python-client", "google-auth", "requests"})
         self.assertTrue(required_packages.issubset(requirement_names()))
 
+    def test_manifest_includes_pinned_iana_timezone_data(self):
+        self.assertIn("tzdata", requirement_names())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import server
+from hermes_transport import TransportBinding
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,11 @@ class CompletedHermesProcess:
 
 
 class ProfileAwareConsoleTests(unittest.TestCase):
+    def local_console(self):
+        return server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
+        )
+
     def tearDown(self):
         server.AGENT_CONSOLE_RUNS.clear()
         server.AGENT_CONSOLE_PROCESSES.clear()
@@ -54,6 +60,8 @@ class ProfileAwareConsoleTests(unittest.TestCase):
     def test_console_payload_exposes_normalized_profiles(self):
         with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
             server, "hermes_profiles_payload", return_value=profile_discovery()
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(server, "agent_console_model_catalog", return_value={"profile_id": "default", "models": []}):
             payload = server.agent_console_payload()
 
@@ -70,15 +78,32 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             "prompt": "Research this",
             "session_id": None,
             "status": "queued",
+            "starts_new_session": False,
+            "new_session_state": "pending",
             "events": [],
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
-        with patch.object(server.subprocess, "Popen", return_value=CompletedHermesProcess()) as popen:
-            server.run_hermes_agent(run_id, "/tmp/hermes")
+        transport = server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"),
+            command_path="/tmp/hermes",
+        )
+        with patch.object(transport, "revalidate"), patch.object(
+            server.subprocess, "Popen", return_value=CompletedHermesProcess()
+        ) as popen:
+            server.run_hermes_agent(run_id, transport)
 
         command = popen.call_args.args[0]
         self.assertEqual(command[:6], ["/tmp/hermes", "-p", "randy", "chat", "-q", "Research this"])
         self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["session_id"], "session_randy_1")
+        self.assertTrue(server.AGENT_CONSOLE_RUNS[run_id]["starts_new_session"])
+        self.assertEqual(server.AGENT_CONSOLE_RUNS[run_id]["new_session_state"], "started")
+        self.assertEqual(
+            sum(
+                event["type"] == "session.started"
+                for event in server.AGENT_CONSOLE_RUNS[run_id]["events"]
+            ),
+            1,
+        )
 
     def test_start_rejects_cross_profile_session_resume(self):
         server.AGENT_CONSOLE_RUNS["run_default"] = {
@@ -88,8 +113,13 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             "session_id": "session_shared",
             "created_at": "2026-07-10T12:00:00-07:00",
         }
+        transport = self.local_console()
         with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
             server, "hermes_command_path", return_value="/tmp/hermes"
+        ), patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ), patch.object(
+            transport, "revalidate"
         ):
             payload, status = server.start_agent_console_run({
                 "agent_id": "randy",
@@ -110,9 +140,14 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             "session_id": "session_randy_owned",
             "created_at": "2026-07-11T12:00:00-07:00",
         }
+        transport = self.local_console()
         with patch.object(
             server, "hermes_profiles_payload", return_value=profile_discovery()
         ), patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ), patch.object(
+            transport, "revalidate"
+        ), patch.object(
             server.threading, "Thread"
         ) as worker:
             unknown, unknown_status = server.start_agent_console_run(
@@ -160,6 +195,8 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         with patch.object(
             server, "agent_console_profile", return_value={"id": "randy", "name": "randy"}
         ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
+        ), patch.object(
             server, "agent_console_provider_inventory", side_effect=[before, verified]
         ), patch.object(
             server, "apply_provider_switch", return_value=({"ok": True}, "")
@@ -190,6 +227,46 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             cwd=server.BASE_DIR,
         )
 
+    def test_remote_connection_rejects_direct_provider_preview_and_apply(self):
+        remote_transport = MagicMock()
+        remote_transport.mode = "remote"
+        payload = {
+            "agent_id": "randy",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4",
+            "confirmed": True,
+            "confirmation_id": "provider_switch_untrusted",
+        }
+
+        with patch.object(
+            server,
+            "hermes_console_transport",
+            return_value=remote_transport,
+        ), patch.object(
+            server,
+            "agent_console_provider_inventory",
+        ) as inventory, patch.object(
+            server,
+            "apply_provider_switch",
+        ) as apply:
+            preview, preview_status = (
+                server.preview_agent_console_provider_switch(payload)
+            )
+            result, status = server.switch_agent_console_provider(payload)
+
+        self.assertEqual(preview_status, 409)
+        self.assertEqual(status, 409)
+        self.assertEqual(
+            preview["error_code"],
+            "remote_provider_switch_unsupported",
+        )
+        self.assertEqual(
+            result["error_code"],
+            "remote_provider_switch_unsupported",
+        )
+        inventory.assert_not_called()
+        apply.assert_not_called()
+
     def test_frontend_routes_managed_profile_to_console(self):
         self.assertIn("data-use-hermes-profile", APP_JS)
         self.assertIn("state.agentConsoleSelectedAgentId", APP_JS)
@@ -197,6 +274,33 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         self.assertIn("async function refreshAgentConsoleModels(agentId", CORE_JS)
         self.assertIn("async function previewAgentConsoleProvider(provider, model, agentId", CORE_JS)
         self.assertIn("async function switchAgentConsoleProvider(provider, model, agentId", CORE_JS)
+
+    def test_frontend_runtime_refresh_is_read_only_and_stale_response_safe(self):
+        self.assertIn("agentConsoleRuntimeRequestGeneration", CORE_JS)
+        self.assertIn("Loading current provider and model", APP_JS)
+        self.assertIn(
+            "requestGeneration !== state.agentConsoleRuntimeRequestGeneration",
+            APP_JS,
+        )
+        self.assertIn(
+            "requestedAgentId !== state.agentConsoleSelectedAgentId",
+            APP_JS,
+        )
+        self.assertIn("providerInventory.read_only && runtimeProvider", APP_JS)
+        self.assertIn(
+            "const selectedActiveRun = selectedRuns.find(agentConsoleRunIsActive)",
+            APP_JS,
+        )
+        self.assertIn(
+            "selectedActiveRun?.provider && selectedActiveRun?.model",
+            APP_JS,
+        )
+        self.assertNotIn("const runtimeRun = activeRun || latestRun", APP_JS)
+        self.assertIn(
+            "providerSelect.disabled = !available || !providerSwitchAvailable",
+            APP_JS,
+        )
+        self.assertIn("silent: true", APP_JS)
 
 
 if __name__ == "__main__":

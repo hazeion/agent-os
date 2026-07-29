@@ -11,6 +11,10 @@ import server
 PNG = b"\x89PNG\r\n\x1a\n" + b"safe-image-payload"
 
 
+def profile_discovery():
+    return {"status": "available", "profiles": [{"id": "default", "name": "default", "is_default": True}]}
+
+
 class AgentConsoleAttachmentRunTests(unittest.TestCase):
     def tearDown(self):
         server.AGENT_CONSOLE_RUNS.clear()
@@ -19,14 +23,16 @@ class AgentConsoleAttachmentRunTests(unittest.TestCase):
     def test_uploaded_image_binds_to_run_without_exposing_its_path(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
-            with patch.object(server, "DATA_DIR", data_dir):
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir):
                 upload, upload_status = server.create_agent_console_attachment(
                     original_name="diagram.png",
                     content_type="image/png",
                     content=PNG,
                 )
                 attachment = upload["attachment"]
-                with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+                with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
+                    server, "hermes_command_path", return_value="/tmp/hermes"
+                ), patch.object(
                     server, "agent_console_model", return_value="test/model"
                 ), patch.object(server.threading, "Thread") as worker:
                     payload, status = server.start_agent_console_run(
@@ -54,13 +60,15 @@ class AgentConsoleAttachmentRunTests(unittest.TestCase):
     def test_text_attachment_adds_fixed_execution_context_but_keeps_display_prompt(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
-            with patch.object(server, "DATA_DIR", data_dir):
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir):
                 upload, _ = server.create_agent_console_attachment(
                     original_name="context.py",
                     content_type="text/x-python",
                     content=b"print('hello')\n",
                 )
-                with patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
+                with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
+                    server, "hermes_command_path", return_value="/tmp/hermes"
+                ), patch.object(
                     server.threading, "Thread"
                 ):
                     payload, status = server.start_agent_console_run(
