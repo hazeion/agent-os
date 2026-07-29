@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import health_checks
+import remote_hermes
 import runtime_config
 import server
 from data_layout import SEED_FILE_NAMES
@@ -44,8 +45,26 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("include requirements-native.lock", manifest)
         for name in SEED_FILE_NAMES:
             self.assertIn(f"include data/{name}", manifest)
-        for name in ("app.js", "core.js", "index.html", "mentat-logo.png", "styles.css"):
+        for name in (
+            "app.js",
+            "core.js",
+            "index.html",
+            "mentat-logo.png",
+            "mentat-mark-emerald.png",
+            "styles.css",
+        ):
             self.assertIn(f"include public/{name}", manifest)
+
+    def test_emerald_mark_is_in_every_static_asset_inventory(self):
+        asset = "mentat-mark-emerald.png"
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        spec = (ROOT / "packaging" / "mentat.spec").read_text(encoding="utf-8")
+        verifier = (
+            ROOT / "scripts" / "verify_python_artifacts.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(f"public/{asset}", pyproject)
+        self.assertIn(f'"{asset}"', spec)
+        self.assertIn(f"public/{asset}", verifier)
 
     def test_native_definitions_read_or_receive_the_single_version_source(self):
         spec = (ROOT / "packaging" / "mentat.spec").read_text(encoding="utf-8")
@@ -115,6 +134,9 @@ class PackagingContractTests(unittest.TestCase):
         workflow = (
             ROOT / ".github" / "workflows" / "signed-release-artifacts.yml"
         ).read_text(encoding="utf-8")
+        signing_guide = (ROOT / "RELEASE_SIGNING.md").read_text(encoding="utf-8")
+        normalized_signing_guide = " ".join(signing_guide.split())
+        rehearsal = (ROOT / "RELEASE_REHEARSAL.md").read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertIn("environment: beta-release", workflow)
@@ -129,9 +151,37 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("spctl --assess --type execute", workflow)
         self.assertIn("security import", workflow)
         self.assertIn(" -x -k ", workflow)
+        self.assertIn('MAC_KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"', workflow)
+        self.assertNotIn("secrets.MAC_KEYCHAIN_PASSWORD", workflow)
         self.assertIn("signtool.exe", workflow.lower())
-        self.assertIn("Import-PfxCertificate", workflow)
-        self.assertIn("mentat-signing-thumbprint", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn(
+            "azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43",
+            workflow,
+        )
+        self.assertEqual(
+            workflow.count(
+                "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82"
+            ),
+            2,
+        )
+        self.assertIn("vars.AZURE_ARTIFACT_SIGNING_ENDPOINT", workflow)
+        self.assertIn("timestamp-rfc3161: http://timestamp.acs.microsoft.com", workflow)
+        self.assertIn(
+            '& $signTool.FullName verify /pa /all /v $executable\n'
+            '            if ($LASTEXITCODE -ne 0) { throw "Application '
+            'signature verification failed: $executable" }',
+            workflow,
+        )
+        self.assertIn(
+            '& $signTool.FullName verify /pa /all /v $installer.FullName\n'
+            '          if ($LASTEXITCODE -ne 0) { throw "Installer signature '
+            'verification failed: $($installer.FullName)" }',
+            workflow,
+        )
+        self.assertNotIn("WINDOWS_CERTIFICATE_BASE64", workflow)
+        self.assertNotIn("WINDOWS_CERTIFICATE_PASSWORD", workflow)
+        self.assertNotIn("Import-PfxCertificate", workflow)
         self.assertIn("Smoke the exact signed macOS package", workflow)
         self.assertIn("Mentat remained healthy after stop", workflow)
         self.assertIn('item.__setitem__("BundleIsRelocatable", False)', workflow)
@@ -150,6 +200,33 @@ class PackagingContractTests(unittest.TestCase):
         self.assertNotIn("actions/setup-python@v", workflow)
         self.assertNotIn("actions/upload-artifact@v", workflow)
         self.assertNotIn("actions/download-artifact@v", workflow)
+        self.assertIn("[RELEASE_SIGNING.md](RELEASE_SIGNING.md)", rehearsal)
+        self.assertIn(
+            "repo:hazeion/agent-os:environment:beta-release",
+            signing_guide,
+        )
+        self.assertIn("https://token.actions.githubusercontent.com", signing_guide)
+        self.assertIn("api://AzureADTokenExchange", signing_guide)
+        self.assertIn("Entity type: **Environment**", signing_guide)
+        self.assertIn("service principal exists", normalized_signing_guide)
+        self.assertIn("**Selected branches and tags**", signing_guide)
+        self.assertIn("exactly one allowed branch: `main`", normalized_signing_guide)
+        for name in (
+            "MAC_CERTIFICATES_BASE64",
+            "MAC_CERTIFICATES_PASSWORD",
+            "MAC_APPLICATION_IDENTITY",
+            "MAC_INSTALLER_IDENTITY",
+            "MAC_NOTARY_APPLE_ID",
+            "MAC_NOTARY_PASSWORD",
+            "MAC_NOTARY_TEAM_ID",
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_ARTIFACT_SIGNING_ENDPOINT",
+            "AZURE_ARTIFACT_SIGNING_ACCOUNT",
+            "AZURE_ARTIFACT_SIGNING_PROFILE",
+        ):
+            self.assertIn(f"`{name}`", signing_guide)
 
     def test_native_installers_use_platform_data_safe_install_locations(self):
         windows = (ROOT / "packaging" / "windows" / "Mentat.iss").read_text(encoding="utf-8")
@@ -218,6 +295,185 @@ class CliTests(unittest.TestCase):
             cli._forward_runtime_arguments(args),
             ["--config", "example.toml", "--port", "8891"],
         )
+
+    def test_connection_cli_has_no_api_key_value_argument(self):
+        parser = cli.build_parser()
+        self.assertNotIn(
+            "--api-key",
+            {
+                option
+                for action in parser._actions
+                for option in action.option_strings
+            },
+        )
+        configured = parser.parse_args(
+            [
+                "connection",
+                "configure-remote",
+                "--endpoint",
+                "https://hermes.example",
+                "--api-key-env",
+                "MENTAT_REMOTE_HERMES_API_KEY",
+            ]
+        )
+        self.assertFalse(hasattr(configured, "api_key"))
+
+    def test_connection_status_and_two_step_local_confirmation_are_secret_free(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "operator-data"
+            status_output = io.StringIO()
+            with redirect_stdout(status_output):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "connection",
+                            "status",
+                            "--data-dir",
+                            str(data_root),
+                        ]
+                    ),
+                    0,
+                )
+            status = json.loads(status_output.getvalue())
+            self.assertEqual(status["selection"]["mode"], "local")
+            self.assertFalse(status["selection"]["remembered_remote"])
+            self.assertNotIn(str(data_root), status_output.getvalue())
+
+            preview_output = io.StringIO()
+            with patch.object(cli.sys.stdin, "isatty", return_value=False):
+                with redirect_stdout(preview_output):
+                    self.assertEqual(
+                        cli.main(
+                            [
+                                "connection",
+                                "use",
+                                "local",
+                                "--data-dir",
+                                str(data_root),
+                            ]
+                        ),
+                        3,
+                    )
+            preview = json.loads(preview_output.getvalue())
+            token = preview["confirmation_token"]
+            self.assertRegex(token, r"^[0-9a-f]{64}$")
+            confirmed_output = io.StringIO()
+            with patch.object(cli, "_connection_server_running", return_value=False):
+                with redirect_stdout(confirmed_output):
+                    self.assertEqual(
+                        cli.main(
+                            [
+                                "connection",
+                                "use",
+                                "local",
+                                "--data-dir",
+                                str(data_root),
+                                "--confirm",
+                                token,
+                            ]
+                        ),
+                        0,
+                    )
+            confirmed = json.loads(confirmed_output.getvalue())
+            self.assertTrue(confirmed["ok"])
+            self.assertEqual(confirmed["selection"]["mode"], "local")
+
+    def test_connection_mutation_refuses_while_server_is_running(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "operator-data"
+            preview = remote_hermes.preview_remembered_connection(data_root, "local")
+            token = remote_hermes.offline_confirmation_token(preview)
+            output = io.StringIO()
+            with patch.object(cli, "_connection_server_running", return_value=True):
+                with patch.object(
+                    remote_hermes,
+                    "confirm_remembered_connection",
+                    side_effect=AssertionError("must not mutate"),
+                ):
+                    with redirect_stdout(output):
+                        self.assertEqual(
+                            cli.main(
+                                [
+                                    "connection",
+                                    "use",
+                                    "local",
+                                    "--data-dir",
+                                    str(data_root),
+                                    "--confirm",
+                                    token,
+                                ]
+                            ),
+                            2,
+                        )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(
+                payload["error_code"],
+                "connection_change_server_running",
+            )
+
+    def test_configure_remote_reads_environment_and_never_prints_private_values(self):
+        secret = "cli-remote-secret-NEVER-PRINT-12345"
+        endpoint = "https://private-hermes.example"
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "operator-data"
+            argv = [
+                "connection",
+                "configure-remote",
+                "--endpoint",
+                endpoint,
+                "--label",
+                "Workshop remote",
+                "--api-key-env",
+                "MENTAT_REMOTE_HERMES_API_KEY",
+                "--data-dir",
+                str(data_root),
+            ]
+            preview_output = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"MENTAT_REMOTE_HERMES_API_KEY": secret},
+            ):
+                with patch.object(cli.sys.stdin, "isatty", return_value=False):
+                    with redirect_stdout(preview_output):
+                        self.assertEqual(cli.main(argv), 3)
+            serialized = preview_output.getvalue()
+            self.assertNotIn(secret, serialized)
+            self.assertNotIn(endpoint, serialized)
+            self.assertNotIn(str(data_root), serialized)
+            token = json.loads(serialized)["confirmation_token"]
+
+            result = {
+                "status": "selected",
+                "selection": {
+                    "mode": "remote",
+                    "label": "Workshop remote",
+                    "binding_id": "b" * 32,
+                    "configured": True,
+                },
+                "discovery": {"trusted": True, "status": "healthy"},
+            }
+            confirmed_output = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"MENTAT_REMOTE_HERMES_API_KEY": secret},
+            ):
+                with patch.object(
+                    cli,
+                    "_connection_server_running",
+                    return_value=False,
+                ):
+                    with patch.object(
+                        remote_hermes,
+                        "confirm_connection_from_source",
+                        return_value=result,
+                    ):
+                        with redirect_stdout(confirmed_output):
+                            self.assertEqual(
+                                cli.main([*argv, "--confirm", token]),
+                                0,
+                            )
+            self.assertNotIn(secret, confirmed_output.getvalue())
+            self.assertNotIn(endpoint, confirmed_output.getvalue())
 
     def test_doctor_output_does_not_include_private_paths(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -3,21 +3,21 @@
 Mentat is a single-developer beta. Support is best effort, with no guaranteed
 response time.
 
-## Supported setup
+## Current setup
 
-- **Tier one:** current macOS and Windows releases. The first macOS candidate
-  is Intel; Apple Silicon requires Rosetta and must pass the release rehearsal.
-- **Preview:** Linux, covered by CI but not yet promised at the same level
-- **Python fallback:** Python 3.11–3.13 with Git and a supported Hermes runtime
-- **Access:** one local operator; Mentat stays bound to loopback
+- **Development build:** Python 3.11–3.13 and Git on macOS, Windows, or Linux
+- **Agent features:** a supported Hermes runtime; planning features still work
+  when Hermes is unavailable
+- **Access:** one local operator; the Mentat dashboard stays on your computer
 
-There is no final public-beta release yet. Signed release candidates are
-prereleases used for the rehearsal; the README source setup remains available
-for the current development build.
+macOS and Windows are the tier-one beta targets. Linux is a preview platform.
+There is no public-beta release yet, so use the
+[README source setup](README.md#quick-start) unless you received a private
+release-candidate invitation.
 
-Invited testers can use the short [limited beta checklist](BETA_TESTING.md)
-once the signed release rehearsal is complete. Active cohort problems and safe
-workarounds appear in [known beta issues](KNOWN_ISSUES.md).
+Invited testers should use the exact build and short
+[limited beta checklist](BETA_TESTING.md) provided by the maintainer. Active,
+public-safe problems and workarounds appear in [known beta issues](KNOWN_ISSUES.md).
 
 ## Known limitations
 
@@ -28,11 +28,12 @@ workarounds appear in [known beta issues](KNOWN_ISSUES.md).
   beta runtime; other Hermes releases need fresh compatibility evidence.
 - Google Calendar, Obsidian notes, Hermes sessions, and Hermes cron inventory
   are read-only. Mentat does not queue or edit cron jobs.
-- Updates are manual. Make a backup before upgrading.
+- Updates are manual. Back up your data before upgrading.
 - The first macOS package is `x86_64`; a native Apple Silicon package is not
-  available in this beta candidate.
+  available yet.
 - Native signing/notarization and public release-channel settings remain release
   gates; they are not bypassed by source builds.
 
 For ordinary bugs, use the [bug report form](https://github.com/hazeion/agent-os/issues/new?template=bug_report.yml).
+For feature ideas, use the [feature request form](https://github.com/hazeion/agent-os/issues/new?template=feature_request.yml).
 For possible security problems, use the [private security advisory form](https://github.com/hazeion/agent-os/security/advisories/new).

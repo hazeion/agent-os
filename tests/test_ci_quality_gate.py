@@ -61,6 +61,9 @@ class CiQualityGateTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "quality-gates.yml").read_text(
             encoding="utf-8"
         )
+        browser_smoke = (ROOT / "scripts" / "browser_smoke.mjs").read_text(
+            encoding="utf-8"
+        )
         self.assertEqual(workflow.count("runs-on: ubuntu-24.04"), 4)
         self.assertEqual(workflow.count("python-version: \"3.13.14\""), 3)
         self.assertIn("node-version: 24.18.0", workflow)
@@ -79,6 +82,10 @@ class CiQualityGateTests(unittest.TestCase):
             "MENTAT_BROWSER_RUNTIME_DIR: ${{ runner.temp }}/browser-smoke-runtime",
             workflow,
         )
+        self.assertIn("'--disable-dev-shm-usage'", browser_smoke)
+        self.assertIn("'Chrome debug page', 30000", browser_smoke)
+        self.assertIn("await stopChild(chrome)", browser_smoke)
+        self.assertIn("maxRetries: 5", browser_smoke)
         self.assertIn("--require-hashes -r requirements-quality.lock", workflow)
         self.assertIn("pip_audit -r requirements.txt --strict", workflow)
         self.assertIn("pip_audit -r requirements-native.lock --strict", workflow)

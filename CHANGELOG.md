@@ -2,6 +2,87 @@
 
 All notable changes to Mentat.
 
+## 2026-07-26
+
+### Added
+- Added setup-wizard and installed CLI workflows for configuring, testing, and
+  selecting local Hermes or one remembered remote endpoint.
+- Added `mentat connection status`, `test`, `use`, and `configure-remote` with
+  interactive confirmation and exact two-step non-interactive confirmation.
+
+### Changed
+- Remote connection records now keep only a credential-source reference. API
+  keys resolve from a named environment variable or owner-only env file.
+- Existing schema-v1 embedded remote keys migrate to a separate owner-only
+  private env file while retaining the selected connection.
+
+### Safety
+- CLI connection mutations refuse to run while Mentat is active, remote
+  activation probes authenticated readiness/capabilities before commit, failed
+  operations restore the prior selection, and browser connection requests no
+  longer accept API-key values.
+- Server startup and offline connection changes now share a cross-process
+  reservation, closing startup races and preventing live schema migration.
+- `mentat connection test local` now verifies that the supported Hermes CLI can
+  execute instead of treating a saved local label as proof of readiness.
+
+## 2026-07-25
+
+### Added
+- Added capability-gated, cursor-based replay for remote Hermes Runs events,
+  exact pending approval/clarification recovery from run status, and effective
+  provider/model runtime events.
+- Added a complete authenticated read-only remote profile runtime inventory so
+  Agent Console can show the selected profile's current provider and model.
+
+### Changed
+- Remote approval and clarification waits now keep the normal SSE connection
+  open. Multiple interactive pauses resume on the same run worker and stream;
+  a genuine interruption reconnects automatically from the last verified
+  cursor without resubmitting the run.
+- Agent Console clears stale runtime values while changing agents, rejects
+  out-of-order refresh responses, and refreshes provider/model identity after
+  relevant run, response, session, and connection lifecycle events. Remote
+  selectors show the current values but remain disabled.
+
+### Safety
+- Replay journals and subscriber queues are count- and byte-bounded, sequenced,
+  normalized to a public allowlist, and process-local. Raw tool previews and
+  reasoning bodies are omitted. Invalid, ahead, expired, duplicated, or gapped
+  event cursors fail closed.
+- Pending actions remain bound to the exact request ID, and provider/model
+  payloads reject URLs, paths, secret-shaped identifiers, endpoint reflection,
+  and malformed or partial inventories.
+
+## 2026-07-24
+
+### Changed
+- Updated protected Windows release signing to Azure Artifact Signing with
+  short-lived GitHub OIDC, and added a concise Apple/Azure maintainer setup
+  guide for the first signed release candidate.
+
+### Fixed
+- Remote Console runs now retain a safe connection-bound session alias, so a
+  fresh completed run can continue in the same Hermes session without exposing
+  the upstream session ID.
+- Clarification runs now accept Hermes' advertised
+  `waiting_for_clarification` status instead of failing after the question
+  appears.
+- Supported remote image requests now use a dedicated bounded outbound limit
+  instead of the smaller response-size limit, and deterministic request
+  rejections no longer claim that a run may have started.
+- Kanban follow-up confirmations now bind persisted Mentat task state and the
+  exact remote revision without including a newly generated sync timestamp.
+- Browser smoke gives Chrome a bounded startup window on slower CI runners and
+  waits for browser shutdown before removing its private profile directory.
+
+### Verified
+- Completed the mandatory maintained-runtime matrix against Hermes `0.19.0`
+  over authenticated, certificate-verified HTTPS, including Console
+  interactions, continuation, sessions/search, profiles, skills/toolsets,
+  Context Packs, images, stopping, cancellation races, and revision-bound
+  Kanban creation and result acceptance.
+
 ## 2026-07-21
 
 ### Added
