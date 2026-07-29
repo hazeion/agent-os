@@ -200,6 +200,34 @@ def normalize_transport_binding(
     return mode, binding_id
 
 
+def normalize_usage(value: Any) -> dict[str, int] | None:
+    if value is None:
+        return None
+    if type(value) is not dict:
+        return None
+    normalized: dict[str, int] = {}
+    for name in ("input_tokens", "output_tokens", "total_tokens"):
+        item = value.get(name)
+        if type(item) is not int or not (0 <= item <= 10**9):
+            return None
+        normalized[name] = item
+    context_tokens = value.get("context_tokens")
+    context_length = value.get("context_length")
+    if context_tokens is not None or context_length is not None:
+        if (
+            type(context_tokens) is not int
+            or type(context_length) is not int
+            or not (0 <= context_tokens <= context_length <= 10**9)
+            or context_length == 0
+        ):
+            context_tokens = None
+            context_length = None
+        else:
+            normalized["context_tokens"] = context_tokens
+            normalized["context_length"] = context_length
+    return normalized
+
+
 def summarize_run(run: dict) -> dict:
     prompt, prompt_truncated = bounded_excerpt(run.get("prompt"), PROMPT_EXCERPT_LIMIT)
     response, response_truncated = bounded_excerpt(run.get("response"), RESPONSE_EXCERPT_LIMIT)
@@ -219,8 +247,16 @@ def summarize_run(run: dict) -> dict:
         "model": str(run.get("model") or ""),
         "status": str(run.get("status") or "failed"),
         "session_id": run.get("session_id") or None,
+        "starts_new_session": bool(run.get("starts_new_session")),
+        "new_session_state": (
+            run.get("new_session_state")
+            if run.get("new_session_state") in {"pending", "started", "failed"}
+            else None
+        ),
         "transport_mode": transport[0],
         "connection_binding_id": transport[1],
+        "usage": normalize_usage(run.get("usage")),
+        "partial": bool(run.get("partial")),
         "created_at": run.get("created_at"),
         "updated_at": run.get("updated_at"),
         "started_at": run.get("started_at"),
@@ -360,8 +396,16 @@ def _hydrate(summary: dict) -> dict | None:
         "model": str(summary.get("model") or ""),
         "status": str(summary.get("status") or "failed"),
         "session_id": summary.get("session_id") or None,
+        "starts_new_session": bool(summary.get("starts_new_session")),
+        "new_session_state": (
+            summary.get("new_session_state")
+            if summary.get("new_session_state") in {"pending", "started", "failed"}
+            else None
+        ),
         "transport_mode": transport[0],
         "connection_binding_id": transport[1],
+        "usage": normalize_usage(summary.get("usage")),
+        "partial": bool(summary.get("partial")),
         "prompt": str(summary.get("prompt_excerpt") or ""),
         "prompt_truncated": bool(summary.get("prompt_truncated")),
         "response": str(summary.get("response_excerpt") or ""),
@@ -421,7 +465,14 @@ def load_run_summaries(
             run["status"] = "interrupted"
             run["updated_at"] = interrupted_at
             run["completed_at"] = interrupted_at
-            run["error"] = "Mentat restarted before this run finished."
+            if run.get("transport_mode") == "remote":
+                run["partial"] = True
+                run["error"] = (
+                    "Mentat restarted before this remote run finished; "
+                    "its upstream state could not be verified."
+                )
+            else:
+                run["error"] = "Mentat restarted before this run finished."
             next_sequence = int(run.get("event_cursor") or 0) + 1
             run["events"].append({
                 "schema_version": EVENT_SCHEMA_VERSION,

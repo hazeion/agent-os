@@ -63,6 +63,50 @@ The stored credential and endpoint remain excluded from ordinary backup and
 are never returned from stored state or upstream responses; only the
 operator-supplied setup request, a public label, opaque binding, and minimized
 trusted discovery state may cross the browser boundary.
+Milestone 2E extends that fixed authenticated boundary with read-only remote
+session list, detail, and message operations. Upstream session IDs remain
+process-private behind random connection-bound aliases; browser payloads carry
+only bounded public metadata and user/assistant replay text. Hermes branch
+and compression projection is consumed at the list boundary; projected
+transcripts are labeled as partial because Hermes does not return ancestor
+turns, and any later message-identity change fails closed. Remote continuation
+is enabled only when the maintained runtime advertises the exact stoppable,
+revision-bound capability.
+Milestone 2F adds one-use, process-private remote Context Pack grants. A grant
+binds the selected connection, current pack revision, and exact staged text
+snapshot ids; Mentat sends only bounded UTF-8 text with generic context labels.
+Local paths, filenames, blob metadata, and storage identities never enter the
+upstream request. Direct files and artifacts fail before submission. Images
+also fail clearly because Hermes currently documents them on chat/responses,
+not on the stoppable Runs lifecycle used by Agent Console.
+Milestone 2G adds fixed authenticated reads for the advertised remote skills
+and toolsets endpoints. The Settings payload is read-only, connection-bound,
+bounded, path-free, and allowlisted to skill/toolset identifiers, enabled state,
+and tool counts. It never includes raw responses, descriptions, categories,
+labels, skill contents, tool names, configured-provider details, or partial
+results.
+Milestone 2H adds bounded remote message search over the same 12 recent session
+projections used by the Sessions view. Mentat reads every visible user/assistant
+message in that window through the exact authenticated message endpoint, returns
+at most 20 bounded snippets behind connection-bound aliases, and discards the
+whole search if any read or final connection check fails. The browser is told
+when the 12-session limit was reached and older sessions may not be included,
+or when compacted ancestor turns or additional matches were omitted; Mentat
+does not claim complete-history search.
+Milestone 2I makes diagnostics transport-aware. Local mode retains the existing
+Hermes file/runtime checks. Remote mode replaces them with one authenticated,
+bounded readiness summary and fixed failure categories; it does not return the
+endpoint, credential, binding ID, local Hermes paths, or raw upstream details.
+Remote browser-visible session titles, previews, and message text fail closed
+when they contain path-shaped slash/backslash tokens or credential-shaped
+assignments. Ordinary web URLs, numeric dates/fractions, and `A/B` abbreviations
+remain readable. URL exceptions require a syntactically public host, no user
+credentials, canonical global-unicast IP or valid public DNS syntax, no raw or
+encoded backslash, and only the same safe slash tokens in query/fragment values.
+Special-use DNS suffixes and nested/adjacent URL-path hybrids are rejected;
+Markdown, backtick, and emphasis wrappers are parsed outside the URL span.
+Supported structured messages contribute only bounded allowlisted text parts;
+image, tool, and reasoning content is omitted.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other
@@ -102,7 +146,9 @@ Unsupported capabilities and unknown Hermes versions fail closed. Mentat never
 constructs a shell command from browser text and never collects Hermes-owned
 provider/model credentials or authentication-file contents. The sole remote
 connection credential is the operator-supplied API key governed by the
-owner-only, server-side boundary below.
+owner-only, server-side boundary below. Mentat's connection record stores only
+a credential-source reference; the key is resolved from a validated environment
+variable or owner-only env file.
 
 Mentat is an unauthenticated local application and must bind only to a loopback
 host. Non-loopback serving of Mentat is not a deployment option under this
@@ -116,8 +162,10 @@ Every run records its Hermes profile id, launches with a fixed
 that same profile. `hermes_transport.py` owns the transport-neutral launch
 boundary: it preserves the exact local command/environment/process contract,
 binds retained runs to the selected opaque connection identity, and revalidates
-that identity before queue and launch. Its remote implementation deliberately
-advertises Console unavailable and can neither inspect nor launch local Hermes.
+that identity before queue and launch. Its remote implementation supports one
+profile-scoped turn through fixed Runs API operations, reads only the advertised
+complete profile/runtime inventories, and can neither inspect nor launch local
+Hermes.
 
 ## Remote Hermes connection boundary
 
@@ -125,16 +173,21 @@ The approved public-beta direction is local Mentat connected to one active
 local or remote Hermes endpoint. The detailed capability matrix, upstream
 blockers, implementation order, and exit evidence live in
 [REMOTE_HERMES.md](REMOTE_HERMES.md). The connection/storage/discovery
-foundation and Agent Console transport boundary are implemented, but remote
-execution is not and Mentat must not advertise remote parity or remote Console
-readiness yet.
+foundation, Agent Console transport boundary, default-profile remote run
+lifecycle, read-only sessions, bounded Context Pack text, and remote
+skill/toolset visibility are implemented. Exact approval and clarification
+responses, continuation, complete profile discovery, revisioned Kanban, and
+bounded image transfer are enabled only when their complete advertised
+contracts are present. Remote provider/model mutation and general file/artifact
+transfer remain incomplete, so Mentat must not advertise full remote parity.
 
 The remote boundary has these architectural invariants:
 
 1. the operator explicitly supplies an HTTPS endpoint and API credential;
-2. the credential is used only by Mentat's server and remains outside tracked
-   files, URLs, browser storage/payloads, diagnostics, backups that are not
-   secret-aware, and logs;
+2. setup and CLI accept only a credential-source reference, never an API-key
+   value argument; the key is used only by Mentat's server and remains outside
+   the connection record, tracked files, URLs, browser storage/payloads,
+   diagnostics, backups that are not secret-aware, and logs;
 3. public health is treated only as untrusted liveness; authenticated readiness
    and machine-readable capabilities are validated before Mentat enables a
    dependent feature;
@@ -149,16 +202,32 @@ The remote boundary has these architectural invariants:
 8. local Mentat features continue to work when they do not depend on the failed
    or unavailable remote capability.
 
-Remote Console, sessions/runs, approvals/cancellation/stopping, and
-skill/toolset visibility have documented Hermes API surfaces and remain
-mandatory beta work. Clarification handling is also mandatory, but remains a
-compatibility blocker until the HTTP API advertises a typed request/response
-capability.
-Complete read-only profile discovery and API-key-authenticated Kanban are also
-mandatory, but are upstream blockers until Hermes exposes supported,
-capability-advertised server-to-server operations. Profile creation/deletion,
-identity editing, provider administration, cron inventory, and advanced
-artifact transfer may degrade clearly in remote mode.
+Remote runs, bounded events/status, cancellation, stopping, approval, and
+clarification use the documented Hermes Runs API only when each exact
+capability is advertised. Mentat keeps one SSE subscription open while a run
+waits for an operator response. Hermes assigns monotonic event IDs and retains
+a bounded in-memory journal; a real reconnect supplies the last verified event
+ID and receives only later events. Run status returns the current sanitized,
+request-bound pending action as the authoritative recovery path if its event
+was missed. Mentat never guesses or replays a stale response.
+
+Hermes may also advertise a complete API-key-authenticated profile runtime
+inventory containing only profile ID, current provider ID, and current model
+ID. Mentat uses it to show the selected remote agent's current runtime on load
+and after relevant lifecycle events. Active-run runtime events take precedence.
+These values are read-only in remote mode: visibility does not grant provider
+mutation authority. Provider-switch preview and apply handlers revalidate the
+selected transport under the connection-operation lock and reject every
+non-local binding before local inventory or mutation code runs. Profile
+creation/deletion, identity editing, remote
+provider administration, cron inventory, and advanced artifact transfer may
+degrade clearly in remote mode.
+
+Remote upstream run identifiers are process-private and are not retained in
+Console history. Graceful shutdown performs one stop attempt and bounded
+terminal read-back. After an abrupt process death, Mentat marks a restored
+remote summary interrupted and partial; durable upstream-run recovery is a
+separate storage/authority slice and is not implied by 2C.
 
 ## Agent Console file boundary
 
@@ -197,6 +266,13 @@ relative paths. They never store note/file contents or absolute paths. Every use
 revalidates the references. Console use creates normal private staged snapshots;
 delegation use resolves bounded text into the exact preview and confirmation
 digest, so changed pack content must be previewed again.
+
+Remote Console use adds a short-lived random grant around those existing
+private snapshots. The grant is bound to one connection, pack revision, and
+ordered attachment-id set, and is consumed once. Mentat reads only validated
+text snapshots, applies fixed item and total limits, and constructs a
+path-free user-context block. A restart, expiry, connection change, pack edit,
+or attachment mismatch requires the operator to apply the pack again.
 
 Assistant-created artifacts are accepted only from a private per-run export
 directory named in trusted server-generated execution context. Mentat does not
@@ -324,10 +400,11 @@ a result. Deep Hermes message search remains a separate read-only endpoint.
 
 ## Provider switching boundary
 
-Provider discovery and selection are scoped to the selected Hermes profile. The
-current adapter runs locally; remote mode may expose these controls only when a
-supported endpoint advertises equivalent authenticated inventory, mutation,
-verification, and rollback behavior.
+Provider discovery and selection are scoped to the selected Hermes profile.
+The current mutation adapter runs locally. Remote mode may display the
+capability-advertised current provider/model identity, but keeps mutation
+controls disabled unless a future endpoint advertises equivalent authenticated
+inventory, mutation, verification, and rollback behavior.
 Mentat obtains picker context from Hermes through `load_picker_context()` and
 builds the selectable inventory with
 `build_models_payload(..., explicit_only=True, picker_hints=True)`. The browser
@@ -395,9 +472,38 @@ Agent Console progress is exposed as versioned, structured Mentat events. Event
 sequence numbers are monotonic within a run and double as polling cursors. The
 browser requests only events newer than its cursor and merges them into its local
 run view; the full-run response remains available for compatibility and recovery.
-Events describe Mentat-owned lifecycle transitions only. Mentat does not parse
-unstable native Hermes output into synthetic tool-call events, and it does not
-require a streaming transport for this local-first contract.
+Mentat-owned lifecycle events include a durable `session.started` boundary only
+after an explicitly fresh local run launches or a remote run is accepted.
+
+Local Hermes tool progress arrives through an optional, private, run-scoped
+JSONL channel owned and pre-created by Mentat runtime storage. Mentat passes the
+paths through optional environment variables so an older Hermes runtime keeps
+the exact legacy command and safely ignores them. Mentat validates the file
+boundary, schema, monotonic sequence, type, count, size, and tool identifier
+before projecting an event. It never derives reasoning status from assistant
+text; a local `reasoning.available` phase is accepted only when Hermes reports
+that the provider supplied a genuine reasoning field, and its summary is fixed.
+Mentat never parses native CLI stdout/stderr into tool events or returns raw
+reasoning, tool arguments, tool results, paths, or secrets. The source file is
+deleted with the run's private input workspace. On platforms without secure
+directory-descriptor/no-follow writes, this optional local detail channel fails
+closed and the Console retains its generic lifecycle status and unavailable
+context state.
+
+Completed runs may also receive a private structured usage report. Billing
+totals remain separate from `context_tokens` (the last actual prompt size) and
+`context_length` (the active model window). The UI calculates a percentage only
+when both exact non-negative integers are present and internally consistent;
+otherwise it says the context measurement is unavailable. Cumulative billing
+tokens must never be substituted for active context usage. Remote Runs may
+provide the same optional fields and safe progress summaries through their
+versioned response/event contracts.
+
+For remote runs, the upstream Hermes event sequence is separately verified
+before Mentat projects events into that local history. Approval and
+clarification waits remain active states and do not close the upstream stream.
+Reconnect replay is bounded and in-memory; current pending-action status is the
+fail-closed recovery source when retained history is unavailable.
 
 Agent Console slash commands come from Mentat's versioned, project-owned safe
 command manifest. Each entry declares its dashboard handler, arguments,

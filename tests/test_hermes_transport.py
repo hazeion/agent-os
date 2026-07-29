@@ -73,6 +73,14 @@ class HermesTransportTests(unittest.TestCase):
             root.chmod(0o700)
         return root
 
+    def test_private_remote_content_has_a_bounded_public_message(self):
+        error = HermesTransportError("remote_private_reflection")
+        self.assertEqual(
+            error.public_message,
+            "Remote content was blocked by Mentat's content-safety checks.",
+        )
+        self.assertNotIn("reflection", error.public_message.casefold())
+
     def local_adapter(
         self,
         binding: TransportBinding,
@@ -132,6 +140,45 @@ class HermesTransportTests(unittest.TestCase):
         self.assertEqual(popen.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(popen.call_args.kwargs["errors"], "replace")
 
+    def test_local_adapter_uses_env_telemetry_without_changing_legacy_command(self):
+        adapter = self.local_adapter(
+            TransportBinding("local", "Local Hermes", "local-default")
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            private_root = Path(temporary).resolve()
+            usage_path = private_root / "run" / "usage.json"
+            progress_path = private_root / "run" / "progress.jsonl"
+            launch = adapter.build_console_launch(
+                profile_id="default",
+                prompt="Observe this run",
+                session_id=None,
+                image_path=None,
+                usage_path=usage_path,
+                progress_path=progress_path,
+            )
+            self.assertEqual(
+                launch.command,
+                (
+                    str(adapter.command_path),
+                    "-p",
+                    "default",
+                    "chat",
+                    "-q",
+                    "Observe this run",
+                    "-Q",
+                    "--source",
+                    "mentat",
+                ),
+            )
+            self.assertEqual(
+                launch.env["MENTAT_HERMES_USAGE_FILE"],
+                str(usage_path),
+            )
+            self.assertEqual(
+                launch.env["MENTAT_HERMES_PROGRESS_FILE"],
+                str(progress_path),
+            )
+
     def test_selector_is_binding_aware_and_remote_never_builds_local(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.root(temporary)
@@ -163,7 +210,7 @@ class HermesTransportTests(unittest.TestCase):
             forbidden_builder.assert_not_called()
             with self.assertRaisesRegex(
                 HermesTransportError,
-                "remote_console_not_implemented",
+                "remote_run_capability_unavailable",
             ):
                 remote.build_console_launch(
                     profile_id="default",
@@ -198,13 +245,10 @@ class HermesTransportTests(unittest.TestCase):
             self.assertEqual(summary["agents"], [])
             self.assertEqual(
                 summary["transport"]["error_code"],
-                "remote_console_not_implemented",
+                "remote_run_capability_unavailable",
             )
             self.assertEqual(status, 503)
-            self.assertEqual(
-                started["error_code"],
-                "remote_console_not_implemented",
-            )
+            self.assertIn(started["error_code"], {"remote_unavailable", "remote_run_capability_unavailable"})
             public = json.dumps({"summary": summary, "started": started})
             self.assertNotIn(SECRET, public)
             self.assertNotIn("private-hermes.example", public)
@@ -255,6 +299,12 @@ class HermesTransportTests(unittest.TestCase):
             side_effect=slow_profiles,
         ), patch.object(
             server,
+            "hermes_console_transport",
+            return_value=server.local_hermes_console_transport(
+                TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
+            ),
+        ), patch.object(
+            server,
             "agent_console_model_catalog",
             return_value={"profile_id": "default", "models": []},
         ), patch.object(
@@ -279,9 +329,6 @@ class HermesTransportTests(unittest.TestCase):
                     server.select_hermes_connection(
                         {
                             "mode": "local",
-                            "label": "Local Hermes",
-                            "endpoint": None,
-                            "api_key": None,
                             "confirmation_token": "test-token",
                         }
                     ),
@@ -387,6 +434,8 @@ class HermesTransportTests(unittest.TestCase):
             "prompt": "Run safely",
             "session_id": None,
             "status": "queued",
+            "starts_new_session": False,
+            "new_session_state": "pending",
             "events": [],
             "created_at": "2026-07-20T00:00:00-07:00",
         }
@@ -411,6 +460,62 @@ class HermesTransportTests(unittest.TestCase):
         )
         self.assertNotIn(SECRET, public)
         self.assertNotIn("/Users/private", public)
+        self.assertFalse(server.AGENT_CONSOLE_RUNS[run_id]["starts_new_session"])
+        self.assertEqual(
+            server.AGENT_CONSOLE_RUNS[run_id]["new_session_state"],
+            "failed",
+        )
+        self.assertFalse(any(
+            event["type"] == "session.started"
+            for event in server.AGENT_CONSOLE_RUNS[run_id]["events"]
+        ))
+
+    def test_spawned_cli_failure_does_not_claim_new_session_started(self):
+        class FailedProcess:
+            returncode = 2
+
+            def communicate(self, timeout=None):
+                return "", "configuration rejected"
+
+        adapter = self.local_adapter(
+            TransportBinding("local", "Local Hermes", "local-default"),
+            popen_factory=Mock(return_value=FailedProcess()),
+        )
+        run_id = "run_spawned_failure"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "default",
+            "agent_name": "default",
+            "prompt": "Start cleanly",
+            "session_id": None,
+            "status": "queued",
+            "starts_new_session": False,
+            "new_session_state": "pending",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.root(temporary)
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                adapter,
+                "revalidate",
+            ), patch.object(
+                server,
+                "persist_agent_console_runs",
+            ), patch.object(
+                server,
+                "collect_agent_console_artifacts",
+            ):
+                server.run_hermes_agent(run_id, adapter)
+
+        run = server.AGENT_CONSOLE_RUNS[run_id]
+        self.assertEqual(run["status"], "failed")
+        self.assertFalse(run["starts_new_session"])
+        self.assertEqual(run["new_session_state"], "failed")
+        self.assertFalse(any(
+            event["type"] == "session.started"
+            for event in run["events"]
+        ))
 
     def test_run_binding_mismatch_fails_before_revalidation_or_process_launch(self):
         process_factory = Mock()
