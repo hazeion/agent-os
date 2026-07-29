@@ -42,6 +42,69 @@ class HermesProviderSwitchingTests(unittest.TestCase):
         self.assertTrue(preview["requires_confirmation"])
         self.assertNotEqual(preview["confirmation_id"], changed["confirmation_id"])
 
+    def test_remote_preview_also_binds_exact_runtime_revision(self):
+        inventory = {
+            "current_provider": "openai-codex",
+            "current_model": "gpt-5.6-luna",
+            "providers": [
+                {
+                    "id": "anthropic",
+                    "name": "anthropic",
+                    "authenticated": True,
+                    "models": ["claude-sonnet"],
+                }
+            ],
+            "capabilities": {"providers.switch": True},
+            "revision": "runtime_rev_" + ("a" * 64),
+        }
+        first, status = switching.preview_provider_switch(
+            "builder", "anthropic", "claude-sonnet", inventory
+        )
+        changed, _ = switching.preview_provider_switch(
+            "builder",
+            "anthropic",
+            "claude-sonnet",
+            {**inventory, "revision": "runtime_rev_" + ("b" * 64)},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(first["revision"], inventory["revision"])
+        self.assertNotEqual(first["confirmation_id"], changed["confirmation_id"])
+
+    def test_local_confirmation_token_remains_compatible_without_revision(self):
+        expected = "provider_switch_" + __import__("hashlib").sha256(
+            "\0".join(
+                ["builder", "openai-codex", "gpt", "anthropic", "claude"]
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        self.assertEqual(
+            switching.provider_switch_confirmation(
+                "builder", "openai-codex", "gpt", "anthropic", "claude"
+            ),
+            expected,
+        )
+
+    def test_remote_confirmation_binds_opaque_connection_identifier(self):
+        first = switching.provider_switch_confirmation(
+            "builder",
+            "openai-codex",
+            "gpt",
+            "anthropic",
+            "claude",
+            "runtime_rev_" + ("a" * 64),
+            "b" * 32,
+        )
+        second = switching.provider_switch_confirmation(
+            "builder",
+            "openai-codex",
+            "gpt",
+            "anthropic",
+            "claude",
+            "runtime_rev_" + ("a" * 64),
+            "c" * 32,
+        )
+        self.assertNotEqual(first, second)
+
     def test_preview_rejects_unauthenticated_provider_or_unlisted_model(self):
         inventory = {
             "providers": [

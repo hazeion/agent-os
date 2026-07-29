@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import server
-from hermes_transport import TransportBinding
+from hermes_transport import HermesTransportError, TransportBinding
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -227,9 +227,54 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             cwd=server.BASE_DIR,
         )
 
-    def test_remote_connection_rejects_direct_provider_preview_and_apply(self):
+    def remote_runtime(self, *, provider="openai-codex", model="gpt-5.6", revision="a"):
+        return {
+            "profile_id": "randy",
+            "current_provider": provider,
+            "current_model": model,
+            "providers": [
+                {
+                    "id": "openai-codex",
+                    "name": "openai-codex",
+                    "authenticated": True,
+                    "models": ["gpt-5.6"],
+                },
+                {
+                    "id": "anthropic",
+                    "name": "anthropic",
+                    "authenticated": True,
+                    "models": ["claude-sonnet-4"],
+                },
+            ],
+            "revision": "runtime_rev_" + (revision * 64),
+            "capabilities": {"providers.switch": True},
+            "read_only": False,
+            "error": "",
+        }
+
+    def remote_transport(self, *, binding_id="b" * 32):
         remote_transport = MagicMock()
         remote_transport.mode = "remote"
+        remote_transport.binding = TransportBinding(
+            "remote",
+            "Remote workshop",
+            binding_id,
+        )
+        remote_transport.read_profiles.return_value = [
+            {
+                "id": "randy",
+                "is_default": False,
+                "is_active": True,
+                "served": True,
+            }
+        ]
+        return remote_transport
+
+    def test_remote_connection_remains_read_only_when_switch_capability_is_missing(self):
+        remote_transport = self.remote_transport()
+        remote_transport.read_profile_runtime.side_effect = HermesTransportError(
+            "remote_profile_runtime_capability_unavailable"
+        )
         payload = {
             "agent_id": "randy",
             "provider": "anthropic",
@@ -244,9 +289,6 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             return_value=remote_transport,
         ), patch.object(
             server,
-            "agent_console_provider_inventory",
-        ) as inventory, patch.object(
-            server,
             "apply_provider_switch",
         ) as apply:
             preview, preview_status = (
@@ -258,14 +300,299 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(
             preview["error_code"],
-            "remote_provider_switch_unsupported",
+            "remote_profile_runtime_capability_unavailable",
         )
         self.assertEqual(
             result["error_code"],
-            "remote_provider_switch_unsupported",
+            "remote_profile_runtime_capability_unavailable",
         )
-        inventory.assert_not_called()
         apply.assert_not_called()
+
+    def test_remote_preview_rereads_runtime_and_binds_revision(self):
+        transport = self.remote_transport()
+        first = self.remote_runtime(revision="a")
+        transport.read_profile_runtime.return_value = first
+        with patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ):
+            preview, status = server.preview_agent_console_provider_switch(
+                {
+                    "agent_id": "randy",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4",
+                }
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["revision"], first["revision"])
+        transport.read_profile_runtime.assert_called_once_with("randy")
+
+    def test_remote_switch_is_revision_bound_idempotent_and_fresh_verified(self):
+        transport = self.remote_transport()
+        before = self.remote_runtime(revision="a")
+        after = self.remote_runtime(
+            provider="anthropic",
+            model="claude-sonnet-4",
+            revision="b",
+        )
+        transport.read_profile_runtime.side_effect = [before, after]
+        preview, _ = server.preview_provider_switch(
+            "randy",
+            "anthropic",
+            "claude-sonnet-4",
+            before,
+            binding_id=transport.binding.binding_id,
+        )
+        transport.switch_profile_runtime.return_value = after
+        with patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ):
+            result, status = server.switch_agent_console_provider(
+                {
+                    "agent_id": "randy",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4",
+                    "confirmed": True,
+                    "confirmation_id": preview["confirmation_id"],
+                }
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["provider"], "anthropic")
+        transport.switch_profile_runtime.assert_called_once()
+        call = transport.switch_profile_runtime.call_args
+        self.assertEqual(call.kwargs["revision"], before["revision"])
+        self.assertRegex(
+            call.kwargs["idempotency_key"],
+            r"^mentat-provider-[0-9a-f]{32}$",
+        )
+        self.assertEqual(transport.read_profile_runtime.call_count, 2)
+
+    def test_remote_switch_rejects_stale_confirmation_before_mutation(self):
+        transport = self.remote_transport()
+        original = self.remote_runtime(revision="a")
+        changed = self.remote_runtime(revision="b")
+        preview, _ = server.preview_provider_switch(
+            "randy",
+            "anthropic",
+            "claude-sonnet-4",
+            original,
+            binding_id=transport.binding.binding_id,
+        )
+        transport.read_profile_runtime.return_value = changed
+        with patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ):
+            result, status = server.switch_agent_console_provider(
+                {
+                    "agent_id": "randy",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4",
+                    "confirmed": True,
+                    "confirmation_id": preview["confirmation_id"],
+                }
+            )
+        self.assertEqual(status, 409)
+        self.assertIn("changed after preview", result["error"])
+        transport.switch_profile_runtime.assert_not_called()
+
+    def test_remote_switch_blocks_active_target_profile_only(self):
+        transport = self.remote_transport()
+        runtime = self.remote_runtime()
+        transport.read_profile_runtime.return_value = runtime
+        server.AGENT_CONSOLE_RUNS["run_randy"] = {
+            "id": "run_randy",
+            "agent_id": "randy",
+            "status": "running",
+        }
+        with patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ):
+            result, status = server.preview_agent_console_provider_switch(
+                {
+                    "agent_id": "randy",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4",
+                }
+            )
+        self.assertEqual(status, 409)
+        self.assertEqual(result["active_run_id"], "run_randy")
+        transport.read_profile_runtime.assert_not_called()
+
+    def test_remote_verification_mismatch_rolls_back_once_and_verifies(self):
+        transport = self.remote_transport()
+        before = self.remote_runtime(revision="a")
+        mismatch = self.remote_runtime(
+            provider="anthropic",
+            model="claude-sonnet-4",
+            revision="b",
+        )
+        mismatch["current_model"] = "unexpected-model"
+        mismatch["providers"][1]["models"].append("unexpected-model")
+        rolled_back = self.remote_runtime(revision="c")
+        transport.read_profile_runtime.side_effect = [
+            before,
+            mismatch,
+            rolled_back,
+        ]
+        acknowledged = self.remote_runtime(
+            provider="anthropic",
+            model="claude-sonnet-4",
+            revision="b",
+        )
+        transport.switch_profile_runtime.side_effect = [
+            acknowledged,
+            rolled_back,
+        ]
+        preview, _ = server.preview_provider_switch(
+            "randy",
+            "anthropic",
+            "claude-sonnet-4",
+            before,
+            binding_id=transport.binding.binding_id,
+        )
+        with patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ):
+            result, status = server.switch_agent_console_provider(
+                {
+                    "agent_id": "randy",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4",
+                    "confirmed": True,
+                    "confirmation_id": preview["confirmation_id"],
+                }
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(
+            result["error_code"], "verification_failed_rolled_back"
+        )
+        self.assertEqual(transport.switch_profile_runtime.call_count, 2)
+        rollback = transport.switch_profile_runtime.call_args_list[1]
+        self.assertEqual(rollback.kwargs["provider"], "openai-codex")
+        self.assertEqual(rollback.kwargs["revision"], mismatch["revision"])
+        self.assertRegex(
+            rollback.kwargs["idempotency_key"],
+            r"^mentat-provider-rollback-[0-9a-f]{32}$",
+        )
+
+    def test_remote_verification_mismatch_reports_failed_rollback(self):
+        transport = self.remote_transport()
+        before = self.remote_runtime(revision="a")
+        mismatch = self.remote_runtime(
+            provider="anthropic",
+            model="claude-sonnet-4",
+            revision="b",
+        )
+        mismatch["current_model"] = "unexpected-model"
+        mismatch["providers"][1]["models"].append("unexpected-model")
+        transport.read_profile_runtime.side_effect = [before, mismatch]
+        transport.switch_profile_runtime.side_effect = [
+            self.remote_runtime(
+                provider="anthropic",
+                model="claude-sonnet-4",
+                revision="b",
+            ),
+            HermesTransportError("remote_profile_runtime_changed"),
+        ]
+        preview, _ = server.preview_provider_switch(
+            "randy",
+            "anthropic",
+            "claude-sonnet-4",
+            before,
+            binding_id=transport.binding.binding_id,
+        )
+        with patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ):
+            result, status = server.switch_agent_console_provider(
+                {
+                    "agent_id": "randy",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4",
+                    "confirmed": True,
+                    "confirmation_id": preview["confirmation_id"],
+                }
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(
+            result["error_code"],
+            "verification_failed_rollback_unverified",
+        )
+        self.assertEqual(transport.switch_profile_runtime.call_count, 2)
+
+    def test_remote_confirmation_cannot_cross_connection_bindings(self):
+        first = self.remote_transport(binding_id="b" * 32)
+        second = self.remote_transport(binding_id="c" * 32)
+        runtime = self.remote_runtime(revision="a")
+        first.read_profile_runtime.return_value = runtime
+        second.read_profile_runtime.return_value = runtime
+        with patch.object(
+            server,
+            "hermes_console_transport",
+            side_effect=[first, second],
+        ):
+            preview, preview_status = (
+                server.preview_agent_console_provider_switch(
+                    {
+                        "agent_id": "randy",
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4",
+                    }
+                )
+            )
+            result, status = server.switch_agent_console_provider(
+                {
+                    "agent_id": "randy",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4",
+                    "confirmed": True,
+                    "confirmation_id": preview["confirmation_id"],
+                }
+            )
+
+        self.assertEqual(preview_status, 200)
+        self.assertEqual(status, 409)
+        self.assertIn("changed after preview", result["error"])
+        first.switch_profile_runtime.assert_not_called()
+        second.switch_profile_runtime.assert_not_called()
+
+    def test_remote_verification_advanced_revision_never_rolls_back(self):
+        transport = self.remote_transport()
+        before = self.remote_runtime(revision="a")
+        acknowledged = self.remote_runtime(
+            provider="anthropic",
+            model="claude-sonnet-4",
+            revision="b",
+        )
+        concurrent = self.remote_runtime(revision="c")
+        transport.read_profile_runtime.side_effect = [before, concurrent]
+        transport.switch_profile_runtime.return_value = acknowledged
+        preview, _ = server.preview_provider_switch(
+            "randy",
+            "anthropic",
+            "claude-sonnet-4",
+            before,
+            binding_id=transport.binding.binding_id,
+        )
+        with patch.object(
+            server, "hermes_console_transport", return_value=transport
+        ):
+            result, status = server.switch_agent_console_provider(
+                {
+                    "agent_id": "randy",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4",
+                    "confirmed": True,
+                    "confirmation_id": preview["confirmation_id"],
+                }
+            )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(
+            result["error_code"],
+            "verification_concurrent_change",
+        )
+        self.assertIn("did not roll it back", result["error"])
+        self.assertEqual(transport.switch_profile_runtime.call_count, 1)
 
     def test_frontend_routes_managed_profile_to_console(self):
         self.assertIn("data-use-hermes-profile", APP_JS)
