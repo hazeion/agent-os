@@ -230,7 +230,8 @@ process.stdout.write(JSON.stringify(result));
     def test_today_compact_agenda_stays_separate_and_no_calendar_timer_is_added(self):
         render_block = self.block("function renderCalendar(payload", "function renderEmail")
         self.assertIn("if (view === 'calendar')", render_block)
-        self.assertIn("renderCalendarInto('#calendar-list', payload, { limit: 5 })", render_block)
+        self.assertIn("renderHomeSchedule(payload)", render_block)
+        self.assertNotIn("renderCalendarWeek(payload", render_block.split("return;", 1)[-1])
         calendar_feature = self.block("const CALENDAR_DEFAULT_START_HOUR", "function renderCalendarInto")
         self.assertNotIn("setInterval", calendar_feature)
 

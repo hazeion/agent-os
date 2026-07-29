@@ -306,6 +306,10 @@ class HermesProfileCreationServerTests(unittest.TestCase):
         blocked_create, blocked_create_status = server.create_hermes_profile(request)
         with patch.object(server, "hermes_profiles_payload", return_value=discovery("default")), patch.object(
             server, "hermes_command_path", return_value="/opt/hermes/bin/hermes"
+        ), patch.object(
+            server, "hermes_console_transport", return_value=server.local_hermes_console_transport(
+                server.TransportBinding("local", "Local Hermes", "local-default"), command_path="/opt/hermes/bin/hermes"
+            )
         ):
             blocked_run, blocked_run_status = server.start_agent_console_run(
                 {"agent_id": "hermes", "prompt": "hello"}
