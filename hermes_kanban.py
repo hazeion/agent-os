@@ -11,6 +11,9 @@ import json
 import re
 import subprocess
 from typing import Any, Callable
+from uuid import uuid4
+
+from remote_hermes import RemoteHermesClient, RemoteHermesError
 
 
 SCHEMA_VERSION = 1
@@ -508,3 +511,127 @@ class HermesKanbanAdapter:
         if set(changes) != {"assignee"}:
             return _failure("capability_unavailable", "Hermes CLI supports only assignee updates; title, body, priority, and arbitrary status updates are unavailable.")
         return self.assign_task(board, task_id, changes["assignee"])
+
+
+class RemoteHermesKanbanAdapter:
+    """Revision-aware remote Kanban adapter using only Hermes' fixed API contract."""
+
+    def __init__(self, client: RemoteHermesClient) -> None:
+        self.client = client
+
+    def _call(self, operation: str, **kwargs: Any) -> tuple[dict | None, dict | None]:
+        try:
+            return dict(self.client.kanban_request(operation, **kwargs)), None
+        except RemoteHermesError as exc:
+            return None, _failure(exc.code, "Remote Hermes Kanban is unavailable.", partial=exc.code in {"remote_timeout", "remote_unavailable"})
+
+    def detect_capabilities(self, *, refresh: bool = False) -> dict:
+        try:
+            capabilities = self.client.require_kanban_capabilities()
+        except RemoteHermesError as exc:
+            return {"schema_version": SCHEMA_VERSION, "status": "unavailable", "capabilities": {key: False for key in CAPABILITY_KEYS}, "error": _failure(exc.code, "Remote Hermes Kanban is unavailable.")["error"]}
+        supported = {"kanban_api", "kanban_api_revisioned", "kanban_api_idempotency", "kanban_api_requires_api_key"}.issubset(set(capabilities.get("features") or ()))
+        values = {key: supported for key in CAPABILITY_KEYS}
+        return {"schema_version": SCHEMA_VERSION, "status": "available" if supported else "unsupported", "hermes_version": "remote", "capabilities": values, "error": None if supported else {"code": "capability_unavailable", "message": "Remote Hermes does not advertise revisioned Kanban."}}
+
+    def list_boards(self) -> dict:
+        payload, error = self._call("boards")
+        if error:
+            return error
+        if payload.get("object") != "list" or payload.get("version") != 1 or payload.get("complete") is not True or not isinstance(payload.get("data"), list):
+            return _failure("invalid_payload", "Remote Hermes returned an invalid Kanban board list.")
+        boards = []
+        for item in payload["data"]:
+            if type(item) is not dict or set(item) != {"id", "object", "name", "archived", "is_current"} or item.get("object") != "hermes.kanban.board":
+                return _failure("invalid_payload", "Remote Hermes returned an invalid Kanban board.")
+            board_id = _short_text(item.get("id"), 64).lower()
+            if not _BOARD_RE.fullmatch(board_id):
+                return _failure("invalid_payload", "Remote Hermes returned an invalid Kanban board.")
+            boards.append({"id": board_id, "name": _short_text(item.get("name"), 160) or board_id, "archived": bool(item.get("archived")), "is_current": bool(item.get("is_current")), "description": "", "icon": "", "color": "", "counts": {}})
+        return {"schema_version": SCHEMA_VERSION, "ok": True, "boards": boards, "error": None}
+
+    def list_profiles(self, board: str) -> dict:
+        try:
+            board = _validate(board, _BOARD_RE, "board")
+        except ValueError as exc:
+            return _failure("invalid_request", str(exc))
+        payload, error = self._call("profiles", board=board)
+        if error:
+            return error
+        if payload.get("object") != "list" or payload.get("version") != 1 or payload.get("complete") is not True or payload.get("board") != board or not isinstance(payload.get("data"), list):
+            return _failure("invalid_payload", "Remote Hermes returned an invalid Kanban profile list.")
+        profiles = []
+        for item in payload["data"]:
+            if type(item) is not dict or set(item) != {"id", "object", "available", "counts"} or item.get("object") != "hermes.kanban.profile":
+                return _failure("invalid_payload", "Remote Hermes returned an invalid Kanban profile.")
+            profile_id = _short_text(item.get("id"), 80)
+            if not _PROFILE_RE.fullmatch(profile_id) or type(item.get("counts")) is not dict:
+                return _failure("invalid_payload", "Remote Hermes returned an invalid Kanban profile.")
+            profiles.append({"id": profile_id, "name": profile_id, "available": bool(item["available"]), "counts": {str(k): max(0, _integer(v)) for k, v in item["counts"].items() if str(k)[:32]}})
+        return {"schema_version": SCHEMA_VERSION, "ok": True, "profiles": profiles, "error": None}
+
+    @staticmethod
+    def _detail(payload: dict, board: str) -> dict | None:
+        if payload.get("object") != "hermes.kanban.task_detail" or payload.get("version") != 1 or payload.get("board") not in {None, board} or not isinstance(payload.get("revision"), str) or not re.fullmatch(r"kanbanrev_[0-9a-f]{64}", payload["revision"]):
+            return None
+        task = _normalize_task(payload.get("task"))
+        if task is None:
+            return None
+        comments = payload.get("comments")
+        runs = payload.get("runs")
+        if not isinstance(comments, list) or not isinstance(runs, list):
+            return None
+        clean_comments = [{"author": _short_text(item.get("author"), 80), "body": _clean_text(item.get("body"), MAX_TEXT), "created_at": _timestamp(item.get("created_at"))} for item in comments if isinstance(item, dict)]
+        clean_runs = [item for item in (_normalize_run(value) for value in runs) if item]
+        return {"schema_version": SCHEMA_VERSION, "ok": True, "task": task, "latest_summary": _clean_text(task.get("result"), MAX_TEXT), "parents": [], "children": [], "comments": clean_comments, "runs": clean_runs, "revision": payload["revision"], "error": None}
+
+    def get_task(self, board: str, task_id: str) -> dict:
+        try:
+            board, task_id = _validate(board, _BOARD_RE, "board"), _validate(task_id, _IDENTIFIER_RE, "task id")
+        except ValueError as exc:
+            return _failure("invalid_request", str(exc))
+        payload, error = self._call("task", board=board, task_id=task_id)
+        if error:
+            return error
+        detail = self._detail(payload, board)
+        return detail or _failure("invalid_payload", "Remote Hermes returned an invalid Kanban task.")
+
+    def create_task(self, board: str, *, title: str, body: str = "", assignee: str | None = None, priority: int = 0, workspace: str = "scratch", idempotency_key: str | None = None) -> dict:
+        try:
+            board = _validate(board, _BOARD_RE, "board")
+            material = {"title": _validate_text(title, "title", 500), "body": _validate_text(body, "body", MAX_TEXT, required=False), "assignee": _validate(assignee, _PROFILE_RE, "assignee") if assignee else None, "workspace_kind": workspace, "priority": max(-1000, min(1000, int(priority))), "idempotency_key": _validate(idempotency_key, _IDENTIFIER_RE, "idempotency key")}
+            if workspace not in {"scratch", "worktree"}:
+                raise ValueError("Invalid workspace kind.")
+        except (TypeError, ValueError) as exc:
+            return _failure("invalid_request", str(exc))
+        payload, error = self._call("create", board=board, body=material)
+        if error:
+            return error
+        detail = self._detail(payload, board)
+        return detail or _failure("invalid_payload", "Remote Hermes returned an invalid created task.", partial=True)
+
+    def mutate_task(self, board: str, task_id: str, action: str, *, expected_revision: str, idempotency_key: str, **changes: Any) -> dict:
+        if not isinstance(expected_revision, str) or not re.fullmatch(r"kanbanrev_[0-9a-f]{64}", expected_revision) or not isinstance(idempotency_key, str) or not _IDENTIFIER_RE.fullmatch(idempotency_key):
+            return _failure("invalid_request", "Remote Kanban mutation binding is invalid.")
+        body = {"action": action, "expected_revision": expected_revision, "idempotency_key": idempotency_key, **changes}
+        payload, error = self._call("action", board=board, task_id=task_id, body=body)
+        if error:
+            return error
+        detail = self._detail(payload, board)
+        return detail or _failure("verification_failed", "Remote Hermes accepted the operation but its result could not be verified.", partial=True)
+
+    def _action(self, board: str, task_id: str, action: str, **changes: Any) -> dict:
+        before = self.get_task(board, task_id)
+        if not before.get("ok"):
+            return before
+        return self.mutate_task(board, task_id, action, expected_revision=before["revision"], idempotency_key=f"mentat-{uuid4().hex}", **changes)
+
+    def assign_task(self, board: str, task_id: str, assignee: str | None) -> dict: return self._action(board, task_id, "assign", assignee=assignee)
+    def comment_task(self, board: str, task_id: str, text: str, *, author: str = "mentat") -> dict: return self._action(board, task_id, "comment", body=text, author=author)
+    def reply_task(self, board: str, task_id: str, text: str, *, author: str = "mentat") -> dict: return self._action(board, task_id, "reply", body=text, author=author)
+    def promote_task(self, board: str, task_id: str, *, reason: str = "") -> dict: return self._action(board, task_id, "promote", reason=reason)
+    def block_task(self, board: str, task_id: str, reason: str, *, kind: str = "needs_input") -> dict: return self._action(board, task_id, "block", reason=reason, kind=kind)
+    def retry_task(self, board: str, task_id: str, *, reason: str = "Retried from Mentat") -> dict: return self._action(board, task_id, "retry", reason=reason)
+    def terminate_task(self, board: str, task_id: str, *, reason: str = "Stopped from Mentat") -> dict: return self._action(board, task_id, "terminate", reason=reason)
+    def update_task(self, board: str, task_id: str, **changes: Any) -> dict:
+        return self.assign_task(board, task_id, changes["assignee"]) if set(changes) == {"assignee"} else _failure("capability_unavailable", "Remote Hermes supports only assignment updates.")

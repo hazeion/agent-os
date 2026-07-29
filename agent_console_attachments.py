@@ -573,6 +573,55 @@ def resolve_blob_path(
 
 
 @synchronized_private_state
+def read_attachment_bytes(
+    data_dir: Path,
+    attachment_id: str,
+    *,
+    allowed_states: Collection[str] | None = None,
+) -> tuple[dict, bytes]:
+    """Read one exact attachment blob without following a filesystem link."""
+
+    identifier = _validate_attachment_id(attachment_id)
+    states = frozenset(allowed_states or AVAILABLE_STATES)
+    if not states or not states <= ATTACHMENT_STATES:
+        raise AttachmentValidationError("Invalid attachment state allowlist")
+    connection = connect(data_dir)
+    try:
+        row = connection.execute(
+            "SELECT a.*, b.state AS blob_state, b.storage_key, b.sha256 AS blob_sha256, "
+            "b.byte_size AS blob_byte_size FROM attachments a "
+            "LEFT JOIN blobs b ON b.id = a.blob_id WHERE a.id = ?",
+            (identifier,),
+        ).fetchone()
+        if row is None:
+            raise AttachmentNotFound("Attachment not found")
+        if row["state"] not in states or row["blob_state"] != "ready":
+            raise AttachmentUnavailable("Attachment is not available")
+        expected_size = int(row["byte_size"])
+        expected_sha256 = str(row["blob_sha256"] or "")
+        if int(row["blob_byte_size"] or -1) != expected_size or not _SHA256_PATTERN.fullmatch(expected_sha256):
+            raise AttachmentStorageError("Attachment blob metadata is invalid")
+        path = _safe_blob_path(_blobs_root(data_dir), str(row["storage_key"]), require_exists=True)
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode) or details.st_size != expected_size:
+                raise AttachmentStorageError("Attachment blob content changed")
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = -1
+                payload = handle.read(expected_size + 1)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(payload) != expected_size or hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise AttachmentStorageError("Attachment blob content changed")
+        return _public_metadata(row), payload
+    finally:
+        connection.close()
+
+
+@synchronized_private_state
 def read_attachment_text(
     data_dir: Path,
     attachment_id: str,

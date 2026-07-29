@@ -1,0 +1,4 @@
+# Release-gate tooling. Regenerate with pip-tools and hashes when updating.
+pip-audit==2.10.1
+detect-secrets==1.5.0
+pipx==1.8.0
