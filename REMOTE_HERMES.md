@@ -2,7 +2,7 @@
 
 Status: Approved beta architecture; mandatory maintained-runtime contract live-verified over HTTPS
 Approved: 2026-07-16
-Maintainer verification: 2026-07-24 against Hermes `0.19.0`
+Maintainer verification: 2026-07-28 against the Hermes fork runtime contract
 
 ## Product boundary
 
@@ -32,11 +32,11 @@ also show a bounded, read-only skills and toolsets inventory through the exact
 advertised endpoints. On runtimes advertising the complete verified contract,
 Mentat also enables complete profile discovery, fresh revision-bound session
 continuation, request-bound approval and clarification responses, bounded
-image data URLs, revisioned/idempotent Kanban, and a read-only profile runtime
-inventory. The Console loads and refreshes each selected profile's current
-provider/model identity, but remote switching remains disabled in both the UI
-and the provider-mutation backend. Direct files and artifacts remain
-unavailable.
+image data URLs, revisioned/idempotent Kanban, and profile-scoped runtime
+inventory and switching. The Console loads each selected served profile's
+current provider/model identity and enables the existing selectors only when
+Hermes advertises the complete version-one revision, idempotency, and
+active-run-lock contract. Direct files and artifacts remain unavailable.
 Content safety applies to remote session titles and previews, replay, and
 search. Path- or credential-shaped content fails closed. Compact division such
 as `a/b` is path-shaped here; use spaced code such as `a / b` in transcripts.
@@ -69,7 +69,7 @@ partial rather than claiming the remote run stopped.
 | Profile creation | `hermes_profile_creation.py` and fixed Hermes profile operations | No API-key-authenticated profile-creation capability is advertised by the API server | No approved remote boundary | Exact preview, capability match, profile-bound confirmation, and verified refresh would be required | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Profile identity inspection and synchronization | `hermes_profile_identity.py` resolves local profile metadata and the managed `SOUL.md` block through Hermes APIs | No supported API-server identity capability is advertised | Direct remote `SOUL.md` access is prohibited | Existing revision-bound preview, confirmation, atomicity, verification, and rollback contract would still apply | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Profile deletion | `hermes_profile_deletion.py` calls the supported local Hermes profile API | No supported API-server deletion capability is advertised | No approved remote boundary | Existing exact preview, active-run exclusion, confirmation, and post-delete discovery would still apply | **Graceful degradation**; remote unavailable unless upstream adds support |
-| Provider/model inventory and switching | `hermes_provider_switching.py` loads local picker context and performs a fixed profile-model operation; remote Console consumes only current runtime identity | The fork advertises a complete, API-key-authenticated, secret-free profile runtime inventory and effective run runtime events, but no provider mutation contract | Hermes remains credential owner; Mentat must never receive provider secrets | Strictly validate bounded provider/model IDs, refresh on relevant lifecycle events, keep remote selectors read-only; mutation still requires explicit authenticated inventory, exact preview, active-run lock, switch verification, and rollback | **Graceful degradation**; remote identity visibility is supported, remote administration remains blocked. Session-scoped remote selection is the near-term follow-on described below |
+| Provider/model inventory and switching | `hermes_provider_switching.py` preserves the local picker/fixed-operation path; `remote_hermes.py`, `hermes_transport.py`, and `server.py` consume the remote profile runtime contract | The fork advertises exact authenticated `GET /v1/profiles/{profile_id}/runtime` and `POST /v1/profiles/{profile_id}/runtime/switch` version-one endpoints with revision binding, idempotency, and active-run exclusion | Hermes remains credential owner; Mentat receives only validated provider/model choices and a runtime revision, never credentials or provider endpoints | Require every exact capability flag and endpoint; bind preview to profile/current/target/revision; hold connection and profile mutation locks; send one server-generated idempotency key; fresh-read verify; attempt one revision-bound rollback only after a verified mutation mismatch | **Graceful degradation**; fully supported hosts enable switching, while partial/older hosts retain the read-only current-runtime projection |
 | Skill and toolset visibility | `hermes_skills.py` discovers the local built-in catalog inside the Hermes runtime; Settings uses the remote inventory adapter only in remote mode | The API capability document advertises exact `GET /v1/skills` and `GET /v1/toolsets` paths when supported | API-server bearer key | Revalidate the selected connection before and after both reads; bound and allowlist skill/toolset identifiers, enabled state, and counts; reject private reflection and malformed/partial results; omit descriptions, categories, labels, paths, skill contents, and tool names | **Required**; read-only visibility implemented in 2G |
 | Skill selection | `hermes_skills.py` applies local profile-scoped selection through Hermes | No API-server skill-selection mutation is part of the approved stable surface | No approved remote boundary | Exact profile and selection preview, confirmation, capability match, and refreshed catalog | **Graceful degradation**; remote unavailable unless upstream adds support |
 | Durable Kanban delegation and follow-up | `hermes_kanban.py` uses fixed shell-free local operations or the fixed remote Kanban adapter with task/run read-back | The verified runtime advertises bearer-authenticated revisioned and idempotent Kanban endpoints | API-server bearer key; the dashboard browser/session token remains prohibited | Preserve exact preview/confirmation, mutation locks, in-flight reservation, live task/run binding, idempotency, and operation-specific read-back | **Required** for the verified runtime; unavailable elsewhere |
@@ -100,10 +100,12 @@ when its kind matches the waiting status and its request schema passes the same
 validation as the live event. A legacy no-ID approval acknowledgement never
 clears Mentat's exact local request by itself; Mentat reconciles authoritative
 run status first. `run_runtime_identity` and
-`profile_runtime_inventory` version 1 expose only bounded provider/model IDs.
-They never expose endpoints, paths, credential metadata, environment names, or
-tokens. All four contracts are independently capability-gated for compatibility
-with older Hermes hosts.
+`profile_runtime_inventory` version 1 exposes only bounded provider/model IDs.
+The separate `profile_runtime_switch` version-one contract adds bounded choices
+and an opaque runtime revision. It is trusted only when revision binding,
+idempotency, active-run locking, API-key inventory, and both exact profile
+runtime endpoints are advertised together. These contracts never expose
+endpoints, paths, credential metadata, environment names, or tokens.
 
 The inventory covers the current integration modules `remote_hermes.py`, `hermes_transport.py`, `hermes_profiles.py`,
 `hermes_profile_creation.py`, `hermes_profile_identity.py`,
@@ -278,9 +280,10 @@ Acceptance evidence for this operator experience requires:
 - browser responses, logs, diagnostics, tracked files, and backups that are not
   secret-aware remain free of endpoint and credential data.
 
-## Planned Session Runtime Model Selection API
+## Provider runtime selection
 
-Status: near-term Hermes-fork and Mentat integration goal; not implemented yet.
+Status: profile-default runtime switching implemented; session-scoped
+overrides remain deferred.
 
 Hermes messaging adapters already provide session-scoped `/model` behavior
 because Telegram, Discord, and Slack events enter the in-process gateway
@@ -288,49 +291,27 @@ command dispatcher. The Runs API used by Mentat instead creates an agent
 directly and does not dispatch slash commands. Mentat must not send `/model` as
 model prose or impersonate a messaging platform.
 
-The target feature name is **Session Runtime Model Selection**. Its upstream
-description is: a capability-advertised, API-key-authenticated interface for
-one-turn and session-scoped provider/model selection in Hermes Runs, reusing
-Hermes' existing model-resolution pipeline while keeping credentials inside
-Hermes.
+The Hermes fork now exposes **Profile Default Runtime Management** through an
+exact authenticated runtime read and revision-bound switch. Mentat projects the
+validated choices into the existing Agent Console controls. Preview re-reads
+the selected served profile and binds its current provider/model, requested
+pair, and revision. Apply excludes an active Mentat run for that profile,
+revalidates the connection under the shared mutation locks, recomputes the
+confirmation, and makes one idempotent switch call. A fresh read must verify
+the target. A mismatch permits one rollback only when the fresh state still
+has the exact revision acknowledged by Mentat's switch response, followed by
+another fresh read. If that revision has advanced, Mentat treats the state as
+a concurrent change, does not roll it back, and requires operator inspection.
+An uncertain mutation is never retried.
 
-The Hermes fork should:
+Hosts missing any required flag or exact endpoint remain read-only. Provider
+credentials, endpoint configuration, remote profile creation, skill selection,
+cron mutation, and arbitrary configuration writes remain outside this
+contract.
 
-- advertise an exact versioned runtime-selection capability and endpoint set;
-- return a complete, bounded, profile-scoped, secret-free inventory of
-  providers Hermes currently considers authenticated and their selectable
-  models;
-- accept structured provider, model, profile, connection, session, and scope
-  fields rather than a free-form slash-command string;
-- support `once` and `session` scopes first, matching the useful safe portion
-  of `/model`;
-- resolve credentials and provider transport entirely inside Hermes;
-- bind preview and apply to the exact current runtime, session, and endpoint;
-- preserve the expensive-model confirmation behavior and reject stale or
-  ambiguous selection;
-- define active-run concurrency behavior, idempotency, post-apply read-back,
-  and secret-free audit events; and
-- return the verified effective provider and model without returning API keys,
-  credential references, environment names, paths, or endpoint details.
-
-Mentat should expose this as a **Remote Runtime Selector** in Agent Console. It
-must load and refresh the effective provider/model on profile selection, run
-start, runtime-change events, completion, reconnect, and explicit refresh.
-Hosts without the exact advertised capability remain read-only.
-
-Session Runtime Model Selection is deliberately separate from changing a
-profile's saved default. Persistent profile administration is a later
-**Profile Default Runtime Management** capability with stricter revision,
-confirmation, active-run exclusion, verification, and rollback requirements.
-
-An upstream-facing feature or pull-request title should use:
-
-```text
-feat(api): add authenticated session runtime model selection
-```
-
-with the motivation described as `/model` parity for Runs API clients, not as
-remote credential or configuration management.
+One-turn or session-scoped runtime overrides remain a separate future Runs API
+capability. Mentat must not emulate them by sending `/model` as prose or by
+changing a saved profile default and immediately changing it back.
 
 ## Deferred command discovery and typed execution
 
@@ -426,13 +407,13 @@ After that baseline contract is stable, the next operator-facing slices are:
     **Operator experience: local and remote selection**, initially for local
     plus one remembered remote endpoint; **implemented**. The Settings selector
     remains deferred; and
-12. the Hermes-fork capability and Mentat **Remote Runtime Selector** described
-    in **Planned Session Runtime Model Selection API**, initially limited to
-    one-turn and session-scoped selection.
+12. the Hermes-fork capability and Mentat profile-default **Remote Runtime
+    Selector** described in **Provider runtime selection**; **implemented with
+    exact capability gating, revision-bound confirmation, verification, and
+    rollback**.
 
-Command discovery and persistent profile-default administration remain later,
-separately reviewed capabilities rather than prerequisites for these two
-slices.
+Command discovery and session-scoped runtime overrides remain later,
+separately reviewed capabilities.
 
 ## Beta exit evidence
 
