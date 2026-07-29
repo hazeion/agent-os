@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
 Status: Repository implementation complete through Milestone 8; public beta remains externally gated
-Last updated: 2026-07-24
+Last updated: 2026-07-28
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
@@ -51,6 +51,7 @@ release contract for later implementation and release decisions.
 | Access model | One local operator; Mentat loopback only; one active local or remote Hermes endpoint | Approved 2026-07-16 |
 | Remote transport | Operator-supplied HTTPS endpoint and API key; server-to-server only | Approved 2026-07-16 |
 | Remote parity | Console, sessions/runs, approvals/clarification/cancellation/stopping, skills/toolsets, Kanban, and read-only profile discovery are mandatory; approved administration features may degrade clearly | Approved 2026-07-16 |
+| Remote provider/model switching | Enable only against the exact authenticated version-one profile runtime contract; otherwise retain a read-only runtime projection | Approved 2026-07-28 |
 | Tier-one platforms | macOS and Windows | Approved 2026-07-17 |
 | Preview platform | Linux, covered by CI but not initially promised at the same support level | Approved 2026-07-17 |
 | Python | 3.11 through 3.13 | Approved 2026-07-17 |
@@ -314,7 +315,12 @@ Work in order:
 9. Add Kanban delegation and follow-up only through the supported,
    authenticated, revision-aware capability required by
    [REMOTE_HERMES.md](REMOTE_HERMES.md). **Verified for the connected runtime.**
-10. Test endpoint changes, authentication failure, certificate failure,
+10. Add provider/model switching only through the exact served-profile runtime
+   read/switch contract. **Implemented with complete capability gating,
+   connection- and revision-bound confirmation, one idempotent mutation, fresh
+   verification, and one safe rollback attempt only while the acknowledged
+   post-switch revision still owns the observed state.**
+11. Test endpoint changes, authentication failure, certificate failure,
    capability loss, timeouts, interrupted streams, stale confirmations,
    partial failures, local fallback, upgrade, and rollback. **Milestone 2I adds
    transport-aware diagnostics: local mode keeps its existing checks, while
@@ -580,8 +586,9 @@ The release cannot be called public beta until all of the following are true:
 - [x] Required CI is green on the supported platform/Python matrix.
 - [x] One remote Hermes endpoint can provide every mandatory capability over
   verified HTTPS without exposing its API credential.
-- [x] Remote Kanban and read-only profile discovery use supported,
-  capability-advertised authentication surfaces.
+- [x] Remote Kanban, read-only profile discovery, and fully compatible
+  provider/model switching use supported, capability-advertised authentication
+  surfaces; partial and older hosts retain read-only runtime visibility.
 - [x] Missing Hermes, Google Calendar, or Obsidian degrades safely and clearly.
 - [x] Security, privacy, contributing, support, and known-limitations documents
   are public.

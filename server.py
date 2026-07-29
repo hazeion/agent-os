@@ -5788,6 +5788,72 @@ def agent_console_provider_inventory(profile_id: str = "default", *, refresh: bo
     )
 
 
+def _remote_runtime_model_catalog(runtime: dict) -> dict:
+    current_provider = compact_text(
+        runtime.get("current_provider"), max_length=120
+    )
+    current_model = compact_text(runtime.get("current_model"), max_length=160)
+    selected = next(
+        (
+            item
+            for item in runtime.get("providers") or []
+            if item.get("id") == current_provider
+        ),
+        {},
+    )
+    models = [
+        compact_text(item, max_length=160)
+        for item in selected.get("models") or []
+        if compact_text(item, max_length=160)
+    ]
+    return {
+        "profile_id": runtime.get("profile_id"),
+        "provider": current_provider,
+        "provider_label": compact_text(
+            selected.get("name"), max_length=160
+        )
+        or current_provider,
+        "current_model": current_model,
+        "models": models,
+        "capabilities": dict(runtime.get("capabilities") or {}),
+        "error": compact_text(runtime.get("error"), max_length=300),
+    }
+
+
+def _read_only_remote_runtime_inventory(
+    profile_id: str,
+    runtime: dict,
+    *,
+    fallback_model: str = "",
+) -> dict:
+    provider = compact_text(runtime.get("provider"), max_length=120)
+    model = (
+        compact_text(runtime.get("model"), max_length=160)
+        or compact_text(fallback_model, max_length=160)
+    )
+    providers = [
+        {
+            "id": provider,
+            "name": provider,
+            "current": True,
+            "models": [model] if model else [],
+        }
+    ] if provider else []
+    return {
+        "profile_id": profile_id,
+        "current_provider": provider,
+        "current_model": model,
+        "providers": providers,
+        "capabilities": {"providers.switch": False},
+        "read_only": True,
+        "error": (
+            ""
+            if provider and model
+            else "Current remote runtime identity is unavailable."
+        ),
+    }
+
+
 def agent_console_event(run: dict, message: str, kind: str = "status", data: dict | None = None) -> None:
     events = run.setdefault("events", [])
     sequence_candidates = []
@@ -5909,34 +5975,22 @@ def _agent_console_payload_locked():
         } for profile in profiles]
         selected = next((profile["id"] for profile in profiles if profile["is_active"] and profile["served"]), None)
         selected_runtime = runtimes.get(selected or "") or {}
-        current_provider = compact_text(selected_runtime.get("provider"), max_length=120)
-        current_model = compact_text(selected_runtime.get("model"), max_length=160) or fallback_model
-        runtime_providers = [{
-            "id": current_provider,
-            "name": current_provider,
-            "current": True,
-            "models": [current_model] if current_model else [],
-        }] if current_provider else []
+        provider_payload = _read_only_remote_runtime_inventory(
+            selected or "default",
+            selected_runtime,
+            fallback_model=fallback_model,
+        )
+        if selected and "profile_runtime_switch" in capabilities:
+            try:
+                provider_payload = transport.read_profile_runtime(selected)
+            except HermesTransportError:
+                pass
+        catalog = _remote_runtime_model_catalog(provider_payload)
         return {
             "agents": agents,
             "selected_agent_id": selected,
-            "model_catalog": {
-                "profile_id": selected,
-                "provider": current_provider,
-                "provider_label": current_provider,
-                "current_model": current_model,
-                "models": [current_model] if current_model else [],
-                "capabilities": {"providers.switch": False},
-            },
-            "provider_inventory": {
-                "profile_id": selected,
-                "current_provider": current_provider,
-                "current_model": current_model,
-                "providers": runtime_providers,
-                "capabilities": {"providers.switch": False},
-                "read_only": True,
-                "error": "" if current_provider and current_model else "Current remote runtime identity is unavailable.",
-            },
+            "model_catalog": catalog,
+            "provider_inventory": provider_payload,
             "runs": snapshots,
             "active_run_id": active_run_id,
             "local_only": False,
@@ -7524,8 +7578,8 @@ def preview_agent_console_provider_switch(payload):
         return _preview_agent_console_provider_switch_locked(payload)
 
 
-def _local_provider_mutation_transport_locked():
-    """Fail closed unless the currently selected Hermes binding is local."""
+def _provider_mutation_transport_locked():
+    """Resolve one connection-bound provider mutation transport."""
 
     try:
         transport = hermes_console_transport()
@@ -7534,40 +7588,107 @@ def _local_provider_mutation_transport_locked():
             "error": "Hermes connection settings are unavailable.",
             "error_code": "hermes_connection_unavailable",
         }, 409
-    if transport.mode != "local":
+    if transport.mode not in {"local", "remote"}:
         return None, {
-            "error": (
-                "Provider and model changes are read-only for remote Hermes "
-                "connections."
-            ),
-            "error_code": "remote_provider_switch_unsupported",
+            "error": "Provider and model changes are unavailable.",
+            "error_code": "provider_switch_unsupported",
         }, 409
     return transport, None, 200
+
+
+def _active_provider_run(profile_id: str, *, target_only: bool) -> dict | None:
+    for item in AGENT_CONSOLE_RUNS.values():
+        if item.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES:
+            continue
+        run_profile = (
+            compact_text(item.get("agent_id"), max_length=64).lower()
+            or "default"
+        )
+        if run_profile == "hermes":
+            run_profile = "default"
+        if not target_only or run_profile == profile_id:
+            return item
+    return None
+
+
+def _remote_provider_error(exc: HermesTransportError) -> tuple[dict, int]:
+    status = {
+        "remote_profile_runtime_not_served": 404,
+        "remote_profile_runtime_active": 409,
+        "remote_profile_runtime_changed": 409,
+        "remote_profile_runtime_idempotency_conflict": 409,
+        "remote_profile_runtime_choice_unavailable": 422,
+        "remote_profile_runtime_capability_unavailable": 409,
+        "remote_profile_runtime_request_invalid": 400,
+        "remote_profile_runtime_schema_invalid": 502,
+        "remote_profile_runtime_private": 502,
+        "remote_profile_runtime_switch_unverified": 502,
+    }.get(exc.code, 503)
+    return {"error": exc.public_message, "error_code": exc.code}, status
+
+
+def _remote_profile_available(
+    transport: RemoteHermesConsoleTransport,
+    profile_id: str,
+) -> bool:
+    profiles = transport.read_profiles()
+    return any(
+        profile.get("id") == profile_id and profile.get("served") is True
+        for profile in profiles
+    )
 
 
 def _preview_agent_console_provider_switch_locked(payload):
     if not isinstance(payload, dict):
         return {"error": "Provider switch payload must be a JSON object"}, 400
-    _, transport_error, transport_status = _local_provider_mutation_transport_locked()
+    transport, transport_error, transport_status = _provider_mutation_transport_locked()
     if transport_error:
         return transport_error, transport_status
     requested = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
     if requested == "hermes":
         requested = "default"
-    if agent_console_profile(requested) is None:
+    if transport.mode == "remote":
+        try:
+            transport.revalidate(DATA_DIR)
+            if not _remote_profile_available(transport, requested):
+                return {
+                    "error": f"Unknown or unavailable remote Hermes profile: {requested}"
+                }, 400
+        except HermesTransportError as exc:
+            return _remote_provider_error(exc)
+    elif agent_console_profile(requested) is None:
         return {"error": f"Unknown or unavailable Hermes profile: {requested}"}, 400
     provider = compact_text(payload.get("provider"), max_length=120)
     model = compact_text(payload.get("model"), max_length=160)
     if not provider or not model:
         return {"error": "Provider and model are required"}, 400
     with AGENT_CONSOLE_LOCK:
-        active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+        active = _active_provider_run(
+            requested,
+            target_only=transport.mode == "remote",
+        )
         if active:
             return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
-    inventory = agent_console_provider_inventory(requested, refresh=True)
+    if transport.mode == "remote":
+        try:
+            inventory = transport.read_profile_runtime(requested)
+        except HermesTransportError as exc:
+            return _remote_provider_error(exc)
+    else:
+        inventory = agent_console_provider_inventory(requested, refresh=True)
     if inventory.get("error") and not inventory.get("providers"):
         return {"error": inventory["error"]}, 503
-    return preview_provider_switch(requested, provider, model, inventory)
+    return preview_provider_switch(
+        requested,
+        provider,
+        model,
+        inventory,
+        binding_id=(
+            transport.binding.binding_id
+            if transport.mode == "remote"
+            else ""
+        ),
+    )
 
 
 def switch_agent_console_provider(payload):
@@ -7578,7 +7699,7 @@ def switch_agent_console_provider(payload):
 def _switch_agent_console_provider_locked(payload):
     if not isinstance(payload, dict):
         return {"error": "Provider switch payload must be a JSON object"}, 400
-    _, transport_error, transport_status = _local_provider_mutation_transport_locked()
+    transport, transport_error, transport_status = _provider_mutation_transport_locked()
     if transport_error:
         return transport_error, transport_status
     if payload.get("confirmed") is not True:
@@ -7591,30 +7712,101 @@ def _switch_agent_console_provider_locked(payload):
     model = compact_text(payload.get("model"), max_length=160)
     if not confirmation_id or not provider or not model:
         return {"error": "Provider, model, and preview confirmation are required."}, 400
-    if agent_console_profile(requested) is None:
-        return {"error": f"Unknown or unavailable Hermes profile: {requested}"}, 400
-
     if not HERMES_PROFILE_CREATION_LOCK.acquire(blocking=False):
         return {"error": "Another Hermes profile change is already in progress."}, 409
     try:
+        if transport.mode == "remote":
+            try:
+                transport.revalidate(DATA_DIR)
+                if not _remote_profile_available(transport, requested):
+                    return {
+                        "error": f"Unknown or unavailable remote Hermes profile: {requested}"
+                    }, 400
+            except HermesTransportError as exc:
+                return _remote_provider_error(exc)
+        elif agent_console_profile(requested) is None:
+            return {"error": f"Unknown or unavailable Hermes profile: {requested}"}, 400
         with AGENT_CONSOLE_LOCK:
-            active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+            active = _active_provider_run(
+                requested,
+                target_only=transport.mode == "remote",
+            )
             if active:
                 return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
-        before = agent_console_provider_inventory(requested, refresh=True)
-        preview, preview_status = preview_provider_switch(requested, provider, model, before)
+        if transport.mode == "remote":
+            try:
+                before = transport.read_profile_runtime(requested)
+            except HermesTransportError as exc:
+                return _remote_provider_error(exc)
+        else:
+            before = agent_console_provider_inventory(requested, refresh=True)
+        preview, preview_status = preview_provider_switch(
+            requested,
+            provider,
+            model,
+            before,
+            binding_id=(
+                transport.binding.binding_id
+                if transport.mode == "remote"
+                else ""
+            ),
+        )
         if preview_status != 200:
             return preview, preview_status
         if confirmation_id != preview.get("confirmation_id"):
             return {"error": "Provider or profile state changed after preview; preview the change again."}, 409
 
-        _, apply_error = apply_provider_switch(
-            hermes_python_path(), HERMES_HOME, requested, provider, model, cwd=BASE_DIR
-        )
-        if apply_error:
-            return {"error": apply_error or "Hermes could not change the provider."}, 500
+        if transport.mode == "remote":
+            try:
+                acknowledged = transport.switch_profile_runtime(
+                    requested,
+                    provider=provider,
+                    model=model,
+                    revision=before["revision"],
+                    idempotency_key=f"mentat-provider-{uuid4().hex}",
+                )
+            except HermesTransportError as exc:
+                return _remote_provider_error(exc)
+        else:
+            _, apply_error = apply_provider_switch(
+                hermes_python_path(), HERMES_HOME, requested, provider, model, cwd=BASE_DIR
+            )
+            if apply_error:
+                return {"error": apply_error or "Hermes could not change the provider."}, 500
 
-        verified = agent_console_provider_inventory(requested, refresh=True)
+        if transport.mode == "remote":
+            try:
+                verified = transport.read_profile_runtime(requested)
+            except HermesTransportError:
+                return {
+                    "error": (
+                        "Hermes accepted the provider change, but Mentat could "
+                        "not verify the resulting runtime. Review this profile "
+                        "in Hermes before running it."
+                    ),
+                    "error_code": "verification_failed_rollback_unverified",
+                }, 502
+        else:
+            verified = agent_console_provider_inventory(requested, refresh=True)
+        if transport.mode == "remote":
+            acknowledged_revision = compact_text(
+                acknowledged.get("revision"), max_length=80
+            )
+            verified_revision = compact_text(
+                verified.get("revision"), max_length=80
+            )
+            if (
+                not acknowledged_revision
+                or verified_revision != acknowledged_revision
+            ):
+                return {
+                    "error": (
+                        "Hermes runtime changed again after Mentat's provider "
+                        "update. Mentat did not roll it back; review the current "
+                        "profile in Hermes before running it."
+                    ),
+                    "error_code": "verification_concurrent_change",
+                }, 409
         if verified.get("current_provider") == provider and verified.get("current_model") == model:
             AGENT_MODEL_CATALOG_CACHE.update({"key": None, "payload": None, "fetched_at": 0.0})
             return {
@@ -7623,7 +7815,11 @@ def _switch_agent_console_provider_locked(payload):
                 "provider": provider,
                 "model": model,
                 "provider_inventory": verified,
-                "model_catalog": agent_console_model_catalog(requested, refresh=True),
+                "model_catalog": (
+                    _remote_runtime_model_catalog(verified)
+                    if transport.mode == "remote"
+                    else agent_console_model_catalog(requested, refresh=True)
+                ),
                 "message": "Hermes provider and default model updated and verified.",
             }, 200
 
@@ -7631,12 +7827,29 @@ def _switch_agent_console_provider_locked(payload):
         prior_model = compact_text(before.get("current_model"), max_length=160)
         rollback_ok = False
         if prior_provider and prior_model:
-            _, rollback_error = apply_provider_switch(
-                hermes_python_path(), HERMES_HOME, requested, prior_provider, prior_model, cwd=BASE_DIR
-            )
-            if not rollback_error:
-                rolled_back = agent_console_provider_inventory(requested, refresh=True)
-                rollback_ok = rolled_back.get("current_provider") == prior_provider and rolled_back.get("current_model") == prior_model
+            if transport.mode == "remote":
+                try:
+                    transport.switch_profile_runtime(
+                        requested,
+                        provider=prior_provider,
+                        model=prior_model,
+                        revision=verified["revision"],
+                        idempotency_key=f"mentat-provider-rollback-{uuid4().hex}",
+                    )
+                    rolled_back = transport.read_profile_runtime(requested)
+                    rollback_ok = (
+                        rolled_back.get("current_provider") == prior_provider
+                        and rolled_back.get("current_model") == prior_model
+                    )
+                except (HermesTransportError, KeyError):
+                    rollback_ok = False
+            else:
+                _, rollback_error = apply_provider_switch(
+                    hermes_python_path(), HERMES_HOME, requested, prior_provider, prior_model, cwd=BASE_DIR
+                )
+                if not rollback_error:
+                    rolled_back = agent_console_provider_inventory(requested, refresh=True)
+                    rollback_ok = rolled_back.get("current_provider") == prior_provider and rolled_back.get("current_model") == prior_model
         return {
             "error": "Hermes did not verify the requested provider change; the prior configuration was restored." if rollback_ok else "Hermes did not verify the requested provider change, and Mentat could not verify rollback. Review this profile in Hermes before running it.",
             "error_code": "verification_failed_rolled_back" if rollback_ok else "verification_failed_rollback_unverified",
@@ -7676,36 +7889,23 @@ def _refresh_agent_console_models_locked(payload=None):
                 runtime = transport.read_profile_runtimes().get(requested_agent_id) or {}
             except HermesTransportError:
                 runtime = {}
-        provider = compact_text(runtime.get("provider"), max_length=120)
-        model = compact_text(runtime.get("model"), max_length=160) or compact_text(remote.get("model"), max_length=160)
-        providers = [{
-            "id": provider,
-            "name": provider,
-            "current": True,
-            "models": [model] if model else [],
-        }] if provider else []
-        error = "" if provider and model else "Current remote runtime identity is unavailable."
+        provider_payload = _read_only_remote_runtime_inventory(
+            requested_agent_id,
+            runtime,
+            fallback_model=compact_text(remote.get("model"), max_length=160),
+        )
+        if "profile_runtime_switch" in set(remote.get("capabilities") or ()):
+            try:
+                provider_payload = transport.read_profile_runtime(
+                    requested_agent_id
+                )
+            except HermesTransportError:
+                pass
         return {
             "ok": True,
             "agent_id": requested_agent_id,
-            "model_catalog": {
-                "profile_id": requested_agent_id,
-                "provider": provider,
-                "provider_label": provider,
-                "current_model": model,
-                "models": [model] if model else [],
-                "capabilities": {"providers.switch": False},
-                "error": error,
-            },
-            "provider_inventory": {
-                "profile_id": requested_agent_id,
-                "current_provider": provider,
-                "current_model": model,
-                "providers": providers,
-                "capabilities": {"providers.switch": False},
-                "read_only": True,
-                "error": error,
-            },
+            "model_catalog": _remote_runtime_model_catalog(provider_payload),
+            "provider_inventory": provider_payload,
         }, 200
     if agent_console_profile(requested_agent_id) is None:
         return {"error": f"Unknown or unavailable Hermes profile: {requested_agent_id}"}, 400
