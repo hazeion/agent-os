@@ -198,12 +198,32 @@ def provider_inventory(
     }
 
 
-def provider_switch_confirmation(profile_id: str, current_provider: str, current_model: str, provider: str, model: str) -> str:
-    bound = "\0".join([profile_id, current_provider, current_model, provider, model])
+def provider_switch_confirmation(
+    profile_id: str,
+    current_provider: str,
+    current_model: str,
+    provider: str,
+    model: str,
+    revision: str = "",
+    binding_id: str = "",
+) -> str:
+    values = [profile_id, current_provider, current_model, provider, model]
+    if revision:
+        values.append(revision)
+    if binding_id:
+        values.append(binding_id)
+    bound = "\0".join(values)
     return "provider_switch_" + hashlib.sha256(bound.encode("utf-8")).hexdigest()[:24]
 
 
-def preview_provider_switch(profile_id: str, provider: str, model: str, inventory: dict) -> tuple[dict, int]:
+def preview_provider_switch(
+    profile_id: str,
+    provider: str,
+    model: str,
+    inventory: dict,
+    *,
+    binding_id: str = "",
+) -> tuple[dict, int]:
     if inventory.get("capabilities", {}).get("providers.switch") is not True:
         return {"error": "This Hermes runtime does not expose supported provider switching."}, 503
     target = next((row for row in inventory.get("providers") or [] if row.get("id") == provider and row.get("authenticated") is True), None)
@@ -213,7 +233,16 @@ def preview_provider_switch(profile_id: str, provider: str, model: str, inventor
         return {"error": f"Choose a model Hermes reports for {target.get('name') or provider}."}, 400
     current_provider = str(inventory.get("current_provider") or "")
     current_model = str(inventory.get("current_model") or "")
-    confirmation_id = provider_switch_confirmation(profile_id, current_provider, current_model, provider, model)
+    revision = str(inventory.get("revision") or "")
+    confirmation_id = provider_switch_confirmation(
+        profile_id,
+        current_provider,
+        current_model,
+        provider,
+        model,
+        revision,
+        binding_id,
+    )
     return {
         "ok": True,
         "requires_confirmation": True,
@@ -223,6 +252,7 @@ def preview_provider_switch(profile_id: str, provider: str, model: str, inventor
         "target": {"provider": provider, "provider_name": target.get("name") or provider, "model": model},
         "effects": [f"Change {profile_id} from {current_provider or 'no provider'} / {current_model or 'no model'} to {target.get('name') or provider} / {model}."],
         "warnings": ["New Agent Console runs for this profile will use this provider and model."],
+        **({"revision": revision} if revision else {}),
     }, 200
 
 
