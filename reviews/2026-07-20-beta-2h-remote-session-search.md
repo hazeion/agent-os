@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Session Search
 
-Status: Merged; post-merge Windows timing hotfix ready to merge
+Status: Merged; post-merge Windows timing hotfix merged
 Slice: `beta-2h-remote-session-search`
 Date: `2026-07-20`
 Review log: `reviews/2026-07-20-beta-2h-remote-session-search.md`
@@ -862,10 +862,17 @@ unsupported remote mutation.
 
 ## Outcome review
 
-- Classification: pending.
-- Acceptance criteria summary: pending.
-- Potential bugs or untested paths: pending.
-- Remaining reviewer dissent: pending.
-- Compatibility/migration/rollback concerns: pending.
+- Classification: accepted.
+- Acceptance criteria summary: AC-1 through AC-6 are complete. The focused,
+  full, static, rendered, adversarial-review, ready-PR, and hosted gates pass;
+  hotfix run 85 passed all 42 supported jobs on the exact merged head.
+- Potential bugs or untested paths: no live private remote host was contacted;
+  deterministic HTTPS transport fakes cover the supported bounded schema and
+  failure modes.
+- Remaining reviewer dissent: none. Three independent post-merge reviewers
+  found zero findings on the exact hotfix head.
+- Compatibility/migration/rollback concerns: this is read-only, adds no data
+  migration, preserves local behavior, and can be rolled back without changing
+  Hermes or Mentat data.
 - User decision: standing authorization to continue after successful merge.
 - Next slice authorized: Yes, under the active Road to Beta goal.
