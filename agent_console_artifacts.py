@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from runtime_config import BASE_DIR
+from private_state import ensure_console_root
 
 SCHEMA_VERSION = 1
 RUN_ID_PATTERN = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
@@ -257,7 +258,9 @@ def build_execution_context(
     """
     normalized_run_id = validate_run_id(run_id)
     export_directory = prepare_export_directory(data_dir, normalized_run_id)
-    owned_root = Path(attachment_root or (Path(data_dir) / "runtime"))
+    ensure_console_root(data_dir)
+    default_owned_root = Path(data_dir).absolute() / "private" / "console"
+    owned_root = Path(attachment_root or default_owned_root)
     try:
         owned_root.resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
@@ -324,7 +327,11 @@ def cleanup_run_input_directory(data_dir: Path, run_id: str) -> int:
         raise ArtifactValidationError("unsafe_input_directory", "Agent input directory is outside runtime storage")
     removed = 0
     for candidate in resolved_run_root.iterdir():
-        if candidate.is_symlink() or not candidate.is_file():
+        if candidate.is_symlink():
+            candidate.unlink()
+            removed += 1
+            continue
+        if not candidate.is_file():
             raise ArtifactValidationError("unsafe_input_directory", "Agent input directory contains an unsafe entry")
         candidate.unlink()
         removed += 1

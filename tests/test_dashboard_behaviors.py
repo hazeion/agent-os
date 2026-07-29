@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from hermes_transport import TransportBinding
 
 
 def profile_discovery():
@@ -16,11 +17,18 @@ def profile_discovery():
 
 
 class DashboardBehaviorTests(unittest.TestCase):
+    def local_console(self):
+        return server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
+        )
+
     def write_json(self, root: Path, name: str, payload) -> None:
         (root / name).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     def test_agent_console_only_accepts_hermes_and_requires_a_prompt(self):
-        with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()):
+        with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
+        ):
             invalid_agent, invalid_agent_status = server.start_agent_console_run({"agent_id": "shell", "prompt": "hello"})
             missing_prompt, missing_prompt_status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "  "})
 
@@ -31,9 +39,14 @@ class DashboardBehaviorTests(unittest.TestCase):
 
     def test_agent_console_starts_a_managed_hermes_run(self):
         server.AGENT_CONSOLE_RUNS.clear()
+        transport = self.local_console()
         try:
             with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
                 server, "hermes_command_path", return_value="/tmp/hermes"
+            ), patch.object(
+                server, "hermes_console_transport", return_value=transport
+            ), patch.object(
+                transport, "revalidate"
             ), patch.object(
                 server, "agent_console_model", return_value="test/model"
             ), patch.object(server.threading, "Thread") as worker:
@@ -66,9 +79,15 @@ class DashboardBehaviorTests(unittest.TestCase):
             "events": [],
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
+        transport = server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"),
+            command_path="/tmp/hermes",
+        )
         try:
-            with patch.object(server.subprocess, "Popen", return_value=CompletedHermesProcess()) as popen:
-                server.run_hermes_agent(run_id, "/tmp/hermes")
+            with patch.object(transport, "revalidate"), patch.object(
+                server.subprocess, "Popen", return_value=CompletedHermesProcess()
+            ) as popen:
+                server.run_hermes_agent(run_id, transport)
 
             command = popen.call_args.args[0]
             self.assertEqual(command[:6], ["/tmp/hermes", "-p", "default", "chat", "-q", "Continue this work"])
@@ -108,7 +127,12 @@ class DashboardBehaviorTests(unittest.TestCase):
             with patch.object(server, "HERMES_HOME", hermes_home), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()
             ) as popen:
-                server.run_hermes_agent(run_id, "/tmp/hermes")
+                transport = server.local_hermes_console_transport(
+                    TransportBinding("local", "Local Hermes", "local-default"),
+                    command_path="/tmp/hermes",
+                )
+                with patch.object(transport, "revalidate"):
+                    server.run_hermes_agent(run_id, transport)
 
         child_env = popen.call_args.kwargs["env"]
         self.assertEqual(child_env["PATH"].split(server.os.pathsep)[0], str(shared_bin))
@@ -133,6 +157,8 @@ class DashboardBehaviorTests(unittest.TestCase):
         }
         with patch.object(
             server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
             payload, status = server.preview_agent_console_provider_switch(
                 {
@@ -164,6 +190,8 @@ class DashboardBehaviorTests(unittest.TestCase):
         }
         with patch.object(
             server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
             payload, status = server.preview_agent_console_provider_switch(
                 {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
@@ -213,7 +241,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "calendar.json", fallback_events)
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "google_credentials", return_value=(None, "Google OAuth token not found")
             ):
                 server.CALENDAR_CACHE.update({"key": None, "payload": None, "fetched_at": None})
@@ -258,7 +286,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "attention.json", attention)
             self.write_json(root, "tasks.json", tasks)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.resolve_attention_item("attn_manual")
                 follow_up = server.attention_payload()
                 stored_attention = json.loads((root / "attention.json").read_text(encoding="utf-8"))
@@ -316,7 +344,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "attention.json", [])
             self.write_json(root, "dashboard.json", dashboard)
-            with patch.object(server, "DATA_DIR", root), patch.object(
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(
                 server, "CONFIG_DISPLAY_NAME", None
             ), patch.object(server, "CONFIG_GREETING_PREFIX", "Hello"
             ), patch.object(
@@ -345,7 +373,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload = server.API_ROUTES["/api/projects"]()
 
         self.assertEqual(payload["projects"], projects)
@@ -390,7 +418,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             state_db = root / "state.db"
             self.write_json(root, "agents.json", agents)
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
                 payload = server.agents_payload()
 
         self.assertEqual([agent["id"] for agent in payload["agents"]], ["agent_hermes", "agent_helper"])
@@ -443,7 +471,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             con.commit()
             con.close()
 
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "STATE_DB", state_db):
                 payload = server.agents_payload()
 
         self.assertEqual(payload["summary"]["total"], 1)
@@ -475,7 +503,7 @@ class DashboardBehaviorTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.write_json(root, "agents.json", [])
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "datetime") as clock:
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "datetime") as clock:
                 clock.now.side_effect = [first_heartbeat_at, second_heartbeat_at]
                 payload, status = server.handle_post_route("/api/agents/heartbeat", request)
                 updated_payload, updated_status = server.handle_post_route(
@@ -564,7 +592,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             con.commit()
             con.close()
 
-            with patch.object(server, "DATA_DIR", root), patch.object(server, "STATE_DB", db_path):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "STATE_DB", db_path):
                 payload, status = server.session_replay("session_trace")
 
         replay = payload["replay"]
@@ -606,7 +634,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "tasks.json", [])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.create_task(request)
                 stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 
@@ -668,7 +696,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "tasks.json", [existing])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.update_task("task_existing", request)
                 stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 
@@ -705,7 +733,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "tasks.json", [])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.handle_post_route("/api/tasks", request)
                 stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 
@@ -749,7 +777,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             root = Path(tmpdir)
             self.write_json(root, "projects.json", projects)
             self.write_json(root, "tasks.json", [existing])
-            with patch.object(server, "DATA_DIR", root):
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.handle_post_route("/api/tasks/task_existing", request)
                 stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 

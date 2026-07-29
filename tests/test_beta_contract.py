@@ -8,6 +8,7 @@ ROADMAP = (ROOT / "ROAD_TO_BETA.md").read_text(encoding="utf-8")
 ARCHITECTURE = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
 REMOTE_HERMES = (ROOT / "REMOTE_HERMES.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+APP_JS = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
 
 
 def section(text: str, start: str, end: str) -> str:
@@ -19,6 +20,10 @@ def normalized_section(text: str, start: str, end: str) -> str:
 
 
 class BetaContractTests(unittest.TestCase):
+    def test_remote_transcripts_render_as_escaped_plain_text(self):
+        self.assertIn("payload.plain_text === true", APP_JS)
+        self.assertIn("plainTextTranscript ? highlightHtml", APP_JS)
+
     def test_standard_mit_license_uses_approved_holder(self):
         self.assertTrue(LICENSE.startswith("MIT License\n"))
         self.assertIn("Copyright (c) 2026 Brandon Thomas", LICENSE)
@@ -106,15 +111,62 @@ class BetaContractTests(unittest.TestCase):
         ):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
-        self.assertTrue(next_actions.lstrip().startswith("1. Begin the next bounded Milestone 1 slice"))
-        self.assertIn("[DATA_LAYOUT.md](DATA_LAYOUT.md)", next_actions)
+        self.assertTrue(
+            next_actions.lstrip().startswith(
+                "1. Configure the protected `beta-release` environment"
+            )
+        )
+        self.assertIn("real operator-managed", next_actions)
+        self.assertIn("signed numbered-RC workflow", next_actions)
+        self.assertIn("limited cohort", next_actions)
+        self.assertIn("protected exact-byte", next_actions)
         self.assertNotIn("early CI guardrail", next_actions)
         self.assertNotIn("Finish the remaining Milestone 0", next_actions)
 
     def test_docs_do_not_claim_native_installers_already_exist(self):
-        self.assertIn("Native installers are required for the public beta but are not implemented yet", README)
-        self.assertIn("source-checkout instructions remain the current install path", README)
-        self.assertIn("You need Python 3.11 through 3.13", README)
+        normalized_readme = " ".join(README.replace(">", "").split())
+        self.assertIn("There is no public installer yet", normalized_readme)
+        self.assertIn("## Quick start", README)
+        self.assertIn("[Python 3.11–3.13]", README)
+        for first_run_step in (
+            "git clone https://github.com/hazeion/agent-os.git",
+            "python -m pip install -r requirements.txt",
+            "python scripts/mentat_setup.py",
+            "./run.sh",
+        ):
+            self.assertIn(first_run_step, README)
+
+    def test_roadmap_separates_repository_readiness_from_external_release_gates(self):
+        baseline = normalized_section(ROADMAP, "## Current baseline", "## How roadmap work is organized")
+        milestone_map = normalized_section(ROADMAP, "## Milestone map", "## Milestone 0")
+        done = section(ROADMAP, "## Public beta definition of done", "## Work intentionally deferred")
+        next_actions = ROADMAP.split("## Current next actions", 1)[1]
+
+        self.assertIn("Repository implementation complete through Milestone 8", ROADMAP)
+        self.assertIn("remaining gaps are external execution evidence", baseline)
+        self.assertNotIn("there is no installable Python package", baseline.lower())
+        self.assertIn("Repository tooling complete; signed clean-machine evidence remains in 6", milestone_map)
+        self.assertIn("Repository kit complete; external cohort not started", milestone_map)
+        self.assertIn("Repository promotion complete; publication blocked by 6 and 7", milestone_map)
+        self.assertIn("Repository tooling complete; signed rehearsal externally gated", milestone_map)
+        self.assertEqual(done.count("- [x]"), 10)
+        self.assertEqual(done.count("- [ ]"), 4)
+        for unfinished in (
+            "- [ ] A signed and notarized native installer for macOS",
+            "- [ ] Release artifacts, checksums, notes, and rollback instructions",
+            "- [ ] The limited external beta meets its cohort",
+            "- [ ] There are no unresolved P0 or P1 issues",
+            "- [x] One remote Hermes endpoint can provide every mandatory capability",
+        ):
+            self.assertIn(unfinished, done)
+        for required in (
+            "release immutability",
+            "real operator-managed",
+            "another person",
+            "limited cohort",
+            "protected exact-byte",
+        ):
+            self.assertIn(required, next_actions)
 
     def test_remote_contract_records_required_parity_and_safe_degradation(self):
         for required in (
@@ -127,7 +179,8 @@ class BetaContractTests(unittest.TestCase):
             "Durable Kanban delegation and follow-up",
         ):
             self.assertIn(required, REMOTE_HERMES)
-        self.assertIn("**Required**; upstream authenticated capability blocker", REMOTE_HERMES)
+        self.assertIn("request-bound approval", REMOTE_HERMES)
+        self.assertIn("revisioned and idempotent Kanban", REMOTE_HERMES)
         self.assertIn("Clarification handling", REMOTE_HERMES)
         self.assertIn("**Graceful degradation**", REMOTE_HERMES)
 
@@ -142,6 +195,7 @@ class BetaContractTests(unittest.TestCase):
         })
         for adapter in adapters:
             self.assertIn(f"`{adapter}`", REMOTE_HERMES)
+        self.assertIn("`remote_hermes.py`", REMOTE_HERMES)
 
     def test_remote_security_boundary_is_fail_closed(self):
         normalized_contract = " ".join(REMOTE_HERMES.split())
@@ -155,8 +209,8 @@ class BetaContractTests(unittest.TestCase):
             "must never be returned to the browser",
         ):
             self.assertIn(requirement, normalized_contract)
-        self.assertIn("unauthenticated loopback plugin HTTP route", normalized_contract)
-        self.assertNotIn("behind dashboard session auth", normalized_contract)
+        self.assertIn("separate dashboard session-token boundary", normalized_contract)
+        self.assertIn("not the approved stable API-server bearer boundary", normalized_contract)
         normalized_architecture = " ".join(ARCHITECTURE.split())
         self.assertIn("never collects Hermes-owned provider/model credentials", normalized_architecture)
         self.assertIn("operator-supplied API key", normalized_architecture)
@@ -165,7 +219,7 @@ class BetaContractTests(unittest.TestCase):
         link = "[REMOTE_HERMES.md](REMOTE_HERMES.md)"
         self.assertIn(link, ROADMAP)
         self.assertIn(link, ARCHITECTURE)
-        self.assertIn(link, README)
+        self.assertIn("(REMOTE_HERMES.md)", README)
 
     def test_roadmap_uses_verified_ready_pull_requests(self):
         self.assertIn("ready pull request", ROADMAP)
