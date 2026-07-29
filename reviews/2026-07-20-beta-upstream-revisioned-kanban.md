@@ -48,7 +48,8 @@ post-action read-back, local-mode compatibility, and capability advertisement.
 
 - Draft upstream pull request: [NousResearch/hermes-agent#68200](https://github.com/NousResearch/hermes-agent/pull/68200)
 - Fork branch: `hazeion:feat/http-revisioned-kanban` at
-  `29591d75dbf4ba470098e136a65539d4d001762b`.
+  `14491d168` after rebasing onto upstream `main` at
+  `67e73ae95899c57b9b9134b4b10a2520dffd0a16`.
 - Focused Kanban/database suite: 245 tests passed.
 - API-server and multiplex regression suite: 212 tests passed.
 - Ruff, Python compilation, and whitespace checks passed.

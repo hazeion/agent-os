@@ -20,9 +20,11 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import ssl
 import stat
+import subprocess
 import threading
 import time
 from typing import Any, Callable, Mapping
@@ -32,17 +34,28 @@ from uuid import uuid4
 
 from data_layout import (
     _open_directory_no_follow,
+    _open_readonly_no_follow,
     _windows_close_handle,
     _windows_open_directory_chain,
 )
 from json_store import read_json, write_json_atomic
-from private_state import ensure_private_root, private_root, private_state_lock
+from private_state import (
+    ensure_private_root,
+    mentat_server_active,
+    private_root,
+    private_state_lock,
+)
 
 
-CONNECTION_SCHEMA_VERSION = 1
+CONNECTION_SCHEMA_VERSION = 2
+LEGACY_CONNECTION_SCHEMA_VERSION = 1
 CONNECTION_FILE_NAME = "remote-hermes-connection-v1.json"
+CONNECTION_CREDENTIAL_FILE_NAME = "remote-hermes-credential.env"
+DEFAULT_REMOTE_API_KEY_ENV = "MENTAT_REMOTE_HERMES_API_KEY"
 MAX_CONNECTION_BYTES = 16 * 1024
+MAX_CREDENTIAL_FILE_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_REMOTE_RUN_REQUEST_BYTES = 28 * 1024 * 1024
 MAX_RUN_EVENT_BYTES = 256 * 1024
 MAX_RUN_STREAM_BYTES = 4 * 1024 * 1024
 MAX_RUN_EVENTS = 5_000
@@ -56,11 +69,19 @@ FIXED_PATHS = frozenset(
         "/v1/capabilities",
         "/v1/skills",
         "/v1/toolsets",
+        "/v1/profiles",
+        "/v1/profile-runtimes",
     }
 )
 _RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
 _SAFE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+()-]{0,79}$")
 _SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/@-]{0,159}$")
+_RUNTIME_SECRET_PREFIX = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:sk-(?:proj-)?|gh[pousr]_|github_pat_|xox[baprs]-|AIza|AKIA|ASIA|eyJ)"
+)
+_RUNTIME_SECRET_SEGMENT = re.compile(
+    r"(?i)(?:^|[./_:@-])(?:api.?key|secret|token|password|passwd|bearer|authorization)(?:$|[./_:@-])"
+)
 _KNOWN_BOOLEAN_FEATURES = frozenset(
     {
         "chat_completions",
@@ -70,8 +91,30 @@ _KNOWN_BOOLEAN_FEATURES = frozenset(
         "run_submission",
         "run_status",
         "run_events_sse",
+        "run_event_replay",
+        "run_pending_action_status",
+        "run_runtime_identity",
         "run_stop",
         "run_approval_response",
+        "run_approval_request_binding",
+        "run_approval_structured_preview",
+        "run_clarification_response",
+        "run_clarification_request_binding",
+        "clarification_events",
+        "run_session_continuation",
+        "run_session_continuation_exact_revision",
+        "run_session_continuation_stoppable",
+        "run_inline_images",
+        "profile_inventory",
+        "profile_inventory_complete",
+        "profile_inventory_requires_api_key",
+        "profile_runtime_inventory",
+        "profile_runtime_inventory_complete",
+        "profile_runtime_inventory_requires_api_key",
+        "kanban_api",
+        "kanban_api_revisioned",
+        "kanban_api_idempotency",
+        "kanban_api_requires_api_key",
         "tool_progress_events",
         "approval_events",
         "session_resources",
@@ -102,6 +145,26 @@ _CAPABILITY_INVENTORY_ENDPOINTS = {
     "skills": ("GET", "/v1/skills"),
     "toolsets": ("GET", "/v1/toolsets"),
 }
+_PROFILE_INVENTORY_ENDPOINT = ("GET", "/v1/profiles")
+_PROFILE_RUNTIME_INVENTORY_ENDPOINT = ("GET", "/v1/profile-runtimes")
+_CONTINUATION_ENDPOINT = ("GET", "/v1/sessions/{session_id}/continuation")
+_APPROVAL_ENDPOINT = ("POST", "/v1/runs/{run_id}/approval")
+_CLARIFICATION_ENDPOINT = ("POST", "/v1/runs/{run_id}/clarification")
+_KANBAN_ENDPOINTS = {
+    "kanban_boards": ("GET", "/v1/kanban/boards"),
+    "kanban_profiles": ("GET", "/v1/kanban/profiles?board={board}"),
+    "kanban_tasks": ("GET", "/v1/kanban/tasks?board={board}"),
+    "kanban_task": ("GET", "/v1/kanban/tasks/{task_id}?board={board}"),
+    "kanban_task_create": ("POST", "/v1/kanban/tasks?board={board}"),
+    "kanban_task_action": ("POST", "/v1/kanban/tasks/{task_id}/actions?board={board}"),
+}
+_APPROVAL_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_CLARIFICATION_REQUEST_ID = re.compile(r"clarify_[A-Za-z0-9_-]{1,120}\Z")
+_CONTINUATION_REVISION = re.compile(r"sessionrev_[0-9a-f]{64}\Z")
+_KANBAN_REVISION = re.compile(r"kanbanrev_[0-9a-f]{64}\Z")
+_KANBAN_IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}\Z")
+_KANBAN_BOARD = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+_KANBAN_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 MAX_REMOTE_SKILLS = 500
 MAX_REMOTE_TOOLSETS = 128
 MAX_REMOTE_TOOLS_PER_TOOLSET = 256
@@ -116,6 +179,9 @@ MAX_PUBLIC_URL_SPANS = 256
 MAX_PUBLIC_URL_QUERY_FIELDS = 64
 _SECRET_TOKEN_TEXT = re.compile(
     r"(?i)(?:\bbearer\s+\S+|\b(?:sk-(?:proj-)?|gh[pousr]_|AKIA)[A-Z0-9_-]{8,})"
+)
+_ASCII_CREDENTIAL_MARKER = re.compile(
+    r"(?i)(?:key|credentials?|password|passwd|secret|token|authorization)"
 )
 _CREDENTIAL_LABELS = (
     "apikey",
@@ -316,6 +382,7 @@ _RUN_STATUSES = frozenset(
         "queued",
         "running",
         "waiting_for_approval",
+        "waiting_for_clarification",
         "stopping",
         "completed",
         "failed",
@@ -665,13 +732,13 @@ def _unlink_connection(path: Path, parent_fd: int | None) -> None:
 
 def _write_connection_record(
     path: Path,
-    selection: ConnectionSelection,
+    state: ConnectionState,
     *,
     parent_fd: int | None,
 ) -> None:
     write_json_atomic(
         path,
-        _record(selection),
+        _record(state),
         mode=0o600,
         parent_fd=parent_fd,
         maximum_bytes=MAX_CONNECTION_BYTES,
@@ -688,6 +755,29 @@ class RemoteHermesError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class CredentialSource:
+    kind: str
+    name: str
+    path: str | None = None
+
+
+@dataclass(frozen=True)
+class RememberedRemote:
+    label: str
+    endpoint: str
+    credential: CredentialSource
+
+
+@dataclass(frozen=True)
+class ConnectionState:
+    mode: str
+    local_label: str
+    remote: RememberedRemote | None
+    binding_id: str
+    schema_version: int = CONNECTION_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -712,18 +802,34 @@ class ConnectionSelection:
 class ConnectionPreview:
     current: ConnectionSelection
     proposed: ConnectionSelection
+    current_state: ConnectionState
+    proposed_state: ConnectionState
     confirmation_token: str
     changed: bool
 
     def public_summary(self) -> dict[str, Any]:
         return {
             "status": "ready",
-            "current": self.current.public_summary(),
+            "current": {
+                **self.current.public_summary(),
+                "remembered_remote": self.current_state.remote is not None,
+                "remembered_remote_label": (
+                    self.current_state.remote.label
+                    if self.current_state.remote is not None
+                    else None
+                ),
+            },
             "proposed": {
                 "mode": self.proposed.mode,
                 "label": self.proposed.label,
                 "configured": self.proposed.mode == "remote",
                 "transport": _transport_label(self.proposed.endpoint),
+                "remembered_remote": self.proposed_state.remote is not None,
+                "remembered_remote_label": (
+                    self.proposed_state.remote.label
+                    if self.proposed_state.remote is not None
+                    else None
+                ),
             },
             "changed": self.changed,
             "confirmation_token": self.confirmation_token,
@@ -740,8 +846,21 @@ def _default_selection() -> ConnectionSelection:
     )
 
 
+def _default_state() -> ConnectionState:
+    return ConnectionState(
+        mode="local",
+        local_label="Local Hermes",
+        remote=None,
+        binding_id="local-default",
+    )
+
+
 def connection_path(data_root: Path) -> Path:
     return private_root(Path(data_root)) / CONNECTION_FILE_NAME
+
+
+def connection_credential_path(data_root: Path) -> Path:
+    return private_root(Path(data_root)) / CONNECTION_CREDENTIAL_FILE_NAME
 
 
 def _clean_label(value: Any) -> str:
@@ -762,6 +881,266 @@ def _clean_api_key(value: Any) -> str:
     if value != value.strip() or any(ord(char) < 33 or ord(char) > 126 for char in value):
         raise RemoteHermesError("connection_credential_invalid")
     return value
+
+
+def _clean_environment_name(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", value):
+        raise RemoteHermesError("connection_credential_source_invalid")
+    return value
+
+
+def _clean_credential_path(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or not value
+        or len(value) > 2048
+        or "\x00" in value
+    ):
+        raise RemoteHermesError("connection_credential_source_invalid")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise RemoteHermesError("connection_credential_source_invalid")
+    return os.fspath(path)
+
+
+def credential_source_from_values(
+    kind: Any,
+    *,
+    name: Any = DEFAULT_REMOTE_API_KEY_ENV,
+    path: Any = None,
+) -> CredentialSource:
+    clean_name = _clean_environment_name(name)
+    if kind == "environment":
+        if path is not None and path != "":
+            raise RemoteHermesError("connection_credential_source_invalid")
+        return CredentialSource("environment", clean_name)
+    if kind == "env_file":
+        return CredentialSource("env_file", clean_name, _clean_credential_path(path))
+    if kind == "private_env_file":
+        if path is not None and path != "":
+            raise RemoteHermesError("connection_credential_source_invalid")
+        return CredentialSource("private_env_file", clean_name)
+    raise RemoteHermesError("connection_credential_source_invalid")
+
+
+def _credential_source_record(source: CredentialSource) -> dict[str, Any]:
+    payload = {"kind": source.kind, "name": source.name}
+    if source.kind == "env_file":
+        payload["path"] = source.path
+    return payload
+
+
+def _credential_source_from_record(payload: Any) -> CredentialSource:
+    if type(payload) is not dict:
+        raise RemoteHermesError("connection_record_invalid")
+    expected = (
+        {"kind", "name", "path"}
+        if payload.get("kind") == "env_file"
+        else {"kind", "name"}
+    )
+    if set(payload) != expected:
+        raise RemoteHermesError("connection_record_invalid")
+    try:
+        return credential_source_from_values(
+            payload.get("kind"),
+            name=payload.get("name"),
+            path=payload.get("path"),
+        )
+    except RemoteHermesError as exc:
+        raise RemoteHermesError("connection_record_invalid") from exc
+
+
+def _read_owner_private_bytes(
+    path: Path,
+    *,
+    parent_fd: int | None = None,
+    maximum_bytes: int = MAX_CREDENTIAL_FILE_BYTES,
+) -> bytes:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = (
+            os.open(path.name, flags, dir_fd=parent_fd)
+            if parent_fd is not None
+            else _open_readonly_no_follow(path)
+        )
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        raise RemoteHermesError("connection_credential_unavailable") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size > maximum_bytes
+            or (
+                os.name == "posix"
+                and (
+                    (hasattr(os, "geteuid") and metadata.st_uid != os.geteuid())
+                    or stat.S_IMODE(metadata.st_mode) != 0o600
+                )
+            )
+        ):
+            raise RemoteHermesError("connection_credential_file_unsafe")
+        if os.name == "nt" and not _verify_owner_private(path, directory=False):
+            raise RemoteHermesError("connection_credential_file_unsafe")
+        chunks: list[bytes] = []
+        remaining = maximum_bytes + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > maximum_bytes:
+            raise RemoteHermesError("connection_credential_file_unsafe")
+        return raw
+    except RemoteHermesError:
+        raise
+    except OSError as exc:
+        raise RemoteHermesError("connection_credential_unavailable") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _parse_environment_file(raw: bytes, name: str) -> str:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RemoteHermesError("connection_credential_file_invalid") from exc
+    found: str | None = None
+    for source_line in text.splitlines():
+        line = source_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, raw_value = line.partition("=")
+        if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key.strip()):
+            raise RemoteHermesError("connection_credential_file_invalid")
+        if key.strip() != name:
+            continue
+        if found is not None:
+            raise RemoteHermesError("connection_credential_file_invalid")
+        value_text = raw_value.strip()
+        if (
+            len(value_text) >= 2
+            and value_text[0] == value_text[-1]
+            and value_text[0] in {'"', "'"}
+        ):
+            if value_text[0] == '"':
+                try:
+                    value = json.loads(value_text)
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise RemoteHermesError("connection_credential_file_invalid") from exc
+            else:
+                value = value_text[1:-1]
+        else:
+            if not value_text or any(char.isspace() for char in value_text):
+                raise RemoteHermesError("connection_credential_file_invalid")
+            value = value_text
+        found = _clean_api_key(value)
+    if found is None:
+        raise RemoteHermesError("connection_credential_unavailable")
+    return found
+
+
+def _resolve_credential(
+    data_root: Path,
+    source: CredentialSource,
+    *,
+    private_parent_fd: int | None = None,
+) -> str:
+    if source.kind == "environment":
+        value = os.environ.get(source.name)
+        if value is None:
+            raise RemoteHermesError("connection_credential_unavailable")
+        return _clean_api_key(value)
+    if source.kind == "private_env_file":
+        raw = _read_owner_private_bytes(
+            connection_credential_path(data_root),
+            parent_fd=private_parent_fd,
+        )
+        return _parse_environment_file(raw, source.name)
+    if source.kind == "env_file" and source.path is not None:
+        return _parse_environment_file(
+            _read_owner_private_bytes(Path(source.path)),
+            source.name,
+        )
+    raise RemoteHermesError("connection_credential_source_invalid")
+
+
+def _credential_file_bytes(name: str, api_key: str) -> bytes:
+    return f"{name}={json.dumps(_clean_api_key(api_key))}\n".encode("utf-8")
+
+
+def _write_private_credential(
+    path: Path,
+    name: str,
+    api_key: str,
+    *,
+    parent_fd: int | None,
+) -> None:
+    content = _credential_file_bytes(name, api_key)
+    temporary_name = f".{path.name}.{uuid4().hex}.tmp"
+    temporary_path = path.with_name(temporary_name)
+    descriptor = None
+    try:
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = (
+            os.open(temporary_name, flags, 0o600, dir_fd=parent_fd)
+            if parent_fd is not None
+            else os.open(temporary_path, flags, 0o600)
+        )
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("credential write incomplete")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        if parent_fd is not None:
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+        else:
+            os.replace(temporary_path, path)
+        if os.name == "nt":
+            _windows_set_owner_only(path, directory=False)
+        if not _verify_owner_private(path, directory=False):
+            raise OSError("credential file privacy could not be verified")
+        if _read_owner_private_bytes(path, parent_fd=parent_fd) != content:
+            raise OSError("credential file verification failed")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            if parent_fd is not None:
+                os.unlink(temporary_name, dir_fd=parent_fd)
+            else:
+                temporary_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _loopback_host(hostname: str) -> bool:
@@ -873,20 +1252,30 @@ def _selection_from_values(
     return ConnectionSelection("remote", clean_label, clean_endpoint, clean_key, binding_id)
 
 
-def _record(selection: ConnectionSelection) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "schema_version": selection.schema_version,
-        "mode": selection.mode,
-        "label": selection.label,
-        "binding_id": selection.binding_id,
+def _record(state: ConnectionState) -> dict[str, Any]:
+    remote = None
+    if state.remote is not None:
+        remote = {
+            "label": state.remote.label,
+            "endpoint": state.remote.endpoint,
+            "credential": _credential_source_record(state.remote.credential),
+        }
+    return {
+        "schema_version": state.schema_version,
+        "mode": state.mode,
+        "local": {"label": state.local_label},
+        "remote": remote,
+        "binding_id": state.binding_id,
     }
-    if selection.mode == "remote":
-        payload["endpoint"] = selection.endpoint
-        payload["api_key"] = selection.api_key
-    return payload
 
 
-def _selection_from_record(payload: Any) -> ConnectionSelection:
+def _valid_binding(value: Any) -> bool:
+    return isinstance(value, str) and bool(
+        re.fullmatch(r"(?:local-default|[0-9a-f]{32})", value)
+    )
+
+
+def _state_from_record(payload: Any) -> ConnectionState:
     if type(payload) is not dict:
         raise RemoteHermesError("connection_record_invalid")
     version = payload.get("schema_version")
@@ -894,18 +1283,73 @@ def _selection_from_record(payload: Any) -> ConnectionSelection:
         raise RemoteHermesError("connection_record_invalid")
     if version > CONNECTION_SCHEMA_VERSION:
         raise RemoteHermesError("connection_schema_newer")
-    if version != CONNECTION_SCHEMA_VERSION:
+    if version != CONNECTION_SCHEMA_VERSION or set(payload) != {
+        "schema_version",
+        "mode",
+        "local",
+        "remote",
+        "binding_id",
+    }:
         raise RemoteHermesError("connection_record_invalid")
+    mode = payload.get("mode")
+    binding = payload.get("binding_id")
+    local = payload.get("local")
+    if (
+        mode not in {"local", "remote"}
+        or not _valid_binding(binding)
+        or type(local) is not dict
+        or set(local) != {"label"}
+    ):
+        raise RemoteHermesError("connection_record_invalid")
+    try:
+        local_label = _clean_label(local.get("label"))
+    except RemoteHermesError as exc:
+        raise RemoteHermesError("connection_record_invalid") from exc
+    remote_payload = payload.get("remote")
+    remote: RememberedRemote | None = None
+    if remote_payload is not None:
+        if type(remote_payload) is not dict or set(remote_payload) != {
+            "label",
+            "endpoint",
+            "credential",
+        }:
+            raise RemoteHermesError("connection_record_invalid")
+        try:
+            remote = RememberedRemote(
+                _clean_label(remote_payload.get("label")),
+                normalize_endpoint(remote_payload.get("endpoint")),
+                _credential_source_from_record(remote_payload.get("credential")),
+            )
+        except RemoteHermesError as exc:
+            raise RemoteHermesError("connection_record_invalid") from exc
+        endpoint_markers = {
+            remote.endpoint,
+            urlsplit(remote.endpoint).hostname or "",
+            urlsplit(remote.endpoint).netloc,
+        }
+        if any(
+            marker and marker.casefold() in remote.label.casefold()
+            for marker in endpoint_markers
+        ):
+            raise RemoteHermesError("connection_record_invalid")
+    if mode == "remote" and (remote is None or binding == "local-default"):
+        raise RemoteHermesError("connection_record_invalid")
+    if binding == "local-default" and (
+        mode != "local" or local_label != "Local Hermes" or remote is not None
+    ):
+        raise RemoteHermesError("connection_record_invalid")
+    return ConnectionState(mode, local_label, remote, binding)
+
+
+def _legacy_selection_from_record(payload: Any) -> ConnectionSelection:
     base_fields = {"schema_version", "mode", "label", "binding_id"}
-    expected_fields = (
+    expected = (
         base_fields | {"endpoint", "api_key"}
         if payload.get("mode") == "remote"
         else base_fields
     )
-    if set(payload) != expected_fields:
-        raise RemoteHermesError("connection_record_invalid")
     binding = payload.get("binding_id")
-    if not isinstance(binding, str) or not re.fullmatch(r"(?:local-default|[0-9a-f]{32})", binding):
+    if set(payload) != expected or not _valid_binding(binding):
         raise RemoteHermesError("connection_record_invalid")
     if payload.get("mode") == "remote" and binding == "local-default":
         raise RemoteHermesError("connection_record_invalid")
@@ -927,15 +1371,14 @@ def _selection_from_record(payload: Any) -> ConnectionSelection:
         raise RemoteHermesError("connection_record_invalid") from exc
 
 
-def _read_existing_record(
+def _read_record_payload(
     data_root: Path,
     *,
-    parent_fd: int | None = None,
-) -> ConnectionSelection:
-    path = connection_path(data_root)
+    parent_fd: int | None,
+) -> dict[str, Any] | None:
     try:
-        payload = read_json(
-            path,
+        return read_json(
+            connection_path(data_root),
             None,
             parent_fd=parent_fd,
             maximum_bytes=MAX_CONNECTION_BYTES,
@@ -944,31 +1387,251 @@ def _read_existing_record(
             require_existing=True,
         )
     except FileNotFoundError:
-        return _default_selection()
+        return None
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise RemoteHermesError("connection_record_invalid") from exc
-    return _selection_from_record(payload)
 
 
-def load_connection(data_root: Path) -> ConnectionSelection:
-    path = connection_path(data_root)
+def _restore_credential_snapshot(
+    data_root: Path,
+    snapshot: bytes | None,
+    *,
+    parent_fd: int | None,
+) -> None:
+    path = connection_credential_path(data_root)
+    if snapshot is None:
+        if _entry_exists(path, parent_fd):
+            _unlink_connection(path, parent_fd)
+        return
+    key = _parse_environment_file(snapshot, DEFAULT_REMOTE_API_KEY_ENV)
+    _write_private_credential(
+        path,
+        DEFAULT_REMOTE_API_KEY_ENV,
+        key,
+        parent_fd=parent_fd,
+    )
+
+
+def _migrate_legacy_record(
+    data_root: Path,
+    payload: dict[str, Any],
+    *,
+    parent_fd: int | None,
+) -> ConnectionState:
+    legacy = _legacy_selection_from_record(payload)
+    remote = None
+    if legacy.mode == "remote":
+        remote = RememberedRemote(
+            legacy.label,
+            legacy.endpoint or "",
+            CredentialSource("private_env_file", DEFAULT_REMOTE_API_KEY_ENV),
+        )
+    state = ConnectionState(
+        mode=legacy.mode,
+        local_label="Local Hermes",
+        remote=remote,
+        binding_id=legacy.binding_id,
+    )
+    credential_path = connection_credential_path(data_root)
+    previous_credential: bytes | None = None
+    credential_existed = _entry_exists(credential_path, parent_fd)
+    if credential_existed:
+        previous_credential = _read_owner_private_bytes(
+            credential_path,
+            parent_fd=parent_fd,
+        )
     try:
-        with private_state_lock(Path(data_root)):
+        if legacy.mode == "remote":
+            _write_private_credential(
+                credential_path,
+                DEFAULT_REMOTE_API_KEY_ENV,
+                legacy.api_key or "",
+                parent_fd=parent_fd,
+            )
+        _write_connection_record(
+            connection_path(data_root),
+            state,
+            parent_fd=parent_fd,
+        )
+        committed = _read_record_payload(data_root, parent_fd=parent_fd)
+        if committed is None or _state_from_record(committed) != state:
+            raise OSError("connection migration did not verify")
+        if state.remote is not None:
+            _resolve_credential(data_root, state.remote.credential, private_parent_fd=parent_fd)
+        return state
+    except Exception as migration_error:
+        rollback_verified = False
+        try:
+            write_json_atomic(
+                connection_path(data_root),
+                payload,
+                mode=0o600,
+                parent_fd=parent_fd,
+                maximum_bytes=MAX_CONNECTION_BYTES,
+            )
+            _restore_credential_snapshot(
+                data_root,
+                previous_credential if credential_existed else None,
+                parent_fd=parent_fd,
+            )
+            restored = _read_record_payload(data_root, parent_fd=parent_fd)
+            rollback_verified = restored == payload
+        except Exception:
+            rollback_verified = False
+        raise RemoteHermesError(
+            "connection_migration_rolled_back"
+            if rollback_verified
+            else "connection_migration_partial"
+        ) from migration_error
+
+
+def _read_existing_state(
+    data_root: Path,
+    *,
+    parent_fd: int | None = None,
+) -> ConnectionState:
+    payload = _read_record_payload(data_root, parent_fd=parent_fd)
+    if payload is None:
+        return _default_state()
+    version = payload.get("schema_version")
+    if type(version) is not int:
+        raise RemoteHermesError("connection_record_invalid")
+    if version > CONNECTION_SCHEMA_VERSION:
+        raise RemoteHermesError("connection_schema_newer")
+    if version == LEGACY_CONNECTION_SCHEMA_VERSION:
+        if mentat_server_active(data_root):
+            raise RemoteHermesError("connection_migration_server_running")
+        return _migrate_legacy_record(data_root, payload, parent_fd=parent_fd)
+    return _state_from_record(payload)
+
+
+def _selection_from_state(
+    data_root: Path,
+    state: ConnectionState,
+    *,
+    parent_fd: int | None = None,
+) -> ConnectionSelection:
+    if state.mode == "local":
+        return ConnectionSelection(
+            "local",
+            state.local_label,
+            None,
+            None,
+            state.binding_id,
+        )
+    if state.remote is None:
+        raise RemoteHermesError("connection_record_invalid")
+    return ConnectionSelection(
+        "remote",
+        state.remote.label,
+        state.remote.endpoint,
+        _resolve_credential(
+            data_root,
+            state.remote.credential,
+            private_parent_fd=parent_fd,
+        ),
+        state.binding_id,
+    )
+
+
+def _selection_from_state_allow_unavailable(
+    data_root: Path,
+    state: ConnectionState,
+    *,
+    parent_fd: int | None = None,
+) -> ConnectionSelection:
+    try:
+        return _selection_from_state(data_root, state, parent_fd=parent_fd)
+    except RemoteHermesError as exc:
+        if state.mode != "remote" or not exc.code.startswith("connection_credential_"):
+            raise
+        if state.remote is None:
+            raise
+        return ConnectionSelection(
+            "remote",
+            state.remote.label,
+            state.remote.endpoint,
+            None,
+            state.binding_id,
+        )
+
+
+def _load_connection_state_locked(data_root: Path) -> ConnectionState:
+    path = connection_path(data_root)
+    root = Path(data_root)
+    try:
+        with private_state_lock(root):
             if not os.path.lexists(os.fspath(path)):
-                return _default_selection()
-            private = ensure_private_root(Path(data_root))
-            if not _verify_owner_private(private, directory=True) or not _verify_owner_private(path, directory=False):
+                return _default_state()
+            private = ensure_private_root(root)
+            if (
+                not _verify_owner_private(private, directory=True)
+                or not _verify_owner_private(path, directory=False)
+            ):
                 raise RemoteHermesError("connection_storage_unavailable")
             with _pinned_private_directory(private) as parent_fd:
-                return _read_existing_record(Path(data_root), parent_fd=parent_fd)
+                return _read_existing_state(root, parent_fd=parent_fd)
     except RemoteHermesError:
         raise
     except OSError as exc:
         raise RemoteHermesError("connection_storage_unavailable") from exc
 
 
-def _canonical(selection: ConnectionSelection) -> bytes:
-    return json.dumps(_record(selection), sort_keys=True, separators=(",", ":")).encode("utf-8")
+def load_connection_state(data_root: Path) -> ConnectionState:
+    return _load_connection_state_locked(data_root)
+
+
+def _load_state_and_selection(
+    data_root: Path,
+    *,
+    allow_unavailable_credential: bool = False,
+) -> tuple[ConnectionState, ConnectionSelection]:
+    path = connection_path(data_root)
+    root = Path(data_root)
+    try:
+        with private_state_lock(root):
+            if not os.path.lexists(os.fspath(path)):
+                return _default_state(), _default_selection()
+            private = ensure_private_root(root)
+            if (
+                not _verify_owner_private(private, directory=True)
+                or not _verify_owner_private(path, directory=False)
+            ):
+                raise RemoteHermesError("connection_storage_unavailable")
+            with _pinned_private_directory(private) as parent_fd:
+                state = _read_existing_state(root, parent_fd=parent_fd)
+                selection_loader = (
+                    _selection_from_state_allow_unavailable
+                    if allow_unavailable_credential
+                    else _selection_from_state
+                )
+                return state, selection_loader(root, state, parent_fd=parent_fd)
+    except RemoteHermesError:
+        raise
+    except OSError as exc:
+        raise RemoteHermesError("connection_storage_unavailable") from exc
+
+
+def load_connection(data_root: Path) -> ConnectionSelection:
+    return _load_state_and_selection(data_root)[1]
+
+
+def _canonical_state(state: ConnectionState) -> bytes:
+    return json.dumps(_record(state), sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _canonical_selection(selection: ConnectionSelection) -> bytes:
+    return json.dumps(
+        {
+            "mode": selection.mode,
+            "label": selection.label,
+            "endpoint": selection.endpoint,
+            "api_key": selection.api_key,
+            "binding_id": selection.binding_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def _same_intent(left: ConnectionSelection, right: ConnectionSelection) -> bool:
@@ -985,24 +1648,45 @@ def _same_intent(left: ConnectionSelection, right: ConnectionSelection) -> bool:
     )
 
 
-def _intent_digest(
-    current: ConnectionSelection,
-    proposed: ConnectionSelection,
-) -> bytes:
+def _same_state_intent(left: ConnectionState, right: ConnectionState) -> bool:
+    return (
+        left.mode,
+        left.local_label,
+        left.remote,
+    ) == (
+        right.mode,
+        right.local_label,
+        right.remote,
+    )
+
+
+def _intent_digest(preview: ConnectionPreview) -> bytes:
     message = (
-        b"mentat-remote-hermes-intent-v1\0"
-        + _canonical(current)
+        b"mentat-remote-hermes-intent-v2\0"
+        + _canonical_state(preview.current_state)
         + b"\0"
-        + _canonical(proposed)
+        + _canonical_selection(preview.current)
+        + b"\0"
+        + _canonical_state(preview.proposed_state)
+        + b"\0"
+        + _canonical_selection(preview.proposed)
     )
     return hmac.new(_CONFIRMATION_SECRET, message, hashlib.sha256).digest()
 
 
-def _register_confirmation(
-    current: ConnectionSelection,
-    proposed: ConnectionSelection,
-) -> str:
-    digest = _intent_digest(current, proposed)
+def offline_confirmation_token(preview: ConnectionPreview) -> str:
+    """Bind an out-of-process CLI confirmation without hashing credential bytes."""
+
+    return hashlib.sha256(
+        b"mentat-connection-cli-confirm-v1\0"
+        + _canonical_state(preview.current_state)
+        + b"\0"
+        + _canonical_state(preview.proposed_state)
+    ).hexdigest()
+
+
+def _register_confirmation(preview: ConnectionPreview) -> str:
+    digest = _intent_digest(preview)
     nonce = os.urandom(16)
     token = hmac.new(
         _CONFIRMATION_SECRET,
@@ -1026,13 +1710,12 @@ def _register_confirmation(
 
 def _consume_confirmation(
     token: Any,
-    current: ConnectionSelection,
-    proposed: ConnectionSelection,
+    preview: ConnectionPreview,
 ) -> None:
     if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token):
         raise RemoteHermesError("connection_confirmation_invalid")
     now = time.monotonic()
-    expected = _intent_digest(current, proposed)
+    expected = _intent_digest(preview)
     with _PREVIEW_LOCK:
         grant = _PREVIEW_GRANTS.get(token)
         if (
@@ -1046,25 +1729,127 @@ def _consume_confirmation(
         _PREVIEW_GRANTS.pop(token, None)
 
 
-def preview_connection(data_root: Path, payload: Any) -> ConnectionPreview:
-    if type(payload) is not dict:
-        raise RemoteHermesError("connection_payload_invalid")
-    if set(payload) - {"mode", "label", "endpoint", "api_key"}:
-        raise RemoteHermesError("connection_payload_invalid")
-    current = load_connection(data_root)
-    proposed = _selection_from_values(
-        payload.get("mode"),
-        payload.get("label"),
-        payload.get("endpoint"),
-        payload.get("api_key"),
-        binding_id=current.binding_id,
-    )
-    return ConnectionPreview(
+def _build_preview(
+    current_state: ConnectionState,
+    current: ConnectionSelection,
+    proposed_state: ConnectionState,
+    proposed: ConnectionSelection,
+) -> ConnectionPreview:
+    preliminary = ConnectionPreview(
         current=current,
         proposed=proposed,
-        confirmation_token=_register_confirmation(current, proposed),
-        changed=not _same_intent(current, proposed),
+        current_state=current_state,
+        proposed_state=proposed_state,
+        confirmation_token="",
+        changed=(
+            not _same_state_intent(current_state, proposed_state)
+            or not _same_intent(current, proposed)
+        ),
     )
+    return ConnectionPreview(
+        current=preliminary.current,
+        proposed=preliminary.proposed,
+        current_state=preliminary.current_state,
+        proposed_state=preliminary.proposed_state,
+        confirmation_token=_register_confirmation(preliminary),
+        changed=preliminary.changed,
+    )
+
+
+def preview_connection(data_root: Path, payload: Any) -> ConnectionPreview:
+    """Compatibility-only direct-secret preview for trusted Python callers."""
+
+    if type(payload) is not dict or set(payload) - {"mode", "label", "endpoint", "api_key"}:
+        raise RemoteHermesError("connection_payload_invalid")
+    current_state, current = _load_state_and_selection(
+        data_root,
+        allow_unavailable_credential=True,
+    )
+    mode = payload.get("mode")
+    if mode == "local":
+        proposed = _selection_from_values(
+            mode,
+            payload.get("label"),
+            payload.get("endpoint"),
+            payload.get("api_key"),
+            binding_id=current.binding_id,
+        )
+        proposed_state = ConnectionState(
+            "local",
+            proposed.label,
+            current_state.remote,
+            current_state.binding_id,
+        )
+    else:
+        proposed = _selection_from_values(
+            mode,
+            payload.get("label"),
+            payload.get("endpoint"),
+            payload.get("api_key"),
+            binding_id=current.binding_id,
+        )
+        proposed_state = ConnectionState(
+            "remote",
+            current_state.local_label,
+            RememberedRemote(
+                proposed.label,
+                proposed.endpoint or "",
+                CredentialSource("private_env_file", DEFAULT_REMOTE_API_KEY_ENV),
+            ),
+            current_state.binding_id,
+        )
+    return _build_preview(current_state, current, proposed_state, proposed)
+
+
+def preview_connection_from_source(
+    data_root: Path,
+    *,
+    label: Any,
+    endpoint: Any,
+    credential_source: CredentialSource,
+    activate: bool = True,
+) -> ConnectionPreview:
+    current_state, current = _load_state_and_selection(
+        data_root,
+        allow_unavailable_credential=True,
+    )
+    clean_label = _clean_label(label)
+    clean_endpoint = normalize_endpoint(endpoint)
+    _selection_from_values(
+        "remote",
+        clean_label,
+        clean_endpoint,
+        _resolve_credential(Path(data_root), credential_source),
+        binding_id=current.binding_id,
+    )
+    remote = RememberedRemote(clean_label, clean_endpoint, credential_source)
+    proposed_state = ConnectionState(
+        "remote" if activate else current_state.mode,
+        current_state.local_label,
+        remote,
+        current_state.binding_id,
+    )
+    proposed = _selection_from_state(Path(data_root), proposed_state)
+    return _build_preview(current_state, current, proposed_state, proposed)
+
+
+def preview_remembered_connection(data_root: Path, mode: Any) -> ConnectionPreview:
+    current_state, current = _load_state_and_selection(
+        data_root,
+        allow_unavailable_credential=True,
+    )
+    if mode not in {"local", "remote"}:
+        raise RemoteHermesError("connection_mode_invalid")
+    if mode == "remote" and current_state.remote is None:
+        raise RemoteHermesError("connection_remote_not_configured")
+    proposed_state = ConnectionState(
+        mode,
+        current_state.local_label,
+        current_state.remote,
+        current_state.binding_id,
+    )
+    proposed = _selection_from_state(Path(data_root), proposed_state)
+    return _build_preview(current_state, current, proposed_state, proposed)
 
 
 def _transport_label(endpoint: str | None) -> str:
@@ -1851,14 +2636,28 @@ def _overlength_human_candidate_is_safe(
 def _secret_shaped_text(value: str) -> bool:
     if _SECRET_TOKEN_TEXT.search(value):
         return True
+    # The detailed grammar below protects punctuation-, prose-, and
+    # identifier-shaped credential labels. None of its ASCII credential
+    # candidates can exist without one of these marker terms, so avoid the
+    # expensive per-token candidate scan in that case. The delimiter walk must
+    # still run because it also rejects private host/port and bracket shapes.
+    # Unicode text retains the full path because NFKC may reveal a marker.
+    scan_credential_candidates = (
+        not value.isascii()
+        or _ASCII_CREDENTIAL_MARKER.search(value) is not None
+    )
     identifier_characters = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
-    human_stem_positions = _human_credential_candidate_positions(value)
-    compound_boundary_positions = {
-        position
-        for match in _HUMAN_COMPOUND_PATTERN.finditer(value)
-        for position in range(match.start(), match.end())
-        if value[position] in ":=\r\n.,;?!…—–"
-    }
+    if scan_credential_candidates:
+        human_stem_positions = _human_credential_candidate_positions(value)
+        compound_boundary_positions = {
+            position
+            for match in _HUMAN_COMPOUND_PATTERN.finditer(value)
+            for position in range(match.start(), match.end())
+            if value[position] in ":=\r\n.,;?!…—–"
+        }
+    else:
+        human_stem_positions = []
+        compound_boundary_positions = set()
     human_stem_cursor = 0
     latest_human_stem = -161
     human_clause_start = 0
@@ -2296,6 +3095,14 @@ def _reject_json_constant(_value: str):
     raise ValueError("non-finite JSON number")
 
 
+def _runtime_identifier_contains_secret_shape(value: str) -> bool:
+    return (
+        _RUNTIME_SECRET_PREFIX.search(value) is not None
+        or _RUNTIME_SECRET_SEGMENT.search(value) is not None
+        or _secret_shaped_text(value)
+    )
+
+
 class RemoteHermesClient:
     """Fixed-purpose client for public health and authenticated discovery."""
 
@@ -2317,6 +3124,7 @@ class RemoteHermesClient:
         self.timeout_seconds = float(timeout_seconds)
         self.maximum_bytes = maximum_bytes
         self.connection_factory = connection_factory
+        self._trusted_feature_cache: frozenset[str] = frozenset()
 
     def _connection(self, *, timeout_seconds: float | None = None):
         parsed = urlsplit(self.endpoint)
@@ -2962,7 +3770,7 @@ class RemoteHermesClient:
                 ).encode("utf-8")
             except (TypeError, ValueError, UnicodeError) as exc:
                 raise RemoteHermesError("remote_run_request_invalid") from exc
-            if len(encoded) > MAX_RESPONSE_BYTES:
+            if len(encoded) > MAX_REMOTE_RUN_REQUEST_BYTES:
                 raise RemoteHermesError("remote_run_request_invalid")
             headers["Content-Type"] = "application/json"
             headers["Content-Length"] = str(len(encoded))
@@ -2979,6 +3787,20 @@ class RemoteHermesClient:
             if status in {401, 403}:
                 raise RemoteHermesError("remote_authentication_failed")
             if status != expected_status:
+                if method == "POST" and path == "/v1/runs":
+                    deterministic_rejection = status in {
+                        400,
+                        404,
+                        405,
+                        413,
+                        415,
+                        422,
+                    }
+                    raise RemoteHermesError(
+                        "remote_run_rejected"
+                        if deterministic_rejection
+                        else "remote_submission_unverified"
+                    )
                 raise RemoteHermesError("remote_run_rejected")
             content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().casefold()
             if content_type not in {"application/json", "application/problem+json"}:
@@ -3017,6 +3839,140 @@ class RemoteHermesClient:
             except Exception:
                 pass
 
+    def _contract_json_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        expected_status: int = 200,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        """Call one prevalidated contract path without exposing generic HTTP."""
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "Mentat/remote-hermes-v1",
+        }
+        encoded: bytes | None = None
+        if body is not None:
+            try:
+                encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise RemoteHermesError("remote_run_request_invalid") from exc
+            if len(encoded) > MAX_RESPONSE_BYTES:
+                raise RemoteHermesError("remote_run_request_invalid")
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(encoded))
+        connection = self._connection()
+        try:
+            if encoded is None:
+                connection.request(method, path, headers=headers)
+            else:
+                connection.request(method, path, body=encoded, headers=headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            if 300 <= status <= 399:
+                raise RemoteHermesError("remote_redirect_refused")
+            if status in {401, 403}:
+                raise RemoteHermesError("remote_authentication_failed")
+            if status != expected_status:
+                raise RemoteHermesError("remote_run_rejected")
+            content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().casefold()
+            if content_type not in {"application/json", "application/problem+json"}:
+                raise RemoteHermesError("remote_content_type_invalid")
+            declared = response.getheader("Content-Length")
+            if declared is not None:
+                try:
+                    if int(declared) < 0 or int(declared) > self.maximum_bytes:
+                        raise RemoteHermesError("remote_response_too_large")
+                except ValueError as exc:
+                    raise RemoteHermesError("remote_response_invalid") from exc
+            raw = response.read(self.maximum_bytes + 1)
+            if len(raw) > self.maximum_bytes:
+                raise RemoteHermesError("remote_response_too_large")
+            try:
+                payload = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+            except (UnicodeError, ValueError, RecursionError) as exc:
+                raise RemoteHermesError("remote_response_invalid") from exc
+            if type(payload) is not dict or not _safe_shape(payload):
+                raise RemoteHermesError("remote_response_invalid")
+            return payload
+        except RemoteHermesError:
+            raise
+        except ssl.SSLCertVerificationError as exc:
+            raise RemoteHermesError("remote_certificate_invalid") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RemoteHermesError("remote_timeout") from exc
+        except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+            raise RemoteHermesError("remote_unavailable") from exc
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    def _require_features(self, *required: str) -> None:
+        capabilities = self._trusted_capabilities()
+        if not set(required).issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+
+    def get_continuation_descriptor(self, session_id: str) -> dict[str, Any]:
+        session_id = self._validated_session_id(session_id)
+        self._require_features("run_session_continuation", "run_session_continuation_exact_revision", "run_session_continuation_stoppable")
+        payload = self._contract_json_request("GET", f"/v1/sessions/{session_id}/continuation")
+        if (
+            payload.get("object") != "hermes.session.continuation"
+            or payload.get("version") != 1
+            or self._validated_session_id(payload.get("session_id")) != session_id
+            or not isinstance(payload.get("revision"), str)
+            or not _CONTINUATION_REVISION.fullmatch(payload["revision"])
+        ):
+            raise RemoteHermesError("remote_session_schema_invalid")
+        return {"version": 1, "session_id": session_id, "revision": payload["revision"]}
+
+    def submit_continuation(self, user_input: str, descriptor: Mapping[str, Any]) -> dict[str, str]:
+        if not isinstance(descriptor, Mapping):
+            raise RemoteHermesError("remote_run_request_invalid")
+        session_id = self._validated_session_id(descriptor.get("session_id"))
+        revision = descriptor.get("revision")
+        if descriptor.get("version") != 1 or not isinstance(revision, str) or not _CONTINUATION_REVISION.fullmatch(revision):
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_session_continuation", "run_session_continuation_exact_revision", "run_session_continuation_stoppable")
+        return self._submit_run_payload(user_input, {"version": 1, "session_id": session_id, "revision": revision})
+
+    def respond_to_approval(self, run_id: str, request_id: str, choice: str) -> dict[str, Any]:
+        run_id = self._validated_run_id(run_id)
+        if not isinstance(request_id, str) or not _APPROVAL_REQUEST_ID.fullmatch(request_id) or choice not in {"once", "deny"}:
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_approval_response", "run_approval_request_binding", "run_approval_structured_preview")
+        payload = self._contract_json_request("POST", f"/v1/runs/{run_id}/approval", body={"request_id": request_id, "choice": choice})
+        if payload.get("object") != "hermes.run.approval_response" or payload.get("run_id") != run_id or payload.get("request_id") != request_id or payload.get("choice") != choice or type(payload.get("resolved")) is not int or payload["resolved"] < 1:
+            raise RemoteHermesError("remote_run_schema_invalid")
+        return {"request_id": request_id, "choice": choice, "resolved": payload["resolved"]}
+
+    def respond_to_clarification(self, run_id: str, request_id: str, response: Mapping[str, Any]) -> dict[str, Any]:
+        run_id = self._validated_run_id(run_id)
+        if not isinstance(request_id, str) or not _CLARIFICATION_REQUEST_ID.fullmatch(request_id) or not isinstance(response, Mapping):
+            raise RemoteHermesError("remote_run_request_invalid")
+        response_type = response.get("type")
+        if response_type == "choice":
+            choice_id = response.get("choice_id")
+            if not isinstance(choice_id, str) or not re.fullmatch(r"choice-[1-4]", choice_id):
+                raise RemoteHermesError("remote_run_request_invalid")
+            body_response = {"type": "choice", "choice_id": choice_id}
+        elif response_type == "text":
+            text = response.get("text")
+            if not isinstance(text, str) or not text.strip() or len(text) > 2_000 or "\x00" in text:
+                raise RemoteHermesError("remote_run_request_invalid")
+            body_response = {"type": "text", "text": text.strip()}
+        else:
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_clarification_response", "run_clarification_request_binding", "clarification_events")
+        payload = self._contract_json_request("POST", f"/v1/runs/{run_id}/clarification", body={"request_id": request_id, "response": body_response})
+        if payload.get("object") != "hermes.run.clarification_response" or payload.get("run_id") != run_id or payload.get("request_id") != request_id or payload.get("type") != response_type:
+            raise RemoteHermesError("remote_run_schema_invalid")
+        return {"request_id": request_id, "type": response_type, **({"choice_id": body_response["choice_id"]} if response_type == "choice" else {})}
+
     def require_console_run_capabilities(self) -> dict[str, Any]:
         discovery = self.discover()
         required = {"run_submission", "run_status", "run_events_sse", "run_stop"}
@@ -3024,7 +3980,25 @@ class RemoteHermesClient:
             raise RemoteHermesError("remote_run_capability_unavailable")
         return discovery
 
-    def submit_run(self, user_input: str) -> dict[str, str]:
+    def require_kanban_capabilities(self) -> dict[str, Any]:
+        """Return trusted capabilities only when the fixed Kanban contract is complete."""
+        capabilities = self._trusted_capabilities()
+        required = {
+            "kanban_api",
+            "kanban_api_revisioned",
+            "kanban_api_idempotency",
+            "kanban_api_requires_api_key",
+        }
+        if not required.issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+        return capabilities
+
+    def _submit_run_payload(
+        self,
+        user_input: str,
+        continuation: Mapping[str, Any] | None = None,
+        images: list[dict[str, Any]] | None = None,
+    ) -> dict[str, str]:
         if (
             not isinstance(user_input, str)
             or not user_input.strip()
@@ -3032,19 +4006,156 @@ class RemoteHermesClient:
             or "\x00" in user_input
         ):
             raise RemoteHermesError("remote_run_request_invalid")
+        body: dict[str, Any] = {"input": user_input}
+        if continuation is not None:
+            body["continuation"] = dict(continuation)
+        if images is not None:
+            body["input"] = [{"type": "input_text", "text": user_input}, *images]
         payload = self._run_json_request(
             "POST",
             "/v1/runs",
             expected_status=202,
-            body={"input": user_input},
+            body=body,
         )
         run_id = self._validated_run_id(payload.get("run_id"))
         if payload.get("status") != "started":
             raise RemoteHermesError("remote_run_schema_invalid")
         return {"run_id": run_id, "status": "started"}
 
+    def submit_run(self, user_input: str) -> dict[str, str]:
+        return self._submit_run_payload(user_input)
+
+    def submit_run_with_images(self, user_input: str, image_data_urls: list[str]) -> dict[str, str]:
+        if not isinstance(image_data_urls, list) or not (1 <= len(image_data_urls) <= 4):
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_inline_images")
+        images: list[dict[str, Any]] = []
+        total_bytes = 0
+        for value in image_data_urls:
+            if not isinstance(value, str) or len(value) > 7_000_000:
+                raise RemoteHermesError("remote_run_request_invalid")
+            match = re.fullmatch(r"data:(image/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})", value)
+            if match is None:
+                raise RemoteHermesError("remote_run_request_invalid")
+            encoded = match.group(2)
+            padding = 2 if encoded.endswith("==") else 1 if encoded.endswith("=") else 0
+            decoded_size = (len(encoded) * 3) // 4 - padding
+            if decoded_size <= 0 or decoded_size > 5 * 1024 * 1024:
+                raise RemoteHermesError("remote_run_request_invalid")
+            total_bytes += decoded_size
+            if total_bytes > 20 * 1024 * 1024:
+                raise RemoteHermesError("remote_run_request_invalid")
+            images.append({"type": "input_image", "image_url": value, "detail": "auto"})
+        return self._submit_run_payload(user_input, images=images)
+
+    def read_profiles(self) -> list[dict[str, Any]]:
+        capabilities = self._trusted_capabilities()
+        if not {"profile_inventory", "profile_inventory_complete", "profile_inventory_requires_api_key"}.issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+        payload = self._request_json("/v1/profiles", authenticated=True, root_list_limits={"data": 1_000})
+        if payload.get("object") != "list" or payload.get("version") != 1 or payload.get("complete") is not True or not isinstance(payload.get("active_profile"), str) or not isinstance(payload.get("data"), list):
+            raise RemoteHermesError("remote_schema_unsupported")
+        profiles: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        active_count = 0
+        for item in payload["data"]:
+            if type(item) is not dict or set(item) != {"id", "object", "is_default", "is_active", "served"}:
+                raise RemoteHermesError("remote_schema_unsupported")
+            profile_id = item.get("id")
+            if not isinstance(profile_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", profile_id) or profile_id in seen or item.get("object") != "hermes.profile" or type(item.get("is_default")) is not bool or type(item.get("is_active")) is not bool or type(item.get("served")) is not bool:
+                raise RemoteHermesError("remote_schema_unsupported")
+            seen.add(profile_id)
+            active_count += int(item["is_active"])
+            profiles.append({"id": profile_id, "is_default": item["is_default"], "is_active": item["is_active"], "served": item["served"]})
+        if (
+            not profiles
+            or active_count != 1
+            or payload["active_profile"] not in seen
+            or not any(item["id"] == payload["active_profile"] and item["is_active"] for item in profiles)
+            or sum(int(item["is_default"]) for item in profiles) != 1
+        ):
+            raise RemoteHermesError("remote_schema_unsupported")
+        return profiles
+
+    def read_profile_runtimes(self) -> dict[str, dict[str, str]]:
+        capabilities = self._trusted_capabilities()
+        required = {
+            "profile_runtime_inventory",
+            "profile_runtime_inventory_complete",
+            "profile_runtime_inventory_requires_api_key",
+        }
+        if not required.issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+        payload = self._request_json(
+            "/v1/profile-runtimes",
+            authenticated=True,
+            root_list_limits={"data": 1_000},
+        )
+        if (
+            payload.get("object") != "hermes.profile_runtime.list"
+            or payload.get("version") != 1
+            or payload.get("complete") is not True
+            or not isinstance(payload.get("data"), list)
+        ):
+            raise RemoteHermesError("remote_schema_unsupported")
+        runtimes: dict[str, dict[str, str]] = {}
+        for item in payload["data"]:
+            if type(item) is not dict or set(item) != {"profile_id", "provider", "model"}:
+                raise RemoteHermesError("remote_schema_unsupported")
+            profile_id = item.get("profile_id")
+            provider = item.get("provider")
+            model = item.get("model")
+            if (
+                not isinstance(profile_id, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", profile_id)
+                or profile_id in runtimes
+                or not isinstance(provider, str)
+                or (provider and _INVENTORY_IDENTIFIER.fullmatch(provider) is None)
+                or not isinstance(model, str)
+                or (model and _SAFE_MODEL.fullmatch(model) is None)
+                or _runtime_identifier_contains_secret_shape(provider)
+                or _runtime_identifier_contains_secret_shape(model)
+                or self._contains_private_inventory_text(provider)
+                or self._contains_private_inventory_text(model)
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+            runtimes[profile_id] = {"provider": provider, "model": model}
+        if "default" not in runtimes:
+            raise RemoteHermesError("remote_schema_unsupported")
+        return runtimes
+
+    def kanban_request(
+        self,
+        operation: str,
+        *,
+        board: str | None = None,
+        task_id: str | None = None,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        """Execute only one named revisioned Kanban operation."""
+        self._require_features("kanban_api", "kanban_api_revisioned", "kanban_api_idempotency", "kanban_api_requires_api_key")
+        if operation == "boards" and board is None and task_id is None and body is None:
+            return self._contract_json_request("GET", "/v1/kanban/boards")
+        if not isinstance(board, str) or not _KANBAN_BOARD.fullmatch(board):
+            raise RemoteHermesError("remote_run_request_invalid")
+        suffix = f"?board={board}"
+        if operation == "profiles" and task_id is None and body is None:
+            return self._contract_json_request("GET", "/v1/kanban/profiles" + suffix)
+        if operation == "tasks" and task_id is None and body is None:
+            return self._contract_json_request("GET", "/v1/kanban/tasks" + suffix)
+        if operation == "create" and task_id is None and isinstance(body, Mapping):
+            return self._contract_json_request("POST", "/v1/kanban/tasks" + suffix, body=body)
+        if not isinstance(task_id, str) or not _KANBAN_TASK_ID.fullmatch(task_id):
+            raise RemoteHermesError("remote_run_request_invalid")
+        if operation == "task" and body is None:
+            return self._contract_json_request("GET", f"/v1/kanban/tasks/{task_id}" + suffix)
+        if operation == "action" and isinstance(body, Mapping):
+            return self._contract_json_request("POST", f"/v1/kanban/tasks/{task_id}/actions" + suffix, body=body)
+        raise RemoteHermesError("remote_path_not_allowed")
+
     def get_run(self, run_id: str) -> dict[str, Any]:
         run_id = self._validated_run_id(run_id)
+        features = set(self._trusted_feature_cache)
         payload = self._run_json_request(
             "GET",
             f"/v1/runs/{run_id}",
@@ -3056,6 +4167,73 @@ class RemoteHermesClient:
         if status not in _RUN_STATUSES:
             raise RemoteHermesError("remote_run_schema_invalid")
         normalized: dict[str, Any] = {"status": status}
+        runtime = payload.get("runtime")
+        if runtime is not None:
+            if (
+                "run_runtime_identity" not in features
+                or type(runtime) is not dict
+                or set(runtime) != {"provider", "model"}
+                or not isinstance(runtime.get("provider"), str)
+                or _INVENTORY_IDENTIFIER.fullmatch(runtime["provider"]) is None
+                or not isinstance(runtime.get("model"), str)
+                or _SAFE_MODEL.fullmatch(runtime["model"]) is None
+                or _runtime_identifier_contains_secret_shape(runtime["provider"])
+                or _runtime_identifier_contains_secret_shape(runtime["model"])
+                or self._contains_private_run_text(runtime, run_id)
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            normalized["runtime"] = dict(runtime)
+        pending_action = payload.get("pending_action")
+        waiting_kind = {
+            "waiting_for_approval": "approval",
+            "waiting_for_clarification": "clarification",
+        }.get(status)
+        if pending_action is not None:
+            if (
+                "run_pending_action_status" not in features
+                or waiting_kind is None
+                or type(pending_action) is not dict
+                or pending_action.get("version") != 1
+                or pending_action.get("kind") != waiting_kind
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            if waiting_kind == "approval":
+                event_payload = {
+                    "event": "approval.request",
+                    "run_id": run_id,
+                    "request_id": pending_action.get("request_id"),
+                    "preview": pending_action.get("preview"),
+                    "choices": pending_action.get("choices"),
+                }
+            else:
+                event_payload = {
+                    "event": "clarify.request",
+                    "run_id": run_id,
+                    "request_id": pending_action.get("request_id"),
+                    "prompt": pending_action.get("prompt"),
+                }
+            action_event = self._normalize_run_event(event_payload, run_id)
+            normalized["pending_action"] = {
+                "version": 1,
+                "kind": waiting_kind,
+                **{
+                    key: value
+                    for key, value in action_event.items()
+                    if key != "type"
+                },
+            }
+        elif (
+            waiting_kind is not None
+            and "run_pending_action_status" in features
+        ):
+            raise RemoteHermesError("remote_run_schema_invalid")
+        if "session_id" in payload:
+            try:
+                normalized["session_id"] = self._validated_session_id(
+                    payload.get("session_id")
+                )
+            except RemoteHermesError as exc:
+                raise RemoteHermesError("remote_run_schema_invalid") from exc
         if status == "completed":
             output = payload.get("output")
             if not isinstance(output, str) or len(output) > 200_000 or "\x00" in output:
@@ -3073,6 +4251,20 @@ class RemoteHermesClient:
                 if type(value) is not int or not (0 <= value <= 10**9):
                     raise RemoteHermesError("remote_run_schema_invalid")
                 clean_usage[name] = value
+            context_tokens = usage.get("context_tokens")
+            context_length = usage.get("context_length")
+            if context_tokens is not None or context_length is not None:
+                if (
+                    type(context_tokens) is not int
+                    or type(context_length) is not int
+                    or not (0 <= context_tokens <= context_length <= 10**9)
+                    or context_length == 0
+                ):
+                    context_tokens = None
+                    context_length = None
+                else:
+                    clean_usage["context_tokens"] = context_tokens
+                    clean_usage["context_length"] = context_length
             normalized["usage"] = clean_usage
         return normalized
 
@@ -3109,11 +4301,141 @@ class RemoteHermesClient:
                 raise RemoteHermesError("remote_run_schema_invalid")
             if self._contains_private_run_text(tool, run_id):
                 raise RemoteHermesError("remote_private_reflection")
-            return {"type": event_type, "tool": tool}
+            return {
+                "type": event_type,
+                "tool": tool,
+                "summary": (
+                    f"Using {tool}"
+                    if event_type == "tool.started"
+                    else f"Finished {tool}"
+                ),
+            }
         if event_type == "reasoning.available":
-            return {"type": event_type}
+            summary = payload.get("summary")
+            safe_summaries = {
+                "Running verification checks",
+                "Preparing a scoped change",
+                "Inspecting relevant context",
+                "Planning the next action",
+                "Analyzing the latest result",
+                "Reasoning about the next action",
+            }
+            if summary is not None and summary not in safe_summaries:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            return {
+                "type": event_type,
+                "summary": summary or "Reasoning about the next action",
+            }
         if event_type == "approval.request":
-            return {"type": event_type}
+            request_id = payload.get("request_id")
+            preview = payload.get("preview")
+            choices = payload.get("choices")
+            if (
+                not isinstance(request_id, str)
+                or not _APPROVAL_REQUEST_ID.fullmatch(request_id)
+                or type(preview) is not dict
+                or set(preview) != {"version", "category", "title", "summary", "risk_labels"}
+                or preview.get("version") != 1
+                or not all(isinstance(preview.get(key), str) and 1 <= len(preview[key]) <= 500 and "\x00" not in preview[key] for key in ("category", "title", "summary"))
+                or not isinstance(preview.get("risk_labels"), list)
+                or len(preview["risk_labels"]) > 8
+                or not all(isinstance(label, str) and 1 <= len(label) <= 120 and "\x00" not in label for label in preview["risk_labels"])
+                or not isinstance(choices, list)
+                or not {"once", "deny"}.issubset(set(choices))
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            if any(self._contains_private_run_text(value, run_id) or _contains_private_public_text(value) for value in (
+                preview["category"], preview["title"], preview["summary"], *preview["risk_labels"]
+            )):
+                raise RemoteHermesError("remote_private_reflection")
+            return {"type": event_type, "request_id": request_id, "preview": dict(preview), "choices": [choice for choice in ("once", "deny") if choice in choices]}
+        if event_type == "clarify.request":
+            request_id = payload.get("request_id")
+            prompt = payload.get("prompt")
+            if not isinstance(request_id, str) or not _CLARIFICATION_REQUEST_ID.fullmatch(request_id) or type(prompt) is not dict or prompt.get("version") != 1 or prompt.get("type") not in {"choice", "text"} or not isinstance(prompt.get("question"), str) or not prompt["question"].strip() or len(prompt["question"]) > 2_000 or "\x00" in prompt["question"]:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            normalized_prompt: dict[str, Any] = {"version": 1, "type": prompt["type"], "question": prompt["question"]}
+            if prompt["type"] == "choice":
+                choices = prompt.get("choices")
+                if not isinstance(choices, list) or not (1 <= len(choices) <= 4):
+                    raise RemoteHermesError("remote_run_schema_invalid")
+                normalized_choices = []
+                for choice in choices:
+                    if type(choice) is not dict or set(choice) != {"id", "label"} or not isinstance(choice.get("id"), str) or not re.fullmatch(r"choice-[1-4]", choice["id"]) or not isinstance(choice.get("label"), str) or not choice["label"].strip() or len(choice["label"]) > 500 or "\x00" in choice["label"]:
+                        raise RemoteHermesError("remote_run_schema_invalid")
+                    normalized_choices.append({"id": choice["id"], "label": choice["label"]})
+                normalized_prompt["choices"] = normalized_choices
+            if any(self._contains_private_run_text(value, run_id) or _contains_private_public_text(value) for value in (
+                normalized_prompt["question"], *(choice["label"] for choice in normalized_prompt.get("choices", []))
+            )):
+                raise RemoteHermesError("remote_private_reflection")
+            return {"type": event_type, "request_id": request_id, "prompt": normalized_prompt}
+        if event_type == "approval.responded":
+            request_id = payload.get("request_id")
+            choice = payload.get("choice")
+            resolved = payload.get("resolved")
+            if (
+                (
+                    request_id is not None
+                    and (
+                        not isinstance(request_id, str)
+                        or _APPROVAL_REQUEST_ID.fullmatch(request_id) is None
+                    )
+                )
+                or choice not in {"once", "session", "always", "deny"}
+                or type(resolved) is not int
+                or resolved < 1
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            normalized_response = {
+                "type": event_type,
+                "choice": choice,
+                "resolved": resolved,
+            }
+            if request_id is None:
+                normalized_response["legacy_unbound"] = True
+            else:
+                normalized_response["request_id"] = request_id
+            return normalized_response
+        if event_type == "clarify.responded":
+            request_id = payload.get("request_id")
+            response_type = payload.get("type")
+            if (
+                not isinstance(request_id, str)
+                or _CLARIFICATION_REQUEST_ID.fullmatch(request_id) is None
+                or response_type not in {"choice", "text"}
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            normalized_response = {
+                "type": event_type,
+                "request_id": request_id,
+                "response_type": response_type,
+            }
+            if response_type == "choice":
+                choice_id = payload.get("choice_id")
+                if not isinstance(choice_id, str) or re.fullmatch(r"choice-[1-4]", choice_id) is None:
+                    raise RemoteHermesError("remote_run_schema_invalid")
+                normalized_response["choice_id"] = choice_id
+            return normalized_response
+        if event_type == "runtime.updated":
+            provider = payload.get("provider")
+            model = payload.get("model")
+            if (
+                not isinstance(provider, str)
+                or _INVENTORY_IDENTIFIER.fullmatch(provider) is None
+                or not isinstance(model, str)
+                or _SAFE_MODEL.fullmatch(model) is None
+                or _runtime_identifier_contains_secret_shape(provider)
+                or _runtime_identifier_contains_secret_shape(model)
+                or self._contains_private_run_text(
+                    {"provider": provider, "model": model}, run_id
+                )
+            ):
+                raise RemoteHermesError("remote_run_schema_invalid")
+            return {
+                "type": event_type,
+                "runtime": {"provider": provider, "model": model},
+            }
         if event_type in {"run.cancelled", "run.failed"}:
             return {"type": event_type}
         if event_type == "run.completed":
@@ -3130,8 +4452,19 @@ class RemoteHermesClient:
         run_id: str,
         *,
         should_stop: Callable[[], bool] | None = None,
+        last_event_id: int | None = None,
     ):
         run_id = self._validated_run_id(run_id)
+        replay_enabled = "run_event_replay" in self._trusted_feature_cache
+        if (
+            last_event_id is not None
+            and (
+                not replay_enabled
+                or type(last_event_id) is not int
+                or not (0 <= last_event_id <= 10**10 - 1)
+            )
+        ):
+            raise RemoteHermesError("remote_run_request_invalid")
         path = f"/v1/runs/{run_id}/events"
         headers = {
             "Accept": "text/event-stream",
@@ -3139,6 +4472,8 @@ class RemoteHermesClient:
             "Cache-Control": "no-cache",
             "User-Agent": "Mentat/remote-hermes-v1",
         }
+        if last_event_id is not None:
+            headers["Last-Event-ID"] = str(last_event_id)
         connection = self._connection(timeout_seconds=RUN_STREAM_READ_TIMEOUT_SECONDS)
         try:
             connection.request("GET", path, headers=headers)
@@ -3157,6 +4492,7 @@ class RemoteHermesClient:
             event_count = 0
             data_lines: list[bytes] = []
             data_bytes = 0
+            event_id: int | None = None
             deadline = time.monotonic() + RUN_STREAM_MAX_SECONDS
             while True:
                 if time.monotonic() >= deadline:
@@ -3194,7 +4530,22 @@ class RemoteHermesClient:
                     event_count += 1
                     if event_count > MAX_RUN_EVENTS:
                         raise RemoteHermesError("remote_response_too_large")
-                    yield self._normalize_run_event(payload, run_id)
+                    normalized = self._normalize_run_event(payload, run_id)
+                    if replay_enabled:
+                        sequence = payload.get("sequence")
+                        payload_event_id = payload.get("event_id")
+                        if (
+                            event_id is None
+                            or type(sequence) is not int
+                            or type(payload_event_id) is not int
+                            or event_id != sequence
+                            or sequence != payload_event_id
+                            or sequence <= 0
+                        ):
+                            raise RemoteHermesError("remote_run_stream_invalid")
+                        normalized["sequence"] = sequence
+                    yield normalized
+                    event_id = None
                     continue
                 if line.startswith(b":"):
                     continue
@@ -3205,7 +4556,17 @@ class RemoteHermesClient:
                     if data_bytes > MAX_RUN_EVENT_BYTES:
                         raise RemoteHermesError("remote_response_too_large")
                     continue
-                if line.startswith((b"event:", b"id:", b"retry:")):
+                if line.startswith(b"id:"):
+                    raw_id = line[3:].strip()
+                    if (
+                        not replay_enabled
+                        or not raw_id
+                        or re.fullmatch(rb"(?:0|[1-9][0-9]{0,9})", raw_id) is None
+                    ):
+                        raise RemoteHermesError("remote_run_stream_invalid")
+                    event_id = int(raw_id)
+                    continue
+                if line.startswith((b"event:", b"retry:")):
                     continue
                 raise RemoteHermesError("remote_run_stream_invalid")
         except RemoteHermesError:
@@ -3304,6 +4665,67 @@ class RemoteHermesClient:
             ) == expected
             for name, expected in _CAPABILITY_INVENTORY_ENDPOINTS.items()
         )
+        if features.get("profile_inventory") is True:
+            if (
+                features.get("profile_inventory_version") != 1
+                or features.get("profile_inventory_complete") is not True
+                or features.get("profile_inventory_requires_api_key") is not True
+                or type(endpoints.get("profiles")) is not dict
+                or (endpoints["profiles"].get("method"), endpoints["profiles"].get("path")) != _PROFILE_INVENTORY_ENDPOINT
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("profile_runtime_inventory") is True:
+            if (
+                features.get("profile_runtime_inventory_version") != 1
+                or features.get("profile_runtime_inventory_complete") is not True
+                or features.get("profile_runtime_inventory_requires_api_key") is not True
+                or type(endpoints.get("profile_runtimes")) is not dict
+                or (
+                    endpoints["profile_runtimes"].get("method"),
+                    endpoints["profile_runtimes"].get("path"),
+                )
+                != _PROFILE_RUNTIME_INVENTORY_ENDPOINT
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_event_replay") is True and features.get("run_event_replay_version") != 1:
+            raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_pending_action_status") is True and features.get("run_pending_action_status_version") != 1:
+            raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_runtime_identity") is True and features.get("run_runtime_identity_version") != 1:
+            raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_session_continuation") is True:
+            if (
+                features.get("run_session_continuation_version") != 1
+                or features.get("run_session_continuation_exact_revision") is not True
+                or features.get("run_session_continuation_stoppable") is not True
+                or type(endpoints.get("session_continuation")) is not dict
+                or (endpoints["session_continuation"].get("method"), endpoints["session_continuation"].get("path")) != _CONTINUATION_ENDPOINT
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_approval_response") is True:
+            if features.get("run_approval_request_binding") is not True or features.get("run_approval_structured_preview") is not True or features.get("run_approval_preview_version") != 1 or type(endpoints.get("run_approval")) is not dict or (endpoints["run_approval"].get("method"), endpoints["run_approval"].get("path")) != _APPROVAL_ENDPOINT:
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_clarification_response") is True:
+            if features.get("run_clarification_request_binding") is not True or features.get("clarification_events") is not True or features.get("run_clarification_prompt_version") != 1 or type(endpoints.get("run_clarification")) is not dict or (endpoints["run_clarification"].get("method"), endpoints["run_clarification"].get("path")) != _CLARIFICATION_ENDPOINT:
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("run_inline_images") is True:
+            image_endpoint = endpoints.get("run_inline_images")
+            if (
+                features.get("run_inline_images_version") != 1
+                or features.get("run_inline_images_data_urls_only") is not True
+                or features.get("run_inline_images_max_count") != 4
+                or features.get("run_inline_images_max_bytes") != 5 * 1024 * 1024
+                or type(image_endpoint) is not dict
+                or (image_endpoint.get("method"), image_endpoint.get("path"), image_endpoint.get("version"), image_endpoint.get("image_transport"), image_endpoint.get("max_count"), image_endpoint.get("max_bytes_per_image")) != ("POST", "/v1/runs", 1, "data_url_only", 4, 5 * 1024 * 1024)
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("kanban_api") is True:
+            if features.get("kanban_api_version") != 1 or features.get("kanban_api_revisioned") is not True or features.get("kanban_api_idempotency") is not True or features.get("kanban_api_requires_api_key") is not True:
+                raise RemoteHermesError("remote_schema_unsupported")
+            for name, expected in _KANBAN_ENDPOINTS.items():
+                item = endpoints.get(name)
+                if type(item) is not dict or (item.get("method"), item.get("path")) != expected:
+                    raise RemoteHermesError("remote_schema_unsupported")
         model = _bounded_text(payload.get("model"), maximum=160)
         if not _SAFE_MODEL.fullmatch(model) or model.startswith("/") or ".." in model or "://" in model or "\\" in model:
             raise RemoteHermesError("remote_schema_unsupported")
@@ -3312,6 +4734,7 @@ class RemoteHermesClient:
             for name in _KNOWN_BOOLEAN_FEATURES
             if features.get(name) is True
         )
+        self._trusted_feature_cache = frozenset(supported)
         return {
             "model": model,
             "features": supported,
@@ -3367,33 +4790,21 @@ class RemoteHermesClient:
         return discovery
 
 
-def confirm_connection(
+def _confirm_preview(
     data_root: Path,
-    payload: Any,
+    preview: ConnectionPreview,
     confirmation_token: Any,
     *,
+    private_api_key: str | None = None,
+    require_server_stopped: bool = False,
     client_factory: Callable[[str, str], RemoteHermesClient] = RemoteHermesClient,
 ) -> dict[str, Any]:
-    if type(payload) is not dict or set(payload) - {"mode", "label", "endpoint", "api_key"}:
-        raise RemoteHermesError("connection_payload_invalid")
-    current_preview = load_connection(data_root)
-    proposed_preview = _selection_from_values(
-        payload.get("mode"),
-        payload.get("label"),
-        payload.get("endpoint"),
-        payload.get("api_key"),
-        binding_id=current_preview.binding_id,
-    )
-    _consume_confirmation(
-        confirmation_token,
-        current_preview,
-        proposed_preview,
-    )
+    _consume_confirmation(confirmation_token, preview)
     discovery: dict[str, Any] | None = None
-    if proposed_preview.mode == "remote":
+    if preview.proposed.mode == "remote":
         client = client_factory(
-            proposed_preview.endpoint or "",
-            proposed_preview.api_key or "",
+            preview.proposed.endpoint or "",
+            preview.proposed.api_key or "",
         )
         discovery = client.discover()
         if discovery.get("trusted") is not True:
@@ -3402,6 +4813,8 @@ def confirm_connection(
     root = Path(data_root)
     try:
         with private_state_lock(root):
+            if require_server_stopped and mentat_server_active(root):
+                raise RemoteHermesError("connection_change_server_running")
             private = ensure_private_root(root)
             path = private / CONNECTION_FILE_NAME
             if os.name == "nt" and not os.path.lexists(os.fspath(path)):
@@ -3412,64 +4825,163 @@ def confirm_connection(
                 prior_existed = _entry_exists(path, parent_fd)
                 if prior_existed and not _verify_owner_private(path, directory=False):
                     raise RemoteHermesError("connection_storage_unavailable")
-                current = _read_existing_record(root, parent_fd=parent_fd)
-                proposed = _selection_from_values(
-                    payload.get("mode"),
-                    payload.get("label"),
-                    payload.get("endpoint"),
-                    payload.get("api_key"),
-                    binding_id=current.binding_id,
+                prior_payload = _read_record_payload(root, parent_fd=parent_fd)
+                current_state = _read_existing_state(root, parent_fd=parent_fd)
+                current = _selection_from_state_allow_unavailable(
+                    root,
+                    current_state,
+                    parent_fd=parent_fd,
                 )
-                if current != current_preview or proposed != proposed_preview:
+                if (
+                    current_state != preview.current_state
+                    or current != preview.current
+                ):
                     raise RemoteHermesError("connection_changed")
-                selected = (
-                    current
-                    if _same_intent(current, proposed)
-                    else ConnectionSelection(
-                        proposed.mode,
-                        proposed.label,
-                        proposed.endpoint,
-                        proposed.api_key,
+                proposed_state = ConnectionState(
+                    preview.proposed_state.mode,
+                    preview.proposed_state.local_label,
+                    preview.proposed_state.remote,
+                    current_state.binding_id,
+                )
+                if private_api_key is None:
+                    proposed = _selection_from_state(
+                        root,
+                        proposed_state,
+                        parent_fd=parent_fd,
+                    )
+                    if proposed != preview.proposed:
+                        raise RemoteHermesError("connection_changed")
+                else:
+                    if (
+                        proposed_state.remote is None
+                        or proposed_state.remote.credential.kind != "private_env_file"
+                        or _clean_api_key(private_api_key) != preview.proposed.api_key
+                    ):
+                        raise RemoteHermesError("connection_changed")
+                    proposed = preview.proposed
+                changed = (
+                    not _same_state_intent(current_state, proposed_state)
+                    or not _same_intent(current, proposed)
+                )
+                selected_state = (
+                    current_state
+                    if not changed
+                    else ConnectionState(
+                        proposed_state.mode,
+                        proposed_state.local_label,
+                        proposed_state.remote,
                         uuid4().hex,
                     )
                 )
-                if selected != current:
+                credential_path = connection_credential_path(root)
+                credential_existed = _entry_exists(credential_path, parent_fd)
+                credential_snapshot: bytes | None = None
+                if private_api_key is not None and credential_existed:
+                    credential_snapshot = _read_owner_private_bytes(
+                        credential_path,
+                        parent_fd=parent_fd,
+                    )
+                if selected_state != current_state:
                     try:
                         if not _pinned_directory_matches(private, parent_fd):
                             raise OSError("private connection directory changed")
+                        if private_api_key is not None:
+                            _write_private_credential(
+                                credential_path,
+                                DEFAULT_REMOTE_API_KEY_ENV,
+                                private_api_key,
+                                parent_fd=parent_fd,
+                            )
                         _write_connection_record(
                             path,
-                            selected,
+                            selected_state,
                             parent_fd=parent_fd,
+                        )
+                        committed_payload = _read_record_payload(
+                            root,
+                            parent_fd=parent_fd,
+                        )
+                        committed_state = (
+                            _state_from_record(committed_payload)
+                            if committed_payload is not None
+                            else None
+                        )
+                        committed_selection = (
+                            _selection_from_state(
+                                root,
+                                committed_state,
+                                parent_fd=parent_fd,
+                            )
+                            if committed_state is not None
+                            else None
                         )
                         if (
                             not _pinned_directory_matches(private, parent_fd)
-                            or _read_existing_record(root, parent_fd=parent_fd) != selected
+                            or committed_state != selected_state
+                            or committed_selection is None
+                            or (
+                                committed_selection.mode,
+                                committed_selection.label,
+                                committed_selection.endpoint,
+                                committed_selection.api_key,
+                            )
+                            != (
+                                proposed.mode,
+                                proposed.label,
+                                proposed.endpoint,
+                                proposed.api_key,
+                            )
                         ):
                             raise OSError("connection commit did not verify")
                     except Exception as commit_error:
                         rollback_verified = False
                         try:
                             if prior_existed:
-                                _write_connection_record(
+                                if prior_payload is None:
+                                    raise OSError("prior connection record missing")
+                                write_json_atomic(
                                     path,
-                                    current,
+                                    prior_payload,
+                                    mode=0o600,
                                     parent_fd=parent_fd,
+                                    maximum_bytes=MAX_CONNECTION_BYTES,
                                 )
-                                rollback_verified = (
-                                    _read_existing_record(root, parent_fd=parent_fd)
-                                    == current
-                                )
+                                if os.name == "nt":
+                                    _windows_set_owner_only(path, directory=False)
+                                if not _verify_owner_private(path, directory=False):
+                                    raise OSError(
+                                        "connection rollback privacy could not be verified"
+                                    )
                             elif _entry_exists(path, parent_fd):
-                                committed = _read_existing_record(
+                                _unlink_connection(path, parent_fd)
+                            if private_api_key is not None:
+                                _restore_credential_snapshot(
                                     root,
+                                    credential_snapshot
+                                    if credential_existed
+                                    else None,
                                     parent_fd=parent_fd,
                                 )
-                                if committed == selected:
-                                    _unlink_connection(path, parent_fd)
-                                rollback_verified = not _entry_exists(path, parent_fd)
-                            else:
-                                rollback_verified = True
+                            restored_payload = _read_record_payload(
+                                root,
+                                parent_fd=parent_fd,
+                            )
+                            credential_restored = (
+                                _read_owner_private_bytes(
+                                    credential_path,
+                                    parent_fd=parent_fd,
+                                )
+                                == credential_snapshot
+                                if credential_existed
+                                else not _entry_exists(credential_path, parent_fd)
+                            )
+                            rollback_verified = (
+                                restored_payload == prior_payload
+                                and (
+                                    private_api_key is None
+                                    or credential_restored
+                                )
+                            )
                         except Exception:
                             rollback_verified = False
                         raise RemoteHermesError(
@@ -3481,8 +4993,182 @@ def confirm_connection(
         raise
     except OSError as exc:
         raise RemoteHermesError("connection_storage_unavailable") from exc
+    selected = ConnectionSelection(
+        proposed.mode,
+        proposed.label,
+        proposed.endpoint,
+        proposed.api_key,
+        selected_state.binding_id,
+    )
     return {
         "status": "selected",
+        "selection": selected.public_summary(),
+        "discovery": discovery,
+    }
+
+
+def confirm_connection(
+    data_root: Path,
+    payload: Any,
+    confirmation_token: Any,
+    *,
+    require_server_stopped: bool = False,
+    client_factory: Callable[[str, str], RemoteHermesClient] = RemoteHermesClient,
+) -> dict[str, Any]:
+    preview = preview_connection(data_root, payload)
+    private_api_key = (
+        payload.get("api_key")
+        if type(payload) is dict and payload.get("mode") == "remote"
+        else None
+    )
+    return _confirm_preview(
+        data_root,
+        preview,
+        confirmation_token,
+        private_api_key=private_api_key,
+        require_server_stopped=require_server_stopped,
+        client_factory=client_factory,
+    )
+
+
+def confirm_connection_from_source(
+    data_root: Path,
+    *,
+    label: Any,
+    endpoint: Any,
+    credential_source: CredentialSource,
+    confirmation_token: Any,
+    activate: bool = True,
+    require_server_stopped: bool = False,
+    client_factory: Callable[[str, str], RemoteHermesClient] = RemoteHermesClient,
+) -> dict[str, Any]:
+    preview = preview_connection_from_source(
+        data_root,
+        label=label,
+        endpoint=endpoint,
+        credential_source=credential_source,
+        activate=activate,
+    )
+    return _confirm_preview(
+        data_root,
+        preview,
+        confirmation_token,
+        require_server_stopped=require_server_stopped,
+        client_factory=client_factory,
+    )
+
+
+def confirm_remembered_connection(
+    data_root: Path,
+    mode: Any,
+    confirmation_token: Any,
+    *,
+    require_server_stopped: bool = False,
+    client_factory: Callable[[str, str], RemoteHermesClient] = RemoteHermesClient,
+) -> dict[str, Any]:
+    preview = preview_remembered_connection(data_root, mode)
+    return _confirm_preview(
+        data_root,
+        preview,
+        confirmation_token,
+        require_server_stopped=require_server_stopped,
+        client_factory=client_factory,
+    )
+
+
+def _local_hermes_command_path() -> str | None:
+    configured = str(os.environ.get("HERMES_COMMAND") or "").strip()
+    if configured:
+        candidate = Path(os.path.expandvars(os.path.expanduser(configured)))
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return os.fspath(candidate)
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+    resolved = shutil.which("hermes")
+    if resolved:
+        return resolved
+    for candidate in (
+        Path.home() / ".local" / "bin" / "hermes",
+        Path.home() / ".local" / "bin" / "hermes.exe",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return os.fspath(candidate)
+    return None
+
+
+def _probe_local_hermes() -> dict[str, Any]:
+    command = _local_hermes_command_path()
+    if command is None:
+        raise RemoteHermesError("local_connection_unavailable")
+    try:
+        result = subprocess.run(
+            [command, "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
+    except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired, OSError) as exc:
+        raise RemoteHermesError("local_connection_unavailable") from exc
+    if result.returncode != 0:
+        raise RemoteHermesError("local_connection_unavailable")
+    return {
+        "trusted": True,
+        "platform": "hermes-agent",
+        "readiness": {"cli": "ok"},
+    }
+
+
+def test_connection_mode(
+    data_root: Path,
+    mode: str,
+    *,
+    local_probe: Callable[[], dict[str, Any]] = _probe_local_hermes,
+    client_factory: Callable[[str, str], RemoteHermesClient] = RemoteHermesClient,
+) -> dict[str, Any]:
+    if mode == "local":
+        state = load_connection_state(data_root)
+        discovery = local_probe()
+        if (
+            type(discovery) is not dict
+            or discovery.get("trusted") is not True
+            or discovery.get("platform") != "hermes-agent"
+        ):
+            raise RemoteHermesError("local_connection_unavailable")
+        if load_connection_state(data_root) != state:
+            raise RemoteHermesError("connection_changed")
+        return {
+            "status": "verified",
+            "selection": ConnectionSelection(
+                "local",
+                state.local_label,
+                None,
+                None,
+                state.binding_id,
+            ).public_summary(),
+            "discovery": {
+                "trusted": True,
+                "platform": "hermes-agent",
+                "readiness": {"cli": "ok"},
+            },
+        }
+    if mode != "remote":
+        raise RemoteHermesError("connection_mode_invalid")
+    state = load_connection_state(data_root)
+    if state.remote is None:
+        raise RemoteHermesError("connection_remote_not_configured")
+    selected = _selection_from_state(
+        Path(data_root),
+        ConnectionState("remote", state.local_label, state.remote, state.binding_id),
+    )
+    client = client_factory(selected.endpoint or "", selected.api_key or "")
+    discovery = client.discover()
+    if load_connection_state(data_root) != state:
+        raise RemoteHermesError("connection_changed")
+    return {
+        "status": "verified",
         "selection": selected.public_summary(),
         "discovery": discovery,
     }
@@ -3494,23 +5180,11 @@ def test_selected_connection(
     client_factory: Callable[[str, str], RemoteHermesClient] = RemoteHermesClient,
 ) -> dict[str, Any]:
     selected = load_connection(data_root)
-    if selected.mode == "local":
-        if load_connection(data_root) != selected:
-            raise RemoteHermesError("connection_changed")
-        return {
-            "status": "local",
-            "selection": selected.public_summary(),
-            "discovery": None,
-        }
-    client = client_factory(selected.endpoint or "", selected.api_key or "")
-    discovery = client.discover()
-    if load_connection(data_root) != selected:
-        raise RemoteHermesError("connection_changed")
-    return {
-        "status": "verified",
-        "selection": selected.public_summary(),
-        "discovery": discovery,
-    }
+    return test_connection_mode(
+        data_root,
+        selected.mode,
+        client_factory=client_factory,
+    )
 
 
 def connection_diagnostics(
@@ -3603,7 +5277,17 @@ def connection_diagnostics(
 
 def public_connection_payload(data_root: Path) -> dict[str, Any]:
     try:
-        return {"status": "configured", "selection": load_connection(data_root).public_summary()}
+        state, selection = _load_state_and_selection(data_root)
+        return {
+            "status": "configured",
+            "selection": {
+                **selection.public_summary(),
+                "remembered_remote": state.remote is not None,
+                "remembered_remote_label": (
+                    state.remote.label if state.remote is not None else None
+                ),
+            },
+        }
     except RemoteHermesError as exc:
         return {
             "status": "unavailable",
@@ -3621,6 +5305,7 @@ def public_error(error: RemoteHermesError) -> tuple[dict[str, Any], int]:
         "connection_label_private_shaped",
         "connection_label_secret_shaped",
         "connection_credential_invalid",
+        "connection_credential_source_invalid",
         "connection_endpoint_invalid",
         "connection_endpoint_scheme_invalid",
         "connection_endpoint_components_invalid",
@@ -3634,31 +5319,47 @@ def public_error(error: RemoteHermesError) -> tuple[dict[str, Any], int]:
         "connection_storage_unavailable",
         "connection_commit_rolled_back",
         "connection_commit_partial",
+        "connection_migration_rolled_back",
+        "connection_migration_partial",
     }:
         status = 500
     payload = {
         "error": "Mentat could not verify this Hermes connection change.",
         "error_code": error.code,
     }
-    if error.code == "connection_commit_partial":
+    if error.code in {"connection_commit_partial", "connection_migration_partial"}:
         payload["partial"] = True
     return payload, status
 
 
 __all__ = [
     "CONNECTION_FILE_NAME",
+    "CONNECTION_CREDENTIAL_FILE_NAME",
     "CONNECTION_SCHEMA_VERSION",
+    "DEFAULT_REMOTE_API_KEY_ENV",
+    "ConnectionState",
     "ConnectionPreview",
     "ConnectionSelection",
+    "CredentialSource",
+    "RememberedRemote",
     "RemoteHermesClient",
     "RemoteHermesError",
     "connection_diagnostics",
+    "connection_credential_path",
+    "confirm_connection_from_source",
+    "confirm_remembered_connection",
     "confirm_connection",
     "connection_path",
+    "credential_source_from_values",
     "load_connection",
+    "load_connection_state",
     "normalize_endpoint",
+    "offline_confirmation_token",
     "preview_connection",
+    "preview_connection_from_source",
+    "preview_remembered_connection",
     "public_connection_payload",
     "public_error",
+    "test_connection_mode",
     "test_selected_connection",
 ]
