@@ -16,8 +16,12 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
 
         self.assertIn("provider switching unsupported by this Hermes runtime", render_block)
         self.assertIn("Agent execution remains available with the current provider and model.", render_block)
-        self.assertIn("if (prompt) prompt.disabled = !available || Boolean(activeRun);", render_block)
-        self.assertIn("if (send) send.disabled = !available || Boolean(activeRun);", render_block)
+        self.assertIn(
+            "const runtimeBlocked = agentConsoleRuntimeBlocked();",
+            render_block,
+        )
+        self.assertIn("if (prompt) prompt.disabled = !available || Boolean(activeRun) || runtimeBlocked;", render_block)
+        self.assertIn("if (send) send.disabled = !available || Boolean(activeRun) || runtimeBlocked;", render_block)
         self.assertNotIn(
             "if (send) send.disabled = !available || !providerSwitchAvailable",
             render_block,
@@ -52,8 +56,9 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
         self.assertIn("const consolePayload = await api(endpoints.agentConsole);", helper_block)
         self.assertIn("agent.id === requestedProfileId", helper_block)
         self.assertIn("state.agentConsoleSelectedAgentId !== requestedProfileId", helper_block)
-        self.assertIn("const catalog = await refreshAgentConsoleModelCatalog", helper_block)
-        self.assertIn("if (!catalog)", helper_block)
+        self.assertIn("const refreshPromise = refreshAgentConsoleModelCatalog", helper_block)
+        self.assertIn("const refreshed = await refreshPromise", helper_block)
+        self.assertIn("if (!agentConsoleReadableRuntime(refreshed, requestedProfileId))", helper_block)
         self.assertIn("Could not open ${requestedProfileId} in Agent Console", helper_block)
         self.assertIn("return false;", helper_block)
         self.assertIn(
@@ -123,15 +128,15 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
         self.assertIn(".sidebar-footer { width: 100%; max-width: none;", breakpoint_block)
         self.assertIn(".sidebar-footer #health-label { max-width: 100%; }", breakpoint_block)
 
-    def test_model_command_uses_confirmed_provider_workflow_or_fails_closed(self):
+    def test_model_command_uses_automatic_confirmed_provider_workflow_or_fails_closed(self):
         prompt_start = APP_JS.index("async function submitAgentConsolePrompt()")
         prompt_end = APP_JS.index("function renderCrons", prompt_start)
         prompt_block = APP_JS[prompt_start:prompt_end]
 
         self.assertIn("state.agentConsoleProviderInventory.capabilities?.['providers.switch'] === true", prompt_block)
-        self.assertIn("Choose Review Change to preview and confirm", prompt_block)
+        self.assertIn("await applyAgentConsoleRuntimeSelection({", prompt_block)
         self.assertIn("does not expose supported provider/model switching", prompt_block)
-        self.assertNotIn("Apply Model to update Hermes", prompt_block)
+        self.assertNotIn("Review Change", prompt_block)
 
 
 if __name__ == "__main__":

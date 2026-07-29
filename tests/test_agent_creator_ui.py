@@ -72,8 +72,12 @@ class AgentCreatorUiTests(unittest.TestCase):
         self.assertIn("managed-agent-provider-editor", STYLES)
 
     def test_provider_and_model_controls_wrap_without_overlap(self):
-        toolbar_rule = STYLES[STYLES.index(".agent-console-toolbar"):STYLES.index(".agent-console-select-shell")]
+        toolbar_start = STYLES.index(".agent-console-toolbar")
+        toolbar_rule = STYLES[toolbar_start:STYLES.index(".agent-console-select-shell {", toolbar_start)]
+        runtime_start = STYLES.index(".agent-console-runtime-row {")
+        runtime_rule = STYLES[runtime_start:STYLES.index(".agent-console-runtime-row .agent-console-select-shell", runtime_start)]
         self.assertIn("flex-wrap: wrap", toolbar_rule)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", runtime_rule)
         self.assertIn("flex: 1 1 210px", STYLES)
 
     def test_skill_picker_supports_default_custom_and_none_modes(self):

@@ -293,16 +293,32 @@ model prose or impersonate a messaging platform.
 
 The Hermes fork now exposes **Profile Default Runtime Management** through an
 exact authenticated runtime read and revision-bound switch. Mentat projects the
-validated choices into the existing Agent Console controls. Preview re-reads
-the selected served profile and binds its current provider/model, requested
-pair, and revision. Apply excludes an active Mentat run for that profile,
+validated choices into the Agent Console's Agent, Provider, and Model row. An
+Agent change re-reads the exact served-profile runtime without mutation. A
+Provider change selects Hermes's first listed model, while a Model change keeps
+the selected provider; either selector change automatically performs the safe
+preview/apply flow without a second review-dialog click. Preview re-reads the
+selected served profile and binds its current provider/model, requested pair,
+connection, and revision. Apply excludes an active Mentat run for that profile,
 revalidates the connection under the shared mutation locks, recomputes the
 confirmation, and makes one idempotent switch call. A fresh read must verify
-the target. A mismatch permits one rollback only when the fresh state still
-has the exact revision acknowledged by Mentat's switch response, followed by
-another fresh read. If that revision has advanced, Mentat treats the state as
-a concurrent change, does not roll it back, and requires operator inspection.
-An uncertain mutation is never retried.
+the target. A mismatch permits one rollback only when the fresh state still has
+the exact revision acknowledged by Mentat's switch response, followed by
+another fresh read. If that revision has advanced, Mentat treats the state as a
+concurrent change, does not roll it back, and requires operator inspection. An
+uncertain mutation is never retried. A verified change is shown as a browser-
+session transcript notice bound to the current connection and profile, and is
+never injected into model context.
+
+The displayed current pair always comes from Hermes's exact runtime fields,
+not from the first selectable provider/model. During a selector mutation,
+Mentat shows the last confirmed pair plus the pending target. If the mutation
+fails and the reconciliation read also fails, the Console clears stale picker
+data and pauses prompts, attachments, new sessions, and runtime changes until
+the operator's explicit runtime retry obtains a fresh, non-error confirmed
+pair. Delayed results from a prior connection are discarded. Context Pack and
+attachment staging serialize with runtime changes and are discarded if their
+connection/profile context changes in flight.
 
 Hosts missing any required flag or exact endpoint remain read-only. Provider
 credentials, endpoint configuration, remote profile creation, skill selection,

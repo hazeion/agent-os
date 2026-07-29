@@ -11,6 +11,22 @@ All notable changes to Mentat.
 - Agent Console now exposes validated remote provider/model choices through
   the existing selectors when every revision, idempotency, and active-run
   safety capability is advertised.
+- Agent Console now keeps Agent, Provider, and Model in one runtime row above
+  the prompt. Agent selection re-reads Hermes, while provider or model
+  selection automatically runs the bound preview and verified switch without a
+  separate review-dialog click. Provider changes use Hermes's first listed
+  model and verified changes appear as UI-only transcript notices.
+- Detailed tool events now start hidden. A Show tools / Hide tools control
+  reveals them, while an outstanding tool call remains visible through an
+  animated Agent is using tools indicator outside collapsed history. Its live
+  announcement changes only when selected-agent tool activity starts or ends.
+- Agent Console keeps Hermes's confirmed runtime separate from selectable
+  inventory and pending targets. If a failed switch cannot be reconciled with
+  a fresh read, it clears stale picker data and blocks execution until an
+  explicit runtime retry succeeds.
+- Delayed runtime results cannot cross transport bindings, blank/error refresh
+  payloads cannot unlock execution, and Context Pack or attachment staging is
+  serialized with provider/model switching.
 
 ### Safety
 - Remote preview binds the selected connection, profile, current and target
