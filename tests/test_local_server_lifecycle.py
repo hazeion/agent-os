@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 import mentat_lifecycle as lifecycle
+from private_state import connection_server_reservation_path, mentat_server_active
 import server
 
 
@@ -24,9 +25,9 @@ class LocalServerLifecycleTests(unittest.TestCase):
             greeting_prefix=None,
         )
 
-    def test_managed_ports_include_primary_and_dev_ports(self):
-        self.assertEqual(lifecycle.managed_ports(8888), [8888, 8890])
-        self.assertEqual(lifecycle.managed_ports(9001), [8888, 8890, 9001])
+    def test_managed_ports_include_only_the_configured_port(self):
+        self.assertEqual(lifecycle.managed_ports(8888), [8888])
+        self.assertEqual(lifecycle.managed_ports(9001), [9001])
 
     def test_parse_netstat_listeners_extracts_listening_rows(self):
         output = """
@@ -81,7 +82,7 @@ class LocalServerLifecycleTests(unittest.TestCase):
             ipv4_result = lifecycle.identify_listener(ipv4, None, probe_cache, command_cache)
             ipv6_result = lifecycle.identify_listener(ipv6, None, probe_cache, command_cache)
 
-        self.assertTrue(ipv4_result[0])
+        self.assertFalse(ipv4_result[0])
         self.assertFalse(ipv6_result[0])
         self.assertEqual(probe.call_args_list, [call("127.0.0.1", 8888), call("::1", 8888)])
 
@@ -98,6 +99,67 @@ class LocalServerLifecycleTests(unittest.TestCase):
             self.assertIsNone(server.configured_launcher_pid())
         with patch.dict(server.os.environ, {"MENTAT_LAUNCHER_PID": str(server.os.getpid())}, clear=False):
             self.assertIsNone(server.configured_launcher_pid())
+
+    def test_dashboard_cleanup_always_releases_connection_reservation(self):
+        for failing_step in ("stop_runs", "server_close", "runtime_state"):
+            with self.subTest(failing_step=failing_step), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir) / "operator-data"
+                root.mkdir(mode=0o700)
+                public = Path(tmpdir) / "public"
+                fake_server = MagicMock()
+                fake_server.serve_forever.return_value = None
+                if failing_step == "server_close":
+                    fake_server.server_close.side_effect = RuntimeError(
+                        "server close failed"
+                    )
+                stop_effect = (
+                    RuntimeError("run cleanup failed")
+                    if failing_step == "stop_runs"
+                    else None
+                )
+                clear_effect = (
+                    RuntimeError("runtime cleanup failed")
+                    if failing_step == "runtime_state"
+                    else None
+                )
+                with patch.object(server, "DATA_DIR", root), patch.object(
+                    server, "PUBLIC_DIR", public
+                ), patch.object(
+                    server,
+                    "load_remote_hermes_connection_state",
+                ), patch.object(
+                    server, "load_agent_console_runs"
+                ), patch.object(
+                    server, "maintain_agent_console_attachments"
+                ), patch.object(
+                    server.threading.Thread, "start"
+                ), patch.object(
+                    server,
+                    "server_class_for_host",
+                    return_value=lambda *_args: fake_server,
+                ), patch.object(
+                    server, "start_launcher_watch", return_value=None
+                ), patch.object(
+                    server, "write_runtime_state"
+                ), patch.object(
+                    server,
+                    "stop_agent_console_processes",
+                    side_effect=stop_effect,
+                ) as stop_runs, patch.object(
+                    server,
+                    "clear_runtime_state",
+                    side_effect=clear_effect,
+                ) as clear_state:
+                    with self.assertRaises(RuntimeError):
+                        server.serve_dashboard()
+
+                stop_runs.assert_called_once_with()
+                fake_server.server_close.assert_called_once_with()
+                clear_state.assert_called_once_with()
+                self.assertFalse(
+                    connection_server_reservation_path(root).exists()
+                )
+                self.assertFalse(mentat_server_active(root))
 
     def test_cleanup_does_not_kill_listener_tracked_only_by_stale_runtime_state(self):
         with TemporaryDirectory() as tmpdir:
@@ -193,6 +255,55 @@ class LocalServerLifecycleTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertEqual(report["actions"][0]["action"], "blocked_non_mentat")
         self.assertEqual(report["actions"][0]["pid"], 9988)
+
+    def test_cleanup_ignores_listener_on_a_different_port(self):
+        with TemporaryDirectory() as tmpdir:
+            config = self.make_config(Path(tmpdir), port=8895)
+            listener = lifecycle.Listener(pid=8881, port=8888, local_address="127.0.0.1:8888", raw="")
+            with patch.object(lifecycle, "netstat_listeners", return_value=[listener]), patch.object(
+                lifecycle, "kill_pid"
+            ) as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["managed_ports"], [8895])
+        self.assertEqual(report["actions"], [{"action": "no_managed_listeners", "ports": [8895]}])
+        kill_pid.assert_not_called()
+
+    def test_probe_only_listener_on_configured_port_is_blocked_not_killed(self):
+        with TemporaryDirectory() as tmpdir:
+            config = self.make_config(Path(tmpdir), port=8895)
+            listener = lifecycle.Listener(pid=8896, port=8895, local_address="127.0.0.1:8895", raw="")
+            with patch.object(lifecycle, "netstat_listeners", return_value=[listener]), patch.object(
+                lifecycle, "process_commandline", return_value="python /tmp/unrelated_server.py"
+            ), patch.object(lifecycle, "probe_mentat", return_value=True), patch.object(
+                lifecycle, "kill_pid"
+            ) as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config)
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["actions"][0]["action"], "blocked_non_mentat")
+        self.assertEqual(report["actions"][0]["reasons"], ["overview_probe"])
+        kill_pid.assert_not_called()
+
+    def test_public_reports_do_not_expose_paths_commands_or_raw_runtime_state(self):
+        with TemporaryDirectory() as tmpdir:
+            config = self.make_config(Path(tmpdir), port=8895)
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps({"pid": 4321, "data_dir": str(config.data_dir)}) + "\n", encoding="utf-8")
+            listener = lifecycle.Listener(pid=4321, port=8895, local_address="127.0.0.1:8895", raw="private")
+            private_command = f'python "{lifecycle.BASE_DIR / "server.py"}" --data-dir {config.data_dir}'
+            with patch.object(lifecycle, "netstat_listeners", return_value=[listener]), patch.object(
+                lifecycle, "process_commandline", return_value=private_command
+            ), patch.object(lifecycle, "probe_mentat", return_value=True):
+                report = lifecycle.status_report(config)
+
+        serialized = json.dumps(report)
+        self.assertNotIn(str(config.data_dir), serialized)
+        self.assertNotIn('"command_line":', serialized)
+        self.assertNotIn('"runtime_state":', serialized)
+        self.assertNotIn('"state_path":', serialized)
 
     def test_preflight_rejects_non_loopback_host_before_cleanup(self):
         with TemporaryDirectory() as tmpdir, patch.object(lifecycle, "cleanup_mentat_listeners") as cleanup, patch.object(
