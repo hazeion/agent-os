@@ -3067,7 +3067,6 @@ function renderAgentConsole(payload = {}) {
   const modelSelect = $('#agent-console-model-select');
   const toolToggle = $('#agent-console-tool-toggle');
   const runtimeRefresh = $('#agent-console-runtime-refresh');
-  const runtimeBanner = $('#agent-console-runtime-banner');
   const toolActivityBanner = $('#agent-console-tool-activity-banner');
   const toolActivityText = $('#agent-console-tool-activity-text');
   const toolLiveStatus = $('#agent-console-tool-live-status');
@@ -3237,21 +3236,19 @@ function renderAgentConsole(payload = {}) {
     modelSelect.value = runtimeModel;
     state.agentConsoleSelectedModel = runtimeModel;
   }
-  const modelLabel = runtimeModel || confirmedModel || selectedAgent.model || 'configured model';
-  const providerLabel = runtimeProvider || confirmedProvider || catalog.provider_label || catalog.provider || 'Hermes';
   const pendingRuntime = state.agentConsoleRuntimePending?.agent_id === selectedAgent.id
     ? state.agentConsoleRuntimePending
     : null;
   const providerCapabilityLabel = providerSwitchUnavailable ? ' · provider switching unsupported by this Hermes runtime' : '';
   if (stateLabel) {
     stateLabel.textContent = state.agentConsoleRuntimeLoading
-      ? 'Loading current provider and model…'
+      ? 'Checking Hermes runtime…'
       : state.agentConsoleRuntimeUnresolved
-        ? 'Runtime verification required · retry the Hermes runtime check before running this agent'
+        ? 'Runtime verification required'
       : !available
       ? `Hermes CLI unavailable${providerCapabilityLabel}`
       : selectedActiveRun
-        ? `${providerLabel} · ${modelLabel} · ${
+        ? `${
           selectedActiveRun.status === 'waiting_for_approval'
             ? 'waiting for approval'
             : selectedActiveRun.status === 'waiting_for_clarification'
@@ -3259,8 +3256,8 @@ function renderAgentConsole(payload = {}) {
               : 'working'
         }${providerCapabilityLabel}`
         : pendingRuntime
-          ? `${providerLabel} · ${modelLabel} · switching to ${pendingRuntime.provider} · ${pendingRuntime.model}`
-        : `${providerLabel} · ${modelLabel} · ready${providerCapabilityLabel}`;
+          ? 'Switching runtime…'
+        : `Ready${providerCapabilityLabel}`;
     stateLabel.title = providerSwitchUnavailable
       ? available
         ? 'This Hermes runtime does not expose supported provider switching. Agent execution remains available with the current provider and model.'
@@ -3300,20 +3297,6 @@ function renderAgentConsole(payload = {}) {
       (notice.agent_id || 'default') === selectedAgent.id
       && (notice.transport_binding || '') === (state.agentConsoleTransportBinding || '')
     ));
-  const latestRuntimeNotice = selectedRuntimeNotices.at(-1);
-  const matchingRuntimeNotice = latestRuntimeNotice?.provider === confirmedProvider
-    && latestRuntimeNotice?.model === confirmedModel
-    ? latestRuntimeNotice
-    : null;
-  if (runtimeBanner) {
-    runtimeBanner.hidden = !matchingRuntimeNotice && !state.agentConsoleRuntimeUnresolved;
-    runtimeBanner.classList.toggle('error', state.agentConsoleRuntimeUnresolved);
-    runtimeBanner.textContent = state.agentConsoleRuntimeUnresolved
-      ? 'Runtime verification required. Mentat has paused this agent until Hermes confirms its current provider and model.'
-      : matchingRuntimeNotice
-        ? `Runtime switched to ${matchingRuntimeNotice.provider} · ${matchingRuntimeNotice.model}`
-        : '';
-  }
   const activeToolRun = selectedRuns.find((run) => (
     agentConsoleRunIsActive(run)
     && agentConsoleOutstandingToolCount(run.events || []) > 0

@@ -14,7 +14,7 @@ class AgentConsoleRuntimeSwitchUiTests(unittest.TestCase):
         start_index = APP.index(start)
         return APP[start_index:APP.index(end, start_index)]
 
-    def test_runtime_controls_share_one_row_before_the_prompt(self):
+    def test_runtime_controls_share_one_row_with_transcript_before_prompt(self):
         console = INDEX[
             INDEX.index('id="agent-console-panel"')
             : INDEX.index('id="view-agents"')
@@ -32,6 +32,14 @@ class AgentConsoleRuntimeSwitchUiTests(unittest.TestCase):
         self.assertLess(runtime.index(ids[0]), runtime.index(ids[1]))
         self.assertLess(runtime.index(ids[1]), runtime.index(ids[2]))
         self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", CSS)
+        self.assertLess(
+            console.index('id="agent-console-model-select"'),
+            console.index('id="agent-console-transcript"'),
+        )
+        self.assertLess(
+            console.index('id="agent-console-transcript"'),
+            console.index('<form id="agent-console-form"'),
+        )
 
     def test_provider_and_model_changes_apply_automatically(self):
         handlers = self.app_block(
@@ -101,7 +109,7 @@ class AgentConsoleRuntimeSwitchUiTests(unittest.TestCase):
         self.assertIn("currentProviderOutsideInventory", render)
         self.assertIn("confirmed_only: true", render)
         self.assertIn("state.agentConsoleRuntimePending", render)
-        self.assertIn("switching to ${pendingRuntime.provider}", render)
+        self.assertIn("'Switching runtime…'", render)
 
     def test_unverified_runtime_blocks_execution_until_explicit_retry(self):
         render = self.app_block("function renderAgentConsole(payload = {})", "function scheduleAgentConsolePoll")
@@ -111,6 +119,12 @@ class AgentConsoleRuntimeSwitchUiTests(unittest.TestCase):
         self.assertIn("if (attach) attach.disabled", render)
         self.assertIn("runtimeRefresh.hidden = !state.agentConsoleRuntimeUnresolved", render)
         self.assertIn('id="agent-console-runtime-refresh"', INDEX)
+        transcript = INDEX[
+            INDEX.index('id="agent-console-transcript"')
+            : INDEX.index('<form id="agent-console-form"')
+        ]
+        self.assertIn('id="agent-console-runtime-refresh"', transcript)
+        self.assertIn(">Retry check</button>", transcript)
         retry = self.app_block(
             "$('#agent-console-runtime-refresh')?.addEventListener",
             "$('[data-provider-switch-confirm]')?.addEventListener",
@@ -218,24 +232,31 @@ class AgentConsoleRuntimeSwitchUiTests(unittest.TestCase):
         self.assertIn("transport_binding: state.agentConsoleTransportBinding", notice)
         render = self.app_block("function renderAgentConsole(payload = {})", "function scheduleAgentConsolePoll")
         self.assertIn("agent-console-runtime-notice", render)
-        self.assertIn("agent-console-runtime-banner", INDEX)
+        self.assertNotIn("agent-console-runtime-banner", INDEX)
+        self.assertNotIn("runtimeBanner", render)
         self.assertIn("(notice.transport_binding || '') === (state.agentConsoleTransportBinding || '')", render)
         self.assertIn(".sort((left, right) => left.timestamp - right.timestamp)", render)
         self.assertIn("Switched to", render)
         self.assertNotIn('agent-console-runtime-notice" role="status"', render)
         self.assertNotIn("startAgentConsoleRun", notice)
 
-    def test_history_toolbar_is_not_a_second_runtime_editor(self):
+    def test_visible_transcript_toolbar_is_not_a_second_runtime_editor(self):
         console = INDEX[
             INDEX.index('id="agent-console-panel"')
             : INDEX.index('id="view-agents"')
         ]
-        details = console[console.index('id="agent-console-details"'):]
-        self.assertIn("<summary>Console history</summary>", details)
-        self.assertIn('id="agent-console-new-session"', details)
-        self.assertIn('id="agent-console-tool-toggle"', details)
-        self.assertNotIn('id="agent-console-provider-select"', details)
-        self.assertNotIn("Review change", details)
+        transcript = console[
+            console.index('id="agent-console-transcript"')
+            : console.index('<form id="agent-console-form"')
+        ]
+        self.assertIn('aria-label="Agent Console transcript"', transcript)
+        self.assertIn('id="agent-console-new-session"', transcript)
+        self.assertIn('id="agent-console-tool-toggle"', transcript)
+        self.assertIn('id="agent-console-chat"', transcript)
+        self.assertNotIn('id="agent-console-provider-select"', transcript)
+        self.assertNotIn("Review change", transcript)
+        self.assertNotIn("<details", transcript)
+        self.assertNotIn("<summary", transcript)
 
 
 if __name__ == "__main__":
