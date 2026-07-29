@@ -881,6 +881,57 @@ h1, h2, h3, p { margin: 0; }
 .agent-console-log-row > span:nth-of-type(2) { color: var(--accent); font: 750 .68rem/1.45 var(--mono); }
 .agent-console-log-prompt > span { color: var(--accent-2) !important; }
 .agent-console-log-status { color: var(--muted); }
+.agent-console-log-status.tool\.started > span:last-child,
+.agent-console-log-status.tool\.completed > span:last-child { color: var(--accent); }
+.agent-console-log-status.reasoning\.available > span:last-child,
+.agent-console-reasoning-detail { color: var(--text-secondary); }
+.agent-console-reasoning-detail {
+  min-width: 0;
+}
+.agent-console-reasoning-detail summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.agent-console-reasoning-detail summary:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.agent-console-reasoning-detail > div {
+  margin-top: 7px;
+  border-left: 1px solid var(--line-strong);
+  padding-left: 9px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.agent-console-session-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px 6px;
+  color: var(--success);
+  font: 750 .6rem/1.2 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.agent-console-session-divider::before,
+.agent-console-session-divider::after {
+  height: 1px;
+  flex: 1;
+  background: color-mix(in srgb, var(--success) 38%, var(--line));
+  content: "";
+}
+.agent-console-context-usage {
+  display: grid;
+  gap: 3px;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+  color: var(--muted-2);
+  font-size: .59rem;
+}
+.agent-console-context-usage span { display: block; }
+.agent-console-context-usage strong { color: var(--text-secondary); font-weight: 800; }
 .agent-console-log-status.complete > span:last-child { color: var(--success); }
 .agent-console-log-status.error > span:last-child,
 .agent-console-log-status.cancelled > span:last-child,
@@ -3356,6 +3407,1270 @@ code { font-family: var(--mono); color: var(--accent); }
   100% { box-shadow: var(--shadow); }
 }
 
+/* Reference-aligned Mentat Home: operations-first composition. */
+:root[data-ui-shell='emerald'] .command-header {
+  min-height: 64px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-bottom: 16px;
+  padding-block: 10px;
+}
+
+:root[data-ui-shell='emerald'] .topbar-context {
+  min-width: 1px;
+}
+
+:root[data-ui-shell='emerald'] .topbar-context .hero-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .header-actions {
+  width: auto;
+  gap: 12px;
+}
+
+:root[data-ui-shell='emerald'] .connection-status-button {
+  min-width: 190px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border: 1px solid var(--operations-border-control);
+  border-radius: var(--operations-radius-sm);
+  background: var(--operations-surface-input);
+  color: var(--operations-content-primary);
+  font: 500 13px/20px var(--operations-font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+:root[data-ui-shell='emerald'] .connection-status-button::after {
+  content: "›";
+  margin-left: auto;
+  color: var(--operations-content-tertiary);
+  font-size: 18px;
+}
+
+:root[data-ui-shell='emerald'] .connection-status-button:hover {
+  border-color: var(--operations-content-accent);
+  background: var(--operations-surface-row-hover);
+}
+
+:root[data-ui-shell='emerald'] .operator-avatar {
+  width: 40px;
+  height: 40px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 40px;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: 50%;
+  background: var(--operations-surface-raised);
+  color: var(--operations-content-primary);
+  font: 600 12px/1 var(--operations-font-sans);
+  letter-spacing: .04em;
+}
+
+:root[data-ui-shell='emerald'] .global-search-wrap {
+  width: min(28vw, 360px);
+}
+
+:root[data-ui-shell='emerald'] .home-operations-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.174fr) minmax(360px, 1fr);
+  grid-template-areas:
+    "focus agents"
+    "schedule context"
+    "console console";
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+}
+
+:root[data-ui-shell='emerald'] .home-operations-grid > * {
+  min-width: 0;
+}
+
+:root[data-ui-shell='emerald'] .home-operations-grid .panel {
+  padding: 18px 20px;
+  border-radius: 12px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--operations-surface-panel) 96%, var(--operations-emerald-950)), var(--operations-surface-panel));
+}
+
+:root[data-ui-shell='emerald'] .home-focus-panel {
+  grid-area: focus;
+  min-height: 350px;
+}
+
+:root[data-ui-shell='emerald'] #today-active-work-panel.home-focus-panel {
+  grid-area: focus;
+}
+
+:root[data-ui-shell='emerald'] .home-live-agents-panel {
+  grid-area: agents;
+  min-height: 350px;
+}
+
+:root[data-ui-shell='emerald'] .home-today-panel {
+  grid-area: schedule;
+  min-height: 292px;
+}
+
+:root[data-ui-shell='emerald'] .home-context-stack {
+  grid-area: context;
+  display: grid;
+  grid-template-rows: minmax(176px, 1.15fr) minmax(112px, .85fr);
+  gap: 10px;
+}
+
+:root[data-ui-shell='emerald'] .home-context-stack > .command-card {
+  min-height: 0;
+  padding: 13px 16px;
+}
+
+:root[data-ui-shell='emerald'] .home-projects-panel {
+  min-height: 176px;
+}
+
+:root[data-ui-shell='emerald'] .home-crons-panel {
+  min-height: 112px;
+}
+
+:root[data-ui-shell='emerald'] .home-context-stack .home-panel-head {
+  margin-bottom: 8px;
+}
+
+:root[data-ui-shell='emerald'] .home-context-stack .home-panel-heading .panel-subtitle {
+  margin-top: 0;
+  line-height: 14px;
+}
+
+:root[data-ui-shell='emerald'] #agent-console-panel.home-console-panel {
+  grid-area: console;
+  min-height: 104px;
+  padding: 14px 18px;
+  overflow: visible;
+}
+
+:root[data-ui-shell='emerald'] .home-panel-head {
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+:root[data-ui-shell='emerald'] .home-panel-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+:root[data-ui-shell='emerald'] .home-panel-heading h2,
+:root[data-ui-shell='emerald'] .home-console-heading h2 {
+  color: var(--operations-content-primary);
+  font: 600 17px/22px var(--operations-font-sans);
+  letter-spacing: -.015em;
+  text-transform: none;
+}
+
+:root[data-ui-shell='emerald'] .home-panel-heading .panel-subtitle,
+:root[data-ui-shell='emerald'] .home-console-heading .panel-subtitle {
+  margin-top: 2px;
+  color: var(--operations-content-tertiary);
+  font: 400 12px/17px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] #home-schedule-date.attention {
+  color: var(--operations-state-warning);
+}
+
+:root[data-ui-shell='emerald'] .home-panel-icon {
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 26px;
+  color: var(--operations-content-primary);
+}
+
+:root[data-ui-shell='emerald'] .home-panel-icon svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+:root[data-ui-shell='emerald'] .home-panel-head .mini-button {
+  min-height: 34px;
+  padding: 7px 11px;
+  border-color: var(--operations-border-control);
+  border-radius: var(--operations-radius-sm);
+  background: transparent;
+  color: var(--operations-content-secondary);
+  font-size: 12px;
+  text-transform: none;
+}
+
+:root[data-ui-shell='emerald'] .home-panel-head .mini-button:hover {
+  color: var(--operations-content-accent);
+  border-color: var(--operations-content-accent);
+}
+
+:root[data-ui-shell='emerald'] .home-completion {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+:root[data-ui-shell='emerald'] .home-completion > div {
+  display: grid;
+  justify-items: end;
+}
+
+:root[data-ui-shell='emerald'] .home-completion span,
+:root[data-ui-shell='emerald'] .home-completion small {
+  color: var(--operations-content-tertiary);
+  font: 400 11px/15px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-completion strong {
+  color: var(--operations-content-primary);
+  font: 600 21px/26px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-completion-ring {
+  --progress: 0;
+  position: relative;
+  width: 56px;
+  height: 56px;
+  display: block;
+  flex: 0 0 56px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--operations-content-accent) calc(var(--progress) * 1%),
+    color-mix(in srgb, var(--operations-border-default) 74%, transparent) 0
+  );
+}
+
+:root[data-ui-shell='emerald'] .home-completion-ring::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: inherit;
+  background: var(--operations-surface-panel);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-list {
+  display: grid;
+  gap: 7px;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-row {
+  width: 100%;
+  min-height: 61px;
+  display: grid;
+  grid-template-columns: 31px minmax(0, 1fr) auto 18px;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--operations-surface-row) 82%, transparent);
+  color: var(--operations-content-primary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--operations-duration-fast) var(--operations-ease),
+    background var(--operations-duration-fast) var(--operations-ease);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-row:hover {
+  border-color: var(--operations-border-control);
+  background: var(--operations-surface-row-hover);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-state {
+  position: relative;
+  width: 27px;
+  height: 27px;
+  display: block;
+  border: 2px solid var(--operations-content-secondary);
+  border-radius: 50%;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-state.completed {
+  border-color: var(--operations-state-success);
+  color: var(--operations-state-success);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-state.completed::before {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 4px;
+  inset: 8px auto auto 7px;
+  border: solid currentColor;
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-state.attention {
+  border-color: var(--operations-state-warning);
+  color: var(--operations-state-warning);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-state.attention::before {
+  content: "!";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 700 14px/1 var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-copy strong {
+  overflow: hidden;
+  color: var(--operations-content-primary);
+  font: 600 13px/18px var(--operations-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-copy small {
+  overflow: hidden;
+  color: var(--operations-content-tertiary);
+  font: 400 11px/16px var(--operations-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-time {
+  color: var(--operations-content-accent);
+  font: 500 11px/16px var(--operations-font-sans);
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-time.attention {
+  color: var(--operations-state-warning);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-time.completed {
+  color: var(--operations-state-success);
+}
+
+:root[data-ui-shell='emerald'] .home-row-arrow {
+  color: var(--operations-content-tertiary);
+  font: 300 24px/1 var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scope {
+  justify-self: start;
+  position: relative;
+  margin-top: 1px;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scope summary,
+:root[data-ui-shell='emerald'] .home-utility-disclosure summary,
+:root[data-ui-shell='emerald'] .home-review-disclosure summary,
+:root[data-ui-shell='emerald'] .agent-console-details summary {
+  color: var(--operations-content-secondary);
+  font: 500 11px/16px var(--operations-font-sans);
+  cursor: pointer;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scope .today-project-select {
+  width: 190px;
+  min-height: 36px;
+  display: block;
+  margin-top: 6px;
+}
+
+:root[data-ui-shell='emerald'] .home-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+}
+
+:root[data-ui-shell='emerald'] .home-panel-footer > .mini-button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border-color: var(--operations-border-control);
+  color: var(--operations-content-accent);
+  text-decoration: none;
+}
+
+:root[data-ui-shell='emerald'] .home-utility-disclosure {
+  position: relative;
+}
+
+:root[data-ui-shell='emerald'] .home-utility-disclosure[open] {
+  min-width: 0;
+  flex: 1 0 100%;
+}
+
+:root[data-ui-shell='emerald'] .home-utility-popover,
+:root[data-ui-shell='emerald'] .home-completed-list {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--operations-border-default);
+  border-radius: var(--operations-radius-sm);
+  background: var(--operations-surface-raised);
+}
+
+:root[data-ui-shell='emerald'] .home-utility-popover .quick-capture-form {
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, 180px) auto;
+}
+
+:root[data-ui-shell='emerald'] .home-completed-list {
+  max-height: 220px;
+  overflow: auto;
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-list {
+  display: grid;
+  gap: 7px;
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-row {
+  width: 100%;
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(145px, .75fr) minmax(94px, .5fr) 18px;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--operations-surface-row) 82%, transparent);
+  color: var(--operations-content-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-row:hover {
+  border-color: var(--operations-border-control);
+  background: var(--operations-surface-row-hover);
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-row.attention {
+  border-color: color-mix(in srgb, var(--operations-state-warning) 48%, var(--operations-border-subtle));
+  background: color-mix(in srgb, var(--operations-state-warning) 8%, var(--operations-surface-row));
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-primary,
+:root[data-ui-shell='emerald'] .home-live-agent-runtime,
+:root[data-ui-shell='emerald'] .home-live-agent-freshness {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-name {
+  display: inline;
+  color: var(--operations-content-primary);
+  font: 600 13px/17px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-agent-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  color: var(--operations-content-accent);
+  font: 500 10px/14px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-agent-status i {
+  width: 7px;
+  height: 7px;
+  display: inline-block;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+:root[data-ui-shell='emerald'] .home-agent-status.working {
+  color: var(--operations-state-info);
+}
+
+:root[data-ui-shell='emerald'] .home-agent-status.attention {
+  color: var(--operations-state-warning);
+}
+
+:root[data-ui-shell='emerald'] .home-agent-status.unavailable {
+  color: var(--operations-content-tertiary);
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-primary small,
+:root[data-ui-shell='emerald'] .home-live-agent-runtime small,
+:root[data-ui-shell='emerald'] .home-live-agent-freshness small {
+  overflow: hidden;
+  color: var(--operations-content-tertiary);
+  font: 400 10px/14px var(--operations-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-runtime > span,
+:root[data-ui-shell='emerald'] .home-live-agent-freshness > span {
+  overflow: hidden;
+  color: var(--operations-content-secondary);
+  font: 400 10px/14px var(--operations-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-freshness small.ready {
+  color: var(--operations-state-success);
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-freshness small.working {
+  color: var(--operations-state-info);
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-freshness small.attention {
+  color: var(--operations-state-warning);
+}
+
+:root[data-ui-shell='emerald'] .home-live-agent-freshness small.unavailable {
+  color: var(--operations-content-tertiary);
+}
+
+:root[data-ui-shell='emerald'] .home-review-disclosure {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--operations-border-subtle);
+}
+
+:root[data-ui-shell='emerald'] .home-review-disclosure summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+:root[data-ui-shell='emerald'] .home-review-disclosure .agent-activity-list {
+  max-height: 220px;
+  margin-top: 9px;
+  overflow: auto;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule {
+  min-height: 206px;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-all-day {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: 7px;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-all-day > span {
+  color: var(--operations-content-tertiary);
+  font: 500 10px/14px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-all-day button {
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: 5px;
+  background: var(--operations-surface-row);
+  color: var(--operations-content-secondary);
+  font: 500 10px/14px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-timeline {
+  min-width: 0;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-hours {
+  position: relative;
+  height: 18px;
+  padding: 0 0 5px;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-hours span {
+  position: absolute;
+  left: var(--tick-left);
+  transform: translateX(-50%);
+  color: var(--operations-content-tertiary);
+  font: 400 9px/13px var(--operations-font-sans);
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-hours span:first-child {
+  transform: none;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-hours span:last-child {
+  transform: translateX(-100%);
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-track {
+  position: relative;
+  min-height: var(--schedule-track-height, 172px);
+  overflow: hidden;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, transparent 49.5%, color-mix(in srgb, var(--operations-border-subtle) 60%, transparent) 50%, transparent 50.5%),
+    var(--operations-surface-row);
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-track > i {
+  position: absolute;
+  inset: 0 auto 0 var(--tick-left);
+  width: 1px;
+  background: color-mix(in srgb, var(--operations-border-subtle) 72%, transparent);
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-event {
+  position: absolute;
+  z-index: 2;
+  top: calc(14px + var(--event-lane, 0) * 57px);
+  left: var(--event-left);
+  width: var(--event-width);
+  min-width: 0;
+  max-width: calc(100% - var(--event-left));
+  min-height: 48px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  overflow: hidden;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--operations-content-accent) 54%, var(--operations-border-default));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--operations-emerald-800) 46%, var(--operations-surface-raised));
+  color: var(--operations-content-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-event.alternate {
+  border-color: color-mix(in srgb, var(--operations-state-info) 48%, var(--operations-border-default));
+  background: color-mix(in srgb, var(--operations-state-info) 14%, var(--operations-surface-raised));
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-event.task {
+  border-color: color-mix(in srgb, var(--operations-content-accent) 70%, var(--operations-border-default));
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-event strong {
+  overflow: hidden;
+  font: 600 10px/14px var(--operations-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-event small {
+  overflow: hidden;
+  color: var(--operations-content-secondary);
+  font: 400 9px/12px var(--operations-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-now {
+  position: absolute;
+  z-index: 3;
+  inset: 0 auto 0 var(--now-left);
+  width: 1px;
+  background: var(--operations-state-danger);
+}
+
+:root[data-ui-shell='emerald'] .home-schedule-now::before {
+  content: "Now";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--operations-state-danger);
+  color: var(--operations-surface-app);
+  font: 600 8px/11px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-project-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--operations-surface-row) 78%, transparent);
+}
+
+:root[data-ui-shell='emerald'] .home-project-stat {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+}
+
+:root[data-ui-shell='emerald'] .home-project-stat strong {
+  color: var(--operations-content-secondary);
+  font: 500 19px/23px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-project-stat.active strong {
+  color: var(--operations-content-accent);
+}
+
+:root[data-ui-shell='emerald'] .home-project-stat span {
+  overflow: hidden;
+  color: var(--operations-content-tertiary);
+  font: 400 9px/13px var(--operations-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-project-queue {
+  margin-top: 6px;
+}
+
+:root[data-ui-shell='emerald'] .home-project-queue-card {
+  width: 100%;
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--operations-surface-row) 78%, transparent);
+  color: var(--operations-content-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+:root[data-ui-shell='emerald'] .home-project-queue-card > span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+:root[data-ui-shell='emerald'] .home-project-queue-card strong {
+  overflow: hidden;
+  font: 600 11px/15px var(--operations-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-project-queue-card small,
+:root[data-ui-shell='emerald'] .home-project-queue-card em {
+  overflow: hidden;
+  color: var(--operations-content-tertiary);
+  font: 400 9px/13px var(--operations-font-sans);
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-project-progress {
+  --progress: 0;
+  position: relative;
+  width: 43px;
+  height: 43px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 43px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at center, var(--operations-surface-raised) 0 62%, transparent 64%),
+    conic-gradient(var(--operations-content-accent) calc(var(--progress) * 1%), var(--operations-border-default) 0);
+  color: var(--operations-content-secondary);
+  font: 500 9px/1 var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-crons-panel {
+  padding-block: 10px;
+}
+
+:root[data-ui-shell='emerald'] .home-crons-panel .home-panel-head {
+  margin-bottom: 8px;
+}
+
+:root[data-ui-shell='emerald'] .home-cron-list {
+  display: grid;
+  gap: 4px;
+}
+
+:root[data-ui-shell='emerald'] .home-cron-row {
+  min-height: 29px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) minmax(88px, auto);
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border-top: 1px solid var(--operations-border-subtle);
+}
+
+:root[data-ui-shell='emerald'] .home-cron-row:first-child {
+  border-top: 0;
+}
+
+:root[data-ui-shell='emerald'] .home-cron-state {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--operations-content-tertiary);
+}
+
+:root[data-ui-shell='emerald'] .home-cron-state.enabled {
+  background: var(--operations-state-success);
+}
+
+:root[data-ui-shell='emerald'] .home-cron-row > span:not(.home-cron-state) {
+  min-width: 0;
+  display: grid;
+}
+
+:root[data-ui-shell='emerald'] .home-cron-row strong,
+:root[data-ui-shell='emerald'] .home-cron-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .home-cron-row strong {
+  color: var(--operations-content-secondary);
+  font: 500 9px/13px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-cron-row small {
+  color: var(--operations-content-tertiary);
+  font: 400 8px/12px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] #agent-console-panel.home-console-panel .agent-console {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: 7px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-command-bar {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(150px, .75fr) minmax(140px, .7fr) minmax(165px, .8fr) minmax(260px, 2.2fr) minmax(120px, .7fr);
+  align-items: end;
+  gap: 16px;
+}
+
+:root[data-ui-shell='emerald'] .home-console-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+:root[data-ui-shell='emerald'] .home-console-mark {
+  height: 29px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--operations-content-accent);
+}
+
+:root[data-ui-shell='emerald'] .home-console-mark i {
+  width: 2px;
+  height: 9px;
+  display: block;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+:root[data-ui-shell='emerald'] .home-console-mark i:nth-child(2),
+:root[data-ui-shell='emerald'] .home-console-mark i:nth-child(4) {
+  height: 18px;
+}
+
+:root[data-ui-shell='emerald'] .home-console-mark i:nth-child(3) {
+  height: 25px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-select-shell {
+  min-width: 0;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-select {
+  width: 100%;
+  min-height: 38px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 7px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-composer-row {
+  min-height: 38px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form textarea {
+  min-height: 36px;
+  max-height: 84px;
+  padding-block: 9px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-send {
+  width: 42px;
+  min-width: 42px;
+  min-height: 38px;
+  overflow: hidden;
+  padding: 0;
+  color: transparent;
+  font-size: 0;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-send::before {
+  content: "➤";
+  color: var(--operations-content-accent);
+  font-size: 17px;
+}
+
+:root[data-ui-shell='emerald'] .home-console-state {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  margin-right: 0;
+  align-content: center;
+  overflow: hidden;
+  padding: 7px 9px;
+  border: 1px solid var(--operations-border-subtle);
+  border-radius: var(--operations-radius-sm);
+  background: var(--operations-surface-row);
+  flex: none;
+}
+
+:root[data-ui-shell='emerald'] .home-console-state #agent-console-state {
+  overflow: hidden;
+  color: var(--operations-content-tertiary);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-form-status {
+  min-height: 0;
+  color: var(--operations-state-warning);
+  font-size: 10px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-form-status:empty {
+  display: none;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-details {
+  border-top: 1px solid var(--operations-border-subtle);
+  padding-top: 5px;
+}
+
+:root[data-ui-shell='emerald'] .home-utility-disclosure:not([open]) > :not(summary),
+:root[data-ui-shell='emerald'] .home-review-disclosure:not([open]) > :not(summary),
+:root[data-ui-shell='emerald'] .agent-console-details:not([open]) > :not(summary) {
+  display: none !important;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-details[open] {
+  padding-top: 9px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-details .agent-console-toolbar {
+  margin: 9px 0;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-details .agent-console-chat {
+  min-height: 150px;
+  max-height: 420px;
+}
+
+/* Classic remains a functional visual rollback while Home keeps the new IA. */
+:root[data-ui-shell='classic'] .home-operations-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(340px, .88fr);
+  grid-template-areas:
+    "focus agents"
+    "schedule context"
+    "console console";
+  align-items: stretch;
+  gap: 10px;
+}
+
+:root[data-ui-shell='classic'] #today-active-work-panel.home-focus-panel {
+  grid-area: focus;
+}
+
+:root[data-ui-shell='classic'] .home-live-agents-panel {
+  grid-area: agents;
+}
+
+:root[data-ui-shell='classic'] .home-today-panel {
+  grid-area: schedule;
+}
+
+:root[data-ui-shell='classic'] .home-context-stack {
+  grid-area: context;
+}
+
+:root[data-ui-shell='classic'] #agent-console-panel.home-console-panel {
+  grid-area: console;
+  min-height: 0;
+}
+
+:root[data-ui-shell='classic'] .home-context-stack {
+  display: grid;
+  gap: 10px;
+}
+
+:root[data-ui-shell='classic'] .home-focus-list,
+:root[data-ui-shell='classic'] .home-live-agent-list,
+:root[data-ui-shell='classic'] .home-cron-list {
+  display: grid;
+  gap: 8px;
+}
+
+@media (min-width: 901px) and (max-width: 1199px) {
+  :root[data-ui-shell='emerald'] .home-operations-grid {
+    grid-template-columns: minmax(360px, 1.08fr) minmax(330px, .92fr);
+  }
+
+  :root[data-ui-shell='emerald'] .home-live-agent-row {
+    grid-template-columns: minmax(0, 1fr) minmax(100px, .55fr) 18px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-live-agent-freshness {
+    display: none;
+  }
+
+  :root[data-ui-shell='emerald'] .agent-console-command-bar {
+    grid-template-columns: minmax(150px, .8fr) minmax(145px, .7fr) minmax(165px, .8fr) minmax(260px, 1.7fr);
+  }
+
+  :root[data-ui-shell='emerald'] .home-console-state {
+    grid-column: 1 / -1;
+    min-height: 28px;
+  }
+
+  :root[data-ui-shell='emerald'] .connection-status-button {
+    min-width: 150px;
+  }
+
+  :root[data-ui-shell='emerald'] .global-search-wrap {
+    width: min(30vw, 300px);
+  }
+}
+
+@media (max-width: 900px) {
+  :root[data-ui-shell='emerald'] .command-header {
+    min-height: 64px;
+    grid-template-columns: minmax(0, 1fr);
+    margin-bottom: 12px;
+    padding: 10px 14px 10px 70px;
+  }
+
+  :root[data-ui-shell='emerald'] .topbar-context {
+    display: none;
+  }
+
+  :root[data-ui-shell='emerald'] .header-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 40px;
+    gap: 8px;
+  }
+
+  :root[data-ui-shell='emerald'] .connection-status-button {
+    min-width: 0;
+    min-height: 42px;
+  }
+
+  :root[data-ui-shell='emerald'] .global-search-wrap {
+    width: 100%;
+    max-width: none;
+  }
+
+  :root[data-ui-shell='emerald'] .home-operations-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "focus"
+      "agents"
+      "schedule"
+      "context"
+      "console";
+    gap: 10px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-focus-panel,
+  :root[data-ui-shell='emerald'] .home-live-agents-panel,
+  :root[data-ui-shell='emerald'] .home-today-panel {
+    min-height: 0;
+  }
+
+  :root[data-ui-shell='emerald'] .home-context-stack {
+    grid-template-rows: auto;
+  }
+
+  :root[data-ui-shell='emerald'] .agent-console-command-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :root[data-ui-shell='emerald'] .home-console-heading,
+  :root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form,
+  :root[data-ui-shell='emerald'] .home-console-state {
+    grid-column: 1 / -1;
+  }
+
+  :root[data-ui-shell='classic'] .home-operations-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "focus"
+      "agents"
+      "schedule"
+      "context"
+      "console";
+  }
+}
+
+@media (max-width: 640px) {
+  :root[data-ui-shell='emerald'] .header-actions {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+
+  :root[data-ui-shell='emerald'] .connection-status-button {
+    grid-column: 1 / -1;
+  }
+
+  :root[data-ui-shell='emerald'] .home-operations-grid .panel {
+    padding: 14px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-panel-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  :root[data-ui-shell='emerald'] .home-completion {
+    width: 100%;
+    justify-content: space-between;
+    margin-left: 37px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-focus-row {
+    grid-template-columns: 28px minmax(0, 1fr) 16px;
+    min-height: 68px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-focus-time {
+    grid-column: 2;
+    white-space: normal;
+  }
+
+  :root[data-ui-shell='emerald'] .home-focus-row > .home-row-arrow {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
+  :root[data-ui-shell='emerald'] .home-utility-popover .quick-capture-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-shell='emerald'] .home-live-agent-row {
+    grid-template-columns: minmax(0, 1fr) 18px;
+    min-height: 84px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-live-agent-runtime,
+  :root[data-ui-shell='emerald'] .home-live-agent-freshness {
+    grid-column: 1;
+  }
+
+  :root[data-ui-shell='emerald'] .home-live-agent-row > .home-row-arrow {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule-actions {
+    width: 100%;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule-hours,
+  :root[data-ui-shell='emerald'] .home-schedule-track > i,
+  :root[data-ui-shell='emerald'] .home-schedule-now {
+    display: none;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule-track {
+    min-height: 0;
+    display: grid;
+    gap: 7px;
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule-event,
+  :root[data-ui-shell='emerald'] .home-schedule-event:nth-of-type(even) {
+    position: static;
+    width: 100%;
+    min-height: 54px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-project-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  :root[data-ui-shell='emerald'] .agent-console-command-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-shell='emerald'] .home-console-heading,
+  :root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form,
+  :root[data-ui-shell='emerald'] .home-console-state {
+    grid-column: 1;
+  }
+
+  :root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  :root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-stop {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -5175,4 +6490,1463 @@ h2,
   .managed-agent-detail-actions { align-items: center; flex-direction: row; flex-wrap: wrap; }
   .managed-agent-identity-head,
   .managed-agent-identity-actions { align-items: stretch; flex-direction: column; }
+}
+
+/* Emerald foundation
+   --------------------------------------------------------------------------
+   This is the final effective layer for the Operations shell. It is scoped by
+   data-ui-shell so the pre-existing theme and Compact Dark cascade remains a
+   usable Classic rollback. Primitive tokens mirror the Figma handoff; semantic
+   tokens are the only values consumed by the component and shell rules below.
+   -------------------------------------------------------------------------- */
+
+:root[data-theme='emerald'] {
+  color-scheme: dark;
+
+  /* Primitive / neutral */
+  --operations-neutral-1000: #05090b;
+  --operations-neutral-950: #070d11;
+  --operations-neutral-900: #0b1115;
+  --operations-neutral-850: #0f151a;
+  --operations-neutral-800: #121a20;
+  --operations-neutral-750: #182127;
+  --operations-neutral-700: #202b30;
+  --operations-neutral-650: #2a373b;
+  --operations-neutral-600: #344348;
+  --operations-neutral-550: #596b6f;
+  --operations-neutral-500: #566166;
+  --operations-neutral-400: #7e898b;
+  --operations-neutral-300: #aab1af;
+  --operations-neutral-200: #cbcfc8;
+  --operations-neutral-100: #eae7dd;
+  --operations-neutral-0: #f6f3ea;
+
+  /* Primitive / emerald */
+  --operations-emerald-50: #eff9f0;
+  --operations-emerald-100: #d8eedb;
+  --operations-emerald-200: #bfe2c2;
+  --operations-emerald-300: #9dce9b;
+  --operations-emerald-400: #7fbe87;
+  --operations-emerald-500: #61a66f;
+  --operations-emerald-600: #478758;
+  --operations-emerald-700: #326741;
+  --operations-emerald-800: #264b36;
+  --operations-emerald-900: #183225;
+
+  /* Primitive / state */
+  --operations-orange-300: #f0ac69;
+  --operations-orange-400: #e69148;
+  --operations-orange-500: #c96c32;
+  --operations-orange-700: #7a4027;
+  --operations-orange-900: #39241d;
+  --operations-red-500: #db716b;
+  --operations-red-800: #5a2a2c;
+  --operations-blue-400: #70a9bd;
+
+  /* Semantic / surface */
+  --operations-surface-canvas: var(--operations-neutral-950);
+  --operations-surface-app-bar: var(--operations-neutral-1000);
+  --operations-surface-sidebar: #070b0f;
+  --operations-surface-panel: var(--operations-neutral-850);
+  --operations-surface-raised: var(--operations-neutral-800);
+  --operations-surface-row: #10171b;
+  --operations-surface-row-hover: var(--operations-neutral-750);
+  --operations-surface-input: var(--operations-neutral-900);
+  --operations-surface-selected: color-mix(in srgb, var(--operations-emerald-900) 68%, var(--operations-neutral-850));
+  --operations-surface-warning: color-mix(in srgb, var(--operations-orange-900) 72%, var(--operations-neutral-850));
+  --operations-surface-danger: color-mix(in srgb, var(--operations-red-800) 62%, var(--operations-neutral-850));
+
+  /* Semantic / content */
+  --operations-content-primary: var(--operations-neutral-100);
+  --operations-content-secondary: var(--operations-neutral-300);
+  --operations-content-tertiary: var(--operations-neutral-400);
+  --operations-content-disabled: var(--operations-neutral-500);
+  --operations-content-accent: var(--operations-emerald-300);
+  --operations-content-on-accent: #07110b;
+
+  /* Semantic / border and state */
+  --operations-border-subtle: var(--operations-neutral-700);
+  --operations-border-default: var(--operations-neutral-650);
+  --operations-border-strong: var(--operations-neutral-600);
+  --operations-border-control: var(--operations-neutral-550);
+  --operations-border-interactive: var(--operations-neutral-550);
+  --operations-focus: var(--operations-emerald-300);
+  --operations-state-success: var(--operations-emerald-300);
+  --operations-state-warning: var(--operations-orange-400);
+  --operations-state-danger: var(--operations-red-500);
+  --operations-state-info: var(--operations-blue-400);
+
+  /* Semantic / elevation, type, shape, and motion */
+  --operations-panel-gradient: linear-gradient(145deg, var(--operations-neutral-800), var(--operations-neutral-850) 62%, #0d1418);
+  --operations-raised-gradient: linear-gradient(145deg, var(--operations-neutral-750), var(--operations-neutral-800));
+  --operations-font-sans: "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --operations-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --operations-radius-xs: 4px;
+  --operations-radius-sm: 6px;
+  --operations-radius-md: 10px;
+  --operations-radius-lg: 12px;
+  --operations-radius-xl: 16px;
+  --operations-ease: cubic-bezier(.2, .8, .2, 1);
+  --operations-duration-fast: 120ms;
+  --operations-duration-standard: 160ms;
+  --operations-duration-slow: 220ms;
+
+  /* Compatibility aliases for existing components. */
+  --bg: var(--operations-surface-canvas);
+  --bg-elevated: var(--operations-surface-app-bar);
+  --sidebar: var(--operations-surface-sidebar);
+  --sidebar-bg: color-mix(in srgb, var(--operations-surface-sidebar) 96%, transparent);
+  --card: var(--operations-surface-panel);
+  --card-2: var(--operations-surface-raised);
+  --card-3: var(--operations-surface-row-hover);
+  --line: color-mix(in srgb, var(--operations-border-subtle) 76%, transparent);
+  --line-strong: var(--operations-border-default);
+  --line-hot: var(--operations-focus);
+  --text: var(--operations-content-primary);
+  --text-strong: var(--operations-content-primary);
+  --text-secondary: var(--operations-content-secondary);
+  --text-tertiary: var(--operations-content-tertiary);
+  --text-placeholder: var(--operations-content-disabled);
+  --muted: var(--operations-content-secondary);
+  --muted-2: var(--operations-content-tertiary);
+  --accent: var(--operations-content-accent);
+  --accent-2: var(--operations-emerald-400);
+  --success: var(--operations-state-success);
+  --warn: var(--operations-state-warning);
+  --danger: var(--operations-state-danger);
+  --radius: var(--operations-radius-md);
+  --radius-sm: var(--operations-radius-sm);
+  --sans: var(--operations-font-sans);
+  --mono: var(--operations-font-mono);
+  --shadow: none;
+  --header-bg: color-mix(in srgb, var(--operations-surface-app-bar) 94%, transparent);
+  --panel-bg: var(--operations-panel-gradient);
+  --metric-bg: var(--operations-surface-raised);
+  --card-active-bg: var(--operations-surface-selected);
+  --selected-panel-bg: var(--operations-surface-selected);
+  --control-bg: var(--operations-surface-input);
+  --button-bg: var(--operations-surface-raised);
+  --button-hover-bg: var(--operations-surface-row-hover);
+  --button-text: var(--operations-content-primary);
+  --danger-button-bg: var(--operations-state-danger);
+  --danger-button-text: var(--operations-content-on-accent);
+  --calendar-fallback-bg: var(--operations-surface-warning);
+  --calendar-local-event-bg: var(--operations-surface-raised);
+  --calendar-live-event-bg: var(--operations-surface-selected);
+  --soft-bg: color-mix(in srgb, var(--operations-surface-raised) 68%, transparent);
+  --list-bg: color-mix(in srgb, var(--operations-surface-row) 76%, transparent);
+  --config-bg: var(--operations-surface-input);
+  --config-text: var(--operations-content-secondary);
+  --scrollbar-track: var(--operations-surface-canvas);
+  --scrollbar-thumb: var(--operations-border-strong);
+  --scrollbar-thumb-hover: var(--operations-border-interactive);
+  --body-grid-line-x: transparent;
+  --body-grid-line-y: transparent;
+}
+
+.theme-swatch-chip.theme-emerald {
+  background: linear-gradient(135deg, #070d11 0 38%, #183225 38% 68%, #9dce9b 68% 84%, #f6f3ea 84%);
+}
+
+/* The shell and palette are independent preferences. Existing saved palettes
+   feed the shell semantic layer without replacing their established tokens. */
+:root[data-ui-shell='emerald']:not([data-theme='emerald']) {
+  --operations-surface-canvas: var(--bg);
+  --operations-surface-app-bar: var(--bg-elevated);
+  --operations-surface-sidebar: var(--sidebar);
+  --operations-surface-panel: var(--card);
+  --operations-surface-raised: var(--card-2);
+  --operations-surface-row: color-mix(in srgb, var(--card) 76%, var(--bg));
+  --operations-surface-row-hover: var(--card-3);
+  --operations-surface-input: var(--control-bg);
+  --operations-surface-selected: var(--selected-panel-bg);
+  --operations-surface-warning: var(--calendar-fallback-bg);
+  --operations-surface-danger: color-mix(in srgb, var(--danger) 20%, var(--card));
+  --operations-content-primary: var(--text);
+  --operations-content-secondary: var(--text-secondary);
+  --operations-content-tertiary: var(--muted);
+  --operations-content-disabled: var(--muted-2);
+  --operations-content-accent: var(--accent);
+  --operations-content-on-accent: var(--bg);
+  --operations-border-subtle: var(--line);
+  --operations-border-default: var(--line-strong);
+  --operations-border-strong: color-mix(in srgb, var(--line-strong) 76%, var(--text));
+  --operations-border-control: var(--operations-content-secondary);
+  --operations-border-interactive: color-mix(in srgb, var(--line-strong) 58%, var(--accent));
+  --operations-focus: var(--accent);
+  --operations-state-success: var(--success);
+  --operations-state-warning: var(--warn);
+  --operations-state-danger: var(--danger);
+  --operations-state-info: var(--accent);
+  --operations-emerald-300: var(--accent);
+  --operations-emerald-400: var(--accent);
+  --operations-emerald-700: color-mix(in srgb, var(--accent) 42%, var(--bg));
+  --operations-panel-gradient: var(--panel-bg);
+  --operations-raised-gradient: linear-gradient(145deg, var(--card-2), var(--card));
+  --operations-font-sans: var(--sans);
+  --operations-font-mono: var(--mono);
+  --operations-radius-xs: 4px;
+  --operations-radius-sm: max(4px, var(--radius-sm));
+  --operations-radius-md: max(6px, var(--radius));
+  --operations-radius-lg: max(10px, var(--radius));
+  --operations-radius-xl: max(14px, var(--radius));
+  --operations-ease: cubic-bezier(.2, .8, .2, 1);
+  --operations-duration-fast: 120ms;
+  --operations-duration-standard: 160ms;
+  --operations-duration-slow: 220ms;
+}
+
+/* The preloader and media-query listener resolve System to this root state.
+   Override both Operations tokens and legacy aliases so contrast is effective
+   across every saved theme and both shell choices. */
+:root[data-contrast='high'] {
+  color-scheme: dark;
+  --operations-surface-canvas: #030607;
+  --operations-surface-app-bar: #020405;
+  --operations-surface-sidebar: #030607;
+  --operations-surface-panel: #0b1114;
+  --operations-surface-raised: #121c20;
+  --operations-surface-row: #0c1316;
+  --operations-surface-row-hover: #172329;
+  --operations-surface-input: #060b0d;
+  --operations-surface-selected: #173024;
+  --operations-surface-warning: #2d2012;
+  --operations-surface-danger: #301719;
+  --operations-content-primary: #fffdf5;
+  --operations-content-secondary: #d7ddd8;
+  --operations-content-tertiary: #bac4bd;
+  --operations-content-disabled: #82908a;
+  --operations-content-accent: #b9efba;
+  --operations-border-subtle: #3f5152;
+  --operations-border-default: #617678;
+  --operations-border-strong: #809496;
+  --operations-border-control: #a9bcba;
+  --operations-border-interactive: #a9bcba;
+  --operations-focus: #c3f5c4;
+  --operations-state-success: #b9efba;
+  --operations-state-warning: #ffc17d;
+  --operations-state-danger: #ff948e;
+  --operations-state-info: #9ed4e5;
+  --operations-panel-gradient: var(--operations-surface-panel);
+  --operations-raised-gradient: var(--operations-surface-raised);
+
+  --bg: var(--operations-surface-canvas);
+  --bg-elevated: var(--operations-surface-app-bar);
+  --sidebar: var(--operations-surface-sidebar);
+  --sidebar-bg: var(--operations-surface-sidebar);
+  --card: var(--operations-surface-panel);
+  --card-2: var(--operations-surface-raised);
+  --card-3: var(--operations-surface-row-hover);
+  --line: var(--operations-border-subtle);
+  --line-strong: var(--operations-border-strong);
+  --line-hot: var(--operations-focus);
+  --text: var(--operations-content-primary);
+  --text-strong: var(--operations-content-primary);
+  --text-secondary: var(--operations-content-secondary);
+  --text-tertiary: var(--operations-content-tertiary);
+  --text-placeholder: var(--operations-content-tertiary);
+  --muted: var(--operations-content-secondary);
+  --muted-2: var(--operations-content-tertiary);
+  --accent: var(--operations-content-accent);
+  --accent-2: var(--operations-focus);
+  --success: var(--operations-state-success);
+  --warn: var(--operations-state-warning);
+  --danger: var(--operations-state-danger);
+  --hero-blue: var(--operations-state-info);
+  --hero-teal: var(--operations-content-accent);
+  --hero-white: var(--operations-content-primary);
+  --header-bg: var(--operations-surface-app-bar);
+  --panel-bg: var(--operations-surface-panel);
+  --metric-bg: var(--operations-surface-raised);
+  --card-active-bg: var(--operations-surface-row-hover);
+  --selected-panel-bg: var(--operations-surface-row-hover);
+  --control-bg: var(--operations-surface-input);
+  --button-bg: var(--operations-surface-raised);
+  --button-hover-bg: var(--operations-surface-row-hover);
+  --button-text: var(--operations-content-primary);
+  --danger-button-bg: var(--operations-state-danger);
+  --danger-button-text: var(--operations-surface-canvas);
+  --calendar-fallback-bg: var(--operations-surface-warning);
+  --calendar-local-event-bg: var(--operations-surface-raised);
+  --calendar-live-event-bg: var(--operations-surface-selected);
+  --soft-bg: var(--operations-surface-raised);
+  --list-bg: var(--operations-surface-row);
+  --config-bg: var(--operations-surface-input);
+  --config-text: var(--operations-content-secondary);
+  --scrollbar-track: var(--operations-surface-canvas);
+  --scrollbar-thumb: var(--operations-border-strong);
+  --scrollbar-thumb-hover: var(--operations-border-interactive);
+  --body-grid-line-x: transparent;
+  --body-grid-line-y: transparent;
+}
+
+/* New shell affordances are inert in Classic and until Operations is selected. */
+:is(.mobile-nav-toggle, #navigation-toggle),
+.mobile-shell-header,
+.mobile-nav-close,
+.nav-backdrop,
+.shell-overlay {
+  display: none;
+}
+
+.nav-icon,
+.search-icon {
+  display: inline-grid;
+  place-items: center;
+}
+
+.nav-icon svg,
+.search-icon svg,
+.mobile-nav-toggle svg,
+.mobile-nav-close svg {
+  width: 20px;
+  height: 20px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.search-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 1000;
+  inset: 10px auto auto 10px;
+  transform: translateY(calc(-100% - 20px));
+  padding: 9px 12px;
+  border: 2px solid var(--operations-focus, var(--accent));
+  border-radius: 6px;
+  background: var(--operations-surface-panel, var(--card));
+  color: var(--operations-content-primary, var(--text));
+  font: 600 14px/20px var(--operations-font-sans, var(--sans));
+  text-decoration: none;
+  transition: transform 120ms ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+:root[data-ui-shell='emerald'],
+:root[data-ui-shell='emerald'] body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+:root[data-ui-shell='emerald'] body {
+  min-width: 0;
+  background:
+    radial-gradient(circle at 73% -12%, color-mix(in srgb, var(--operations-emerald-700) 10%, transparent), transparent 31rem),
+    var(--operations-surface-canvas);
+  color: var(--operations-content-primary);
+  font-family: var(--operations-font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+
+:root[data-ui-shell='emerald'] body::before,
+:root[data-ui-shell='emerald'] body::after,
+:root[data-ui-shell='emerald'] .grid-bg {
+  display: none;
+}
+
+:root[data-ui-shell='emerald'] :where(
+  .app-shell,
+  .app-main,
+  #main-content,
+  .command-surface,
+  .command-header,
+  .header-actions,
+  .global-search-wrap,
+  .view,
+  .today-grid,
+  .project-command-grid,
+  .managed-agent-layout,
+  .model-usage-grid,
+  .panel,
+  .panel-head,
+  .item,
+  .task-list-item,
+  .task-detail-card,
+  .session-detail,
+  .calendar-operator-layout
+) {
+  min-width: 0;
+}
+
+:root[data-ui-shell='emerald'] :where(img, svg, video, canvas) {
+  max-width: 100%;
+}
+
+:root[data-ui-shell='emerald'] :where(button, input, select, textarea) {
+  font-family: var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] :where(
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  [tabindex]:not([tabindex='-1'])
+):focus-visible {
+  outline: 2px solid var(--operations-focus);
+  outline-offset: 2px;
+}
+
+:root[data-ui-shell='emerald'] .app-shell {
+  display: grid;
+  grid-template: minmax(100vh, auto) / 216px minmax(0, 1fr);
+  width: 100%;
+  min-height: 100vh;
+}
+
+:root[data-ui-shell='emerald'] .sidebar {
+  position: sticky;
+  inset: 0 auto auto 0;
+  z-index: 70;
+  grid-column: 1;
+  grid-row: 1;
+  width: 216px;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+  overflow: hidden;
+  padding: 24px 14px 16px;
+  border: 0;
+  border-right: 1px solid var(--operations-border-subtle);
+  background: var(--operations-surface-sidebar);
+  box-shadow: none;
+}
+
+:root[data-ui-shell='emerald'] .brand-block {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 20px;
+  border: 0;
+  border-bottom: 1px solid var(--operations-border-subtle);
+}
+
+:root[data-ui-shell='emerald'] .brand-mark {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--operations-border-control);
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+  animation: none;
+}
+
+:root[data-ui-shell='emerald'] .brand-mark::before,
+:root[data-ui-shell='emerald'] .brand-mark::after {
+  display: none;
+}
+
+:root[data-ui-shell='emerald'] .mentat-brand-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  object-fit: contain;
+  filter: none;
+}
+
+:root[data-ui-shell='emerald'] .brand-name {
+  color: var(--operations-content-primary);
+  font: 600 18px/24px var(--operations-font-sans);
+  letter-spacing: -.015em;
+}
+
+:root[data-ui-shell='emerald'] .brand-subtitle {
+  margin-top: 1px;
+  color: var(--operations-content-tertiary);
+  font: 500 11px/16px var(--operations-font-sans);
+  letter-spacing: .02em;
+  text-transform: none;
+}
+
+:root[data-ui-shell='emerald'] .nav-groups {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-flow: row;
+  align-content: start;
+  gap: 18px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+:root[data-ui-shell='emerald'] .nav-groups section {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+:root[data-ui-shell='emerald'] .nav-label {
+  display: block;
+  margin: 0 10px 5px;
+  color: var(--operations-content-tertiary);
+  font: 600 11px/16px var(--operations-font-sans);
+  letter-spacing: .02em;
+  text-transform: none;
+}
+
+:root[data-ui-shell='emerald'] .nav-item {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--operations-radius-sm);
+  background: transparent;
+  color: var(--operations-content-secondary);
+  font: 500 14px/20px var(--operations-font-sans);
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  transform: none;
+  transition:
+    color var(--operations-duration-fast) var(--operations-ease),
+    background var(--operations-duration-fast) var(--operations-ease),
+    border-color var(--operations-duration-fast) var(--operations-ease);
+}
+
+:root[data-ui-shell='emerald'] .nav-item > :first-child {
+  flex: 0 0 20px;
+  width: 20px;
+  color: var(--operations-content-tertiary);
+  text-align: center;
+}
+
+:root[data-ui-shell='emerald'] .nav-item:hover {
+  border-color: var(--operations-border-subtle);
+  background: color-mix(in srgb, var(--operations-surface-row-hover) 76%, transparent);
+  color: var(--operations-content-primary);
+  transform: none;
+}
+
+:root[data-ui-shell='emerald'] .nav-item.active,
+:root[data-ui-shell='emerald'] .nav-item[aria-current='page'] {
+  border-color: color-mix(in srgb, var(--operations-emerald-700) 48%, var(--operations-border-subtle));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--operations-emerald-700) 20%, transparent), color-mix(in srgb, var(--operations-emerald-700) 5%, transparent));
+  color: var(--operations-content-primary);
+  box-shadow: inset 2px 0 0 var(--operations-content-accent);
+}
+
+:root[data-ui-shell='emerald'] .nav-item.active > :first-child,
+:root[data-ui-shell='emerald'] .nav-item[aria-current='page'] > :first-child {
+  color: var(--operations-content-accent);
+}
+
+:root[data-ui-shell='emerald'] .sidebar-footer {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  display: grid;
+  align-items: start;
+  gap: 6px;
+  margin: auto 0 0;
+  padding: 12px 10px 0;
+  border: 0;
+  border-top: 1px solid var(--operations-border-subtle);
+  background: transparent;
+}
+
+:root[data-ui-shell='emerald'] .sidebar-footer .status-line {
+  min-width: 0;
+  margin: 0;
+  color: var(--operations-content-secondary);
+  font: 500 12px/16px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .sidebar-footer #health-label {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .sidebar-footer .small {
+  color: var(--operations-content-tertiary);
+  font: 500 11px/16px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .dot {
+  width: 8px;
+  height: 8px;
+  box-shadow: none;
+}
+
+:root[data-ui-shell='emerald'] :is(.app-main, .command-surface, #main-content) {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  margin: 0;
+}
+
+:root[data-ui-shell='emerald'] .command-surface {
+  padding: 0 clamp(18px, 2vw, 32px) 40px;
+}
+
+:root[data-ui-shell='emerald'] .command-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  min-height: 76px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 430px);
+  align-items: center;
+  gap: 24px;
+  margin: 0 calc(clamp(18px, 2vw, 32px) * -1) 20px;
+  padding: 14px clamp(18px, 2vw, 32px);
+  border: 0;
+  border-bottom: 1px solid var(--operations-border-subtle);
+  background: color-mix(in srgb, var(--operations-surface-app-bar) 94%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(16px);
+}
+
+:root[data-ui-shell='emerald'] .command-header .hero-title {
+  display: block;
+  color: var(--operations-content-primary);
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  -webkit-text-stroke: 0;
+  font: 600 clamp(21px, 1.65vw, 26px)/32px var(--operations-font-sans);
+  letter-spacing: -.025em;
+  text-shadow: none;
+  filter: none;
+  animation: none;
+}
+
+:root[data-ui-shell='emerald'] .command-header .hero-title::after {
+  display: none;
+}
+
+:root[data-ui-shell='emerald'] .command-header p {
+  max-width: 760px;
+  margin-top: 2px;
+  color: var(--operations-content-tertiary);
+  font: 400 13px/18px var(--operations-font-sans);
+  letter-spacing: 0;
+}
+
+:root[data-ui-shell='emerald'] .header-actions {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+:root[data-ui-shell='emerald'] .global-search-wrap {
+  width: 100%;
+  max-width: 430px;
+}
+
+:root[data-ui-shell='emerald'] .search-shell {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  gap: 9px;
+  padding: 8px 11px;
+  border: 1px solid var(--operations-border-control);
+  border-radius: var(--operations-radius-sm);
+  background: var(--operations-surface-input);
+  color: var(--operations-content-tertiary);
+}
+
+:root[data-ui-shell='emerald'] .search-shell:focus-within {
+  border-color: var(--operations-focus);
+  box-shadow: 0 0 0 1px var(--operations-focus);
+}
+
+:root[data-ui-shell='emerald'] .search-shell input {
+  min-width: 0;
+  color: var(--operations-content-primary);
+  font: 400 14px/20px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .search-shell input::placeholder {
+  color: var(--operations-content-tertiary);
+  opacity: 1;
+}
+
+:root[data-ui-shell='emerald'] .global-search-results {
+  margin-top: 8px;
+  border-color: var(--operations-border-control);
+  border-radius: var(--operations-radius-md);
+  background: var(--operations-surface-raised);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .42);
+}
+
+:root[data-ui-shell='emerald'] .metric-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+:root[data-ui-shell='emerald'] .metric-card,
+:root[data-ui-shell='emerald'] .panel {
+  border: 1px solid var(--operations-border-subtle);
+  background: var(--operations-panel-gradient);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+:root[data-ui-shell='emerald'] .metric-card {
+  min-height: 84px;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--operations-radius-md);
+}
+
+:root[data-ui-shell='emerald'] .metric-card-button:hover,
+:root[data-ui-shell='emerald'] .metric-card-button:focus-visible {
+  border-color: var(--operations-border-default);
+  background: var(--operations-surface-raised);
+  transform: translateY(-1px);
+}
+
+:root[data-ui-shell='emerald'] .metric-value {
+  color: var(--operations-content-primary);
+  font: 600 22px/24px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .metric-label {
+  color: var(--operations-content-secondary);
+  font: 500 12px/16px var(--operations-font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+:root[data-ui-shell='emerald'] .metric-sub {
+  color: var(--operations-content-tertiary);
+  font: 400 11px/16px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .panel {
+  padding: 20px;
+  border-radius: var(--operations-radius-lg);
+}
+
+:root[data-ui-shell='emerald'] .panel-head {
+  min-height: 0;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:root[data-ui-shell='emerald'] .panel-head h2,
+:root[data-ui-shell='emerald'] .calendar-title-block h2 {
+  color: var(--operations-content-primary);
+  font: 600 17px/24px var(--operations-font-sans);
+  letter-spacing: -.012em;
+  text-transform: none;
+}
+
+:root[data-ui-shell='emerald'] .panel-head h3,
+:root[data-ui-shell='emerald'] h3 {
+  color: var(--operations-content-primary);
+  font: 600 15px/20px var(--operations-font-sans);
+  letter-spacing: -.008em;
+  text-transform: none;
+}
+
+:root[data-ui-shell='emerald'] .panel-subtitle {
+  margin-top: 3px;
+  color: var(--operations-content-tertiary);
+  font: 400 13px/18px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] :where(
+  .mini-button,
+  .action-button,
+  .status-filter-select,
+  .today-project-select,
+  .session-select
+) {
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--operations-border-control);
+  border-radius: var(--operations-radius-sm);
+  background: var(--operations-surface-raised);
+  color: var(--operations-content-primary);
+  font: 500 13px/20px var(--operations-font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: none;
+}
+
+:root[data-ui-shell='emerald'] :where(.mini-button, .action-button):hover:not(:disabled) {
+  border-color: var(--operations-border-interactive);
+  background: var(--operations-surface-row-hover);
+}
+
+:root[data-ui-shell='emerald'] :where(.mini-button, .action-button):disabled {
+  color: var(--operations-content-disabled);
+  opacity: .72;
+  cursor: not-allowed;
+}
+
+:root[data-ui-shell='emerald'] :where(
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea
+) {
+  max-width: 100%;
+  border-color: var(--operations-border-control);
+  border-radius: var(--operations-radius-sm);
+  background: var(--operations-surface-input);
+  color: var(--operations-content-primary);
+}
+
+:root[data-ui-shell='emerald'] :where(
+  .item,
+  .project-card,
+  .note-card,
+  .session-card,
+  .message-result,
+  .task-list-item,
+  .task-detail-card,
+  .completed-line,
+  .agent-pulse-item,
+  .calendar-agenda-summary,
+  .session-controls-card,
+  .session-detail,
+  .config-pre,
+  .empty
+) {
+  border-color: var(--operations-border-subtle);
+  border-radius: var(--operations-radius-md);
+  background: var(--operations-surface-row);
+}
+
+:root[data-ui-shell='emerald'] :where(
+  .project-card-button,
+  .task-list-item-button,
+  .session-card,
+  .message-result
+):hover {
+  border-color: var(--operations-border-default);
+  background: var(--operations-surface-row-hover);
+}
+
+:root[data-ui-shell='emerald'] .item {
+  padding: 14px;
+}
+
+:root[data-ui-shell='emerald'] .item-title {
+  color: var(--operations-content-primary);
+  font: 500 14px/20px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .item-desc {
+  color: var(--operations-content-secondary);
+  font: 400 13px/18px var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .item-meta {
+  color: var(--operations-content-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+:root[data-ui-shell='emerald'] :where(.pill, .status-chip, .calendar-status-chip) {
+  border-radius: 999px;
+  font-family: var(--operations-font-sans);
+  letter-spacing: .01em;
+}
+
+:root[data-ui-shell='emerald'] :where(dialog, .dialog-card, .agent-creator-shell) {
+  border-color: var(--operations-border-default);
+  border-radius: var(--operations-radius-xl);
+  background: var(--operations-surface-panel);
+  color: var(--operations-content-primary);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, .55);
+}
+
+:root[data-ui-shell='emerald'] dialog::backdrop {
+  background: rgba(2, 5, 6, .76);
+  backdrop-filter: blur(3px);
+}
+
+:root[data-ui-shell='emerald'] .calendar-week-scroll,
+:root[data-ui-shell='emerald'] .model-usage-table-scroll,
+:root[data-ui-shell='emerald'] .session-detail {
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+/* Intermediate shell: a compact icon rail preserves content width at 1024px. */
+@media (min-width: 901px) and (max-width: 1199px) {
+  :root[data-ui-shell='emerald'] .app-shell {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+
+  :root[data-ui-shell='emerald'] .sidebar {
+    width: 76px;
+    gap: 14px;
+    overflow: visible;
+    padding: 18px 10px 14px;
+  }
+
+  :root[data-ui-shell='emerald'] .brand-block {
+    justify-content: center;
+    padding: 0 0 16px;
+  }
+
+  :root[data-ui-shell='emerald'] .brand-block > :not(.brand-mark),
+  :root[data-ui-shell='emerald'] .brand-name,
+  :root[data-ui-shell='emerald'] .brand-subtitle,
+  :root[data-ui-shell='emerald'] .nav-label,
+  :root[data-ui-shell='emerald'] .nav-item .nav-text,
+  :root[data-ui-shell='emerald'] .nav-item > span:last-child:not(:first-child) {
+    display: none;
+  }
+
+  :root[data-ui-shell='emerald'] .nav-groups {
+    gap: 12px;
+  }
+
+  :root[data-ui-shell='emerald'] .nav-item {
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 10px;
+  }
+
+  :root[data-ui-shell='emerald'] .nav-item > :first-child {
+    flex-basis: 22px;
+    width: 22px;
+  }
+
+  :root[data-ui-shell='emerald'] .sidebar-footer {
+    position: relative;
+    z-index: 1;
+    width: 44px;
+    max-width: 44px;
+    min-height: 44px;
+    align-content: center;
+    justify-items: center;
+    gap: 6px;
+    overflow: hidden;
+    padding: 10px;
+    border: 1px solid var(--operations-border-control);
+    border-radius: var(--operations-radius-sm);
+    background: var(--operations-surface-raised);
+    cursor: help;
+  }
+
+  :root[data-ui-shell='emerald'] .sidebar-footer .status-line {
+    justify-content: center;
+  }
+
+  :root[data-ui-shell='emerald'] .sidebar-footer #health-label,
+  :root[data-ui-shell='emerald'] .sidebar-footer .small {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  :root[data-ui-shell='emerald'] .sidebar-footer:is(:hover, :focus-visible, :focus-within) {
+    z-index: 90;
+    width: min(320px, calc(100vw - 92px));
+    max-width: min(320px, calc(100vw - 92px));
+    min-height: 94px;
+    align-content: start;
+    justify-items: start;
+    overflow: visible;
+    padding: 12px;
+    border-radius: var(--operations-radius-md);
+    background: var(--operations-surface-panel);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .46);
+  }
+
+  :root[data-ui-shell='emerald'] .sidebar-footer:is(:hover, :focus-visible, :focus-within) .status-line {
+    justify-content: flex-start;
+  }
+
+  :root[data-ui-shell='emerald'] .sidebar-footer:is(:hover, :focus-visible, :focus-within) #health-label,
+  :root[data-ui-shell='emerald'] .sidebar-footer:is(:hover, :focus-visible, :focus-within) .small {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    clip-path: none;
+    white-space: normal;
+  }
+
+  :root[data-ui-shell='emerald'] :is(.app-main, .command-surface, #main-content) {
+    grid-column: 2;
+  }
+
+  :root[data-ui-shell='emerald'] .metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Drawer shell: the content remains present while navigation becomes modal. */
+@media (max-width: 900px) {
+  :root[data-ui-shell='emerald'] .app-shell {
+    display: block;
+    min-height: 100vh;
+  }
+
+  :root[data-ui-shell='emerald'] :is(.app-main, .command-surface, #main-content) {
+    width: 100%;
+    min-height: 100vh;
+    margin: 0;
+  }
+
+  :root[data-ui-shell='emerald'] .mobile-shell-header {
+    position: sticky;
+    top: 0;
+    z-index: 80;
+    width: 100%;
+    min-height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 64px;
+    border-bottom: 1px solid var(--operations-border-subtle);
+    background: color-mix(in srgb, var(--operations-surface-app-bar) 96%, transparent);
+    backdrop-filter: blur(16px);
+  }
+
+  :root[data-ui-shell='emerald'] .mobile-brand {
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--operations-content-primary);
+    font: 600 16px/22px var(--operations-font-sans);
+  }
+
+  :root[data-ui-shell='emerald'] .mobile-brand-mark {
+    width: 30px;
+    height: 30px;
+    display: inline-grid;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--operations-border-control);
+    border-radius: 50%;
+    background: transparent;
+  }
+
+  :root[data-ui-shell='emerald'] .mobile-brand-mark img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  :root[data-ui-shell='emerald'] .command-surface {
+    padding: 0 16px 32px;
+  }
+
+  :root[data-ui-shell='emerald'] :is(.mobile-nav-toggle, #navigation-toggle) {
+    position: absolute;
+    z-index: 2;
+    inset: 14px auto auto 14px;
+    width: 44px;
+    height: 44px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--operations-border-control);
+    border-radius: var(--operations-radius-sm);
+    background: var(--operations-surface-raised);
+    color: var(--operations-content-primary);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+    cursor: pointer;
+  }
+
+  :root[data-ui-shell='emerald'] :is(.nav-backdrop, .shell-overlay, #shell-overlay) {
+    position: fixed;
+    z-index: 100;
+    inset: 0;
+    display: block;
+    border: 0;
+    background: rgba(2, 5, 6, .72);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      opacity var(--operations-duration-standard) var(--operations-ease),
+      visibility 0s linear var(--operations-duration-standard);
+  }
+
+  :root[data-ui-shell='emerald'] :is(.nav-backdrop, .shell-overlay, #shell-overlay)[hidden] {
+    display: none;
+  }
+
+  :root[data-ui-shell='emerald'] .sidebar {
+    position: fixed;
+    z-index: 110;
+    inset: 0 auto 0 0;
+    width: min(320px, 86vw);
+    height: 100vh;
+    height: 100dvh;
+    max-width: 100%;
+    gap: 18px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 22px 16px 18px;
+    border: 0;
+    border-right: 1px solid var(--operations-border-default);
+    background: var(--operations-surface-sidebar);
+    box-shadow: 24px 0 56px rgba(0, 0, 0, .48);
+    transform: translateX(calc(-100% - 20px));
+    visibility: hidden;
+    transition:
+      transform var(--operations-duration-slow) var(--operations-ease),
+      visibility 0s linear var(--operations-duration-slow);
+  }
+
+  :root[data-ui-shell='emerald'] .mobile-nav-close {
+    width: 40px;
+    height: 40px;
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 40px;
+    margin-left: auto;
+    padding: 0;
+    border: 1px solid var(--operations-border-control);
+    border-radius: var(--operations-radius-sm);
+    background: var(--operations-surface-raised);
+    color: var(--operations-content-primary);
+    font: 400 24px/1 var(--operations-font-sans);
+    cursor: pointer;
+  }
+
+  :root[data-ui-shell='emerald'][data-nav-open='true'] .sidebar,
+  :root[data-ui-shell='emerald'] [data-nav-open='true'] .sidebar,
+  :root[data-ui-shell='emerald'] body[data-nav-open='true'] .sidebar,
+  :root[data-ui-shell='emerald'] body.nav-open .sidebar,
+  :root[data-ui-shell='emerald'].navigation-open .sidebar,
+  :root[data-ui-shell='emerald'] body.navigation-open .sidebar,
+  :root[data-ui-shell='emerald'] .sidebar.is-open {
+    transform: translateX(0);
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  :root[data-ui-shell='emerald'][data-nav-open='true'] :is(.nav-backdrop, .shell-overlay, #shell-overlay),
+  :root[data-ui-shell='emerald'] [data-nav-open='true'] :is(.nav-backdrop, .shell-overlay, #shell-overlay),
+  :root[data-ui-shell='emerald'] body[data-nav-open='true'] :is(.nav-backdrop, .shell-overlay, #shell-overlay),
+  :root[data-ui-shell='emerald'] body.nav-open :is(.nav-backdrop, .shell-overlay, #shell-overlay),
+  :root[data-ui-shell='emerald'].navigation-open :is(.nav-backdrop, .shell-overlay, #shell-overlay),
+  :root[data-ui-shell='emerald'] body.navigation-open :is(.nav-backdrop, .shell-overlay, #shell-overlay) {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition-delay: 0s;
+  }
+
+  :root[data-ui-shell='emerald'][data-nav-open='true'],
+  :root[data-ui-shell='emerald'][data-nav-open='true'] body,
+  :root[data-ui-shell='emerald'] body[data-nav-open='true'],
+  :root[data-ui-shell='emerald'] body.nav-open,
+  :root[data-ui-shell='emerald'].navigation-open,
+  :root[data-ui-shell='emerald'] body.navigation-open {
+    overflow: hidden;
+  }
+
+  :root[data-ui-shell='emerald'] .brand-block {
+    padding-right: 0;
+  }
+
+  :root[data-ui-shell='emerald'] .nav-item {
+    width: 100%;
+    min-height: 44px;
+    justify-content: flex-start;
+  }
+
+  :root[data-ui-shell='emerald'] .nav-item > span:last-child:not(:first-child) {
+    display: inline;
+  }
+
+  :root[data-ui-shell='emerald'] .command-header {
+    position: sticky;
+    top: 0;
+    z-index: 80;
+    min-height: 72px;
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 42vw);
+    gap: 14px;
+    margin: 0 -16px 16px;
+    padding: 12px 16px 12px 70px;
+  }
+
+  :root[data-ui-shell='emerald'] .command-header .hero-title {
+    overflow: hidden;
+    font-size: 20px;
+    line-height: 26px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :root[data-ui-shell='emerald'] .command-header p {
+    display: none;
+  }
+
+  :root[data-ui-shell='emerald'] .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :root[data-ui-shell='emerald'] .today-grid,
+  :root[data-ui-shell='emerald'] .project-command-grid,
+  :root[data-ui-shell='emerald'] .managed-agent-layout,
+  :root[data-ui-shell='emerald'] .model-usage-grid,
+  :root[data-ui-shell='emerald'] .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-shell='emerald'] .span-2 {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  :root[data-ui-shell='emerald'] .command-surface {
+    padding-inline: 12px;
+  }
+
+  :root[data-ui-shell='emerald'] .command-header {
+    position: sticky;
+    top: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    margin-inline: -12px;
+    padding: 13px 12px 12px 68px;
+  }
+
+  :root[data-ui-shell='emerald'] .header-actions,
+  :root[data-ui-shell='emerald'] .global-search-wrap {
+    width: 100%;
+    max-width: none;
+  }
+
+  :root[data-ui-shell='emerald'] .search-shell {
+    min-height: 44px;
+  }
+
+  :root[data-ui-shell='emerald'] .panel {
+    padding: 16px;
+  }
+
+  :root[data-ui-shell='emerald'] .panel-head {
+    flex-wrap: wrap;
+  }
+
+  :root[data-ui-shell='emerald'] :where(
+    .mini-button,
+    .action-button,
+    .status-filter-select,
+    .today-project-select,
+    .session-select
+  ) {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 480px) {
+  :root[data-ui-shell='emerald'] :is(.mobile-nav-toggle, #navigation-toggle) {
+    inset: 12px auto auto 12px;
+  }
+
+  :root[data-ui-shell='emerald'] .command-header {
+    padding-left: 66px;
+  }
+
+  :root[data-ui-shell='emerald'] .command-header .hero-title {
+    font-size: 18px;
+    line-height: 24px;
+  }
+
+  :root[data-ui-shell='emerald'] .metric-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-shell='emerald'] .metric-card {
+    min-height: 74px;
+  }
+
+  :root[data-ui-shell='emerald'] .panel {
+    padding: 14px;
+    border-radius: var(--operations-radius-md);
+  }
+
+  :root[data-ui-shell='emerald'] .panel-controls,
+  :root[data-ui-shell='emerald'] .item-actions {
+    max-width: 100%;
+  }
+
+  :root[data-ui-shell='emerald'] :where(
+    .calendar-header-actions,
+    .calendar-week-nav,
+    .agent-console-toolbar,
+    .task-editor-actions
+  ) {
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-ui-shell='emerald'] *,
+  :root[data-ui-shell='emerald'] *::before,
+  :root[data-ui-shell='emerald'] *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+/* Final shell overrides for the operations top bar; kept after legacy layers. */
+:root[data-ui-shell='emerald'] .command-header {
+  min-height: 64px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-bottom: 16px;
+  padding-block: 10px;
+}
+
+:root[data-ui-shell='emerald'] .topbar-context .hero-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .header-actions {
+  width: auto;
+  gap: 12px;
+}
+
+:root[data-ui-shell='emerald'] .global-search-wrap {
+  width: min(28vw, 360px);
+  max-width: 360px;
+}
+
+@media (max-width: 900px) {
+  :root[data-ui-shell='emerald'] .command-header {
+    min-height: 64px;
+    grid-template-columns: minmax(0, 1fr);
+    margin-bottom: 12px;
+    padding: 10px 14px 10px 70px;
+  }
+
+  :root[data-ui-shell='emerald'] .topbar-context {
+    display: none;
+  }
+
+  :root[data-ui-shell='emerald'] .header-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 40px;
+    gap: 8px;
+  }
+
+  :root[data-ui-shell='emerald'] .global-search-wrap {
+    width: 100%;
+    max-width: none;
+  }
+}
+
+@media (max-width: 640px) {
+  :root[data-ui-shell='emerald'] .header-actions {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+
+  :root[data-ui-shell='emerald'] .connection-status-button {
+    grid-column: 1 / -1;
+  }
+
+  :root[data-ui-shell='emerald'] #view-today button,
+  :root[data-ui-shell='emerald'] #view-today summary {
+    min-height: 44px;
+  }
+
+  :root[data-ui-shell='emerald'] #view-today .agent-console-attach,
+  :root[data-ui-shell='emerald'] #view-today .agent-console-send {
+    width: 44px;
+    min-width: 44px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule {
+    min-height: 0;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule-hours,
+  :root[data-ui-shell='emerald'] .home-schedule-track > i,
+  :root[data-ui-shell='emerald'] .home-schedule-now {
+    display: none;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule-track {
+    min-height: 0;
+    display: grid;
+    gap: 7px;
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule-event,
+  :root[data-ui-shell='emerald'] .home-schedule-event:nth-of-type(even) {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    min-height: 52px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-schedule-all-day {
+    flex-wrap: wrap;
+  }
 }

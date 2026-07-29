@@ -21,6 +21,7 @@ MIGRATION_RECEIPT_NAME = "private-console-migration-v1.json"
 MIGRATION_RESERVATION_NAME = "private-console-migration-v1.reservation.json"
 RESTORE_RESERVATION_NAME = "private-console-restore-v1.reservation.json"
 GENERAL_RESTORE_STATE_NAME = "restore-state-v1.json"
+CONNECTION_SERVER_RESERVATION_NAME = "connection-server-reservation-v1.json"
 
 R = TypeVar("R")
 
@@ -121,12 +122,25 @@ def ensure_private_root(data_root: Path) -> Path:
 
 
 def mentat_server_active(data_root: Path) -> bool:
-    """Fail closed when a recorded Mentat server PID is still alive."""
+    """Fail closed when a recorded or starting Mentat server PID is still alive."""
 
-    state = Path(data_root) / "runtime" / "server-state.json"
+    runtime = Path(data_root) / "runtime"
+    for state in (
+        runtime / CONNECTION_SERVER_RESERVATION_NAME,
+        runtime / "server-state.json",
+    ):
+        active = _pid_record_active(state)
+        if active is True:
+            return True
+    return False
+
+
+def _pid_record_active(state: Path) -> bool | None:
+    """Return None for absence, false for a dead PID, and true for unsafe/live state."""
+
     try:
         if state.is_symlink() or not state.is_file():
-            return os.path.lexists(os.fspath(state))
+            return True if os.path.lexists(os.fspath(state)) else None
         import json
 
         payload = json.loads(state.read_text(encoding="utf-8"))
@@ -136,11 +150,54 @@ def mentat_server_active(data_root: Path) -> bool:
         os.kill(pid, 0)
         return True
     except FileNotFoundError:
-        return False
+        return None
     except ProcessLookupError:
         return False
     except (OSError, UnicodeError, ValueError, TypeError):
         return True
+
+
+def connection_server_reservation_path(data_root: Path) -> Path:
+    return Path(data_root) / "runtime" / CONNECTION_SERVER_RESERVATION_NAME
+
+
+def reserve_mentat_server(data_root: Path) -> None:
+    """Publish a live startup reservation under the private-state mutation lock."""
+
+    root = Path(data_root)
+    with private_state_lock(root):
+        if mentat_server_active(root):
+            raise PrivateStateError("Mentat server is already active")
+        runtime = root / "runtime"
+        if not _secure_directory(runtime):
+            raise PrivateStateError("Mentat runtime directory is unsafe")
+        from json_store import write_json_atomic
+
+        write_json_atomic(
+            connection_server_reservation_path(root),
+            {"schema_version": 1, "pid": os.getpid()},
+            mode=0o600,
+            maximum_bytes=1024,
+        )
+
+
+def release_mentat_server(data_root: Path) -> None:
+    """Remove only this process's startup/lifetime reservation."""
+
+    root = Path(data_root)
+    path = connection_server_reservation_path(root)
+    with private_state_lock(root):
+        try:
+            if path.is_symlink() or not path.is_file():
+                return
+            import json
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("pid") != os.getpid():
+                return
+            path.unlink()
+        except (FileNotFoundError, OSError, UnicodeError, ValueError, TypeError):
+            return
 
 
 def private_control_issue(data_root: Path) -> str | None:

@@ -80,8 +80,8 @@ jobs:
         env:
           MAC_CERTIFICATES_BASE64: ${{ secrets.MAC_CERTIFICATES_BASE64 }}
           MAC_CERTIFICATES_PASSWORD: ${{ secrets.MAC_CERTIFICATES_PASSWORD }}
-          MAC_KEYCHAIN_PASSWORD: ${{ secrets.MAC_KEYCHAIN_PASSWORD }}
         run: |
+          MAC_KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
           python -c 'import base64, os, pathlib; pathlib.Path(os.environ["RUNNER_TEMP"], "mentat-signing.p12").write_bytes(base64.b64decode(os.environ["MAC_CERTIFICATES_BASE64"]))'
           security create-keychain -p "$MAC_KEYCHAIN_PASSWORD" "$RUNNER_TEMP/mentat-signing.keychain-db"
           security set-keychain-settings -lut 21600 "$RUNNER_TEMP/mentat-signing.keychain-db"
@@ -180,6 +180,9 @@ jobs:
       - release-source
     runs-on: windows-2025
     environment: beta-release
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Check out repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -214,27 +217,34 @@ jobs:
       - name: Build Windows application bundle
         run: python scripts/build_native.py --bundle-only
 
-      - name: Import protected signing certificate
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'mentat-signing.pfx'
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
-          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable:$false
-          Set-Content -Path "$env:RUNNER_TEMP/mentat-signing-thumbprint" -Value $certificate.Thumbprint -NoNewline
+      - name: Authenticate to Azure with GitHub OIDC
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign application and build signed installer
+      - name: Sign Windows application executables
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\dist\Mentat\Mentat Launcher.exe
+            ${{ github.workspace }}\dist\Mentat\mentat.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify application signatures and build installer
         shell: pwsh
         run: |
-          $thumbprint = Get-Content "$env:RUNNER_TEMP/mentat-signing-thumbprint"
           $signTool = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin/*/x64/signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
           $applicationExecutables = @('dist/Mentat/Mentat Launcher.exe', 'dist/Mentat/mentat.exe')
           foreach ($executable in $applicationExecutables) {
-            & $signTool.FullName sign /sha1 $thumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 $executable
             & $signTool.FullName verify /pa /all /v $executable
+            if ($LASTEXITCODE -ne 0) { throw "Application signature verification failed: $executable" }
           }
           $version = python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION.removeprefix("v"))'
           $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
@@ -242,9 +252,26 @@ jobs:
           $outputDir = (New-Item -ItemType Directory -Force 'dist/installer').FullName
           & $compiler "/DMyAppVersion=$version" "/DMyAppSourceDir=$sourceDir" "/DMyAppOutputDir=$outputDir" packaging/windows/Mentat.iss
           if ($LASTEXITCODE -ne 0) { throw "Installer build failed: $LASTEXITCODE" }
+
+      - name: Sign Windows installer
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\installer
+          files-folder-filter: Mentat-*-windows-x64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Windows installer signature
+        shell: pwsh
+        run: |
+          $signTool = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin/*/x64/signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
           $installer = Get-ChildItem 'dist/installer/Mentat-*-windows-x64.exe' | Select-Object -First 1
-          & $signTool.FullName sign /sha1 $thumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 $installer.FullName
           & $signTool.FullName verify /pa /all /v $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Installer signature verification failed: $($installer.FullName)" }
 
       - name: Smoke the exact signed Windows installer
         shell: pwsh
@@ -280,18 +307,6 @@ jobs:
           path: dist/installer/Mentat-*-windows-x64.exe
           if-no-files-found: error
           retention-days: 7
-
-      - name: Remove signing material
-        if: always()
-        shell: pwsh
-        run: |
-          $thumbprintPath = "$env:RUNNER_TEMP/mentat-signing-thumbprint"
-          if (Test-Path $thumbprintPath) {
-            $thumbprint = Get-Content $thumbprintPath
-            Remove-Item "Cert:\CurrentUser\My\$thumbprint" -Force -ErrorAction SilentlyContinue
-          }
-          Remove-Item "$env:RUNNER_TEMP/mentat-signing.pfx" -Force -ErrorAction SilentlyContinue
-          Remove-Item $thumbprintPath -Force -ErrorAction SilentlyContinue
 
   python-package:
     name: Verified Python release artifacts

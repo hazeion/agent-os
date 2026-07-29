@@ -211,6 +211,20 @@ def normalize_usage(value: Any) -> dict[str, int] | None:
         if type(item) is not int or not (0 <= item <= 10**9):
             return None
         normalized[name] = item
+    context_tokens = value.get("context_tokens")
+    context_length = value.get("context_length")
+    if context_tokens is not None or context_length is not None:
+        if (
+            type(context_tokens) is not int
+            or type(context_length) is not int
+            or not (0 <= context_tokens <= context_length <= 10**9)
+            or context_length == 0
+        ):
+            context_tokens = None
+            context_length = None
+        else:
+            normalized["context_tokens"] = context_tokens
+            normalized["context_length"] = context_length
     return normalized
 
 
@@ -233,6 +247,12 @@ def summarize_run(run: dict) -> dict:
         "model": str(run.get("model") or ""),
         "status": str(run.get("status") or "failed"),
         "session_id": run.get("session_id") or None,
+        "starts_new_session": bool(run.get("starts_new_session")),
+        "new_session_state": (
+            run.get("new_session_state")
+            if run.get("new_session_state") in {"pending", "started", "failed"}
+            else None
+        ),
         "transport_mode": transport[0],
         "connection_binding_id": transport[1],
         "usage": normalize_usage(run.get("usage")),
@@ -376,6 +396,12 @@ def _hydrate(summary: dict) -> dict | None:
         "model": str(summary.get("model") or ""),
         "status": str(summary.get("status") or "failed"),
         "session_id": summary.get("session_id") or None,
+        "starts_new_session": bool(summary.get("starts_new_session")),
+        "new_session_state": (
+            summary.get("new_session_state")
+            if summary.get("new_session_state") in {"pending", "started", "failed"}
+            else None
+        ),
         "transport_mode": transport[0],
         "connection_binding_id": transport[1],
         "usage": normalize_usage(summary.get("usage")),

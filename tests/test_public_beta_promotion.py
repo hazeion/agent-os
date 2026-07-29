@@ -339,10 +339,10 @@ Aggregate results
         self.assertIn("No unresolved P0 or P1", exit_form)
         self.assertIn("Repository preparation status", road)
         self.assertIn("Dispatch remains blocked", road)
-        self.assertLess(readme.index("[Mentat releases page]"), readme.index("## Try the development build"))
-        for required in ("signed `.pkg`", "signed `.exe`", "pipx install WHEEL_URL", "mentat setup", "mentat start"):
+        self.assertLess(readme.index("## Quick start"), readme.index("## Want the technical details?"))
+        for required in ("There is no public installer yet", "git clone", "python scripts/mentat_setup.py", "./run.sh"):
             self.assertIn(required, readme)
-        self.assertIn("no final public beta yet", readme)
+        self.assertIn("invited to test a signed release candidate", readme)
 
 
 if __name__ == "__main__":

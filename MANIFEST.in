@@ -8,6 +8,7 @@ include public/app.js
 include public/core.js
 include public/index.html
 include public/mentat-logo.png
+include public/mentat-mark-emerald.png
 include public/styles.css
 include data/agent_messages.json
 include data/agents.json

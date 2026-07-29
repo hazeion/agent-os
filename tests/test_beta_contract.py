@@ -111,8 +111,12 @@ class BetaContractTests(unittest.TestCase):
         ):
             self.assertIn(non_goal, deferred_work)
         self.assertIn("Approved 2026-07-17", milestone)
-        self.assertTrue(next_actions.lstrip().startswith("1. Run the mandatory remote contract matrix"))
-        self.assertIn("mentat-beta-contracts", next_actions)
+        self.assertTrue(
+            next_actions.lstrip().startswith(
+                "1. Configure the protected `beta-release` environment"
+            )
+        )
+        self.assertIn("real operator-managed", next_actions)
         self.assertIn("signed numbered-RC workflow", next_actions)
         self.assertIn("limited cohort", next_actions)
         self.assertIn("protected exact-byte", next_actions)
@@ -121,7 +125,7 @@ class BetaContractTests(unittest.TestCase):
 
     def test_docs_do_not_claim_native_installers_already_exist(self):
         normalized_readme = " ".join(README.replace(">", "").split())
-        self.assertIn("native installers are still on the way", normalized_readme)
+        self.assertIn("There is no public installer yet", normalized_readme)
         self.assertIn("## Quick start", README)
         self.assertIn("[Python 3.11–3.13]", README)
         for first_run_step in (
@@ -145,14 +149,14 @@ class BetaContractTests(unittest.TestCase):
         self.assertIn("Repository kit complete; external cohort not started", milestone_map)
         self.assertIn("Repository promotion complete; publication blocked by 6 and 7", milestone_map)
         self.assertIn("Repository tooling complete; signed rehearsal externally gated", milestone_map)
-        self.assertEqual(done.count("- [x]"), 9)
-        self.assertEqual(done.count("- [ ]"), 5)
+        self.assertEqual(done.count("- [x]"), 10)
+        self.assertEqual(done.count("- [ ]"), 4)
         for unfinished in (
             "- [ ] A signed and notarized native installer for macOS",
             "- [ ] Release artifacts, checksums, notes, and rollback instructions",
             "- [ ] The limited external beta meets its cohort",
             "- [ ] There are no unresolved P0 or P1 issues",
-            "- [ ] One remote Hermes endpoint can provide every mandatory capability",
+            "- [x] One remote Hermes endpoint can provide every mandatory capability",
         ):
             self.assertIn(unfinished, done)
         for required in (
