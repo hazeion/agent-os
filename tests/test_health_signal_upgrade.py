@@ -12,7 +12,8 @@ import server
 
 class HealthSignalUpgradeTests(unittest.TestCase):
     def test_health_payload_reports_subsystems_and_overall_status(self):
-        payload = server.health()
+        with patch.object(server, "remote_hermes_diagnostics", return_value={"mode": "local"}):
+            payload = server.health()
         self.assertIn("status", payload)
         self.assertIn(payload["status"], {"healthy", "degraded", "error"})
         self.assertIsInstance(payload.get("subsystems"), list)
@@ -23,6 +24,10 @@ class HealthSignalUpgradeTests(unittest.TestCase):
             subsystem_keys,
             {"state_db", "config", "calendar", "cron", "host_resources"},
         )
+        self.assertNotIn("hermes_home", payload)
+        self.assertNotIn("state_db_exists", payload)
+        self.assertNotIn("state_db_size", payload)
+        self.assertTrue(all("path" not in item for item in payload["subsystems"]))
 
     def test_overall_health_matches_worst_subsystem(self):
         payload = server.health()

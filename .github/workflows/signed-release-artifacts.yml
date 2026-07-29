@@ -1,0 +1,473 @@
+name: Signed beta artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact numbered RC tag to create after both signed installers pass
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-beta-artifacts
+  cancel-in-progress: false
+
+jobs:
+  release-source:
+    name: Verify protected release source
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate numbered release candidate tag
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python scripts/release_rehearsal.py validate-rc-tag "$RELEASE_TAG"
+
+      - name: Verify exact commit checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/verify_release_checks.py
+
+  macos:
+    name: Signed and notarized macOS package
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    needs:
+      - release-source
+    runs-on: macos-15-intel
+    environment: beta-release
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify trusted source revision
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: requirements-native.lock
+
+      - name: Install pinned build dependencies
+        run: python -m pip install --require-hashes -r requirements-native.lock
+
+      - name: Build and inspect unsigned macOS content
+        shell: bash
+        run: |
+          python scripts/build_native.py
+          test "$(find dist/Mentat.app/Contents/Resources/public -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5
+          test "$(find dist/Mentat.app/Contents/Resources/data -maxdepth 1 -type f | wc -l | tr -d ' ')" = 9
+          test ! -e dist/Mentat.app/Contents/Resources/data/private
+          test ! -e dist/Mentat.app/Contents/Resources/data/runtime
+
+      - name: Import protected signing identities
+        shell: bash
+        env:
+          MAC_CERTIFICATES_BASE64: ${{ secrets.MAC_CERTIFICATES_BASE64 }}
+          MAC_CERTIFICATES_PASSWORD: ${{ secrets.MAC_CERTIFICATES_PASSWORD }}
+        run: |
+          MAC_KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          python -c 'import base64, os, pathlib; pathlib.Path(os.environ["RUNNER_TEMP"], "mentat-signing.p12").write_bytes(base64.b64decode(os.environ["MAC_CERTIFICATES_BASE64"]))'
+          security create-keychain -p "$MAC_KEYCHAIN_PASSWORD" "$RUNNER_TEMP/mentat-signing.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/mentat-signing.keychain-db"
+          security unlock-keychain -p "$MAC_KEYCHAIN_PASSWORD" "$RUNNER_TEMP/mentat-signing.keychain-db"
+          security import "$RUNNER_TEMP/mentat-signing.p12" -x -k "$RUNNER_TEMP/mentat-signing.keychain-db" -P "$MAC_CERTIFICATES_PASSWORD" -T /usr/bin/codesign -T /usr/bin/pkgbuild
+          security list-keychains -d user -s "$RUNNER_TEMP/mentat-signing.keychain-db"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MAC_KEYCHAIN_PASSWORD" "$RUNNER_TEMP/mentat-signing.keychain-db"
+
+      - name: Build and sign macOS package
+        shell: bash
+        env:
+          MAC_APPLICATION_IDENTITY: ${{ secrets.MAC_APPLICATION_IDENTITY }}
+          MAC_INSTALLER_IDENTITY: ${{ secrets.MAC_INSTALLER_IDENTITY }}
+        run: |
+          find dist/Mentat.app/Contents -type f -print0 | while IFS= read -r -d '' candidate; do
+            if file "$candidate" | grep -q 'Mach-O'; then
+              codesign --force --options runtime --timestamp --sign "$MAC_APPLICATION_IDENTITY" "$candidate"
+            fi
+          done
+          codesign --force --options runtime --timestamp --sign "$MAC_APPLICATION_IDENTITY" dist/Mentat.app
+          unsigned_package=$(find dist -maxdepth 1 -name 'Mentat-*-unsigned.pkg' -print -quit)
+          test -n "$unsigned_package"
+          package_version=$(python -c 'from mentat.version import __version__; print(__version__)')
+          display_version=$(python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION.removeprefix("v"))')
+          rm "$unsigned_package"
+          signed_package="dist/Mentat-${display_version}-macos-x86_64-signed.pkg"
+          package_root="$RUNNER_TEMP/mentat-signed-package-root"
+          mkdir -p "$package_root/Applications"
+          ditto dist/Mentat.app "$package_root/Applications/Mentat.app"
+          component_plist="$RUNNER_TEMP/mentat-signed-components.plist"
+          pkgbuild --analyze --root "$package_root" "$component_plist"
+          COMPONENT_PLIST="$component_plist" python -c 'import os, pathlib, plistlib; path = pathlib.Path(os.environ["COMPONENT_PLIST"]); items = plistlib.loads(path.read_bytes()); assert items and all(isinstance(item, dict) for item in items); [item.__setitem__("BundleIsRelocatable", False) for item in items]; path.write_bytes(plistlib.dumps(items, sort_keys=False))'
+          pkgbuild --root "$package_root" --component-plist "$component_plist" --install-location / --identifier dev.mentat.local --version "$package_version" --sign "$MAC_INSTALLER_IDENTITY" "$signed_package"
+          codesign --verify --deep --strict --verbose=2 dist/Mentat.app
+          pkgutil --check-signature "$signed_package"
+
+      - name: Notarize and staple macOS package
+        shell: bash
+        env:
+          MAC_NOTARY_APPLE_ID: ${{ secrets.MAC_NOTARY_APPLE_ID }}
+          MAC_NOTARY_PASSWORD: ${{ secrets.MAC_NOTARY_PASSWORD }}
+          MAC_NOTARY_TEAM_ID: ${{ secrets.MAC_NOTARY_TEAM_ID }}
+        run: |
+          signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
+          xcrun notarytool submit "$signed_package" --apple-id "$MAC_NOTARY_APPLE_ID" --password "$MAC_NOTARY_PASSWORD" --team-id "$MAC_NOTARY_TEAM_ID" --wait
+          xcrun stapler staple "$signed_package"
+          xcrun stapler validate "$signed_package"
+          spctl --assess --type execute --verbose=2 dist/Mentat.app
+          spctl --assess --type install --verbose=2 "$signed_package"
+
+      - name: Smoke the exact signed macOS package
+        shell: bash
+        run: |
+          signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
+          sudo installer -pkg "$signed_package" -target /
+          export MENTAT_DATA_DIR="$RUNNER_TEMP/mentat-signed-data"
+          /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8898 >"$RUNNER_TEMP/mentat-signed.log" 2>&1 &
+          launcher_pid=$!
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null
+          /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8898
+          wait "$launcher_pid" || true
+          if curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null; then
+            echo 'Mentat remained healthy after stop' >&2
+            exit 1
+          fi
+          test -f "$MENTAT_DATA_DIR/tasks.json"
+          sudo rm -rf /Applications/Mentat.app
+          sudo pkgutil --forget dev.mentat.local
+          test -f "$MENTAT_DATA_DIR/tasks.json"
+
+      - name: Upload signed macOS package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-macos-signed-notarized
+          path: dist/Mentat-*-signed.pkg
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/mentat-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/mentat-signing.p12"
+
+  windows:
+    name: Signed Windows installer
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    needs:
+      - release-source
+    runs-on: windows-2025
+    environment: beta-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify trusted source revision
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD) -ne $env:GITHUB_SHA) { throw 'Checked-out revision does not match dispatch revision' }
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: requirements-native.lock
+
+      - name: Install pinned build dependencies
+        run: python -m pip install --require-hashes -r requirements-native.lock
+
+      - name: Verify pinned Windows installer compiler
+        shell: pwsh
+        run: |
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path $compiler)) { throw 'Inno Setup 6 compiler missing' }
+          $package = choco list --local-only --exact innosetup --limit-output
+          if ($LASTEXITCODE -ne 0 -or $package -notcontains 'innosetup|6.7.1') {
+            throw "Expected Inno Setup 6.7.1 from the fixed runner image"
+          }
+
+      - name: Build Windows application bundle
+        run: python scripts/build_native.py --bundle-only
+
+      - name: Authenticate to Azure with GitHub OIDC
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows application executables
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\dist\Mentat\Mentat Launcher.exe
+            ${{ github.workspace }}\dist\Mentat\mentat.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify application signatures and build installer
+        shell: pwsh
+        run: |
+          $signTool = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin/*/x64/signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          $applicationExecutables = @('dist/Mentat/Mentat Launcher.exe', 'dist/Mentat/mentat.exe')
+          foreach ($executable in $applicationExecutables) {
+            & $signTool.FullName verify /pa /all /v $executable
+            if ($LASTEXITCODE -ne 0) { throw "Application signature verification failed: $executable" }
+          }
+          $version = python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION.removeprefix("v"))'
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          $sourceDir = (Resolve-Path 'dist/Mentat').Path
+          $outputDir = (New-Item -ItemType Directory -Force 'dist/installer').FullName
+          & $compiler "/DMyAppVersion=$version" "/DMyAppSourceDir=$sourceDir" "/DMyAppOutputDir=$outputDir" packaging/windows/Mentat.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed: $LASTEXITCODE" }
+
+      - name: Sign Windows installer
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\installer
+          files-folder-filter: Mentat-*-windows-x64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Windows installer signature
+        shell: pwsh
+        run: |
+          $signTool = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin/*/x64/signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          $installer = Get-ChildItem 'dist/installer/Mentat-*-windows-x64.exe' | Select-Object -First 1
+          & $signTool.FullName verify /pa /all /v $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Installer signature verification failed: $($installer.FullName)" }
+
+      - name: Smoke the exact signed Windows installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'dist/installer/Mentat-*-windows-x64.exe' | Select-Object -First 1
+          $installDir = Join-Path $env:RUNNER_TEMP 'MentatSignedApp'
+          $env:MENTAT_DATA_DIR = Join-Path $env:RUNNER_TEMP 'mentat-signed-data'
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Signed installer failed: $($install.ExitCode)" }
+          $launcher = Start-Process -FilePath "$installDir/mentat.exe" -ArgumentList @('start', '--port', '8898') -PassThru
+          $healthy = $false
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            try {
+              Invoke-RestMethod -Uri 'http://127.0.0.1:8898/api/health' | Out-Null
+              $healthy = $true
+              break
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          if (-not $healthy) { throw 'Signed Mentat installer did not become healthy' }
+          & "$installDir/mentat.exe" stop --port 8898
+          if (-not $launcher.WaitForExit(15000)) { throw 'Signed Mentat launcher did not stop' }
+          if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Signed install did not initialize data' }
+          $uninstall = Start-Process -FilePath "$installDir/unins000.exe" -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Signed uninstaller failed: $($uninstall.ExitCode)" }
+          if (-not (Test-Path "$env:MENTAT_DATA_DIR/tasks.json")) { throw 'Signed uninstall removed Mentat data' }
+
+      - name: Upload signed Windows installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-windows-signed
+          path: dist/installer/Mentat-*-windows-x64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  python-package:
+    name: Verified Python release artifacts
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    needs:
+      - release-source
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify trusted source revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements-native.lock
+            requirements-quality.lock
+
+      - name: Install pinned package tools
+        run: |
+          python -m pip install --require-hashes -r requirements-native.lock
+          python -m pip install --require-hashes -r requirements-quality.lock
+
+      - name: Build and verify exact Python artifacts
+        run: |
+          python -m build --no-isolation
+          python scripts/verify_python_artifacts.py dist
+
+      - name: Upload verified Python artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-python-release
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Signed release and tag required
+    if: ${{ always() }}
+    needs:
+      - release-source
+      - macos
+      - windows
+      - python-package
+    runs-on: ubuntu-24.04
+    environment: beta-release
+    permissions:
+      attestations: read
+      contents: write
+    steps:
+      - name: Verify every protected release job
+        env:
+          SOURCE_RESULT: ${{ needs.release-source.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          PYTHON_RESULT: ${{ needs.python-package.result }}
+        run: |
+          test "$SOURCE_RESULT" = success
+          test "$MACOS_RESULT" = success
+          test "$WINDOWS_RESULT" = success
+          test "$PYTHON_RESULT" = success
+
+      - name: Check out exact signed revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+
+      - name: Download every protected artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: mentat-*
+          path: release-input
+          merge-multiple: true
+
+      - name: Build reproducible release metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python scripts/release_rehearsal.py validate-rc-tag "$RELEASE_TAG"
+          python scripts/release_rehearsal.py build \
+            --artifact-dir release-input \
+            --output-dir release-bundle \
+            --release-tag "$RELEASE_TAG" \
+            --source-sha "$GITHUB_SHA"
+
+      - name: Preserve the exact release recovery bundle
+        shell: bash
+        run: |
+          mkdir release-archive
+          cp release-input/Mentat-*-macos-x86_64-signed.pkg release-archive/
+          cp release-input/Mentat-*-windows-x64.exe release-archive/
+          cp release-input/*.whl release-input/*.tar.gz release-archive/
+          cp release-bundle/SHA256SUMS release-bundle/release-manifest.json release-bundle/RELEASE_NOTES.md release-archive/
+          test "$(find release-archive -maxdepth 1 -type f | wc -l | tr -d ' ')" = 7
+          cd release-archive
+          sha256sum --check SHA256SUMS
+
+      - name: Upload exact release recovery bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-release-recovery-bundle
+          path: release-archive/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create the validated beta tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release tag already exists' >&2
+            exit 1
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag --annotate "$RELEASE_TAG" --message "Mentat $RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Publish the immutable prerelease bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            release-archive/Mentat-*-macos-x86_64-signed.pkg \
+            release-archive/Mentat-*-windows-x64.exe \
+            release-archive/*.whl \
+            release-archive/*.tar.gz \
+            release-archive/SHA256SUMS \
+            release-archive/release-manifest.json \
+            --verify-tag \
+            --prerelease \
+            --title "Mentat $RELEASE_TAG" \
+            --notes-file release-archive/RELEASE_NOTES.md
+
+      - name: Verify immutable prerelease identity and attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '{assets: [.assets[] | {digest, name, size}], draft, html_url, immutable, prerelease, tag_name}' \
+            > candidate-release.json
+          python scripts/public_beta_promotion.py verify-release \
+            --bundle-dir release-archive \
+            --release-snapshot candidate-release.json \
+            --release-tag "$RELEASE_TAG" \
+            --prerelease
+          gh release verify "$RELEASE_TAG"
