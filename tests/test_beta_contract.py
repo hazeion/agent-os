@@ -8,22 +8,165 @@ ROADMAP = (ROOT / "ROAD_TO_BETA.md").read_text(encoding="utf-8")
 ARCHITECTURE = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
 REMOTE_HERMES = (ROOT / "REMOTE_HERMES.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+APP_JS = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
+
+
+def section(text: str, start: str, end: str) -> str:
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def normalized_section(text: str, start: str, end: str) -> str:
+    return " ".join(section(text, start, end).split())
 
 
 class BetaContractTests(unittest.TestCase):
+    def test_remote_transcripts_render_as_escaped_plain_text(self):
+        self.assertIn("payload.plain_text === true", APP_JS)
+        self.assertIn("plainTextTranscript ? highlightHtml", APP_JS)
+
     def test_standard_mit_license_uses_approved_holder(self):
         self.assertTrue(LICENSE.startswith("MIT License\n"))
         self.assertIn("Copyright (c) 2026 Brandon Thomas", LICENSE)
         self.assertIn("Permission is hereby granted, free of charge", LICENSE)
         self.assertIn('THE SOFTWARE IS PROVIDED "AS IS"', LICENSE)
 
-    def test_milestone_zero_records_only_the_approved_decisions(self):
-        self.assertIn("Status: Milestone 0 in progress", ROADMAP)
-        self.assertIn("Remote architecture and license decisions approved: 2026-07-16", ROADMAP)
-        self.assertIn("| License | MIT | Approved 2026-07-16 |", ROADMAP)
-        self.assertIn("| Tier-one platforms | macOS and Windows | Recommended; approval pending |", ROADMAP)
-        self.assertIn("| Python | 3.11 through 3.13 | Recommended; approval pending |", ROADMAP)
-        self.assertIn("one active local or remote Hermes endpoint", ROADMAP)
+    def test_milestone_zero_records_the_complete_approved_contract(self):
+        decisions = section(ROADMAP, "## Beta contract decisions", "## Current baseline")
+        milestone = section(ROADMAP, "## Milestone 0", "## Milestone 1")
+
+        self.assertIn("Milestone 0 is complete", ROADMAP)
+        self.assertIn("Beta release contract approved: 2026-07-17", ROADMAP)
+        self.assertIn("| Audience | Hermes operators comfortable installing local software | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Tier-one platforms | macOS and Windows | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Preview platform | Linux, covered by CI but not initially promised at the same support level | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Python | 3.11 through 3.13 | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Update model | Manual, versioned upgrades with a pre-upgrade backup | Approved 2026-07-17 |", decisions)
+        self.assertIn("| Telemetry | Off and absent by default | Approved 2026-07-17 |", decisions)
+        self.assertIn("| First version | `0.1.0b1`, displayed to users as `v0.1.0-beta.1` | Approved 2026-07-17 |", decisions)
+        self.assertIn("| License | MIT | Approved 2026-07-16 |", decisions)
+        self.assertIn("Native installers are primary on tier-one platforms", decisions)
+        self.assertIn("`pipx` from a tagged release remains supported", decisions)
+        self.assertNotIn("approval pending", decisions.lower())
+        self.assertNotIn("pending", milestone.lower())
+
+    def test_native_installers_and_pipx_are_consistent_beta_channels(self):
+        milestone_three = normalized_section(ROADMAP, "## Milestone 3", "## Milestone 4")
+        milestone_four = normalized_section(ROADMAP, "## Milestone 4", "## Milestone 5")
+        milestone_six = normalized_section(ROADMAP, "## Milestone 6", "## Milestone 7")
+        milestone_eight = normalized_section(ROADMAP, "## Milestone 8", "## Public beta definition of done")
+        definition_of_done = normalized_section(ROADMAP, "## Public beta definition of done", "## Work intentionally deferred")
+
+        for requirement in (
+            "signed and notarized native installer for macOS",
+            "signed native installer for Windows",
+            "`pipx`",
+        ):
+            self.assertIn(requirement, ROADMAP)
+        self.assertIn("Exact installer formats and tooling", ROADMAP)
+        for milestone in (
+            milestone_three,
+            milestone_four,
+            milestone_six,
+            milestone_eight,
+            definition_of_done,
+        ):
+            self.assertIn("signed and notarized native installer for macOS", milestone)
+            self.assertIn("signed native installer for Windows", milestone)
+            self.assertIn("`pipx`", milestone)
+        self.assertIn("native installers", section(ROADMAP, "## Milestone map", "## Milestone 0").lower())
+        normalized_roadmap = " ".join(ROADMAP.lower().split())
+        self.assertNotIn("| native installers | deferred", normalized_roadmap)
+        self.assertNotIn("native installers are deferred", normalized_roadmap)
+        self.assertNotIn("native signed installers and automatic updates", normalized_roadmap)
+
+    def test_severity_feedback_and_next_slice_order_are_approved(self):
+        milestone = section(ROADMAP, "## Milestone 0", "## Milestone 1")
+        deferred_work = normalized_section(
+            ROADMAP,
+            "## Work intentionally deferred",
+            "## Current next actions",
+        )
+        next_actions = ROADMAP.split("## Current next actions", 1)[1]
+
+        for policy in (
+            "P0: data loss, secret exposure, unsafe mutation, or app-wide unusability",
+            "P1: a core workflow is unusable with no reasonable workaround",
+            "P2: degraded behavior with a workaround",
+            "P3: polish, documentation, or minor inconvenience",
+            "P0 and P1 issues block a release",
+            "P2 and P3 issues are prioritized by frequency and operator impact",
+            "ordinary reports use GitHub Issues after the public issue path opens",
+            "security reports use the private channel established in Milestone 5",
+            "beta support is best effort with no guaranteed response-time SLA",
+            "reports must exclude credentials and private operator content",
+            "explicit beta non-goals are maintained in the deferred-work section",
+        ):
+            self.assertIn(policy, milestone)
+        for non_goal in (
+            "non-loopback or hosted Mentat access",
+            "authentication, multi-user accounts, or multi-tenancy",
+            "automatic updates",
+            "telemetry or analytics by default",
+            "large new product surfaces that do not close a beta acceptance gap",
+        ):
+            self.assertIn(non_goal, deferred_work)
+        self.assertIn("Approved 2026-07-17", milestone)
+        self.assertTrue(
+            next_actions.lstrip().startswith(
+                "1. Configure the protected `beta-release` environment"
+            )
+        )
+        self.assertIn("real operator-managed", next_actions)
+        self.assertIn("signed numbered-RC workflow", next_actions)
+        self.assertIn("limited cohort", next_actions)
+        self.assertIn("protected exact-byte", next_actions)
+        self.assertNotIn("early CI guardrail", next_actions)
+        self.assertNotIn("Finish the remaining Milestone 0", next_actions)
+
+    def test_docs_do_not_claim_native_installers_already_exist(self):
+        normalized_readme = " ".join(README.replace(">", "").split())
+        self.assertIn("There is no public installer yet", normalized_readme)
+        self.assertIn("## Quick start", README)
+        self.assertIn("[Python 3.11–3.13]", README)
+        for first_run_step in (
+            "git clone https://github.com/hazeion/agent-os.git",
+            "python -m pip install -r requirements.txt",
+            "python scripts/mentat_setup.py",
+            "./run.sh",
+        ):
+            self.assertIn(first_run_step, README)
+
+    def test_roadmap_separates_repository_readiness_from_external_release_gates(self):
+        baseline = normalized_section(ROADMAP, "## Current baseline", "## How roadmap work is organized")
+        milestone_map = normalized_section(ROADMAP, "## Milestone map", "## Milestone 0")
+        done = section(ROADMAP, "## Public beta definition of done", "## Work intentionally deferred")
+        next_actions = ROADMAP.split("## Current next actions", 1)[1]
+
+        self.assertIn("Repository implementation complete through Milestone 8", ROADMAP)
+        self.assertIn("remaining gaps are external execution evidence", baseline)
+        self.assertNotIn("there is no installable Python package", baseline.lower())
+        self.assertIn("Repository tooling complete; signed clean-machine evidence remains in 6", milestone_map)
+        self.assertIn("Repository kit complete; external cohort not started", milestone_map)
+        self.assertIn("Repository promotion complete; publication blocked by 6 and 7", milestone_map)
+        self.assertIn("Repository tooling complete; signed rehearsal externally gated", milestone_map)
+        self.assertEqual(done.count("- [x]"), 10)
+        self.assertEqual(done.count("- [ ]"), 4)
+        for unfinished in (
+            "- [ ] A signed and notarized native installer for macOS",
+            "- [ ] Release artifacts, checksums, notes, and rollback instructions",
+            "- [ ] The limited external beta meets its cohort",
+            "- [ ] There are no unresolved P0 or P1 issues",
+            "- [x] One remote Hermes endpoint can provide every mandatory capability",
+        ):
+            self.assertIn(unfinished, done)
+        for required in (
+            "release immutability",
+            "real operator-managed",
+            "another person",
+            "limited cohort",
+            "protected exact-byte",
+        ):
+            self.assertIn(required, next_actions)
 
     def test_remote_contract_records_required_parity_and_safe_degradation(self):
         for required in (
@@ -36,7 +179,8 @@ class BetaContractTests(unittest.TestCase):
             "Durable Kanban delegation and follow-up",
         ):
             self.assertIn(required, REMOTE_HERMES)
-        self.assertIn("**Required**; upstream authenticated capability blocker", REMOTE_HERMES)
+        self.assertIn("request-bound approval", REMOTE_HERMES)
+        self.assertIn("revisioned and idempotent Kanban", REMOTE_HERMES)
         self.assertIn("Clarification handling", REMOTE_HERMES)
         self.assertIn("**Graceful degradation**", REMOTE_HERMES)
 
@@ -51,6 +195,7 @@ class BetaContractTests(unittest.TestCase):
         })
         for adapter in adapters:
             self.assertIn(f"`{adapter}`", REMOTE_HERMES)
+        self.assertIn("`remote_hermes.py`", REMOTE_HERMES)
 
     def test_remote_security_boundary_is_fail_closed(self):
         normalized_contract = " ".join(REMOTE_HERMES.split())
@@ -64,8 +209,8 @@ class BetaContractTests(unittest.TestCase):
             "must never be returned to the browser",
         ):
             self.assertIn(requirement, normalized_contract)
-        self.assertIn("unauthenticated loopback plugin HTTP route", normalized_contract)
-        self.assertNotIn("behind dashboard session auth", normalized_contract)
+        self.assertIn("separate dashboard session-token boundary", normalized_contract)
+        self.assertIn("not the approved stable API-server bearer boundary", normalized_contract)
         normalized_architecture = " ".join(ARCHITECTURE.split())
         self.assertIn("never collects Hermes-owned provider/model credentials", normalized_architecture)
         self.assertIn("operator-supplied API key", normalized_architecture)
@@ -74,7 +219,7 @@ class BetaContractTests(unittest.TestCase):
         link = "[REMOTE_HERMES.md](REMOTE_HERMES.md)"
         self.assertIn(link, ROADMAP)
         self.assertIn(link, ARCHITECTURE)
-        self.assertIn(link, README)
+        self.assertIn("(REMOTE_HERMES.md)", README)
 
     def test_roadmap_uses_verified_ready_pull_requests(self):
         self.assertIn("ready pull request", ROADMAP)

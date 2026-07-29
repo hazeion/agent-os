@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from runtime_config import BASE_DIR
+from private_state import ensure_console_root
 
 SCHEMA_VERSION = 1
 RUN_ID_PATTERN = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
@@ -165,18 +166,19 @@ def prepare_input_directory(data_dir: Path, run_id: str) -> Path:
 def _copy_private_regular_file(source: Path, destination: Path, *, max_bytes: int) -> Path:
     """Copy one validated private file without following source or destination symlinks."""
     no_follow = getattr(os, "O_NOFOLLOW", 0)
+    binary = getattr(os, "O_BINARY", 0)
     source_descriptor = destination_descriptor = None
     created = False
     completed = False
     copied = 0
     try:
-        source_descriptor = os.open(source, os.O_RDONLY | no_follow)
+        source_descriptor = os.open(source, os.O_RDONLY | no_follow | binary)
         source_details = os.fstat(source_descriptor)
         if not stat.S_ISREG(source_details.st_mode) or source_details.st_size > max_bytes:
             raise ArtifactValidationError("invalid_attachment_path", "Attachment must be a bounded regular file")
         destination_descriptor = os.open(
             destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow | binary,
             0o600,
         )
         created = True
@@ -256,7 +258,9 @@ def build_execution_context(
     """
     normalized_run_id = validate_run_id(run_id)
     export_directory = prepare_export_directory(data_dir, normalized_run_id)
-    owned_root = Path(attachment_root or (Path(data_dir) / "runtime"))
+    ensure_console_root(data_dir)
+    default_owned_root = Path(data_dir).absolute() / "private" / "console"
+    owned_root = Path(attachment_root or default_owned_root)
     try:
         owned_root.resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
@@ -323,7 +327,11 @@ def cleanup_run_input_directory(data_dir: Path, run_id: str) -> int:
         raise ArtifactValidationError("unsafe_input_directory", "Agent input directory is outside runtime storage")
     removed = 0
     for candidate in resolved_run_root.iterdir():
-        if candidate.is_symlink() or not candidate.is_file():
+        if candidate.is_symlink():
+            candidate.unlink()
+            removed += 1
+            continue
+        if not candidate.is_file():
             raise ArtifactValidationError("unsafe_input_directory", "Agent input directory contains an unsafe entry")
         candidate.unlink()
         removed += 1
@@ -706,7 +714,7 @@ def read_workspace_text_context(
 
 def _copy_validated_snapshot(source: Path, staging_root: Path, *, max_bytes: int) -> Path:
     staging_root = _ensure_private_directory(staging_root)
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

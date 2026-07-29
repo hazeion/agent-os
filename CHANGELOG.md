@@ -2,6 +2,349 @@
 
 All notable changes to Mentat.
 
+## 2026-07-26
+
+### Added
+- Added setup-wizard and installed CLI workflows for configuring, testing, and
+  selecting local Hermes or one remembered remote endpoint.
+- Added `mentat connection status`, `test`, `use`, and `configure-remote` with
+  interactive confirmation and exact two-step non-interactive confirmation.
+
+### Changed
+- Remote connection records now keep only a credential-source reference. API
+  keys resolve from a named environment variable or owner-only env file.
+- Existing schema-v1 embedded remote keys migrate to a separate owner-only
+  private env file while retaining the selected connection.
+
+### Safety
+- CLI connection mutations refuse to run while Mentat is active, remote
+  activation probes authenticated readiness/capabilities before commit, failed
+  operations restore the prior selection, and browser connection requests no
+  longer accept API-key values.
+- Server startup and offline connection changes now share a cross-process
+  reservation, closing startup races and preventing live schema migration.
+- `mentat connection test local` now verifies that the supported Hermes CLI can
+  execute instead of treating a saved local label as proof of readiness.
+
+## 2026-07-25
+
+### Added
+- Added capability-gated, cursor-based replay for remote Hermes Runs events,
+  exact pending approval/clarification recovery from run status, and effective
+  provider/model runtime events.
+- Added a complete authenticated read-only remote profile runtime inventory so
+  Agent Console can show the selected profile's current provider and model.
+
+### Changed
+- Remote approval and clarification waits now keep the normal SSE connection
+  open. Multiple interactive pauses resume on the same run worker and stream;
+  a genuine interruption reconnects automatically from the last verified
+  cursor without resubmitting the run.
+- Agent Console clears stale runtime values while changing agents, rejects
+  out-of-order refresh responses, and refreshes provider/model identity after
+  relevant run, response, session, and connection lifecycle events. Remote
+  selectors show the current values but remain disabled.
+
+### Safety
+- Replay journals and subscriber queues are count- and byte-bounded, sequenced,
+  normalized to a public allowlist, and process-local. Raw tool previews and
+  reasoning bodies are omitted. Invalid, ahead, expired, duplicated, or gapped
+  event cursors fail closed.
+- Pending actions remain bound to the exact request ID, and provider/model
+  payloads reject URLs, paths, secret-shaped identifiers, endpoint reflection,
+  and malformed or partial inventories.
+
+## 2026-07-24
+
+### Changed
+- Updated protected Windows release signing to Azure Artifact Signing with
+  short-lived GitHub OIDC, and added a concise Apple/Azure maintainer setup
+  guide for the first signed release candidate.
+
+### Fixed
+- Remote Console runs now retain a safe connection-bound session alias, so a
+  fresh completed run can continue in the same Hermes session without exposing
+  the upstream session ID.
+- Clarification runs now accept Hermes' advertised
+  `waiting_for_clarification` status instead of failing after the question
+  appears.
+- Supported remote image requests now use a dedicated bounded outbound limit
+  instead of the smaller response-size limit, and deterministic request
+  rejections no longer claim that a run may have started.
+- Kanban follow-up confirmations now bind persisted Mentat task state and the
+  exact remote revision without including a newly generated sync timestamp.
+- Browser smoke gives Chrome a bounded startup window on slower CI runners and
+  waits for browser shutdown before removing its private profile directory.
+
+### Verified
+- Completed the mandatory maintained-runtime matrix against Hermes `0.19.0`
+  over authenticated, certificate-verified HTTPS, including Console
+  interactions, continuation, sessions/search, profiles, skills/toolsets,
+  Context Packs, images, stopping, cancellation races, and revision-bound
+  Kanban creation and result acceptance.
+
+## 2026-07-21
+
+### Added
+- Added a protected public-beta promotion path that verifies and republishes
+  the immutable tested RC identity, GitHub asset digests, and attestation;
+  preserves pre-tag recovery evidence; and requires a closed public Milestone 7
+  exit summary with checked, candidate-bound attestations.
+- Added a concise limited-beta tester checklist, privacy-safe structured
+  feedback form, and maintainer cohort runbook without claiming external
+  results or storing participant data in Git.
+
+## 2026-07-20
+
+### Added
+- Added deterministic release-candidate checksums, manifest, and release notes,
+  plus a short clean-install, upgrade, backup, restore, rollback, and
+  uninstall-preservation rehearsal checklist.
+- Added a protected Python package job and final prerelease assembly gate beside
+  the signed macOS and Windows artifact jobs.
+- Added public beta security, privacy, support, contribution, conduct, and issue
+  guidance, including a private vulnerability-reporting path and clear
+  pre-install platform and support expectations.
+- Added a user-initiated redacted diagnostics ZIP and a compact Settings help
+  area with the Mentat version, docs, bug-reporting, and diagnostics actions.
+- Added read-only remote message search across the same bounded 12 recent
+  sessions shown in Agents. Matches open the existing transcript through
+  private Mentat aliases, and the UI explains when the session limit was
+  reached or compacted history was outside the search window.
+- Added a read-only Hermes Capabilities view in Settings for remote skills and
+  toolsets. Mentat uses only the exact authenticated endpoints advertised by
+  Hermes and keeps local mode unchanged.
+- Added bounded remote Context Pack text for Agent Console. One short-lived
+  opaque grant binds the selected connection, current pack revision, and exact
+  private snapshots before Mentat sends path-free text to Hermes Runs.
+- Added capability-gated read-only remote session history using Hermes' exact
+  list, detail, and message endpoints. The existing Sessions UI can show a
+  bounded recent list, transcript, and replay while local SQLite behavior stays
+  unchanged in local mode.
+- Added capability-gated remote Agent Console turns for the selected Hermes
+  host's default profile, including fixed run submission, bounded SSE progress,
+  status reconciliation, usage metadata, and remote cancellation.
+- Added a binding-aware Hermes Console transport boundary that keeps the local
+  CLI launch contract intact and gives later remote execution one typed entry
+  point.
+- Added validated transport mode and opaque connection binding metadata to new
+  and retained Console run summaries, with safe defaults for older history.
+
+### Safety
+- Diagnostics are generated in memory from fixed version, platform-category,
+  install-type, and health-status fields. They never collect logs, environment
+  variables, credentials, endpoints, personal content, local paths, hostnames,
+  usernames, or blob identifiers.
+- Remote message search reads only the exact advertised session list/message
+  endpoints, returns at most 20 escaped user/assistant snippets, and exposes no
+  upstream session IDs. Any failed session read or changed connection discards
+  all matches; path-shaped or credential-shaped public text and partial message
+  envelopes fail closed, while syntactically public credential-free web URLs,
+  numeric dates/fractions, `A/B` abbreviations, and safe text-only multimodal
+  content remain searchable. Alternate numeric loopback, non-unicast or local
+  hosts, userinfo, backslash hybrids, private query values, and private-key
+  headers fail closed, as do special-use DNS and nested/adjacent URL-path
+  hybrids. List limits, compaction, and match truncation are explicit.
+- Remote capability inventory is connection-bound, size-limited, allowlisted,
+  path-free, and escaped in the browser. Raw responses, descriptions, skill
+  contents, tool names, credentials, and partial inventories are never exposed.
+- Remote Context Pack requests use generic context labels and fixed item,
+  total-context, and complete-prompt limits. Changed, expired, replayed, or
+  mismatched grants fail before submission. Direct files and artifacts remain
+  unavailable; supported runtimes may accept only validated, bounded image
+  data URLs for the stoppable Runs lifecycle.
+- Remote session identifiers remain process-private behind random aliases bound
+  to the selected connection. Mentat allowlists and bounds public metadata,
+  returns only user/assistant conversation text, labels compressed
+  latest-segment history as partial, and rejects stale aliases, changed
+  capabilities, changed message identity, private transport reflection,
+  malformed pagination, or uncertain identity.
+- Added verified, exact remote continuation, profile inventory, approval,
+  clarification, inline-image, and revisioned Kanban contracts for runtimes
+  that advertise the complete supported capability set.
+- Remote approval and clarification replies now require the verified exact
+  request-binding contracts. Runs wait for a verified operator response, then
+  resume without submitting a second prompt; unsupported or malformed requests
+  still stop safely.
+- Remote runs now require the exact advertised Runs API endpoints, remain bound
+  to one opaque connection identity, never retry submission, and issue at most
+  one stop attempt. Interrupted streams reconcile through status.
+- Graceful shutdown performs bounded remote stop/read-back. Abrupt process
+  death is reported as an interrupted partial run; upstream run IDs are not
+  persisted in this slice.
+- Selected remote mode now fails closed instead of inspecting or launching the
+  local Hermes CLI. Connection changes are blocked during active runs, bindings
+  are rechecked before queue and launch, and private launch errors or failed
+  child-process output stay out of browser and retained-history payloads.
+
+## 2026-07-19
+
+### Added
+- Added the Milestone 2A remote Hermes foundation: one owner-only local/remote
+  connection record, exact preview and confirmation, binding rotation when
+  connection authority changes, and a fixed-path server-only discovery client.
+- Added bounded public-health, authenticated detailed-health, and capability
+  discovery with verified TLS, no redirects or ambient proxy behavior, strict
+  response limits, schema validation, and secret-free browser summaries.
+- Added loopback-only routes to inspect, preview, select, and test the active
+  connection. Existing Console and Hermes behavior remains local until the
+  transport adapter lands.
+
+### Changed
+- Simplified the README into a quick, friendly first-user setup guide and moved
+  advanced implementation detail to the focused architecture and roadmap docs.
+
+### Safety
+- Keeps the remote endpoint and API key out of tracked files, ordinary backups,
+  logs, diagnostics, and browser responses. Failed probes do not change the
+  active selection; uncertain commits roll back exactly or report a bounded
+  partial failure.
+
+## 2026-07-18
+
+### Added
+- Completed Milestone 1F with an installed-layout integration drill that creates
+  a verified pre-upgrade backup, replaces immutable application trees with
+  changed packaged seeds, removes only the application tree, and reconnects a
+  reinstall without changing durable JSON or retained private Console state.
+- Moved retained Agent Console history, SQLite metadata, and content-addressed
+  blobs to owner-only durable `private/console` storage while keeping uploads,
+  exports, execution inputs, and workspace/artifact snapshots in ephemeral
+  runtime storage.
+- Added exact preview-confirm migration for legacy runtime Console state with a
+  shared cross-process lock, SQLite backup semantics, source preservation,
+  reservation-first recovery, verified receipt-last completion, and startup
+  refusal for incomplete or conflicting state.
+- Extended ordinary backup to version 2 with canonical retained history, a
+  supported-schema WAL-safe SQLite snapshot filtered to retained run references,
+  and exactly referenced ready blobs. Restore now exchanges the private unit
+  through verified old/new states and retains version-1 JSON-only compatibility.
+- Added Milestone 1E-A's deterministic, bounded, owner-only general backup
+  format for the fixed nine-document durable operator JSON inventory.
+- Added read-only restore preview, state-bound confirmation, forward refusal,
+  pre-restore recovery backup, exact atomic document replacement, verified
+  interruption resume, confirmed orphan-temporary cleanup, and startup refusal
+  for incomplete or ambiguous restore state.
+- Added explicit source-checkout CLI modes for backup creation and restore
+  preview/confirmation while keeping other private/credential state,
+  runtime/cache/log/browser/external state, nested backups, and the later
+  installed CLI out of this bounded format.
+- Completed Milestone 1D with a fixed owner-only durable-JSON schema manifest,
+  current metadata for clean seed-only installs, explicit backed-up version-0
+  bootstrap, interruption-safe retry, and distinct forward-version refusal.
+- Added schema preview/confirmation, manifest/backup integrity, clean/repeat,
+  stale-token, interruption, substitution, normal-write serialization, tamper,
+  and newer-version coverage.
+- Added pre-write current/newer schema refusal, durable clean-initialization
+  provenance, exact orphan-temporary reconciliation, canonical resume-backup
+  binding, strict integer semantics, bounded malformed-artifact handling,
+  pinned descriptor-relative schema writes, seed/target containment refusal,
+  and reentrant global-before-file mutation locking.
+- Reconciles exact pre-link and same-inode post-link reservation, seed, backup,
+  and manifest publication states; rejects multiple recovery temporaries; and
+  preserves full required-directory hardening for current-schema startup.
+- Pins required-directory hardening and ordinary durable JSON I/O to the locked
+  root descriptor, refuses all recovery on newer schemas, rejects contextual
+  reserved-namespace lookalikes, and repairs a missing empty fresh backup
+  directory without weakening migrated-backup evidence.
+- Preserves the configured data-root spelling through component-by-component
+  no-follow locking, including the server write handoff; binds recovery
+  inventory, validation, deletion, and verification to one pinned root; gives
+  cross-category invalid artifacts global precedence; and reports safely read
+  newer metadata before any older recovery classification.
+- Keeps component validation and pinned JSON I/O active when the source
+  development override omits only the on-disk lock artifact; finalizes fresh
+  schema state inside the initializer lock with a final root-identity check;
+  and verifies complete recovery inventory and promoted-final identity again
+  after temporary deletion before claiming reconciliation.
+- Binds startup handoff to the guarded root's device/file identity, rejects
+  mixed nested lock-mode escalation, validates durable JSON file objects and
+  bounded top-level shapes before successful writes, and rechecks all nine
+  confirmation/seed bytes at migration, recovery, and fresh terminal success.
+- Routes product reads through the pinned bounded file boundary, refuses
+  missing installed durable documents, hardens parent permissions only through
+  the pinned descriptor, binds temporary and committed bytes/inodes, cleans all
+  precommit failures, and validates terminal manifest/backup/data evidence
+  entirely through retained root/child descriptors.
+- Completed Milestone 1C with an explicit CLI preview/confirmation workflow for
+  the fixed legacy durable-JSON inventory, including a validated versioned ZIP,
+  locked revalidation, missing-only atomic publication, interruption-safe
+  resume, exact verification, and a completion receipt checked at startup.
+- Added stale-token, conflict, source-change, destination-race, backup ordering,
+  corruption, interruption/resume, receipt, CLI-isolation, and source-
+  preservation coverage.
+- Completed Milestone 1B with a standard-library, cross-process-locked data-root
+  initializer. Clean installed layouts create owner-only durable, private,
+  runtime, backup, cache, log, and config boundaries and copy only missing
+  validated seeds through synced same-directory temporary files and atomic
+  no-replace promotion.
+- Added first-run, repeat-run, mixed existing/missing, legacy/conflict,
+  permission, interruption-recovery, destination-race, startup-ordering, and
+  two-process serialization coverage.
+
+### Safety
+- Coordinates ordinary durable JSON writes and schema migration through the
+  process-reentrant shared cross-process lock, binds confirmation to live bytes and the exact
+  target, publishes backup evidence before metadata, keeps browser-visible JSON
+  shapes unchanged, and never performs a downgrade or silent existing-root
+  upgrade.
+- Keeps migration output path/content/hash-free, preserves the legacy source,
+  refuses unknown, symbolic-linked, or hard-linked inputs and changed partial
+  state, binds confirmation to exact root spellings and an empty initial target,
+  pins receipt validation against root substitution, secures every required
+  completed-migration directory boundary before startup, never overwrites a
+  destination, preserves owner-only mode before ordinary atomic-write commit,
+  tolerates only exact safe orphan writer temporaries after completion, and
+  leaves private-state movement and general backup/restore outside this slice.
+- Revalidates the complete bounded preflight after acquiring the initialization
+  lock, never replaces an existing operator destination, keeps `--print-config`
+  side-effect-free, treats the tracked source layout as a no-op development
+  override, and fails closed before seed copying when legacy, invalid, linked,
+  conflicting, or unverifiable state is present.
+- The Milestone 1B initializer kept migration, schema evolution,
+  backup/restore, private/runtime data moves, remote credentials, packaging,
+  and installers outside that initializer slice.
+
+## 2026-07-17
+
+### Added
+- Added the early GitHub Actions guardrail for pull requests and `main`, with
+  Python compilation, JavaScript syntax checks, and the complete unittest suite
+  across macOS, Windows, and Ubuntu on Python 3.11 through 3.13. This narrow
+  guardrail does not yet add packaging, native installers, browser release
+  gates, dependency scanning, or branch-protection configuration.
+- Defined the Milestone 1A data-layout contract, including the complete current
+  mutable-path inventory, target durable/private/runtime/backup/cache/log/config
+  classes, platform defaults, override precedence, missing-only seed behavior,
+  fail-closed migration/schema rules, and secret exclusions.
+- Added the Milestone 1B-A standard-library data-root resolver and bounded
+  read-only preflight. Config-less loads select the approved macOS, Windows, or
+  Linux/XDG root; explicit CLI, current environment, legacy environment, and
+  TOML inputs retain exact precedence and report a safe source label. Preflight
+  validates only the fixed seed set, enforces a 16 MiB per-document ceiling and
+  current top-level shapes, and fails closed on symlink/reparse, legacy, or
+  conflicting state without creating or modifying files. Config-less normal
+  startup is blocked before lifecycle cleanup or writes until the writable
+  initializer lands; print-config remains side-effect-free.
+
+### Changed
+- Closed the remaining Milestone 0 release-contract decisions for the beta
+  audience, supported and preview platforms, Python versions, manual updates,
+  absent-by-default telemetry, initial version, severity levels, and feedback
+  policy.
+- Made signed native installers the required primary public-beta path on macOS
+  and Windows, with macOS notarization and `pipx` retained as the supported
+  advanced/fallback and Linux preview path. Installer implementation remains a
+  future packaging milestone.
+- Moved the roadmap forward to the early cross-platform CI guardrail followed
+  by the Milestone 1A mutable-path inventory and data-layout contract.
+
+### Fixed
+- Made Agent Console binary snapshots preserve all bytes on Windows and added
+  pinned IANA timezone data for Windows calendar and recurrence behavior.
+- Removed test-suite dependencies on a developer's local Hermes profiles and
+  Obsidian vault, and made the Hermes-home assertion platform-correct.
+
 ## 2026-07-16
 
 ### Added

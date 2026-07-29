@@ -20,9 +20,8 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn("activeView === 'projects'", refresh_block)
 
     def test_readme_documents_no_premature_frontend_build_step(self):
-        self.assertIn("static HTML, CSS, and vanilla JavaScript", README)
-        self.assertIn("There is currently **no npm install step**", README)
-        self.assertIn("Agent Pulse live heartbeat registry", README)
+        self.assertIn("There is no npm install step", README)
+        self.assertIn("plain HTML, CSS, and JavaScript", README)
 
     def test_dashboard_identity_is_project_owned_not_hardcoded(self):
         self.assertIn('read_json_file("dashboard.json", {})', SERVER)
@@ -57,8 +56,11 @@ class NextPhaseReadinessTests(unittest.TestCase):
 
     def test_dashboard_json_writes_are_allowlisted_to_data_files(self):
         self.assertIn('ALLOWED_DATA_WRITES = {', SERVER)
-        self.assertIn('if name not in ALLOWED_DATA_WRITES', SERVER)
-        self.assertIn('path.parent != data_root', SERVER)
+        self.assertIn('allowlist = ALLOWED_DATA_WRITES if write else ALLOWED_DATA_READS', SERVER)
+        self.assertIn('if name not in allowlist', SERVER)
+        self.assertIn('"/" in name or "\\\\" in name', SERVER)
+        self.assertIn('return _absolute_without_following(DATA_DIR) / name', SERVER)
+        self.assertNotIn('(DATA_DIR / name).resolve()', SERVER)
         self.assertIn('update_json_file("attention.json", [], mutator)', SERVER)
     def test_core_script_loads_before_app_script(self):
         self.assertLess(INDEX.index('/core.js?v='), INDEX.index('/app.js?v='))

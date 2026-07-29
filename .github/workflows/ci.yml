@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15-intel
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q .
+
+      - name: Check public/core.js syntax
+        run: node --check public/core.js
+
+      - name: Check public/app.js syntax
+        run: node --check public/app.js
+
+      - name: Check scripts/browser_smoke.mjs syntax
+        run: node --check scripts/browser_smoke.mjs
+
+      - name: Run test suite
+        run: python -m unittest discover -s tests -v
+
+  windows-test:
+    name: windows-2025 / Python ${{ matrix.python-version }} / group ${{ matrix.group }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+        group:
+          - 0
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q .
+
+      - name: Check public/core.js syntax
+        run: node --check public/core.js
+
+      - name: Check public/app.js syntax
+        run: node --check public/app.js
+
+      - name: Check scripts/browser_smoke.mjs syntax
+        run: node --check scripts/browser_smoke.mjs
+
+      - name: Run bounded Windows test group
+        run: python scripts/run_unittest_shards.py --run-group ${{ matrix.group }}
+
+  required:
+    name: CI required
+    if: ${{ always() }}
+    needs:
+      - test
+      - windows-test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify required matrix
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          WINDOWS_RESULT: ${{ needs.windows-test.result }}
+        run: |
+          test "$TEST_RESULT" = success
+          test "$WINDOWS_RESULT" = success

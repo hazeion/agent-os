@@ -6,6 +6,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+/build/
+/dist/
+*.egg-info/
 
 # Virtual environments
 .venv/
@@ -19,6 +22,9 @@ docs/
 sketches/
 .hermes-tmp.*/
 data/runtime/
+data/private/
+*.swp
+data/.mentat-initialization.lock
 
 # OS/editor noise
 .DS_Store

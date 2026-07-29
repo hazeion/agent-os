@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from mentat.version import DISPLAY_VERSION, __version__
+
 HEALTH_STATUS_RANK = {"healthy": 0, "degraded": 1, "error": 2}
 
 
@@ -30,6 +32,7 @@ class HealthContext:
     file_mtime_iso: Callable[[Path], str | None]
     human_bytes: Callable[[int | float | None], str | None]
     clean_snippet: Callable[[str | None, int], str]
+    hermes_diagnostics: Callable[[], dict]
 
 
 def normalize_health_status(status: str | None) -> str:
@@ -145,12 +148,11 @@ def state_db_health(ctx: HealthContext):
             "state_db",
             "Hermes state.db",
             "error",
-            f"Hermes state.db is not accessible: {exc}",
-            path=str(ctx.state_db),
+            "Hermes state.db is not accessible.",
             exists=None,
             size=None,
             modified_at=None,
-            error=ctx.clean_snippet(str(exc), 220),
+            error="state_db_not_accessible",
         )
     if not state_db_exists:
         return make_health_subsystem(
@@ -159,7 +161,6 @@ def state_db_health(ctx: HealthContext):
             "Hermes state.db",
             "error",
             "Hermes state.db is missing.",
-            path=str(ctx.state_db),
             exists=False,
             size=None,
             modified_at=None,
@@ -176,7 +177,6 @@ def state_db_health(ctx: HealthContext):
             "Hermes state.db",
             "healthy",
             f"Readable SQLite store ({row[0]} schema entries).",
-            path=str(ctx.state_db),
             exists=True,
             size=path_size(ctx, ctx.state_db),
             modified_at=ctx.file_mtime_iso(ctx.state_db),
@@ -187,12 +187,11 @@ def state_db_health(ctx: HealthContext):
             "state_db",
             "Hermes state.db",
             "error",
-            f"Unreadable SQLite store: {exc}",
-            path=str(ctx.state_db),
+            "Hermes state.db could not be read safely.",
             exists=True,
             size=path_size(ctx, ctx.state_db),
             modified_at=ctx.file_mtime_iso(ctx.state_db),
-            error=ctx.clean_snippet(str(exc), 220),
+            error="state_db_unreadable",
         )
 
 
@@ -205,7 +204,6 @@ def config_health(ctx: HealthContext):
             "Hermes config",
             "degraded",
             "Hermes config file not found.",
-            path=payload.get("path"),
             exists=False,
             modified_at=None,
             summary_fields=[],
@@ -216,12 +214,11 @@ def config_health(ctx: HealthContext):
             "config",
             "Hermes config",
             "error",
-            f"Config exists but could not be read: {payload['error']}",
-            path=payload.get("path"),
+            "Hermes config exists but could not be read safely.",
             exists=True,
             modified_at=payload.get("modified_at"),
             size=payload.get("size"),
-            error=ctx.clean_snippet(payload.get("error"), 220),
+            error="config_unreadable",
             summary_fields=sorted((payload.get("summary") or {}).keys()),
         )
     summary_fields = sorted((payload.get("summary") or {}).keys())
@@ -236,7 +233,6 @@ def config_health(ctx: HealthContext):
         "Hermes config",
         "healthy",
         summary,
-        path=payload.get("path"),
         exists=True,
         modified_at=payload.get("modified_at"),
         size=payload.get("size"),
@@ -252,12 +248,11 @@ def cron_health(ctx: HealthContext):
             "cron",
             "Cron jobs",
             "error",
-            f"Cron job store exists but could not be read: {payload['error']}",
-            path=payload.get("source"),
+            "Cron job store exists but could not be read safely.",
             exists=True,
             count=0,
             enabled_count=0,
-            error=ctx.clean_snippet(payload.get("error"), 220),
+            error="cron_store_unreadable",
         )
     if not payload.get("exists"):
         return make_health_subsystem(
@@ -266,7 +261,6 @@ def cron_health(ctx: HealthContext):
             "Cron jobs",
             "degraded",
             "Cron job store not initialized yet.",
-            path=payload.get("source"),
             exists=False,
             count=0,
             enabled_count=0,
@@ -277,7 +271,6 @@ def cron_health(ctx: HealthContext):
         "Cron jobs",
         "healthy",
         f"{payload.get('enabled_count', 0)} enabled of {payload.get('count', 0)} scheduled jobs.",
-        path=payload.get("source"),
         exists=True,
         count=payload.get("count", 0),
         enabled_count=payload.get("enabled_count", 0),
@@ -290,10 +283,10 @@ def calendar_health(ctx: HealthContext):
     stale = bool((payload.get("summary") or {}).get("stale"))
     source = payload.get("source") or "unknown"
     auth = payload.get("auth") or "unknown"
-    error_text = ctx.clean_snippet(payload.get("error"), 220) if payload.get("error") else None
+    has_error = bool(payload.get("error"))
     next_event = (payload.get("summary") or {}).get("next_event") or {}
 
-    if source == "google" and auth == "connected" and not error_text:
+    if source == "google" and auth == "connected" and not has_error:
         summary = "Google Calendar is connected and serving live read-only data."
         if next_event.get("title"):
             summary = f"Google Calendar connected; next event: {next_event['title']}."
@@ -303,11 +296,11 @@ def calendar_health(ctx: HealthContext):
         summary = "Using local calendar.json fallback instead of live Google data."
         if stale:
             summary = "Using stale local calendar.json fallback; live Google data unavailable."
-        if error_text:
-            summary = f"Calendar fell back to local data: {error_text}"
+        if has_error:
+            summary = "Calendar fell back to local data because live Google Calendar is unavailable."
     else:
         status = "error"
-        summary = error_text or "Calendar has no live Google data and no local fallback available."
+        summary = "Calendar has no live Google data and no local fallback available."
 
     return make_health_subsystem(
         ctx,
@@ -322,8 +315,6 @@ def calendar_health(ctx: HealthContext):
         fallback_available=fallback_available,
         item_count=(payload.get("summary") or {}).get("count", 0),
         next_event=next_event,
-        error=error_text,
-        cache=payload.get("cache"),
     )
 
 
@@ -351,6 +342,33 @@ def host_health(ctx: HealthContext, memory: dict | None, disk: dict):
     )
 
 
+def remote_hermes_health(ctx: HealthContext, diagnostics: dict):
+    status = diagnostics.get("status")
+    if status not in HEALTH_STATUS_RANK:
+        status = "error"
+    readiness = diagnostics.get("readiness")
+    if type(readiness) is not dict:
+        readiness = {}
+    capabilities = diagnostics.get("capabilities")
+    if type(capabilities) is not list:
+        capabilities = []
+    return make_health_subsystem(
+        ctx,
+        "remote_hermes",
+        "Remote Hermes",
+        status,
+        diagnostics.get("summary") or "Remote Hermes health is unavailable.",
+        mode=diagnostics.get("mode") or "unavailable",
+        category=diagnostics.get("category") or "unsupported",
+        label=ctx.clean_snippet(diagnostics.get("label"), 80),
+        liveness=diagnostics.get("liveness"),
+        version=ctx.clean_snippet(diagnostics.get("version"), 80),
+        model=ctx.clean_snippet(diagnostics.get("model"), 160),
+        readiness=readiness,
+        capabilities=capabilities,
+    )
+
+
 def health(ctx: HealthContext):
     if sys.platform.startswith("win"):
         disk = {
@@ -365,13 +383,30 @@ def health(ctx: HealthContext):
         root = str(ctx.base_dir.anchor or "/")
         disk = {root: disk_details(root, ctx)}
     memory = windows_memory(ctx)
-    subsystems = [
-        state_db_health(ctx),
-        config_health(ctx),
-        calendar_health(ctx),
-        cron_health(ctx),
-        host_health(ctx, memory, disk),
-    ]
+    try:
+        hermes_diagnostics = ctx.hermes_diagnostics()
+    except Exception:
+        hermes_diagnostics = {
+            "mode": "unavailable",
+            "status": "error",
+            "category": "unsupported",
+            "summary": "Hermes connection health is unavailable.",
+        }
+    local_mode = hermes_diagnostics.get("mode") == "local"
+    if local_mode:
+        subsystems = [
+            state_db_health(ctx),
+            config_health(ctx),
+            calendar_health(ctx),
+            cron_health(ctx),
+            host_health(ctx, memory, disk),
+        ]
+    else:
+        subsystems = [
+            remote_hermes_health(ctx, hermes_diagnostics),
+            calendar_health(ctx),
+            host_health(ctx, memory, disk),
+        ]
     status = worst_health_status(*(subsystem.get("status") for subsystem in subsystems))
     degraded_items = [item for item in subsystems if item.get("status") == "degraded"]
     error_items = [item for item in subsystems if item.get("status") == "error"]
@@ -381,15 +416,13 @@ def health(ctx: HealthContext):
         summary = "; ".join(item.get("summary", item.get("name", "Subsystem degraded")) for item in degraded_items[:2])
     else:
         summary = "All monitored dashboard subsystems are healthy."
-    state_db_item = next((item for item in subsystems if item.get("key") == "state_db"), {})
-    return {
+    payload = {
+        "version": __version__,
+        "display_version": DISPLAY_VERSION,
         "now": ctx.now_iso(),
         "status": status,
         "status_label": status_label(status),
         "summary": ctx.clean_snippet(summary, 240),
-        "hermes_home": str(ctx.hermes_home),
-        "state_db_exists": bool(state_db_item.get("exists")),
-        "state_db_size": state_db_item.get("size"),
         "memory": memory,
         "disk": disk,
         "status_counts": {
@@ -399,3 +432,4 @@ def health(ctx: HealthContext):
         },
         "subsystems": subsystems,
     }
+    return payload

@@ -288,6 +288,15 @@ python -m unittest discover -s tests -v
 - Favor incremental changes over broad rewrites.
 - Apply YAGNI: do not add complexity before the project needs it.
 
+## README guidance
+
+Treat `README.md` as a first-time user's welcome and setup guide. Keep it light,
+friendly, informative where needed, and concise. A reader with little technical
+experience should be able to install and launch Mentat quickly without working
+through architecture, milestone, or migration details. Link to focused docs for
+advanced material instead of expanding it in the README, and trim anything that
+is not vital to understanding, installing, or running Mentat.
+
 ## Repository notes
 
 - `mentat.local.toml` and local env files are machine-specific and should stay untracked.
