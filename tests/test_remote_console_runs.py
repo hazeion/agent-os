@@ -67,6 +67,63 @@ def capability_payload(**feature_updates):
     }
 
 
+def runtime_capability_payload(**feature_updates):
+    payload = capability_payload(
+        profile_runtime_inventory=True,
+        profile_runtime_inventory_version=1,
+        profile_runtime_inventory_complete=True,
+        profile_runtime_inventory_requires_api_key=True,
+        profile_runtime_switch=True,
+        profile_runtime_switch_version=1,
+        profile_runtime_switch_revision_bound=True,
+        profile_runtime_switch_idempotency=True,
+        profile_runtime_switch_active_run_lock=True,
+        **feature_updates,
+    )
+    payload["endpoints"].update(
+        {
+            "profile_runtimes": {
+                "method": "GET",
+                "path": "/v1/profile-runtimes",
+            },
+            "profile_runtime": {
+                "method": "GET",
+                "path": "/v1/profiles/{profile_id}/runtime",
+                "version": 1,
+            },
+            "profile_runtime_switch": {
+                "method": "POST",
+                "path": "/v1/profiles/{profile_id}/runtime/switch",
+                "version": 1,
+            },
+        }
+    )
+    return payload
+
+
+def profile_runtime_payload(
+    *,
+    provider="openai-codex",
+    model="gpt-5.6",
+    revision_character="a",
+):
+    return {
+        "object": "hermes.profile.runtime",
+        "version": 1,
+        "profile_id": "default",
+        "provider": provider,
+        "model": model,
+        "choices": [
+            {"provider": "openai-codex", "models": ["gpt-5.6"]},
+            {
+                "provider": "anthropic",
+                "models": ["claude-sonnet", "claude-opus"],
+            },
+        ],
+        "revision": "runtime_rev_" + (revision_character * 64),
+    }
+
+
 class FakeResponse:
     def __init__(self, status, payload=b"", *, content_type="application/json", headers=None):
         self.status = status
@@ -112,6 +169,8 @@ class FakeConnection:
         )
 
     def getresponse(self):
+        if isinstance(self.response, Exception):
+            raise self.response
         return self.response
 
     def close(self):
@@ -204,6 +263,34 @@ class FakeRunClient:
         return {
             "default": {"provider": "openai-codex", "model": "gpt-5.6"},
             "researcher": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        }
+
+    def read_profile_runtime(self, profile_id):
+        current = self.read_profile_runtimes()[profile_id]
+        return {
+            "profile_id": profile_id,
+            "current_provider": current["provider"],
+            "current_model": current["model"],
+            "providers": [
+                {
+                    "id": "openai-codex",
+                    "name": "openai-codex",
+                    "authenticated": True,
+                    "current": current["provider"] == "openai-codex",
+                    "models": ["gpt-5.6"],
+                },
+                {
+                    "id": "openrouter",
+                    "name": "openrouter",
+                    "authenticated": True,
+                    "current": current["provider"] == "openrouter",
+                    "models": ["anthropic/claude-sonnet-4"],
+                },
+            ],
+            "revision": "runtime_rev_" + ("a" * 64),
+            "capabilities": {"providers.switch": True},
+            "read_only": False,
+            "error": "",
         }
 
     @staticmethod
@@ -799,6 +886,235 @@ class RemoteConsoleRunTests(unittest.TestCase):
         runtimes = client.read_profile_runtimes()
         self.assertEqual(runtimes["researcher"]["provider"], "openrouter")
         self.assertNotIn(SECRET, json.dumps(runtimes))
+
+    def test_profile_runtime_switch_capability_requires_every_exact_flag_and_endpoint(self):
+        mutations = (
+            ("profile_runtime_switch_version", 2),
+            ("profile_runtime_switch_revision_bound", False),
+            ("profile_runtime_switch_idempotency", False),
+            ("profile_runtime_switch_active_run_lock", False),
+        )
+        for name, value in mutations:
+            with self.subTest(name=name):
+                capabilities = runtime_capability_payload()
+                capabilities["features"][name] = value
+                queue = ResponseQueue([FakeResponse(200, capabilities)])
+                client = remote_hermes.RemoteHermesClient(
+                    ENDPOINT, SECRET, connection_factory=queue
+                )
+                with self.assertRaises(remote_hermes.RemoteHermesError):
+                    client.require_profile_runtime_switch_capabilities()
+        capabilities = runtime_capability_payload()
+        capabilities["endpoints"]["profile_runtime_switch"]["path"] = "/unsafe"
+        client = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=ResponseQueue(
+                [FakeResponse(200, capabilities)]
+            ),
+        )
+        with self.assertRaises(remote_hermes.RemoteHermesError):
+            client.require_profile_runtime_switch_capabilities()
+
+    def test_profile_runtime_read_validates_choices_revision_and_private_reflection(self):
+        valid = profile_runtime_payload()
+        queue = ResponseQueue(
+            [
+                FakeResponse(200, runtime_capability_payload()),
+                FakeResponse(200, valid),
+            ]
+        )
+        runtime = remote_hermes.RemoteHermesClient(
+            ENDPOINT, SECRET, connection_factory=queue
+        ).read_profile_runtime("default")
+        self.assertEqual(runtime["current_model"], "gpt-5.6")
+        self.assertTrue(runtime["capabilities"]["providers.switch"])
+        self.assertFalse(runtime["read_only"])
+        self.assertNotIn(SECRET, json.dumps(runtime))
+
+        invalid_payloads = []
+        duplicate_provider = profile_runtime_payload()
+        duplicate_provider["choices"].append(
+            {"provider": "anthropic", "models": ["claude-haiku"]}
+        )
+        invalid_payloads.append(duplicate_provider)
+        duplicate_model = profile_runtime_payload()
+        duplicate_model["choices"][0]["models"].append("gpt-5.6")
+        invalid_payloads.append(duplicate_model)
+        missing_current = profile_runtime_payload()
+        missing_current["model"] = "gpt-unlisted"
+        invalid_payloads.append(missing_current)
+        bad_revision = profile_runtime_payload()
+        bad_revision["revision"] = "not-a-revision"
+        invalid_payloads.append(bad_revision)
+        reflected = profile_runtime_payload()
+        reflected["choices"][0]["models"] = [SECRET]
+        reflected["model"] = SECRET
+        invalid_payloads.append(reflected)
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload.get("revision")):
+                client = remote_hermes.RemoteHermesClient(
+                    ENDPOINT,
+                    SECRET,
+                    connection_factory=ResponseQueue(
+                        [
+                            FakeResponse(200, runtime_capability_payload()),
+                            FakeResponse(200, payload),
+                        ]
+                    ),
+                )
+                with self.assertRaises(remote_hermes.RemoteHermesError):
+                    client.read_profile_runtime("default")
+
+    def test_profile_runtime_switch_uses_exact_authenticated_request_and_response(self):
+        updated = profile_runtime_payload(
+            provider="anthropic",
+            model="claude-sonnet",
+            revision_character="b",
+        )
+        key = "mentat-provider-" + ("c" * 32)
+        queue = ResponseQueue(
+            [
+                FakeResponse(200, runtime_capability_payload()),
+                FakeResponse(
+                    200,
+                    {
+                        "object": "hermes.profile.runtime.switch",
+                        "idempotency_key": key,
+                        "runtime": updated,
+                    },
+                ),
+            ]
+        )
+        runtime = remote_hermes.RemoteHermesClient(
+            ENDPOINT, SECRET, connection_factory=queue
+        ).switch_profile_runtime(
+            "default",
+            provider="anthropic",
+            model="claude-sonnet",
+            revision="runtime_rev_" + ("a" * 64),
+            idempotency_key=key,
+        )
+        call = queue.calls[-1]
+        self.assertEqual(call["method"], "POST")
+        self.assertEqual(
+            call["path"], "/v1/profiles/default/runtime/switch"
+        )
+        self.assertEqual(call["headers"]["Authorization"], f"Bearer {SECRET}")
+        self.assertEqual(
+            json.loads(call["body"]),
+            {
+                "provider": "anthropic",
+                "model": "claude-sonnet",
+                "revision": "runtime_rev_" + ("a" * 64),
+                "idempotency_key": key,
+            },
+        )
+        self.assertEqual(runtime["current_provider"], "anthropic")
+
+    def test_profile_runtime_switch_translates_expected_upstream_conflicts(self):
+        cases = (
+            (404, "profile_not_served", "remote_profile_runtime_not_served"),
+            (409, "profile_runtime_active", "remote_profile_runtime_active"),
+            (409, "profile_runtime_changed", "remote_profile_runtime_changed"),
+            (
+                409,
+                "profile_runtime_idempotency_conflict",
+                "remote_profile_runtime_idempotency_conflict",
+            ),
+            (
+                422,
+                "profile_runtime_unavailable_choice",
+                "remote_profile_runtime_choice_unavailable",
+            ),
+        )
+        for status, upstream, expected in cases:
+            with self.subTest(upstream=upstream):
+                queue = ResponseQueue(
+                    [
+                        FakeResponse(200, runtime_capability_payload()),
+                        FakeResponse(
+                            status,
+                            {"error": {"message": "suppressed", "code": upstream}},
+                        ),
+                    ]
+                )
+                client = remote_hermes.RemoteHermesClient(
+                    ENDPOINT, SECRET, connection_factory=queue
+                )
+                with self.assertRaises(remote_hermes.RemoteHermesError) as raised:
+                    client.switch_profile_runtime(
+                        "default",
+                        provider="anthropic",
+                        model="claude-sonnet",
+                        revision="runtime_rev_" + ("a" * 64),
+                        idempotency_key="mentat-provider-" + ("d" * 32),
+                    )
+                self.assertEqual(raised.exception.code, expected)
+
+    def test_uncertain_profile_runtime_mutation_is_not_retried(self):
+        queue = ResponseQueue(
+            [
+                FakeResponse(200, runtime_capability_payload()),
+                TimeoutError("response was lost"),
+            ]
+        )
+        client = remote_hermes.RemoteHermesClient(
+            ENDPOINT, SECRET, connection_factory=queue
+        )
+        with self.assertRaises(remote_hermes.RemoteHermesError) as raised:
+            client.switch_profile_runtime(
+                "default",
+                provider="anthropic",
+                model="claude-sonnet",
+                revision="runtime_rev_" + ("a" * 64),
+                idempotency_key="mentat-provider-" + ("e" * 32),
+            )
+        self.assertEqual(
+            raised.exception.code,
+            "remote_profile_runtime_switch_unverified",
+        )
+        self.assertEqual(
+            sum(call["method"] == "POST" for call in queue.calls),
+            1,
+        )
+
+    def test_remote_console_projects_mutable_runtime_choices_when_fully_supported(self):
+        capabilities = {
+            "model": "configured fallback",
+            "capabilities": [
+                "run_submission",
+                "run_status",
+                "run_events_sse",
+                "run_stop",
+                "profile_runtime_inventory",
+                "profile_runtime_switch",
+                "profile_runtime_switch_revision_bound",
+                "profile_runtime_switch_idempotency",
+                "profile_runtime_switch_active_run_lock",
+            ],
+        }
+        adapter = self.adapter(FakeRunClient(capabilities=capabilities))
+        with patch.object(
+            server, "hermes_console_transport", return_value=adapter
+        ):
+            console = server.agent_console_payload()
+            refreshed, status = server.refresh_agent_console_models(
+                {"agent_id": "researcher"}
+            )
+        self.assertFalse(console["provider_inventory"]["read_only"])
+        self.assertTrue(
+            console["provider_inventory"]["capabilities"]["providers.switch"]
+        )
+        self.assertEqual(
+            [row["id"] for row in console["provider_inventory"]["providers"]],
+            ["openai-codex", "openrouter"],
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(refreshed["provider_inventory"]["read_only"])
+        self.assertTrue(
+            refreshed["provider_inventory"]["capabilities"]["providers.switch"]
+        )
 
     def test_remote_console_load_and_agent_refresh_show_read_only_runtime(self):
         capabilities = {

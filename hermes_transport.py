@@ -29,6 +29,17 @@ class HermesTransportError(RuntimeError):
         "remote_capability_inventory_schema_invalid": "This Hermes host returned an unsupported skills or toolsets inventory.",
         "remote_capability_inventory_private": "This Hermes host returned unsafe skills or toolsets metadata.",
         "remote_profile_capability_unavailable": "This Hermes host does not support complete read-only profile discovery.",
+        "remote_profile_runtime_capability_unavailable": "This Hermes host does not support safe remote provider and model switching.",
+        "remote_profile_runtime_schema_invalid": "This Hermes host returned an unsupported provider and model inventory.",
+        "remote_profile_runtime_private": "This Hermes host returned unsafe provider or model metadata.",
+        "remote_profile_runtime_request_invalid": "The provider and model change request is invalid.",
+        "remote_profile_runtime_not_served": "That Hermes profile is not served by the selected host.",
+        "remote_profile_runtime_active": "That Hermes profile has an active run. Stop it before changing provider configuration.",
+        "remote_profile_runtime_changed": "The Hermes provider or model changed after preview. Review the change again.",
+        "remote_profile_runtime_idempotency_conflict": "Hermes rejected a conflicting provider change request.",
+        "remote_profile_runtime_choice_unavailable": "That provider and model pair is no longer available.",
+        "remote_profile_runtime_unavailable": "The remote Hermes provider and model operation is unavailable.",
+        "remote_profile_runtime_switch_unverified": "Mentat could not verify whether Hermes applied the provider change. Inspect the profile before starting another run.",
         "remote_private_reflection": "Remote content was blocked by Mentat's content-safety checks.",
         "remote_approval_unsupported": "This remote run needs approval, which Mentat cannot answer yet.",
         "remote_run_failed": "The remote Hermes run failed.",
@@ -269,6 +280,42 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
             if not callable(method):
                 raise HermesTransportError("remote_profile_capability_unavailable")
             return method()
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def read_profile_runtime(self, profile_id: str) -> dict[str, Any]:
+        try:
+            method = getattr(self._client, "read_profile_runtime", None)
+            if not callable(method):
+                raise HermesTransportError(
+                    "remote_profile_runtime_capability_unavailable"
+                )
+            return method(profile_id)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def switch_profile_runtime(
+        self,
+        profile_id: str,
+        *,
+        provider: str,
+        model: str,
+        revision: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        try:
+            method = getattr(self._client, "switch_profile_runtime", None)
+            if not callable(method):
+                raise HermesTransportError(
+                    "remote_profile_runtime_capability_unavailable"
+                )
+            return method(
+                profile_id,
+                provider=provider,
+                model=model,
+                revision=revision,
+                idempotency_key=idempotency_key,
+            )
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
