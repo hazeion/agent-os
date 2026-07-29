@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from hermes_transport import TransportBinding
 
 
 def profile_discovery():
@@ -16,11 +17,18 @@ def profile_discovery():
 
 
 class DashboardBehaviorTests(unittest.TestCase):
+    def local_console(self):
+        return server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
+        )
+
     def write_json(self, root: Path, name: str, payload) -> None:
         (root / name).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     def test_agent_console_only_accepts_hermes_and_requires_a_prompt(self):
-        with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()):
+        with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
+        ):
             invalid_agent, invalid_agent_status = server.start_agent_console_run({"agent_id": "shell", "prompt": "hello"})
             missing_prompt, missing_prompt_status = server.start_agent_console_run({"agent_id": "hermes", "prompt": "  "})
 
@@ -31,9 +39,14 @@ class DashboardBehaviorTests(unittest.TestCase):
 
     def test_agent_console_starts_a_managed_hermes_run(self):
         server.AGENT_CONSOLE_RUNS.clear()
+        transport = self.local_console()
         try:
             with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
                 server, "hermes_command_path", return_value="/tmp/hermes"
+            ), patch.object(
+                server, "hermes_console_transport", return_value=transport
+            ), patch.object(
+                transport, "revalidate"
             ), patch.object(
                 server, "agent_console_model", return_value="test/model"
             ), patch.object(server.threading, "Thread") as worker:
@@ -66,9 +79,15 @@ class DashboardBehaviorTests(unittest.TestCase):
             "events": [],
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
+        transport = server.local_hermes_console_transport(
+            TransportBinding("local", "Local Hermes", "local-default"),
+            command_path="/tmp/hermes",
+        )
         try:
-            with patch.object(server.subprocess, "Popen", return_value=CompletedHermesProcess()) as popen:
-                server.run_hermes_agent(run_id, "/tmp/hermes")
+            with patch.object(transport, "revalidate"), patch.object(
+                server.subprocess, "Popen", return_value=CompletedHermesProcess()
+            ) as popen:
+                server.run_hermes_agent(run_id, transport)
 
             command = popen.call_args.args[0]
             self.assertEqual(command[:6], ["/tmp/hermes", "-p", "default", "chat", "-q", "Continue this work"])
@@ -108,7 +127,12 @@ class DashboardBehaviorTests(unittest.TestCase):
             with patch.object(server, "HERMES_HOME", hermes_home), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()
             ) as popen:
-                server.run_hermes_agent(run_id, "/tmp/hermes")
+                transport = server.local_hermes_console_transport(
+                    TransportBinding("local", "Local Hermes", "local-default"),
+                    command_path="/tmp/hermes",
+                )
+                with patch.object(transport, "revalidate"):
+                    server.run_hermes_agent(run_id, transport)
 
         child_env = popen.call_args.kwargs["env"]
         self.assertEqual(child_env["PATH"].split(server.os.pathsep)[0], str(shared_bin))
@@ -133,6 +157,8 @@ class DashboardBehaviorTests(unittest.TestCase):
         }
         with patch.object(
             server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
             payload, status = server.preview_agent_console_provider_switch(
                 {
@@ -164,6 +190,8 @@ class DashboardBehaviorTests(unittest.TestCase):
         }
         with patch.object(
             server, "agent_console_profile", return_value={"id": "default", "name": "default"}
+        ), patch.object(
+            server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(server, "agent_console_provider_inventory", return_value=inventory):
             payload, status = server.preview_agent_console_provider_switch(
                 {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}

@@ -183,11 +183,63 @@ def normalize_artifacts(raw_artifacts: Any) -> list[dict]:
     return normalized
 
 
+def normalize_transport_binding(
+    mode: Any,
+    binding_id: Any,
+    *,
+    legacy_default: bool,
+) -> tuple[str, str] | None:
+    if mode is None and binding_id is None and legacy_default:
+        return "local", "local-default"
+    if mode not in ("local", "remote") or not isinstance(binding_id, str):
+        return None
+    if not re.fullmatch(r"(?:local-default|[0-9a-f]{32})", binding_id):
+        return None
+    if mode == "remote" and binding_id == "local-default":
+        return None
+    return mode, binding_id
+
+
+def normalize_usage(value: Any) -> dict[str, int] | None:
+    if value is None:
+        return None
+    if type(value) is not dict:
+        return None
+    normalized: dict[str, int] = {}
+    for name in ("input_tokens", "output_tokens", "total_tokens"):
+        item = value.get(name)
+        if type(item) is not int or not (0 <= item <= 10**9):
+            return None
+        normalized[name] = item
+    context_tokens = value.get("context_tokens")
+    context_length = value.get("context_length")
+    if context_tokens is not None or context_length is not None:
+        if (
+            type(context_tokens) is not int
+            or type(context_length) is not int
+            or not (0 <= context_tokens <= context_length <= 10**9)
+            or context_length == 0
+        ):
+            context_tokens = None
+            context_length = None
+        else:
+            normalized["context_tokens"] = context_tokens
+            normalized["context_length"] = context_length
+    return normalized
+
+
 def summarize_run(run: dict) -> dict:
     prompt, prompt_truncated = bounded_excerpt(run.get("prompt"), PROMPT_EXCERPT_LIMIT)
     response, response_truncated = bounded_excerpt(run.get("response"), RESPONSE_EXCERPT_LIMIT)
     error, error_truncated = bounded_excerpt(run.get("error"), ERROR_EXCERPT_LIMIT)
     events = normalize_events(str(run.get("id") or ""), run.get("events"))
+    transport = normalize_transport_binding(
+        run.get("transport_mode"),
+        run.get("connection_binding_id"),
+        legacy_default=True,
+    )
+    if transport is None:
+        raise ValueError("Invalid Agent Console transport binding")
     return {
         "id": str(run.get("id") or ""),
         "agent_id": str(run.get("agent_id") or "hermes"),
@@ -195,6 +247,16 @@ def summarize_run(run: dict) -> dict:
         "model": str(run.get("model") or ""),
         "status": str(run.get("status") or "failed"),
         "session_id": run.get("session_id") or None,
+        "starts_new_session": bool(run.get("starts_new_session")),
+        "new_session_state": (
+            run.get("new_session_state")
+            if run.get("new_session_state") in {"pending", "started", "failed"}
+            else None
+        ),
+        "transport_mode": transport[0],
+        "connection_binding_id": transport[1],
+        "usage": normalize_usage(run.get("usage")),
+        "partial": bool(run.get("partial")),
         "created_at": run.get("created_at"),
         "updated_at": run.get("updated_at"),
         "started_at": run.get("started_at"),
@@ -319,6 +381,13 @@ def _hydrate(summary: dict) -> dict | None:
     run_id = summary.get("id")
     if not isinstance(run_id, str) or not run_id:
         return None
+    transport = normalize_transport_binding(
+        summary.get("transport_mode"),
+        summary.get("connection_binding_id"),
+        legacy_default=True,
+    )
+    if transport is None:
+        return None
     events = normalize_events(run_id, summary.get("events"))
     return {
         "id": run_id,
@@ -327,6 +396,16 @@ def _hydrate(summary: dict) -> dict | None:
         "model": str(summary.get("model") or ""),
         "status": str(summary.get("status") or "failed"),
         "session_id": summary.get("session_id") or None,
+        "starts_new_session": bool(summary.get("starts_new_session")),
+        "new_session_state": (
+            summary.get("new_session_state")
+            if summary.get("new_session_state") in {"pending", "started", "failed"}
+            else None
+        ),
+        "transport_mode": transport[0],
+        "connection_binding_id": transport[1],
+        "usage": normalize_usage(summary.get("usage")),
+        "partial": bool(summary.get("partial")),
         "prompt": str(summary.get("prompt_excerpt") or ""),
         "prompt_truncated": bool(summary.get("prompt_truncated")),
         "response": str(summary.get("response_excerpt") or ""),
@@ -386,7 +465,14 @@ def load_run_summaries(
             run["status"] = "interrupted"
             run["updated_at"] = interrupted_at
             run["completed_at"] = interrupted_at
-            run["error"] = "Mentat restarted before this run finished."
+            if run.get("transport_mode") == "remote":
+                run["partial"] = True
+                run["error"] = (
+                    "Mentat restarted before this remote run finished; "
+                    "its upstream state could not be verified."
+                )
+            else:
+                run["error"] = "Mentat restarted before this run finished."
             next_sequence = int(run.get("event_cursor") or 0) + 1
             run["events"].append({
                 "schema_version": EVENT_SCHEMA_VERSION,

@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from hermes_transport import TransportBinding
 from agent_console_artifacts import prepare_export_directory
 from agent_console_attachments import resolve_blob_path
 
@@ -73,7 +74,15 @@ class AgentConsoleArtifactIntegrationTests(unittest.TestCase):
             ), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()
             ) as popen:
-                server.run_hermes_agent(run_id, "/tmp/hermes")
+                transport = server.local_hermes_console_transport(
+                    TransportBinding(
+                        payload["run"]["transport_mode"],
+                        "Local Hermes",
+                        payload["run"]["connection_binding_id"],
+                    ),
+                    command_path="/tmp/hermes",
+                )
+                server.run_hermes_agent(run_id, transport)
 
             run = server.agent_console_snapshot(server.AGENT_CONSOLE_RUNS[run_id])
             artifact = run["artifacts"][0]
