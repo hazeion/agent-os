@@ -2,9 +2,111 @@
 
 All notable changes to Mentat.
 
+## 2026-07-26
+
+### Added
+- Added setup-wizard and installed CLI workflows for configuring, testing, and
+  selecting local Hermes or one remembered remote endpoint.
+- Added `mentat connection status`, `test`, `use`, and `configure-remote` with
+  interactive confirmation and exact two-step non-interactive confirmation.
+
+### Changed
+- Remote connection records now keep only a credential-source reference. API
+  keys resolve from a named environment variable or owner-only env file.
+- Existing schema-v1 embedded remote keys migrate to a separate owner-only
+  private env file while retaining the selected connection.
+
+### Safety
+- CLI connection mutations refuse to run while Mentat is active, remote
+  activation probes authenticated readiness/capabilities before commit, failed
+  operations restore the prior selection, and browser connection requests no
+  longer accept API-key values.
+- Server startup and offline connection changes now share a cross-process
+  reservation, closing startup races and preventing live schema migration.
+- `mentat connection test local` now verifies that the supported Hermes CLI can
+  execute instead of treating a saved local label as proof of readiness.
+
+## 2026-07-25
+
+### Added
+- Added capability-gated, cursor-based replay for remote Hermes Runs events,
+  exact pending approval/clarification recovery from run status, and effective
+  provider/model runtime events.
+- Added a complete authenticated read-only remote profile runtime inventory so
+  Agent Console can show the selected profile's current provider and model.
+
+### Changed
+- Remote approval and clarification waits now keep the normal SSE connection
+  open. Multiple interactive pauses resume on the same run worker and stream;
+  a genuine interruption reconnects automatically from the last verified
+  cursor without resubmitting the run.
+- Agent Console clears stale runtime values while changing agents, rejects
+  out-of-order refresh responses, and refreshes provider/model identity after
+  relevant run, response, session, and connection lifecycle events. Remote
+  selectors show the current values but remain disabled.
+
+### Safety
+- Replay journals and subscriber queues are count- and byte-bounded, sequenced,
+  normalized to a public allowlist, and process-local. Raw tool previews and
+  reasoning bodies are omitted. Invalid, ahead, expired, duplicated, or gapped
+  event cursors fail closed.
+- Pending actions remain bound to the exact request ID, and provider/model
+  payloads reject URLs, paths, secret-shaped identifiers, endpoint reflection,
+  and malformed or partial inventories.
+
+## 2026-07-24
+
+### Changed
+- Updated protected Windows release signing to Azure Artifact Signing with
+  short-lived GitHub OIDC, and added a concise Apple/Azure maintainer setup
+  guide for the first signed release candidate.
+
+### Fixed
+- Remote Console runs now retain a safe connection-bound session alias, so a
+  fresh completed run can continue in the same Hermes session without exposing
+  the upstream session ID.
+- Clarification runs now accept Hermes' advertised
+  `waiting_for_clarification` status instead of failing after the question
+  appears.
+- Supported remote image requests now use a dedicated bounded outbound limit
+  instead of the smaller response-size limit, and deterministic request
+  rejections no longer claim that a run may have started.
+- Kanban follow-up confirmations now bind persisted Mentat task state and the
+  exact remote revision without including a newly generated sync timestamp.
+- Browser smoke gives Chrome a bounded startup window on slower CI runners and
+  waits for browser shutdown before removing its private profile directory.
+
+### Verified
+- Completed the mandatory maintained-runtime matrix against Hermes `0.19.0`
+  over authenticated, certificate-verified HTTPS, including Console
+  interactions, continuation, sessions/search, profiles, skills/toolsets,
+  Context Packs, images, stopping, cancellation races, and revision-bound
+  Kanban creation and result acceptance.
+
+## 2026-07-21
+
+### Added
+- Added a protected public-beta promotion path that verifies and republishes
+  the immutable tested RC identity, GitHub asset digests, and attestation;
+  preserves pre-tag recovery evidence; and requires a closed public Milestone 7
+  exit summary with checked, candidate-bound attestations.
+- Added a concise limited-beta tester checklist, privacy-safe structured
+  feedback form, and maintainer cohort runbook without claiming external
+  results or storing participant data in Git.
+
 ## 2026-07-20
 
 ### Added
+- Added deterministic release-candidate checksums, manifest, and release notes,
+  plus a short clean-install, upgrade, backup, restore, rollback, and
+  uninstall-preservation rehearsal checklist.
+- Added a protected Python package job and final prerelease assembly gate beside
+  the signed macOS and Windows artifact jobs.
+- Added public beta security, privacy, support, contribution, conduct, and issue
+  guidance, including a private vulnerability-reporting path and clear
+  pre-install platform and support expectations.
+- Added a user-initiated redacted diagnostics ZIP and a compact Settings help
+  area with the Mentat version, docs, bug-reporting, and diagnostics actions.
 - Added read-only remote message search across the same bounded 12 recent
   sessions shown in Agents. Matches open the existing transcript through
   private Mentat aliases, and the UI explains when the session limit was
@@ -29,6 +131,10 @@ All notable changes to Mentat.
   and retained Console run summaries, with safe defaults for older history.
 
 ### Safety
+- Diagnostics are generated in memory from fixed version, platform-category,
+  install-type, and health-status fields. They never collect logs, environment
+  variables, credentials, endpoints, personal content, local paths, hostnames,
+  usernames, or blob identifiers.
 - Remote message search reads only the exact advertised session list/message
   endpoints, returns at most 20 escaped user/assistant snippets, and exposes no
   upstream session IDs. Any failed session read or changed connection discards
@@ -45,26 +151,24 @@ All notable changes to Mentat.
 - Remote Context Pack requests use generic context labels and fixed item,
   total-context, and complete-prompt limits. Changed, expired, replayed, or
   mismatched grants fail before submission. Direct files and artifacts remain
-  unavailable, and inline images fail clearly because Hermes does not yet
-  advertise image input for the stoppable Runs lifecycle.
+  unavailable; supported runtimes may accept only validated, bounded image
+  data URLs for the stoppable Runs lifecycle.
 - Remote session identifiers remain process-private behind random aliases bound
   to the selected connection. Mentat allowlists and bounds public metadata,
   returns only user/assistant conversation text, labels compressed
   latest-segment history as partial, and rejects stale aliases, changed
   capabilities, changed message identity, private transport reflection,
   malformed pagination, or uncertain identity.
-- Remote session continuation remains unavailable because the current Runs
-  input is not separately capability-advertised and the session-chat stream has
-  no matching public status/stop operation.
-- Audited remote approval responses and kept them unavailable: Hermes' current
-  mutation has no request ID/revision/hash, so Mentat cannot prove that a
-  user's confirmation still targets the displayed request. Approval requests
-  continue to stop the bound run safely until upstream adds exact binding and
-  a structured privacy-safe preview.
+- Added verified, exact remote continuation, profile inventory, approval,
+  clarification, inline-image, and revisioned Kanban contracts for runtimes
+  that advertise the complete supported capability set.
+- Remote approval and clarification replies now require the verified exact
+  request-binding contracts. Runs wait for a verified operator response, then
+  resume without submitting a second prompt; unsupported or malformed requests
+  still stop safely.
 - Remote runs now require the exact advertised Runs API endpoints, remain bound
   to one opaque connection identity, never retry submission, and issue at most
-  one stop attempt. Interrupted streams reconcile through status; approval
-  requests stop safely because approval responses are not supported yet.
+  one stop attempt. Interrupted streams reconcile through status.
 - Graceful shutdown performs bounded remote stop/read-back. Abrupt process
   death is reported as an interrupted partial run; upstream run IDs are not
   persisted in this slice.

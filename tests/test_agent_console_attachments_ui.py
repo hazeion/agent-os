@@ -11,7 +11,7 @@ CSS = (ROOT / "public" / "styles.css").read_text(encoding="utf-8")
 
 class AgentConsoleAttachmentUiTests(unittest.TestCase):
     def test_composer_has_accessible_attachment_controls(self):
-        console = INDEX[INDEX.index('id="agent-console-panel"'):INDEX.index('id="today-completed-panel"')]
+        console = INDEX[INDEX.index('id="agent-console-panel"'):INDEX.index('id="view-agents"')]
         self.assertIn('id="agent-console-attach"', console)
         self.assertIn('aria-label="Attach files"', console)
         self.assertIn('aria-expanded="false"', console)

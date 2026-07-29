@@ -73,11 +73,11 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
 
     def test_compact_navigation_keeps_descriptive_accessible_names(self):
         for label in (
-            "Today View",
-            "Agents / Sessions",
+            "Home",
+            "Agents and Sessions",
             "Calendar",
-            "Projects / Tasks",
-            "Notes",
+            "Projects and Tasks",
+            "Notes and Context",
             "Settings",
         ):
             self.assertIn(f'aria-label="{label}"', INDEX_HTML)

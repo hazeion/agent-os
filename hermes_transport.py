@@ -28,9 +28,12 @@ class HermesTransportError(RuntimeError):
         "remote_capability_inventory_unavailable": "This Hermes host does not support read-only skills and toolsets visibility.",
         "remote_capability_inventory_schema_invalid": "This Hermes host returned an unsupported skills or toolsets inventory.",
         "remote_capability_inventory_private": "This Hermes host returned unsafe skills or toolsets metadata.",
+        "remote_profile_capability_unavailable": "This Hermes host does not support complete read-only profile discovery.",
         "remote_private_reflection": "Remote content was blocked by Mentat's content-safety checks.",
         "remote_approval_unsupported": "This remote run needs approval, which Mentat cannot answer yet.",
         "remote_run_failed": "The remote Hermes run failed.",
+        "remote_run_rejected": "The remote Hermes host rejected this Console request.",
+        "remote_run_request_invalid": "The remote Hermes Console request is invalid.",
         "remote_submission_unverified": "Mentat could not verify whether the remote run started.",
         "remote_stop_unverified": "Mentat could not verify that the remote run stopped.",
         "console_request_invalid": "The Hermes Console request is invalid.",
@@ -113,6 +116,8 @@ class HermesConsoleTransport:
         prompt: str,
         session_id: str | None,
         image_path: Path | None,
+        usage_path: Path | None = None,
+        progress_path: Path | None = None,
     ) -> LocalConsoleLaunch:
         raise HermesTransportError(self.unavailable_code)
 
@@ -135,6 +140,9 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         self._ready = False
         self._sessions_ready = False
         self.model = "configured default"
+        self.event_replay_available = False
+        self.pending_action_status_available = False
+        self.runtime_identity_available = False
 
     @property
     def console_available(self) -> bool:
@@ -147,6 +155,10 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
             self._ready = False
             raise HermesTransportError(exc.code) from exc
         self.model = str(discovery.get("model") or "configured default")
+        capabilities = set(discovery.get("capabilities") or ())
+        self.event_replay_available = "run_event_replay" in capabilities
+        self.pending_action_status_available = "run_pending_action_status" in capabilities
+        self.runtime_identity_available = "run_runtime_identity" in capabilities
         self._ready = True
         return {
             "model": self.model,
@@ -204,11 +216,59 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
-    def submit_run(self, prompt: str) -> dict[str, str]:
+    def submit_run(
+        self,
+        prompt: str,
+        *,
+        continuation: dict[str, Any] | None = None,
+        image_data_urls: list[str] | None = None,
+    ) -> dict[str, str]:
         if not self._ready:
             raise HermesTransportError(self.unavailable_code)
         try:
+            if continuation is not None and image_data_urls is not None:
+                raise HermesTransportError("console_request_invalid")
+            if continuation is not None:
+                return self._client.submit_continuation(prompt, continuation)
+            if image_data_urls is not None:
+                return self._client.submit_run_with_images(prompt, image_data_urls)
             return self._client.submit_run(prompt)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def get_continuation_descriptor(self, remote_session_id: str) -> dict[str, Any]:
+        try:
+            return self._client.get_continuation_descriptor(remote_session_id)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def respond_to_approval(self, remote_run_id: str, request_id: str, choice: str) -> dict[str, Any]:
+        try:
+            return self._client.respond_to_approval(remote_run_id, request_id, choice)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def respond_to_clarification(self, remote_run_id: str, request_id: str, response: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self._client.respond_to_clarification(remote_run_id, request_id, response)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def read_profiles(self) -> list[dict[str, Any]]:
+        try:
+            method = getattr(self._client, "read_profiles", None)
+            if not callable(method):
+                raise HermesTransportError("remote_profile_capability_unavailable")
+            return method()
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def read_profile_runtimes(self) -> dict[str, dict[str, str]]:
+        try:
+            method = getattr(self._client, "read_profile_runtimes", None)
+            if not callable(method):
+                raise HermesTransportError("remote_profile_capability_unavailable")
+            return method()
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
@@ -223,12 +283,13 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         remote_run_id: str,
         *,
         should_stop: Callable[[], bool] | None = None,
+        last_event_id: int | None = None,
     ):
         try:
-            yield from self._client.iter_run_events(
-                remote_run_id,
-                should_stop=should_stop,
-            )
+            kwargs = {"should_stop": should_stop}
+            if last_event_id is not None:
+                kwargs["last_event_id"] = last_event_id
+            yield from self._client.iter_run_events(remote_run_id, **kwargs)
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
@@ -271,6 +332,8 @@ class LocalHermesConsoleTransport(HermesConsoleTransport):
         prompt: str,
         session_id: str | None,
         image_path: Path | None,
+        usage_path: Path | None = None,
+        progress_path: Path | None = None,
     ) -> LocalConsoleLaunch:
         if not self.command_path:
             raise HermesTransportError("local_console_unavailable")
@@ -302,10 +365,19 @@ class LocalHermesConsoleTransport(HermesConsoleTransport):
             command.extend(["--image", str(image_path)])
         if session_id:
             command.extend(["--resume", session_id])
-
         env = os.environ.copy()
         env["HERMES_HOME"] = str(self.hermes_home)
         env["PYTHONUNBUFFERED"] = "1"
+        for name, path in (
+            ("MENTAT_HERMES_USAGE_FILE", usage_path),
+            ("MENTAT_HERMES_PROGRESS_FILE", progress_path),
+        ):
+            if path is None:
+                continue
+            normalized_path = Path(path)
+            if not normalized_path.is_absolute() or "\x00" in str(normalized_path):
+                raise HermesTransportError("console_request_invalid")
+            env[name] = str(normalized_path)
         if self.shared_bin is not None:
             current_path = env.get("PATH") or ""
             path_entries = current_path.split(os.pathsep) if current_path else []
