@@ -478,6 +478,22 @@ h1, h2, h3, p { margin: 0; }
   gap: 8px;
   min-height: 0;
 }
+.agent-console-command-bar {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.agent-console-runtime-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 10px;
+  min-width: 0;
+}
+.agent-console-runtime-row .agent-console-select-shell {
+  width: 100%;
+  max-width: none;
+}
 .agent-console-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -835,6 +851,36 @@ h1, h2, h3, p { margin: 0; }
 .agent-console-send,
 .agent-console-stop { min-height: 42px; }
 .agent-console-stop[hidden] { display: none; }
+.agent-console-runtime-refresh {
+  margin-top: 7px;
+}
+.agent-console-runtime-banner {
+  margin-top: 8px;
+  border-left: 2px solid var(--success);
+  padding: 7px 10px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 6%, transparent);
+  font-size: .68rem;
+  line-height: 1.45;
+}
+.agent-console-runtime-banner.error {
+  border-left-color: var(--danger);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.agent-console-tool-activity-banner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  border-left: 2px solid var(--accent);
+  padding: 7px 10px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  font-size: .68rem;
+  line-height: 1.45;
+}
+.agent-console-tool-activity-banner[hidden] { display: none; }
 .agent-console-command-menu {
   position: absolute;
   z-index: 4;
@@ -883,6 +929,15 @@ h1, h2, h3, p { margin: 0; }
 .agent-console-log-status { color: var(--muted); }
 .agent-console-log-status.tool\.started > span:last-child,
 .agent-console-log-status.tool\.completed > span:last-child { color: var(--accent); }
+.agent-console-runtime-notice {
+  border-color: color-mix(in srgb, var(--success) 38%, var(--line));
+  background: color-mix(in srgb, var(--success) 6%, transparent);
+}
+.agent-console-runtime-notice > span:last-child { color: var(--success); }
+.agent-console-tool-dots::after {
+  content: ".";
+  animation: agent-console-tool-dots 1.2s steps(1, end) infinite;
+}
 .agent-console-log-status.reasoning\.available > span:last-child,
 .agent-console-reasoning-detail { color: var(--text-secondary); }
 .agent-console-reasoning-detail {
@@ -968,6 +1023,11 @@ h1, h2, h3, p { margin: 0; }
 @keyframes agent-console-dot {
   0%, 60%, 100% { transform: translateY(0); opacity: .42; }
   30% { transform: translateY(-3px); opacity: 1; }
+}
+@keyframes agent-console-tool-dots {
+  0%, 32% { content: "."; }
+  33%, 65% { content: ".."; }
+  66%, 100% { content: "..."; }
 }
 
 .project-command-grid {
@@ -4281,9 +4341,14 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .agent-console-command-bar {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(150px, .75fr) minmax(140px, .7fr) minmax(165px, .8fr) minmax(260px, 2.2fr) minmax(120px, .7fr);
+  gap: 10px;
+}
+
+:root[data-ui-shell='emerald'] .agent-console-runtime-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: end;
-  gap: 16px;
+  gap: 10px;
 }
 
 :root[data-ui-shell='emerald'] .home-console-heading {
@@ -4318,11 +4383,12 @@ code { font-family: var(--mono); color: var(--accent); }
   height: 25px;
 }
 
-:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-select-shell {
+:root[data-ui-shell='emerald'] .agent-console-runtime-row .agent-console-select-shell {
   min-width: 0;
+  max-width: none;
 }
 
-:root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-select {
+:root[data-ui-shell='emerald'] .agent-console-runtime-row .agent-console-select {
   width: 100%;
   min-height: 38px;
 }
@@ -4474,12 +4540,7 @@ code { font-family: var(--mono); color: var(--accent); }
     display: none;
   }
 
-  :root[data-ui-shell='emerald'] .agent-console-command-bar {
-    grid-template-columns: minmax(150px, .8fr) minmax(145px, .7fr) minmax(165px, .8fr) minmax(260px, 1.7fr);
-  }
-
   :root[data-ui-shell='emerald'] .home-console-state {
-    grid-column: 1 / -1;
     min-height: 28px;
   }
 
@@ -4542,14 +4603,8 @@ code { font-family: var(--mono); color: var(--accent); }
     grid-template-rows: auto;
   }
 
-  :root[data-ui-shell='emerald'] .agent-console-command-bar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  :root[data-ui-shell='emerald'] .home-console-heading,
-  :root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form,
-  :root[data-ui-shell='emerald'] .home-console-state {
-    grid-column: 1 / -1;
+  :root[data-ui-shell='emerald'] .agent-console-runtime-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   :root[data-ui-shell='classic'] .home-operations-grid {
@@ -4652,14 +4707,8 @@ code { font-family: var(--mono); color: var(--accent); }
     gap: 10px;
   }
 
-  :root[data-ui-shell='emerald'] .agent-console-command-bar {
+  :root[data-ui-shell='emerald'] .agent-console-runtime-row {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  :root[data-ui-shell='emerald'] .home-console-heading,
-  :root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form,
-  :root[data-ui-shell='emerald'] .home-console-state {
-    grid-column: 1;
   }
 
   :root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form {
@@ -4676,6 +4725,9 @@ code { font-family: var(--mono); color: var(--accent); }
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
+  }
+  .agent-console-tool-dots::after {
+    content: "...";
   }
 }
 

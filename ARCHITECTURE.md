@@ -421,19 +421,38 @@ switching is an approved, fixed Hermes adapter capability with these rules:
   Hermes runtime exposes the supported profile-model operation;
 - the requested provider must be present in the profile-scoped authenticated
   inventory returned by Hermes;
-- the current provider is reported separately from the authenticated set;
+- the current provider/model is reported separately from the authenticated
+  selectable set and remains the only confirmed runtime projection, even when
+  the current pair is not selectable;
 - Mentat previews the affected profile, current provider, requested provider,
-  and model implications before requiring profile-bound confirmation;
+  and model implications before applying a profile-bound confirmation. Agent
+  Console treats a deliberate provider/model selector change as the user
+  action, obtains that bound preview, and applies it immediately without a
+  second modal click. Managed Agents retains its separate review dialog;
 - switching is blocked while an Agent Console run is active;
 - Mentat refreshes Hermes picker context after the operation to verify the
   selected provider and models;
+- while preview/apply is pending, the Console keeps the last confirmed pair
+  visible and labels the requested pair as pending rather than ready;
+- browser apply results are accepted only for the same opaque transport
+  binding and selected profile that initiated the operation;
+- if both a switch attempt and its fresh reconciliation read fail, Mentat
+  discards stale browser inventory and blocks prompts, attachments, sessions,
+  and further switching until an explicit runtime re-check returns an exact
+  non-error current provider/model pair;
+- attachment and Context Pack staging serialize with runtime switching and
+  discard results if the selected profile or connection changes in flight;
+- verified runtime notices are browser-session display state bound to the
+  current Hermes transport and profile, not durable run history;
 - a failed verification triggers rollback to the previous provider when Hermes
   supports it, otherwise Mentat reports the partial failure and fails closed.
 
 This boundary covers selection among already authenticated providers only.
 Credential setup and reauthentication continue to happen through Hermes.
-There is no direct or unconfirmed Agent Console model-mutation route; all
-provider/model changes enter through this capability contract.
+There is no direct or unconfirmed Agent Console model-mutation route. The
+browser may automate preview and confirmation after an explicit selector
+change, but all provider/model changes still enter through this capability
+contract and the server still recomputes the exact confirmation under lock.
 
 ## Project task deletion boundary
 
@@ -489,6 +508,12 @@ deleted with the run's private input workspace. On platforms without secure
 directory-descriptor/no-follow writes, this optional local detail channel fails
 closed and the Console retains its generic lifecycle status and unavailable
 context state.
+
+Detailed tool events are hidden by default. While the selected run has one or
+more outstanding tools, an always-visible animated summary remains outside the
+collapsed Console history. A persistent live region announces only inactive
+to active and active to inactive transitions for the selected
+transport/profile; concurrent tool counts do not repeat the announcement.
 
 Completed runs may also receive a private structured usage report. Billing
 totals remain separate from `context_tokens` (the last actual prompt size) and

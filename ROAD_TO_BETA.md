@@ -319,7 +319,13 @@ Work in order:
    read/switch contract. **Implemented with complete capability gating,
    connection- and revision-bound confirmation, one idempotent mutation, fresh
    verification, and one safe rollback attempt only while the acknowledged
-   post-switch revision still owns the observed state.**
+   post-switch revision still owns the observed state. Agent Console selector
+   changes now automate that confirmation flow, with provider selection using
+   Hermes's first listed model and exact runtime refresh on agent selection or
+   failure. The current runtime remains separate from selectable inventory and
+   the Console fails closed until an explicit retry if post-failure
+   reconciliation is unavailable. Delayed results remain transport-bound, and
+   attachment/Context Pack staging serializes with runtime changes.**
 11. Test endpoint changes, authentication failure, certificate failure,
    capability loss, timeouts, interrupted streams, stale confirmations,
    partial failures, local fallback, upgrade, and rollback. **Milestone 2I adds
@@ -612,6 +618,8 @@ The release cannot be called public beta until all of the following are true:
 - Hermes cron write controls without upstream atomic capabilities;
 - general Hermes configuration, soul, skill-content, credential, or MCP
   editors;
+- per-model effort and speed controls, including capability-aware dropdowns and
+  Agent Console slash-command forms;
 - large new product surfaces that do not close a beta acceptance gap.
 
 ## Current next actions

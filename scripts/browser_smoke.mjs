@@ -305,7 +305,9 @@ async function main() {
         && document.querySelector('#agent-console-form')
         && model?.tagName === 'SELECT'
         && model.options.length > 0
-        && document.querySelector('#agent-console-apply-model')
+        && document.querySelector('#agent-console-provider-select')
+        && document.querySelector('#agent-console-tool-toggle')
+        && !document.querySelector('#agent-console-apply-model')
         && stop?.hidden
         && getComputedStyle(stop).display === 'none'
       );
@@ -323,12 +325,18 @@ async function main() {
       const context = rect('.home-context-stack');
       const consoleDock = rect('#agent-console-panel');
       const grid = rect('#home-operations-dashboard');
+      const agentSelect = rect('#agent-console-agent');
+      const providerSelect = rect('#agent-console-provider-select');
+      const modelSelect = rect('#agent-console-model-select');
+      const prompt = rect('#agent-console-prompt');
       return {
         noMetrics: !document.querySelector('#overview-cards') && ![...document.querySelectorAll('.metric-card')].some((card) => card.getClientRects().length),
         firstRowAligned: Math.abs(focus.top - agents.top) <= 2,
         secondRowAligned: Math.abs(schedule.top - context.top) <= 2,
         columnRatio: focus.width / agents.width,
         consoleSpansGrid: Math.abs(consoleDock.left - grid.left) <= 2 && Math.abs(consoleDock.right - grid.right) <= 2,
+        runtimeControlsAligned: Math.max(agentSelect.top, providerSelect.top, modelSelect.top) - Math.min(agentSelect.top, providerSelect.top, modelSelect.top) <= 2,
+        promptBelowRuntime: prompt.top >= Math.max(agentSelect.bottom, providerSelect.bottom, modelSelect.bottom) - 2,
         rowOrder: focus.top < schedule.top && agents.top < context.top && schedule.bottom <= consoleDock.top + 2,
         overflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - innerWidth,
         overflowSources: [...document.querySelectorAll('body *')]
@@ -351,6 +359,8 @@ async function main() {
       || homeDesktopLayout.columnRatio < 1.08
       || homeDesktopLayout.columnRatio > 1.28
       || !homeDesktopLayout.consoleSpansGrid
+      || !homeDesktopLayout.runtimeControlsAligned
+      || !homeDesktopLayout.promptBelowRuntime
       || !homeDesktopLayout.rowOrder
       || homeDesktopLayout.overflow > 1
     ) {
@@ -575,10 +585,23 @@ async function main() {
         state: document.querySelector('#agent-console-state')?.textContent,
         questionVisible: document.querySelector('#agent-console-chat')?.textContent.includes('Which option should Hermes use?'),
       };
+      const originalHomeRefreshAgentConsoleModels = refreshAgentConsoleModels;
+      refreshAgentConsoleModels = async (agentId) => ({
+        model_catalog: {
+          ...(baseConsole.model_catalog || {}),
+          profile_id: agentId,
+        },
+        provider_inventory: {
+          ...(baseConsole.provider_inventory || {}),
+          profile_id: agentId,
+        },
+      });
       renderAgentConsole({
         ...baseConsole,
         transport: { mode: 'remote', binding_id: remoteBinding, console_available: true },
       });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      refreshAgentConsoleModels = originalHomeRefreshAgentConsoleModels;
       const remoteReady = {
         promptEnabled: !document.querySelector('#agent-console-prompt')?.disabled,
         stopHidden: document.querySelector('#agent-console-stop')?.hidden,
@@ -750,6 +773,931 @@ async function main() {
     await setViewport(client, 1440, 1000);
     const structuredEventRendered = await client.eval(`(() => { renderAgentConsole({ agents: [{ id: 'event-smoke', name: 'Event Smoke', available: true, model: 'test/model' }], model_catalog: { profile_id: 'event-smoke', models: ['test/model'], current_model: 'test/model' }, runs: [{ id: 'run_event_smoke', agent_id: 'event-smoke', agent_name: 'Event Smoke', status: 'completed', prompt: 'Check events', response: 'Done', created_at: new Date().toISOString(), event_cursor: 1, events: [{ schema_version: 1, run_id: 'run_event_smoke', sequence: 1, cursor: 1, type: 'complete', kind: 'complete', timestamp: new Date().toISOString(), data: {}, display_text: 'Structured event rendered' }] }] }); return document.querySelector('#agent-console-chat')?.textContent.includes('Structured event rendered'); })()`);
     if (!structuredEventRendered) throw new Error('Structured Agent Console event render smoke failed');
+    const hiddenToolState = await client.eval(`(() => {
+      state.agentConsoleShowTools = false;
+      document.querySelector('#agent-console-details').open = false;
+      renderAgentConsole({
+        agents: [{ id: 'tool-smoke', name: 'Tool Smoke', available: true, provider: 'alpha', model: 'alpha-one' }],
+        provider_inventory: {
+          profile_id: 'tool-smoke',
+          current_provider: 'alpha',
+          current_model: 'alpha-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'alpha', name: 'Alpha', current: true, models: ['alpha-one'] }],
+        },
+        runs: [{
+          id: 'run_tool_smoke',
+          agent_id: 'tool-smoke',
+          agent_name: 'Tool Smoke',
+          status: 'running',
+          prompt: 'Use a tool',
+          created_at: new Date().toISOString(),
+          events: [{ type: 'tool.started', kind: 'tool.started', display_text: 'Using browser.search', timestamp: new Date().toISOString() }],
+        }],
+      });
+      const chat = document.querySelector('#agent-console-chat')?.textContent || '';
+      return {
+        detailsHidden: !chat.includes('Using browser.search'),
+        historyClosed: !document.querySelector('#agent-console-details').open,
+        activityVisible: document.querySelector('#agent-console-tool-activity-banner')?.getClientRects().length > 0,
+        activityText: document.querySelector('#agent-console-tool-activity-banner')?.textContent || '',
+        toggleLabel: document.querySelector('#agent-console-tool-toggle')?.textContent,
+        pressed: document.querySelector('#agent-console-tool-toggle')?.getAttribute('aria-pressed'),
+        animated: getComputedStyle(document.querySelector('.agent-console-tool-dots'), '::after').animationName === 'agent-console-tool-dots',
+        liveNodeCount: document.querySelectorAll('#agent-console-tool-live-status[role="status"]').length,
+        liveText: document.querySelector('#agent-console-tool-live-status')?.textContent || '',
+        transientStatusCount: document.querySelectorAll('.agent-console-tool-activity[role="status"]').length,
+      };
+    })()`);
+    if (
+      !hiddenToolState.detailsHidden
+      || !hiddenToolState.historyClosed
+      || !hiddenToolState.activityVisible
+      || !hiddenToolState.activityText.includes('Tool Smoke is using tools')
+      || hiddenToolState.toggleLabel !== 'Show tools'
+      || hiddenToolState.pressed !== 'false'
+      || !hiddenToolState.animated
+      || hiddenToolState.liveNodeCount !== 1
+      || !hiddenToolState.liveText.includes('is using tools')
+      || hiddenToolState.transientStatusCount !== 0
+    ) {
+      throw new Error(`Default-hidden tool activity contract failed: ${JSON.stringify(hiddenToolState)}`);
+    }
+    const shownToolState = await client.eval(`(() => {
+      document.querySelector('#agent-console-details').open = true;
+      document.querySelector('#agent-console-tool-toggle').click();
+      const chat = document.querySelector('#agent-console-chat')?.textContent || '';
+      return {
+        detailsVisible: chat.includes('Using browser.search'),
+        activityHidden: document.querySelector('#agent-console-tool-activity-banner')?.hidden,
+        toggleLabel: document.querySelector('#agent-console-tool-toggle')?.textContent,
+        pressed: document.querySelector('#agent-console-tool-toggle')?.getAttribute('aria-pressed'),
+      };
+    })()`);
+    if (
+      !shownToolState.detailsVisible
+      || !shownToolState.activityHidden
+      || shownToolState.toggleLabel !== 'Hide tools'
+      || shownToolState.pressed !== 'true'
+    ) {
+      throw new Error(`Tool visibility toggle contract failed: ${JSON.stringify(shownToolState)}`);
+    }
+    const stableToolLiveState = await client.eval(`(() => {
+      state.agentConsoleShowTools = false;
+      const live = document.querySelector('#agent-console-tool-live-status');
+      const observer = new MutationObserver(() => {});
+      observer.observe(live, { childList: true, characterData: true, subtree: true });
+      renderAgentConsole({
+        agents: [{ id: 'tool-smoke', name: 'Tool Smoke', available: true, provider: 'alpha', model: 'alpha-one' }],
+        provider_inventory: {
+          profile_id: 'tool-smoke',
+          current_provider: 'alpha',
+          current_model: 'alpha-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'alpha', name: 'Alpha', current: true, models: ['alpha-one'] }],
+        },
+        runs: [{
+          id: 'run_tool_smoke',
+          agent_id: 'tool-smoke',
+          agent_name: 'Tool Smoke',
+          status: 'running',
+          prompt: 'Use concurrent tools',
+          created_at: new Date().toISOString(),
+          events: [
+            { type: 'tool.started', kind: 'tool.started', display_text: 'First tool', timestamp: new Date().toISOString() },
+            { type: 'tool.started', kind: 'tool.started', display_text: 'Second tool', timestamp: new Date().toISOString() },
+          ],
+        }],
+      });
+      const repeatedAnnouncementMutations = observer.takeRecords().length;
+      observer.disconnect();
+      state.agentConsoleSelectedAgentId = 'tool-second';
+      renderAgentConsole({
+        agents: [
+          { id: 'tool-smoke', name: 'Tool Smoke', available: true, provider: 'alpha', model: 'alpha-one' },
+          { id: 'tool-second', name: 'Tool Second', available: true, provider: 'alpha', model: 'alpha-one' },
+        ],
+        provider_inventory: {
+          profile_id: 'tool-second',
+          current_provider: 'alpha',
+          current_model: 'alpha-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'alpha', name: 'Alpha', current: true, models: ['alpha-one'] }],
+        },
+        runs: [],
+        selected_agent_id: 'tool-second',
+      });
+      return {
+        repeatedAnnouncementMutations,
+        switchedAgentLiveText: live.textContent,
+      };
+    })()`);
+    if (
+      stableToolLiveState.repeatedAnnouncementMutations !== 0
+      || stableToolLiveState.switchedAgentLiveText !== ''
+    ) {
+      throw new Error(`Stable tool live-region contract failed: ${JSON.stringify(stableToolLiveState)}`);
+    }
+    await client.eval(`(() => {
+      window.__originalPreviewAgentConsoleProvider = previewAgentConsoleProvider;
+      window.__originalSwitchAgentConsoleProvider = switchAgentConsoleProvider;
+      window.__originalRefreshAgentConsoleModels = refreshAgentConsoleModels;
+      window.__originalStartAgentConsoleRun = startAgentConsoleRun;
+      window.__originalStageContextPack = stageContextPack;
+      window.__runtimeSwitchCalls = [];
+      window.__runtimeRunCalls = [];
+      window.__runtimeContextPackCalls = [];
+      startAgentConsoleRun = async (...args) => {
+        window.__runtimeRunCalls.push(args);
+        throw new Error('Unexpected run during runtime smoke.');
+      };
+      stageContextPack = async (...args) => {
+        window.__runtimeContextPackCalls.push(args);
+        return { attachments: [], instructions: '' };
+      };
+      refreshAgentConsoleModels = async (agentId) => ({
+        model_catalog: {
+          profile_id: agentId,
+          models: [...(state.agentConsoleModels || [])],
+          current_model: state.agentConsoleProviderInventory.current_model || '',
+        },
+        provider_inventory: structuredClone(state.agentConsoleProviderInventory),
+      });
+      window.__runtimeDynamicRefreshAgentConsoleModels = refreshAgentConsoleModels;
+      window.__holdRuntimePreview = true;
+      window.__resolveRuntimePreview = null;
+      previewAgentConsoleProvider = async (provider, model, agentId) => {
+        window.__runtimeSwitchCalls.push(['preview', provider, model, agentId]);
+        if (window.__holdRuntimePreview) {
+          await new Promise((resolve) => {
+            window.__resolveRuntimePreview = resolve;
+          });
+        }
+        return {
+          profile_id: agentId,
+          confirmation_id: 'provider_switch_browser_smoke',
+          target: { provider, model },
+        };
+      };
+      switchAgentConsoleProvider = async (provider, model, agentId, confirmationId) => {
+        window.__runtimeSwitchCalls.push(['switch', provider, model, agentId, confirmationId]);
+        return {
+          ok: true,
+          agent_id: agentId,
+          provider,
+          model,
+          message: 'Runtime updated and verified.',
+          model_catalog: { profile_id: agentId, models: [model], current_model: model },
+          provider_inventory: {
+            profile_id: agentId,
+            current_provider: provider,
+            current_model: model,
+            capabilities: { 'providers.switch': true },
+            providers: [
+              { id: 'alpha', name: 'Alpha', current: provider === 'alpha', models: ['alpha-one'] },
+              { id: 'beta', name: 'Beta', current: provider === 'beta', models: ['beta-first', 'beta-second'] },
+            ],
+          },
+        };
+      };
+      state.agentConsoleShowTools = false;
+      state.agentConsoleRuntimeNotices = [];
+      state.agentConsoleSelectedProvider = '';
+      state.agentConsoleSelectedModel = '';
+      state.agentConsoleRuntimeUnresolved = false;
+      state.agentConsoleRuntimeLoading = false;
+      document.querySelector('#agent-console-details').open = false;
+      renderAgentConsole({
+        agents: [{ id: 'runtime-smoke', name: 'Runtime Smoke', available: true, provider: 'legacy', model: 'legacy-one' }],
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'legacy',
+          current_model: 'legacy-one',
+          capabilities: { 'providers.switch': true },
+          providers: [
+            { id: 'beta', name: 'Beta', current: false, models: ['beta-first', 'beta-second'] },
+          ],
+        },
+        runs: [],
+      });
+    })()`);
+    const confirmedOutsideInventory = await client.eval(`(() => {
+      const provider = document.querySelector('#agent-console-provider-select');
+      const model = document.querySelector('#agent-console-model-select');
+      return {
+        provider: provider?.value,
+        providerDisabled: provider?.selectedOptions[0]?.disabled,
+        model: model?.value,
+        modelDisabled: model?.selectedOptions[0]?.disabled,
+        state: document.querySelector('#agent-console-state')?.textContent || '',
+      };
+    })()`);
+    if (
+      confirmedOutsideInventory.provider !== 'legacy'
+      || !confirmedOutsideInventory.providerDisabled
+      || confirmedOutsideInventory.model !== 'legacy-one'
+      || !confirmedOutsideInventory.modelDisabled
+      || !confirmedOutsideInventory.state.includes('legacy · legacy-one · ready')
+      || confirmedOutsideInventory.state.includes('beta · beta-first · ready')
+    ) {
+      throw new Error(`Confirmed runtime outside selectable inventory failed: ${JSON.stringify(confirmedOutsideInventory)}`);
+    }
+    const failedTransportRefreshState = await client.eval(`(async () => {
+      refreshAgentConsoleModels = async () => {
+        throw new Error('Rejected transport refresh');
+      };
+      renderAgentConsole({
+        transport: { mode: 'remote', binding_id: 'browser-smoke-rejected-refresh', console_available: true },
+        agents: state.agentConsoleAgents,
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'legacy',
+          current_model: 'legacy-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'legacy', name: 'Legacy', current: true, models: ['legacy-one'] }],
+        },
+        runs: [],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const rejected = {
+        unresolved: state.agentConsoleRuntimeUnresolved,
+        promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
+        retryVisible: document.querySelector('#agent-console-runtime-refresh')?.getClientRects().length > 0,
+      };
+      refreshAgentConsoleModels = async (agentId) => ({
+        model_catalog: { profile_id: agentId, models: [], current_model: '' },
+        provider_inventory: {
+          profile_id: agentId,
+          current_provider: '',
+          current_model: '',
+          capabilities: { 'providers.switch': false },
+          providers: [],
+          error: 'Runtime unavailable.',
+        },
+      });
+      renderAgentConsole({
+        transport: { mode: 'remote', binding_id: 'browser-smoke-degraded-refresh', console_available: true },
+        agents: state.agentConsoleAgents,
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'legacy',
+          current_model: 'legacy-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'legacy', name: 'Legacy', current: true, models: ['legacy-one'] }],
+        },
+        runs: [],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const degraded = {
+        unresolved: state.agentConsoleRuntimeUnresolved,
+        promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
+        retryVisible: document.querySelector('#agent-console-runtime-refresh')?.getClientRects().length > 0,
+      };
+      refreshAgentConsoleModels = window.__runtimeDynamicRefreshAgentConsoleModels;
+      state.agentConsoleRuntimeUnresolved = false;
+      state.agentConsoleRuntimeLoading = false;
+      return { rejected, degraded };
+    })()`);
+    if (
+      !failedTransportRefreshState.rejected.unresolved
+      || !failedTransportRefreshState.rejected.promptDisabled
+      || !failedTransportRefreshState.rejected.retryVisible
+      || !failedTransportRefreshState.degraded.unresolved
+      || !failedTransportRefreshState.degraded.promptDisabled
+      || !failedTransportRefreshState.degraded.retryVisible
+    ) {
+      throw new Error(`Transport refresh failure did not fail closed: ${JSON.stringify(failedTransportRefreshState)}`);
+    }
+    await client.eval(`(() => {
+      state.agentConsoleSelectedProvider = '';
+      state.agentConsoleSelectedModel = '';
+      renderAgentConsole({
+        agents: [{ id: 'runtime-smoke', name: 'Runtime Smoke', available: true, provider: 'alpha', model: 'alpha-one' }],
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'alpha',
+          current_model: 'alpha-one',
+          capabilities: { 'providers.switch': true },
+          providers: [
+            { id: 'alpha', name: 'Alpha', current: true, models: ['alpha-one'] },
+            { id: 'beta', name: 'Beta', current: false, models: ['beta-first', 'beta-second'] },
+          ],
+        },
+        runs: [{
+          id: 'runtime-history-before-switch',
+          agent_id: 'runtime-smoke',
+          agent_name: 'Runtime Smoke',
+          status: 'completed',
+          prompt: 'Earlier retained run',
+          response: 'Earlier response',
+          created_at: '2026-01-01T00:00:00.000Z',
+          events: [],
+        }],
+      });
+      const provider = document.querySelector('#agent-console-provider-select');
+      provider.value = 'beta';
+      provider.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(() => client.eval(`window.__runtimeSwitchCalls?.length === 1 && Boolean(window.__resolveRuntimePreview)`), 'runtime preview pending');
+    const pendingRuntimeState = await client.eval(`(() => ({
+      state: document.querySelector('#agent-console-state')?.textContent || '',
+      providerDisabled: document.querySelector('#agent-console-provider-select')?.disabled,
+      modelDisabled: document.querySelector('#agent-console-model-select')?.disabled,
+      promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
+      sendDisabled: document.querySelector('#agent-console-form .agent-console-send')?.disabled,
+    }))()`);
+    if (
+      !pendingRuntimeState.state.includes('alpha · alpha-one · switching to beta · beta-first')
+      || pendingRuntimeState.state.includes('beta · beta-first · ready')
+      || !pendingRuntimeState.providerDisabled
+      || !pendingRuntimeState.modelDisabled
+      || !pendingRuntimeState.promptDisabled
+      || !pendingRuntimeState.sendDisabled
+    ) {
+      throw new Error(`Pending runtime projection failed: ${JSON.stringify(pendingRuntimeState)}`);
+    }
+    await client.eval(`(() => {
+      window.__holdRuntimePreview = false;
+      window.__resolveRuntimePreview();
+    })()`);
+    await waitFor(() => client.eval(`window.__runtimeSwitchCalls?.length === 2 && document.querySelector('#agent-console-chat')?.textContent.includes('Switched to beta · beta-first')`), 'immediate provider runtime switch');
+    const providerSwitchState = await client.eval(`(() => ({
+      calls: window.__runtimeSwitchCalls,
+      provider: document.querySelector('#agent-console-provider-select')?.value,
+      model: document.querySelector('#agent-console-model-select')?.value,
+      mutationUnlocked: !state.agentConsoleRuntimeMutationInFlight,
+      bannerVisible: document.querySelector('#agent-console-runtime-banner')?.getClientRects().length > 0,
+      banner: document.querySelector('#agent-console-runtime-banner')?.textContent || '',
+      noticeAfterRetainedRun: document.querySelector('#agent-console-chat')?.lastElementChild?.classList.contains('agent-console-runtime-notice'),
+    }))()`);
+    if (
+      JSON.stringify(providerSwitchState.calls) !== JSON.stringify([
+        ['preview', 'beta', 'beta-first', 'runtime-smoke'],
+        ['switch', 'beta', 'beta-first', 'runtime-smoke', 'provider_switch_browser_smoke'],
+      ])
+      || providerSwitchState.provider !== 'beta'
+      || providerSwitchState.model !== 'beta-first'
+      || !providerSwitchState.mutationUnlocked
+      || !providerSwitchState.bannerVisible
+      || !providerSwitchState.banner.includes('Runtime switched to beta · beta-first')
+      || !providerSwitchState.noticeAfterRetainedRun
+    ) {
+      throw new Error(`Immediate provider switch contract failed: ${JSON.stringify(providerSwitchState)}`);
+    }
+    await client.eval(`(() => {
+      const model = document.querySelector('#agent-console-model-select');
+      model.value = 'beta-second';
+      model.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(() => client.eval(`window.__runtimeSwitchCalls?.length === 4 && document.querySelector('#agent-console-model-select')?.value === 'beta-second'`), 'immediate model runtime switch');
+    const modelSwitchState = await client.eval(`(() => ({
+      calls: window.__runtimeSwitchCalls.slice(2),
+      notice: document.querySelector('#agent-console-chat')?.textContent || '',
+    }))()`);
+    if (
+      JSON.stringify(modelSwitchState.calls) !== JSON.stringify([
+        ['preview', 'beta', 'beta-second', 'runtime-smoke'],
+        ['switch', 'beta', 'beta-second', 'runtime-smoke', 'provider_switch_browser_smoke'],
+      ])
+      || !modelSwitchState.notice.includes('Switched to beta · beta-second')
+    ) {
+      throw new Error(`Immediate model switch contract failed: ${JSON.stringify(modelSwitchState)}`);
+    }
+    await client.eval(`(() => {
+      window.__oldRuntimeBinding = state.agentConsoleTransportBinding;
+      state.agentConsoleRuntimeNotices = [];
+      window.__resolveOldBindingSwitch = null;
+      switchAgentConsoleProvider = async (provider, model, agentId, confirmationId) => {
+        window.__runtimeSwitchCalls.push(['switch-old-binding', provider, model, agentId, confirmationId]);
+        await new Promise((resolve) => {
+          window.__resolveOldBindingSwitch = resolve;
+        });
+        window.__oldBindingSwitchReturned = true;
+        return {
+          ok: true,
+          agent_id: agentId,
+          provider,
+          model,
+          message: 'Old binding switch completed.',
+          model_catalog: { profile_id: agentId, models: [model], current_model: model },
+          provider_inventory: {
+            profile_id: agentId,
+            current_provider: provider,
+            current_model: model,
+            capabilities: { 'providers.switch': true },
+            providers: [{ id: provider, name: provider, current: true, models: [model] }],
+          },
+        };
+      };
+      const model = document.querySelector('#agent-console-model-select');
+      model.value = 'beta-first';
+      model.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(() => client.eval(`Boolean(window.__resolveOldBindingSwitch)`), 'deferred old-binding switch');
+    await client.eval(`(() => {
+      const separator = window.__oldRuntimeBinding.indexOf(':');
+      const originalMode = window.__oldRuntimeBinding.slice(0, separator);
+      const originalBindingId = window.__oldRuntimeBinding.slice(separator + 1);
+      state.agentConsoleSelectedProvider = '';
+      state.agentConsoleSelectedModel = '';
+      renderAgentConsole({
+        transport: { mode: 'remote', binding_id: 'browser-smoke-new-binding', console_available: true },
+        agents: [{ id: 'runtime-smoke', name: 'Runtime Smoke', available: true, provider: 'gamma', model: 'gamma-one' }],
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'gamma',
+          current_model: 'gamma-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'gamma', name: 'Gamma', current: true, models: ['gamma-one'] }],
+        },
+        runs: [],
+      });
+      state.agentConsoleSelectedProvider = '';
+      state.agentConsoleSelectedModel = '';
+      renderAgentConsole({
+        transport: { mode: originalMode, binding_id: originalBindingId, console_available: true },
+        agents: [{ id: 'runtime-smoke', name: 'Runtime Smoke', available: true, provider: 'gamma', model: 'gamma-one' }],
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'gamma',
+          current_model: 'gamma-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'gamma', name: 'Gamma', current: true, models: ['gamma-one'] }],
+        },
+        runs: [],
+      });
+      window.__resolveOldBindingSwitch();
+    })()`);
+    await waitFor(() => client.eval(`window.__oldBindingSwitchReturned && !state.agentConsoleRuntimeMutationInFlight`), 'A-B-A old-binding result discarded');
+    const transportRaceState = await client.eval(`(() => ({
+      provider: document.querySelector('#agent-console-provider-select')?.value,
+      model: document.querySelector('#agent-console-model-select')?.value,
+      state: document.querySelector('#agent-console-state')?.textContent || '',
+      bannerHidden: document.querySelector('#agent-console-runtime-banner')?.hidden,
+      newBindingNotice: state.agentConsoleRuntimeNotices.some((notice) => (
+        notice.transport_binding === state.agentConsoleTransportBinding
+        && notice.provider === 'beta'
+        && notice.model === 'beta-first'
+      )),
+    }))()`);
+    if (
+      transportRaceState.provider !== 'gamma'
+      || transportRaceState.model !== 'gamma-one'
+      || !transportRaceState.state.includes('gamma · gamma-one · ready')
+      || !transportRaceState.bannerHidden
+      || transportRaceState.newBindingNotice
+    ) {
+      throw new Error(`A-B-A old transport runtime result was not discarded: ${JSON.stringify(transportRaceState)}`);
+    }
+    await client.eval(`(() => {
+      state.agentConsoleSelectedProvider = '';
+      state.agentConsoleSelectedModel = '';
+      renderAgentConsole({
+        transport: { mode: 'remote', binding_id: 'browser-smoke-new-binding', console_available: true },
+        agents: [{ id: 'runtime-smoke', name: 'Runtime Smoke', available: true, provider: 'beta', model: 'beta-second' }],
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'beta',
+          current_model: 'beta-second',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'beta', name: 'Beta', current: true, models: ['beta-first', 'beta-second'] }],
+        },
+        runs: [],
+      });
+      switchAgentConsoleProvider = async (provider, model, agentId, confirmationId) => {
+        window.__runtimeSwitchCalls.push(['switch-failed', provider, model, agentId, confirmationId]);
+        throw new Error('Hermes rejected the browser smoke switch.');
+      };
+      refreshAgentConsoleModels = async (agentId) => ({
+        model_catalog: { profile_id: agentId, models: ['beta-first', 'beta-second'], current_model: 'beta-second' },
+        provider_inventory: {
+          profile_id: agentId,
+          current_provider: 'beta',
+          current_model: 'beta-second',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'beta', name: 'Beta', current: true, models: ['beta-first', 'beta-second'] }],
+        },
+      });
+      const model = document.querySelector('#agent-console-model-select');
+      model.value = 'beta-first';
+      model.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(() => client.eval(`document.querySelector('#agent-console-form-status')?.textContent.includes('Hermes rejected the browser smoke switch.') && document.querySelector('#agent-console-model-select')?.value === 'beta-second' && !state.agentConsoleRuntimeMutationInFlight`), 'failed runtime switch reconciliation');
+    await client.eval(`(() => {
+      refreshAgentConsoleModels = async (agentId) => ({
+        ok: true,
+        agent_id: agentId,
+        model_catalog: { profile_id: agentId, models: [], current_model: '' },
+        provider_inventory: {
+          profile_id: agentId,
+          current_provider: '',
+          current_model: '',
+          capabilities: { 'providers.switch': false },
+          providers: [],
+          error: 'Current runtime identity is unavailable.',
+        },
+      });
+      const model = document.querySelector('#agent-console-model-select');
+      model.value = 'beta-first';
+      model.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(() => client.eval(`state.agentConsoleRuntimeUnresolved && !state.agentConsoleRuntimeMutationInFlight`), 'unverified runtime fail-closed state');
+    const unresolvedRuntimeState = await client.eval(`(() => ({
+      state: document.querySelector('#agent-console-state')?.textContent || '',
+      status: document.querySelector('#agent-console-form-status')?.textContent || '',
+      bannerVisible: document.querySelector('#agent-console-runtime-banner')?.getClientRects().length > 0,
+      promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
+      sendDisabled: document.querySelector('#agent-console-form .agent-console-send')?.disabled,
+      attachDisabled: document.querySelector('#agent-console-attach')?.disabled,
+      providerDisabled: document.querySelector('#agent-console-provider-select')?.disabled,
+      modelDisabled: document.querySelector('#agent-console-model-select')?.disabled,
+      retryVisible: document.querySelector('#agent-console-runtime-refresh')?.getClientRects().length > 0,
+      switchCallCount: window.__runtimeSwitchCalls.length,
+    }))()`);
+    if (
+      !unresolvedRuntimeState.state.includes('Runtime verification required')
+      || !unresolvedRuntimeState.status.includes('Retry the runtime check')
+      || !unresolvedRuntimeState.bannerVisible
+      || !unresolvedRuntimeState.promptDisabled
+      || !unresolvedRuntimeState.sendDisabled
+      || !unresolvedRuntimeState.attachDisabled
+      || !unresolvedRuntimeState.providerDisabled
+      || !unresolvedRuntimeState.modelDisabled
+      || !unresolvedRuntimeState.retryVisible
+    ) {
+      throw new Error(`Unverified runtime did not fail closed: ${JSON.stringify(unresolvedRuntimeState)}`);
+    }
+    const unresolvedContextPackState = await client.eval(`(async () => {
+      state.contextPacks = [{
+        id: 'runtime-pack',
+        name: 'Runtime pack',
+        note_paths: [],
+        workspace_files: [],
+      }];
+      renderContextPacks({ context_packs: state.contextPacks });
+      renderAgentConsoleContextPackPicker();
+      await applyContextPackToConsole('runtime-pack');
+      return {
+        stageCalls: window.__runtimeContextPackCalls.length,
+        listDisabled: document.querySelector('[data-use-context-pack="runtime-pack"]')?.disabled,
+        pickerDisabled: document.querySelector('[data-apply-context-pack="runtime-pack"]')?.disabled,
+        status: document.querySelector('#agent-console-form-status')?.textContent || '',
+      };
+    })()`);
+    if (
+      unresolvedContextPackState.stageCalls !== 0
+      || !unresolvedContextPackState.listDisabled
+      || !unresolvedContextPackState.pickerDisabled
+      || !unresolvedContextPackState.status.includes('Wait until Hermes confirms')
+    ) {
+      throw new Error(`Unresolved Context Pack staging was not blocked: ${JSON.stringify(unresolvedContextPackState)}`);
+    }
+    const retryRuntimeState = await client.eval(`(async () => {
+      refreshAgentConsoleModels = async (agentId) => ({
+        model_catalog: { profile_id: agentId, models: ['gamma-one'], current_model: 'gamma-one' },
+        provider_inventory: {
+          profile_id: agentId,
+          current_provider: 'gamma',
+          current_model: 'gamma-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'gamma', name: 'Gamma', current: true, models: ['gamma-one'] }],
+        },
+      });
+      document.querySelector('#agent-console-runtime-refresh').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return {
+        unresolved: state.agentConsoleRuntimeUnresolved,
+        provider: document.querySelector('#agent-console-provider-select')?.value,
+        model: document.querySelector('#agent-console-model-select')?.value,
+        promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
+        retryHidden: document.querySelector('#agent-console-runtime-refresh')?.hidden,
+        staleBannerHidden: document.querySelector('#agent-console-runtime-banner')?.hidden,
+        switchCallCount: window.__runtimeSwitchCalls.length,
+      };
+    })()`);
+    if (
+      retryRuntimeState.unresolved
+      || retryRuntimeState.provider !== 'gamma'
+      || retryRuntimeState.model !== 'gamma-one'
+      || retryRuntimeState.promptDisabled
+      || !retryRuntimeState.retryHidden
+      || !retryRuntimeState.staleBannerHidden
+      || retryRuntimeState.switchCallCount !== unresolvedRuntimeState.switchCallCount
+    ) {
+      throw new Error(`Explicit runtime reconciliation failed: ${JSON.stringify(retryRuntimeState)}`);
+    }
+    const stagingSerializationState = await client.eval(`(async () => {
+      window.__resolveContextPackStage = null;
+      stageContextPack = async (...args) => {
+        window.__runtimeContextPackCalls.push(args);
+        await new Promise((resolve) => {
+          window.__resolveContextPackStage = resolve;
+        });
+        return { attachments: [], instructions: '' };
+      };
+      renderAgentConsole({
+        transport: { mode: 'remote', binding_id: 'browser-smoke-new-binding', console_available: true },
+        agents: [{ id: 'runtime-smoke', name: 'Runtime Smoke', available: true, provider: 'gamma', model: 'gamma-one' }],
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'gamma',
+          current_model: 'gamma-one',
+          capabilities: { 'providers.switch': true },
+          providers: [
+            { id: 'gamma', name: 'Gamma', current: true, models: ['gamma-one'] },
+            { id: 'beta', name: 'Beta', current: false, models: ['beta-first'] },
+          ],
+        },
+        runs: [],
+      });
+      const switchCallsBefore = window.__runtimeSwitchCalls.length;
+      const staging = applyContextPackToConsole('runtime-pack');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const provider = document.querySelector('#agent-console-provider-select');
+      const locked = {
+        agent: document.querySelector('#agent-console-agent')?.disabled,
+        provider: provider?.disabled,
+        model: document.querySelector('#agent-console-model-select')?.disabled,
+      };
+      provider.value = 'beta';
+      provider.dispatchEvent(new Event('change', { bubbles: true }));
+      const providerAfterBlockedChange = provider.value;
+      window.__resolveContextPackStage();
+      await staging;
+      return {
+        locked,
+        providerAfterBlockedChange,
+        switchCallsUnchanged: window.__runtimeSwitchCalls.length === switchCallsBefore,
+        stagingFinished: !state.agentConsoleAttachmentsUploading,
+      };
+    })()`);
+    if (
+      !stagingSerializationState.locked.agent
+      || !stagingSerializationState.locked.provider
+      || !stagingSerializationState.locked.model
+      || stagingSerializationState.providerAfterBlockedChange !== 'gamma'
+      || !stagingSerializationState.switchCallsUnchanged
+      || !stagingSerializationState.stagingFinished
+    ) {
+      throw new Error(`Context Pack/runtime serialization failed: ${JSON.stringify(stagingSerializationState)}`);
+    }
+    const agentRefreshState = await client.eval(`(async () => {
+      window.__resolveAgentRuntimeRead = null;
+      refreshAgentConsoleModels = async (agentId) => {
+        await new Promise((resolve) => {
+          window.__resolveAgentRuntimeRead = resolve;
+        });
+        return {
+          model_catalog: { profile_id: agentId, models: ['gamma-one'], current_model: 'gamma-one' },
+          provider_inventory: {
+            profile_id: agentId,
+            current_provider: 'gamma',
+            current_model: 'gamma-one',
+            capabilities: { 'providers.switch': true },
+            providers: [{ id: 'gamma', name: 'Gamma', current: true, models: ['gamma-one'] }],
+          },
+        };
+      };
+      state.agentConsoleAgents = [
+        { id: 'runtime-smoke', name: 'Runtime Smoke', available: true, provider: 'beta', model: 'beta-second' },
+        { id: 'runtime-second', name: 'Runtime Second', available: true, provider: 'gamma', model: 'gamma-one' },
+      ];
+      renderAgentConsole({ agents: state.agentConsoleAgents, provider_inventory: state.agentConsoleProviderInventory, runs: [] });
+      const before = window.__runtimeSwitchCalls.length;
+      const agent = document.querySelector('#agent-console-agent');
+      agent.value = 'runtime-second';
+      agent.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const pending = {
+        promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
+        sendDisabled: document.querySelector('#agent-console-form .agent-console-send')?.disabled,
+        attachDisabled: document.querySelector('#agent-console-attach')?.disabled,
+        newSessionDisabled: document.querySelector('#agent-console-new-session')?.disabled,
+        state: document.querySelector('#agent-console-state')?.textContent || '',
+      };
+      renderAgentConsole({
+        agents: state.agentConsoleAgents,
+        provider_inventory: {
+          profile_id: 'runtime-second',
+          current_provider: 'stale-same-profile',
+          current_model: 'stale-same-profile-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{
+            id: 'stale-same-profile',
+            name: 'Stale same profile',
+            current: true,
+            models: ['stale-same-profile-one'],
+          }],
+        },
+        runs: [],
+      });
+      const incidentalSameProfile = {
+        loading: state.agentConsoleRuntimeLoading,
+        promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
+        sendDisabled: document.querySelector('#agent-console-form .agent-console-send')?.disabled,
+      };
+      state.agentConsoleStartFresh = false;
+      document.querySelector('#agent-console-new-session').click();
+      const prompt = document.querySelector('#agent-console-prompt');
+      prompt.value = 'Must not run before runtime confirmation';
+      await submitAgentConsolePrompt();
+      const blockedActions = {
+        startFresh: state.agentConsoleStartFresh,
+        runCalls: window.__runtimeRunCalls.length,
+      };
+      window.__resolveAgentRuntimeRead();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return {
+        switchCallsUnchanged: window.__runtimeSwitchCalls.length === before,
+        provider: document.querySelector('#agent-console-provider-select')?.value,
+        model: document.querySelector('#agent-console-model-select')?.value,
+        status: document.querySelector('#agent-console-form-status')?.textContent || '',
+        pending,
+        incidentalSameProfile,
+        blockedActions,
+      };
+    })()`);
+    if (
+      !agentRefreshState.switchCallsUnchanged
+      || agentRefreshState.provider !== 'gamma'
+      || agentRefreshState.model !== 'gamma-one'
+      || !agentRefreshState.status.includes('confirmed by Hermes')
+      || !agentRefreshState.pending.promptDisabled
+      || !agentRefreshState.pending.sendDisabled
+      || !agentRefreshState.pending.attachDisabled
+      || !agentRefreshState.pending.newSessionDisabled
+      || !agentRefreshState.pending.state.includes('Loading current provider and model')
+      || !agentRefreshState.incidentalSameProfile.loading
+      || !agentRefreshState.incidentalSameProfile.promptDisabled
+      || !agentRefreshState.incidentalSameProfile.sendDisabled
+      || agentRefreshState.blockedActions.startFresh
+      || agentRefreshState.blockedActions.runCalls !== 0
+    ) {
+      throw new Error(`Agent runtime refresh contract failed: ${JSON.stringify(agentRefreshState)}`);
+    }
+    const staleAgentRefreshState = await client.eval(`(async () => {
+      window.__resolveStaleAgentRuntimeRead = null;
+      window.__staleAgentRuntimeReadCalls = 0;
+      refreshAgentConsoleModels = async (agentId) => {
+        window.__staleAgentRuntimeReadCalls += 1;
+        if (window.__staleAgentRuntimeReadCalls === 1) {
+          await new Promise((resolve) => {
+            window.__resolveStaleAgentRuntimeRead = resolve;
+          });
+        } else {
+          return {
+            model_catalog: { profile_id: agentId, models: ['delta-one'], current_model: 'delta-one' },
+            provider_inventory: {
+              profile_id: agentId,
+              current_provider: 'delta',
+              current_model: 'delta-one',
+              capabilities: { 'providers.switch': true },
+              providers: [{ id: 'delta', name: 'Delta', current: true, models: ['delta-one'] }],
+            },
+          };
+        }
+        return {
+          model_catalog: { profile_id: agentId, models: ['stale-one'], current_model: 'stale-one' },
+          provider_inventory: {
+            profile_id: agentId,
+            current_provider: 'stale',
+            current_model: 'stale-one',
+            capabilities: { 'providers.switch': true },
+            providers: [{ id: 'stale', name: 'Stale', current: true, models: ['stale-one'] }],
+          },
+        };
+      };
+      const agent = document.querySelector('#agent-console-agent');
+      agent.value = 'runtime-smoke';
+      agent.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      renderAgentConsole({
+        transport: { mode: 'remote', binding_id: 'browser-smoke-stale-agent-binding', console_available: true },
+        agents: state.agentConsoleAgents,
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'delta',
+          current_model: 'delta-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'delta', name: 'Delta', current: true, models: ['delta-one'] }],
+        },
+        runs: [],
+      });
+      for (let attempt = 0; attempt < 20 && state.agentConsoleProviderInventory.current_provider !== 'delta'; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const confirmedBeforeOldAgentRead = state.agentConsoleProviderInventory.current_provider;
+      window.__resolveStaleAgentRuntimeRead();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return {
+        provider: document.querySelector('#agent-console-provider-select')?.value,
+        model: document.querySelector('#agent-console-model-select')?.value,
+        unresolved: state.agentConsoleRuntimeUnresolved,
+        state: document.querySelector('#agent-console-state')?.textContent || '',
+        calls: window.__staleAgentRuntimeReadCalls,
+        confirmedBeforeOldAgentRead,
+      };
+    })()`);
+    if (
+      staleAgentRefreshState.provider !== 'delta'
+      || staleAgentRefreshState.model !== 'delta-one'
+      || staleAgentRefreshState.unresolved
+      || !staleAgentRefreshState.state.includes('delta · delta-one · ready')
+    ) {
+      throw new Error(`Stale agent runtime read overwrote the new binding: ${JSON.stringify(staleAgentRefreshState)}`);
+    }
+    const staleRetryRefreshState = await client.eval(`(async () => {
+      state.agentConsoleRuntimeUnresolved = true;
+      clearAgentConsoleRuntimeForInspection('runtime-smoke');
+      renderAgentConsole({
+        agents: state.agentConsoleAgents,
+        provider_inventory: state.agentConsoleProviderInventory,
+        runs: [],
+      });
+      window.__resolveStaleRetryRuntimeRead = null;
+      window.__staleRetryRuntimeReadCalls = 0;
+      refreshAgentConsoleModels = async (agentId) => {
+        window.__staleRetryRuntimeReadCalls += 1;
+        if (window.__staleRetryRuntimeReadCalls === 1) {
+          await new Promise((resolve) => {
+            window.__resolveStaleRetryRuntimeRead = resolve;
+          });
+        } else {
+          return {
+            model_catalog: { profile_id: agentId, models: ['epsilon-one'], current_model: 'epsilon-one' },
+            provider_inventory: {
+              profile_id: agentId,
+              current_provider: 'epsilon',
+              current_model: 'epsilon-one',
+              capabilities: { 'providers.switch': true },
+              providers: [{ id: 'epsilon', name: 'Epsilon', current: true, models: ['epsilon-one'] }],
+            },
+          };
+        }
+        return {
+          model_catalog: { profile_id: agentId, models: ['stale-retry-one'], current_model: 'stale-retry-one' },
+          provider_inventory: {
+            profile_id: agentId,
+            current_provider: 'stale-retry',
+            current_model: 'stale-retry-one',
+            capabilities: { 'providers.switch': true },
+            providers: [{ id: 'stale-retry', name: 'Stale retry', current: true, models: ['stale-retry-one'] }],
+          },
+        };
+      };
+      document.querySelector('#agent-console-runtime-refresh').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      renderAgentConsole({
+        transport: { mode: 'remote', binding_id: 'browser-smoke-stale-retry-binding', console_available: true },
+        agents: state.agentConsoleAgents,
+        provider_inventory: {
+          profile_id: 'runtime-smoke',
+          current_provider: 'epsilon',
+          current_model: 'epsilon-one',
+          capabilities: { 'providers.switch': true },
+          providers: [{ id: 'epsilon', name: 'Epsilon', current: true, models: ['epsilon-one'] }],
+        },
+        runs: [],
+      });
+      for (let attempt = 0; attempt < 20 && state.agentConsoleProviderInventory.current_provider !== 'epsilon'; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const confirmedBeforeOldRetryRead = state.agentConsoleProviderInventory.current_provider;
+      window.__resolveStaleRetryRuntimeRead();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return {
+        provider: document.querySelector('#agent-console-provider-select')?.value,
+        model: document.querySelector('#agent-console-model-select')?.value,
+        unresolved: state.agentConsoleRuntimeUnresolved,
+        state: document.querySelector('#agent-console-state')?.textContent || '',
+        calls: window.__staleRetryRuntimeReadCalls,
+        confirmedBeforeOldRetryRead,
+      };
+    })()`);
+    if (
+      staleRetryRefreshState.provider !== 'epsilon'
+      || staleRetryRefreshState.model !== 'epsilon-one'
+      || staleRetryRefreshState.unresolved
+      || !staleRetryRefreshState.state.includes('epsilon · epsilon-one · ready')
+    ) {
+      throw new Error(`Stale retry runtime read overwrote the new binding: ${JSON.stringify(staleRetryRefreshState)}`);
+    }
+    await client.eval(`(() => {
+      previewAgentConsoleProvider = window.__originalPreviewAgentConsoleProvider;
+      switchAgentConsoleProvider = window.__originalSwitchAgentConsoleProvider;
+      refreshAgentConsoleModels = window.__originalRefreshAgentConsoleModels;
+      startAgentConsoleRun = window.__originalStartAgentConsoleRun;
+      stageContextPack = window.__originalStageContextPack;
+      delete window.__originalPreviewAgentConsoleProvider;
+      delete window.__originalSwitchAgentConsoleProvider;
+      delete window.__originalRefreshAgentConsoleModels;
+      delete window.__originalStartAgentConsoleRun;
+      delete window.__originalStageContextPack;
+      delete window.__runtimeDynamicRefreshAgentConsoleModels;
+      delete window.__runtimeSwitchCalls;
+      delete window.__runtimeRunCalls;
+      delete window.__runtimeContextPackCalls;
+    })()`);
     await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/'; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await waitFor(() => client.eval(`(() => { const menu = document.querySelector('#agent-console-command-menu'); return Boolean(menu && !menu.hidden && menu.textContent.includes('/model')); })()`), 'agent console command completion');
     const commandManifestOk = await client.eval(`fetch('/api/agent-console/commands').then((response) => response.json()).then((payload) => payload.schema_version === 1 && payload.source === 'mentat' && payload.capabilities?.['commands.hermes_cli_passthrough'] === false && payload.commands?.map((item) => item.command).join(',') === '/model,/new,/help')`);
@@ -769,7 +1717,7 @@ async function main() {
 
     await client.eval(`document.querySelector('[data-view="calendar"]').click()`);
     await waitFor(() => client.eval('document.querySelector("#view-calendar.active") !== null'), 'Calendar view');
-    await waitFor(() => client.eval(`document.querySelectorAll('#calendar-week-days .calendar-week-day-header').length === 7 && document.querySelector('#calendar-week')?.getAttribute('aria-busy') === 'false'`), 'Operator Week render');
+    await waitFor(() => client.eval(`document.querySelectorAll('#calendar-week-days .calendar-week-day-header').length === 7 && document.querySelector('#calendar-week')?.getAttribute('aria-busy') === 'false'`), 'Operator Week render', 30000);
     const currentWeekLabel = await client.eval(`document.querySelector('#calendar-week-range')?.textContent || ''`);
     await client.eval(`document.querySelector('[data-calendar-week-nav="next"]').click()`);
     await waitFor(() => client.eval(`document.querySelector('#calendar-week')?.getAttribute('aria-busy') === 'false' && (document.querySelector('#calendar-week-range')?.textContent || '') !== ${JSON.stringify(currentWeekLabel)}`), 'next calendar week');
@@ -1073,7 +2021,7 @@ async function main() {
     );
     await setViewport(client, 1440, 1000);
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'saved shell reload', 'theme and contrast reload', 'Classic Home rollback geometry', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'compact Agent Console disclosure', 'six-view responsive matrix', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'saved shell reload', 'theme and contrast reload', 'Classic Home rollback geometry', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'compact Agent Console disclosure', 'six-view responsive matrix', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
     await stopChild(chrome);

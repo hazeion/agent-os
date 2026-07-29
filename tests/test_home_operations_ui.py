@@ -158,16 +158,24 @@ class HomeOperationsUiTests(unittest.TestCase):
             "agent-console-state",
             "agent-console-form-status",
             "agent-console-provider-select",
-            "agent-console-apply-model",
             "agent-console-new-session",
+            "agent-console-tool-toggle",
             "agent-console-chat",
         ):
             self.assertEqual(console.count(f'id="{element_id}"'), 1, element_id)
         self.assertEqual(console.count("agent-console-send"), 1)
         details_start = console.index('id="agent-console-details"')
-        self.assertLess(details_start, console.index('id="agent-console-provider-select"'))
+        runtime_row = console[
+            console.index('<div class="agent-console-runtime-row">')
+            : console.index('id="agent-console-form"')
+        ]
+        self.assertLess(runtime_row.index('id="agent-console-agent"'), runtime_row.index('id="agent-console-provider-select"'))
+        self.assertLess(runtime_row.index('id="agent-console-provider-select"'), runtime_row.index('id="agent-console-model-select"'))
+        self.assertLess(console.index('id="agent-console-provider-select"'), details_start)
+        self.assertLess(console.index('id="agent-console-model-select"'), console.index('id="agent-console-form"'))
         self.assertLess(details_start, console.index('id="agent-console-chat"'))
-        self.assertIn("<summary>Console history &amp; provider settings</summary>", console)
+        self.assertIn("<summary>Console history</summary>", console)
+        self.assertNotIn('id="agent-console-apply-model"', console)
 
     def test_home_grid_matches_reference_and_stacks_in_reading_order(self):
         operations = CSS[
