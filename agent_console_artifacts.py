@@ -327,7 +327,11 @@ def cleanup_run_input_directory(data_dir: Path, run_id: str) -> int:
         raise ArtifactValidationError("unsafe_input_directory", "Agent input directory is outside runtime storage")
     removed = 0
     for candidate in resolved_run_root.iterdir():
-        if candidate.is_symlink() or not candidate.is_file():
+        if candidate.is_symlink():
+            candidate.unlink()
+            removed += 1
+            continue
+        if not candidate.is_file():
             raise ArtifactValidationError("unsafe_input_directory", "Agent input directory contains an unsafe entry")
         candidate.unlink()
         removed += 1

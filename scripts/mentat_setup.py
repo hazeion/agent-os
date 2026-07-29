@@ -6,9 +6,10 @@ This helper writes only local, untracked bootstrap files:
 - `mentat.local.env` (POSIX shell `source`-ready env overrides)
 - `mentat.local.env.bat` (Windows batch `call`-ready env overrides)
 
-It intentionally does not collect or write credentials/tokens.
-Credentials should remain in your existing Hermes profile (`$HERMES_HOME`) and
-are never touched by this tool.
+Hermes provider credentials remain in the Hermes profile. A remote Hermes
+server bearer key is never accepted as an argument or copied into these files;
+the wizard stores only a reference to an owner-only env file or process
+environment variable.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +27,8 @@ import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if os.fspath(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, os.fspath(REPO_ROOT))
 DEFAULT_TOML_PATH = Path("mentat.local.toml")
 DEFAULT_ENV_PATH = Path("mentat.local.env")
 DEFAULT_ENV_BAT_PATH = Path("mentat.local.env.bat")
@@ -59,6 +63,17 @@ class HermesInspection:
     config_path: str = ""
     hermes_home: str = ""
     error: str = ""
+
+
+@dataclass
+class HermesConnectionValues:
+    mode: str
+    reuse_remembered: bool = False
+    label: str = "Remote Hermes"
+    endpoint: str = ""
+    credential_kind: str = ""
+    credential_name: str = "MENTAT_REMOTE_HERMES_API_KEY"
+    credential_path: str = ""
 
 
 def default_hermes_home() -> str:
@@ -207,6 +222,14 @@ def prompt_int(label: str, default: int) -> int:
             print(exc)
 
 
+def prompt_choice(label: str, choices: tuple[str, ...], default: str) -> str:
+    while True:
+        value = prompt_text(label, default).strip().lower()
+        if value in choices:
+            return value
+        print(f"Choose one of: {', '.join(choices)}")
+
+
 def _normalize_path(text: str) -> str:
     return os.path.expanduser(os.path.expandvars(text)).strip()
 
@@ -252,6 +275,202 @@ def gather_inputs(
         greeting_prefix=greeting_prefix,
         display_name=display_name,
     )
+
+
+def gather_connection_inputs(
+    data_root: Path,
+    *,
+    interactive: bool,
+    cli: argparse.Namespace,
+) -> HermesConnectionValues | None:
+    from remote_hermes import load_connection_state
+
+    state = load_connection_state(data_root)
+    explicit = cli.hermes_mode is not None
+    if not interactive and not explicit:
+        return None
+    mode = (
+        prompt_choice(
+            "Hermes connection mode (local or remote)",
+            ("local", "remote"),
+            state.mode,
+        )
+        if interactive
+        else cli.hermes_mode
+    )
+    if mode == "local":
+        return HermesConnectionValues("local", reuse_remembered=True)
+
+    has_new_definition = any(
+        value is not None
+        for value in (
+            cli.hermes_endpoint,
+            cli.hermes_label,
+            cli.hermes_api_key_env,
+            cli.hermes_api_key_file,
+        )
+    )
+    if state.remote is not None and not has_new_definition:
+        reuse = (
+            prompt_bool(
+                f"Use remembered remote Hermes “{state.remote.label}”",
+                True,
+            )
+            if interactive
+            else True
+        )
+        if reuse:
+            return HermesConnectionValues("remote", reuse_remembered=True)
+
+    endpoint = (
+        prompt_text("Remote Hermes HTTPS origin", cli.hermes_endpoint or "")
+        if interactive
+        else (cli.hermes_endpoint or "")
+    )
+    label = (
+        prompt_text("Remote Hermes display label", cli.hermes_label or "Remote Hermes")
+        if interactive
+        else (cli.hermes_label or "Remote Hermes")
+    )
+    if interactive and cli.hermes_api_key_env is None and cli.hermes_api_key_file is None:
+        source = prompt_choice(
+            "API key source (environment or env-file)",
+            ("environment", "env-file"),
+            "environment",
+        )
+        if source == "environment":
+            name = prompt_text(
+                "API key environment variable",
+                "MENTAT_REMOTE_HERMES_API_KEY",
+            )
+            return HermesConnectionValues(
+                "remote",
+                label=label,
+                endpoint=endpoint,
+                credential_kind="environment",
+                credential_name=name,
+            )
+        path = _normalize_path(prompt_text("Owner-only API key env file", ""))
+        if not Path(path).is_absolute():
+            path = os.path.abspath(os.fspath(Path.cwd() / path))
+        return HermesConnectionValues(
+            "remote",
+            label=label,
+            endpoint=endpoint,
+            credential_kind="env_file",
+            credential_path=path,
+        )
+    if cli.hermes_api_key_env is not None:
+        return HermesConnectionValues(
+            "remote",
+            label=label,
+            endpoint=endpoint,
+            credential_kind="environment",
+            credential_name=cli.hermes_api_key_env,
+        )
+    if cli.hermes_api_key_file is not None:
+        path = cli.hermes_api_key_file.expanduser()
+        if not path.is_absolute():
+            path = Path(os.path.abspath(os.fspath(Path.cwd() / path)))
+        return HermesConnectionValues(
+            "remote",
+            label=label,
+            endpoint=endpoint,
+            credential_kind="env_file",
+            credential_path=os.fspath(path),
+        )
+    raise ValueError(
+        "Remote setup requires --hermes-api-key-env or --hermes-api-key-file."
+    )
+
+
+def apply_connection_values(
+    data_root: Path,
+    values: HermesConnectionValues,
+    *,
+    require_force: bool,
+    force: bool,
+    interactive: bool = False,
+    server_port: int = DEFAULT_PORT,
+) -> dict | None:
+    from remote_hermes import (
+        confirm_connection_from_source,
+        confirm_remembered_connection,
+        credential_source_from_values,
+        preview_connection_from_source,
+        preview_remembered_connection,
+    )
+
+    if values.reuse_remembered:
+        preview = preview_remembered_connection(data_root, values.mode)
+        apply = lambda token: confirm_remembered_connection(
+            data_root,
+            values.mode,
+            token,
+            require_server_stopped=True,
+        )
+    else:
+        source = credential_source_from_values(
+            values.credential_kind,
+            name=values.credential_name,
+            path=values.credential_path or None,
+        )
+        preview = preview_connection_from_source(
+            data_root,
+            label=values.label,
+            endpoint=values.endpoint,
+            credential_source=source,
+        )
+        apply = lambda token: confirm_connection_from_source(
+            data_root,
+            label=values.label,
+            endpoint=values.endpoint,
+            credential_source=source,
+            confirmation_token=token,
+            require_server_stopped=True,
+        )
+    print("\nHermes connection plan:")
+    print(json.dumps(preview.public_summary(), indent=2, sort_keys=True))
+    if preview.changed and require_force and not force:
+        raise ValueError(
+            "Non-interactive Hermes connection changes require --force after reviewing the plan."
+        )
+    if connection_server_active(data_root, server_port):
+        raise ValueError("Stop Mentat before changing its Hermes connection.")
+    if (
+        preview.changed
+        and interactive
+        and not prompt_bool("Apply this Hermes connection change", True)
+    ):
+        return None
+    return apply(preview.confirmation_token)
+
+
+def connection_server_active(data_root: Path, port: int) -> bool:
+    from private_state import mentat_server_active
+
+    if mentat_server_active(data_root):
+        return True
+    try:
+        import mentat_lifecycle
+
+        report = mentat_lifecycle.status_report(
+            type(
+                "ConnectionRuntime",
+                (),
+                {"data_dir": Path(data_root), "port": int(port)},
+            )()
+        )
+        return any(
+            item.get("is_mentat") is True
+            for item in report.get("listeners", [])
+            if isinstance(item, dict)
+        )
+    except Exception:
+        # The durable runtime-state check above is fail closed for recorded
+        # Mentat processes. Listener inspection is an additional compatibility
+        # guard and must not expose platform-specific errors.
+        return True
 
 
 def write_local_toml(path: Path, values: WizardValues) -> None:
@@ -403,7 +622,7 @@ def print_next_steps(env_path: Path, env_bat_path: Path, *, wrote_env: bool) -> 
         print("  run.bat")
     else:
         print("  ./run.sh")
-    print("\nIf Mentat should follow a different Hermes profile than the one detected above, rerun this wizard with --hermes-home or set HERMES_HOME before starting the server.")
+    print("\nUse `mentat connection status` to inspect the selected local or remote Hermes connection.")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -418,6 +637,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hermes-command", default="hermes", help="Hermes CLI command to inspect (default: hermes)")
     parser.add_argument("--hermes-profile", default="", help="Hermes profile to inspect before choosing HERMES_HOME")
     parser.add_argument("--skip-hermes-check", action="store_true", help="Skip Hermes CLI inspection and use manual/default HERMES_HOME resolution only")
+    parser.add_argument(
+        "--hermes-mode",
+        choices=("local", "remote"),
+        help="Select local Hermes or configure/use one remembered remote.",
+    )
+    parser.add_argument(
+        "--hermes-endpoint",
+        help="Remote Hermes HTTPS origin; never include a key in the URL.",
+    )
+    parser.add_argument("--hermes-label", help="Safe display label for remote Hermes.")
+    credential_source = parser.add_mutually_exclusive_group()
+    credential_source.add_argument(
+        "--hermes-api-key-env",
+        nargs="?",
+        const="MENTAT_REMOTE_HERMES_API_KEY",
+        metavar="NAME",
+        help="Read the remote key from NAME; the key value is never a CLI argument.",
+    )
+    credential_source.add_argument(
+        "--hermes-api-key-file",
+        type=Path,
+        metavar="OWNER_ONLY_ENV_FILE",
+        help="Read MENTAT_REMOTE_HERMES_API_KEY from an owner-only env file.",
+    )
     parser.add_argument("--obsidian-vault", default=None, help="Obsidian vault path override")
     parser.add_argument("--app-name", default=None, help="Dashboard product name")
     parser.add_argument("--greeting-prefix", default=None, help="Greeting prefix in dashboard identity")
@@ -485,6 +728,18 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     values = gather_inputs(resolved_defaults, interactive=not args.non_interactive, cli=args)
+    data_root = Path(values.data_dir).expanduser()
+    if not data_root.is_absolute():
+        data_root = (repo_root / data_root).resolve()
+    try:
+        connection_values = gather_connection_inputs(
+            data_root,
+            interactive=not args.non_interactive,
+            cli=args,
+        )
+    except Exception as exc:
+        print(f"Connection setup blocked: {getattr(exc, 'code', 'connection_input_invalid')}")
+        return 2
 
     print("\n" + current_summary(values))
     print("\nPlanned changes:")
@@ -510,10 +765,34 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote env overrides: {env_path}")
         print(f"Wrote env overrides: {env_bat_path}")
 
+    if connection_values is not None:
+        try:
+            result = apply_connection_values(
+                data_root,
+                connection_values,
+                require_force=args.non_interactive,
+                force=args.force,
+                interactive=not args.non_interactive,
+                server_port=values.port,
+            )
+        except Exception as exc:
+            print(
+                "Hermes connection was not changed: "
+                f"{getattr(exc, 'code', 'connection_setup_blocked')}"
+            )
+            return 2
+        if result is None:
+            print("Hermes connection change cancelled.")
+            return 1
+        print(
+            "Hermes connection selected: "
+            f"{result['selection']['label']} ({result['selection']['mode']})"
+        )
+
     print("\nAll local bootstrap files are local-only and should stay out of git.")
     print_next_steps(env_path, env_bat_path, wrote_env=should_write_env)
 
-    print("\nCredentials are never written by this wizard; your Hermes OAuth tokens and API keys remain in your Hermes profile.")
+    print("\nRemote API keys are read only from the selected environment source; no key value is accepted as a command-line argument.")
     return 0
 
 

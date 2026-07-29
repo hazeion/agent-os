@@ -30,12 +30,16 @@ const endpoints = {
   hermesCapabilities: '/api/hermes/capabilities',
   notes: '/api/obsidian-notes',
   health: '/api/health',
+  diagnosticsBundle: '/api/diagnostics/bundle',
   unifiedSearch: '/api/search',
 };
 
 const state = {
   sessions: [],
   tasks: [],
+  overviewCards: {},
+  homeCalendar: {},
+  homeCrons: {},
   taskDeletionPreview: null,
   taskDeletionRequestToken: 0,
   projects: [],
@@ -75,7 +79,7 @@ const state = {
   isRefreshing: false,
   needsRefresh: false,
   hasBootstrapped: false,
-  currentTheme: 'compact-dark',
+  currentTheme: 'emerald',
   agentConsoleRuns: [],
   agentConsoleAgents: [],
   agentConsoleModels: [],
@@ -85,6 +89,8 @@ const state = {
   agentConsoleProviderPreview: null,
   agentConsoleProviderPreviewSource: 'console',
   agentConsoleSelectedModel: '',
+  agentConsoleRuntimeLoading: false,
+  agentConsoleRuntimeRequestGeneration: 0,
   agentConsoleSelectedAgentId: '',
   agentConsoleRunId: '',
   agentConsoleSessionId: '',
@@ -494,6 +500,10 @@ async function stageContextPack(id) {
 
 async function startAgentConsoleRun(payload) {
   return sendJson(`${endpoints.agentConsole}/runs`, payload, { method: 'POST' });
+}
+
+async function respondToAgentConsoleRequest(id, payload) {
+  return sendJson(`${endpoints.agentConsole}/runs/${encodeURIComponent(id)}/response`, payload, { method: 'POST' });
 }
 
 async function uploadAgentConsoleAttachment(file) {

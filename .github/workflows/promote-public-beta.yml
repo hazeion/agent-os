@@ -1,0 +1,159 @@
+name: Promote tested RC to public beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Exact tested numbered RC tag
+        required: true
+        type: string
+      candidate_source_sha:
+        description: Exact 40-character source commit for that RC
+        required: true
+        type: string
+      cohort_summary_url:
+        description: Public closed issue containing the redacted Milestone 7 exit summary
+        required: true
+        type: string
+      confirmation:
+        description: Type PROMOTE_V0.1.0_BETA_1 after every public-beta gate passes
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-beta-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Exact tested RC promotion required
+    if: github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    environment: beta-release
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+      issues: read
+    steps:
+      - name: Check out protected promotion code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify candidate source passed every stable gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_SHA: ${{ inputs.candidate_source_sha }}
+        run: python scripts/verify_release_checks.py
+
+      - name: Verify candidate tag and public cohort summary
+        shell: bash
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          SOURCE_SHA: ${{ inputs.candidate_source_sha }}
+          COHORT_SUMMARY_URL: ${{ inputs.cohort_summary_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release_rehearsal.py validate-rc-tag "$CANDIDATE_TAG"
+          python scripts/release_rehearsal.py validate-tag "v0.1.0-beta.1"
+          [[ "$COHORT_SUMMARY_URL" =~ ^https://github\.com/hazeion/agent-os/issues/[1-9][0-9]*$ ]]
+          test "$SOURCE_SHA" = "$(git rev-list -n 1 "$CANDIDATE_TAG")"
+          gh issue view "$COHORT_SUMMARY_URL" --json body,state,url > cohort-summary.json
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$CANDIDATE_TAG" \
+            --jq '{assets: [.assets[] | {digest, name, size}], draft, html_url, immutable, prerelease, tag_name}' \
+            > candidate-release.json
+          gh release verify "$CANDIDATE_TAG"
+          if git ls-remote --exit-code --tags origin refs/tags/v0.1.0-beta.1 >/dev/null 2>&1; then
+            echo 'Public beta tag already exists' >&2
+            exit 1
+          fi
+
+      - name: Download the exact tested candidate assets
+        shell: bash
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir candidate-assets
+          gh release download "$CANDIDATE_TAG" --dir candidate-assets
+
+      - name: Verify immutable candidate bytes and prepare final notes
+        shell: bash
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          SOURCE_SHA: ${{ inputs.candidate_source_sha }}
+          COHORT_SUMMARY_URL: ${{ inputs.cohort_summary_url }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          python scripts/public_beta_promotion.py prepare \
+            --bundle-dir candidate-assets \
+            --release-snapshot candidate-release.json \
+            --cohort-snapshot cohort-summary.json \
+            --output-notes PUBLIC_BETA_NOTES.md \
+            --candidate-tag "$CANDIDATE_TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --cohort-summary-url "$COHORT_SUMMARY_URL" \
+            --confirmation "$CONFIRMATION"
+
+      - name: Preserve promotion recovery evidence before tagging
+        shell: bash
+        run: |
+          mkdir promotion-recovery
+          cp candidate-assets/* promotion-recovery/
+          cp candidate-release.json cohort-summary.json PUBLIC_BETA_NOTES.md promotion-recovery/
+          test "$(find promotion-recovery -maxdepth 1 -type f | wc -l | tr -d ' ')" = 9
+          cd promotion-recovery
+          sha256sum --check SHA256SUMS
+
+      - name: Upload exact promotion recovery bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mentat-public-beta-promotion-recovery
+          path: promotion-recovery/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create final tag at the tested candidate commit
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.candidate_source_sha }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag --annotate v0.1.0-beta.1 "$SOURCE_SHA" --message "Mentat v0.1.0-beta.1"
+          git push origin refs/tags/v0.1.0-beta.1
+
+      - name: Publish exact tested assets as the public beta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.1.0-beta.1 \
+            candidate-assets/Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg \
+            candidate-assets/Mentat-0.1.0-beta.1-windows-x64.exe \
+            candidate-assets/mentat_local-0.1.0b1-py3-none-any.whl \
+            candidate-assets/mentat_local-0.1.0b1.tar.gz \
+            candidate-assets/SHA256SUMS \
+            candidate-assets/release-manifest.json \
+            --verify-tag \
+            --title "Mentat v0.1.0-beta.1" \
+            --notes-file PUBLIC_BETA_NOTES.md
+
+      - name: Verify immutable public release identity and attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/v0.1.0-beta.1" \
+            --jq '{assets: [.assets[] | {digest, name, size}], draft, html_url, immutable, prerelease, tag_name}' \
+            > final-release.json
+          python scripts/public_beta_promotion.py verify-release \
+            --bundle-dir candidate-assets \
+            --release-snapshot final-release.json \
+            --release-tag v0.1.0-beta.1
+          gh release verify v0.1.0-beta.1

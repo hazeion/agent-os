@@ -27,7 +27,10 @@ function humanCost(value) {
 }
 
 const THEME_STORAGE_KEY = 'mentat-theme';
+const SHELL_STORAGE_KEY = 'mentat-ui-shell-v1';
+const CONTRAST_STORAGE_KEY = 'mentat-contrast-v1';
 const THEMES = [
+  { id: 'emerald', label: 'Emerald', pill: 'emerald', mode: 'dark' },
   { id: 'compact-dark', label: 'Compact Dark', pill: 'compact dark', mode: 'dark' },
   { id: 'catppuccin', label: 'Catppuccin Mocha', pill: 'catppuccin mocha', mode: 'dark' },
   { id: 'nord', label: 'Nord', pill: 'nord', mode: 'dark' },
@@ -93,15 +96,100 @@ function initializeTheme() {
   applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id);
 }
 
+function applyShell(shellId = document.documentElement.dataset.uiShell || 'emerald', { persist = true } = {}) {
+  const shell = ['emerald', 'classic'].includes(shellId) ? shellId : 'emerald';
+  document.documentElement.dataset.uiShell = shell;
+  const select = $('#shell-select');
+  if (select && select.value !== shell) select.value = shell;
+  if (persist && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(SHELL_STORAGE_KEY, shell);
+    } catch {}
+  }
+  closeMobileNavigation({ restoreFocus: false });
+  return shell;
+}
+
+function initializeShell() {
+  let saved = '';
+  if (typeof localStorage !== 'undefined') {
+    try {
+      saved = localStorage.getItem(SHELL_STORAGE_KEY) || '';
+    } catch {}
+  }
+  applyShell(saved || document.documentElement.dataset.uiShell || 'emerald', { persist: false });
+}
+
+const systemContrastMedia = typeof window.matchMedia === 'function'
+  ? window.matchMedia('(prefers-contrast: more)')
+  : null;
+
+function systemUsesHighContrast() {
+  return Boolean(systemContrastMedia?.matches);
+}
+
+function applyContrast(preference = 'system', { persist = true } = {}) {
+  const normalized = ['system', 'standard', 'high'].includes(preference) ? preference : 'system';
+  const resolved = normalized === 'high' || (normalized === 'system' && systemUsesHighContrast())
+    ? 'high'
+    : 'standard';
+  document.documentElement.dataset.contrastPreference = normalized;
+  document.documentElement.dataset.contrast = resolved;
+  const select = $('#contrast-select');
+  if (select && select.value !== normalized) select.value = normalized;
+  if (persist && typeof localStorage !== 'undefined') {
+    try {
+      if (normalized === 'system') localStorage.removeItem(CONTRAST_STORAGE_KEY);
+      else localStorage.setItem(CONTRAST_STORAGE_KEY, normalized);
+    } catch {}
+  }
+  return resolved;
+}
+
+function initializeContrast() {
+  let saved = '';
+  if (typeof localStorage !== 'undefined') {
+    try {
+      saved = localStorage.getItem(CONTRAST_STORAGE_KEY) || '';
+    } catch {}
+  }
+  const preference = ['standard', 'high'].includes(saved)
+    ? saved
+    : (document.documentElement.dataset.contrastPreference || 'system');
+  applyContrast(preference, { persist: false });
+  const handleSystemContrastChange = () => {
+    if (document.documentElement.dataset.contrastPreference === 'system') {
+      applyContrast('system', { persist: false });
+    }
+  };
+  if (systemContrastMedia?.addEventListener) {
+    systemContrastMedia.addEventListener('change', handleSystemContrastChange);
+  } else if (systemContrastMedia?.addListener) {
+    systemContrastMedia.addListener(handleSystemContrastChange);
+  }
+}
+
 function renderGreeting(identity = {}) {
-  state.appName = (identity.app_name || state.appName || 'Mentat').trim();
+  state.appName = 'Mentat';
   state.greetingName = (identity.display_name || state.greetingName || 'Operator').trim();
   state.greetingPrefix = (identity.greeting_prefix || state.greetingPrefix || 'Hello').trim();
   const title = `${state.greetingPrefix} ${state.greetingName}`.trim();
   const brand = document.querySelector('#brand-name');
   const hero = document.querySelector('.hero-title');
-  if (brand) brand.textContent = state.appName;
-  document.title = `${state.appName} · Mission Control`;
+  const avatar = document.querySelector('#operator-avatar');
+  if (brand) brand.textContent = 'Mentat';
+  if (avatar) {
+    const initials = state.greetingName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() || '')
+      .join('') || 'OP';
+    avatar.textContent = initials;
+    avatar.setAttribute('aria-label', `${state.greetingName} · current operator`);
+    avatar.title = title;
+  }
+  document.title = 'Mentat';
   if (!hero) return;
   hero.textContent = title;
   hero.dataset.text = title;
@@ -111,11 +199,158 @@ function renderGreeting(identity = {}) {
 function setView(view, { refreshOnChange = true } = {}) {
   const viewChanged = state.activeView !== view;
   state.activeView = view;
-  $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === view));
+  $$('.nav-item').forEach((item) => {
+    const active = item.dataset.view === view;
+    item.classList.toggle('active', active);
+    if (active) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  });
   $$('[data-view-panel]').forEach((panel) => panel.classList.toggle('active', panel.dataset.viewPanel === view));
   if (view !== 'today') scheduleAgentConsolePoll(false);
   if (state.hasBootstrapped && viewChanged && refreshOnChange) return refresh();
   return Promise.resolve();
+}
+
+const mobileNavigationMedia = typeof window.matchMedia === 'function'
+  ? window.matchMedia('(max-width: 900px)')
+  : null;
+let navigationReturnFocus = null;
+
+function usesMobileNavigation() {
+  const narrowViewport = mobileNavigationMedia
+    ? mobileNavigationMedia.matches
+    : window.innerWidth <= 900;
+  return document.documentElement.dataset.uiShell === 'emerald' && narrowViewport;
+}
+
+function mobileNavigationIsOpen() {
+  return usesMobileNavigation() && document.documentElement.dataset.navOpen === 'true';
+}
+
+function updateMobileNavigation(open = false) {
+  const sidebar = $('#mentat-sidebar');
+  const toggle = $('#navigation-toggle');
+  const overlay = $('#shell-overlay');
+  const main = $('#main-content');
+  if (!sidebar || !toggle || !overlay || !main) return;
+
+  const usesDrawer = usesMobileNavigation();
+  const shouldOpen = usesDrawer && open;
+  if (shouldOpen) {
+    document.documentElement.dataset.navOpen = 'true';
+    document.body.dataset.navOpen = 'true';
+  } else {
+    delete document.documentElement.dataset.navOpen;
+    delete document.body.dataset.navOpen;
+  }
+  sidebar.classList.toggle('is-open', shouldOpen);
+  toggle.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  toggle.setAttribute('aria-label', shouldOpen ? 'Close navigation' : 'Open navigation');
+  overlay.hidden = !shouldOpen;
+  main.inert = shouldOpen;
+
+  if (usesDrawer) {
+    sidebar.inert = !shouldOpen;
+    sidebar.setAttribute('role', 'dialog');
+    if (shouldOpen) {
+      sidebar.removeAttribute('aria-hidden');
+      sidebar.setAttribute('aria-modal', 'true');
+    } else {
+      sidebar.setAttribute('aria-hidden', 'true');
+      sidebar.removeAttribute('aria-modal');
+    }
+  } else {
+    sidebar.inert = false;
+    sidebar.removeAttribute('aria-hidden');
+    sidebar.removeAttribute('aria-modal');
+    sidebar.removeAttribute('role');
+  }
+}
+
+function openMobileNavigation() {
+  if (!usesMobileNavigation() || mobileNavigationIsOpen()) return;
+  navigationReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : $('#navigation-toggle');
+  updateMobileNavigation(true);
+  window.requestAnimationFrame(() => {
+    const target = $('#mentat-sidebar .nav-item[aria-current="page"]')
+      || $('#mentat-sidebar .nav-item');
+    target?.focus();
+  });
+}
+
+function closeMobileNavigation({ restoreFocus = true } = {}) {
+  const wasOpen = mobileNavigationIsOpen();
+  updateMobileNavigation(false);
+  if (restoreFocus && wasOpen) {
+    const target = navigationReturnFocus?.isConnected
+      ? navigationReturnFocus
+      : $('#navigation-toggle');
+    window.requestAnimationFrame(() => target?.focus());
+  }
+  navigationReturnFocus = null;
+}
+
+function mobileNavigationFocusables() {
+  const sidebar = $('#mentat-sidebar');
+  if (!sidebar) return [];
+  return $$(
+    '#mentat-sidebar a[href], #mentat-sidebar button:not([disabled]), '
+    + '#mentat-sidebar input:not([disabled]), #mentat-sidebar select:not([disabled]), '
+    + '#mentat-sidebar textarea:not([disabled]), #mentat-sidebar [tabindex]:not([tabindex="-1"])',
+  ).filter((element) => {
+    const style = window.getComputedStyle(element);
+    return !element.hidden
+      && element.getAttribute('aria-hidden') !== 'true'
+      && style.display !== 'none'
+      && style.visibility !== 'hidden'
+      && element.getClientRects().length > 0;
+  });
+}
+
+function initializeMobileNavigation() {
+  updateMobileNavigation(false);
+  $('#navigation-toggle')?.addEventListener('click', () => {
+    if (mobileNavigationIsOpen()) closeMobileNavigation();
+    else openMobileNavigation();
+  });
+  $('#mobile-nav-close')?.addEventListener('click', () => closeMobileNavigation());
+  $('#shell-overlay')?.addEventListener('click', () => closeMobileNavigation());
+
+  document.addEventListener('keydown', (event) => {
+    if (!mobileNavigationIsOpen()) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeMobileNavigation();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = mobileNavigationFocusables();
+    if (!focusable.length) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!focusable.includes(document.activeElement)) {
+      event.preventDefault();
+      first.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+
+  const handleViewportChange = () => closeMobileNavigation({ restoreFocus: false });
+  if (mobileNavigationMedia?.addEventListener) {
+    mobileNavigationMedia.addEventListener('change', handleViewportChange);
+  } else if (mobileNavigationMedia?.addListener) {
+    mobileNavigationMedia.addListener(handleViewportChange);
+  }
 }
 
 function sleep(ms) {
@@ -166,27 +401,380 @@ function renderProjectScopedViews() {
   renderTaskList(state.tasks);
   renderFocusTasks(state.tasks);
   renderProjects(state.projects);
+  renderHomeProjects(state.projects, state.tasks);
+  renderHomeLiveAgents();
 }
 
-function renderCards(cards = {}) {
-  const defs = [
-    ['active_tasks', 'Active Tasks', 'today focus', 'accent', 'projects', '#tasks-panel'],
-    ['completed_this_week', 'Completed', 'this week', 'success', 'projects', '#completed-work-panel'],
-    ['recent_sessions', 'Sessions', 'recent Hermes work', 'purple', 'agents', '#conversation-library-panel'],
-    ['scheduled_crons', 'Crons', 'scheduled jobs', 'warn', 'agents', '#cron-monitor-panel'],
-    ['active_projects', 'Projects', 'active portfolio', 'accent', 'projects', '#projects-panel'],
-  ];
-  $('#overview-cards').innerHTML = defs.map(([key, label, sub, tone, jumpView, jumpTarget]) => `
-    <button class="metric-card metric-card-button ${tone}" type="button" data-jump-view="${escapeHtml(jumpView)}" data-jump-target="${escapeHtml(jumpTarget)}" aria-label="Open ${escapeHtml(label)} details">
-      <div class="metric-icon" aria-hidden="true">${metricIcons[key]}</div>
-      <div>
-        <div class="metric-value">${cards[key] ?? 0}</div>
-        <div class="metric-label">${escapeHtml(label)}</div>
-        <div class="metric-sub">${escapeHtml(sub)}</div>
-      </div>
-      <span class="metric-arrow" aria-hidden="true">↗</span>
-    </button>
+function homeRelativeTime(value) {
+  const timestamp = Date.parse(String(value || ''));
+  if (!Number.isFinite(timestamp)) return 'No recent activity';
+  const deltaSeconds = Math.round((Date.now() - timestamp) / 1000);
+  const duration = humanDurationApprox(Math.max(1, Math.abs(deltaSeconds)));
+  return deltaSeconds < 0 ? `in ${duration}` : `${duration} ago`;
+}
+
+function homeAgentObservation(profile = {}) {
+  const profileId = normalizeFilterValue(profile.id || profile.name || '');
+  if (!profileId) return null;
+  return (state.agents || []).find((observation) => {
+    const keys = [
+      observation.profile_id,
+      observation.agent_id,
+      observation.id,
+      observation.name,
+    ].map(normalizeFilterValue);
+    return keys.includes(profileId);
+  }) || null;
+}
+
+function homeAgentPresentation(agent = {}) {
+  const runs = currentAgentConsoleRuns().filter((run) => (run.agent_id || 'default') === agent.id);
+  const activeRun = runs.find(agentConsoleRunIsActive);
+  const latestRun = runs.reduce((latest, run) => {
+    if (!latest) return run;
+    const runTime = Date.parse(run.updated_at || run.completed_at || run.created_at || '') || 0;
+    const latestTime = Date.parse(latest.updated_at || latest.completed_at || latest.created_at || '') || 0;
+    return runTime > latestTime ? run : latest;
+  }, null);
+  const observation = homeAgentObservation(agent);
+  const observationStatus = normalizeFilterValue(observation?.status);
+  const observationStale = observation ? isStaleAgent(observation) : false;
+  const runStatus = normalizeFilterValue(latestRun?.status);
+  const needsAttention = Boolean(
+    observation?.needs_user_input
+    || ['failed', 'blocked', 'needs attention', 'needs_attention'].includes(observationStatus)
+    || ['failed', 'blocked', 'error'].includes(runStatus)
+    || latestRun?.action_required?.kind
+    || observationStale,
+  );
+  const working = Boolean(activeRun || (observationStatus === 'running' && !observationStale));
+  const available = Boolean(agent.available);
+  const tone = needsAttention
+    ? 'attention'
+    : working
+      ? 'working'
+      : available
+        ? 'ready'
+        : 'unavailable';
+  const status = needsAttention
+    ? 'Needs attention'
+    : working
+      ? 'Working'
+      : available
+        ? 'Ready'
+        : 'Unavailable';
+  const taskCount = state.tasks.filter((task) => (
+    isOpenTask(task)
+    && (
+      task.delegation?.profile_id === agent.id
+      || normalizeFilterValue(task.assignee) === normalizeFilterValue(agent.id)
+    )
+  )).length;
+  const lastActive = [
+    observation?.last_heartbeat,
+    observation?.updated_at,
+    observation?.started_at,
+    latestRun?.updated_at,
+    latestRun?.completed_at,
+    latestRun?.created_at,
+  ].find((value) => Number.isFinite(Date.parse(String(value || ''))));
+  const currentTask = observation?.current_task
+    || state.tasks.find((task) => isOpenTask(task) && task.delegation?.profile_id === agent.id)?.title
+    || '';
+  const sessionCount = new Set(
+    runs.map((run) => run.session_id).filter(Boolean),
+  ).size;
+  return {
+    agent,
+    activeRun,
+    available,
+    currentTask,
+    lastActive,
+    observation,
+    runs,
+    sessionCount,
+    status,
+    taskCount,
+    tone,
+  };
+}
+
+function renderHomeLiveAgents() {
+  const container = $('#home-live-agent-list');
+  if (!container) return;
+  const agents = Array.isArray(state.agentConsoleAgents) ? state.agentConsoleAgents : [];
+  if (!agents.length) {
+    container.innerHTML = '<div class="empty">No configured Hermes agents are available from the selected connection.</div>';
+    return;
+  }
+  const toneRank = { attention: 0, working: 1, ready: 2, unavailable: 3 };
+  const rows = agents
+    .map((agent) => homeAgentPresentation(agent))
+    .sort((left, right) => (
+      (toneRank[left.tone] ?? 3) - (toneRank[right.tone] ?? 3)
+      || String(left.agent.name || left.agent.id || '').localeCompare(String(right.agent.name || right.agent.id || ''))
+    ))
+    .slice(0, 3);
+  container.innerHTML = rows.map((row) => {
+    const { agent } = row;
+    const runtime = [agent.provider, agent.model].filter(Boolean).join(' · ') || 'Hermes configured';
+    const liveDetail = row.currentTask || agent.description || 'General purpose agent';
+    const health = row.tone === 'attention'
+      ? row.observation?.stale ? 'Stale' : 'Review'
+      : row.tone === 'working' ? 'Active' : row.available ? 'Available' : 'Unavailable';
+    const activityLabel = homeRelativeTime(row.lastActive);
+    const accessibleLabel = [
+      `Open ${agent.name || agent.id || 'agent'} in Agents.`,
+      `Status: ${row.status}.`,
+      `${liveDetail}.`,
+      `Runtime: ${runtime}.`,
+      `${row.sessionCount} session${row.sessionCount === 1 ? '' : 's'} and ${row.taskCount} open task${row.taskCount === 1 ? '' : 's'}.`,
+      `Last activity: ${activityLabel}.`,
+      `Health: ${health}.`,
+    ].join(' ');
+    return `
+      <button class="home-live-agent-row ${escapeHtml(row.tone)}" type="button" data-home-agent-id="${escapeHtml(agent.id || '')}" aria-label="${escapeHtml(accessibleLabel)}">
+        <span class="home-live-agent-primary">
+          <span class="home-live-agent-name">${escapeHtml(agent.name || agent.id || 'Agent')}</span>
+          <span class="home-agent-status ${escapeHtml(row.tone)}"><i aria-hidden="true"></i>${escapeHtml(row.status)}</span>
+          <small>${escapeHtml(liveDetail)}</small>
+        </span>
+        <span class="home-live-agent-runtime">
+          <span>${escapeHtml(runtime)}</span>
+          <small>${row.sessionCount} session${row.sessionCount === 1 ? '' : 's'} · ${row.taskCount} task${row.taskCount === 1 ? '' : 's'}</small>
+        </span>
+        <span class="home-live-agent-freshness">
+          <span>${escapeHtml(activityLabel)}</span>
+          <small class="${escapeHtml(row.tone)}">${escapeHtml(health)}</small>
+        </span>
+        <span class="home-row-arrow" aria-hidden="true">›</span>
+      </button>
+    `;
+  }).join('');
+}
+
+function renderHomeProjects(projects = state.projects, tasks = state.tasks) {
+  const stats = $('#home-project-stats');
+  const queue = $('#home-project-queue');
+  if (!stats || !queue) return;
+  const statusCounts = { active: 0, paused: 0, archived: 0 };
+  projects.forEach((project) => {
+    const status = normalizeFilterValue(project.status || 'active');
+    if (status === 'archived') statusCounts.archived += 1;
+    else if (status === 'paused' || status === 'on hold' || status === 'on_hold') statusCounts.paused += 1;
+    else statusCounts.active += 1;
+  });
+  const completed = tasks.filter((task) => taskArea(task) === 'completed').length;
+  const open = tasks.filter(isOpenTask);
+  const total = tasks.length;
+  const progress = total ? Math.round((completed / total) * 100) : 0;
+  const next = [...open].sort((a, b) => taskSortScore(a) - taskSortScore(b))[0];
+  stats.innerHTML = [
+    ['active', statusCounts.active, 'Active'],
+    ['paused', statusCounts.paused, 'Paused'],
+    ['completed', completed, 'Tasks done'],
+    ['archived', statusCounts.archived, 'Archived'],
+  ].map(([tone, value, label]) => `
+    <div class="home-project-stat ${tone}">
+      <strong>${escapeHtml(value)}</strong>
+      <span>${escapeHtml(label)}</span>
+    </div>
   `).join('');
+  const queueLabel = next
+    ? `Open project task queue. Next: ${next.title}. ${open.length} open task${open.length === 1 ? '' : 's'}. ${progress}% of tracked tasks completed.`
+    : `Open project task queue. Queue clear. ${progress}% of tracked tasks completed.`;
+  queue.innerHTML = `
+    <button type="button" data-home-open-view="projects" class="home-project-queue-card" aria-label="${escapeHtml(queueLabel)}">
+      <span>
+        <strong>${escapeHtml(next?.project || 'Mentat queue')}</strong>
+        <small>${escapeHtml(next ? `Next: ${next.title}` : 'Queue clear — no open next moves.')}</small>
+        <em>${open.length} open task${open.length === 1 ? '' : 's'}</em>
+      </span>
+      <span class="home-project-progress" style="--progress:${progress}" aria-label="${progress}% of tracked tasks completed">${progress}%</span>
+    </button>
+  `;
+}
+
+function renderHomeCrons(payload = state.homeCrons) {
+  state.homeCrons = payload || {};
+  const container = $('#home-cron-list');
+  if (!container) return;
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  if (!jobs.length) {
+    container.innerHTML = `<div class="empty">${escapeHtml(payload?.error || 'No scheduled Hermes automations found.')}</div>`;
+    return;
+  }
+  const ordered = [...jobs].sort((left, right) => {
+    const leftTime = Date.parse(left.next_run || '') || Number.MAX_SAFE_INTEGER;
+    const rightTime = Date.parse(right.next_run || '') || Number.MAX_SAFE_INTEGER;
+    return leftTime - rightTime;
+  });
+  container.innerHTML = ordered.slice(0, 2).map((job) => `
+    <article class="home-cron-row">
+      <span class="home-cron-state ${job.enabled ? 'enabled' : 'disabled'}" aria-hidden="true"></span>
+      <span>
+        <strong>${escapeHtml(job.name || 'Scheduled job')}</strong>
+        <small>${escapeHtml(job.schedule || 'Schedule unavailable')}</small>
+      </span>
+      <span>
+        <strong>${job.enabled ? 'Enabled' : 'Disabled'} · ${escapeHtml(job.last_status || 'Never run')}</strong>
+        <small>${job.next_run ? `Next ${escapeHtml(homeRelativeTime(job.next_run))}` : 'Next run unavailable'}</small>
+      </span>
+    </article>
+  `).join('');
+}
+
+function homeCalendarStatus(payload = {}) {
+  if (Array.isArray(payload)) return { label: 'local read-only schedule', degraded: false };
+  const source = normalizeFilterValue(payload.source || 'local');
+  const auth = normalizeFilterValue(payload.auth || '');
+  const stale = Boolean(payload.summary?.stale);
+  const error = String(payload.error || '').trim();
+  if (source === 'google' && auth === 'connected' && !error) {
+    return { label: `Google Calendar · read-only${stale ? ' · stale' : ''}`, degraded: stale };
+  }
+  if (auth && auth !== 'connected') {
+    return { label: `Google not connected · ${stale ? 'stale ' : ''}local fallback`, degraded: true };
+  }
+  if (error) {
+    return { label: `Calendar temporarily unavailable · ${stale ? 'stale ' : ''}local fallback`, degraded: true };
+  }
+  return { label: `${stale ? 'stale ' : ''}local read-only schedule`, degraded: stale };
+}
+
+function renderHomeSchedule(payload = state.homeCalendar) {
+  state.homeCalendar = payload || {};
+  const container = $('#calendar-list');
+  const dateLabel = $('#home-schedule-date');
+  if (!container) return;
+  const calendarItems = Array.isArray(payload) ? payload : (payload?.items || []);
+  const taskItems = state.tasks
+    .filter((task) => task.scheduled_block?.start)
+    .map((task) => ({
+      id: `task-${task.id || task.title}`,
+      title: task.title || 'Scheduled task',
+      description: task.description || task.project || '',
+      start: task.scheduled_block.start,
+      end: task.scheduled_block.end,
+      type: 'task',
+      task_id: task.id || '',
+      project: task.project || '',
+  }));
+  const items = sortedCalendarItems([...calendarItems, ...taskItems]);
+  const today = new Date();
+  const selectedDate = today;
+  const dayStart = new Date(selectedDate);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+  const dayItems = items.filter((item) => {
+    const start = calendarDate(item.start);
+    if (!start) return false;
+    if (isDateOnly(item.start)) return sameCalendarDay(start, selectedDate);
+    const end = calendarDate(item.end) || new Date(start.getTime() + 60 * 60 * 1000);
+    return start < dayEnd && end > dayStart;
+  });
+  const fullDate = new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(selectedDate);
+  if (dateLabel) {
+    const sourceStatus = homeCalendarStatus(payload);
+    dateLabel.textContent = `${fullDate} · ${sourceStatus.label}`;
+    dateLabel.classList.toggle('attention', sourceStatus.degraded);
+  }
+  if (!dayItems.length) {
+    container.innerHTML = '<div class="empty home-schedule-empty">No calendar events or scheduled task blocks for this day.</div>';
+    return;
+  }
+  const allDay = dayItems.filter((item) => isDateOnly(item.start));
+  const timed = dayItems.filter((item) => !isDateOnly(item.start) && calendarDate(item.start));
+  const minuteFromDayStart = (value) => (
+    (calendarDate(value).getTime() - dayStart.getTime()) / 60000
+  );
+  const starts = timed.map((item) => Math.max(0, minuteFromDayStart(item.start)));
+  const ends = timed.map((item) => {
+    const start = calendarDate(item.start);
+    const end = calendarDate(item.end) || new Date(start.getTime() + 60 * 60 * 1000);
+    return Math.min(24 * 60, Math.max(0, minuteFromDayStart(end)));
+  });
+  let startHour = Math.floor(Math.min(8 * 60, ...(starts.length ? starts : [8 * 60])) / 60);
+  let endHour = Math.ceil(Math.max(14 * 60, ...(ends.length ? ends : [14 * 60])) / 60);
+  startHour = Math.max(0, startHour);
+  endHour = Math.min(24, Math.max(startHour + 6, endHour));
+  const spanMinutes = (endHour - startHour) * 60;
+  const tickStep = Math.max(1, Math.ceil((endHour - startHour) / 6));
+  const ticks = [];
+  for (let hour = startHour; hour <= endHour; hour += tickStep) ticks.push(hour);
+  if (ticks[ticks.length - 1] !== endHour) ticks.push(endHour);
+  const visualLaneEnds = [];
+  const laidOut = timed.map((item, sourceIndex) => {
+    const start = calendarDate(item.start);
+    const end = calendarDate(item.end) || new Date(start.getTime() + 60 * 60 * 1000);
+    const startAbsolute = Math.max(0, minuteFromDayStart(start));
+    const endAbsolute = Math.min(24 * 60, Math.max(startAbsolute + 30, minuteFromDayStart(end)));
+    const startMinutes = startAbsolute - startHour * 60;
+    const endMinutes = endAbsolute - startHour * 60;
+    const naturalLeft = Math.max(0, Math.min(100, (startMinutes / spanMinutes) * 100));
+    const width = Math.min(
+      100,
+      Math.max(8, ((Math.max(endMinutes, startMinutes + 30) - startMinutes) / spanMinutes) * 100),
+    );
+    const left = Math.max(0, Math.min(100 - width, naturalLeft));
+    const right = left + width;
+    let lane = visualLaneEnds.findIndex((laneEnd) => laneEnd <= left);
+    if (lane < 0) {
+      lane = visualLaneEnds.length;
+      visualLaneEnds.push(right);
+    } else {
+      visualLaneEnds[lane] = right;
+    }
+    return {
+      item,
+      sourceIndex,
+      lane,
+      left,
+      width,
+    };
+  });
+  const laneCount = Math.max(1, visualLaneEnds.length);
+  const trackHeight = Math.max(172, 28 + laneCount * 57);
+  const eventMarkup = laidOut.map(({ item, sourceIndex, lane, left, width }) => {
+    const tone = item.type === 'task' ? 'task' : sourceIndex % 2 ? 'alternate' : 'calendar';
+    const data = item.task_id
+      ? `data-home-schedule-task="${escapeHtml(item.task_id)}" data-home-schedule-project="${escapeHtml(item.project || '')}"`
+      : 'data-home-open-view="calendar"';
+    return `
+      <button class="home-schedule-event ${tone}" type="button" style="--event-left:${left}%;--event-width:${width}%;--event-lane:${lane};" ${data} aria-label="${escapeHtml(item.title || 'Schedule item')} · ${escapeHtml(calendarTimeLabel(item))}">
+        <strong>${escapeHtml(item.title || 'Schedule item')}</strong>
+        <small>${escapeHtml(calendarTimeLabel(item))}</small>
+      </button>
+    `;
+  }).join('');
+  const allDayMarkup = allDay.length ? `
+    <div class="home-schedule-all-day">
+      <span>All day</span>
+      ${allDay.map((item) => `<button type="button" data-home-open-view="calendar">${escapeHtml(item.title || 'All-day item')}</button>`).join('')}
+    </div>
+  ` : '';
+  const nowMinutes = today.getHours() * 60 + today.getMinutes() - startHour * 60;
+  const showNow = sameCalendarDay(selectedDate, today) && nowMinutes >= 0 && nowMinutes <= spanMinutes;
+  const nowLeft = (nowMinutes / spanMinutes) * 100;
+  container.innerHTML = `
+    ${allDayMarkup}
+    <div class="home-schedule-timeline">
+      <div class="home-schedule-hours">
+        ${ticks.map((hour) => `<span style="--tick-left:${((hour - startHour) / (endHour - startHour)) * 100}%;">${escapeHtml(timeFmt.format(new Date(2020, 0, 1, hour, 0)))}</span>`).join('')}
+      </div>
+      <div class="home-schedule-track" style="--schedule-track-height:${trackHeight}px;">
+        ${ticks.map((hour) => `<i style="--tick-left:${((hour - startHour) / (endHour - startHour)) * 100}%;" aria-hidden="true"></i>`).join('')}
+        ${showNow ? `<span class="home-schedule-now" style="--now-left:${nowLeft}%;" aria-label="Current time"></span>` : ''}
+        ${eventMarkup}
+      </div>
+    </div>
+  `;
 }
 
 function hasAttentionTag(task = {}) {
@@ -989,6 +1577,7 @@ function updateProjectRailButtons() {
 
 function renderFocusTasks(tasks = []) {
   const scoped = projectFilteredTasks(tasks);
+  const planned = scoped.filter((task) => task.planned_for_today);
   const open = scoped.filter(isOpenTask).sort((a, b) => {
     const aPlanned = Boolean(a.planned_for_today);
     const bPlanned = Boolean(b.planned_for_today);
@@ -998,7 +1587,19 @@ function renderFocusTasks(tasks = []) {
     }
     return taskSortScore(a) - taskSortScore(b);
   });
-  const focus = open.slice(0, 8);
+  const completedPlanned = planned.filter((task) => taskArea(task) === 'completed');
+  const focusSource = planned.length
+    ? [...planned].sort((a, b) => {
+      const aComplete = taskArea(a) === 'completed';
+      const bComplete = taskArea(b) === 'completed';
+      if (aComplete !== bComplete) return aComplete ? -1 : 1;
+      if (Number(a.manual_rank || 0) !== Number(b.manual_rank || 0)) {
+        return Number(a.manual_rank || 0) - Number(b.manual_rank || 0);
+      }
+      return taskSortScore(a) - taskSortScore(b);
+    })
+    : open;
+  const focus = focusSource.slice(0, 3);
 
   const projectOptions = projectOptionsFromTasks(tasks);
   const quickProject = $('#quick-capture-project');
@@ -1008,65 +1609,62 @@ function renderFocusTasks(tasks = []) {
     if (projectOptions.includes(previous)) quickProject.value = previous;
     else if (state.projectFilter && projectOptions.includes(state.projectFilter)) quickProject.value = state.projectFilter;
   }
-  const scopeLabel = state.projectFilter || (projectOptions.length === 1 ? projectOptions[0] : 'All Projects');
-  const inProgress = open.filter((task) => taskArea(task) === 'in progress').length;
-  const needsAttention = open.filter((task) => taskArea(task) === 'needs attention').length;
-  const due = open.filter(isDueTask).length;
-  const nextTask = open[0];
-  const plannedCount = open.filter((task) => task.planned_for_today).length;
-  const statusLine = nextTask
-    ? `Next: ${escapeHtml(nextTask.title)} · ${escapeHtml(taskArea(nextTask))}${plannedCount ? ` · ${plannedCount} deliberately planned` : ''}`
-    : 'Queue clear — no open next moves in this scope.';
-  const queueMeta = `${open.length} open`;
-  const projectSelect = `
-    <label class="today-project-select-label" for="today-project-select">
-      <span class="detail-context-label mono">Project</span>
-      <select id="today-project-select" class="today-project-select" aria-label="Filter next moves by project">
+  const plannedTotal = planned.length;
+  const completion = plannedTotal ? Math.round((completedPlanned.length / plannedTotal) * 100) : 0;
+  const completionValue = $('#home-focus-completion');
+  const completionLabel = $('#home-focus-completion-label');
+  const completionRing = $('#home-focus-completion-ring');
+  if (completionValue) completionValue.textContent = `${completion}%`;
+  if (completionLabel) {
+    completionLabel.textContent = plannedTotal
+      ? `${completedPlanned.length} of ${plannedTotal} done`
+      : 'No Today plan';
+  }
+  if (completionRing) {
+    completionRing.style.setProperty('--progress', completion);
+    completionRing.setAttribute('role', 'progressbar');
+    completionRing.setAttribute('aria-valuemin', '0');
+    completionRing.setAttribute('aria-valuemax', '100');
+    completionRing.setAttribute('aria-valuenow', String(completion));
+    completionRing.setAttribute(
+      'aria-label',
+      plannedTotal
+        ? `${completion}% of today's planned work completed`
+        : 'No tasks are planned for today',
+    );
+  }
+
+  const taskCards = focus.length ? focus.map((task) => {
+    const area = taskArea(task);
+    const indicator = focusTaskIndicator(task);
+    const scheduled = task.scheduled_block?.start
+      ? calendarTimeLabel({ start: task.scheduled_block.start, end: task.scheduled_block.end })
+      : area === 'completed'
+        ? 'Completed'
+        : indicator.label;
+    return `
+      <button class="home-focus-row focus-task-button ${escapeHtml(indicator.key)}" type="button" data-focus-task-id="${escapeHtml(String(task.id || ''))}" data-focus-task-title="${escapeHtml(task.title || '')}" data-focus-project-name="${escapeHtml(task.project || '')}" data-focus-task-area="${escapeHtml(area)}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')} in Projects and Tasks. Status: ${escapeHtml(indicator.label)}. ${escapeHtml(scheduled)}.">
+        <span class="home-focus-state ${escapeHtml(indicator.key)}" aria-label="${escapeHtml(indicator.label)}"></span>
+        <span class="home-focus-copy">
+          <strong>${escapeHtml(task.title || 'Untitled task')}</strong>
+          <small>${escapeHtml(task.description || task.project || 'No description supplied.')}</small>
+        </span>
+        <span class="home-focus-time ${area === 'needs attention' ? 'attention' : area === 'completed' ? 'completed' : ''}">${escapeHtml(scheduled)}</span>
+        <span class="home-row-arrow" aria-hidden="true">›</span>
+      </button>
+    `;
+  }).join('') : '<div class="empty clear-skies">No planned or open work in this project scope.</div>';
+  const scope = `
+    <details class="home-focus-scope">
+      <summary>${escapeHtml(state.projectFilter || 'All projects')}</summary>
+      <label for="today-project-select" class="sr-only">Filter operational focus by project</label>
+      <select id="today-project-select" class="today-project-select" aria-label="Filter operational focus by project">
         <option value="" ${state.projectFilter ? '' : 'selected'}>All projects</option>
         ${projectOptions.map((name) => `<option value="${escapeHtml(name)}" ${state.projectFilter === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
       </select>
-    </label>
+    </details>
   `;
-
-  const header = `
-    <section class="focus-queue-shell ${open.length ? '' : 'clear'}">
-      <header class="focus-queue-header">
-        <div class="focus-queue-copy">
-          <div class="focus-kicker mono">Current queue</div>
-          <h3>${escapeHtml(scopeLabel)} queue</h3>
-          <p>${statusLine}</p>
-        </div>
-        ${projectSelect}
-        <div class="focus-queue-head-meta detail-context-label mono">${escapeHtml(queueMeta)}</div>
-        <div class="focus-stat-row" aria-label="Queue status summary">
-          <span><strong>${inProgress}</strong> in progress</span>
-          <span><strong>${needsAttention}</strong> attention</span>
-          <span><strong>${due}</strong> due</span>
-        </div>
-      </header>
-      <div class="focus-task-rail">
-  `;
-
-
-  const taskCards = focus.length ? focus.map((task, index) => {
-    const area = taskArea(task);
-    const indicator = focusTaskIndicator(task);
-    return `
-      <button class="item focus-task-item focus-task-button focus-task-${escapeHtml(indicator.key)}" type="button" data-focus-task-id="${escapeHtml(String(task.id || ''))}" data-focus-task-title="${escapeHtml(task.title || '')}" data-focus-project-name="${escapeHtml(task.project || '')}" data-focus-task-area="${escapeHtml(area)}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')} in Projects / Tasks">
-        <span class="focus-task-indicator" aria-label="${escapeHtml(indicator.label)}"></span>
-        <span class="focus-task-rank mono">${task.planned_for_today ? String(index + 1).padStart(2, '0') : '··'}</span>
-        <div class="focus-task-body">
-          <div class="item-title"><span>${escapeHtml(task.title)}</span><span class="task-state-text ${taskTone(area)}">${escapeHtml(indicator.label)}</span></div>
-          <div class="item-desc">${escapeHtml(task.description || '')}</div>
-          <div class="item-meta mono">${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')} · ${escapeHtml(taskArea(task))}${task.estimated_minutes ? ` · ${Number(task.estimated_minutes)} min` : ''}</div>
-        </div>
-      </button>
-    `;
-  }).join('') : `
-      <div class="empty clear-skies">No tasks found in this project scope.</div>
-  `;
-
-  $('#focus-task-list').innerHTML = `${header}${taskCards}</div></section>`;
+  $('#focus-task-list').innerHTML = `${taskCards}${scope}`;
 }
 
 function dueTaskReminders(tasks = state.tasks) {
@@ -1979,7 +2577,7 @@ function renderCalendar(payload = {}, { view = state.activeView } = {}) {
     renderCalendarWeek(payload, calendarWeekStartDate());
     return;
   }
-  renderCalendarInto('#calendar-list', payload, { limit: 5 });
+  renderHomeSchedule(payload);
 }
 
 function renderEmail(payload = {}) {
@@ -2036,8 +2634,34 @@ function agentConsoleCommands() {
   return state.agentConsoleCommandManifest?.commands || [];
 }
 
+const agentConsoleActiveStatuses = new Set([
+  'queued',
+  'running',
+  'cancelling',
+  'waiting_for_approval',
+  'waiting_for_clarification',
+]);
+
 function agentConsoleRunIsActive(run = {}) {
-  return ['queued', 'running', 'cancelling'].includes(run.status);
+  return agentConsoleActiveStatuses.has(normalizeFilterValue(run.status));
+}
+
+function agentConsoleRunTransportBinding(run = {}) {
+  const mode = normalizeFilterValue(run.transport_mode || 'local');
+  const bindingId = String(
+    run.connection_binding_id
+    || (mode === 'local' ? 'local-default' : ''),
+  ).trim();
+  return mode && bindingId ? `${mode}:${bindingId}` : '';
+}
+
+function agentConsoleRunMatchesCurrentBinding(run = {}) {
+  const currentBinding = state.agentConsoleTransportBinding;
+  return !currentBinding || agentConsoleRunTransportBinding(run) === currentBinding;
+}
+
+function currentAgentConsoleRuns() {
+  return state.agentConsoleRuns.filter(agentConsoleRunMatchesCurrentBinding);
 }
 
 function agentConsoleEventCursor(run = {}) {
@@ -2334,7 +2958,7 @@ async function addAgentConsoleWorkspaceFile(rootId, relativePath) {
   } finally {
     state.agentConsoleAttachmentsUploading = false;
     renderAgentConsoleAttachmentTray();
-    const activeRun = state.agentConsoleRuns.some(agentConsoleRunIsActive);
+    const activeRun = currentAgentConsoleRuns().some(agentConsoleRunIsActive);
     const selectedAgent = state.agentConsoleAgents.find((agent) => agent.id === state.agentConsoleSelectedAgentId);
     const attach = $('#agent-console-attach');
     const send = $('#agent-console-form .agent-console-send');
@@ -2372,7 +2996,7 @@ async function addAgentConsoleFiles(files = []) {
     const input = $('#agent-console-file-input');
     if (input) input.value = '';
     renderAgentConsoleAttachmentTray();
-    const activeRun = state.agentConsoleRuns.some(agentConsoleRunIsActive);
+    const activeRun = currentAgentConsoleRuns().some(agentConsoleRunIsActive);
     const selectedAgent = state.agentConsoleAgents.find((agent) => agent.id === state.agentConsoleSelectedAgentId);
     if (attach) attach.disabled = !selectedAgent?.available || activeRun;
     if (send) send.disabled = !selectedAgent?.available || activeRun;
@@ -2395,6 +3019,17 @@ function renderAgentConsole(payload = {}) {
 
   if (payload.transport?.mode && payload.transport?.binding_id) {
     const nextBinding = `${payload.transport.mode}:${payload.transport.binding_id}`;
+    if (
+      state.agentConsoleTransportBinding
+      && state.agentConsoleTransportBinding !== nextBinding
+    ) {
+      state.agentConsoleSelectedProvider = '';
+      state.agentConsoleSelectedModel = '';
+      state.agentConsoleModelCatalog = {};
+      state.agentConsoleProviderInventory = {};
+      state.agentConsoleRuntimeLoading = true;
+      state.agentConsoleRuntimeRequestGeneration += 1;
+    }
     if (
       state.agentConsoleRemoteContext
       && state.agentConsoleRemoteContext.transport_binding !== nextBinding
@@ -2425,7 +3060,20 @@ function renderAgentConsole(payload = {}) {
   state.agentConsoleAgents = agents;
   state.agentConsoleModelCatalog = catalog;
   state.agentConsoleProviderInventory = providerInventory;
+  if (incomingProviderInventory) state.agentConsoleRuntimeLoading = false;
   state.agentConsoleRuns = runs;
+  const connectionLabel = $('#connection-mode-label');
+  const connectionDot = $('#connection-mode-dot');
+  const transportMode = normalizeFilterValue(payload.transport?.mode || '');
+  const consoleAvailable = payload.transport?.console_available !== false && agents.some((agent) => agent.available);
+  if (connectionLabel) {
+    connectionLabel.textContent = transportMode === 'remote'
+      ? 'Remote Hermes'
+      : transportMode === 'local'
+        ? 'Local Hermes'
+        : 'Hermes unavailable';
+  }
+  if (connectionDot) connectionDot.className = `dot ${consoleAvailable ? 'healthy' : 'degraded'}`;
   runs.forEach((run) => {
     const cursor = agentConsoleEventCursor(run);
     if (cursor > Number(state.agentConsoleEventCursors[run.id] || 0)) {
@@ -2449,7 +3097,7 @@ function renderAgentConsole(payload = {}) {
   if (providerSelect) {
     providerSelect.innerHTML = scopedProviders.length
       ? scopedProviders.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === selectedProvider?.id ? 'selected' : ''}>${escapeHtml(item.name || item.id)}${item.current ? ' · current' : ''}</option>`).join('')
-      : `<option value="">${escapeHtml(inventoryMatchesAgent ? providerInventory.error || 'No authenticated providers available' : 'Refresh providers for this profile')}</option>`;
+      : `<option value="">${escapeHtml(state.agentConsoleRuntimeLoading ? 'Loading current runtime…' : inventoryMatchesAgent ? providerInventory.error || 'No authenticated providers available' : 'Refresh providers for this profile')}</option>`;
     state.agentConsoleSelectedProvider = providerSelect.value;
   }
   const scopedModels = Array.isArray(selectedProvider?.models) ? selectedProvider.models : [];
@@ -2459,24 +3107,49 @@ function renderAgentConsole(payload = {}) {
   if (modelSelect) {
     modelSelect.innerHTML = scopedModels.length
       ? scopedModels.map((model) => `<option value="${escapeHtml(model)}" ${model === defaultModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
-      : `<option value="">${escapeHtml(inventoryMatchesAgent ? providerInventory.error || 'No models available for this provider' : 'Refresh providers for this profile')}</option>`;
+      : `<option value="">${escapeHtml(state.agentConsoleRuntimeLoading ? 'Loading current runtime…' : inventoryMatchesAgent ? providerInventory.error || 'No models available for this provider' : 'Refresh providers for this profile')}</option>`;
     state.agentConsoleSelectedModel = modelSelect.value;
   }
 
-  const activeRun = runs.find(agentConsoleRunIsActive);
-  const selectedRuns = runs.filter((run) => (run.agent_id || 'default') === selectedAgent.id);
+  const bindingRuns = runs.filter(agentConsoleRunMatchesCurrentBinding);
+  const activeRun = bindingRuns.find(agentConsoleRunIsActive);
+  const selectedRuns = bindingRuns.filter((run) => (run.agent_id || 'default') === selectedAgent.id);
   const latestRun = selectedRuns[0];
+  const selectedActiveRun = selectedRuns.find(agentConsoleRunIsActive);
   if (latestRun?.session_id && !state.agentConsoleStartFresh) state.agentConsoleSessionId = latestRun.session_id;
   state.agentConsoleRunId = activeRun?.id || '';
   const available = Boolean(selectedAgent.available);
-  const modelLabel = modelSelect?.value || selectedAgent.model || 'configured model';
-  const providerLabel = selectedProvider?.name || selectedProvider?.id || catalog.provider_label || catalog.provider || 'Hermes';
+  const runtimeRun = selectedActiveRun?.provider && selectedActiveRun?.model
+    ? selectedActiveRun
+    : null;
+  const runtimeProvider = runtimeRun?.provider || '';
+  const runtimeModel = runtimeRun?.model || '';
+  if (providerInventory.read_only && runtimeProvider && providerSelect) {
+    providerSelect.innerHTML = `<option value="${escapeHtml(runtimeProvider)}">${escapeHtml(runtimeProvider)} · current</option>`;
+    providerSelect.value = runtimeProvider;
+    state.agentConsoleSelectedProvider = runtimeProvider;
+  }
+  if (providerInventory.read_only && runtimeModel && modelSelect) {
+    modelSelect.innerHTML = `<option value="${escapeHtml(runtimeModel)}">${escapeHtml(runtimeModel)}</option>`;
+    modelSelect.value = runtimeModel;
+    state.agentConsoleSelectedModel = runtimeModel;
+  }
+  const modelLabel = runtimeModel || modelSelect?.value || selectedAgent.model || 'configured model';
+  const providerLabel = runtimeProvider || selectedProvider?.name || selectedProvider?.id || catalog.provider_label || catalog.provider || 'Hermes';
   const providerCapabilityLabel = providerSwitchUnavailable ? ' · provider switching unsupported by this Hermes runtime' : '';
   if (stateLabel) {
-    stateLabel.textContent = !available
+    stateLabel.textContent = state.agentConsoleRuntimeLoading
+      ? 'Loading current provider and model…'
+      : !available
       ? `Hermes CLI unavailable${providerCapabilityLabel}`
-      : activeRun
-        ? `${providerLabel} · ${modelLabel} · working${providerCapabilityLabel}`
+      : selectedActiveRun
+        ? `${providerLabel} · ${modelLabel} · ${
+          selectedActiveRun.status === 'waiting_for_approval'
+            ? 'waiting for approval'
+            : selectedActiveRun.status === 'waiting_for_clarification'
+              ? 'waiting for clarification'
+              : 'working'
+        }${providerCapabilityLabel}`
         : `${providerLabel} · ${modelLabel} · ready${providerCapabilityLabel}`;
     stateLabel.title = providerSwitchUnavailable
       ? available
@@ -2502,27 +3175,79 @@ function renderAgentConsole(payload = {}) {
   const visibleRuns = [...selectedRuns].slice(0, 10).reverse();
   chat.innerHTML = visibleRuns.length ? visibleRuns.map((run) => {
     const runAgentName = run.agent_name || selectedAgent.name || 'Hermes';
-    const events = (run.events || []).map((event) => `
+    const startsNewSession = Boolean(
+      run.starts_new_session
+      || (run.events || []).some((event) => event.type === 'session.started' || event.kind === 'session.started')
+    );
+    const sessionDivider = startsNewSession
+      ? '<div class="agent-console-session-divider" role="separator" aria-label="New Hermes session started"><span aria-hidden="true">New Hermes session started</span></div>'
+      : '';
+    const events = (run.events || []).filter(
+      (event) => event.type !== 'session.started' && event.kind !== 'session.started'
+    ).map((event) => {
+      const eventType = event.type || event.kind || 'status';
+      const eventSource = eventType.startsWith('tool.')
+        ? 'Tool'
+        : eventType === 'reasoning.available'
+          ? 'Thinking'
+          : runAgentName;
+      const eventText = String(event.display_text || event.message || 'Working');
+      const eventContent = eventType === 'reasoning.available' && eventText.length > 100
+        ? `<details class="agent-console-reasoning-detail">
+            <summary aria-label="Show full reasoning summary">${escapeHtml(eventText.slice(0, 100))}...</summary>
+            <div>${escapeHtml(eventText)}</div>
+          </details>`
+        : `<span>${escapeHtml(eventText)}</span>`;
+      return `
       <div class="agent-console-log-row agent-console-log-status ${escapeHtml(event.kind || 'status')}">
-        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(event.display_text || event.message || 'Working')}</span>
-      </div>`).join('');
+        <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(eventSource)}</span>${eventContent}
+      </div>`;
+    }).join('');
+    const workingLabel = run.status === 'cancelling'
+      ? 'Stopping'
+      : run.status === 'waiting_for_approval'
+        ? 'Waiting for approval'
+        : run.status === 'waiting_for_clarification'
+          ? 'Waiting for clarification'
+          : 'Working';
     const working = agentConsoleRunIsActive(run) ? `
-      <div class="agent-console-log-row agent-console-working" role="status"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(runAgentName)}</span><span>${run.status === 'cancelling' ? 'Stopping' : 'Working'}</span></div>` : '';
+      <div class="agent-console-log-row agent-console-working"><span class="agent-console-working-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(runAgentName)}</span><span>${escapeHtml(workingLabel)}</span></div>` : '';
     const storedSummaryLabel = run.persisted_summary ? 'Stored summary' : '';
     const promptExcerpt = run.prompt_truncated || storedSummaryLabel ? `<span class="mono">${run.prompt_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const responseExcerpt = run.response_truncated || storedSummaryLabel ? `<span class="mono">${run.response_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const outputArtifacts = Array.isArray(run.artifacts) ? run.artifacts : Array.isArray(run.output_artifacts) ? run.output_artifacts : [];
     const artifactCards = agentConsoleArtifactCards(outputArtifacts);
-    const response = run.response || artifactCards ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${run.response ? renderMarkdown(run.response) : ''}${artifactCards}</div>${responseExcerpt}</div>` : '';
+    const contextTokens = run.usage?.context_tokens;
+    const contextLength = run.usage?.context_length;
+    const contextAvailable = Number.isInteger(contextTokens)
+      && Number.isInteger(contextLength)
+      && contextTokens >= 0
+      && contextLength > 0
+      && contextTokens <= contextLength;
+    const contextPercent = contextAvailable ? Math.round((contextTokens / contextLength) * 1000) / 10 : null;
+    const contextUsage = ['completed', 'failed', 'cancelled'].includes(run.status)
+      ? `<div class="agent-console-context-usage mono" aria-label="${contextAvailable ? `Context window ${humanNumber(contextTokens)} of ${humanNumber(contextLength)} tokens used, ${contextPercent}% used` : 'Context window usage unavailable'}">
+          <span><strong>${contextAvailable ? humanNumber(contextTokens) : 'Unavailable'}</strong> context tokens used</span>
+          <span><strong>${contextAvailable ? humanNumber(contextLength) : 'Unavailable'}</strong> total context window${contextAvailable ? ` · ${contextPercent}% used` : ''}</span>
+        </div>`
+      : '';
+    const response = run.response || artifactCards || contextUsage ? `<div class="agent-console-log-row agent-console-log-response"><span class="mono">${escapeHtml(runAgentName)}</span><div class="message-content markdown-body">${run.response ? renderMarkdown(run.response) : ''}${artifactCards}${contextUsage}</div>${responseExcerpt}</div>` : '';
     const errorExcerpt = run.error_truncated || storedSummaryLabel ? `<span class="mono">${run.error_truncated ? 'Stored excerpt' : storedSummaryLabel}</span>` : '';
     const error = run.error ? `<div class="agent-console-log-row agent-console-log-error"><span class="mono">${run.status === 'cancelled' ? 'Stopped' : 'Error'}</span><div class="message-content">${escapeHtml(run.error)}</div>${errorExcerpt}</div>` : '';
+    const request = run.action_required || {};
+    const requestActions = request.kind === 'approval'
+      ? `<div class="agent-console-log-row agent-console-log-status approval"><span class="mono">Approval</span><div class="message-content"><strong>${escapeHtml(request.preview?.title || 'Remote action needs approval')}</strong><p>${escapeHtml(request.preview?.summary || '')}</p><div class="compact-actions"><button type="button" class="mini-button" data-agent-console-approval="once" data-agent-console-run="${escapeHtml(run.id)}" data-agent-console-request="${escapeHtml(request.request_id || '')}">Allow once</button><button type="button" class="mini-button" data-agent-console-approval="deny" data-agent-console-run="${escapeHtml(run.id)}" data-agent-console-request="${escapeHtml(request.request_id || '')}">Deny</button></div></div></div>`
+      : request.kind === 'clarification'
+        ? `<div class="agent-console-log-row agent-console-log-status clarification"><span class="mono">Question</span><div class="message-content"><strong>${escapeHtml(request.prompt?.question || 'Remote Hermes needs an answer')}</strong>${request.prompt?.type === 'text' ? `<label class="sr-only" for="agent-console-answer-${escapeHtml(run.id)}">Your answer</label><textarea id="agent-console-answer-${escapeHtml(run.id)}" class="agent-console-clarification-text" rows="3" maxlength="2000" placeholder="Type your answer"></textarea><div class="compact-actions"><button type="button" class="mini-button" data-agent-console-clarification-text="true" data-agent-console-run="${escapeHtml(run.id)}" data-agent-console-request="${escapeHtml(request.request_id || '')}">Send answer</button></div>` : (request.prompt?.choices || []).map((choice) => `<button type="button" class="mini-button" data-agent-console-clarification="${escapeHtml(choice.id)}" data-agent-console-run="${escapeHtml(run.id)}" data-agent-console-request="${escapeHtml(request.request_id || '')}">${escapeHtml(choice.label)}</button>`).join('')}</div></div>`
+        : '';
     const inputAttachments = Array.isArray(run.attachments) ? run.attachments : Array.isArray(run.input_attachments) ? run.input_attachments : [];
     const attachmentCards = inputAttachments.length
       ? `<section class="agent-console-run-attachment-context" aria-label="Files used as prompt context"><span class="mono">Used as prompt context · ${inputAttachments.length} file${inputAttachments.length === 1 ? '' : 's'}</span><div class="agent-console-run-attachments">${agentConsoleAttachmentCards(inputAttachments)}</div></section>`
       : '';
-    return `<section class="agent-console-turn"><div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}${attachmentCards}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${response}${error}</section>`;
+    return `<section class="agent-console-turn">${sessionDivider}<div class="agent-console-log-row agent-console-log-prompt"><time class="mono">${escapeHtml(timeFmt.format(new Date(run.created_at || Date.now())))}</time><span>You</span><div class="message-content">${escapeHtml(run.prompt || '')}${attachmentCards}</div>${promptExcerpt}</div><div class="agent-console-events">${events}</div>${working}${requestActions}${response}${error}</section>`;
   }).join('') : `<div class="agent-console-empty mono">${escapeHtml(payload.error || (available ? 'Hermes ready.' : 'Hermes CLI unavailable.'))}</div>`;
   if (wasNearBottom || activeRun) chat.scrollTop = chat.scrollHeight;
+  renderHomeLiveAgents();
   scheduleAgentConsolePoll(Boolean(activeRun));
 }
 
@@ -2531,7 +3256,7 @@ function scheduleAgentConsolePoll(shouldPoll = true) {
   state.agentConsolePollTimer = null;
   if (!shouldPoll || state.activeView !== 'today') return;
   state.agentConsolePollTimer = setTimeout(async () => {
-    const activeRun = state.agentConsoleRuns.find(agentConsoleRunIsActive);
+    const activeRun = currentAgentConsoleRuns().find(agentConsoleRunIsActive);
     if (!activeRun) return;
     const cursor = Number(state.agentConsoleEventCursors[activeRun.id] ?? agentConsoleEventCursor(activeRun));
     try {
@@ -2543,11 +3268,26 @@ function scheduleAgentConsolePoll(shouldPoll = true) {
         Boolean(payload.cursor_reset_required),
       );
       state.agentConsoleEventCursors[activeRun.id] = Number(payload.next_cursor ?? agentConsoleEventCursor(updated));
+      const incomingEvents = Array.isArray(payload.events)
+        ? payload.events
+        : Array.isArray(payload.run?.events)
+          ? payload.run.events
+          : [];
+      const runtimeMayHaveChanged = incomingEvents.some((event) => (
+        ['runtime.updated', 'complete', 'cancelled', 'error', 'session.started'].includes(event.type || event.kind)
+        || ['resumed', 'approval', 'clarification', 'session'].includes(event.data?.phase)
+      )) || updated.status !== activeRun.status;
       renderAgentConsole({
         agents: state.agentConsoleAgents,
         model_catalog: state.agentConsoleModelCatalog,
         runs: state.agentConsoleRuns.map((run) => run.id === activeRun.id ? updated : run),
       });
+      if (runtimeMayHaveChanged) {
+        void refreshAgentConsoleModelCatalog({
+          agentId: updated.agent_id || state.agentConsoleSelectedAgentId,
+          silent: true,
+        });
+      }
     } catch (err) {
       const status = $('#agent-console-form-status');
       if (status) status.textContent = err.message;
@@ -2564,17 +3304,34 @@ function resizeAgentConsolePrompt() {
   renderAgentConsoleCommandMenu();
 }
 
-async function refreshAgentConsoleModelCatalog({ focus = false, agentId = state.agentConsoleSelectedAgentId } = {}) {
+async function refreshAgentConsoleModelCatalog({
+  focus = false,
+  agentId = state.agentConsoleSelectedAgentId,
+  silent = false,
+} = {}) {
   const status = $('#agent-console-form-status');
-  if (status) status.textContent = 'Refreshing active provider models…';
+  const requestedAgentId = agentId || 'default';
+  const requestGeneration = state.agentConsoleRuntimeRequestGeneration + 1;
+  state.agentConsoleRuntimeRequestGeneration = requestGeneration;
+  if (!silent && status) status.textContent = 'Refreshing active provider models…';
+  state.agentConsoleRuntimeLoading = true;
   try {
-    const payload = await refreshAgentConsoleModels(agentId);
+    const payload = await refreshAgentConsoleModels(requestedAgentId);
+    if (
+      requestGeneration !== state.agentConsoleRuntimeRequestGeneration
+      || requestedAgentId !== state.agentConsoleSelectedAgentId
+    ) {
+      return null;
+    }
+    state.agentConsoleRuntimeLoading = false;
     renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: payload.model_catalog, provider_inventory: payload.provider_inventory, runs: state.agentConsoleRuns });
-    if (status) status.textContent = '';
+    if (!silent && status) status.textContent = '';
     if (focus) $('#agent-console-model-select')?.focus();
     return payload.model_catalog;
   } catch (err) {
-    if (status) status.textContent = err.message;
+    if (requestGeneration !== state.agentConsoleRuntimeRequestGeneration) return null;
+    state.agentConsoleRuntimeLoading = false;
+    if (!silent && status) status.textContent = err.message;
     return null;
   }
 }
@@ -2676,7 +3433,11 @@ async function submitAgentConsolePrompt() {
     } else if (definition.handler === 'agent_console.new_session') {
       state.agentConsoleSessionId = '';
       state.agentConsoleStartFresh = true;
-      if (status) status.textContent = 'New Hermes session ready.';
+      if (status) status.textContent = 'Next prompt starts a new Hermes session.';
+      void refreshAgentConsoleModelCatalog({
+        agentId: state.agentConsoleSelectedAgentId,
+        silent: true,
+      });
     } else if (definition.handler === 'agent_console.show_help') {
       const help = agentConsoleCommands().map((item) => `${item.command} — ${item.description}`).join('; ');
       if (status) status.textContent = `Dashboard commands: ${help}.`;
@@ -2688,10 +3449,12 @@ async function submitAgentConsolePrompt() {
   }
   if (status) status.textContent = 'Sending to Hermes…';
   try {
+    const startingFresh = state.agentConsoleStartFresh;
     const payload = await startAgentConsoleRun({
       agent_id: $('#agent-console-agent')?.value || state.agentConsoleSelectedAgentId || 'default',
       prompt: value,
       session_id: state.agentConsoleStartFresh ? undefined : state.agentConsoleSessionId || undefined,
+      start_new_session: startingFresh,
       attachment_ids: state.agentConsoleAttachments.map((attachment) => attachment.id),
       remote_context_token: state.agentConsoleRemoteContext?.token || undefined,
     });
@@ -2703,6 +3466,10 @@ async function submitAgentConsolePrompt() {
     resizeAgentConsolePrompt();
     renderAgentConsoleAttachmentTray();
     renderAgentConsole({ agents: state.agentConsoleAgents, runs: [payload.run, ...state.agentConsoleRuns].filter(Boolean) });
+    void refreshAgentConsoleModelCatalog({
+      agentId: payload.run?.agent_id || state.agentConsoleSelectedAgentId,
+      silent: true,
+    });
     if (status) status.textContent = '';
   } catch (err) {
     if (state.agentConsoleRemoteContext) {
@@ -4537,11 +5304,14 @@ function renderHealth(payload = {}) {
   const pill = $('#health-status-pill');
   const summary = $('#health-summary');
   const status = payload.status || 'healthy';
+  const versionLabel = $('#mentat-version');
+  if (versionLabel) versionLabel.textContent = payload.display_version || 'version unavailable';
   const statusLabel = payload.status_label || (status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : 'Healthy');
   const dotClass = status === 'healthy' ? 'healthy' : 'degraded';
   if (dot) dot.className = `dot ${dotClass}`;
   if (label) {
-    label.textContent = `${statusLabel} · ${payload.summary || 'No subsystem summary available.'}`;
+    const version = payload.display_version ? `Mentat ${payload.display_version} · ` : '';
+    label.textContent = `${version}${statusLabel} · ${payload.summary || 'No subsystem summary available.'}`;
     label.title = label.textContent;
   }
   if (pill) {
@@ -4553,7 +5323,7 @@ function renderHealth(payload = {}) {
   summary.innerHTML = subsystems.length ? subsystems.map((item) => {
     const metaValues = item.key === 'remote_hermes'
       ? [item.label, item.version, item.model, item.category]
-      : [item.path, item.size, item.modified_at];
+      : [item.size, item.modified_at];
     const meta = metaValues.filter(Boolean).map((value) => escapeHtml(value)).join(' · ');
     return `
       <article class="item health-item health-${escapeHtml(item.status || 'healthy')}">
@@ -4566,6 +5336,44 @@ function renderHealth(payload = {}) {
       </article>
     `;
   }).join('') : `<div class="empty">No subsystem health checks returned.</div>`;
+}
+
+async function downloadDiagnosticsBundle() {
+  const button = $('#download-diagnostics');
+  const status = $('#diagnostics-status');
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'Preparing a private, redacted bundle…';
+  try {
+    const response = await fetch(endpoints.diagnosticsBundle, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/zip' },
+    });
+    if (!response.ok) {
+      let message = 'Mentat could not create the diagnostics bundle.';
+      try {
+        const payload = await response.json();
+        if (payload?.error) message = payload.error;
+      } catch (_err) {
+        // Keep the bounded fallback when an intermediary returns a non-JSON error.
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'mentat-diagnostics.zip';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    if (status) status.textContent = 'Diagnostics downloaded. You can attach the ZIP to a bug report.';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function ensureProjectsLoaded() {
@@ -4604,13 +5412,22 @@ async function refresh() {
   if (activeView === 'today') requests.agentConsoleCommandManifest = fetchAgentConsoleCommandManifest();
   if (activeView === 'today' || activeView === 'agents') {
     requests.sessions = api(endpoints.sessions);
+    requests.agents = activeView === 'today'
+      ? api(endpoints.agents).catch(() => ({ agents: [] }))
+      : api(endpoints.agents);
     if (activeView === 'agents') {
-      requests.agents = api(endpoints.agents);
       requests.hermesProfiles = fetchHermesProfiles();
     }
   }
   if (activeView === 'today' || activeView === 'projects' || activeView === 'agents') requests.projects = api(endpoints.projects);
-  if (activeView === 'agents') requests.crons = api(endpoints.crons);
+  if (activeView === 'today' || activeView === 'agents') {
+    requests.crons = activeView === 'today'
+      ? api(endpoints.crons).catch(() => ({
+        jobs: [],
+        error: 'Hermes CRON inventory is temporarily unavailable.',
+      }))
+      : api(endpoints.crons);
+  }
   if (activeView === 'notes') requests.notes = api(endpoints.notes);
   if (activeView === 'today' || activeView === 'notes') requests.contextPacks = fetchContextPacks();
   if (activeView === 'settings') {
@@ -4623,7 +5440,7 @@ async function refresh() {
     const data = Object.fromEntries(entries);
 
     renderGreeting(data.overview.identity || {});
-    renderIfChanged('overview-cards', data.overview.cards, renderCards);
+    state.overviewCards = data.overview.cards || {};
     if (data.projects) {
       state.projects = data.projects.projects || [];
       state.projectsLoaded = true;
@@ -4638,6 +5455,7 @@ async function refresh() {
     if (data.projects) renderIfChanged(`projects-${state.projectFilter}-${state.projectEditorMode}`, state.projects, renderProjects);
     renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
     renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
+    if (activeView === 'today') renderHomeProjects(state.projects, tasks);
     if (data.calendar && (activeView !== 'calendar' || state.calendarWeekStart === calendarRequestWeekKey)) {
       const cacheKey = activeView === 'calendar' ? `calendar-week-${calendarRequestWeekKey}` : 'calendar-agenda';
       renderIfChanged(cacheKey, data.calendar, (payload) => renderCalendar(payload, { view: activeView }));
@@ -4645,7 +5463,10 @@ async function refresh() {
     if (data.agentConsoleCommandManifest) setAgentConsoleCommandManifest(data.agentConsoleCommandManifest);
     if (data.agentConsole) renderAgentConsole(data.agentConsole);
     if (data.agentActivity) renderIfChanged('agent-activity', data.agentActivity, renderAgentActivity);
-    if (data.crons) renderIfChanged('crons', data.crons, renderCrons);
+    if (data.crons) {
+      renderIfChanged('crons', data.crons, renderCrons);
+      if (activeView === 'today') renderHomeCrons(data.crons);
+    }
     if (data.hermesProfiles) renderIfChanged('hermes-profiles', data.hermesProfiles, renderHermesProfiles);
     if (data.sessions || data.agents) {
       if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
@@ -4792,19 +5613,55 @@ async function navigateGlobalSearchResult(result) {
 }
 
 initializeTheme();
+initializeShell();
+initializeContrast();
+initializeMobileNavigation();
 
 $('#refresh-rate').textContent = `${REFRESH_MS / 1000}s`;
 
 $$('.nav-item').forEach((button) => {
   button.addEventListener('click', () => {
+    const closeDrawer = mobileNavigationIsOpen();
     void setView(button.dataset.view);
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    if (closeDrawer) closeMobileNavigation();
   });
 });
 
-$('#overview-cards').addEventListener('click', (event) => {
-  const card = event.target.closest('.metric-card-button');
-  if (!card) return;
-  void jumpToDashboardSection(card.dataset.jumpView, card.dataset.jumpTarget);
+$('.connection-status-button')?.addEventListener('click', () => {
+  void setView('settings');
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+});
+
+$('#home-operations-dashboard')?.addEventListener('click', async (event) => {
+  const scheduledTask = event.target.closest('[data-home-schedule-task]');
+  if (scheduledTask) {
+    state.selectedTaskId = scheduledTask.dataset.homeScheduleTask || '';
+    state.projectFilter = scheduledTask.dataset.homeScheduleProject || '';
+    state.taskStatusFilter = 'all';
+    await setView('projects');
+    renderProjectScopedViews();
+    flashTarget($('#selected-task-panel'));
+    return;
+  }
+
+  const agent = event.target.closest('[data-home-agent-id]');
+  if (agent) {
+    state.selectedHermesProfileId = agent.dataset.homeAgentId || '';
+    await setView('agents');
+    return;
+  }
+
+  const destination = event.target.closest('[data-home-open-view]');
+  if (!destination) return;
+  const view = destination.dataset.homeOpenView || '';
+  const target = destination.dataset.homeTarget || '';
+  if (target) {
+    await jumpToDashboardSection(view, target);
+    return;
+  }
+  await setView(view);
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
 });
 
 $('#quick-capture-form')?.addEventListener('submit', async (event) => {
@@ -4845,6 +5702,8 @@ $('#enable-reminders-button')?.addEventListener('click', async () => {
   button.textContent = permission === 'granted' ? 'Reminders Enabled' : 'Use In-App Reminders';
   renderAndNotifyReminders(state.tasks);
 });
+
+$('#download-diagnostics')?.addEventListener('click', () => void downloadDiagnosticsBundle());
 
 $('#focus-task-list').addEventListener('change', (event) => {
   const projectSelect = event.target.closest('#today-project-select');
@@ -4964,6 +5823,20 @@ const themeSelect = $('#theme-select');
 if (themeSelect) {
   themeSelect.addEventListener('change', (event) => {
     applyTheme(event.target.value);
+  });
+}
+
+const shellSelect = $('#shell-select');
+if (shellSelect) {
+  shellSelect.addEventListener('change', (event) => {
+    applyShell(event.target.value);
+  });
+}
+
+const contrastSelect = $('#contrast-select');
+if (contrastSelect) {
+  contrastSelect.addEventListener('change', (event) => {
+    applyContrast(event.target.value);
   });
 }
 
@@ -5089,6 +5962,7 @@ $('#agent-console-agent')?.addEventListener('change', async (event) => {
   state.agentConsoleSelectedProvider = '';
   state.agentConsoleSelectedModel = '';
   state.agentConsoleProviderInventory = {};
+  state.agentConsoleRuntimeLoading = true;
   state.agentConsoleSessionId = '';
   state.agentConsoleStartFresh = true;
   renderAgentConsole({ agents: state.agentConsoleAgents, model_catalog: {}, runs: state.agentConsoleRuns });
@@ -5131,7 +6005,11 @@ $('#agent-console-new-session')?.addEventListener('click', () => {
   state.agentConsoleSessionId = '';
   state.agentConsoleStartFresh = true;
   const status = $('#agent-console-form-status');
-  if (status) status.textContent = 'New Hermes session ready.';
+  if (status) status.textContent = 'Next prompt starts a new Hermes session.';
+  void refreshAgentConsoleModelCatalog({
+    agentId: state.agentConsoleSelectedAgentId,
+    silent: true,
+  });
   $('#agent-console-prompt')?.focus();
 });
 $('#agent-console-stop')?.addEventListener('click', async () => {
@@ -5142,6 +6020,40 @@ $('#agent-console-stop')?.addEventListener('click', async () => {
     const payload = await stopAgentConsoleRun(state.agentConsoleRunId);
     renderAgentConsole({ agents: state.agentConsoleAgents, runs: state.agentConsoleRuns.map((run) => run.id === payload.run?.id ? payload.run : run) });
   } catch (err) {
+    if (status) status.textContent = err.message;
+  }
+});
+
+$('#agent-console-chat')?.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-agent-console-approval], [data-agent-console-clarification], [data-agent-console-clarification-text]');
+  if (!button) return;
+  const runId = button.dataset.agentConsoleRun || '';
+  const requestId = button.dataset.agentConsoleRequest || '';
+  const approval = button.dataset.agentConsoleApproval;
+  const clarification = button.dataset.agentConsoleClarification;
+  const textClarification = button.dataset.agentConsoleClarificationText === 'true';
+  const status = $('#agent-console-form-status');
+  if (!runId || !requestId) return;
+  button.disabled = true;
+  const textAnswer = textClarification ? document.querySelector(`#agent-console-answer-${CSS.escape(runId)}`)?.value.trim() : '';
+  if (textClarification && !textAnswer) {
+    if (status) status.textContent = 'Type an answer first.';
+    button.disabled = false;
+    return;
+  }
+  if (status) status.textContent = approval ? 'Sending your approval response…' : 'Sending your answer…';
+  try {
+    const payload = await respondToAgentConsoleRequest(runId, approval
+      ? { confirmed: true, kind: 'approval', request_id: requestId, choice: approval }
+      : { confirmed: true, kind: 'clarification', request_id: requestId, response: textClarification ? { type: 'text', text: textAnswer } : { type: 'choice', choice_id: clarification } });
+    renderAgentConsole({ agents: state.agentConsoleAgents, runs: state.agentConsoleRuns.map((run) => run.id === payload.run?.id ? payload.run : run) });
+    void refreshAgentConsoleModelCatalog({
+      agentId: payload.run?.agent_id || state.agentConsoleSelectedAgentId,
+      silent: true,
+    });
+    if (status) status.textContent = '';
+  } catch (err) {
+    button.disabled = false;
     if (status) status.textContent = err.message;
   }
 });
