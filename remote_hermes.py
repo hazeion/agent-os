@@ -111,6 +111,10 @@ _KNOWN_BOOLEAN_FEATURES = frozenset(
         "profile_runtime_inventory",
         "profile_runtime_inventory_complete",
         "profile_runtime_inventory_requires_api_key",
+        "profile_runtime_switch",
+        "profile_runtime_switch_revision_bound",
+        "profile_runtime_switch_idempotency",
+        "profile_runtime_switch_active_run_lock",
         "kanban_api",
         "kanban_api_revisioned",
         "kanban_api_idempotency",
@@ -147,6 +151,12 @@ _CAPABILITY_INVENTORY_ENDPOINTS = {
 }
 _PROFILE_INVENTORY_ENDPOINT = ("GET", "/v1/profiles")
 _PROFILE_RUNTIME_INVENTORY_ENDPOINT = ("GET", "/v1/profile-runtimes")
+_PROFILE_RUNTIME_ENDPOINT = ("GET", "/v1/profiles/{profile_id}/runtime", 1)
+_PROFILE_RUNTIME_SWITCH_ENDPOINT = (
+    "POST",
+    "/v1/profiles/{profile_id}/runtime/switch",
+    1,
+)
 _CONTINUATION_ENDPOINT = ("GET", "/v1/sessions/{session_id}/continuation")
 _APPROVAL_ENDPOINT = ("POST", "/v1/runs/{run_id}/approval")
 _CLARIFICATION_ENDPOINT = ("POST", "/v1/runs/{run_id}/clarification")
@@ -163,6 +173,12 @@ _CLARIFICATION_REQUEST_ID = re.compile(r"clarify_[A-Za-z0-9_-]{1,120}\Z")
 _CONTINUATION_REVISION = re.compile(r"sessionrev_[0-9a-f]{64}\Z")
 _KANBAN_REVISION = re.compile(r"kanbanrev_[0-9a-f]{64}\Z")
 _KANBAN_IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}\Z")
+_PROFILE_RUNTIME_REVISION = re.compile(r"runtime_rev_[0-9a-f]{64}\Z")
+_PROFILE_RUNTIME_IDEMPOTENCY_KEY = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}\Z"
+)
+_PROFILE_RUNTIME_PROVIDER = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+_PROFILE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _KANBAN_BOARD = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _KANBAN_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 MAX_REMOTE_SKILLS = 500
@@ -4093,6 +4109,7 @@ class RemoteHermesClient:
         )
         if (
             payload.get("object") != "hermes.profile_runtime.list"
+            or type(payload.get("version")) is not int
             or payload.get("version") != 1
             or payload.get("complete") is not True
             or not isinstance(payload.get("data"), list)
@@ -4123,6 +4140,330 @@ class RemoteHermesClient:
         if "default" not in runtimes:
             raise RemoteHermesError("remote_schema_unsupported")
         return runtimes
+
+    def _normalize_profile_runtime(
+        self,
+        payload: Any,
+        *,
+        expected_profile_id: str,
+    ) -> dict[str, Any]:
+        if (
+            type(payload) is not dict
+            or set(payload)
+            != {
+                "object",
+                "version",
+                "profile_id",
+                "provider",
+                "model",
+                "choices",
+                "revision",
+            }
+            or payload.get("object") != "hermes.profile.runtime"
+            or type(payload.get("version")) is not int
+            or payload.get("version") != 1
+            or payload.get("profile_id") != expected_profile_id
+        ):
+            raise RemoteHermesError("remote_profile_runtime_schema_invalid")
+        provider = payload.get("provider")
+        model = payload.get("model")
+        revision = payload.get("revision")
+        choices = payload.get("choices")
+        if (
+            not isinstance(provider, str)
+            or _PROFILE_RUNTIME_PROVIDER.fullmatch(provider) is None
+            or not isinstance(model, str)
+            or _SAFE_MODEL.fullmatch(model) is None
+            or not isinstance(revision, str)
+            or _PROFILE_RUNTIME_REVISION.fullmatch(revision) is None
+            or type(choices) is not list
+            or not (1 <= len(choices) <= 100)
+            or _runtime_identifier_contains_secret_shape(provider)
+            or _runtime_identifier_contains_secret_shape(model)
+        ):
+            raise RemoteHermesError("remote_profile_runtime_schema_invalid")
+        normalized_choices: list[dict[str, Any]] = []
+        seen_providers: set[str] = set()
+        for choice in choices:
+            if (
+                type(choice) is not dict
+                or set(choice) != {"provider", "models"}
+                or not isinstance(choice.get("provider"), str)
+                or _PROFILE_RUNTIME_PROVIDER.fullmatch(choice["provider"]) is None
+                or choice["provider"] in seen_providers
+                or type(choice.get("models")) is not list
+                or not (1 <= len(choice["models"]) <= 200)
+                or _runtime_identifier_contains_secret_shape(choice["provider"])
+            ):
+                raise RemoteHermesError("remote_profile_runtime_schema_invalid")
+            seen_models: set[str] = set()
+            models: list[str] = []
+            for candidate in choice["models"]:
+                if (
+                    not isinstance(candidate, str)
+                    or _SAFE_MODEL.fullmatch(candidate) is None
+                    or candidate in seen_models
+                    or _runtime_identifier_contains_secret_shape(candidate)
+                ):
+                    raise RemoteHermesError(
+                        "remote_profile_runtime_schema_invalid"
+                    )
+                seen_models.add(candidate)
+                models.append(candidate)
+            seen_providers.add(choice["provider"])
+            normalized_choices.append(
+                {"provider": choice["provider"], "models": models}
+            )
+        if not any(
+            choice["provider"] == provider and model in choice["models"]
+            for choice in normalized_choices
+        ):
+            raise RemoteHermesError("remote_profile_runtime_schema_invalid")
+        normalized = {
+            "profile_id": expected_profile_id,
+            "current_provider": provider,
+            "current_model": model,
+            "providers": [
+                {
+                    "id": choice["provider"],
+                    "name": choice["provider"],
+                    "authenticated": True,
+                    "current": choice["provider"] == provider,
+                    "models": list(choice["models"]),
+                }
+                for choice in normalized_choices
+            ],
+            "revision": revision,
+            "capabilities": {"providers.switch": True},
+            "read_only": False,
+            "error": "",
+        }
+        if self._contains_private_inventory_text(normalized):
+            raise RemoteHermesError("remote_profile_runtime_private")
+        return normalized
+
+    def _profile_runtime_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "Mentat/remote-hermes-v1",
+        }
+        encoded: bytes | None = None
+        if body is not None:
+            try:
+                encoded = json.dumps(
+                    body,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise RemoteHermesError(
+                    "remote_profile_runtime_request_invalid"
+                ) from exc
+            if len(encoded) > 16 * 1024:
+                raise RemoteHermesError("remote_profile_runtime_request_invalid")
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(encoded))
+        connection = self._connection()
+        mutation = method == "POST"
+        try:
+            if encoded is None:
+                connection.request(method, path, headers=headers)
+            else:
+                connection.request(method, path, body=encoded, headers=headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            if 300 <= status <= 399:
+                raise RemoteHermesError("remote_redirect_refused")
+            if status in {401, 403}:
+                raise RemoteHermesError("remote_authentication_failed")
+            content_type = (
+                str(response.getheader("Content-Type") or "")
+                .split(";", 1)[0]
+                .strip()
+                .casefold()
+            )
+            if content_type not in {"application/json", "application/problem+json"}:
+                raise RemoteHermesError("remote_content_type_invalid")
+            declared = response.getheader("Content-Length")
+            if declared is not None:
+                try:
+                    if int(declared) < 0 or int(declared) > self.maximum_bytes:
+                        raise RemoteHermesError("remote_response_too_large")
+                except ValueError as exc:
+                    raise RemoteHermesError("remote_response_invalid") from exc
+            raw = response.read(self.maximum_bytes + 1)
+            if len(raw) > self.maximum_bytes:
+                raise RemoteHermesError("remote_response_too_large")
+            try:
+                payload = json.loads(
+                    raw.decode("utf-8"),
+                    parse_constant=_reject_json_constant,
+                )
+            except (UnicodeError, ValueError, RecursionError) as exc:
+                raise RemoteHermesError("remote_response_invalid") from exc
+            if type(payload) is not dict or not _safe_shape(payload):
+                raise RemoteHermesError("remote_response_invalid")
+            if status == 200:
+                return payload
+            error = payload.get("error")
+            upstream_code = (
+                error.get("code")
+                if type(error) is dict and isinstance(error.get("code"), str)
+                else ""
+            )
+            expected_errors = {
+                (404, "profile_not_served"): "remote_profile_runtime_not_served",
+                (409, "profile_runtime_active"): "remote_profile_runtime_active",
+                (
+                    409,
+                    "profile_runtime_changed",
+                ): "remote_profile_runtime_changed",
+                (
+                    409,
+                    "profile_runtime_idempotency_conflict",
+                ): "remote_profile_runtime_idempotency_conflict",
+                (
+                    422,
+                    "profile_runtime_unavailable_choice",
+                ): "remote_profile_runtime_choice_unavailable",
+            }
+            raise RemoteHermesError(
+                expected_errors.get(
+                    (status, upstream_code),
+                    (
+                        "remote_profile_runtime_switch_unverified"
+                        if mutation
+                        else "remote_profile_runtime_unavailable"
+                    ),
+                )
+            )
+        except RemoteHermesError:
+            raise
+        except ssl.SSLCertVerificationError as exc:
+            raise RemoteHermesError("remote_certificate_invalid") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RemoteHermesError(
+                "remote_profile_runtime_switch_unverified"
+                if mutation
+                else "remote_timeout"
+            ) from exc
+        except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+            raise RemoteHermesError(
+                "remote_profile_runtime_switch_unverified"
+                if mutation
+                else "remote_unavailable"
+            ) from exc
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    def require_profile_runtime_switch_capabilities(self) -> dict[str, Any]:
+        capabilities = self._trusted_capabilities()
+        required = {
+            "profile_runtime_inventory",
+            "profile_runtime_inventory_complete",
+            "profile_runtime_inventory_requires_api_key",
+            "profile_runtime_switch",
+            "profile_runtime_switch_revision_bound",
+            "profile_runtime_switch_idempotency",
+            "profile_runtime_switch_active_run_lock",
+        }
+        if not required.issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError(
+                "remote_profile_runtime_capability_unavailable"
+            )
+        return capabilities
+
+    def read_profile_runtime(self, profile_id: str) -> dict[str, Any]:
+        if not isinstance(profile_id, str) or _PROFILE_ID.fullmatch(profile_id) is None:
+            raise RemoteHermesError("remote_profile_runtime_request_invalid")
+        self.require_profile_runtime_switch_capabilities()
+        payload = self._profile_runtime_request(
+            "GET",
+            f"/v1/profiles/{profile_id}/runtime",
+        )
+        return self._normalize_profile_runtime(
+            payload,
+            expected_profile_id=profile_id,
+        )
+
+    def switch_profile_runtime(
+        self,
+        profile_id: str,
+        *,
+        provider: str,
+        model: str,
+        revision: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(profile_id, str)
+            or _PROFILE_ID.fullmatch(profile_id) is None
+            or not isinstance(provider, str)
+            or _PROFILE_RUNTIME_PROVIDER.fullmatch(provider) is None
+            or not isinstance(model, str)
+            or _SAFE_MODEL.fullmatch(model) is None
+            or not isinstance(revision, str)
+            or _PROFILE_RUNTIME_REVISION.fullmatch(revision) is None
+            or not isinstance(idempotency_key, str)
+            or _PROFILE_RUNTIME_IDEMPOTENCY_KEY.fullmatch(idempotency_key) is None
+            or _runtime_identifier_contains_secret_shape(provider)
+            or _runtime_identifier_contains_secret_shape(model)
+        ):
+            raise RemoteHermesError("remote_profile_runtime_request_invalid")
+        self.require_profile_runtime_switch_capabilities()
+        try:
+            payload = self._profile_runtime_request(
+                "POST",
+                f"/v1/profiles/{profile_id}/runtime/switch",
+                body={
+                    "provider": provider,
+                    "model": model,
+                    "revision": revision,
+                    "idempotency_key": idempotency_key,
+                },
+            )
+        except RemoteHermesError as exc:
+            if exc.code in {
+                "remote_content_type_invalid",
+                "remote_response_too_large",
+                "remote_response_invalid",
+            }:
+                raise RemoteHermesError(
+                    "remote_profile_runtime_switch_unverified"
+                ) from exc
+            raise
+        if (
+            set(payload) != {"object", "idempotency_key", "runtime"}
+            or payload.get("object") != "hermes.profile.runtime.switch"
+            or payload.get("idempotency_key") != idempotency_key
+        ):
+            raise RemoteHermesError("remote_profile_runtime_switch_unverified")
+        try:
+            runtime = self._normalize_profile_runtime(
+                payload.get("runtime"),
+                expected_profile_id=profile_id,
+            )
+        except RemoteHermesError as exc:
+            raise RemoteHermesError(
+                "remote_profile_runtime_switch_unverified"
+            ) from exc
+        if (
+            runtime["current_provider"] != provider
+            or runtime["current_model"] != model
+        ):
+            raise RemoteHermesError("remote_profile_runtime_switch_unverified")
+        return runtime
 
     def kanban_request(
         self,
@@ -4676,15 +5017,46 @@ class RemoteHermesClient:
                 raise RemoteHermesError("remote_schema_unsupported")
         if features.get("profile_runtime_inventory") is True:
             if (
-                features.get("profile_runtime_inventory_version") != 1
+                type(features.get("profile_runtime_inventory_version")) is not int
+                or features.get("profile_runtime_inventory_version") != 1
                 or features.get("profile_runtime_inventory_complete") is not True
                 or features.get("profile_runtime_inventory_requires_api_key") is not True
                 or type(endpoints.get("profile_runtimes")) is not dict
+                or set(endpoints["profile_runtimes"]) != {"method", "path"}
                 or (
                     endpoints["profile_runtimes"].get("method"),
                     endpoints["profile_runtimes"].get("path"),
                 )
                 != _PROFILE_RUNTIME_INVENTORY_ENDPOINT
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("profile_runtime_switch") is True:
+            runtime_endpoint = endpoints.get("profile_runtime")
+            switch_endpoint = endpoints.get("profile_runtime_switch")
+            if (
+                type(features.get("profile_runtime_switch_version")) is not int
+                or features.get("profile_runtime_switch_version") != 1
+                or features.get("profile_runtime_switch_revision_bound") is not True
+                or features.get("profile_runtime_switch_idempotency") is not True
+                or features.get("profile_runtime_switch_active_run_lock") is not True
+                or type(runtime_endpoint) is not dict
+                or set(runtime_endpoint) != {"method", "path", "version"}
+                or type(runtime_endpoint.get("version")) is not int
+                or (
+                    runtime_endpoint.get("method"),
+                    runtime_endpoint.get("path"),
+                    runtime_endpoint.get("version"),
+                )
+                != _PROFILE_RUNTIME_ENDPOINT
+                or type(switch_endpoint) is not dict
+                or set(switch_endpoint) != {"method", "path", "version"}
+                or type(switch_endpoint.get("version")) is not int
+                or (
+                    switch_endpoint.get("method"),
+                    switch_endpoint.get("path"),
+                    switch_endpoint.get("version"),
+                )
+                != _PROFILE_RUNTIME_SWITCH_ENDPOINT
             ):
                 raise RemoteHermesError("remote_schema_unsupported")
         if features.get("run_event_replay") is True and features.get("run_event_replay_version") != 1:
