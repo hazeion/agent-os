@@ -273,8 +273,10 @@ finished task needs attention.
   120-second transfer bounds limit but do not eliminate that cost.
 - User authorization and scope: standing authorization covers implementation,
   review dispositions, publication, and the next requested slices.
-- Commit hash: to be recorded by the published branch.
-- Ready PR URL: to be recorded after branch publication.
+- Mentat commits: `52550aa`, `bb13e4f`, and `f066fcb`.
+- Hermes commits: `d846f6e95` and `e96de80c6`.
+- Mentat PR: https://github.com/hazeion/agent-os/pull/69
+- Hermes PR: https://github.com/hazeion/hermes-agent/pull/4
 
 ## Outcome review
 
