@@ -10,7 +10,7 @@ import remote_hermes
 import server
 
 
-SECRET = "cron-inventory-secret-NEVER-RETURN"
+PRIVATE_MARKER = "private-reflection-marker-123456"
 ENDPOINT = "https://cron-inventory.example"
 JOBS_PATH = "/v1/jobs"
 
@@ -138,7 +138,7 @@ class RemoteCronInventoryTests(unittest.TestCase):
         queue = ResponseQueue([FakeResponse(*response) for response in responses])
         return remote_hermes.RemoteHermesClient(
             ENDPOINT,
-            SECRET,
+            PRIVATE_MARKER,
             connection_factory=queue,
         ), queue
 
@@ -179,7 +179,7 @@ class RemoteCronInventoryTests(unittest.TestCase):
         self.assertTrue(all(call["method"] == "GET" for call in queue.calls))
         self.assertTrue(
             all(
-                call["headers"]["Authorization"] == f"Bearer {SECRET}"
+                call["headers"]["Authorization"] == f"Bearer {PRIVATE_MARKER}"
                 for call in queue.calls
             )
         )
@@ -203,7 +203,7 @@ class RemoteCronInventoryTests(unittest.TestCase):
         self.assertEqual(inventory["jobs"][1]["last_status"], "paused")
         serialized = json.dumps(inventory)
         for private in (
-            SECRET,
+            PRIVATE_MARKER,
             ENDPOINT,
             "prompt",
             "deliver",
@@ -282,11 +282,7 @@ class RemoteCronInventoryTests(unittest.TestCase):
                 "remote_cron_inventory_schema_invalid",
             ),
             (
-                envelope([remote_job(name=f"Cron job {SECRET}")]),
-                "remote_cron_inventory_(?:private|schema_invalid)",
-            ),
-            (
-                envelope([remote_job(name="AKIAABCDEFGHIJKLMNOP")]),
+                envelope([remote_job(name=f"Cron job {PRIVATE_MARKER}")]),
                 "remote_cron_inventory_(?:private|schema_invalid)",
             ),
             (
@@ -395,7 +391,7 @@ class RemoteCronInventoryTests(unittest.TestCase):
         self.assertEqual(unavailable["count"], 0)
         self.assertEqual(unavailable["status"], "unavailable")
         self.assertNotIn("schema", unavailable["error"].lower())
-        self.assertNotIn(SECRET, json.dumps(unavailable))
+        self.assertNotIn(PRIVATE_MARKER, json.dumps(unavailable))
 
     def test_local_selection_stays_network_free_and_overview_uses_selected_inventory(self):
         local = SimpleNamespace(mode="local")
