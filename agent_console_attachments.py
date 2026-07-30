@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Collection
 
-from PIL import Image, ImageSequence, UnidentifiedImageError
+from PIL import Image, ImageOps, ImageSequence, UnidentifiedImageError
 
 from mentat_db import (
     connect,
@@ -379,13 +379,14 @@ def _canonicalize_image_file(
             loop = max(0, min(int(image.info.get("loop", 0) or 0), 65535))
             for frame in ImageSequence.Iterator(image):
                 frame.load()
+                oriented = ImageOps.exif_transpose(frame)
                 safe_mode = (
                     "RGBA"
-                    if frame.mode in {"RGBA", "LA"}
-                    or "transparency" in frame.info
+                    if oriented.mode in {"RGBA", "LA"}
+                    or "transparency" in oriented.info
                     else "RGB"
                 )
-                safe_frame = frame.convert(safe_mode).copy()
+                safe_frame = oriented.convert(safe_mode).copy()
                 safe_frame.info.clear()
                 frames.append(safe_frame)
                 durations.append(
@@ -394,6 +395,8 @@ def _canonicalize_image_file(
                         min(int(frame.info.get("duration", 0) or 0), 600_000),
                     )
                 )
+                if oriented is not frame:
+                    oriented.close()
         if not frames:
             raise AttachmentValidationError("Image contains no decodable frames")
         if format_name == "JPEG" and len(frames) != 1:

@@ -64,7 +64,7 @@ finished task needs attention.
 | AC-7 | Older remote Hermes versions retain the current summary-only task workflow without broken or misleading artifact controls. | Compatibility tests | Pass |
 | AC-8 | Accepting a task does not erase its retained artifact references; rejected artifact transfers remain visibly unavailable and are not described as downloaded. | Task action and persistence tests | Pass |
 | AC-9 | Each individual artifact is limited to 100 MiB, with at most 10 artifacts and 250 MiB combined per completed task. | Boundary tests | Pass |
-| AC-10 | Existing local Console artifacts, local delegation, remote Kanban actions, task planning, and attachment retention continue to pass. | Focused regression and complete repository suites | Pass; 879 tests passed and the sole full-suite failure is the pre-existing user-owned `Daily Check` fixture change |
+| AC-10 | Existing local Console artifacts, local delegation, remote Kanban actions, task planning, and attachment retention continue to pass. | Focused regression and complete repository suites | Pass; 878 tests passed, 4 skipped, and the sole full-suite failure is the pre-existing user-owned `Daily Check` fixture change |
 
 ### Constraints and recovery
 
@@ -154,8 +154,10 @@ finished task needs attention.
 - Both repositories validate the same type, per-file, count, and combined-size
   limits. Hermes rejects links, hard links, races, active content, malformed
   images/text, and recognizable credential material before advertising a file.
-- Mentat decodes and rewrites accepted raster images before storage so EXIF,
-  comments, XMP, and other hidden metadata do not survive the trust boundary.
+- Hermes and Mentat independently decode and rewrite accepted raster images so
+  EXIF, comments, XMP, appended data, and other hidden metadata do not survive
+  either side of the trust boundary. EXIF orientation is applied before the
+  metadata is removed.
 - Mentat downloads only through its selected server-side adapter, verifies the
   manifest and streamed bytes, and saves an independent content-addressed
   snapshot under gitignored private runtime storage.
@@ -196,17 +198,16 @@ finished task needs attention.
 
 | Command or action | Environment | Exit/result | Pass/fail/skip counts | Notes or artifacts |
 | --- | --- | --- | --- | --- |
-| `python3 -m unittest tests.test_remote_context_inputs tests.test_agent_console_attachments tests.test_remote_kanban_artifacts tests.test_task_delegation tests.test_task_delegation_ui tests.test_home_operations_ui tests.test_request_boundary` | Mentat, macOS Python 3.13 | 0 | 89 passed | Final artifact lifecycle, background Home refresh, retry, unavailable-file, UI, request-boundary, attachment, and remote-input checks. |
-| Broader independent compatibility review suite | Mentat, macOS Python 3.13 | 0 | 173 passed | Remote adapter, persistence, UI, request boundary, legacy compatibility, and attachment regressions. |
-| `.venv/bin/python -m pytest tests/gateway/test_kanban_api.py tests/gateway/test_kanban_artifact_api.py tests/hermes_cli/test_kanban_db.py -q` | Hermes worktree, macOS | 0 | 263 passed | Manifest/download API, completion preservation, named-board cleanup, security boundaries, and local Kanban compatibility. |
+| `python3 -m unittest tests.test_remote_context_inputs tests.test_agent_console_attachments tests.test_remote_kanban_artifacts tests.test_task_delegation tests.test_task_delegation_ui tests.test_home_operations_ui tests.test_request_boundary tests.test_hermes_api tests.test_task_planning` | Mentat, macOS Python 3.13 | 0 | 193 passed | Final artifact lifecycle, image canonicalization and orientation, background Home refresh, retry, unavailable-file, UI, request-boundary, attachment, remote-input, API, and planning checks. |
+| `.venv/bin/python -m pytest tests/gateway/test_kanban_api.py tests/gateway/test_kanban_artifact_api.py tests/hermes_cli/test_kanban_db.py -q` | Hermes worktree, macOS | 0 | 271 passed | Manifest/download API, canonical raster output and orientation, completion preservation, named-board cleanup, security boundaries, and local Kanban compatibility. |
 | `python3 -m py_compile ...`, `node --check ...`, `git diff --check` | Mentat | 0 | Pass | Python, browser JavaScript, and patch hygiene are clean. |
 
 ### Full suite
 
 | Command or action | Environment | Exit/result | Pass/fail/skip counts | Notes |
 | --- | --- | --- | --- | --- |
-| `python3 -m unittest discover -s tests` | Mentat | 1 | 879 passed, 1 failed, 4 skipped | Only `test_only_mentat_project_remains_active_for_v1` fails because the user's intentionally uncommitted `data/projects.json` adds `Daily Check`; that file is excluded from this slice. |
-| `.venv/bin/python -m pytest tests/gateway/test_kanban_api.py tests/gateway/test_kanban_artifact_api.py tests/hermes_cli/test_kanban_db.py -q` | Hermes worktree | 0 | 263 passed | Complete affected Kanban/API set. |
+| `python3 -m unittest discover -s tests` | Mentat | 1 | 878 passed, 1 failed, 4 skipped | Only `test_only_mentat_project_remains_active_for_v1` fails because the user's intentionally uncommitted `data/projects.json` adds `Daily Check`; that file is excluded from this slice. |
+| `.venv/bin/python -m pytest tests/gateway/test_kanban_api.py tests/gateway/test_kanban_artifact_api.py tests/hermes_cli/test_kanban_db.py -q` | Hermes worktree | 0 | 271 passed | Complete affected Kanban/API set. |
 
 ### Rendered or manual behavior
 
@@ -225,10 +226,17 @@ finished task needs attention.
 - The first security review reported no P0/P1 issues. It identified broader
   secret-pattern coverage and cleartext `localhost` handling; both were
   tightened and regression-tested.
-- Final compatibility audit: approved with no remaining actionable issues;
-  173 focused Mentat checks and 256 focused Hermes checks passed in that audit.
-- Final security audit: approved with no remaining actionable issues; 136
-  focused Mentat checks and 263 focused Hermes checks passed in that audit.
+- A later security pass identified image-container polyglots and hidden raster
+  metadata as a publication blocker. Hermes now creates a descriptor-owned
+  canonical raster snapshot, and Mentat independently canonicalizes it again
+  before storage. The final security audit found no remaining P0-P3 issues and
+  cleared publication.
+- The final compatibility audit found no P0/P1 issues. Its EXIF-orientation
+  finding was corrected and regression-tested. It also noted that Hermes
+  canonicalizes all accepted images once for a manifest and again for an
+  individual download. That bounded v1 cost is accepted as a residual
+  performance risk rather than weakening the descriptor-owned security
+  snapshot.
 
 ## Documentation updates
 
@@ -259,7 +267,10 @@ finished task needs attention.
 - Unresolved risks: heuristic secret detection is defense in depth, not a
   credential DLP guarantee; the local transport fixture does not reproduce
   every TLS reverse proxy; production-scale 250 MiB load behavior and Windows
-  filesystem semantics remain CI/deployment verification items.
+  filesystem semantics remain CI/deployment verification items. A task with
+  many large images can spend material CPU time canonicalizing the manifest
+  and then the selected download; the fixed 10-file, 250 MiB, pixel, frame, and
+  120-second transfer bounds limit but do not eliminate that cost.
 - User authorization and scope: standing authorization covers implementation,
   review dispositions, publication, and the next requested slices.
 - Commit hash: to be recorded by the published branch.
@@ -280,13 +291,13 @@ finished task needs attention.
 - Decision: accepted under the user's standing authorization. Proceed to
   publication, then begin the separately scoped Today-schedule layout slice.
 
-- Classification: Verification and final review.
-- Acceptance criteria summary: AC-1 through AC-9 pass; AC-10 awaits complete
-  suite results.
+- Classification: Ready for publication.
+- Acceptance criteria summary: AC-1 through AC-10 pass.
 - Potential bugs or untested paths: deployed TLS proxy behavior, maximum-size
   production load, heuristic credential-detection gaps, and Windows-only
   filesystem behavior remain explicit residual risks.
-- Remaining reviewer dissent: final audits are running.
+- Remaining reviewer dissent: none. The compatibility review's bounded
+  repeated-canonicalization concern is recorded as an accepted residual risk.
 - Compatibility/migration/rollback concerns: recorded in the slice contract.
 - User decision: standing authorization granted for implementation, review
   dispositions, publication, and the next requested slices.

@@ -138,6 +138,27 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
                             & set(normalized.info)
                         )
 
+    def test_jpeg_orientation_is_applied_before_metadata_is_removed(self):
+        image = Image.new("RGB", (2, 1), (20, 40, 60))
+        exif = Image.Exif()
+        exif[0x0112] = 6
+        source = io.BytesIO()
+        image.save(source, format="JPEG", exif=exif)
+        with tempfile.TemporaryDirectory() as root:
+            data_dir = self.make_data_dir(root)
+            metadata = create_attachment(
+                data_dir,
+                original_name="oriented.jpg",
+                content=source.getvalue(),
+                content_type="image/jpeg",
+            )
+            with Image.open(
+                resolve_blob_path(data_dir, metadata["id"])
+            ) as normalized:
+                normalized.load()
+                self.assertEqual(normalized.size, (1, 2))
+                self.assertNotIn("exif", normalized.info)
+
     def test_rejects_paths_secrets_svg_archives_executables_and_mismatched_content(self):
         cases = (
             ("../escape.txt", b"hello", "text/plain"),
