@@ -290,11 +290,18 @@ class AgentConsoleObservabilityTests(unittest.TestCase):
             summary["usage"],
             {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
         )
+        run["usage"]["context_tokens"] = 0
+        run["usage"]["context_length"] = 32000
+        self.assertEqual(
+            agent_run_history.summarize_run(run)["usage"],
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
 
     def test_ui_renders_used_total_percent_progress_and_session_feedback(self):
         self.assertIn("context tokens used", APP_JS)
         self.assertIn("total context window", APP_JS)
         self.assertIn("contextPercent", APP_JS)
+        self.assertIn("contextTokens > 0", APP_JS)
         self.assertIn("New Hermes session started", APP_JS)
         self.assertIn("Next prompt starts a new Hermes session.", APP_JS)
         self.assertIn(

@@ -511,33 +511,45 @@ class RemoteConsoleRunTests(unittest.TestCase):
                     stop_client.stop_run(REMOTE_RUN_ID)
 
     def test_malformed_optional_remote_context_is_omitted_not_promoted(self):
-        queue = ResponseQueue([
-            FakeResponse(
-                200,
-                {
-                    "object": "hermes.run",
-                    "run_id": REMOTE_RUN_ID,
-                    "status": "completed",
-                    "output": "Finished safely",
-                    "usage": {
+        for context_tokens, context_length in (
+            (24000, "private-or-invalid"),
+            (0, 128000),
+        ):
+            with self.subTest(
+                context_tokens=context_tokens,
+                context_length=context_length,
+            ):
+                queue = ResponseQueue([
+                    FakeResponse(
+                        200,
+                        {
+                            "object": "hermes.run",
+                            "run_id": REMOTE_RUN_ID,
+                            "status": "completed",
+                            "output": "Finished safely",
+                            "usage": {
+                                "input_tokens": 4,
+                                "output_tokens": 8,
+                                "total_tokens": 12,
+                                "context_tokens": context_tokens,
+                                "context_length": context_length,
+                            },
+                        },
+                    )
+                ])
+                terminal = remote_hermes.RemoteHermesClient(
+                    ENDPOINT,
+                    SECRET,
+                    connection_factory=queue,
+                ).get_run(REMOTE_RUN_ID)
+                self.assertEqual(
+                    terminal["usage"],
+                    {
                         "input_tokens": 4,
                         "output_tokens": 8,
                         "total_tokens": 12,
-                        "context_tokens": 24000,
-                        "context_length": "private-or-invalid",
                     },
-                },
-            )
-        ])
-        terminal = remote_hermes.RemoteHermesClient(
-            ENDPOINT,
-            SECRET,
-            connection_factory=queue,
-        ).get_run(REMOTE_RUN_ID)
-        self.assertEqual(
-            terminal["usage"],
-            {"input_tokens": 4, "output_tokens": 8, "total_tokens": 12},
-        )
+                )
 
     def test_remote_reasoning_summary_must_be_allowlisted(self):
         client = remote_hermes.RemoteHermesClient(
@@ -1299,7 +1311,13 @@ class RemoteConsoleRunTests(unittest.TestCase):
                 {
                     "status": "completed",
                     "output": "Complete",
-                    "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+                    "usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 5,
+                        "total_tokens": 8,
+                        "context_tokens": 2_048,
+                        "context_length": 128_000,
+                    },
                 }
             ],
         )
@@ -1340,6 +1358,8 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertEqual(run["status"], "completed")
         self.assertEqual(run["response"], "Complete")
         self.assertEqual(run["usage"]["total_tokens"], 8)
+        self.assertEqual(run["usage"]["context_tokens"], 2_048)
+        self.assertEqual(run["usage"]["context_length"], 128_000)
         self.assertEqual(client.submitted, ["Remote work"])
         self.assertTrue(run["starts_new_session"])
         self.assertEqual(run["new_session_state"], "started")
@@ -1352,6 +1372,98 @@ class RemoteConsoleRunTests(unittest.TestCase):
         for private in (REMOTE_RUN_ID, ENDPOINT, SECRET):
             self.assertNotIn(private, public)
             self.assertNotIn(private, history)
+
+    def test_failed_remote_run_keeps_verified_context_usage(self):
+        usage = {
+            "input_tokens": 3,
+            "output_tokens": 1,
+            "total_tokens": 4,
+            "context_tokens": 2_048,
+            "context_length": 128_000,
+        }
+        client = FakeRunClient(
+            events=[{"type": "run.failed"}],
+            statuses=[{"status": "failed", "usage": usage}],
+        )
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        run_id = "run_remote_failed_usage"
+        server.AGENT_CONSOLE_RUNS[run_id] = {
+            "id": run_id,
+            "agent_id": "default",
+            "agent_name": "Remote workshop",
+            "model": "anthropic/claude-test",
+            "transport_mode": "remote",
+            "connection_binding_id": "b" * 32,
+            "prompt": "Fail safely",
+            "status": "queued",
+            "session_id": None,
+            "response": "",
+            "error": "",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+        }
+        with patch.object(adapter, "revalidate"), patch.object(
+            server,
+            "persist_agent_console_runs",
+        ):
+            server.run_remote_hermes_agent(run_id, adapter)
+
+        run = server.AGENT_CONSOLE_RUNS[run_id]
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(run["usage"], usage)
+
+    def test_post_result_cancelled_remote_run_keeps_verified_context_usage(self):
+        usage = {
+            "input_tokens": 3,
+            "output_tokens": 1,
+            "total_tokens": 4,
+            "context_tokens": 2_048,
+            "context_length": 128_000,
+        }
+        local_run_id = "run_remote_cancelled_usage"
+
+        class PostResultCancelledClient(FakeRunClient):
+            def iter_run_events(
+                self,
+                run_id,
+                *,
+                should_stop=None,
+                last_event_id=None,
+            ):
+                self.assert_run_id(run_id)
+                server.AGENT_CONSOLE_RUNS[local_run_id]["status"] = "cancelling"
+                yield {"type": "run.cancelled"}
+
+        client = PostResultCancelledClient(
+            statuses=[{"status": "cancelled", "usage": usage}],
+        )
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        server.AGENT_CONSOLE_RUNS[local_run_id] = {
+            "id": local_run_id,
+            "agent_id": "default",
+            "agent_name": "Remote workshop",
+            "model": "anthropic/claude-test",
+            "transport_mode": "remote",
+            "connection_binding_id": "b" * 32,
+            "prompt": "Stop after this result",
+            "status": "queued",
+            "session_id": None,
+            "response": "",
+            "error": "",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+        }
+        with patch.object(adapter, "revalidate"), patch.object(
+            server,
+            "persist_agent_console_runs",
+        ):
+            server.run_remote_hermes_agent(local_run_id, adapter)
+
+        run = server.AGENT_CONSOLE_RUNS[local_run_id]
+        self.assertEqual(run["status"], "cancelled")
+        self.assertEqual(run["usage"], usage)
 
     def test_completed_remote_run_projects_session_for_safe_continuation(self):
         upstream_session_id = "session_" + ("d" * 32)
@@ -1434,11 +1546,18 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertEqual(client.submitted, ["Recover"])
 
     def test_status_error_after_acceptance_stops_and_verifies_terminal_state(self):
+        usage = {
+            "input_tokens": 3,
+            "output_tokens": 5,
+            "total_tokens": 8,
+            "context_tokens": 2_048,
+            "context_length": 128_000,
+        }
         client = FakeRunClient(
             events=[remote_hermes.RemoteHermesError("remote_timeout")],
             statuses=[
                 remote_hermes.RemoteHermesError("remote_timeout"),
-                {"status": "cancelled"},
+                {"status": "cancelled", "usage": usage},
             ],
         )
         adapter = self.adapter(client)
@@ -1466,6 +1585,7 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertEqual(run["status"], "failed")
         self.assertEqual(client.stopped, [REMOTE_RUN_ID])
         self.assertFalse(run.get("partial", False))
+        self.assertEqual(run["usage"], usage)
         self.assertNotIn("_remote_run_id", run)
 
     def test_uncertain_submission_response_is_retained_as_partial(self):
@@ -2253,9 +2373,67 @@ class RemoteConsoleRunTests(unittest.TestCase):
         self.assertNotIn("_remote_run_id", server.AGENT_CONSOLE_RUNS["run_cancel_race"])
         self.assertNotIn("_remote_transport", server.AGENT_CONSOLE_RUNS["run_cancel_race"])
 
+    def test_cancel_reconciliation_retains_cancelled_usage(self):
+        usage = {
+            "input_tokens": 3,
+            "output_tokens": 5,
+            "total_tokens": 8,
+            "context_tokens": 2_048,
+            "context_length": 128_000,
+        }
+
+        class RejectedStopClient(FakeRunClient):
+            def stop_run(self, run_id):
+                self.assert_run_id(run_id)
+                self.stopped.append(run_id)
+                raise remote_hermes.RemoteHermesError("remote_run_rejected")
+
+        client = RejectedStopClient(
+            statuses=[{"status": "cancelled", "usage": usage}]
+        )
+        adapter = self.adapter(client)
+        adapter.prepare_console()
+        server.AGENT_CONSOLE_RUNS["run_cancelled_usage"] = {
+            "id": "run_cancelled_usage",
+            "status": "running",
+            "events": [],
+            "created_at": "2026-07-20T00:00:00-07:00",
+            "transport_mode": "remote",
+            "connection_binding_id": "b" * 32,
+            "_remote_run_id": REMOTE_RUN_ID,
+            "_remote_transport": adapter,
+        }
+        with patch.object(adapter, "revalidate"), patch.object(
+            server,
+            "persist_agent_console_runs",
+        ):
+            payload, status = server.cancel_agent_console_run(
+                "run_cancelled_usage"
+            )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["run"]["status"], "cancelled")
+        self.assertEqual(
+            server.AGENT_CONSOLE_RUNS["run_cancelled_usage"]["usage"],
+            usage,
+        )
+
     def test_shutdown_verifies_remote_terminal_or_records_partial(self):
+        usage = {
+            "input_tokens": 3,
+            "output_tokens": 5,
+            "total_tokens": 8,
+            "context_tokens": 2_048,
+            "context_length": 128_000,
+        }
         cases = (
-            (FakeRunClient(statuses=[{"status": "cancelled"}]), "cancelled", False),
+            (
+                FakeRunClient(
+                    statuses=[{"status": "cancelled", "usage": usage}]
+                ),
+                "cancelled",
+                False,
+            ),
             (FakeRunClient(statuses=[remote_hermes.RemoteHermesError("remote_timeout")]), "failed", True),
         )
         for index, (client, expected_status, expected_partial) in enumerate(cases):
@@ -2279,6 +2457,8 @@ class RemoteConsoleRunTests(unittest.TestCase):
                 run = server.AGENT_CONSOLE_RUNS[run_id]
                 self.assertEqual(run["status"], expected_status)
                 self.assertEqual(bool(run.get("partial")), expected_partial)
+                if expected_status == "cancelled":
+                    self.assertEqual(run["usage"], usage)
 
         server.AGENT_CONSOLE_RUNS.clear()
         finished_worker = server.threading.Thread(target=lambda: None)

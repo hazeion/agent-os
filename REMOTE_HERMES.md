@@ -87,6 +87,13 @@ partial rather than claiming the remote run stopped.
 
 ## Run continuity and runtime identity
 
+Terminal Runs may include `usage.context_tokens` and
+`usage.context_length`. Hermes must produce these as one internally consistent
+pair from the provider-reported prompt size and the active model window.
+Mentat validates the pair again, keeps cumulative billing totals separate, and
+shows **Unavailable** rather than guessing when either value is absent or
+invalid.
+
 When advertised, `run_event_replay` version 1 gives every Runs SSE event a
 monotonic `id`/`sequence` retained in a fixed in-memory window. Multiple
 subscribers receive independent copies. A reconnect must send

@@ -3407,7 +3407,7 @@ function renderAgentConsole(payload = {}) {
     const contextLength = run.usage?.context_length;
     const contextAvailable = Number.isInteger(contextTokens)
       && Number.isInteger(contextLength)
-      && contextTokens >= 0
+      && contextTokens > 0
       && contextLength > 0
       && contextTokens <= contextLength;
     const contextPercent = contextAvailable ? Math.round((contextTokens / contextLength) * 1000) / 10 : null;
