@@ -10,7 +10,7 @@ google-auth==2.49.2
 requests==2.33.0
 
 # Structural validation for generated raster artifacts and Console images.
-Pillow==12.2.0
+Pillow==12.3.0
 
 # Cross-platform IANA timezone data for zoneinfo (required on Windows).
 tzdata==2026.3
