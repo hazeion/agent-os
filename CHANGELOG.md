@@ -16,6 +16,8 @@ All notable changes to Mentat.
   confirms the match.
 
 ### Changed
+- Home now keeps **Open today schedule** on a stable row below **Quick add**
+  and **Completed work**, including when either section expands.
 - Agent Console now keeps its always-visible transcript between the Agent /
   Provider / Model selector row and the prompt composer.
 - Removed the redundant runtime banner and repeated provider/model status text.
