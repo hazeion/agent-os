@@ -116,6 +116,9 @@ protection as the top priority.
 - Proposed commits: `fix: retain exact remote context telemetry`; `fix(api):
   expose exact run context usage`.
 - User authorization: standing approval.
+- Implementation commits: Mentat `6127f07`; Hermes `c2b802f1a`.
+- Ready PRs: Mentat https://github.com/hazeion/agent-os/pull/71; Hermes
+  https://github.com/hazeion/hermes-agent/pull/5.
 
 ## Outcome review
 
