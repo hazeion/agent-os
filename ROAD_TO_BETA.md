@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
 Status: Repository implementation complete through Milestone 8; public beta remains externally gated
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
@@ -52,6 +52,7 @@ release contract for later implementation and release decisions.
 | Remote transport | Operator-supplied HTTPS endpoint and API key; server-to-server only | Approved 2026-07-16 |
 | Remote parity | Console, sessions/runs, approvals/clarification/cancellation/stopping, skills/toolsets, Kanban, and read-only profile discovery are mandatory; approved administration features may degrade clearly | Approved 2026-07-16 |
 | Remote provider/model switching | Enable only against the exact authenticated version-one profile runtime contract; otherwise retain a read-only runtime projection | Approved 2026-07-28 |
+| Remote cron inventory | Show active and paused jobs through the authenticated, read-only version-one Jobs contract; keep every cron change unavailable | Approved 2026-07-29 |
 | Tier-one platforms | macOS and Windows | Approved 2026-07-17 |
 | Preview platform | Linux, covered by CI but not initially promised at the same support level | Approved 2026-07-17 |
 | Python | 3.11 through 3.13 | Approved 2026-07-17 |

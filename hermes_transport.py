@@ -227,6 +227,12 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
+    def read_cron_jobs(self) -> dict[str, Any]:
+        try:
+            return self._client.read_cron_jobs()
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
     def submit_run(
         self,
         prompt: str,
