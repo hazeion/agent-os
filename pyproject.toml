@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
   "google-api-python-client==2.194.0",
   "google-auth==2.49.2",
+  "Pillow==12.3.0",
   "requests==2.33.0",
   "tzdata==2026.3",
 ]
@@ -47,6 +48,7 @@ py-modules = [
   "data_layout",
   "data_migration",
   "data_schema",
+  "delegation_artifacts",
   "diagnostics_bundle",
   "health_checks",
   "hermes_kanban",
