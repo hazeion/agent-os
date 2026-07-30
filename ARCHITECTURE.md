@@ -291,8 +291,9 @@ verifies its digest and content again, and stores an independent private
 snapshot keyed to the Mentat task, connection, board, and remote task. Home
 and task detail render raster outputs as download-only file cards rather than
 decoding the original file inline. Both sides structurally decode raster files,
-enforce frame and pixel ceilings, and reject malformed containers or bytes
-appended after the image terminator. Home
+enforce frame and pixel ceilings, then re-encode metadata-free canonical
+snapshots. Unknown chunks, embedded metadata, appended bytes, and the original
+untrusted container never become downloadable content. Home
 renders its local data before refreshing at most three current-connection
 delegations in the background. Failed artifact transfers use a bounded retry
 delay, and unsupported hosts are not polled again automatically. An explicit

@@ -33,8 +33,10 @@ All notable changes to Mentat.
 - Cleartext remote Hermes endpoints require a literal loopback IP. Hostnames
   and non-loopback remotes require verified HTTPS.
 - Raster artifacts must decode as a real PNG, JPEG, GIF, or WebP within fixed
-  frame and pixel limits. Malformed images and appended polyglot payloads are
-  rejected; delegated images stay download-only in task surfaces.
+  frame and pixel limits. Hermes and Mentat re-encode metadata-free canonical
+  snapshots, so hidden chunks, metadata, appended payloads, and the original
+  container are not published; delegated images stay download-only in task
+  surfaces.
 
 ## 2026-07-28
 

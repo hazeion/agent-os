@@ -385,7 +385,9 @@ def _canonicalize_image_file(
                     or "transparency" in frame.info
                     else "RGB"
                 )
-                frames.append(frame.convert(safe_mode).copy())
+                safe_frame = frame.convert(safe_mode).copy()
+                safe_frame.info.clear()
+                frames.append(safe_frame)
                 durations.append(
                     max(
                         0,
@@ -397,6 +399,7 @@ def _canonicalize_image_file(
         if format_name == "JPEG" and len(frames) != 1:
             raise AttachmentValidationError("JPEG images must contain one frame")
         first = frames[0].convert("RGB") if format_name == "JPEG" else frames[0]
+        first.info.clear()
         save_options: dict = {}
         if format_name == "PNG":
             save_options.update(compress_level=9, optimize=False)

@@ -375,9 +375,11 @@ off failed transfers, and stops automatically retrying hosts that do not
 advertise the artifact contract. A manual task refresh checks the remote
 completion revision again and can restore a missing private snapshot.
 Raster files are structurally decoded with fixed frame and pixel ceilings at
-both boundaries. Malformed files and containers with appended payloads are
-rejected. The browser presents delegated images as download-only file cards;
-it does not decode the original artifact as a Home-page thumbnail.
+both boundaries, then re-encoded as metadata-free canonical snapshots.
+Malformed files are rejected; unknown chunks, embedded metadata, appended
+payloads, and the original untrusted container are never published. The
+browser presents delegated images as download-only file cards; it does not
+decode the original artifact as a Home-page thumbnail.
 It must not acquire, expose, or replay the dashboard's process/session token as
 a remote server credential or call dashboard-plugin routes as though they were
 the advertised API-server surface. Mentat must not invoke SSH, interpolate

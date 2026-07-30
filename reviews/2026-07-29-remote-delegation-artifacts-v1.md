@@ -64,7 +64,7 @@ finished task needs attention.
 | AC-7 | Older remote Hermes versions retain the current summary-only task workflow without broken or misleading artifact controls. | Compatibility tests | Pass |
 | AC-8 | Accepting a task does not erase its retained artifact references; rejected artifact transfers remain visibly unavailable and are not described as downloaded. | Task action and persistence tests | Pass |
 | AC-9 | Each individual artifact is limited to 100 MiB, with at most 10 artifacts and 250 MiB combined per completed task. | Boundary tests | Pass |
-| AC-10 | Existing local Console artifacts, local delegation, remote Kanban actions, task planning, and attachment retention continue to pass. | Focused regression and complete repository suites | Pass; 878 tests passed and the sole full-suite failure is the pre-existing user-owned `Daily Check` fixture change |
+| AC-10 | Existing local Console artifacts, local delegation, remote Kanban actions, task planning, and attachment retention continue to pass. | Focused regression and complete repository suites | Pass; 879 tests passed and the sole full-suite failure is the pre-existing user-owned `Daily Check` fixture change |
 
 ### Constraints and recovery
 
@@ -154,6 +154,8 @@ finished task needs attention.
 - Both repositories validate the same type, per-file, count, and combined-size
   limits. Hermes rejects links, hard links, races, active content, malformed
   images/text, and recognizable credential material before advertising a file.
+- Mentat decodes and rewrites accepted raster images before storage so EXIF,
+  comments, XMP, and other hidden metadata do not survive the trust boundary.
 - Mentat downloads only through its selected server-side adapter, verifies the
   manifest and streamed bytes, and saves an independent content-addressed
   snapshot under gitignored private runtime storage.
@@ -203,7 +205,7 @@ finished task needs attention.
 
 | Command or action | Environment | Exit/result | Pass/fail/skip counts | Notes |
 | --- | --- | --- | --- | --- |
-| `python3 -m unittest discover -s tests` | Mentat | 1 | 878 passed, 1 failed, 4 skipped | Only `test_only_mentat_project_remains_active_for_v1` fails because the user's intentionally uncommitted `data/projects.json` adds `Daily Check`; that file is excluded from this slice. |
+| `python3 -m unittest discover -s tests` | Mentat | 1 | 879 passed, 1 failed, 4 skipped | Only `test_only_mentat_project_remains_active_for_v1` fails because the user's intentionally uncommitted `data/projects.json` adds `Daily Check`; that file is excluded from this slice. |
 | `.venv/bin/python -m pytest tests/gateway/test_kanban_api.py tests/gateway/test_kanban_artifact_api.py tests/hermes_cli/test_kanban_db.py -q` | Hermes worktree | 0 | 263 passed | Complete affected Kanban/API set. |
 
 ### Rendered or manual behavior

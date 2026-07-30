@@ -7,6 +7,7 @@ import base64
 from unittest.mock import patch
 
 import agent_console_attachments as attachments
+from PIL import Image, PngImagePlugin
 from agent_console_attachments import (
     AttachmentStorageError,
     AttachmentUnavailable,
@@ -52,7 +53,10 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
             self.assertNotIn("storage_key", metadata)
             self.assertNotIn("sha256", metadata)
             self.assertEqual(get_attachment(data_dir, metadata["id"]), metadata)
-            self.assertEqual(resolve_blob_path(data_dir, metadata["id"]).read_bytes(), PNG)
+            with Image.open(resolve_blob_path(data_dir, metadata["id"])) as image:
+                image.load()
+                self.assertEqual(image.size, (1, 1))
+                self.assertEqual(image.info, {})
 
             if os.name != "nt":
                 self.assertEqual(database_path(data_dir).stat().st_mode & 0o777, 0o600)
@@ -83,6 +87,56 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM attachments").fetchone()[0], 2)
             finally:
                 connection.close()
+
+    def test_raster_metadata_and_hidden_chunks_are_removed_before_storage(self):
+        marker = b"hidden-archive-marker-PK0304"
+        cases = []
+        image = Image.new("RGB", (2, 2), (20, 40, 60))
+
+        png = io.BytesIO()
+        png_info = PngImagePlugin.PngInfo()
+        png_info.add_text("payload", marker.decode("ascii"))
+        image.save(png, format="PNG", pnginfo=png_info)
+        cases.append(("payload.png", "image/png", png.getvalue()))
+
+        jpeg = io.BytesIO()
+        exif = Image.Exif()
+        exif[0x9286] = marker
+        image.save(jpeg, format="JPEG", exif=exif)
+        cases.append(("payload.jpg", "image/jpeg", jpeg.getvalue()))
+
+        gif = io.BytesIO()
+        image.save(gif, format="GIF", comment=marker)
+        cases.append(("payload.gif", "image/gif", gif.getvalue()))
+
+        webp = io.BytesIO()
+        image.save(webp, format="WEBP", lossless=True, xmp=marker)
+        cases.append(("payload.webp", "image/webp", webp.getvalue()))
+
+        with tempfile.TemporaryDirectory() as root:
+            data_dir = self.make_data_dir(root)
+            for name, media_type, content in cases:
+                with self.subTest(name=name):
+                    metadata = create_attachment(
+                        data_dir,
+                        original_name=name,
+                        content=content,
+                        content_type=media_type,
+                    )
+                    stored = resolve_blob_path(data_dir, metadata["id"])
+                    self.assertNotIn(marker, stored.read_bytes())
+                    with Image.open(stored) as normalized:
+                        normalized.load()
+                        self.assertFalse(
+                            {
+                                "comment",
+                                "exif",
+                                "xmp",
+                                "XML:com.adobe.xmp",
+                                "payload",
+                            }
+                            & set(normalized.info)
+                        )
 
     def test_rejects_paths_secrets_svg_archives_executables_and_mismatched_content(self):
         cases = (
