@@ -18,7 +18,7 @@ from private_state import (
 
 
 DATABASE_NAME = "mentat.sqlite3"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -77,6 +77,42 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON run_attachments(attachment_id);
         CREATE INDEX IF NOT EXISTS idx_run_attachments_run
             ON run_attachments(run_id);
+        """,
+    ),
+    (
+        2,
+        """
+        CREATE TABLE IF NOT EXISTS task_artifacts (
+            mentat_task_id TEXT NOT NULL,
+            connection_binding_id TEXT NOT NULL,
+            board_id TEXT NOT NULL,
+            remote_task_id TEXT NOT NULL,
+            remote_artifact_id TEXT NOT NULL,
+            attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+            binding_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL DEFAULT 0 CHECK (ordinal >= 0),
+            created_at REAL NOT NULL,
+            PRIMARY KEY (
+                mentat_task_id,
+                connection_binding_id,
+                board_id,
+                remote_task_id,
+                remote_artifact_id
+            )
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_artifacts_task
+            ON task_artifacts(
+                mentat_task_id,
+                connection_binding_id,
+                board_id,
+                remote_task_id,
+                ordinal
+            );
+        CREATE INDEX IF NOT EXISTS idx_task_artifacts_attachment
+            ON task_artifacts(attachment_id);
+        CREATE INDEX IF NOT EXISTS idx_task_artifacts_binding
+            ON task_artifacts(binding_id);
         """,
     ),
 )

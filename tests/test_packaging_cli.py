@@ -26,14 +26,25 @@ ROOT = Path(__file__).resolve().parents[1]
 class PackagingContractTests(unittest.TestCase):
     def test_pyproject_uses_single_version_source_and_pinned_dependencies(self):
         document = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        dependencies = document["project"]["dependencies"]
+        runtime_requirements = {
+            line.strip()
+            for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
         self.assertEqual(document["project"]["dynamic"], ["version"])
         self.assertEqual(
             document["tool"]["setuptools"]["dynamic"]["version"]["attr"],
             "mentat.version.__version__",
         )
         self.assertEqual(document["project"]["requires-python"], ">=3.11,<3.14")
-        self.assertTrue(all("==" in item for item in document["project"]["dependencies"]))
+        self.assertTrue(all("==" in item for item in dependencies))
+        self.assertSetEqual(set(dependencies), runtime_requirements)
         self.assertEqual(document["project"]["scripts"]["mentat"], "mentat.cli:main")
+        self.assertIn(
+            "delegation_artifacts",
+            document["tool"]["setuptools"]["py-modules"],
+        )
 
     def test_source_manifest_allowlists_public_seed_files(self):
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")

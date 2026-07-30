@@ -9,6 +9,7 @@ const endpoints = {
   overview: '/api/overview',
   projects: '/api/projects',
   tasks: '/api/tasks',
+  homeDelegationRefresh: '/api/tasks/delegations/refresh-home',
   agents: '/api/agents',
   contextPacks: '/api/context-packs',
   agentActivity: '/api/agent-activity',
@@ -78,6 +79,7 @@ const state = {
   messageSearchPending: null,
   isRefreshing: false,
   needsRefresh: false,
+  homeDelegationRefreshInFlight: false,
   hasBootstrapped: false,
   currentTheme: 'emerald',
   agentConsoleRuns: [],
@@ -409,6 +411,21 @@ async function delegateTask(id, payload, confirmationId) {
 
 async function refreshTaskDelegation(id) {
   return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delegation/refresh`, {}, { method: 'POST' });
+}
+
+async function refreshHomeDelegations() {
+  return sendJson(endpoints.homeDelegationRefresh, {}, { method: 'POST' });
+}
+
+async function previewDelegationRebind(id) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delegation/rebind/preview`, {}, { method: 'POST' });
+}
+
+async function confirmDelegationRebind(id, confirmationId) {
+  return sendJson(`${endpoints.tasks}/${encodeURIComponent(id)}/delegation/rebind`, {
+    confirmed: true,
+    confirmation_id: confirmationId,
+  }, { method: 'POST' });
 }
 
 async function reorderTodayTask(id, direction) {

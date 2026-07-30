@@ -8,15 +8,21 @@ adapters such as the fixed Hermes image argument.
 from __future__ import annotations
 
 import hashlib
+import codecs
+import io
 import os
 import re
 import sqlite3
 import stat
+import tempfile
 import time
 import uuid
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Collection
+
+from PIL import Image, ImageOps, ImageSequence, UnidentifiedImageError
 
 from mentat_db import (
     connect,
@@ -29,6 +35,9 @@ from private_state import synchronized_private_state
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_TEXT_BYTES = 2 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
+MAX_IMAGE_FRAMES = 100
+MAX_ANIMATED_PIXELS = 80_000_000
 DEFAULT_STAGED_TTL = 2 * 60 * 60
 DEFAULT_ORPHAN_GRACE = 60 * 60
 UPLOAD_MAX_AGE = 15 * 60
@@ -142,8 +151,13 @@ _TOKEN_PATTERN = re.compile(
     rb"(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"
 )
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
-    rb"(?im)^\s*(?:api[_-]?key|access[_-]?token|password|secret|credential|authorization)"
-    rb"\s*[:=]\s*['\"]?([A-Za-z0-9_./+=-]{16,})"
+    rb"(?i)(?:^|[\s,{])['\"]?"
+    rb"[A-Za-z0-9_-]*(?:api[_-]?key|access[_-]?token|password|secret|"
+    rb"credential|authorization|private[_-]?key)[A-Za-z0-9_-]*"
+    rb"['\"]?\s*[:=]\s*['\"]?([A-Za-z0-9_./:@%?&+=-]{16,})"
+)
+_CREDENTIAL_URL_PATTERN = re.compile(
+    rb"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]{4,}@[^\s'\"<>]+"
 )
 
 
@@ -234,6 +248,209 @@ def _detect_image(data: bytes) -> str | None:
     return None
 
 
+def _image_container_ends_exactly(
+    source: Path | bytes,
+    image_type: str,
+    expected_size: int,
+) -> bool:
+    handle = io.BytesIO(source) if isinstance(source, bytes) else source.open("rb")
+    try:
+        if image_type == "image/jpeg":
+            if expected_size < 2:
+                return False
+            handle.seek(expected_size - 2)
+            return handle.read(2) == b"\xff\xd9"
+        if image_type == "image/gif":
+            if expected_size < 1:
+                return False
+            handle.seek(expected_size - 1)
+            return handle.read(1) == b"\x3b"
+        if image_type == "image/webp":
+            handle.seek(0)
+            header = handle.read(12)
+            return (
+                len(header) == 12
+                and header[:4] == b"RIFF"
+                and header[8:12] == b"WEBP"
+                and int.from_bytes(header[4:8], "little") + 8 == expected_size
+            )
+        if image_type != "image/png":
+            return False
+        handle.seek(0)
+        if handle.read(8) != b"\x89PNG\r\n\x1a\n":
+            return False
+        offset = 8
+        while offset + 12 <= expected_size:
+            length_bytes = handle.read(4)
+            chunk_type = handle.read(4)
+            if len(length_bytes) != 4 or len(chunk_type) != 4:
+                return False
+            chunk_size = int.from_bytes(length_bytes, "big")
+            offset += 8
+            if chunk_size > expected_size - offset - 4:
+                return False
+            handle.seek(chunk_size + 4, os.SEEK_CUR)
+            offset += chunk_size + 4
+            if chunk_type == b"IEND":
+                return chunk_size == 0 and offset == expected_size
+        return False
+    finally:
+        handle.close()
+
+
+def _validate_image_structure(
+    source: Path | bytes,
+    image_type: str,
+    expected_size: int,
+) -> None:
+    if not _image_container_ends_exactly(source, image_type, expected_size):
+        raise AttachmentValidationError(
+            "Image contains malformed or trailing content"
+        )
+    pillow_source = io.BytesIO(source) if isinstance(source, bytes) else source
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(pillow_source) as image:
+                if Image.MIME.get(image.format or "") != image_type:
+                    raise AttachmentValidationError(
+                        "Image content does not match its declared type"
+                    )
+                image.verify()
+            if isinstance(source, bytes):
+                pillow_source = io.BytesIO(source)
+            with Image.open(pillow_source) as image:
+                frame_count = int(getattr(image, "n_frames", 1) or 1)
+                if frame_count > MAX_IMAGE_FRAMES:
+                    raise AttachmentValidationError(
+                        "Image has too many frames"
+                    )
+                total_pixels = 0
+                for frame in ImageSequence.Iterator(image):
+                    width, height = frame.size
+                    pixels = int(width) * int(height)
+                    total_pixels += pixels
+                    if (
+                        width <= 0
+                        or height <= 0
+                        or pixels > MAX_IMAGE_PIXELS
+                        or total_pixels > MAX_ANIMATED_PIXELS
+                    ):
+                        raise AttachmentValidationError(
+                            "Image dimensions exceed the safe limit"
+                        )
+                    frame.load()
+    except AttachmentValidationError:
+        raise
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ) as exc:
+        raise AttachmentValidationError(
+            "Image content is malformed or unsafe"
+        ) from exc
+    finally:
+        if isinstance(pillow_source, io.BytesIO):
+            pillow_source.close()
+
+
+def _canonicalize_image_file(
+    path: Path,
+    image_type: str,
+    *,
+    maximum_bytes: int,
+) -> int:
+    format_name = {
+        "image/png": "PNG",
+        "image/jpeg": "JPEG",
+        "image/gif": "GIF",
+        "image/webp": "WEBP",
+    }[image_type]
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+    loop = 0
+    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.canonical"
+    try:
+        with Image.open(path) as image:
+            loop = max(0, min(int(image.info.get("loop", 0) or 0), 65535))
+            for frame in ImageSequence.Iterator(image):
+                frame.load()
+                oriented = ImageOps.exif_transpose(frame)
+                safe_mode = (
+                    "RGBA"
+                    if oriented.mode in {"RGBA", "LA"}
+                    or "transparency" in oriented.info
+                    else "RGB"
+                )
+                safe_frame = oriented.convert(safe_mode).copy()
+                safe_frame.info.clear()
+                frames.append(safe_frame)
+                durations.append(
+                    max(
+                        0,
+                        min(int(frame.info.get("duration", 0) or 0), 600_000),
+                    )
+                )
+                if oriented is not frame:
+                    oriented.close()
+        if not frames:
+            raise AttachmentValidationError("Image contains no decodable frames")
+        if format_name == "JPEG" and len(frames) != 1:
+            raise AttachmentValidationError("JPEG images must contain one frame")
+        first = frames[0].convert("RGB") if format_name == "JPEG" else frames[0]
+        first.info.clear()
+        save_options: dict = {}
+        if format_name == "PNG":
+            save_options.update(compress_level=9, optimize=False)
+        elif format_name == "JPEG":
+            save_options.update(
+                quality=95,
+                subsampling=0,
+                optimize=False,
+                progressive=False,
+            )
+        elif format_name == "GIF":
+            save_options.update(optimize=False)
+        elif format_name == "WEBP":
+            save_options.update(lossless=True, quality=100, method=6)
+        if len(frames) > 1:
+            save_options.update(
+                save_all=True,
+                append_images=frames[1:],
+                duration=durations,
+                loop=loop,
+            )
+        with temporary.open("xb") as destination:
+            if os.name != "nt":
+                os.fchmod(destination.fileno(), 0o600)
+            first.save(destination, format=format_name, **save_options)
+            destination.flush()
+            os.fsync(destination.fileno())
+        size = temporary.stat().st_size
+        if size <= 0 or size > maximum_bytes:
+            raise AttachmentValidationError(
+                "Canonical image exceeds its size limit"
+            )
+        os.replace(temporary, path)
+        if os.name != "nt":
+            path.chmod(0o600, follow_symlinks=False)
+        return size
+    except AttachmentValidationError:
+        raise
+    except (OSError, ValueError, KeyError) as exc:
+        raise AttachmentValidationError(
+            "Image could not be stored safely"
+        ) from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+        for frame in frames:
+            frame.close()
+
+
 def _has_blocked_magic(data: bytes) -> bool:
     signatures = (
         b"MZ", b"\x7fELF", b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08",
@@ -255,7 +472,16 @@ def _looks_like_svg(data: bytes) -> bool:
     return prefix.startswith(b"<svg") or (prefix.startswith(b"<?xml") and b"<svg" in prefix)
 
 
-def _validate_content(name: str, data: bytes, supplied_type: str | None) -> tuple[str, str]:
+def _validate_content(
+    name: str,
+    data: bytes,
+    supplied_type: str | None,
+    *,
+    image_max_bytes: int | None = None,
+    text_max_bytes: int | None = None,
+) -> tuple[str, str]:
+    image_max_bytes = MAX_IMAGE_BYTES if image_max_bytes is None else image_max_bytes
+    text_max_bytes = MAX_TEXT_BYTES if text_max_bytes is None else text_max_bytes
     if not data:
         raise AttachmentValidationError("Empty files cannot be attached")
     extension = Path(name.lower()).suffix
@@ -263,6 +489,15 @@ def _validate_content(name: str, data: bytes, supplied_type: str | None) -> tupl
         raise AttachmentValidationError("SVG files cannot be attached")
     if _has_blocked_magic(data):
         raise AttachmentValidationError("Executable, archive, and unsupported binary files cannot be attached")
+    if (
+        any(marker in data for marker in _PRIVATE_KEY_MARKERS)
+        or _TOKEN_PATTERN.search(data)
+        or _SECRET_ASSIGNMENT_PATTERN.search(data)
+        or _CREDENTIAL_URL_PATTERN.search(data)
+    ):
+        raise AttachmentValidationError(
+            "Files containing recognizable credentials cannot be attached"
+        )
 
     image_type = _detect_image(data)
     if image_type:
@@ -271,8 +506,9 @@ def _validate_content(name: str, data: bytes, supplied_type: str | None) -> tupl
             raise AttachmentValidationError("Image content does not match its filename")
         if supplied_type and supplied_type not in {image_type, "application/octet-stream"}:
             raise AttachmentValidationError("Image content does not match its declared type")
-        if len(data) > MAX_IMAGE_BYTES:
-            raise AttachmentValidationError("Image exceeds the 10 MB limit")
+        if len(data) > image_max_bytes:
+            raise AttachmentValidationError("Image exceeds its size limit")
+        _validate_image_structure(data, image_type, len(data))
         return "image", image_type
 
     if extension not in _TEXT_EXTENSIONS:
@@ -283,20 +519,118 @@ def _validate_content(name: str, data: bytes, supplied_type: str | None) -> tupl
         or supplied_type == "application/octet-stream"
     ):
         raise AttachmentValidationError("File content does not match its declared type")
-    if len(data) > MAX_TEXT_BYTES:
-        raise AttachmentValidationError("Text and code files are limited to 2 MB")
+    if len(data) > text_max_bytes:
+        raise AttachmentValidationError("Text and code file exceeds its size limit")
     if b"\x00" in data:
         raise AttachmentValidationError("Binary files cannot be attached as text")
     try:
         data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise AttachmentValidationError("Text and code files must use UTF-8") from exc
-    if (
-        any(marker in data for marker in _PRIVATE_KEY_MARKERS)
-        or _TOKEN_PATTERN.search(data)
-        or _SECRET_ASSIGNMENT_PATTERN.search(data)
+    return "text", _TEXT_EXTENSIONS[extension]
+
+
+def _validate_staged_content(
+    path: Path,
+    name: str,
+    supplied_type: str | None,
+    *,
+    expected_size: int,
+    image_max_bytes: int,
+    text_max_bytes: int,
+) -> tuple[str, str]:
+    """Validate a staged file incrementally without materializing it in RAM."""
+    extension = Path(name.lower()).suffix
+    expected_kind = _expected_kind(name, supplied_type)
+    maximum = image_max_bytes if expected_kind == "image" else text_max_bytes
+    if expected_size <= 0:
+        raise AttachmentValidationError("Empty files cannot be attached")
+    if expected_size > maximum:
+        label = "Image" if expected_kind == "image" else "Text and code file"
+        raise AttachmentValidationError(f"{label} exceeds its size limit")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    prefix = b""
+    carry = b""
+    decoder = (
+        codecs.getincrementaldecoder("utf-8-sig")("strict")
+        if expected_kind == "text"
+        else None
+    )
+    try:
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+            or details.st_size != expected_size
+        ):
+            raise AttachmentStorageError("Staged attachment content changed")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            while chunk := handle.read(64 * 1024):
+                if len(prefix) < 4096:
+                    prefix += chunk[: 4096 - len(prefix)]
+                scanned = carry + chunk
+                if (
+                    any(marker in scanned for marker in _PRIVATE_KEY_MARKERS)
+                    or _TOKEN_PATTERN.search(scanned)
+                    or _SECRET_ASSIGNMENT_PATTERN.search(scanned)
+                    or _CREDENTIAL_URL_PATTERN.search(scanned)
+                ):
+                    raise AttachmentValidationError(
+                        "Files containing recognizable credentials cannot be attached"
+                    )
+                carry = scanned[-4096:]
+                if decoder is not None:
+                    if b"\x00" in chunk:
+                        raise AttachmentValidationError(
+                            "Binary files cannot be attached as text"
+                        )
+                    decoder.decode(chunk, final=False)
+            if decoder is not None:
+                decoder.decode(b"", final=True)
+    except UnicodeDecodeError as exc:
+        raise AttachmentValidationError(
+            "Text and code files must use UTF-8"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    if _looks_like_svg(prefix) or supplied_type == "image/svg+xml":
+        raise AttachmentValidationError("SVG files cannot be attached")
+    if _has_blocked_magic(prefix):
+        raise AttachmentValidationError(
+            "Executable, archive, and unsupported binary files cannot be attached"
+        )
+    image_type = _detect_image(prefix)
+    if expected_kind == "image":
+        expected_type = _IMAGE_EXTENSIONS.get(extension)
+        if image_type is None or expected_type != image_type:
+            raise AttachmentValidationError(
+                "Image content does not match its filename"
+            )
+        if supplied_type and supplied_type not in {
+            image_type,
+            "application/octet-stream",
+        }:
+            raise AttachmentValidationError(
+                "Image content does not match its declared type"
+            )
+        _validate_image_structure(path, image_type, expected_size)
+        return "image", image_type
+    if image_type is not None or extension not in _TEXT_EXTENSIONS:
+        raise AttachmentValidationError(
+            "This text or code file type is not supported"
+        )
+    if supplied_type and not (
+        supplied_type in _TEXT_CONTENT_TYPES
+        or supplied_type.startswith("text/")
+        or supplied_type == "application/octet-stream"
     ):
-        raise AttachmentValidationError("Files containing recognizable credentials cannot be attached")
+        raise AttachmentValidationError(
+            "File content does not match its declared type"
+        )
     return "text", _TEXT_EXTENSIONS[extension]
 
 
@@ -435,6 +769,8 @@ def create_attachment(
     content_type: str | None = None,
     now: float | None = None,
     staged_ttl: float = DEFAULT_STAGED_TTL,
+    image_max_bytes: int | None = None,
+    text_max_bytes: int | None = None,
 ) -> dict:
     """Validate, stage, and return safe metadata for an uploaded file."""
     if (content is None) == (stream is None):
@@ -443,8 +779,17 @@ def create_attachment(
         raise AttachmentValidationError("Attachment content must be bytes")
     name = _normalize_name(original_name)
     supplied_type = _normalized_content_type(content_type)
+    image_max_bytes = MAX_IMAGE_BYTES if image_max_bytes is None else image_max_bytes
+    text_max_bytes = MAX_TEXT_BYTES if text_max_bytes is None else text_max_bytes
     if staged_ttl <= 0:
         raise AttachmentValidationError("Attachment staging lifetime must be positive")
+    if (
+        type(image_max_bytes) is not int
+        or image_max_bytes <= 0
+        or type(text_max_bytes) is not int
+        or text_max_bytes <= 0
+    ):
+        raise AttachmentValidationError("Attachment size limits are invalid")
 
     created_at = _timestamp(now)
     attachment_id = f"attachment_{uuid.uuid4().hex}"
@@ -463,9 +808,9 @@ def create_attachment(
             "VALUES (?, NULL, ?, ?, ?, 'uploading', 0, ?, ?, ?)",
             (attachment_id, name, provisional_type, expected_kind, created_at, created_at, created_at + staged_ttl),
         )
-        maximum = MAX_IMAGE_BYTES if expected_kind == "image" else MAX_TEXT_BYTES
+        maximum = image_max_bytes if expected_kind == "image" else text_max_bytes
         digest = hashlib.sha256()
-        collected = bytearray()
+        written = 0
         source = stream
         with upload_path.open("xb") as destination:
             if os.name != "nt":
@@ -479,22 +824,38 @@ def create_attachment(
                     raise AttachmentValidationError("Attachment stream must return bytes")
                 if not chunk:
                     continue
-                if len(collected) + len(chunk) > maximum:
+                if written + len(chunk) > maximum:
                     label = "Image" if expected_kind == "image" else "Text and code file"
                     raise AttachmentValidationError(f"{label} exceeds its size limit")
-                collected.extend(chunk)
+                written += len(chunk)
                 digest.update(chunk)
                 destination.write(chunk)
             destination.flush()
             os.fsync(destination.fileno())
 
-        payload = bytes(collected)
-        kind, mime_type = _validate_content(name, payload, supplied_type)
+        kind, mime_type = _validate_staged_content(
+            upload_path,
+            name,
+            supplied_type,
+            expected_size=written,
+            image_max_bytes=image_max_bytes,
+            text_max_bytes=text_max_bytes,
+        )
+        if kind == "image":
+            written = _canonicalize_image_file(
+                upload_path,
+                mime_type,
+                maximum_bytes=image_max_bytes,
+            )
+            digest = hashlib.sha256()
+            with upload_path.open("rb") as canonical:
+                while chunk := canonical.read(64 * 1024):
+                    digest.update(chunk)
         sha256 = digest.hexdigest()
         storage_key = f"{sha256[:2]}/{sha256}"
         blob_root = _blobs_root(data_dir)
         blob_path = _safe_blob_path(blob_root, storage_key, require_exists=False)
-        _promote_blob(upload_path, blob_path, sha256=sha256, byte_size=len(payload))
+        _promote_blob(upload_path, blob_path, sha256=sha256, byte_size=written)
 
         with transaction(connection, immediate=True):
             blob = connection.execute("SELECT id FROM blobs WHERE sha256 = ?", (sha256,)).fetchone()
@@ -504,7 +865,7 @@ def create_attachment(
                     "INSERT INTO blobs "
                     "(id, sha256, storage_key, byte_size, state, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, 'ready', ?, ?)",
-                    (blob_id, sha256, storage_key, len(payload), created_at, created_at),
+                    (blob_id, sha256, storage_key, written, created_at, created_at),
                 )
             else:
                 blob_id = str(blob["id"])
@@ -515,7 +876,7 @@ def create_attachment(
             connection.execute(
                 "UPDATE attachments SET blob_id = ?, mime_type = ?, kind = ?, state = 'staged', "
                 "byte_size = ?, updated_at = ?, expires_at = ? WHERE id = ? AND state = 'uploading'",
-                (blob_id, mime_type, kind, len(payload), created_at, created_at + staged_ttl, attachment_id),
+                (blob_id, mime_type, kind, written, created_at, created_at + staged_ttl, attachment_id),
             )
         row = connection.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
         return _public_metadata(row)
@@ -618,6 +979,75 @@ def read_attachment_bytes(
             raise AttachmentStorageError("Attachment blob content changed")
         return _public_metadata(row), payload
     finally:
+        connection.close()
+
+
+@synchronized_private_state
+def open_attachment_stream(
+    data_dir: Path,
+    attachment_id: str,
+    *,
+    allowed_states: Collection[str] | None = None,
+) -> tuple[dict, BinaryIO]:
+    """Open one digest-verified blob descriptor for bounded HTTP streaming."""
+    identifier = _validate_attachment_id(attachment_id)
+    states = frozenset(allowed_states or AVAILABLE_STATES)
+    if not states or not states <= ATTACHMENT_STATES:
+        raise AttachmentValidationError("Invalid attachment state allowlist")
+    connection = connect(data_dir)
+    descriptor = -1
+    snapshot: BinaryIO | None = None
+    try:
+        row = connection.execute(
+            "SELECT a.*, b.state AS blob_state, b.storage_key, "
+            "b.sha256 AS blob_sha256, b.byte_size AS blob_byte_size "
+            "FROM attachments a LEFT JOIN blobs b ON b.id = a.blob_id "
+            "WHERE a.id = ?",
+            (identifier,),
+        ).fetchone()
+        if row is None:
+            raise AttachmentNotFound("Attachment not found")
+        if row["state"] not in states or row["blob_state"] != "ready":
+            raise AttachmentUnavailable("Attachment is not available")
+        expected_size = int(row["byte_size"])
+        expected_sha256 = str(row["blob_sha256"] or "")
+        if (
+            int(row["blob_byte_size"] or -1) != expected_size
+            or not _SHA256_PATTERN.fullmatch(expected_sha256)
+        ):
+            raise AttachmentStorageError("Attachment blob metadata is invalid")
+        path = _safe_blob_path(
+            _blobs_root(data_dir),
+            str(row["storage_key"]),
+            require_exists=True,
+        )
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+            or details.st_size != expected_size
+        ):
+            raise AttachmentStorageError("Attachment blob content changed")
+        digest = hashlib.sha256()
+        snapshot = tempfile.TemporaryFile(mode="w+b")
+        with os.fdopen(descriptor, "rb") as verifier:
+            descriptor = -1
+            for chunk in iter(lambda: verifier.read(64 * 1024), b""):
+                digest.update(chunk)
+                snapshot.write(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise AttachmentStorageError("Attachment blob content changed")
+        snapshot.seek(0)
+        result = snapshot
+        snapshot = None
+        return _public_metadata(row), result
+    finally:
+        if snapshot is not None:
+            snapshot.close()
+        if descriptor >= 0:
+            os.close(descriptor)
         connection.close()
 
 
@@ -758,14 +1188,24 @@ def list_run_attachments(
             direction_clause = " AND r.direction = ?"
             parameters = (normalized_run_id, direction)
         rows = connection.execute(
-            "SELECT a.*, r.direction, r.ordinal FROM run_attachments r "
-            "JOIN attachments a ON a.id = r.attachment_id WHERE r.run_id = ?"
+            "SELECT a.*, b.state AS blob_state, r.direction, r.ordinal "
+            "FROM run_attachments r "
+            "JOIN attachments a ON a.id = r.attachment_id "
+            "LEFT JOIN blobs b ON b.id = a.blob_id WHERE r.run_id = ?"
             + direction_clause
             + " ORDER BY r.direction, r.ordinal, a.created_at, a.id",
             parameters,
         ).fetchall()
         return [
-            {**_public_metadata(row), "direction": str(row["direction"]), "ordinal": int(row["ordinal"])}
+            {
+                **_public_metadata(row),
+                "available": (
+                    str(row["state"]) in AVAILABLE_STATES
+                    and str(row["blob_state"] or "") == "ready"
+                ),
+                "direction": str(row["direction"]),
+                "ordinal": int(row["ordinal"]),
+            }
             for row in rows
         ]
     finally:

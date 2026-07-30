@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -8,7 +9,9 @@ from unittest.mock import patch
 import server
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"safe-image-payload"
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)
 
 
 def profile_discovery():

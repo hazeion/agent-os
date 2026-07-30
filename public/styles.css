@@ -2695,6 +2695,41 @@ h2 {
 .agent-console-artifact-copy span,
 .agent-console-artifact-unavailable { color: var(--muted-2); font-size: .54rem; text-transform: capitalize; }
 .agent-console-artifact-download { justify-self: start; min-height: 25px; padding: 5px 8px; font-size: .58rem; text-decoration: none; }
+.agent-console-artifacts.compact {
+  margin: 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 9px 9px;
+  background: color-mix(in srgb, var(--card-2) 72%, transparent);
+}
+.agent-console-artifacts.compact .agent-console-artifact-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(155px, 100%), 1fr));
+}
+.agent-console-artifacts.compact .agent-console-artifact-card {
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  padding: 5px;
+}
+.agent-console-artifacts.compact .agent-console-artifact-card > img,
+.agent-console-artifacts.compact .agent-console-artifact-icon {
+  width: 34px;
+  height: 34px;
+}
+.agent-console-artifacts.compact .agent-console-artifact-card.image > img {
+  width: 34px;
+  height: 34px;
+  grid-column: 1;
+  grid-row: 1;
+  object-fit: cover;
+}
+.task-artifact-notice,
+.home-artifact-notice {
+  margin: 0;
+  color: var(--warning);
+  font-size: .68rem;
+  line-height: 1.45;
+}
+.home-artifact-notice { padding: 0 10px 8px; }
 .markdown-body blockquote {
   margin: .55em 0;
   padding: .35em .75em;
@@ -3734,6 +3769,14 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .home-focus-list {
   display: grid;
   gap: 7px;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-item {
+  min-width: 0;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-item:has(.agent-console-artifacts) .home-focus-row {
+  border-radius: 9px 9px 0 0;
 }
 
 :root[data-ui-shell='emerald'] .home-focus-row {

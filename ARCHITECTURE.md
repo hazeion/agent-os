@@ -178,8 +178,10 @@ lifecycle, read-only sessions, bounded Context Pack text, and remote
 skill/toolset visibility are implemented. Exact approval and clarification
 responses, continuation, complete profile discovery, revisioned Kanban, and
 bounded image transfer are enabled only when their complete advertised
-contracts are present. Remote provider/model mutation and general file/artifact
-transfer remain incomplete, so Mentat must not advertise full remote parity.
+contracts are present. Remote delegated Kanban artifact download is available
+only through its complete version-one manifest/digest contract. General remote
+Console file transfer remains incomplete, so Mentat must not advertise full
+remote parity.
 
 The remote boundary has these architectural invariants:
 
@@ -220,7 +222,7 @@ mutation authority. Provider-switch preview and apply handlers revalidate the
 selected transport under the connection-operation lock and reject every
 non-local binding before local inventory or mutation code runs. Profile
 creation/deletion, identity editing, remote
-provider administration, cron inventory, and advanced artifact transfer may
+provider administration, cron inventory, and general Console artifact transfer may
 degrade clearly in remote mode.
 
 Remote upstream run identifiers are process-private and are not retained in
@@ -281,6 +283,26 @@ bounded allowlists, snapshots acceptable files without following symlinks,
 binds stored outputs to retained history, and cleans successfully registered
 exports. Failed registration preserves the export for retry.
 
+Remote delegated artifacts use a narrower boundary. Hermes promotes only files
+explicitly declared when an API-created Kanban task completes inside its managed
+scratch workspace. It returns opaque IDs and safe metadata, never paths.
+Mentat streams each accepted file over the selected authenticated connection,
+verifies its digest and content again, and stores an independent private
+snapshot keyed to the Mentat task, connection, board, and remote task. Home
+and task detail render raster outputs as download-only file cards rather than
+decoding the original file inline. Both sides structurally decode raster files,
+enforce frame and pixel ceilings, then re-encode metadata-free canonical
+snapshots. Unknown chunks, embedded metadata, appended bytes, and the original
+untrusted container never become downloadable content. Home
+renders its local data before refreshing at most three current-connection
+delegations in the background. Failed artifact transfers use a bounded retry
+delay, and unsupported hosts are not polled again automatically. An explicit
+refresh compares the remote completion revision and restores a missing local
+snapshot when possible. The browser sees only fixed same-origin opaque download
+routes. Older Hermes versions keep the summary-only workflow, and older unbound
+Mentat delegations require an explicit verified reconnect before any remote
+read or download.
+
 Staged files expire after two hours. Unreferenced files use a one-hour grace;
 active and retained run references prevent collection. Startup reconciliation
 and a bounded periodic collector repair interrupted states, release references
@@ -333,10 +355,10 @@ Google Calendar.
 ## Hermes Kanban delegation boundary
 
 The supported Hermes Kanban adapter is the only durable delegation mutation
-path. Its current implementation uses fixed local Hermes operations. Remote
-beta parity requires an authenticated, capability-advertised Kanban surface
-that preserves the same revision and read-back behavior; until then remote
-delegation fails closed. Agent Messages remains a project-owned communication
+path. It uses fixed local Hermes operations or the authenticated,
+capability-advertised remote Kanban surface with the same revision and
+read-back behavior. Hosts without the complete contract fail closed. Agent
+Messages remains a project-owned communication
 queue, and Agent Console remains an interactive, globally single-run
 conversation surface; neither is a durable dispatcher.
 
@@ -371,7 +393,8 @@ Adapter mutations verify operation-specific postconditions rather than treating
 a merely readable task as proof that the requested effect occurred.
 
 The task's delegation object stores normalized profile, board, task, run and
-session identifiers; state, synchronization and review status; bounded summary
+session identifiers plus the opaque selected-connection binding; state,
+synchronization and review status; bounded summary
 or blocking-question text; attempt count; timestamps; and a bounded secret-free
 audit. Agent Activity is derived from these task-linked records and groups work
 into needs input, ready for review, running, failed, and recently completed.

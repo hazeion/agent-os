@@ -3,9 +3,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+import base64
 from unittest.mock import patch
 
 import agent_console_attachments as attachments
+from PIL import Image, PngImagePlugin
 from agent_console_attachments import (
     AttachmentStorageError,
     AttachmentUnavailable,
@@ -23,7 +25,9 @@ from agent_console_attachments import (
 from mentat_db import connect, database_path, schema_version
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"safe-image-payload"
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)
 
 
 class AgentConsoleAttachmentTests(unittest.TestCase):
@@ -41,7 +45,7 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
                 now=1_000,
             )
 
-            self.assertEqual(schema_version(data_dir), 1)
+            self.assertEqual(schema_version(data_dir), 2)
             self.assertEqual(metadata["kind"], "image")
             self.assertEqual(metadata["mime_type"], "image/png")
             self.assertEqual(metadata["state"], "staged")
@@ -49,7 +53,10 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
             self.assertNotIn("storage_key", metadata)
             self.assertNotIn("sha256", metadata)
             self.assertEqual(get_attachment(data_dir, metadata["id"]), metadata)
-            self.assertEqual(resolve_blob_path(data_dir, metadata["id"]).read_bytes(), PNG)
+            with Image.open(resolve_blob_path(data_dir, metadata["id"])) as image:
+                image.load()
+                self.assertEqual(image.size, (1, 1))
+                self.assertEqual(image.info, {})
 
             if os.name != "nt":
                 self.assertEqual(database_path(data_dir).stat().st_mode & 0o777, 0o600)
@@ -81,6 +88,77 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_raster_metadata_and_hidden_chunks_are_removed_before_storage(self):
+        marker = b"hidden-archive-marker-PK0304"
+        cases = []
+        image = Image.new("RGB", (2, 2), (20, 40, 60))
+
+        png = io.BytesIO()
+        png_info = PngImagePlugin.PngInfo()
+        png_info.add_text("payload", marker.decode("ascii"))
+        image.save(png, format="PNG", pnginfo=png_info)
+        cases.append(("payload.png", "image/png", png.getvalue()))
+
+        jpeg = io.BytesIO()
+        exif = Image.Exif()
+        exif[0x9286] = marker
+        image.save(jpeg, format="JPEG", exif=exif)
+        cases.append(("payload.jpg", "image/jpeg", jpeg.getvalue()))
+
+        gif = io.BytesIO()
+        image.save(gif, format="GIF", comment=marker)
+        cases.append(("payload.gif", "image/gif", gif.getvalue()))
+
+        webp = io.BytesIO()
+        image.save(webp, format="WEBP", lossless=True, xmp=marker)
+        cases.append(("payload.webp", "image/webp", webp.getvalue()))
+
+        with tempfile.TemporaryDirectory() as root:
+            data_dir = self.make_data_dir(root)
+            for name, media_type, content in cases:
+                with self.subTest(name=name):
+                    metadata = create_attachment(
+                        data_dir,
+                        original_name=name,
+                        content=content,
+                        content_type=media_type,
+                    )
+                    stored = resolve_blob_path(data_dir, metadata["id"])
+                    self.assertNotIn(marker, stored.read_bytes())
+                    with Image.open(stored) as normalized:
+                        normalized.load()
+                        self.assertFalse(
+                            {
+                                "comment",
+                                "exif",
+                                "xmp",
+                                "XML:com.adobe.xmp",
+                                "payload",
+                            }
+                            & set(normalized.info)
+                        )
+
+    def test_jpeg_orientation_is_applied_before_metadata_is_removed(self):
+        image = Image.new("RGB", (2, 1), (20, 40, 60))
+        exif = Image.Exif()
+        exif[0x0112] = 6
+        source = io.BytesIO()
+        image.save(source, format="JPEG", exif=exif)
+        with tempfile.TemporaryDirectory() as root:
+            data_dir = self.make_data_dir(root)
+            metadata = create_attachment(
+                data_dir,
+                original_name="oriented.jpg",
+                content=source.getvalue(),
+                content_type="image/jpeg",
+            )
+            with Image.open(
+                resolve_blob_path(data_dir, metadata["id"])
+            ) as normalized:
+                normalized.load()
+                self.assertEqual(normalized.size, (1, 2))
+                self.assertNotIn("exif", normalized.info)
+
     def test_rejects_paths_secrets_svg_archives_executables_and_mismatched_content(self):
         cases = (
             ("../escape.txt", b"hello", "text/plain"),
@@ -91,9 +169,31 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
             ("archive.txt", b"PK\x03\x04payload", "text/plain"),
             ("program.txt", b"\x7fELFpayload", "text/plain"),
             ("not-really.png", b"plain text", "image/png"),
+            ("header-only.png", b"\x89PNG\r\n\x1a\nnot-an-image", "image/png"),
+            ("polyglot.png", PNG + b"PK\x03\x04hidden-archive", "image/png"),
             ("wrong.jpg", PNG, "image/jpeg"),
+            (
+                "leaky.png",
+                PNG + b"sk-abcdefghijklmnopqrstuvwxyz123456",
+                "image/png",
+            ),
             ("token.txt", b"sk-abcdefghijklmnopqrstuvwxyz123456", "text/plain"),
             ("settings.yaml", b"api_key: abcdefghijklmnopqrstuvwxyz", "application/yaml"),
+            (
+                "settings.json",
+                b'{"api_key":"abcdefghijklmnopQRSTUVWX"}',
+                "application/json",
+            ),
+            (
+                "aws.txt",
+                b"AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwx1234567890ABCD",
+                "text/plain",
+            ),
+            (
+                "database.txt",
+                b"DATABASE_URL=postgres://user:verysecretpassword@example.test/db",
+                "text/plain",
+            ),
             ("binary.txt", b"hello\x00world", "text/plain"),
         )
         with tempfile.TemporaryDirectory() as root:

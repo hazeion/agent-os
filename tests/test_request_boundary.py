@@ -176,28 +176,27 @@ class RequestBoundaryTests(unittest.TestCase):
             },
         )
 
-    def test_attachment_content_is_streamed_with_safe_headers(self):
-        with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "blob"
-            path.write_bytes(b"hello")
-            instance = self.handler(headers=self.local_headers())
-            instance.wfile = BytesIO()
-            instance.send_response = Mock()
-            captured = {}
-            instance.send_header = lambda name, value: captured.__setitem__(name, value)
-            instance.end_headers = Mock()
+    def test_attachment_content_is_sent_with_safe_headers(self):
+        instance = self.handler(headers=self.local_headers())
+        instance.wfile = BytesIO()
+        instance.send_response = Mock()
+        captured = {}
+        instance.send_header = lambda name, value: captured.__setitem__(name, value)
+        instance.end_headers = Mock()
 
-            instance.send_attachment_file(
-                {
-                    "name": "example.html",
-                    "kind": "text",
-                    "mime_type": "text/html",
-                    "byte_size": 5,
-                },
-                path,
-            )
+        stream = BytesIO(b"hello")
+        instance.send_attachment_content(
+            {
+                "name": "example.html",
+                "kind": "text",
+                "mime_type": "text/html",
+                "byte_size": 5,
+            },
+            stream,
+        )
 
         self.assertEqual(instance.wfile.getvalue(), b"hello")
+        self.assertTrue(stream.closed)
         self.assertEqual(captured["Content-Type"], "text/plain; charset=utf-8")
         self.assertEqual(captured["X-Content-Type-Options"], "nosniff")
         self.assertEqual(captured["Cross-Origin-Resource-Policy"], "same-origin")

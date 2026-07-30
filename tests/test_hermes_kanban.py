@@ -200,7 +200,15 @@ class RemoteAdapterTests(unittest.TestCase):
             self.calls = []
 
         def require_kanban_capabilities(self):
-            return {"features": ["kanban_api", "kanban_api_revisioned", "kanban_api_idempotency", "kanban_api_requires_api_key"]}
+            return {"features": [
+                "kanban_api",
+                "kanban_api_revisioned",
+                "kanban_api_idempotency",
+                "kanban_api_requires_api_key",
+                "kanban_artifacts",
+                "kanban_artifacts_requires_api_key",
+                "kanban_artifacts_digests",
+            ]}
 
         def kanban_request(self, operation, **kwargs):
             self.calls.append((operation, kwargs))

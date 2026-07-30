@@ -4,6 +4,17 @@ All notable changes to Mentat.
 
 ## 2026-07-29
 
+### Added
+- Remote delegated Kanban tasks can now bring supported generated text, code,
+  and raster-image files back into Mentat through an authenticated,
+  capability-gated artifact contract.
+- Generated files appear on Home when agent work needs attention and in the
+  full task view. Home renders local work first, then checks a bounded set of
+  current remote work in the background.
+- Older remote task links can be reconnected only after Mentat verifies the
+  exact task, board, agent, title, and live remote revision and the user
+  confirms the match.
+
 ### Changed
 - Agent Console now keeps its always-visible transcript between the Agent /
   Provider / Model selector row and the prompt composer.
@@ -11,6 +22,21 @@ All notable changes to Mentat.
   Verified switches continue to appear as transcript notices.
 - Runtime reconciliation remains available only when needed through a compact
   `Retry check` action alongside New session and Show tools.
+
+### Safety
+- Artifact downloads are limited to 10 files, 100 MiB per file, and 250 MiB
+  per task. Hermes and Mentat both verify type, size, digest, path containment,
+  and recognizable-secret patterns before publishing a local download.
+- Remote paths, storage keys, digests, bearer credentials, and upstream
+  artifact IDs never reach the browser. Files are served from private
+  content-addressed storage through opaque same-origin routes.
+- Cleartext remote Hermes endpoints require a literal loopback IP. Hostnames
+  and non-loopback remotes require verified HTTPS.
+- Raster artifacts must decode as a real PNG, JPEG, GIF, or WebP within fixed
+  frame and pixel limits. Hermes and Mentat re-encode metadata-free canonical
+  snapshots, so hidden chunks, metadata, appended payloads, and the original
+  container are not published; delegated images stay download-only in task
+  surfaces.
 
 ## 2026-07-28
 
