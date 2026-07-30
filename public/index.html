@@ -175,22 +175,24 @@
             <div id="focus-task-list" class="home-focus-list"></div>
             <div id="reminder-list" class="reminder-list"></div>
             <div class="home-panel-footer">
-              <a class="mini-button" href="#today-calendar-panel">Open today schedule</a>
-              <details class="home-utility-disclosure">
-                <summary>Quick add</summary>
-                <div class="home-utility-popover">
-                  <form id="quick-capture-form" class="quick-capture-form">
-                    <input id="quick-capture-title" name="title" type="text" maxlength="160" required placeholder="Add a task for today…" aria-label="Add a task for today" />
-                    <select id="quick-capture-project" name="project" aria-label="Quick capture project"></select>
-                    <button class="action-button" type="submit">Add</button>
-                  </form>
-                  <div id="quick-capture-status" class="task-editor-status mono" role="status"></div>
-                </div>
-              </details>
-              <details class="home-utility-disclosure" id="today-completed-panel">
-                <summary>Completed work</summary>
-                <div id="completed-list" class="stack horizontal-stack home-completed-list"></div>
-              </details>
+              <div class="home-panel-utility-row">
+                <details class="home-utility-disclosure">
+                  <summary>Quick add</summary>
+                  <div class="home-utility-popover">
+                    <form id="quick-capture-form" class="quick-capture-form">
+                      <input id="quick-capture-title" name="title" type="text" maxlength="160" required placeholder="Add a task for today…" aria-label="Add a task for today" />
+                      <select id="quick-capture-project" name="project" aria-label="Quick capture project"></select>
+                      <button class="action-button" type="submit">Add</button>
+                    </form>
+                    <div id="quick-capture-status" class="task-editor-status mono" role="status"></div>
+                  </div>
+                </details>
+                <details class="home-utility-disclosure" id="today-completed-panel">
+                  <summary>Completed work</summary>
+                  <div id="completed-list" class="stack horizontal-stack home-completed-list"></div>
+                </details>
+              </div>
+              <a class="mini-button home-schedule-link" href="#today-calendar-panel">Open today schedule</a>
             </div>
           </section>
 

@@ -1,3 +1,4 @@
+from html.parser import HTMLParser
 from pathlib import Path
 import unittest
 
@@ -48,6 +49,94 @@ class HomeOperationsUiTests(unittest.TestCase):
         self.assertIn("api(endpoints.agents).catch", refresh)
         self.assertIn("api(endpoints.crons).catch", refresh)
         self.assertIn("Hermes CRON inventory is temporarily unavailable.", refresh)
+
+    def test_today_schedule_action_stays_below_utility_disclosures(self):
+        class FooterStructureParser(HTMLParser):
+            VOID_ELEMENTS = {
+                "area",
+                "base",
+                "br",
+                "col",
+                "embed",
+                "hr",
+                "img",
+                "input",
+                "link",
+                "meta",
+                "param",
+                "source",
+                "track",
+                "wbr",
+            }
+
+            def __init__(self):
+                super().__init__()
+                self.stack = []
+                self.footer = None
+
+            def handle_starttag(self, tag, attrs):
+                attributes = dict(attrs)
+                node = {
+                    "tag": tag,
+                    "attrs": attributes,
+                    "children": [],
+                    "text": "",
+                }
+                if self.stack:
+                    self.stack[-1]["children"].append(node)
+                if (
+                    tag == "div"
+                    and "home-panel-footer"
+                    in attributes.get("class", "").split()
+                ):
+                    self.footer = node
+                if tag not in self.VOID_ELEMENTS:
+                    self.stack.append(node)
+
+            def handle_endtag(self, tag):
+                if self.stack and self.stack[-1]["tag"] == tag:
+                    self.stack.pop()
+
+            def handle_data(self, data):
+                if self.stack:
+                    self.stack[-1]["text"] += data
+
+        def classes(node):
+            return set(node["attrs"].get("class", "").split())
+
+        parser = FooterStructureParser()
+        parser.feed(INDEX)
+        self.assertIsNotNone(parser.footer)
+        self.assertEqual(len(parser.footer["children"]), 2)
+
+        utility_row, schedule_link = parser.footer["children"]
+        self.assertEqual(utility_row["tag"], "div")
+        self.assertIn("home-panel-utility-row", classes(utility_row))
+        self.assertEqual(schedule_link["tag"], "a")
+        self.assertIn("home-schedule-link", classes(schedule_link))
+        self.assertEqual(
+            schedule_link["attrs"].get("href"),
+            "#today-calendar-panel",
+        )
+
+        disclosures = utility_row["children"]
+        self.assertEqual([node["tag"] for node in disclosures], ["details", "details"])
+        summaries = [
+            next(
+                child["text"].strip()
+                for child in disclosure["children"]
+                if child["tag"] == "summary"
+            )
+            for disclosure in disclosures
+        ]
+        self.assertEqual(summaries, ["Quick add", "Completed work"])
+
+        footer_css = CSS[
+            CSS.index(":root[data-ui-shell='emerald'] .home-panel-footer {")
+            : CSS.index(":root[data-ui-shell='emerald'] .home-utility-disclosure {")
+        ]
+        self.assertIn("flex-direction: column", footer_css)
+        self.assertIn(".home-panel-utility-row", footer_css)
 
     def test_operational_focus_prioritizes_today_and_reports_real_completion(self):
         focus = self.app_block("function renderFocusTasks", "function dueTaskReminders")
