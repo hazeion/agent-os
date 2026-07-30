@@ -221,9 +221,8 @@ These values are read-only in remote mode: visibility does not grant provider
 mutation authority. Provider-switch preview and apply handlers revalidate the
 selected transport under the connection-operation lock and reject every
 non-local binding before local inventory or mutation code runs. Profile
-creation/deletion, identity editing, remote
-provider administration, cron inventory, and general Console artifact transfer may
-degrade clearly in remote mode.
+creation/deletion, identity editing, remote provider administration, and
+general Console artifact transfer may degrade clearly in remote mode.
 
 Remote upstream run identifiers are process-private and are not retained in
 Console history. Graceful shutdown performs one stop attempt and bounded
@@ -487,15 +486,23 @@ does not mutate Hermes data and is not reversible from Mentat.
 
 ## Hermes cron boundary
 
-Mentat currently exposes local Hermes cron inventory as read-only. Remote mode
-does not read the cron store and must hide the inventory unless Hermes exposes a
-supported bounded read capability. The installed Hermes runtime does not
-provide an atomic, expected-revision, enabled-only
-operation for moving an existing job to the next scheduler tick. A separate
-read followed by the available trigger operation cannot close that race: a job
-could be changed or disabled between validation and mutation, and the trigger
-may implicitly enable it. Mentat therefore advertises no working queue
-capability and its queue controls fail closed.
+Mentat exposes cron inventory as read-only. Local mode reads the local Hermes
+cron store. Remote mode never reads that store or any remote path; it requires
+Hermes to advertise the complete version-one `GET /v1/jobs` contract. That
+endpoint requires the API key and returns a read-only public view capped at 128
+jobs and 256 KiB. It includes only the job ID, an ID-based label, schedule,
+enabled state, last and next run times, status, and an opaque revision. Hermes
+never puts stored names, job instructions, delivery settings, work directories,
+or execution output in this response. Mentat checks the selected connection
+before and after the request and rejects older, partial, malformed, or
+oversized responses.
+
+The installed Hermes runtime does not provide an atomic, expected-revision,
+enabled-only operation for moving an existing job to the next scheduler tick.
+A separate read followed by the available trigger operation cannot close that
+race: a job could be changed or disabled between validation and mutation, and
+the trigger may implicitly enable it. Mentat therefore advertises no working
+queue capability and its queue controls fail closed.
 
 Safe next-tick queueing requires an upstream Hermes compare-and-swap operation
 that atomically verifies the complete expected job revision and enabled state

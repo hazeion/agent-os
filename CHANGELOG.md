@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-29
 
 ### Added
+- Cron Monitor and the Home scheduled-work count now read active and paused
+  jobs from the selected remote Hermes host when it advertises the complete
+  read-only jobs contract.
 - Remote delegated Kanban tasks can now bring supported generated text, code,
   and raster-image files back into Mentat through an authenticated,
   capability-gated artifact contract.
@@ -29,6 +32,11 @@ All notable changes to Mentat.
   `Retry check` action alongside New session and Show tools.
 
 ### Safety
+- Remote cron reads use one fixed, bearer-authenticated endpoint and keep only
+  the small set of fields Mentat already displays. Job prompts, delivery
+  details, origins, work directories, execution output, paths, and raw
+  upstream data never reach the browser. Cron changes and run controls remain
+  disabled.
 - Artifact downloads are limited to 10 files, 100 MiB per file, and 250 MiB
   per task. Hermes and Mentat both verify type, size, digest, path containment,
   and recognizable-secret patterns before publishing a local download.

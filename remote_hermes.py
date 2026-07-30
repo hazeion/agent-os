@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 import bisect
 import hashlib
 import hmac
@@ -73,6 +74,7 @@ FIXED_PATHS = frozenset(
         "/v1/toolsets",
         "/v1/profiles",
         "/v1/profile-runtimes",
+        "/v1/jobs",
     }
 )
 _RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
@@ -132,6 +134,7 @@ _KNOWN_BOOLEAN_FEATURES = frozenset(
         "session_fork",
         "skills_api",
         "jobs_admin",
+        "jobs_inventory",
         "admin_config_rw",
     }
 )
@@ -156,6 +159,11 @@ _CAPABILITY_INVENTORY_ENDPOINTS = {
 }
 _PROFILE_INVENTORY_ENDPOINT = ("GET", "/v1/profiles")
 _PROFILE_RUNTIME_INVENTORY_ENDPOINT = ("GET", "/v1/profile-runtimes")
+_CRON_INVENTORY_ENDPOINT = (
+    "GET",
+    "/v1/jobs",
+    1,
+)
 _PROFILE_RUNTIME_ENDPOINT = ("GET", "/v1/profiles/{profile_id}/runtime", 1)
 _PROFILE_RUNTIME_SWITCH_ENDPOINT = (
     "POST",
@@ -256,7 +264,25 @@ MAX_REMOTE_SKILLS = 500
 MAX_REMOTE_TOOLSETS = 128
 MAX_REMOTE_TOOLS_PER_TOOLSET = 256
 MAX_REMOTE_TOOL_REFERENCES = 4_096
+MAX_REMOTE_CRON_JOBS = 128
 _INVENTORY_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}\Z")
+_CRON_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z")
+_CRON_REVISION = re.compile(r"[0-9a-f]{64}\Z")
+_CRON_EXPRESSION = re.compile(r"[0-9*?,/\- ]{5,200}\Z")
+_CRON_INTERVAL = re.compile(r"every ([1-9][0-9]{0,7})m\Z")
+_CRON_STATUSES = frozenset(
+    {
+        "ok",
+        "error",
+        "claimed",
+        "running",
+        "completed",
+        "failed",
+        "unknown",
+        "scheduled",
+        "paused",
+    }
+)
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}\Z")
 SESSION_LIST_LIMIT = 12
 SESSION_MESSAGE_LIMIT = 500
@@ -3822,6 +3848,147 @@ class RemoteHermesClient:
             "enabled_toolset_count": sum(1 for item in toolsets if item["enabled"]),
         }
 
+    @staticmethod
+    def _cron_inventory_text(
+        value: Any,
+        *,
+        maximum: int,
+    ) -> str:
+        if not isinstance(value, str):
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        text = " ".join(value.split())
+        if not text or len(text) > maximum:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        if "/" in text or "\\" in text:
+            raise RemoteHermesError("remote_cron_inventory_private")
+        return text
+
+    @staticmethod
+    def _cron_inventory_timestamp(value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value or len(value) > 64:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid") from exc
+        return value
+
+    def _cron_inventory_schedule(self, value: Any) -> str:
+        if not isinstance(value, str) or not value or len(value) > 200:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        if value == "Schedule unavailable":
+            return value
+        interval = _CRON_INTERVAL.fullmatch(value)
+        if interval is not None:
+            minutes = int(interval.group(1))
+            if minutes > 10 * 365 * 24 * 60:
+                raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+            return value
+        fields = value.split()
+        if len(fields) in {5, 6} and _CRON_EXPRESSION.fullmatch(value) is not None:
+            return value
+        if self._cron_inventory_timestamp(value) is not None:
+            return value
+        raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+
+    def _normalize_cron_job(self, value: Any) -> dict[str, Any]:
+        expected_keys = {
+            "id",
+            "name",
+            "schedule",
+            "enabled",
+            "last_run",
+            "next_run",
+            "last_status",
+            "configuration_revision",
+        }
+        if type(value) is not dict or set(value) != expected_keys:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        job_id = value.get("id")
+        if not isinstance(job_id, str) or _CRON_JOB_ID.fullmatch(job_id) is None:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        name = self._cron_inventory_text(value.get("name"), maximum=200)
+        if _contains_private_public_text(job_id) or _contains_private_public_text(name):
+            raise RemoteHermesError("remote_cron_inventory_private")
+        if name != f"Cron job {job_id}":
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        enabled = value.get("enabled")
+        if type(enabled) is not bool:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        schedule_text = self._cron_inventory_schedule(value.get("schedule"))
+        status = value.get("last_status")
+        if status not in _CRON_STATUSES:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        revision = value.get("configuration_revision")
+        if not isinstance(revision, str) or _CRON_REVISION.fullmatch(revision) is None:
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+
+        normalized = {
+            "id": job_id,
+            "name": name,
+            "schedule": schedule_text,
+            "enabled": enabled,
+            "last_run": self._cron_inventory_timestamp(value.get("last_run")),
+            "next_run": self._cron_inventory_timestamp(value.get("next_run")),
+            "last_status": status,
+            "configuration_revision": revision,
+        }
+        if self._contains_private_inventory_text(normalized):
+            raise RemoteHermesError("remote_cron_inventory_private")
+        return normalized
+
+    def read_cron_jobs(self) -> dict[str, Any]:
+        capabilities = self._trusted_capabilities()
+        if "jobs_inventory" not in set(capabilities.get("features") or ()):
+            raise RemoteHermesError("remote_cron_inventory_unavailable")
+        if capabilities.get("cron_inventory_contract_valid") is not True:
+            raise RemoteHermesError("remote_schema_unsupported")
+        payload = self._request_json(
+            _CRON_INVENTORY_ENDPOINT[1],
+            authenticated=True,
+            root_list_limits={"jobs": MAX_REMOTE_CRON_JOBS},
+        )
+        jobs_value = payload.get("jobs")
+        if (
+            set(payload)
+            != {
+                "object",
+                "version",
+                "count",
+                "enabled_count",
+                "jobs",
+            }
+            or payload.get("object") != "hermes.jobs.inventory"
+            or type(payload.get("version")) is not int
+            or payload.get("version") != 1
+            or type(payload.get("count")) is not int
+            or type(payload.get("enabled_count")) is not int
+            or type(jobs_value) is not list
+        ):
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        jobs = [self._normalize_cron_job(job) for job in jobs_value]
+        job_ids = [job["id"] for job in jobs]
+        enabled_count = sum(1 for job in jobs if job["enabled"])
+        if (
+            len(set(job_ids)) != len(job_ids)
+            or payload["count"] != len(jobs)
+            or payload["enabled_count"] != enabled_count
+        ):
+            raise RemoteHermesError("remote_cron_inventory_schema_invalid")
+        return {
+            "count": len(jobs),
+            "enabled_count": enabled_count,
+            "jobs": jobs,
+        }
+
     def _run_json_request(
         self,
         method: str,
@@ -5332,6 +5499,28 @@ class RemoteHermesClient:
             ) == expected
             for name, expected in _CAPABILITY_INVENTORY_ENDPOINTS.items()
         )
+        jobs_endpoint = endpoints.get("jobs_inventory")
+        cron_inventory_contract_valid = (
+            features.get("jobs_inventory") is True
+            and type(features.get("jobs_inventory_version")) is int
+            and features.get("jobs_inventory_version") == 1
+            and features.get("jobs_inventory_complete") is True
+            and features.get("jobs_inventory_requires_api_key") is True
+            and features.get("jobs_inventory_read_only") is True
+            and type(features.get("jobs_inventory_max_jobs")) is int
+            and features.get("jobs_inventory_max_jobs") == MAX_REMOTE_CRON_JOBS
+            and type(features.get("jobs_inventory_max_response_bytes")) is int
+            and features.get("jobs_inventory_max_response_bytes") == MAX_RESPONSE_BYTES
+            and type(jobs_endpoint) is dict
+            and set(jobs_endpoint) == {"method", "path", "version"}
+            and type(jobs_endpoint.get("version")) is int
+            and (
+                jobs_endpoint.get("method"),
+                jobs_endpoint.get("path"),
+                jobs_endpoint.get("version"),
+            )
+            == _CRON_INVENTORY_ENDPOINT
+        )
         if features.get("profile_inventory") is True:
             if (
                 features.get("profile_inventory_version") != 1
@@ -5457,6 +5646,7 @@ class RemoteHermesClient:
             "model": model,
             "features": supported,
             "capability_inventory_endpoints_valid": capability_inventory_endpoints_valid,
+            "cron_inventory_contract_valid": cron_inventory_contract_valid,
         }
 
     def discover(self) -> dict[str, Any]:

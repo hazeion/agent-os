@@ -2220,6 +2220,75 @@ def read_cron_jobs():
     }
 
 
+def selected_cron_jobs():
+    """Read cron inventory from the currently selected Hermes authority."""
+
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        try:
+            transport = hermes_console_transport()
+        except (HermesTransportError, RemoteHermesError):
+            return {
+                "exists": None,
+                "source": "unavailable",
+                "mode": "unavailable",
+                "status": "unavailable",
+                "error": "Hermes cron inventory is unavailable.",
+                "count": 0,
+                "enabled_count": 0,
+                "jobs": [],
+            }
+        if transport.mode == "local":
+            return read_cron_jobs()
+        if transport.mode != "remote" or not callable(
+            getattr(transport, "read_cron_jobs", None)
+        ):
+            return {
+                "exists": None,
+                "source": "remote",
+                "mode": "remote",
+                "status": "unavailable",
+                "error": "Remote Hermes cron inventory is unavailable.",
+                "count": 0,
+                "enabled_count": 0,
+                "jobs": [],
+            }
+        label = compact_text(
+            getattr(getattr(transport, "binding", None), "label", ""),
+            max_length=80,
+        )
+        try:
+            transport.revalidate(DATA_DIR)
+            inventory = transport.read_cron_jobs()
+            transport.revalidate(DATA_DIR)
+        except (HermesTransportError, RemoteHermesError) as exc:
+            unsupported = exc.code == "remote_cron_inventory_unavailable"
+            return {
+                "exists": None,
+                "source": "remote",
+                "mode": "remote",
+                "status": "unsupported" if unsupported else "unavailable",
+                "label": label,
+                "error": (
+                    "This remote Hermes host does not advertise read-only cron inventory."
+                    if unsupported
+                    else "Remote Hermes cron inventory is unavailable."
+                ),
+                "count": 0,
+                "enabled_count": 0,
+                "jobs": [],
+            }
+        return {
+            "exists": True,
+            "source": "remote",
+            "mode": "remote",
+            "status": "available",
+            "label": label,
+            "count": inventory["count"],
+            "enabled_count": inventory["enabled_count"],
+            "jobs": inventory["jobs"],
+        }
+
+
 CRON_QUEUE_UNAVAILABLE = (
     "This Hermes runtime does not expose an atomic queue operation that can "
     "reject disabled or changed jobs. Cron inventory remains read-only."
@@ -2228,7 +2297,7 @@ CRON_QUEUE_UNAVAILABLE = (
 
 def cron_jobs_payload():
     """Expose cron inventory while failing closed on unsupported mutations."""
-    payload = read_cron_jobs()
+    payload = selected_cron_jobs()
     return {
         **payload,
         "capabilities": {"crons.queue_enabled": False},
@@ -3400,7 +3469,7 @@ def overview():
     projects = read_json_file("projects.json", [])
     tasks = read_json_file("tasks.json", [])
     attention = read_json_file("attention.json", [])
-    crons = read_cron_jobs()
+    crons = selected_cron_jobs()
     sessions = sessions_payload(local_limit=5)
     dashboard = read_json_file("dashboard.json", {})
 
