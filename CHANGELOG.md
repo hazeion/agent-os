@@ -16,6 +16,9 @@ All notable changes to Mentat.
   confirms the match.
 
 ### Changed
+- Remote Agent Console turns now receive exact context used and total context
+  window values from compatible Hermes Runs instead of showing them as
+  unavailable.
 - Home now keeps **Open today schedule** on a stable row below **Quick add**
   and **Completed work**, including when either section expands.
 - Agent Console now keeps its always-visible transcript between the Agent /

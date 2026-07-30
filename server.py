@@ -7397,6 +7397,8 @@ def run_remote_hermes_agent(
             current["duration_seconds"] = round(time.monotonic() - started, 1)
             status = (terminal or {}).get("status")
             current.pop("action_required", None)
+            if status in {"completed", "failed", "cancelled"}:
+                current["usage"] = (terminal or {}).get("usage") or None
             terminal_session_id = (terminal or {}).get("session_id")
             if isinstance(terminal_session_id, str):
                 current["session_id"] = _remote_session_alias(
@@ -7411,7 +7413,6 @@ def run_remote_hermes_agent(
             elif status == "completed":
                 current["status"] = "completed"
                 current["response"] = str((terminal or {}).get("output") or "")
-                current["usage"] = (terminal or {}).get("usage") or None
                 current["error"] = ""
                 agent_console_event(current, "Response complete", "complete", {"duration_seconds": current["duration_seconds"]})
             elif status == "cancelled" and current.get("status") == "cancelling":
@@ -7459,6 +7460,11 @@ def run_remote_hermes_agent(
                 current["completed_at"] = now_iso()
                 current["response"] = ""
                 current.pop("action_required", None)
+                recovery_status = (recovery_terminal or {}).get("status")
+                if recovery_status in {"completed", "failed", "cancelled"}:
+                    current["usage"] = (
+                        (recovery_terminal or {}).get("usage") or None
+                    )
                 submission_uncertain = (
                     submission_attempted
                     and remote_run_id is None
@@ -8423,10 +8429,11 @@ def cancel_agent_console_run(run_id: str):
                 current = AGENT_CONSOLE_RUNS.get(run_id)
                 if current:
                     terminal_status = (terminal or {}).get("status")
+                    if terminal_status in {"completed", "failed", "cancelled"}:
+                        current["usage"] = (terminal or {}).get("usage") or None
                     if terminal_status == "completed":
                         current["status"] = "completed"
                         current["response"] = str((terminal or {}).get("output") or "")
-                        current["usage"] = (terminal or {}).get("usage") or None
                         current["error"] = ""
                     elif terminal_status == "cancelled":
                         current["status"] = "cancelled"
@@ -8564,10 +8571,11 @@ def stop_agent_console_processes() -> None:
             status = (terminal or {}).get("status")
             run["completed_at"] = now_iso()
             run["response"] = ""
+            if status in {"completed", "failed", "cancelled"}:
+                run["usage"] = (terminal or {}).get("usage") or None
             if status == "completed":
                 run["status"] = "completed"
                 run["response"] = str((terminal or {}).get("output") or "")
-                run["usage"] = (terminal or {}).get("usage") or None
                 run["error"] = ""
             elif status == "cancelled":
                 run["status"] = "cancelled"

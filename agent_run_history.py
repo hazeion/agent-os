@@ -217,8 +217,7 @@ def normalize_usage(value: Any) -> dict[str, int] | None:
         if (
             type(context_tokens) is not int
             or type(context_length) is not int
-            or not (0 <= context_tokens <= context_length <= 10**9)
-            or context_length == 0
+            or not (0 < context_tokens <= context_length <= 10**9)
         ):
             context_tokens = None
             context_length = None
