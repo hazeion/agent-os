@@ -58,6 +58,7 @@ from agent_console_attachments import (
     garbage_collect as garbage_collect_console_attachments,
     get_attachment,
     list_run_attachments,
+    open_attachment_stream,
     read_attachment_bytes,
     read_attachment_text,
     release_attachment,
@@ -80,6 +81,13 @@ from agent_console_telemetry import (
     ProgressTail,
     prepare_local_telemetry_paths,
     read_usage as read_local_console_usage,
+)
+from delegation_artifacts import (
+    artifact_operation_lock,
+    import_remote_task_artifacts,
+    list_task_artifacts,
+    reconcile_task_artifact_bindings,
+    remove_task_artifacts,
 )
 from command_manifest import command_manifest_payload
 from json_store import (
@@ -454,7 +462,7 @@ def public_console_attachment(metadata: dict | None) -> dict | None:
     if not isinstance(metadata, dict) or not metadata.get("id"):
         return None
     attachment_id = str(metadata["id"])
-    return {
+    public = {
         "id": attachment_id,
         "name": str(metadata.get("name") or "attachment"),
         "mime_type": str(metadata.get("mime_type") or "application/octet-stream"),
@@ -463,8 +471,12 @@ def public_console_attachment(metadata: dict | None) -> dict | None:
         "state": str(metadata.get("state") or "staged"),
         "created_at": metadata.get("created_at"),
         "expires_at": metadata.get("expires_at"),
-        "content_url": f"/api/agent-console/attachments/{quote(attachment_id, safe='')}/content",
     }
+    if metadata.get("available") is not False:
+        public["content_url"] = (
+            f"/api/agent-console/attachments/{quote(attachment_id, safe='')}/content"
+        )
+    return public
 
 
 def active_agent_console_run_ids() -> tuple[str, ...]:
@@ -504,8 +516,18 @@ def maintain_agent_console_attachments(*, startup: bool = False) -> dict:
     """Run bounded private attachment reconciliation without exposing local paths."""
     active_run_ids = active_agent_console_run_ids()
     if startup:
+        tasks = read_json_file("tasks.json", [])
+        if not isinstance(tasks, list):
+            raise ValueError("tasks.json must contain a list")
+        delegation_bindings = reconcile_task_artifact_bindings(
+            DATA_DIR,
+            tasks,
+        )
         with AGENT_CONSOLE_LOCK:
-            retained_run_ids = tuple(AGENT_CONSOLE_RUNS)
+            retained_run_ids = (
+                *tuple(AGENT_CONSOLE_RUNS),
+                *delegation_bindings,
+            )
         return reconcile_console_attachments(
             DATA_DIR,
             active_run_ids=active_run_ids,
@@ -552,13 +574,10 @@ def create_agent_console_attachment(
 
 def agent_console_attachment_content(
     attachment_id: str,
-) -> tuple[dict | None, Path | None, int]:
+) -> tuple[dict | None, object | None, int]:
     try:
-        metadata = get_attachment(DATA_DIR, attachment_id)
-        if not metadata:
-            return {"error": "Attachment not found"}, None, 404
-        path = resolve_blob_path(DATA_DIR, attachment_id)
-        return public_console_attachment(metadata), path, 200
+        metadata, content = open_attachment_stream(DATA_DIR, attachment_id)
+        return public_console_attachment(metadata), content, 200
     except AttachmentNotFound:
         return {"error": "Attachment not found"}, None, 404
     except AttachmentUnavailable:
@@ -3636,16 +3655,47 @@ def delete_confirmed_task(task_id: str, payload):
         ]
         return remaining, ({"ok": True, "deleted_task_id": task_id, "task": task, "tasks": remaining}, 200)
 
-    return update_json_file("tasks.json", [], mutator)
+    with artifact_operation_lock():
+        result = update_json_file("tasks.json", [], mutator)
+        if result[1] == 200:
+            try:
+                remove_task_artifacts(DATA_DIR, task_id)
+            except (AttachmentError, OSError, sqlite3.Error):
+                # The private reconciliation pass can safely retry cleanup later.
+                pass
+    return result
 
 
 def kanban_adapter() -> HermesKanbanAdapter | RemoteHermesKanbanAdapter:
     selection = load_remote_hermes_connection(DATA_DIR)
     if selection.mode == "remote":
         return RemoteHermesKanbanAdapter(
-            RemoteHermesClient(selection.endpoint or "", selection.api_key or "")
+            RemoteHermesClient(selection.endpoint or "", selection.api_key or ""),
+            connection_binding_id=selection.binding_id,
         )
-    return HermesKanbanAdapter(hermes_command_path())
+    adapter = HermesKanbanAdapter(hermes_command_path())
+    adapter.connection_binding_id = selection.binding_id
+    return adapter
+
+
+def delegation_connection_is_current(
+    delegation: dict,
+    adapter: HermesKanbanAdapter | RemoteHermesKanbanAdapter,
+) -> bool:
+    """Fail closed when a remote task belongs to another selected connection."""
+    if not isinstance(adapter, RemoteHermesKanbanAdapter):
+        return True
+    return bool(
+        delegation.get("connection_binding_id")
+        and delegation.get("connection_binding_id")
+        == adapter.connection_binding_id
+    )
+
+
+def kanban_adapter_binding(
+    adapter: HermesKanbanAdapter | RemoteHermesKanbanAdapter,
+) -> str:
+    return str(getattr(adapter, "connection_binding_id", "local-default"))
 
 
 def task_record(task_id: str) -> dict | None:
@@ -3753,12 +3803,40 @@ def remote_delegation_revision(remote: dict) -> dict:
     }
 
 
+def artifact_sync_revision(remote: dict) -> str:
+    """Return a stable identifier for the exact remote completion snapshot."""
+    encoded = json.dumps(
+        remote_delegation_revision(remote),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return "artifactrev_" + hashlib.sha256(encoded).hexdigest()
+
+
+def artifact_retry_fields(delegation: dict, state: str) -> dict:
+    """Persist bounded automatic retry state without retrying every UI poll."""
+    if state in {"synced", "unsupported"}:
+        return {
+            "artifact_sync_attempts": 0,
+            "artifact_sync_retry_at": None,
+        }
+    attempts = min(1000, int(delegation.get("artifact_sync_attempts") or 0) + 1)
+    delay_seconds = min(60 * 60, 60 * (2 ** min(attempts - 1, 6)))
+    retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+    return {
+        "artifact_sync_attempts": attempts,
+        "artifact_sync_retry_at": retry_at.isoformat(),
+    }
+
+
 def persist_task_delegation(
     task_id: str,
     delegation: dict,
     *,
     task_updates: dict | None = None,
     expected_reservation_id: str | None = None,
+    expected_task: dict | None = None,
 ):
     def mutator(tasks):
         if not isinstance(tasks, list):
@@ -3767,6 +3845,11 @@ def persist_task_delegation(
         for index, task in enumerate(next_tasks):
             if str(task.get("id") or "") != task_id:
                 continue
+            if expected_task is not None and task != expected_task:
+                return tasks, (
+                    None,
+                    "Task changed after preview; preview the action again.",
+                )
             if expected_reservation_id:
                 current_delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
                 if current_delegation.get("reservation_id") != expected_reservation_id:
@@ -3927,6 +4010,7 @@ def preview_task_delegation(task_id: str, payload):
         "profile_id": profile_id,
         "board_id": board_id,
         "workspace": workspace,
+        "connection_binding_id": kanban_adapter_binding(adapter),
         "instructions": combined_instructions,
         "context_pack": context_pack,
         "context": context,
@@ -3950,6 +4034,11 @@ def preview_task_delegation(task_id: str, payload):
 
 
 def delegate_confirmed_task(task_id: str, payload):
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        return _delegate_confirmed_task_locked(task_id, payload)
+
+
+def _delegate_confirmed_task_locked(task_id: str, payload):
     if not isinstance(payload, dict) or payload.get("confirmed") is not True:
         return {"error": "Delegation requires explicit confirmation."}, 400
     preview, status = preview_task_delegation(task_id, payload)
@@ -3971,6 +4060,7 @@ def delegate_confirmed_task(task_id: str, payload):
         reservation = {
             "profile_id": intent["profile_id"],
             "board_id": intent["board_id"],
+            "connection_binding_id": kanban_adapter_binding(adapter),
             "state": "queued",
             "sync_state": "pending",
             "review_state": "pending",
@@ -4020,6 +4110,7 @@ def delegate_confirmed_task(task_id: str, payload):
             {
                 "profile_id": intent["profile_id"],
                 "board_id": intent["board_id"],
+                "connection_binding_id": kanban_adapter_binding(adapter),
                 "kanban_task_id": remote_id,
                 "state": "queued",
                 "sync_state": "pending",
@@ -4044,6 +4135,10 @@ def delegate_confirmed_task(task_id: str, payload):
 
 
 def refresh_task_delegation(task_id: str, payload=None):
+    adapter = None
+    synchronized = None
+    saved = None
+    remote = None
     with HERMES_KANBAN_LOCK:
         task = task_record(task_id)
         if task is None:
@@ -4051,7 +4146,12 @@ def refresh_task_delegation(task_id: str, payload=None):
         delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else None
         if not delegation or not delegation.get("kanban_task_id"):
             return {"error": "Task has no Hermes delegation."}, 409
-        remote = kanban_adapter().get_task(
+        adapter = kanban_adapter()
+        if not delegation_connection_is_current(delegation, adapter):
+            return {
+                "error": "This delegated task belongs to a different Hermes connection. Switch back to that connection before refreshing it."
+            }, 409
+        remote = adapter.get_task(
             delegation.get("board_id") or "default",
             delegation["kanban_task_id"],
         )
@@ -4083,12 +4183,332 @@ def refresh_task_delegation(task_id: str, payload=None):
         )
         if error:
             return {"error": error}, 500
+    remote_artifact_revision = artifact_sync_revision(remote or {})
+    try:
+        current_artifacts = list_task_artifacts(
+            DATA_DIR,
+            task_id,
+            connection_binding_id=str(
+                synchronized.get("connection_binding_id") or ""
+            ),
+            board=str(synchronized.get("board_id") or "default"),
+            remote_task_id=str(synchronized.get("kanban_task_id") or ""),
+        )
+        locally_available_artifact_count = sum(
+            1
+            for artifact in current_artifacts
+            if artifact.get("available") is not False
+        )
+    except (AttachmentError, OSError, sqlite3.Error):
+        locally_available_artifact_count = 0
+    expected_artifact_count = int(synchronized.get("artifact_count") or 0)
+    artifact_snapshot_missing = (
+        expected_artifact_count > locally_available_artifact_count
+    )
+    if (
+        isinstance(adapter, RemoteHermesKanbanAdapter)
+        and synchronized
+        and synchronized.get("state") in {"ready_for_review", "completed"}
+        and (
+            synchronized.get("artifact_sync_state") != "synced"
+            or synchronized.get("artifact_sync_revision")
+            != remote_artifact_revision
+            or artifact_snapshot_missing
+        )
+    ):
+        with artifact_operation_lock():
+            with HERMES_KANBAN_LOCK:
+                current = task_record(task_id)
+                current_delegation = (
+                    current.get("delegation")
+                    if isinstance(current, dict)
+                    and isinstance(current.get("delegation"), dict)
+                    else None
+                )
+                binding_matches = bool(
+                    current_delegation
+                    and current_delegation.get("connection_binding_id")
+                    == adapter.connection_binding_id
+                    and current_delegation.get("kanban_task_id")
+                    == synchronized.get("kanban_task_id")
+                    and current_delegation.get("board_id")
+                    == synchronized.get("board_id")
+                )
+            if not binding_matches:
+                return {
+                    "error": "Task or delegation changed before generated files could be stored."
+                }, 409
+            artifact_sync = import_remote_task_artifacts(
+                DATA_DIR,
+                mentat_task_id=task_id,
+                connection_binding_id=adapter.connection_binding_id,
+                board=synchronized.get("board_id") or "default",
+                remote_task_id=synchronized["kanban_task_id"],
+                adapter=adapter,
+            )
+            with HERMES_KANBAN_LOCK:
+                current = task_record(task_id)
+                current_delegation = (
+                    current.get("delegation")
+                    if isinstance(current, dict)
+                    and isinstance(current.get("delegation"), dict)
+                    else None
+                )
+                if (
+                    current_delegation
+                    and current_delegation.get("connection_binding_id")
+                    == adapter.connection_binding_id
+                    and current_delegation.get("kanban_task_id")
+                    == synchronized.get("kanban_task_id")
+                    and current_delegation.get("board_id")
+                    == synchronized.get("board_id")
+                ):
+                    updated_delegation = dict(current_delegation)
+                    updated_delegation.update(
+                        {
+                            "artifact_sync_state": artifact_sync["state"],
+                            "artifact_count": artifact_sync["accepted_count"],
+                            "artifact_rejected_count": artifact_sync["rejected_count"],
+                            "artifact_sync_revision": remote_artifact_revision,
+                            "updated_at": now_iso(),
+                        }
+                    )
+                    retry_fields = artifact_retry_fields(
+                        current_delegation,
+                        artifact_sync["state"],
+                    )
+                    updated_delegation["artifact_sync_attempts"] = retry_fields[
+                        "artifact_sync_attempts"
+                    ]
+                    if retry_fields["artifact_sync_retry_at"] is None:
+                        updated_delegation.pop("artifact_sync_retry_at", None)
+                    else:
+                        updated_delegation["artifact_sync_retry_at"] = retry_fields[
+                            "artifact_sync_retry_at"
+                        ]
+                    saved, persistence_error = persist_task_delegation(
+                        task_id,
+                        updated_delegation,
+                    )
+                    if persistence_error:
+                        return {
+                            "error": "Generated files were stored, but their task status could not be saved.",
+                            "partial": True,
+                        }, 500
+                    synchronized = updated_delegation
+    return {
+        "ok": True,
+        "task": public_task_payload(saved),
+        "delegation": synchronized,
+        "remote": remote,
+    }, 200
+
+
+def preview_delegation_rebind(task_id: str, payload=None):
+    """Verify an older delegated task against the selected remote connection."""
+    task = task_record(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}, 404
+    delegation = task.get("delegation")
+    if not isinstance(delegation, dict) or not delegation.get("kanban_task_id"):
+        return {"error": "Task has no Hermes delegation."}, 409
+    if delegation.get("connection_binding_id"):
+        return {"error": "This delegated task is already tied to a Hermes connection."}, 409
+    adapter = kanban_adapter()
+    if not isinstance(adapter, RemoteHermesKanbanAdapter):
+        return {"error": "Select the remote Hermes that owns this task first."}, 409
+    board = str(delegation.get("board_id") or "default")
+    remote_id = str(delegation.get("kanban_task_id") or "")
+    remote = adapter.get_task(board, remote_id)
+    if not remote.get("ok"):
+        return {"error": "Mentat could not verify this task on the selected remote Hermes."}, 409
+    remote_task = remote.get("task") or {}
+    expected_profile = str(delegation.get("profile_id") or "")
+    if (
+        str(remote_task.get("id") or "") != remote_id
+        or str(remote_task.get("title") or "") != str(task.get("title") or task_id)
+        or (
+            expected_profile
+            and str(remote_task.get("assignee") or "") != expected_profile
+        )
+    ):
         return {
-            "ok": True,
-            "task": saved,
-            "delegation": synchronized,
-            "remote": remote,
-        }, 200
+            "error": (
+                "The selected remote task does not match this Mentat task. "
+                "Choose the original Hermes connection."
+            )
+        }, 409
+    intent = {
+        "connection_binding_id": adapter.connection_binding_id,
+        "board_id": board,
+        "kanban_task_id": remote_id,
+        "profile_id": expected_profile,
+        "remote_revision": remote_delegation_revision(remote),
+    }
+    return {
+        "ok": True,
+        "requires_confirmation": True,
+        "confirmation_id": delegation_confirmation("delegation_rebind", task, intent),
+        "task_id": task_id,
+        "remote": {
+            "task_id": remote_id,
+            "board_id": board,
+            "profile_id": expected_profile,
+            "title": str(remote_task.get("title") or ""),
+            "status": str(remote_task.get("status") or ""),
+        },
+        "warning": (
+            "Reconnect only if this is the original remote Hermes. "
+            "Mentat will bind future reads and file downloads to it."
+        ),
+    }, 200
+
+
+def confirm_delegation_rebind(task_id: str, payload=None):
+    if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+        return {"error": "Reconnecting a delegated task requires confirmation."}, 400
+    with HERMES_CONNECTION_OPERATION_LOCK, HERMES_KANBAN_LOCK:
+        preview, status = preview_delegation_rebind(task_id, payload)
+        if status != 200:
+            return preview, status
+        if compact_text(
+            payload.get("confirmation_id"), max_length=80
+        ) != preview.get("confirmation_id"):
+            return {
+                "error": (
+                    "Task or remote Hermes state changed after preview; "
+                    "preview again."
+                )
+            }, 409
+        task = task_record(task_id)
+        delegation = dict((task or {}).get("delegation") or {})
+        adapter = kanban_adapter()
+        if (
+            not isinstance(adapter, RemoteHermesKanbanAdapter)
+            or delegation.get("connection_binding_id")
+        ):
+            return {"error": "Delegation connection changed after preview."}, 409
+        delegation["connection_binding_id"] = adapter.connection_binding_id
+        audit = list(delegation.get("audit") or [])
+        audit.append(delegation_audit_event("connection_rebound"))
+        delegation["audit"] = audit[-100:]
+        delegation["updated_at"] = now_iso()
+        saved, error = persist_task_delegation(
+            task_id,
+            delegation,
+            expected_task=task,
+        )
+        if error:
+            return {"error": error}, 409
+    return {"ok": True, "task": public_task_payload(saved)}, 200
+
+
+def refresh_home_delegations(payload=None):
+    """Refresh a small current-connection work set before Home renders."""
+    selection = load_remote_hermes_connection(DATA_DIR)
+    if selection.mode != "remote" or not selection.binding_id:
+        return {"ok": True, "refreshed": 0, "skipped": 0}, 200
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        return {"error": "Task data is unavailable."}, 500
+    candidates = []
+    skipped = 0
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        delegation = task.get("delegation")
+        if not isinstance(delegation, dict) or not delegation.get("kanban_task_id"):
+            continue
+        if delegation.get("connection_binding_id") != selection.binding_id:
+            skipped += 1
+            continue
+        state = str(delegation.get("state") or "")
+        artifact_state = str(delegation.get("artifact_sync_state") or "")
+        retry_at = str(delegation.get("artifact_sync_retry_at") or "")
+        retry_due = True
+        if retry_at:
+            try:
+                retry_due = datetime.fromisoformat(
+                    retry_at.replace("Z", "+00:00")
+                ) <= datetime.now(timezone.utc)
+            except ValueError:
+                retry_due = True
+        if state in {"queued", "running", "needs_input"} or (
+            state in {"ready_for_review", "completed"}
+            and (
+                not artifact_state
+                or (
+                    artifact_state in {"partial", "error"}
+                    and retry_due
+                )
+            )
+        ):
+            candidates.append(task)
+    candidates.sort(
+        key=lambda task: str(
+            (task.get("delegation") or {}).get("updated_at")
+            or task.get("updated_at")
+            or ""
+        )
+    )
+    results = []
+    for task in candidates[:3]:
+        _result, status = refresh_task_delegation(str(task.get("id") or ""))
+        results.append(
+            {
+                "task_id": str(task.get("id") or ""),
+                "ok": status == 200,
+                "status": status,
+            }
+        )
+    return {
+        "ok": True,
+        "refreshed": len(results),
+        "skipped": skipped + max(0, len(candidates) - len(results)),
+        "results": results,
+    }, 200
+
+
+def public_task_payload(task: dict | None) -> dict | None:
+    """Decorate one task with private, browser-safe artifact metadata."""
+    if not isinstance(task, dict):
+        return None
+    public_task = deepcopy(task)
+    if public_task.get("id"):
+        delegation = task.get("delegation")
+        if isinstance(delegation, dict):
+            try:
+                stored = list_task_artifacts(
+                    DATA_DIR,
+                    str(public_task["id"]),
+                    connection_binding_id=str(
+                        delegation.get("connection_binding_id") or ""
+                    ),
+                    board=str(delegation.get("board_id") or "default"),
+                    remote_task_id=str(delegation.get("kanban_task_id") or ""),
+                )
+            except (AttachmentError, OSError, sqlite3.Error):
+                stored = []
+            public_task["delegation"]["artifacts"] = [
+                public
+                for item in stored
+                if (public := public_console_attachment(item)) is not None
+            ]
+    return public_task
+
+
+def tasks_payload() -> dict:
+    """Return tasks decorated with private, browser-safe artifact metadata."""
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        return {"tasks": []}
+    public_tasks = [
+        decorated
+        for task in tasks
+        if isinstance(task, dict)
+        and (decorated := public_task_payload(task)) is not None
+    ]
+    return {"tasks": public_tasks}
 
 
 DELEGATION_ACTIONS = {"accept", "reply", "retry", "stop", "request_revision", "mark_blocked"}
@@ -4114,6 +4534,7 @@ def delegation_action_binding(delegation: dict) -> dict:
         "profile_id": delegation.get("profile_id"),
         "board_id": delegation.get("board_id") or "default",
         "kanban_task_id": delegation.get("kanban_task_id"),
+        "connection_binding_id": delegation.get("connection_binding_id"),
     }
 
 
@@ -4131,6 +4552,10 @@ def preview_delegation_action(task_id: str, payload):
     if not delegation:
         return {"error": "Task has no Hermes delegation."}, 409
     adapter = kanban_adapter()
+    if not delegation_connection_is_current(delegation, adapter):
+        return {
+            "error": "This delegated task belongs to a different Hermes connection. Switch back to that connection before acting on it."
+        }, 409
     remote = adapter.get_task(delegation.get("board_id") or "default", delegation.get("kanban_task_id"))
     if not remote.get("ok"):
         return {"error": "Hermes delegation state is unavailable; refresh before acting."}, 409
@@ -4198,7 +4623,12 @@ def execute_confirmed_delegation_action(task_id: str, payload):
     note = preview["note"]
     board = delegation.get("board_id") or "default"
     remote_id = delegation.get("kanban_task_id")
+    prior_remote_id = remote_id
     adapter = kanban_adapter()
+    if not delegation_connection_is_current(delegation, adapter):
+        return {
+            "error": "This delegated task belongs to a different Hermes connection. Switch back to that connection before acting on it."
+        }, 409
     task_updates = {}
     with HERMES_KANBAN_LOCK:
         current_task = task_record(task_id)
@@ -4275,6 +4705,16 @@ def execute_confirmed_delegation_action(task_id: str, payload):
                     "partial": True,
                     "kanban_task_id": remote_id,
                 }, 502
+            if action == "request_revision" and remote_id != prior_remote_id:
+                for key in (
+                    "artifact_sync_state",
+                    "artifact_count",
+                    "artifact_rejected_count",
+                    "artifact_sync_revision",
+                    "artifact_sync_attempts",
+                    "artifact_sync_retry_at",
+                ):
+                    delegation.pop(key, None)
             delegation = synchronized_delegation(delegation, remote)
             if action == "request_revision":
                 delegation["review_state"] = "revision_requested"
@@ -4292,7 +4732,31 @@ def execute_confirmed_delegation_action(task_id: str, payload):
                 "partial": True,
                 "kanban_task_id": remote_id,
             }, 500
-    return {"ok": True, "task": saved, "delegation": saved.get("delegation")}, 200
+    cleanup_pending = False
+    if action == "request_revision" and remote_id != prior_remote_id:
+        try:
+            with artifact_operation_lock():
+                current_tasks = read_json_file("tasks.json", [])
+                if isinstance(current_tasks, list):
+                    reconcile_task_artifact_bindings(DATA_DIR, current_tasks)
+        except (AttachmentError, OSError, sqlite3.Error):
+            cleanup_pending = True
+    return {
+        "ok": True,
+        "task": saved,
+        "delegation": saved.get("delegation"),
+        **(
+            {
+                "artifact_cleanup_pending": True,
+                "warning": (
+                    "The revision was created, but old private file cleanup "
+                    "will retry during reconciliation."
+                ),
+            }
+            if cleanup_pending
+            else {}
+        ),
+    }, 200
 
 
 def agent_activity_payload() -> dict:
@@ -8300,11 +8764,14 @@ POST_ROUTES = [
     (re.compile(r"^/api/attention/([^/]+)/resolve$"), resolve_attention_item, False),
     (re.compile(r"^/api/agents/heartbeat$"), upsert_agent_heartbeat, True),
     (re.compile(r"^/api/tasks$"), create_task, True),
+    (re.compile(r"^/api/tasks/delegations/refresh-home$"), refresh_home_delegations, False),
     (re.compile(r"^/api/tasks/([^/]+)/delete/preview$"), preview_task_deletion, True),
     (re.compile(r"^/api/tasks/([^/]+)/delete$"), delete_confirmed_task, True),
     (re.compile(r"^/api/tasks/([^/]+)/delegation/preview$"), preview_task_delegation, True),
     (re.compile(r"^/api/tasks/([^/]+)/delegation$"), delegate_confirmed_task, True),
     (re.compile(r"^/api/tasks/([^/]+)/delegation/refresh$"), refresh_task_delegation, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delegation/rebind/preview$"), preview_delegation_rebind, True),
+    (re.compile(r"^/api/tasks/([^/]+)/delegation/rebind$"), confirm_delegation_rebind, True),
     (re.compile(r"^/api/tasks/([^/]+)/delegation/action/preview$"), preview_delegation_action, True),
     (re.compile(r"^/api/tasks/([^/]+)/delegation/action$"), execute_confirmed_delegation_action, True),
     (re.compile(r"^/api/tasks/([^/]+)/today-order$"), reorder_today_task, True),
@@ -8347,7 +8814,7 @@ API_ROUTES = {
     "/api/overview": overview,
     "/api/projects": lambda: {"projects": read_json_file("projects.json", [])},
     "/api/context-packs": context_packs_payload,
-    "/api/tasks": lambda: {"tasks": read_json_file("tasks.json", [])},
+    "/api/tasks": tasks_payload,
     "/api/agents": agents_payload,
     "/api/agent-messages": agent_messages_payload,
     "/api/agent-activity": agent_activity_payload,
@@ -8480,14 +8947,14 @@ class Handler(BaseHTTPRequestHandler):
             self.log_internal_error("error response transmission", exc)
             return False
 
-    def send_attachment_file(self, metadata: dict, path: Path) -> None:
-        """Stream an owned blob with a browser-safe, non-sniffable response."""
-        try:
-            details = path.stat()
-            if not path.is_file() or details.st_size != int(metadata.get("byte_size") or -1):
-                raise OSError("attachment blob is not a matching regular file")
-        except Exception as exc:
-            self.log_internal_error("attachment content response", exc)
+    def send_attachment_content(self, metadata: dict, content) -> None:
+        """Send content already verified against private blob metadata."""
+        expected_size = int(metadata.get("byte_size") or -1)
+        if expected_size < 0 or not hasattr(content, "read"):
+            try:
+                content.close()
+            except Exception:
+                pass
             self.send_json({"error": "Attachment content is unavailable"}, status=500)
             return
         kind = metadata.get("kind")
@@ -8499,7 +8966,7 @@ class Handler(BaseHTTPRequestHandler):
         filename = quote(str(metadata.get("name") or "attachment"), safe="")
         self.send_response(200)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(details.st_size))
+        self.send_header("Content-Length", str(expected_size))
         self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{filename}")
         self.send_header("Cache-Control", "private, no-store")
         self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
@@ -8508,13 +8975,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         try:
-            with path.open("rb") as source:
-                shutil.copyfileobj(source, self.wfile, length=64 * 1024)
+            sent = 0
+            while chunk := content.read(64 * 1024):
+                sent += len(chunk)
+                if sent > expected_size:
+                    raise OSError("Attachment stream exceeded its verified size")
+                self.wfile.write(chunk)
+            if sent != expected_size:
+                raise OSError("Attachment stream ended before its verified size")
         except Exception as exc:
             # Headers may already be committed. Close this one response rather
             # than attempting to append a second HTTP response to the blob.
             self.log_internal_error("attachment content stream", exc)
             self.close_connection = True
+        finally:
+            try:
+                content.close()
+            except Exception:
+                pass
 
     def control_request_is_local(self) -> bool:
         return self.client_address[0] in {"127.0.0.1", "::1"}
@@ -8621,13 +9099,13 @@ class Handler(BaseHTTPRequestHandler):
             r"/api/agent-console/attachments/([^/]+)/content", parsed.path
         )
         if attachment_match:
-            metadata, path, status = agent_console_attachment_content(
+            metadata, content, status = agent_console_attachment_content(
                 unquote(attachment_match.group(1))
             )
-            if status != 200 or path is None:
+            if status != 200 or content is None:
                 self.send_json(metadata, status=status)
             else:
-                self.send_attachment_file(metadata, path)
+                self.send_attachment_content(metadata, content)
             return
         if parsed.path == "/api/hermes/search":
             try:

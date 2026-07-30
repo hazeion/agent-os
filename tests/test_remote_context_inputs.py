@@ -1,4 +1,5 @@
 from pathlib import Path
+import base64
 import json
 import tempfile
 import unittest
@@ -8,7 +9,9 @@ from hermes_transport import RemoteHermesConsoleTransport, TransportBinding
 import server
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"safe-image-payload"
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)
 
 
 class FakeContextClient:

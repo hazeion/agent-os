@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+import base64
 from unittest.mock import patch
 
 import agent_console_attachments as attachments
@@ -23,7 +24,9 @@ from agent_console_attachments import (
 from mentat_db import connect, database_path, schema_version
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"safe-image-payload"
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)
 
 
 class AgentConsoleAttachmentTests(unittest.TestCase):
@@ -41,7 +44,7 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
                 now=1_000,
             )
 
-            self.assertEqual(schema_version(data_dir), 1)
+            self.assertEqual(schema_version(data_dir), 2)
             self.assertEqual(metadata["kind"], "image")
             self.assertEqual(metadata["mime_type"], "image/png")
             self.assertEqual(metadata["state"], "staged")
@@ -91,9 +94,31 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
             ("archive.txt", b"PK\x03\x04payload", "text/plain"),
             ("program.txt", b"\x7fELFpayload", "text/plain"),
             ("not-really.png", b"plain text", "image/png"),
+            ("header-only.png", b"\x89PNG\r\n\x1a\nnot-an-image", "image/png"),
+            ("polyglot.png", PNG + b"PK\x03\x04hidden-archive", "image/png"),
             ("wrong.jpg", PNG, "image/jpeg"),
+            (
+                "leaky.png",
+                PNG + b"sk-abcdefghijklmnopqrstuvwxyz123456",
+                "image/png",
+            ),
             ("token.txt", b"sk-abcdefghijklmnopqrstuvwxyz123456", "text/plain"),
             ("settings.yaml", b"api_key: abcdefghijklmnopqrstuvwxyz", "application/yaml"),
+            (
+                "settings.json",
+                b'{"api_key":"abcdefghijklmnopQRSTUVWX"}',
+                "application/json",
+            ),
+            (
+                "aws.txt",
+                b"AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwx1234567890ABCD",
+                "text/plain",
+            ),
+            (
+                "database.txt",
+                b"DATABASE_URL=postgres://user:verysecretpassword@example.test/db",
+                "text/plain",
+            ),
             ("binary.txt", b"hello\x00world", "text/plain"),
         )
         with tempfile.TemporaryDirectory() as root:

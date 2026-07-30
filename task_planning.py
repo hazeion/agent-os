@@ -25,6 +25,7 @@ DELEGATION_STATES = frozenset(
     {"queued", "running", "needs_input", "blocked", "ready_for_review", "completed", "failed", "cancelled"}
 )
 SYNC_STATES = frozenset({"pending", "synced", "stale", "error"})
+ARTIFACT_SYNC_STATES = frozenset({"synced", "partial", "unsupported", "error"})
 REVIEW_STATES = frozenset({"pending", "accepted", "revision_requested", "blocked"})
 RUN_OUTCOMES = frozenset({"completed", "blocked", "failed", "cancelled", "timed_out", "reclaimed"})
 RECURRENCE_FREQUENCIES = frozenset({"daily", "weekly", "monthly", "yearly"})
@@ -316,12 +317,23 @@ def _normalize_delegation(value: Any) -> dict[str, Any]:
         "profile_id", "board_id", "kanban_task_id", "run_id", "session_id",
         "state", "sync_state", "review_state", "last_outcome", "summary",
         "latest_question", "attempts", "created_at", "updated_at", "last_synced_at", "reservation_id", "audit",
+        "artifact_sync_state", "artifact_count", "artifact_rejected_count",
+        "artifact_sync_revision", "artifact_sync_attempts", "artifact_sync_retry_at",
+        "connection_binding_id",
     }
     _reject_unknown(item, "delegation", allowed)
     if "profile_id" not in item:
         _fail("delegation.profile_id", "is required")
     result: dict[str, Any] = {"profile_id": _identifier(item["profile_id"], "delegation.profile_id")}
-    for key in ("board_id", "kanban_task_id", "run_id", "session_id", "reservation_id"):
+    for key in (
+        "board_id",
+        "kanban_task_id",
+        "run_id",
+        "session_id",
+        "reservation_id",
+        "connection_binding_id",
+        "artifact_sync_revision",
+    ):
         if item.get(key) is not None:
             result[key] = _identifier(item[key], f"delegation.{key}")
     if "state" in item:
@@ -338,11 +350,43 @@ def _normalize_delegation(value: Any) -> dict[str, Any]:
         result["latest_question"] = _text(item["latest_question"], "delegation.latest_question", maximum=2000, required=False)
     if "attempts" in item:
         result["attempts"] = _int(item["attempts"], "delegation.attempts", minimum=0, maximum=1000)
+    if "artifact_sync_state" in item:
+        result["artifact_sync_state"] = _enum(
+            item["artifact_sync_state"],
+            "delegation.artifact_sync_state",
+            ARTIFACT_SYNC_STATES,
+        )
+    if "artifact_count" in item:
+        result["artifact_count"] = _int(
+            item["artifact_count"],
+            "delegation.artifact_count",
+            minimum=0,
+            maximum=10,
+        )
+    if "artifact_rejected_count" in item:
+        result["artifact_rejected_count"] = _int(
+            item["artifact_rejected_count"],
+            "delegation.artifact_rejected_count",
+            minimum=0,
+            maximum=10_000,
+        )
+    if "artifact_sync_attempts" in item:
+        result["artifact_sync_attempts"] = _int(
+            item["artifact_sync_attempts"],
+            "delegation.artifact_sync_attempts",
+            minimum=0,
+            maximum=1000,
+        )
     for key in ("created_at", "updated_at"):
         if item.get(key) is not None:
             result[key] = _datetime(item[key], f"delegation.{key}")
     if item.get("last_synced_at") is not None:
         result["last_synced_at"] = _datetime(item["last_synced_at"], "delegation.last_synced_at")
+    if item.get("artifact_sync_retry_at") is not None:
+        result["artifact_sync_retry_at"] = _datetime(
+            item["artifact_sync_retry_at"],
+            "delegation.artifact_sync_retry_at",
+        )
     if "audit" in item:
         audit = item["audit"]
         if not isinstance(audit, list) or len(audit) > 100:

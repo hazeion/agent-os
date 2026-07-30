@@ -785,9 +785,9 @@ function hasAttentionTag(task = {}) {
 function taskArea(task = {}) {
   const status = normalizeFilterValue(task.status).replaceAll('_', ' ');
   if (status === 'completed') return 'completed';
+  if (status === 'needs attention' || task.needs_attention || task.review_required || hasAttentionTag(task)) return 'needs attention';
   if (status === 'in progress') return 'in progress';
   if (status === 'waiting') return 'waiting';
-  if (status === 'needs attention' || task.needs_attention || task.review_required || hasAttentionTag(task)) return 'needs attention';
   return 'todo';
 }
 
@@ -1465,9 +1465,19 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
   const updated = selected.updated_at || selected.created_at || selected.completed_at;
   const updatedLabel = updated ? `updated ${humanDate(updated)}` : 'no update timestamp';
   const delegation = selected.delegation && typeof selected.delegation === 'object' ? selected.delegation : null;
+  const delegationArtifacts = Array.isArray(delegation?.artifacts) ? delegation.artifacts : [];
+  const artifactNotice = delegation?.artifact_sync_state === 'partial'
+    ? '<p class="task-artifact-notice">Some generated files were blocked or could not be downloaded safely.</p>'
+    : delegation?.artifact_sync_state === 'error'
+      ? '<p class="task-artifact-notice">Mentat could not safely download the generated files. Refresh the agent work to try again.</p>'
+      : delegation?.artifact_sync_state === 'unsupported' && delegation?.state === 'ready_for_review'
+        ? '<p class="task-artifact-notice">This Hermes server does not offer task file downloads yet.</p>'
+        : '';
   const delegationActions = delegation ? `
     <div class="task-delegation-actions">
-      <button class="mini-button" type="button" data-delegation-refresh="${escapeHtml(String(selected.id || ''))}">Refresh</button>
+      ${delegation.connection_binding_id
+        ? `<button class="mini-button" type="button" data-delegation-refresh="${escapeHtml(String(selected.id || ''))}">Refresh</button>`
+        : `<button class="mini-button" type="button" data-delegation-rebind="${escapeHtml(String(selected.id || ''))}">Reconnect to Hermes</button>`}
       ${delegation.state === 'ready_for_review' ? `<button class="action-button" type="button" data-delegation-action="accept">Accept Result</button><button class="mini-button" type="button" data-delegation-action="request_revision">Request Revision</button>` : ''}
       ${delegation.state === 'needs_input' ? `<button class="action-button" type="button" data-delegation-action="reply">Reply</button><button class="mini-button" type="button" data-delegation-action="retry">Retry</button>` : ''}
       ${delegation.state === 'running' ? `<button class="mini-button danger-button" type="button" data-delegation-action="stop">Stop</button>` : ''}
@@ -1480,6 +1490,8 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
       <div class="task-detail-meta-row mono"><span>${escapeHtml(delegation.profile_id || 'agent')}</span><span>${escapeHtml(delegation.board_id || 'default')}</span><span>${Number(delegation.attempts || 0)} attempt${Number(delegation.attempts || 0) === 1 ? '' : 's'}</span></div>
       ${delegation.latest_question ? `<div class="task-agent-question"><strong>Agent needs your input</strong><p>${escapeHtml(delegation.latest_question)}</p></div>` : ''}
       ${delegation.summary ? `<div class="task-agent-summary"><strong>Latest result</strong><p>${escapeHtml(delegation.summary)}</p></div>` : ''}
+      ${agentConsoleArtifactCards(delegationArtifacts, { embedImages: false })}
+      ${artifactNotice}
       ${delegationActions}
     </section>` : '';
   const checklist = Array.isArray(selected.subtasks) && selected.subtasks.length ? `
@@ -1578,6 +1590,11 @@ function updateProjectRailButtons() {
 function renderFocusTasks(tasks = []) {
   const scoped = projectFilteredTasks(tasks);
   const planned = scoped.filter((task) => task.planned_for_today);
+  const artifactAttention = scoped.filter((task) => (
+    task.delegation?.state === 'ready_for_review'
+    && Array.isArray(task.delegation?.artifacts)
+    && task.delegation.artifacts.length
+  ));
   const open = scoped.filter(isOpenTask).sort((a, b) => {
     const aPlanned = Boolean(a.planned_for_today);
     const bPlanned = Boolean(b.planned_for_today);
@@ -1599,7 +1616,9 @@ function renderFocusTasks(tasks = []) {
       return taskSortScore(a) - taskSortScore(b);
     })
     : open;
-  const focus = focusSource.slice(0, 3);
+  const focus = [...artifactAttention, ...focusSource]
+    .filter((task, index, all) => all.findIndex((item) => item.id === task.id) === index)
+    .slice(0, 3);
 
   const projectOptions = projectOptionsFromTasks(tasks);
   const quickProject = $('#quick-capture-project');
@@ -1642,16 +1661,25 @@ function renderFocusTasks(tasks = []) {
       : area === 'completed'
         ? 'Completed'
         : indicator.label;
+    const artifacts = Array.isArray(task.delegation?.artifacts) ? task.delegation.artifacts : [];
+    const showArtifacts = area === 'needs attention' && artifacts.length;
+    const artifactNotice = area === 'needs attention' && ['partial', 'error'].includes(task.delegation?.artifact_sync_state)
+      ? '<p class="home-artifact-notice">Some generated files were not available.</p>'
+      : '';
     return `
-      <button class="home-focus-row focus-task-button ${escapeHtml(indicator.key)}" type="button" data-focus-task-id="${escapeHtml(String(task.id || ''))}" data-focus-task-title="${escapeHtml(task.title || '')}" data-focus-project-name="${escapeHtml(task.project || '')}" data-focus-task-area="${escapeHtml(area)}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')} in Projects and Tasks. Status: ${escapeHtml(indicator.label)}. ${escapeHtml(scheduled)}.">
-        <span class="home-focus-state ${escapeHtml(indicator.key)}" aria-label="${escapeHtml(indicator.label)}"></span>
-        <span class="home-focus-copy">
-          <strong>${escapeHtml(task.title || 'Untitled task')}</strong>
-          <small>${escapeHtml(task.description || task.project || 'No description supplied.')}</small>
-        </span>
-        <span class="home-focus-time ${area === 'needs attention' ? 'attention' : area === 'completed' ? 'completed' : ''}">${escapeHtml(scheduled)}</span>
-        <span class="home-row-arrow" aria-hidden="true">›</span>
-      </button>
+      <article class="home-focus-item">
+        <button class="home-focus-row focus-task-button ${escapeHtml(indicator.key)}" type="button" data-focus-task-id="${escapeHtml(String(task.id || ''))}" data-focus-task-title="${escapeHtml(task.title || '')}" data-focus-project-name="${escapeHtml(task.project || '')}" data-focus-task-area="${escapeHtml(area)}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')} in Projects and Tasks. Status: ${escapeHtml(indicator.label)}. ${escapeHtml(scheduled)}.">
+          <span class="home-focus-state ${escapeHtml(indicator.key)}" aria-label="${escapeHtml(indicator.label)}"></span>
+          <span class="home-focus-copy">
+            <strong>${escapeHtml(task.title || 'Untitled task')}</strong>
+            <small>${escapeHtml(task.description || task.project || 'No description supplied.')}</small>
+          </span>
+          <span class="home-focus-time ${area === 'needs attention' ? 'attention' : area === 'completed' ? 'completed' : ''}">${escapeHtml(scheduled)}</span>
+          <span class="home-row-arrow" aria-hidden="true">›</span>
+        </button>
+        ${showArtifacts ? agentConsoleArtifactCards(artifacts, { compact: true, embedImages: false }) : ''}
+        ${artifactNotice}
+      </article>
     `;
   }).join('') : '<div class="empty clear-skies">No planned or open work in this project scope.</div>';
   const scope = `
@@ -2752,24 +2780,24 @@ function agentConsoleAttachmentCards(attachments = [], { removable = false } = {
   }).join('');
 }
 
-function agentConsoleArtifactCards(artifacts = []) {
+function agentConsoleArtifactCards(artifacts = [], { compact = false, embedImages = true } = {}) {
   if (!artifacts.length) return '';
   const cards = artifacts.map((artifact) => {
     const name = String(artifact?.name || 'Generated file');
     const kind = String(artifact?.kind || 'file');
     const mimeType = String(artifact?.mime_type || '').toLowerCase();
     const contentUrl = safeAgentConsoleContentUrl(artifact?.content_url);
-    const canEmbedImage = kind === 'image' && AGENT_CONSOLE_INLINE_IMAGE_TYPES.has(mimeType) && contentUrl;
+    const canEmbedImage = embedImages && kind === 'image' && AGENT_CONSOLE_INLINE_IMAGE_TYPES.has(mimeType) && contentUrl;
     const preview = canEmbedImage
       ? `<img src="${escapeHtml(contentUrl)}" alt="${escapeHtml(name)}" loading="lazy" />`
       : `<span class="agent-console-artifact-icon mono" aria-hidden="true">${kind === 'code' ? 'CODE' : kind === 'image' ? 'IMG' : 'FILE'}</span>`;
     const size = agentConsoleAttachmentSize(artifact?.byte_size);
     const download = contentUrl
-      ? `<a class="mini-button agent-console-artifact-download" href="${escapeHtml(contentUrl)}" download="${escapeHtml(name)}">Download</a>`
+      ? `<a class="mini-button agent-console-artifact-download" href="${escapeHtml(contentUrl)}" download="${escapeHtml(name)}" aria-label="Download ${escapeHtml(name)}" title="Download ${escapeHtml(name)}">Download</a>`
       : '<span class="mono agent-console-artifact-unavailable">Unavailable</span>';
     return `<article class="agent-console-artifact-card ${canEmbedImage ? 'image' : ''}">${preview}<div class="agent-console-artifact-copy"><strong>${escapeHtml(name)}</strong><span class="mono">${escapeHtml([kind, size].filter(Boolean).join(' · '))}</span></div>${download}</article>`;
   }).join('');
-  return `<section class="agent-console-artifacts" aria-label="Generated files"><h4 class="mono">Generated files</h4><div class="agent-console-artifact-grid">${cards}</div></section>`;
+  return `<section class="agent-console-artifacts ${compact ? 'compact' : ''}" aria-label="Generated files"><h4 class="mono">Generated files</h4><div class="agent-console-artifact-grid">${cards}</div></section>`;
 }
 
 async function copyRenderedCode(button) {
@@ -5927,6 +5955,26 @@ async function refresh() {
     renderIfChanged('health', data.health, renderHealth);
     state.hasBootstrapped = true;
     $('#last-updated').textContent = fmt.format(new Date());
+    if (activeView === 'today' && !state.homeDelegationRefreshInFlight) {
+      state.homeDelegationRefreshInFlight = true;
+      void refreshHomeDelegations()
+        .then(async (payload) => {
+          if (!Number(payload?.refreshed || 0)) return;
+          const refreshedTasks = (await api(endpoints.tasks)).tasks || [];
+          state.tasks = refreshedTasks;
+          renderAndNotifyReminders(refreshedTasks);
+          renderTaskList(refreshedTasks);
+          renderFocusTasks(refreshedTasks);
+          renderCompletedWork(refreshedTasks);
+          renderHomeProjects(state.projects, refreshedTasks);
+        })
+        .catch(() => {
+          // The local Home view is already usable when the remote is offline.
+        })
+        .finally(() => {
+          state.homeDelegationRefreshInFlight = false;
+        });
+    }
   } catch (err) {
     console.error(err);
     $('#health-dot').className = 'dot degraded';
@@ -6960,6 +7008,24 @@ document.addEventListener('click', async (event) => {
   const refreshDelegation = event.target.closest('[data-delegation-refresh]');
   if (refreshDelegation) {
     await refreshSelectedTaskDelegation(refreshDelegation.dataset.delegationRefresh || '');
+    return;
+  }
+
+  const rebindDelegation = event.target.closest('[data-delegation-rebind]');
+  if (rebindDelegation) {
+    const taskId = rebindDelegation.dataset.delegationRebind || '';
+    try {
+      const preview = await previewDelegationRebind(taskId);
+      const target = preview.remote || {};
+      const approved = window.confirm(
+        `${preview.warning}\n\nTask: ${target.title || taskId}\nBoard: ${target.board_id || 'default'}\nAgent: ${target.profile_id || 'unassigned'}`,
+      );
+      if (!approved) return;
+      await confirmDelegationRebind(taskId, preview.confirmation_id);
+      await refresh();
+    } catch (err) {
+      $('#health-label').textContent = `Reconnect failed: ${err.message}`;
+    }
     return;
   }
 

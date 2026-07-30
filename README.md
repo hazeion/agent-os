@@ -94,7 +94,7 @@ On the **Mentat computer**, create an owner-only file such as
 `~/.config/mentat/remote-hermes.env` containing the same key:
 
 ```bash
-MENTAT_REMOTE_HERMES_API_KEY="paste-the-same-key-here"
+MENTAT_REMOTE_HERMES_API_KEY="your-key"
 ```
 
 On macOS or Linux, protect it with

@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from typing import Any, Callable
+import tempfile
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from remote_hermes import RemoteHermesClient, RemoteHermesError
@@ -516,8 +517,14 @@ class HermesKanbanAdapter:
 class RemoteHermesKanbanAdapter:
     """Revision-aware remote Kanban adapter using only Hermes' fixed API contract."""
 
-    def __init__(self, client: RemoteHermesClient) -> None:
+    def __init__(
+        self,
+        client: RemoteHermesClient,
+        *,
+        connection_binding_id: str = "",
+    ) -> None:
         self.client = client
+        self.connection_binding_id = connection_binding_id
 
     def _call(self, operation: str, **kwargs: Any) -> tuple[dict | None, dict | None]:
         try:
@@ -532,7 +539,80 @@ class RemoteHermesKanbanAdapter:
             return {"schema_version": SCHEMA_VERSION, "status": "unavailable", "capabilities": {key: False for key in CAPABILITY_KEYS}, "error": _failure(exc.code, "Remote Hermes Kanban is unavailable.")["error"]}
         supported = {"kanban_api", "kanban_api_revisioned", "kanban_api_idempotency", "kanban_api_requires_api_key"}.issubset(set(capabilities.get("features") or ()))
         values = {key: supported for key in CAPABILITY_KEYS}
-        return {"schema_version": SCHEMA_VERSION, "status": "available" if supported else "unsupported", "hermes_version": "remote", "capabilities": values, "error": None if supported else {"code": "capability_unavailable", "message": "Remote Hermes does not advertise revisioned Kanban."}}
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "available" if supported else "unsupported",
+            "hermes_version": "remote",
+            "capabilities": values,
+            "artifact_downloads": {
+                "supported": {
+                    "kanban_artifacts",
+                    "kanban_artifacts_requires_api_key",
+                    "kanban_artifacts_digests",
+                }.issubset(set(capabilities.get("features") or ()))
+            },
+            "error": None if supported else {
+                "code": "capability_unavailable",
+                "message": "Remote Hermes does not advertise revisioned Kanban.",
+            },
+        }
+
+    def list_artifacts(self, board: str, task_id: str) -> dict:
+        """Return the verified remote artifact manifest without local paths."""
+        try:
+            board = _validate(board, _BOARD_RE, "board")
+            task_id = _validate(task_id, _IDENTIFIER_RE, "task id")
+            manifest = self.client.list_kanban_artifacts(board, task_id)
+        except (ValueError, RemoteHermesError) as exc:
+            code = exc.code if isinstance(exc, RemoteHermesError) else "invalid_request"
+            return _failure(
+                code,
+                "Generated files are unavailable from remote Hermes.",
+                partial=code in {"remote_timeout", "remote_unavailable"},
+            )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "ok": True,
+            **manifest,
+            "error": None,
+        }
+
+    def download_artifact(
+        self,
+        board: str,
+        task_id: str,
+        artifact: Mapping[str, Any],
+    ) -> dict:
+        """Download exactly one artifact from a previously verified manifest."""
+        try:
+            board = _validate(board, _BOARD_RE, "board")
+            task_id = _validate(task_id, _IDENTIFIER_RE, "task id")
+            stream = tempfile.TemporaryFile(mode="w+b")
+            self.client.stream_kanban_artifact(
+                board,
+                task_id,
+                artifact,
+                stream,
+            )
+            stream.seek(0)
+        except (ValueError, RemoteHermesError) as exc:
+            try:
+                stream.close()
+            except (NameError, OSError):
+                pass
+            code = exc.code if isinstance(exc, RemoteHermesError) else "invalid_request"
+            return _failure(
+                code,
+                "A generated file could not be downloaded safely.",
+                partial=code in {"remote_timeout", "remote_unavailable"},
+            )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "ok": True,
+            "artifact": dict(artifact),
+            "stream": stream,
+            "error": None,
+        }
 
     def list_boards(self) -> dict:
         payload, error = self._call("boards")

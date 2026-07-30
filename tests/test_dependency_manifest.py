@@ -6,6 +6,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "server.py"
+ATTACHMENTS = ROOT / "agent_console_attachments.py"
 REQUIREMENTS = ROOT / "requirements.txt"
 
 MODULE_TO_PACKAGE = {
@@ -13,6 +14,7 @@ MODULE_TO_PACKAGE = {
     "google.oauth2": "google-auth",
     "googleapiclient": "google-api-python-client",
     "requests": "requests",
+    "PIL": "Pillow",
 }
 
 
@@ -35,13 +37,14 @@ class DependencyManifestTests(unittest.TestCase):
             self.assertIn("==", line, f"Dependency line should be pinned for reproducibility: {line}")
 
     def test_manifest_covers_non_stdlib_server_imports(self):
-        tree = ast.parse(SERVER.read_text(encoding="utf-8"))
         imported_modules = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported_modules.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported_modules.add(node.module)
+        for source in (SERVER, ATTACHMENTS):
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported_modules.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported_modules.add(node.module)
 
         required_packages = set()
         for module_name in imported_modules:
@@ -52,7 +55,10 @@ class DependencyManifestTests(unittest.TestCase):
         if any(module_name == "google.auth.transport.requests" or module_name.startswith("google.auth.transport.requests.") for module_name in imported_modules):
             required_packages.add("requests")
 
-        self.assertSetEqual(required_packages, {"google-api-python-client", "google-auth", "requests"})
+        self.assertSetEqual(
+            required_packages,
+            {"google-api-python-client", "google-auth", "requests", "Pillow"},
+        )
         self.assertTrue(required_packages.issubset(requirement_names()))
 
     def test_manifest_includes_pinned_iana_timezone_data(self):

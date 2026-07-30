@@ -31,6 +31,43 @@ class TaskDelegationUiTests(unittest.TestCase):
         self.assertIn("refreshTaskDelegation", CORE)
         self.assertIn("runTaskDelegationAction", CORE)
 
+    def test_generated_files_are_available_in_task_and_home_views(self):
+        self.assertIn("delegationArtifacts", APP)
+        self.assertIn(
+            "agentConsoleArtifactCards(delegationArtifacts, { embedImages: false })",
+            APP,
+        )
+        focus = APP[APP.index("function renderFocusTasks") : APP.index("function dueTaskReminders")]
+        self.assertIn("task.delegation?.artifacts", focus)
+        self.assertIn(
+            "agentConsoleArtifactCards(artifacts, { compact: true, embedImages: false })",
+            focus,
+        )
+        self.assertIn("artifactAttention", focus)
+        task_area = APP[APP.index("function taskArea") : APP.index("function taskTone")]
+        self.assertLess(
+            task_area.index("task.needs_attention"),
+            task_area.index("status === 'in progress'"),
+        )
+        self.assertIn('aria-label="Download ${escapeHtml(name)}"', APP)
+        self.assertIn("home-focus-item", focus)
+        self.assertIn(".agent-console-artifacts.compact", CSS)
+        self.assertIn(".task-artifact-notice", CSS)
+
+    def test_home_renders_local_data_before_remote_delegation_refresh(self):
+        refresh = APP[
+            APP.index("async function refresh()")
+            : APP.index("async function runMessageSearchRequest")
+        ]
+        local_fetch = refresh.index("const requests = {")
+        local_render = refresh.index("renderIfChanged(`focus-")
+        remote_refresh = refresh.index("void refreshHomeDelegations()")
+        self.assertLess(local_fetch, local_render)
+        self.assertLess(local_render, remote_refresh)
+        self.assertIn("homeDelegationRefreshInFlight", CORE)
+        self.assertIn("const refreshedTasks = (await api(endpoints.tasks)).tasks", refresh)
+        self.assertIn("renderFocusTasks(refreshedTasks)", refresh)
+
     def test_today_has_agent_activity_and_review_inbox(self):
         self.assertIn('id="agent-activity-panel"', INDEX)
         self.assertIn('id="agent-activity-list"', INDEX)

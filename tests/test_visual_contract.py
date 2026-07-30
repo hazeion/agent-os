@@ -396,6 +396,8 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('.home-focus-state.attention', CSS)
         self.assertIn('.home-focus-time.attention', CSS)
         self.assertIn('.home-focus-state.completed', CSS)
+        self.assertIn('home-focus-item', render_focus_block)
+        self.assertIn('Generated files', APP_JS)
 
     def test_agents_sessions_detail_has_replay_tab_and_trace_sections(self):
         self.assertIn('id="session-select"', INDEX)

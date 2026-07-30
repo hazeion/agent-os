@@ -36,7 +36,9 @@ image data URLs, revisioned/idempotent Kanban, and profile-scoped runtime
 inventory and switching. The Console loads each selected served profile's
 current provider/model identity and enables the existing selectors only when
 Hermes advertises the complete version-one revision, idempotency, and
-active-run-lock contract. Direct files and artifacts remain unavailable.
+active-run-lock contract. General Agent Console files remain unavailable.
+Completed remote Kanban tasks can expose a separate, capability-gated set of
+generated files through fixed authenticated artifact endpoints.
 Content safety applies to remote session titles and previews, replay, and
 search. Path- or credential-shaped content fails closed. Compact division such
 as `a/b` is path-shaped here; use spaced code such as `a / b` in transcripts.
@@ -61,7 +63,7 @@ partial rather than claiming the remote run stopped.
 | Public connection liveness | `remote_hermes.py` calls only fixed `/health` and treats the result as untrusted | Hermes documents unauthenticated `GET /health` as a cheap public liveness probe in its [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) | No authentication; response is untrusted liveness only | Bounded timeout/size/schema checks; never derive identity, readiness, or enabled features from this response | **Required** diagnostic; 2A foundation implemented |
 | Authenticated readiness and capability discovery | `remote_hermes.py` validates fixed `/health/detailed` and `/v1/capabilities` responses and returns an allowlisted summary | Hermes documents bearer-authenticated `GET /health/detailed` and machine-readable `GET /v1/capabilities` in its [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) | API-server bearer key over verified HTTPS | Validate schema/version, endpoint identity, advertised auth, bounded readiness, model, and capability set | **Required**; complete inventory stays capability-gated |
 | Hermes configuration and overview summary | `server.py` reads local `CONFIG_PATH` metadata and combines it with normalized profile/provider discovery | Remote health, capabilities, and model endpoints can supply bounded connection/profile/model status; remote configuration-file metadata is unnecessary | API-server bearer key; never request or expose raw remote configuration | Normalize an allowlisted summary and suppress upstream errors, paths, headers, and secret-shaped values | Safe connection/profile/model status is **Required**; file/configuration details remain local-only |
-| Agent Console conversation and streaming | `hermes_transport.py` selects a binding-aware transport, preserves the profile-scoped local CLI launch, and implements the active remote profile Runs adapter | Hermes documents Chat Completions, Responses, run submission, SSE events, approvals, and session chat in the [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) and [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) | API-server bearer key over verified HTTPS; key remains in Mentat's server process | Bind each run to the active endpoint; keep one stream through interactive waits; verify monotonic cursors and bounded replay; never retry submission | **Required**; bounded Context Pack text and capability-gated images are supported; direct files and artifacts are not |
+| Agent Console conversation and streaming | `hermes_transport.py` selects a binding-aware transport, preserves the profile-scoped local CLI launch, and implements the active remote profile Runs adapter | Hermes documents Chat Completions, Responses, run submission, SSE events, approvals, and session chat in the [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) and [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) | API-server bearer key over verified HTTPS; key remains in Mentat's server process | Bind each run to the active endpoint; keep one stream through interactive waits; verify monotonic cursors and bounded replay; never retry submission | **Required**; bounded Context Pack text and capability-gated images are supported; general Console file output is not |
 | Run status, progress, approval, cancellation, and stopping | `server.py` and `agent_run_history.py` normalize remote events/status and keep upstream run identity private | Fixed Runs, status, replayable SSE, stop, and request-bound approval endpoints are capability-advertised by the verified runtime | Same API-server bearer boundary | Capability match before action, exact live-run/request binding, authoritative pending-action recovery, one claimed stop attempt, and post-action status read-back | **Required**; approval choices are enabled only with the exact bound-preview contract |
 | Clarification requests and responses | `server.py` retains bounded run interaction state and posts a typed response through `hermes_transport.py` | The verified runtime advertises a typed request/response endpoint with exact request binding | API-server bearer key | Require a machine-readable request event, typed bounded response, exact run/request binding, and post-response status verification | **Required** for the verified runtime; unavailable without the contract |
 | Session list, replay, continuation, and search | `server.py` preserves local `state.db` reads and routes selected remote history through `remote_hermes.py` | The verified runtime advertises an exact revision-bound, stoppable continuation descriptor as well as session reads | API-server bearer key; no remote database access; upstream IDs remain process-private | Normalize bounded user/assistant history, bind opaque aliases to the selected projected identity, label compressed history partial, require a fresh exact continuation descriptor | **Required**; continuation is enabled only with that exact capability |
@@ -75,7 +77,8 @@ partial rather than claiming the remote run stopped.
 | Durable Kanban delegation and follow-up | `hermes_kanban.py` uses fixed shell-free local operations or the fixed remote Kanban adapter with task/run read-back | The verified runtime advertises bearer-authenticated revisioned and idempotent Kanban endpoints | API-server bearer key; the dashboard browser/session token remains prohibited | Preserve exact preview/confirmation, mutation locks, in-flight reservation, live task/run binding, idempotency, and operation-specific read-back | **Required** for the verified runtime; unavailable elsewhere |
 | Cron inventory | `server.py` reads the local Hermes cron store; queue controls already fail closed | Hermes documents bearer-authenticated Jobs API list/CRUD/pause/resume/run endpoints, including `GET /api/jobs` | API-server bearer key; direct remote cron-file access remains prohibited | Before integration, verify capability advertisement, bounded schema, read-only inventory semantics, and correspondence with Mentat's existing job revisions; mutations remain separately deferred | **Graceful degradation**; documented upstream surface needs compatibility validation |
 | Console input attachments and Context Packs | `agent_console_attachments.py`, `agent_console_artifacts.py`, and Mentat-owned Context Pack resolution stage local snapshots | The verified Runs contract accepts up to four bounded image data URLs; general uploaded files and paths remain unsupported | API-server bearer key; Mentat-owned files stay local unless explicitly transmitted through a supported bounded content type | Bind one-use Context Pack grants to the connection, pack revision, and exact snapshots; enforce text/image bounds and never transmit a path | **Required**; images are capability-gated and general files **gracefully degrade** |
-| Assistant-created artifacts | Mentat discovers files only in a trusted local run export directory | No general remote artifact-download contract is established by the approved API surface | No arbitrary remote file URL or path may be opened | Require an advertised resource endpoint, bounded metadata/content, type validation, and Mentat-owned snapshot before display | **Graceful degradation** pending a supported resource contract |
+| Delegated Kanban artifacts | `delegation_artifacts.py` imports only explicit completion files returned by the fixed remote manifest | Hermes advertises `kanban_artifacts` version 1, digest verification, exact list/download routes, 10 files, 100 MiB per file, and 250 MiB total | API-server bearer key stays server-side; browser downloads only from opaque same-origin Mentat routes | Bind task, board, connection, manifest ID, size, type, digest, and private snapshot; reject recognizable secrets and active content | **Graceful degradation**; supported only when the complete contract is advertised |
+| General assistant-created artifacts | Mentat discovers local Console files only in a trusted local run export directory | No general remote Console artifact-download contract is established | No arbitrary remote file URL or path may be opened | A separate advertised resource contract and Mentat-owned snapshot would be required | **Graceful degradation** pending a supported Console resource contract |
 | Calendar, notes, planning, projects, tasks, search, themes, and reminders | Mentat-owned storage and integrations; Google Calendar is read-only | No Hermes access is required for the core feature behavior | Local Mentat boundary | Preserve existing local validation and mutation contracts | **Mentat-local** and available in both connection modes |
 | Google Calendar credential location | `server.py` currently resolves `google_token.json` below local `HERMES_HOME` | Not a remote Hermes API concern | Credentials must move to the future Mentat operator-data root rather than a remote Hermes host | Migration and read-only calendar verification in Milestone 1 | **Mentat-local**; storage coupling must be removed before remote beta |
 | Agent Pulse heartbeat observations | Project-owned `data/agents.json` and the local Mentat heartbeat endpoint | No Hermes API is required | Local Mentat boundary | Preserve observation-only semantics; never treat heartbeats as profile authority | **Mentat-local** |
@@ -122,7 +125,9 @@ The first remote implementation must satisfy all of these rules:
 1. Mentat supports one active Hermes connection at a time. Switching the
    endpoint invalidates endpoint-bound capability, session, run, preview, and
    confirmation state.
-2. A non-loopback remote endpoint must use `https`. URLs containing user info,
+2. A non-loopback remote endpoint must use `https`. Cleartext `http` is
+   accepted only with a literal loopback IP (`127.0.0.0/8` or `::1`), not a
+   hostname. URLs containing user info,
    fragments, or embedded credentials are invalid. Certificate verification is
    mandatory, redirects are not followed across origins, and calls use bounded
    connection/read timeouts and response sizes.
@@ -350,8 +355,8 @@ creation, runtime selection, or another reviewed typed capability.
 
 ### Kanban
 
-Remote beta parity requires the durable Kanban path. Mentat needs an upstream
-surface that:
+Remote beta parity uses the maintained authenticated Kanban surface. Mentat
+requires a remote host that:
 
 - is advertised through machine-readable capabilities;
 - accepts the same API-server bearer authentication as the selected endpoint,
@@ -362,7 +367,17 @@ surface that:
 - permits operation-specific read-back verification and idempotency.
 
 On hosts that do not advertise and verify that contract, Mentat labels remote
-Kanban unavailable.
+Kanban unavailable. Generated-file retrieval is a separate optional capability:
+version one permits at most 10 explicit latest-completion files, 100 MiB each,
+and 250 MiB combined. It never enables remote workspace browsing or path-based
+downloads. Mentat renders local Home data before this background check, backs
+off failed transfers, and stops automatically retrying hosts that do not
+advertise the artifact contract. A manual task refresh checks the remote
+completion revision again and can restore a missing private snapshot.
+Raster files are structurally decoded with fixed frame and pixel ceilings at
+both boundaries. Malformed files and containers with appended payloads are
+rejected. The browser presents delegated images as download-only file cards;
+it does not decode the original artifact as a Home-page thumbnail.
 It must not acquire, expose, or replay the dashboard's process/session token as
 a remote server credential or call dashboard-plugin routes as though they were
 the advertised API-server surface. Mentat must not invoke SSH, interpolate

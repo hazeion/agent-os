@@ -14,6 +14,7 @@ import bisect
 import hashlib
 import hmac
 import http.client
+import io
 import ipaddress
 import json
 import math
@@ -27,7 +28,7 @@ import stat
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, BinaryIO, Callable, Mapping
 import unicodedata
 from urllib.parse import parse_qsl, unquote, unquote_plus, urlsplit
 from uuid import uuid4
@@ -62,6 +63,7 @@ MAX_RUN_EVENTS = 5_000
 RUN_STREAM_READ_TIMEOUT_SECONDS = 35.0
 RUN_STREAM_MAX_SECONDS = 30 * 60.0
 DEFAULT_TIMEOUT_SECONDS = 5.0
+ARTIFACT_TIMEOUT_SECONDS = 120.0
 FIXED_PATHS = frozenset(
     {
         "/health",
@@ -119,6 +121,9 @@ _KNOWN_BOOLEAN_FEATURES = frozenset(
         "kanban_api_revisioned",
         "kanban_api_idempotency",
         "kanban_api_requires_api_key",
+        "kanban_artifacts",
+        "kanban_artifacts_requires_api_key",
+        "kanban_artifacts_digests",
         "tool_progress_events",
         "approval_events",
         "session_resources",
@@ -168,6 +173,16 @@ _KANBAN_ENDPOINTS = {
     "kanban_task_create": ("POST", "/v1/kanban/tasks?board={board}"),
     "kanban_task_action": ("POST", "/v1/kanban/tasks/{task_id}/actions?board={board}"),
 }
+_KANBAN_ARTIFACT_ENDPOINTS = {
+    "kanban_task_artifacts": (
+        "GET",
+        "/v1/kanban/tasks/{task_id}/artifacts?board={board}",
+    ),
+    "kanban_task_artifact": (
+        "GET",
+        "/v1/kanban/tasks/{task_id}/artifacts/{artifact_id}?board={board}",
+    ),
+}
 _APPROVAL_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _CLARIFICATION_REQUEST_ID = re.compile(r"clarify_[A-Za-z0-9_-]{1,120}\Z")
 _CONTINUATION_REVISION = re.compile(r"sessionrev_[0-9a-f]{64}\Z")
@@ -181,6 +196,62 @@ _PROFILE_RUNTIME_PROVIDER = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _PROFILE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _KANBAN_BOARD = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _KANBAN_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_KANBAN_ARTIFACT_ID = re.compile(r"hart_[0-9a-f]{64}\Z")
+_KANBAN_ARTIFACT_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+KANBAN_ARTIFACT_MAX_BYTES = 100 * 1024 * 1024
+KANBAN_ARTIFACT_MAX_COUNT = 10
+KANBAN_ARTIFACT_MAX_TOTAL_BYTES = 250 * 1024 * 1024
+_KANBAN_ARTIFACT_TYPES = {
+    ".txt": ("text", "text/plain"),
+    ".md": ("text", "text/markdown"),
+    ".markdown": ("text", "text/markdown"),
+    ".py": ("text", "text/x-python"),
+    ".pyi": ("text", "text/x-python"),
+    ".js": ("text", "text/javascript"),
+    ".mjs": ("text", "text/javascript"),
+    ".cjs": ("text", "text/javascript"),
+    ".ts": ("text", "text/typescript"),
+    ".tsx": ("text", "text/typescript"),
+    ".jsx": ("text", "text/javascript"),
+    ".json": ("text", "application/json"),
+    ".jsonl": ("text", "application/x-ndjson"),
+    ".css": ("text", "text/css"),
+    ".yaml": ("text", "application/yaml"),
+    ".yml": ("text", "application/yaml"),
+    ".toml": ("text", "application/toml"),
+    ".ini": ("text", "text/plain"),
+    ".cfg": ("text", "text/plain"),
+    ".conf": ("text", "text/plain"),
+    ".csv": ("text", "text/csv"),
+    ".tsv": ("text", "text/tab-separated-values"),
+    ".sql": ("text", "application/sql"),
+    ".c": ("text", "text/x-c"),
+    ".h": ("text", "text/x-c"),
+    ".cc": ("text", "text/x-c++"),
+    ".cpp": ("text", "text/x-c++"),
+    ".hpp": ("text", "text/x-c++"),
+    ".java": ("text", "text/x-java-source"),
+    ".go": ("text", "text/x-go"),
+    ".rs": ("text", "text/x-rust"),
+    ".rb": ("text", "text/x-ruby"),
+    ".php": ("text", "text/x-php"),
+    ".swift": ("text", "text/x-swift"),
+    ".kt": ("text", "text/x-kotlin"),
+    ".kts": ("text", "text/x-kotlin"),
+    ".cs": ("text", "text/x-csharp"),
+    ".vue": ("text", "text/plain"),
+    ".svelte": ("text", "text/plain"),
+    ".graphql": ("text", "text/plain"),
+    ".gql": ("text", "text/plain"),
+    ".log": ("text", "text/plain"),
+    ".diff": ("text", "text/x-diff"),
+    ".patch": ("text", "text/x-diff"),
+    ".png": ("image", "image/png"),
+    ".jpg": ("image", "image/jpeg"),
+    ".jpeg": ("image", "image/jpeg"),
+    ".gif": ("image", "image/gif"),
+    ".webp": ("image", "image/webp"),
+}
 MAX_REMOTE_SKILLS = 500
 MAX_REMOTE_TOOLSETS = 128
 MAX_REMOTE_TOOLS_PER_TOOLSET = 256
@@ -1160,8 +1231,6 @@ def _write_private_credential(
 
 
 def _loopback_host(hostname: str) -> bool:
-    if hostname.casefold() == "localhost":
-        return True
     try:
         return ipaddress.ip_address(hostname).is_loopback
     except ValueError:
@@ -4009,6 +4078,20 @@ class RemoteHermesClient:
             raise RemoteHermesError("remote_run_capability_unavailable")
         return capabilities
 
+    def require_kanban_artifact_capabilities(self) -> dict[str, Any]:
+        """Return trusted capabilities only for the complete artifact contract."""
+        capabilities = self._trusted_capabilities()
+        required = {
+            "kanban_api",
+            "kanban_api_requires_api_key",
+            "kanban_artifacts",
+            "kanban_artifacts_requires_api_key",
+            "kanban_artifacts_digests",
+        }
+        if not required.issubset(set(capabilities.get("features") or ())):
+            raise RemoteHermesError("remote_run_capability_unavailable")
+        return capabilities
+
     def _submit_run_payload(
         self,
         user_input: str,
@@ -4493,6 +4576,250 @@ class RemoteHermesClient:
         if operation == "action" and isinstance(body, Mapping):
             return self._contract_json_request("POST", f"/v1/kanban/tasks/{task_id}/actions" + suffix, body=body)
         raise RemoteHermesError("remote_path_not_allowed")
+
+    @staticmethod
+    def _validated_kanban_artifact(
+        value: Any,
+        *,
+        task_id: str,
+    ) -> dict[str, Any]:
+        expected_keys = {
+            "id",
+            "object",
+            "name",
+            "kind",
+            "mime_type",
+            "byte_size",
+            "digest",
+            "created_at",
+        }
+        if (
+            type(value) is not dict
+            or set(value) != expected_keys
+            or value.get("object") != "hermes.kanban.artifact"
+        ):
+            raise RemoteHermesError("remote_kanban_artifact_schema_invalid")
+        artifact_id = value.get("id")
+        digest = value.get("digest")
+        name = value.get("name")
+        kind = value.get("kind")
+        mime_type = value.get("mime_type")
+        byte_size = value.get("byte_size")
+        created_at = value.get("created_at")
+        expected_type = (
+            _KANBAN_ARTIFACT_TYPES.get(Path(name.lower()).suffix)
+            if isinstance(name, str)
+            else None
+        )
+        if (
+            not isinstance(artifact_id, str)
+            or _KANBAN_ARTIFACT_ID.fullmatch(artifact_id) is None
+            or not isinstance(digest, str)
+            or _KANBAN_ARTIFACT_DIGEST.fullmatch(digest) is None
+            or not isinstance(name, str)
+            or not name
+            or len(name) > 255
+            or name in {".", ".."}
+            or "/" in name
+            or "\\" in name
+            or "\x00" in name
+            or any(ord(char) < 32 or ord(char) == 127 for char in name)
+            or _runtime_identifier_contains_secret_shape(name)
+            or kind not in {"text", "image"}
+            or not isinstance(mime_type, str)
+            or len(mime_type) > 100
+            or not re.fullmatch(r"[a-z0-9.+-]+/[a-z0-9.+-]+", mime_type)
+            or expected_type != (kind, mime_type)
+            or type(byte_size) is not int
+            or byte_size < 1
+            or byte_size > KANBAN_ARTIFACT_MAX_BYTES
+            or type(created_at) is not int
+            or created_at < 0
+        ):
+            raise RemoteHermesError("remote_kanban_artifact_schema_invalid")
+        return {
+            "id": artifact_id,
+            "object": "hermes.kanban.artifact",
+            "task_id": task_id,
+            "name": name,
+            "kind": kind,
+            "mime_type": mime_type,
+            "byte_size": byte_size,
+            "digest": digest,
+            "created_at": created_at,
+        }
+
+    def list_kanban_artifacts(self, board: str, task_id: str) -> dict[str, Any]:
+        """List bounded completed-task artifacts through the fixed contract."""
+        self.require_kanban_artifact_capabilities()
+        if not isinstance(board, str) or _KANBAN_BOARD.fullmatch(board) is None:
+            raise RemoteHermesError("remote_run_request_invalid")
+        if not isinstance(task_id, str) or _KANBAN_TASK_ID.fullmatch(task_id) is None:
+            raise RemoteHermesError("remote_run_request_invalid")
+        payload = self._contract_json_request(
+            "GET",
+            f"/v1/kanban/tasks/{task_id}/artifacts?board={board}",
+        )
+        if (
+            set(payload)
+            != {
+                "object",
+                "version",
+                "complete",
+                "task_id",
+                "data",
+                "rejected_count",
+                "total_bytes",
+            }
+            or payload.get("object") != "hermes.kanban.artifact_list"
+            or payload.get("version") != 1
+            or payload.get("complete") is not True
+            or payload.get("task_id") != task_id
+            or type(payload.get("data")) is not list
+            or len(payload["data"]) > KANBAN_ARTIFACT_MAX_COUNT
+            or type(payload.get("rejected_count")) is not int
+            or payload["rejected_count"] < 0
+            or type(payload.get("total_bytes")) is not int
+            or payload["total_bytes"] < 0
+            or payload["total_bytes"] > KANBAN_ARTIFACT_MAX_TOTAL_BYTES
+        ):
+            raise RemoteHermesError("remote_kanban_artifact_schema_invalid")
+        artifacts = [
+            self._validated_kanban_artifact(item, task_id=task_id)
+            for item in payload["data"]
+        ]
+        if (
+            len({item["id"] for item in artifacts}) != len(artifacts)
+            or sum(item["byte_size"] for item in artifacts) != payload["total_bytes"]
+        ):
+            raise RemoteHermesError("remote_kanban_artifact_schema_invalid")
+        return {
+            "task_id": task_id,
+            "artifacts": artifacts,
+            "rejected_count": payload["rejected_count"],
+            "total_bytes": payload["total_bytes"],
+        }
+
+    def download_kanban_artifact(
+        self,
+        board: str,
+        task_id: str,
+        artifact: Mapping[str, Any],
+    ) -> bytes:
+        """Download one listed artifact and verify every advertised byte."""
+        destination = io.BytesIO()
+        self.stream_kanban_artifact(
+            board,
+            task_id,
+            artifact,
+            destination,
+        )
+        return destination.getvalue()
+
+    def stream_kanban_artifact(
+        self,
+        board: str,
+        task_id: str,
+        artifact: Mapping[str, Any],
+        destination: BinaryIO,
+    ) -> int:
+        """Stream one verified artifact into a private caller-owned file."""
+        self.require_kanban_artifact_capabilities()
+        if not isinstance(board, str) or _KANBAN_BOARD.fullmatch(board) is None:
+            raise RemoteHermesError("remote_run_request_invalid")
+        if not isinstance(task_id, str) or _KANBAN_TASK_ID.fullmatch(task_id) is None:
+            raise RemoteHermesError("remote_run_request_invalid")
+        normalized = self._validated_kanban_artifact(
+            {
+                key: artifact.get(key)
+                for key in {
+                    "id",
+                    "object",
+                    "name",
+                    "kind",
+                    "mime_type",
+                    "byte_size",
+                    "digest",
+                    "created_at",
+                }
+            },
+            task_id=task_id,
+        )
+        artifact_id = normalized["id"]
+        expected_size = normalized["byte_size"]
+        expected_digest = normalized["digest"]
+        path = (
+            f"/v1/kanban/tasks/{task_id}/artifacts/{artifact_id}"
+            f"?board={board}"
+        )
+        connection = self._connection(timeout_seconds=ARTIFACT_TIMEOUT_SECONDS)
+        try:
+            connection.request(
+                "GET",
+                path,
+                headers={
+                    "Accept": normalized["mime_type"],
+                    "Authorization": f"Bearer {self.api_key}",
+                    "User-Agent": "Mentat/remote-hermes-v1",
+                },
+            )
+            response = connection.getresponse()
+            status = int(response.status)
+            if 300 <= status <= 399:
+                raise RemoteHermesError("remote_redirect_refused")
+            if status in {401, 403}:
+                raise RemoteHermesError("remote_authentication_failed")
+            if status != 200:
+                raise RemoteHermesError("remote_kanban_artifact_unavailable")
+            content_type = (
+                str(response.getheader("Content-Type") or "")
+                .split(";", 1)[0]
+                .strip()
+                .casefold()
+            )
+            if (
+                content_type != normalized["mime_type"]
+                or response.getheader("X-Hermes-Artifact-Id") != artifact_id
+                or response.getheader("X-Hermes-Artifact-Digest")
+                != expected_digest
+            ):
+                raise RemoteHermesError("remote_kanban_artifact_mismatch")
+            declared = response.getheader("Content-Length")
+            try:
+                if declared is None or int(declared) != expected_size:
+                    raise RemoteHermesError("remote_kanban_artifact_mismatch")
+            except ValueError as exc:
+                raise RemoteHermesError("remote_kanban_artifact_mismatch") from exc
+            digest = hashlib.sha256()
+            written = 0
+            while written < expected_size:
+                chunk = response.read(min(64 * 1024, expected_size - written))
+                if not isinstance(chunk, bytes) or not chunk:
+                    raise RemoteHermesError("remote_kanban_artifact_mismatch")
+                written += len(chunk)
+                if written > expected_size:
+                    raise RemoteHermesError("remote_kanban_artifact_mismatch")
+                digest.update(chunk)
+                destination.write(chunk)
+            if (
+                written != expected_size
+                or "sha256:" + digest.hexdigest() != expected_digest
+            ):
+                raise RemoteHermesError("remote_kanban_artifact_mismatch")
+            return written
+        except RemoteHermesError:
+            raise
+        except ssl.SSLCertVerificationError as exc:
+            raise RemoteHermesError("remote_certificate_invalid") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RemoteHermesError("remote_timeout") from exc
+        except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+            raise RemoteHermesError("remote_unavailable") from exc
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         run_id = self._validated_run_id(run_id)
@@ -5097,6 +5424,26 @@ class RemoteHermesClient:
             for name, expected in _KANBAN_ENDPOINTS.items():
                 item = endpoints.get(name)
                 if type(item) is not dict or (item.get("method"), item.get("path")) != expected:
+                    raise RemoteHermesError("remote_schema_unsupported")
+        if features.get("kanban_artifacts") is True:
+            if (
+                features.get("kanban_artifacts_version") != 1
+                or features.get("kanban_artifacts_requires_api_key") is not True
+                or features.get("kanban_artifacts_digests") is not True
+                or features.get("kanban_artifacts_max_files")
+                != KANBAN_ARTIFACT_MAX_COUNT
+                or features.get("kanban_artifacts_max_bytes")
+                != KANBAN_ARTIFACT_MAX_BYTES
+                or features.get("kanban_artifacts_max_total_bytes")
+                != KANBAN_ARTIFACT_MAX_TOTAL_BYTES
+            ):
+                raise RemoteHermesError("remote_schema_unsupported")
+            for name, expected in _KANBAN_ARTIFACT_ENDPOINTS.items():
+                item = endpoints.get(name)
+                if (
+                    type(item) is not dict
+                    or (item.get("method"), item.get("path")) != expected
+                ):
                     raise RemoteHermesError("remote_schema_unsupported")
         model = _bounded_text(payload.get("model"), maximum=160)
         if not _SAFE_MODEL.fullmatch(model) or model.startswith("/") or ".." in model or "://" in model or "\\" in model:

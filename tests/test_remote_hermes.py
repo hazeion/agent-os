@@ -197,6 +197,7 @@ class RemoteHermesTests(unittest.TestCase):
 
         rejected = (
             "http://hermes.example",
+            "http://localhost:8642",
             "ftp://hermes.example",
             "https://user:pass@hermes.example",
             "https://hermes.example/api",
@@ -1303,15 +1304,11 @@ class RemoteHermesTests(unittest.TestCase):
             )
         )
 
-        loopback_health = _health()
-        loopback_health["readiness"]["checks"] = {
-            "localhost": {"status": "ok"}
-        }
         cases.append(
             (
-                "http://localhost:8642",
-                loopback_health,
-                _capabilities(),
+                "http://127.0.0.1:8642",
+                _health(),
+                _capabilities(model="127.0.0.1"),
             )
         )
 
