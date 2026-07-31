@@ -151,6 +151,7 @@ def run_setup(args: argparse.Namespace) -> int:
     import server
 
     _runtime_config, config = _load_config(args)
+    repeat_setup_options = bool(_forward_runtime_arguments(args))
     issue = server.prepare_data_root_for_startup(config)
     if issue is not None:
         _print_json({"ok": False, "status": "blocked", "issue": issue})
@@ -159,7 +160,18 @@ def run_setup(args: argparse.Namespace) -> int:
         {
             "ok": True,
             "status": "ready",
-            "message": "Mentat is ready. Run `mentat start` to open your dashboard.",
+            "message": (
+                "Mentat is ready. Run `mentat start --open-browser`"
+                + (
+                    " with the same setup options"
+                    if repeat_setup_options
+                    else ""
+                )
+                + " to launch the dashboard. You can use planning features "
+                "without Hermes."
+            ),
+            "next_command": "mentat start --open-browser",
+            "repeat_setup_options": repeat_setup_options,
             "version": __version__,
         }
     )

@@ -498,6 +498,56 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["network"], "loopback-only")
         self.assertNotIn(str(private_root), output.getvalue())
 
+    def test_setup_reports_an_exact_launch_command_and_planner_only_path(self):
+        args = cli.build_parser().parse_args(["setup"])
+        output = io.StringIO()
+        with patch.object(
+            cli,
+            "_load_config",
+            return_value=(None, SimpleNamespace()),
+        ):
+            with patch.object(
+                server,
+                "prepare_data_root_for_startup",
+                return_value=None,
+            ):
+                with redirect_stdout(output):
+                    self.assertEqual(cli.run_setup(args), 0)
+
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["next_command"], "mentat start --open-browser")
+        self.assertFalse(payload["repeat_setup_options"])
+        self.assertIn("planning features without Hermes", payload["message"])
+        self.assertNotIn("`mentat start` to open", payload["message"])
+
+    def test_setup_custom_runtime_options_are_repeated_without_echoing_values(self):
+        private_root = "/private/operator/data"
+        args = cli.build_parser().parse_args(
+            ["setup", "--data-dir", private_root, "--port", "8894"]
+        )
+        output = io.StringIO()
+        with patch.object(
+            cli,
+            "_load_config",
+            return_value=(None, SimpleNamespace()),
+        ):
+            with patch.object(
+                server,
+                "prepare_data_root_for_startup",
+                return_value=None,
+            ):
+                with redirect_stdout(output):
+                    self.assertEqual(cli.run_setup(args), 0)
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["next_command"], "mentat start --open-browser")
+        self.assertTrue(payload["repeat_setup_options"])
+        self.assertIn("with the same setup options", payload["message"])
+        self.assertNotIn(private_root, output.getvalue())
+        self.assertNotIn("8894", output.getvalue())
+
     def test_start_runs_preflight_before_the_server_module(self):
         args = cli.build_parser().parse_args(["start", "--port", "8891"])
         with patch.object(cli, "run_lifecycle", return_value=0) as preflight:
