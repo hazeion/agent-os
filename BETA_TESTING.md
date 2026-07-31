@@ -19,9 +19,98 @@ project data.
   files in an issue. Keep endpoints, hostnames, IP addresses, and private
   network details out too.
 
+## First launch
+
+Read the matching path now, but wait for checklist step 1 to start your timer.
+Use only the exact release candidate linked by your invitation. Download its
+`SHA256SUMS` file with your assigned artifact, confirm that the artifact's
+SHA-256 value matches its line, and stop if it does not. **Do not install it**
+after a checksum mismatch; report that as an install blocker.
+
+Choose the one install channel assigned by your invitation:
+
+### macOS native
+
+1. Download `Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg` and `SHA256SUMS`
+   into Downloads.
+2. In Terminal, run the command below. Compare the printed value with the
+   package's line in `SHA256SUMS`.
+
+   ```text
+   shasum -a 256 "$HOME/Downloads/Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg"
+   ```
+
+3. Open the `.pkg` from Downloads and finish the installer.
+4. Open Mentat from Applications. The dashboard should open in your browser.
+   On Apple Silicon, use Rosetta only when your invitation assigns that path.
+
+### Windows native
+
+1. Download `Mentat-0.1.0-beta.1-windows-x64.exe` and `SHA256SUMS` into
+   Downloads.
+2. In PowerShell, run the command below. Compare the printed value with the
+   installer's line in `SHA256SUMS`.
+
+   ```text
+   Get-FileHash "$env:USERPROFILE\Downloads\Mentat-0.1.0-beta.1-windows-x64.exe" -Algorithm SHA256
+   ```
+
+3. Run the installer from Downloads and keep the recommended choices.
+4. Open Mentat from the Start menu. The dashboard should open in your browser.
+
+### pipx
+
+This channel requires Python 3.11–3.13 and `pipx`. Confirm both are installed
+before starting the timer. If `pipx` is missing, use its
+[official installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html)
+and the Python setup assigned in your invitation.
+
+1. Download `mentat_local-0.1.0b1-py3-none-any.whl` and `SHA256SUMS` into
+   Downloads.
+2. Verify the wheel before installing it. On macOS, run:
+
+   ```text
+   shasum -a 256 "$HOME/Downloads/mentat_local-0.1.0b1-py3-none-any.whl"
+   ```
+
+   On Linux, run:
+
+   ```text
+   sha256sum "$HOME/Downloads/mentat_local-0.1.0b1-py3-none-any.whl"
+   ```
+
+   On Windows PowerShell, run:
+
+   ```text
+   Get-FileHash "$env:USERPROFILE\Downloads\mentat_local-0.1.0b1-py3-none-any.whl" -Algorithm SHA256
+   ```
+
+   Compare the printed value with the wheel's line in `SHA256SUMS`.
+3. Install that verified local wheel. On macOS or Linux, run:
+
+   ```text
+   pipx install "$HOME/Downloads/mentat_local-0.1.0b1-py3-none-any.whl"
+   ```
+
+   On Windows PowerShell, run:
+
+   ```text
+   pipx install "$env:USERPROFILE\Downloads\mentat_local-0.1.0b1-py3-none-any.whl"
+   ```
+
+4. Finish setup and open Mentat:
+
+   ```text
+   mentat setup
+   mentat start --open-browser
+   ```
+
+When Mentat opens, continue with the checklist below. Do not switch install
+channels during the timed attempt unless your invitation asks you to.
+
 ## Your checklist
 
-1. Start your timer, then follow the release's Mentat install instructions
+1. Start your timer, then follow the matching **First launch** path above
    without maintainer help. Note where you get stuck, even if you solve it.
 2. Open **Settings → Help & Diagnostics** and confirm the expected Mentat
    version appears.

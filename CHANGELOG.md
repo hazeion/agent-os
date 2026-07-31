@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- Release-candidate notes now send invited testers to a short, channel-specific
+  first-launch path instead of the full maintainer rehearsal; recovery and
+  rollback drills remain in the rehearsal guide.
 - Apple notarization waits are now bounded below GitHub's hard job limit, so a
   stalled request fails clearly while protected signing cleanup still runs.
   Maintainer guidance now prevents duplicate resubmission while Apple continues

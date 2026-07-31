@@ -90,6 +90,18 @@ class ReleaseRehearsalTests(unittest.TestCase):
             self.assertIn("/Applications/Mentat.app/Contents/MacOS/Mentat backup", notes)
             self.assertIn("$env:LOCALAPPDATA\\Programs\\Mentat\\mentat.exe", notes)
             self.assertIn("--confirm TOKEN_FROM_PREVIEW", notes)
+            self.assertIn(f"/blob/v0.1.0-beta.1-rc.1/BETA_TESTING.md", notes)
+            self.assertIn("download `mentat_local-0.1.0b1-py3-none-any.whl`", notes)
+            self.assertIn("install the verified local file", notes)
+            self.assertNotIn("pipx install https://", notes)
+            self.assertIn(
+                f"/blob/v0.1.0-beta.1-rc.1/RELEASE_REHEARSAL.md",
+                notes,
+            )
+            self.assertLess(
+                notes.index("BETA_TESTING.md"),
+                notes.index("RELEASE_REHEARSAL.md"),
+            )
 
     def test_inventory_rejects_missing_extra_empty_and_symlink_files(self):
         with tempfile.TemporaryDirectory() as temporary:
