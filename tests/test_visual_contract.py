@@ -444,6 +444,7 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("display: inline", drawer)
         self.assertIn(".sidebar-footer:is(:hover, :focus-visible, :focus-within)", CSS)
         self.assertIn(":root[data-contrast='high']", CSS)
+        self.assertIn(":root[data-ui-shell][data-contrast='high']", CSS)
         self.assertIn("--operations-border-control: var(--operations-neutral-550)", CSS)
         self.assertIn("border: 1px solid var(--operations-border-control)", CSS)
 
@@ -676,9 +677,11 @@ class VisualContractTests(unittest.TestCase):
         self.assertLess(head_block.index("mentat-ui-shell-v1"), stylesheet_index)
         self.assertLess(head_block.index("mentat-contrast-v1"), stylesheet_index)
         self.assertRegex(head_block, r"let theme = ['\"]emerald['\"]")
-        self.assertRegex(head_block, r"let shell = ['\"]emerald['\"]")
+        self.assertIn("localStorage.removeItem(legacyShellKey)", head_block)
+        self.assertNotIn("allowedShells", head_block)
+        self.assertNotIn("savedShell", head_block)
         self.assertIn("document.documentElement.dataset.theme = theme", head_block)
-        self.assertIn("document.documentElement.dataset.uiShell = shell", head_block)
+        self.assertIn("document.documentElement.dataset.uiShell = 'emerald'", head_block)
         self.assertIn("document.documentElement.dataset.contrast", head_block)
         self.assertIn("prefers-contrast: more", head_block)
         self.assertIn('/core.js?v=emerald-shell-1', INDEX)
@@ -691,7 +694,6 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('id="theme-preview-grid"', INDEX)
         self.assertIn('Theme Studio', INDEX)
         self.assertIn("THEME_STORAGE_KEY = 'mentat-theme'", APP_JS)
-        self.assertIn("SHELL_STORAGE_KEY = 'mentat-ui-shell-v1'", APP_JS)
         self.assertIn("CONTRAST_STORAGE_KEY = 'mentat-contrast-v1'", APP_JS)
         self.assertIn("currentTheme: 'emerald'", CORE_JS)
         self.assertIn('function applyTheme(themeId = state.currentTheme || THEMES[0].id)', APP_JS)
@@ -701,7 +703,13 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('value="system"', INDEX)
         self.assertIn('value="standard"', INDEX)
         self.assertIn('value="high"', INDEX)
-        self.assertIn('value="classic"', INDEX)
+        self.assertNotIn('id="shell-select"', INDEX)
+        self.assertNotIn('value="classic"', INDEX)
+        self.assertNotIn("SHELL_STORAGE_KEY", APP_JS)
+        self.assertNotIn("function applyShell", APP_JS)
+        self.assertNotIn("function initializeShell", APP_JS)
+        self.assertNotIn("const shellSelect", APP_JS)
+        self.assertNotIn("data-ui-shell='classic'", CSS)
         dark_themes = ('emerald', 'compact-dark', 'catppuccin', 'nord', 'aurora', 'tokyo-night', 'gruvbox-dark', 'dracula', 'one-dark', 'solarized-dark')
         light_themes = ('light', 'github-light', 'gruvbox-light', 'solarized-light', 'catppuccin-latte', 'rose-pine-dawn')
         for theme in dark_themes + light_themes:
@@ -718,6 +726,19 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('.theme-preview-list', CSS)
         self.assertIn('.theme-preview-grid', CSS)
         self.assertIn('.theme-swatch.active', CSS)
+        preview_list = CSS[
+            CSS.index('.theme-preview-list {')
+            : CSS.index('}', CSS.index('.theme-preview-list {')) + 1
+        ]
+        self.assertIn('grid-template-columns: repeat(auto-fill, 160px);', preview_list)
+        self.assertIn('justify-content: start;', preview_list)
+        self.assertNotIn('1fr', preview_list)
+        swatch = CSS[
+            CSS.index('.theme-swatch {')
+            : CSS.index('}', CSS.index('.theme-swatch {')) + 1
+        ]
+        self.assertIn('width: 160px;', swatch)
+        self.assertIn('height: 88px;', swatch)
         soft_light = CSS[CSS.index(":root[data-theme='light'] {") : CSS.index(":root[data-theme='catppuccin'] {")]
         self.assertIn('--bg: #dfe5ec;', soft_light)
         self.assertNotIn('--bg-elevated: #ffffff;', soft_light)

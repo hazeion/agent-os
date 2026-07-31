@@ -165,6 +165,137 @@ class InputFocusContinuityTests(unittest.TestCase):
         self.assertIn("box-shadow: none;", specific_block)
         self.assertNotIn("outline-offset:", specific_block)
 
+    def test_select_focus_uses_the_actual_control_border(self):
+        selector = (
+            ":root[data-ui-shell] select:focus,\n"
+            ":root[data-ui-shell] select:focus-visible"
+        )
+        self.assertIn(selector, CSS)
+        start = CSS.index(selector)
+        block = CSS[start : CSS.index("}", start) + 1]
+        self.assertIn("border-color: var(--accent);", block)
+        self.assertIn("outline: none;", block)
+        self.assertIn("box-shadow: none;", block)
+        self.assertNotIn("outline-offset:", block)
+
+        def specificity(candidate):
+            candidate = re.sub(r":where\([^)]*\)", "", candidate, flags=re.DOTALL)
+            return (
+                len(re.findall(r"#[\w-]+", candidate)),
+                len(re.findall(r"\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+", candidate)),
+                len(re.findall(r"(?:^|[ >+~])([a-z][\w-]*)", candidate)),
+            )
+
+        final_position = CSS.index(selector)
+        final_specificity = specificity(
+            ":root[data-ui-shell] select:focus-visible"
+        )
+
+        def final_rule_wins(candidate, declarations, position):
+            if "!important" in declarations:
+                return False
+            candidate_specificity = specificity(candidate)
+            return final_specificity > candidate_specificity or (
+                final_specificity == candidate_specificity
+                and final_position > position
+            )
+
+        select_subjects = {"select"}
+        for tag in re.findall(r"<select\b[^>]*>", INDEX):
+            id_match = re.search(r'\bid="([^"]+)"', tag)
+            if id_match:
+                select_subjects.add(f"#{id_match.group(1)}")
+            class_match = re.search(r'\bclass="([^"]+)"', tag)
+            if class_match:
+                select_subjects.update(
+                    f".{class_name}"
+                    for class_name in class_match.group(1).split()
+                )
+
+        def split_selector_list(selector_list):
+            selectors = []
+            start = 0
+            depth = 0
+            for index, character in enumerate(selector_list):
+                if character in "([":
+                    depth += 1
+                elif character in ")]":
+                    depth = max(0, depth - 1)
+                elif character == "," and depth == 0:
+                    selectors.append(selector_list[start:index].strip())
+                    start = index + 1
+            selectors.append(selector_list[start:].strip())
+            return [candidate for candidate in selectors if candidate]
+
+        competitors = []
+        for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", CSS, re.DOTALL):
+            selectors, declarations = match.groups()
+            if match.start() == final_position:
+                continue
+            if not re.search(
+                r"(?:border(?:-color)?|outline|box-shadow)\s*:",
+                declarations,
+            ):
+                continue
+            for candidate in split_selector_list(selectors):
+                if (
+                    ":focus" in candidate
+                    and any(subject in candidate for subject in select_subjects)
+                ):
+                    competitors.append((candidate, declarations, match.start()))
+
+        self.assertGreaterEqual(len(competitors), 5)
+        for candidate, declarations, position in competitors:
+            with self.subTest(competitor=candidate):
+                self.assertTrue(
+                    final_rule_wins(candidate, declarations, position),
+                    f"Final dropdown focus rule loses to {candidate}",
+                )
+
+        self.assertFalse(
+            final_rule_wins(
+                "#theme-select:focus-visible",
+                "outline: 2px solid red;",
+                final_position - 1,
+            )
+        )
+        self.assertFalse(
+            final_rule_wins(
+                ".theme-select:focus-visible",
+                "outline: 2px solid red !important;",
+                final_position - 1,
+            )
+        )
+        self.assertFalse(
+            final_rule_wins(
+                ":root[data-ui-shell] :where(button, select):focus-visible",
+                "outline: 2px solid red !important;",
+                final_position - 1,
+            )
+        )
+        self.assertFalse(
+            final_rule_wins(
+                "#session-select:focus",
+                "border-color: red;",
+                final_position - 1,
+            )
+        )
+
+        for select_id in (
+            "agent-console-agent",
+            "agent-console-provider-select",
+            "agent-console-model-select",
+            "session-select",
+            "task-status-filter",
+            "theme-select",
+            "contrast-select",
+        ):
+            with self.subTest(select_id=select_id):
+                self.assertRegex(
+                    INDEX,
+                    rf'<select[^>]*\bid="{re.escape(select_id)}"',
+                )
+
     def test_final_text_entry_focus_rules_win_the_emerald_cascade(self):
         def specificity(selector):
             selector = re.sub(

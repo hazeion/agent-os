@@ -86,6 +86,55 @@ async function reloadPage(client) {
   await waitFor(() => client.eval('document.readyState === "complete"'), 'page reload');
 }
 
+async function verifyAppearanceContinuity(client) {
+  await client.eval(`document.querySelector('[data-view="settings"]').click()`);
+  await waitFor(() => client.eval('document.querySelector("#view-settings.active") !== null'), 'Settings view');
+  await setViewport(client, 1440, 1000);
+  const appearance = await client.eval(`(() => {
+    const cards = [...document.querySelectorAll('#theme-preview-grid .theme-swatch')];
+    const rectangles = cards.map((card) => card.getBoundingClientRect());
+    const accentProbe = document.createElement('span');
+    accentProbe.style.color = 'var(--accent)';
+    document.body.append(accentProbe);
+    const accent = getComputedStyle(accentProbe).color;
+    accentProbe.remove();
+    const focusStyles = ['theme-select', 'contrast-select'].map((id) => {
+      const control = document.getElementById(id);
+      control.focus();
+      const style = getComputedStyle(control);
+      return {
+        id,
+        border: style.borderTopColor,
+        outline: style.outlineStyle,
+        shadow: style.boxShadow,
+      };
+    });
+    return {
+      cardCount: cards.length,
+      cardSizes: [...new Set(rectangles.map((rect) => rect.width + 'x' + rect.height))],
+      accent,
+      focusStyles,
+    };
+  })()`);
+  if (
+    appearance.cardCount !== 16
+    || appearance.cardSizes.length !== 1
+    || appearance.cardSizes[0] !== '160x88'
+    || appearance.focusStyles.some((style) => (
+      style.border !== appearance.accent
+      || style.outline !== 'none'
+      || style.shadow !== 'none'
+    ))
+  ) {
+    throw new Error(`Appearance continuity smoke failed: ${JSON.stringify(appearance)}`);
+  }
+  await setViewport(client, 390, 844);
+  const phoneThemeGridHidden = await client.eval(`getComputedStyle(document.querySelector('#theme-preview-grid')).display === 'none'`);
+  if (!phoneThemeGridHidden) throw new Error('Phone theme preview grid remained visible');
+  await setViewport(client, 1440, 1000);
+  return appearance;
+}
+
 async function pointerClick(client, x, y) {
   const common = { x, y, button: 'left', clickCount: 1 };
   await client.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...common });
@@ -224,90 +273,29 @@ async function main() {
       localStorage.setItem('mentat-contrast-v1', 'high');
     })()`);
     await reloadPage(client);
-    const savedShell = await client.eval(`(() => ({
+    const savedAppearance = await client.eval(`(() => ({
       theme: document.documentElement.dataset.theme,
       shell: document.documentElement.dataset.uiShell,
       contrast: document.documentElement.dataset.contrast,
-      bodyColor: getComputedStyle(document.body).color,
-      searchBorder: getComputedStyle(document.querySelector('.search-shell')).borderTopColor,
+      legacyShell: localStorage.getItem('mentat-ui-shell-v1'),
     }))()`);
     if (
-      savedShell.theme !== 'compact-dark'
-      || savedShell.shell !== 'classic'
-      || savedShell.contrast !== 'high'
-      || savedShell.bodyColor !== 'rgb(255, 253, 245)'
-      || savedShell.searchBorder !== 'rgb(128, 148, 150)'
+      savedAppearance.theme !== 'compact-dark'
+      || savedAppearance.shell !== 'emerald'
+      || savedAppearance.contrast !== 'high'
+      || savedAppearance.legacyShell !== null
     ) {
-      throw new Error(`Saved shell preference contract failed: ${JSON.stringify(savedShell)}`);
+      throw new Error(`Saved appearance migration contract failed: ${JSON.stringify(savedAppearance)}`);
     }
-    await setViewport(client, 1200, 900);
-    const classicHomeLayout = await client.eval(`(() => {
-      const selectors = [
-        '#today-active-work-panel',
-        '#home-live-agents-panel',
-        '#today-calendar-panel',
-        '.home-context-stack',
-        '#agent-console-panel',
-      ];
-      const rects = selectors.map((selector) => document.querySelector(selector)?.getBoundingClientRect());
-      const overlap = (left, right) => (
-        Math.min(left.right, right.right) - Math.max(left.left, right.left) > 2
-        && Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 2
-      );
-      return {
-        visible: rects.every((rect) => rect && rect.width > 120 && rect.height > 40),
-        focusAgentsAligned: Math.abs(rects[0].top - rects[1].top) <= 2,
-        scheduleContextAligned: Math.abs(rects[2].top - rects[3].top) <= 2,
-        consoleLast: rects[4].top >= Math.max(rects[2].bottom, rects[3].bottom) - 2,
-        focusConsoleOverlap: overlap(rects[0], rects[4]),
-        overflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - innerWidth,
-      };
-    })()`);
-    if (
-      !classicHomeLayout.visible
-      || !classicHomeLayout.focusAgentsAligned
-      || !classicHomeLayout.scheduleContextAligned
-      || !classicHomeLayout.consoleLast
-      || classicHomeLayout.focusConsoleOverlap
-      || classicHomeLayout.overflow > 1
-    ) {
-      throw new Error(`Classic Home rollback layout failed: ${JSON.stringify(classicHomeLayout)}`);
-    }
-    await setViewport(client, 390, 844);
-    const classicMobileConsole = await client.eval(`(() => {
-      const consoleGrid = document.querySelector('#agent-console-panel .agent-console')?.getBoundingClientRect();
-      const commandBar = document.querySelector('#agent-console-panel .agent-console-command-bar')?.getBoundingClientRect();
-      const selectors = document.querySelector('.agent-console-runtime-row')?.getBoundingClientRect();
-      const transcript = document.querySelector('#agent-console-transcript')?.getBoundingClientRect();
-      const composer = document.querySelector('#agent-console-form')?.getBoundingClientRect();
-      return {
-        shell: document.documentElement.dataset.uiShell,
-        ordered: Boolean(
-          selectors
-          && transcript
-          && composer
-          && selectors.bottom <= transcript.top + 1
-          && transcript.bottom <= composer.top + 1
-        ),
-        trailingGap: consoleGrid && commandBar
-          ? Math.max(0, consoleGrid.bottom - commandBar.bottom)
-          : null,
-        overflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - innerWidth,
-      };
-    })()`);
-    if (
-      classicMobileConsole.shell !== 'classic'
-      || !classicMobileConsole.ordered
-      || classicMobileConsole.trailingGap === null
-      || classicMobileConsole.trailingGap > 2
-      || classicMobileConsole.overflow > 1
-    ) {
-      throw new Error(`Classic mobile Agent Console layout failed: ${JSON.stringify(classicMobileConsole)}`);
+    if (process.env.MENTAT_APPEARANCE_SMOKE === '1') {
+      const appearance = await verifyAppearanceContinuity(client);
+      console.log(JSON.stringify({ ok: true, baseUrl, appearance }, null, 2));
+      await client.ws.close?.();
+      return;
     }
 
     await client.eval(`(() => {
       localStorage.setItem('mentat-theme', 'emerald');
-      localStorage.setItem('mentat-ui-shell-v1', 'emerald');
       localStorage.removeItem('mentat-contrast-v1');
     })()`);
     await setViewport(client, 1440, 1000);
@@ -1804,6 +1792,7 @@ async function main() {
 
     await client.eval(`document.querySelector('[data-view="settings"]').click()`);
     await waitFor(() => client.eval('document.querySelector("#view-settings.active") !== null'), 'Settings view');
+    await verifyAppearanceContinuity(client);
     await waitFor(() => client.eval(`document.querySelector('#mentat-version')?.textContent.startsWith('v0.1.0')`), 'Mentat version display');
     const supportActionsVisible = await client.eval(`Boolean(document.querySelector('#download-diagnostics') && document.querySelector('a[href*="issues/new?template=bug_report.yml"]') && document.querySelector('a[href$="#quick-start"]'))`);
     if (!supportActionsVisible) throw new Error('Settings support actions smoke failed');
@@ -2062,7 +2051,7 @@ async function main() {
     );
     await setViewport(client, 1440, 1000);
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'saved shell reload', 'theme and contrast reload', 'Classic Home rollback geometry', 'Classic mobile Agent Console geometry', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
     await stopChild(chrome);

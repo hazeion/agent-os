@@ -8,7 +8,7 @@
   <script>
     (() => {
       const themeKey = 'mentat-theme';
-      const shellKey = 'mentat-ui-shell-v1';
+      const legacyShellKey = 'mentat-ui-shell-v1';
       const contrastKey = 'mentat-contrast-v1';
       const allowedThemes = new Set([
         'emerald', 'compact-dark', 'catppuccin', 'nord', 'aurora', 'tokyo-night',
@@ -16,24 +16,21 @@
         'github-light', 'gruvbox-light', 'solarized-light',
         'catppuccin-latte', 'rose-pine-dawn',
       ]);
-      const allowedShells = new Set(['emerald', 'classic']);
       const allowedContrastPreferences = new Set(['standard', 'high']);
       let theme = 'emerald';
-      let shell = 'emerald';
       let contrastPreference = 'system';
       try {
+        localStorage.removeItem(legacyShellKey);
         const savedTheme = localStorage.getItem(themeKey);
-        const savedShell = localStorage.getItem(shellKey);
         const savedContrast = localStorage.getItem(contrastKey);
         if (allowedThemes.has(savedTheme)) theme = savedTheme;
-        if (allowedShells.has(savedShell)) shell = savedShell;
         if (allowedContrastPreferences.has(savedContrast)) contrastPreference = savedContrast;
       } catch {}
       const systemHighContrast = contrastPreference === 'system'
         && typeof matchMedia === 'function'
         && matchMedia('(prefers-contrast: more)').matches;
       document.documentElement.dataset.theme = theme;
-      document.documentElement.dataset.uiShell = shell;
+      document.documentElement.dataset.uiShell = 'emerald';
       document.documentElement.dataset.contrastPreference = contrastPreference;
       document.documentElement.dataset.contrast = contrastPreference === 'high' || systemHighContrast
         ? 'high'
@@ -681,13 +678,6 @@
             <div id="theme-preview-grid" class="theme-preview-grid" aria-label="Mentat theme choices"></div>
           </div>
           <div class="appearance-controls" aria-describedby="appearance-controls-help">
-            <label class="theme-select-shell" for="shell-select">
-              <span class="mono">Interface layout</span>
-              <select id="shell-select" class="theme-select">
-                <option value="emerald">Emerald</option>
-                <option value="classic">Classic</option>
-              </select>
-            </label>
             <label class="theme-select-shell" for="contrast-select">
               <span class="mono">Contrast</span>
               <select id="contrast-select" class="theme-select">
@@ -697,7 +687,7 @@
               </select>
             </label>
           </div>
-          <p class="section-copy" id="appearance-controls-help">Layout and contrast preferences apply across Mentat. The system contrast option follows your device setting.</p>
+          <p class="section-copy" id="appearance-controls-help">Theme and contrast preferences apply across Mentat. The system contrast option follows your device setting.</p>
           <div class="section-divider"></div>
           <div class="panel-head compact-head">
             <div>
