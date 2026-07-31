@@ -27,8 +27,8 @@ function humanCost(value) {
 }
 
 const THEME_STORAGE_KEY = 'mentat-theme';
-const SHELL_STORAGE_KEY = 'mentat-ui-shell-v1';
 const CONTRAST_STORAGE_KEY = 'mentat-contrast-v1';
+document.documentElement.dataset.uiShell = 'emerald';
 const THEMES = [
   { id: 'emerald', label: 'Emerald', pill: 'emerald', mode: 'dark' },
   { id: 'compact-dark', label: 'Compact Dark', pill: 'compact dark', mode: 'dark' },
@@ -94,30 +94,6 @@ function initializeTheme() {
     } catch {}
   }
   applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id);
-}
-
-function applyShell(shellId = document.documentElement.dataset.uiShell || 'emerald', { persist = true } = {}) {
-  const shell = ['emerald', 'classic'].includes(shellId) ? shellId : 'emerald';
-  document.documentElement.dataset.uiShell = shell;
-  const select = $('#shell-select');
-  if (select && select.value !== shell) select.value = shell;
-  if (persist && typeof localStorage !== 'undefined') {
-    try {
-      localStorage.setItem(SHELL_STORAGE_KEY, shell);
-    } catch {}
-  }
-  closeMobileNavigation({ restoreFocus: false });
-  return shell;
-}
-
-function initializeShell() {
-  let saved = '';
-  if (typeof localStorage !== 'undefined') {
-    try {
-      saved = localStorage.getItem(SHELL_STORAGE_KEY) || '';
-    } catch {}
-  }
-  applyShell(saved || document.documentElement.dataset.uiShell || 'emerald', { persist: false });
 }
 
 const systemContrastMedia = typeof window.matchMedia === 'function'
@@ -220,7 +196,7 @@ function usesMobileNavigation() {
   const narrowViewport = mobileNavigationMedia
     ? mobileNavigationMedia.matches
     : window.innerWidth <= 900;
-  return document.documentElement.dataset.uiShell === 'emerald' && narrowViewport;
+  return narrowViewport;
 }
 
 function mobileNavigationIsOpen() {
@@ -6134,7 +6110,6 @@ async function navigateGlobalSearchResult(result) {
 }
 
 initializeTheme();
-initializeShell();
 initializeContrast();
 initializeMobileNavigation();
 
@@ -6343,13 +6318,6 @@ const themeSelect = $('#theme-select');
 if (themeSelect) {
   themeSelect.addEventListener('change', (event) => {
     applyTheme(event.target.value);
-  });
-}
-
-const shellSelect = $('#shell-select');
-if (shellSelect) {
-  shellSelect.addEventListener('change', (event) => {
-    applyShell(event.target.value);
   });
 }
 

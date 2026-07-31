@@ -16,7 +16,7 @@ without rewriting the application or changing its capability boundaries.
   hero-card row.
 - Existing workflows remain available while visual density and hierarchy
   improve.
-- A saved Classic shell remains available until the conversion reaches parity.
+- The Emerald shell is the only supported interface layout.
 
 ## Constraints
 
@@ -57,7 +57,7 @@ Status: Implemented and verified in this branch.
 Deliverables:
 
 - saved Emerald theme;
-- saved Emerald/Classic shell preference;
+- fixed Emerald interface layout with saved color-theme preference;
 - Standard, System, and High Contrast behavior;
 - expanded desktop rail, compact intermediate rail, mobile drawer;
 - command header, connection state, global search, operator identity;
@@ -207,7 +207,7 @@ Goals:
 
 - organize connection, appearance, health, capability inventory, version,
   diagnostics, and support into clear Emerald sections;
-- preserve theme, shell, and contrast controls;
+- preserve theme and contrast controls while keeping Emerald fixed;
 - standardize dialog spacing, button grouping, warning text, and review steps;
 - keep local/remote connection configuration behavior unchanged until its
   separate product capability is approved.
@@ -215,29 +215,29 @@ Goals:
 Verification:
 
 - local, remote, unavailable, and degraded connection summaries;
-- High Contrast across every saved theme/shell combination;
+- High Contrast across every saved theme with fixed Emerald initialization;
 - all destructive and confirmed flows;
 - diagnostics download and support links;
 - keyboard dialog focus and Escape behavior.
 
-### Slice 8 — Parity, cleanup, and Classic retirement decision
+### Slice 8 — Parity and cleanup
 
-Status: Planned.
+Status: Classic retirement approved; remaining cross-browser review is planned.
 
 Goals:
 
 - run cross-page component and token audit;
 - remove obsolete selectors only after every existing workflow has parity;
 - complete Safari, Firefox, and screen-reader review;
-- decide whether to retain or retire the Classic shell;
+- remove the obsolete Classic selector, preference, and compatibility rules;
 - update screenshots, changelog, and contributor guidance.
 
-Classic is not removed automatically. Retirement requires:
+Classic retirement was approved after:
 
 - all six pages accepted in Emerald;
 - no workflow relies on Classic-only layout;
 - migration and recovery are documented;
-- a separately approved publication slice.
+- a separately reviewed publication slice.
 
 ## Current-to-target mapping
 
@@ -279,7 +279,7 @@ Classic is not removed automatically. Retirement requires:
 - current-page and keyboard behavior.
 - page geometry, overflow, and touch targets.
 - live workflow smoke in disposable Chromium.
-- theme/shell/contrast persistence.
+- theme/contrast persistence and legacy shell-preference removal.
 - packaged static-asset inventory.
 
 ### Rendered fixtures
@@ -317,7 +317,7 @@ Every converted page should be inspected with:
 | Empty screens feel unfinished | Preserve hierarchy with concise, bounded empty states |
 | Legacy CSS leaks into the new layout | Use explicit grid areas and computed geometry checks |
 | One-off styles fragment the system | Require semantic token and named component mapping |
-| Classic breaks during incremental migration | Test Classic geometry until retirement is approved |
+| Obsolete shell preferences survive retirement | Remove the legacy key before paint and verify Emerald initialization |
 
 ## Definition of complete
 

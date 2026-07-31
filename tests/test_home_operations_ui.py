@@ -274,7 +274,7 @@ class HomeOperationsUiTests(unittest.TestCase):
     def test_home_grid_matches_reference_and_stacks_in_reading_order(self):
         operations = CSS[
             CSS.index("/* Reference-aligned Mentat Home")
-            : CSS.index("/* Classic remains a functional visual rollback")
+            : CSS.index("@media (min-width: 901px)", CSS.index("/* Reference-aligned Mentat Home"))
         ]
         self.assertIn("minmax(420px, 1.174fr) minmax(360px, 1fr)", operations)
         self.assertIn('"focus agents"', operations)
@@ -287,14 +287,8 @@ class HomeOperationsUiTests(unittest.TestCase):
         for area in ('"focus"', '"agents"', '"schedule"', '"context"', '"console"'):
             self.assertIn(area, responsive)
         self.assertIn("grid-template-columns: minmax(0, 1fr)", responsive)
-        classic = CSS[
-            CSS.index("/* Classic remains a functional visual rollback")
-            : CSS.index("@media (min-width: 901px)", CSS.index("/* Classic remains a functional visual rollback"))
-        ]
-        for area in ('"focus agents"', '"schedule context"', '"console console"'):
-            self.assertIn(area, classic)
-        self.assertIn("#today-active-work-panel.home-focus-panel", classic)
-        self.assertIn("#agent-console-panel.home-console-panel", classic)
+        self.assertNotIn("Classic remains a functional visual rollback", CSS)
+        self.assertNotIn("data-ui-shell='classic'", CSS)
         phone = CSS[
             CSS.index("@media (max-width: 640px)", CSS.index("/* Reference-aligned Mentat Home"))
             :
@@ -317,7 +311,7 @@ class HomeOperationsUiTests(unittest.TestCase):
     def test_home_disclosures_are_panel_bounded_when_open(self):
         operations = CSS[
             CSS.index("/* Reference-aligned Mentat Home")
-            : CSS.index("/* Classic remains a functional visual rollback")
+            : CSS.index("@media (min-width: 901px)", CSS.index("/* Reference-aligned Mentat Home"))
         ]
         self.assertIn(".home-utility-disclosure[open]", operations)
         self.assertIn("flex: 1 0 100%", operations)

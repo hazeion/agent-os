@@ -5,13 +5,14 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
-- Text fields and search controls now highlight their visible border on focus
-  without drawing a second outline or glow outside the control.
+- Retired the unused Classic interface choice, migrated any saved layout back to
+  Emerald, and kept every Theme Studio preview card the same size.
+- Text fields, search controls, and dropdowns now highlight their visible border
+  on focus without drawing a second outline or glow outside the control.
 - The phone navigation Close button and Hermes connection control now match
   the shared 44px interaction target used by adjacent mobile controls.
 - Ensured the shared 44px phone control target wins the final theme cascade for
-  Today filters, Agent Console controls, and Settings selectors in both UI
-  shells.
+  Today filters, Agent Console controls, and Settings selectors in Emerald.
 - Phone layouts now use the same 44px interaction height for planner filters,
   Agent Console and managed-agent selectors, the Console prompt, Settings
   selectors, and the Today schedule link. Settings keeps its compact theme
