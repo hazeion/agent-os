@@ -316,7 +316,7 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("api://AzureADTokenExchange", signing_guide)
         self.assertIn("Developer ID G2", signing_guide)
         self.assertIn(
-            "F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A",
+            "F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A",  # pragma: allowlist secret
             signing_guide,
         )
         self.assertIn("Entity type: **Environment**", signing_guide)

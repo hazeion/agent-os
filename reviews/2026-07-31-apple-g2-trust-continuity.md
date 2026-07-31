@@ -194,12 +194,18 @@ without weakening release gates or leaving altered keychain state behind.
   SHA-256 assertion as a high-entropy candidate. This was a fail-closed false
   positive, not secret exposure.
 - Added the repository's narrow `# pragma: allowlist secret` annotation only to
-  that exact public-fingerprint assertion. The workflow, guide, and evidence
-  continue to show the public pin intentionally; no secret baseline was broadly
-  weakened.
+  the two exact test assertions of that public fingerprint. The workflow,
+  guide, and evidence continue to show the public pin intentionally; no secret
+  baseline was broadly weakened.
 - Both independent reviewers rechecked the publication fix and found no P0/P1
   or publication concern. The local environment lacks the `detect_secrets`
   package, so the hosted rerun remains the authoritative scanner result.
+- The first hosted rerun cleared the workflow assertion but then reported the
+  second exact public-fingerprint occurrence in the operator-guide assertion.
+  Applied the same line-specific annotation to that assertion only; scanner
+  configuration and baseline remain unchanged.
+- Both independent reviewers rechecked the second annotation and found no
+  P0/P1, scan-scope, or publication concern.
 
 ## Adversarial review
 
