@@ -164,6 +164,102 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn(" -x -k ", workflow)
         self.assertIn('MAC_KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"', workflow)
         self.assertNotIn("secrets.MAC_KEYCHAIN_PASSWORD", workflow)
+        self.assertIn(
+            "https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer",
+            workflow,
+        )
+        self.assertIn(
+            "F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A",
+            workflow,
+        )
+        self.assertIn('test "$actual_g2_sha256" = "$G2_SHA256"', workflow)
+        self.assertIn(
+            'security list-keychains -d user > "$ORIGINAL_KEYCHAINS"',
+            workflow,
+        )
+        self.assertIn(
+            "security default-keychain -d user | sed "
+            "'s/^[[:space:]]*\"//; s/\"[[:space:]]*$//'",
+            workflow,
+        )
+        self.assertIn(
+            'signing_keychains=("$RUNNER_TEMP/mentat-signing.keychain-db" "$login_keychain")',
+            workflow,
+        )
+        self.assertIn('if test "$keychain" != "$login_keychain"', workflow)
+        self.assertIn(
+            'security list-keychains -d user -s "${signing_keychains[@]}"',
+            workflow,
+        )
+        self.assertIn(
+            'touch "$RUNNER_TEMP/mentat-keychain-list-change-attempted"',
+            workflow,
+        )
+        self.assertIn(
+            'security list-keychains -d user -s "${original_keychains[@]}"',
+            workflow,
+        )
+        self.assertIn(
+            'security find-certificate -a -Z "$login_keychain" > "$G2_INVENTORY" || g2_inventory_status=$?',
+            workflow,
+        )
+        self.assertIn(
+            'if test "$g2_inventory_status" -ne 0 && test "$g2_inventory_status" -ne 44',
+            workflow,
+        )
+        self.assertIn('exit "$g2_inventory_status"', workflow)
+        self.assertIn('grep -qi "$g2_sha1" "$G2_INVENTORY"', workflow)
+        self.assertNotIn(
+            'security find-certificate -a -Z "$login_keychain" |',
+            workflow,
+        )
+        self.assertIn(
+            'touch "$RUNNER_TEMP/mentat-g2-import-attempted"',
+            workflow,
+        )
+        self.assertIn("umask 077", workflow)
+        self.assertIn('chmod 600 "$RUNNER_TEMP/mentat-signing.p12"', workflow)
+        self.assertIn(
+            'test "$(stat -f \'%Lp\' "$RUNNER_TEMP/mentat-signing.p12")" = "600"',
+            workflow,
+        )
+        self.assertIn(
+            'touch "$RUNNER_TEMP/mentat-signing-keychain-create-attempted"',
+            workflow,
+        )
+        self.assertIn("security delete-certificate -Z", workflow)
+        self.assertIn(
+            'elif test "$cleanup_inventory_status" -ne 44',
+            workflow,
+        )
+        self.assertIn("cleanup_status=0", workflow)
+        self.assertIn('exit "$cleanup_status"', workflow)
+        self.assertNotIn("mapfile", workflow)
+        g2_digest_check = workflow.index(
+            'test "$actual_g2_sha256" = "$G2_SHA256"'
+        )
+        g2_attempt = workflow.index(
+            'touch "$RUNNER_TEMP/mentat-g2-import-attempted"'
+        )
+        g2_import = workflow.index('security import "$G2_CERT"')
+        p12_permissions = workflow.index(
+            'chmod 600 "$RUNNER_TEMP/mentat-signing.p12"'
+        )
+        keychain_attempt = workflow.index(
+            'touch "$RUNNER_TEMP/mentat-signing-keychain-create-attempted"'
+        )
+        keychain_create = workflow.index("security create-keychain")
+        list_attempt = workflow.index(
+            'touch "$RUNNER_TEMP/mentat-keychain-list-change-attempted"'
+        )
+        list_change = workflow.index(
+            'security list-keychains -d user -s "${signing_keychains[@]}"'
+        )
+        self.assertLess(g2_digest_check, g2_attempt)
+        self.assertLess(g2_attempt, g2_import)
+        self.assertLess(p12_permissions, keychain_attempt)
+        self.assertLess(keychain_attempt, keychain_create)
+        self.assertLess(list_attempt, list_change)
         self.assertIn("signtool.exe", workflow.lower())
         self.assertIn("id-token: write", workflow)
         self.assertIn(
@@ -218,6 +314,11 @@ class PackagingContractTests(unittest.TestCase):
         )
         self.assertIn("https://token.actions.githubusercontent.com", signing_guide)
         self.assertIn("api://AzureADTokenExchange", signing_guide)
+        self.assertIn("Developer ID G2", signing_guide)
+        self.assertIn(
+            "F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A",
+            signing_guide,
+        )
         self.assertIn("Entity type: **Environment**", signing_guide)
         self.assertIn("service principal exists", normalized_signing_guide)
         self.assertIn("**Selected branches and tags**", signing_guide)
