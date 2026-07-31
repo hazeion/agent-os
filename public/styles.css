@@ -7772,11 +7772,11 @@ h2,
   }
 
   :root[data-ui-shell='emerald'] .mobile-nav-close {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     display: inline-grid;
     place-items: center;
-    flex: 0 0 40px;
+    flex: 0 0 44px;
     margin-left: auto;
     padding: 0;
     border: 1px solid var(--operations-border-control);
@@ -8032,6 +8032,7 @@ h2,
 
   :root[data-ui-shell='emerald'] .connection-status-button {
     grid-column: 1 / -1;
+    min-height: 44px;
   }
 
   :root[data-ui-shell='emerald'] #view-today button,

@@ -5,6 +5,8 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- The phone navigation Close button and Hermes connection control now match
+  the shared 44px interaction target used by adjacent mobile controls.
 - Ensured the shared 44px phone control target wins the final theme cascade for
   Today filters, Agent Console controls, and Settings selectors in both UI
   shells.
