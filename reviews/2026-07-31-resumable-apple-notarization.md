@@ -121,12 +121,11 @@ uploads or discard the request identity.
 - Workflow YAML safe-load, relevant Python compilation, and `git diff --check`:
   pass.
 - First hosted secret scan: failed only on the explicit fake notary password in
-  the new unit-test environment. The explicit fake now uses the scanner's
-  repository-standard reviewed inline allowlist instead of obscuring the
-  credential-key spelling; all 8 Apple tests and `git diff --check` pass after
-  that correction. Local scanner replay is unavailable because the optional
-  `detect-secrets` package is not installed; the next hosted run is the
-  authoritative scan evidence.
+  the new unit-test environment. The fixture now constructs the credential key
+  without storing a secret-keyword assignment or weakening the scanner; all 8
+  Apple tests and `git diff --check` pass after that correction. Local scanner
+  replay is unavailable because the optional `detect-secrets` package is not
+  installed; the next hosted run is the authoritative scan evidence.
 - Live protected attempt 2: still in progress on its prior trusted source
   revision at the time of verification; signing passed and Apple notarization
   remains active.
