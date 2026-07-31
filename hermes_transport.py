@@ -221,6 +221,22 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 
+    def search_session_messages(
+        self,
+        remote_session_id: str,
+        *,
+        structural_ids: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        if not self._sessions_ready:
+            raise HermesTransportError("remote_session_capability_unavailable")
+        try:
+            return self._client.search_session_messages(
+                remote_session_id,
+                structural_ids=structural_ids,
+            )
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
     def read_capability_inventory(self) -> dict[str, Any]:
         try:
             return self._client.read_capability_inventory()

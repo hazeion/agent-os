@@ -2,6 +2,22 @@
 
 All notable changes to Mentat.
 
+## 2026-07-30
+
+### Fixed
+- Remote Hermes session search now omits individual messages that cannot cross
+  Mentat's browser privacy boundary instead of making every query unavailable.
+  Safe matches in the same bounded recent-session window remain searchable,
+  and the coverage note reports only how many messages and sessions were
+  privacy-filtered.
+
+### Safety
+- Schema, pagination, connection binding, capability, transport, and final
+  revalidation failures still discard the complete search. Filtered message
+  content, filter reasons, paths, credentials, endpoints, and upstream session
+  identifiers never reach the browser, and strict transcript reads are
+  unchanged.
+
 ## 2026-07-29
 
 ### Added

@@ -432,8 +432,9 @@ in this order:
    read-only endpoints; **Milestone 2G implemented with bounded Settings
    metadata and fail-closed connection binding**;
 7. bounded recent-session message search through the existing authenticated
-   session reads; **Milestone 2H implemented with all-or-nothing 12-session
-   coverage and explicit list, compaction, and result limits**;
+   session reads; **Milestone 2H implemented with bounded 12-session coverage,
+   message-granular privacy filtering after strict response validation, and
+   explicit list, filtering, compaction, and result limits**;
 8. read-only profile discovery through a supported authenticated capability;
 9. Kanban delegation and follow-up through a supported authenticated capability;
 10. capability-gated degradation, compatibility, recovery, and cross-platform

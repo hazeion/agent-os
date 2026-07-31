@@ -4302,9 +4302,12 @@ function renderMessageSearchResults(payload = {}, query = '') {
   if (coverage) {
     const sessionCount = Number(coverage.sessions_scanned) || 0;
     const messageCount = Number(coverage.messages_scanned) || 0;
+    const filteredCount = Number(coverage.filtered_messages) || 0;
+    const filteredSessionCount = Number(coverage.sessions_with_filtered_messages) || 0;
     const compactedCount = Number(coverage.compacted_sessions) || 0;
     coverageParts.push(`${sessionCount} recent ${sessionCount === 1 ? 'session' : 'sessions'}`);
     coverageParts.push(`${messageCount} visible ${messageCount === 1 ? 'message' : 'messages'} searched`);
+    if (filteredCount > 0) coverageParts.push(`${filteredCount} ${filteredCount === 1 ? 'message' : 'messages'} omitted for privacy across ${filteredSessionCount} ${filteredSessionCount === 1 ? 'session' : 'sessions'}`);
     if (coverage.list_truncated) coverageParts.push(`${Number(coverage.session_limit) || 12}-session limit reached; older sessions may not be included`);
     if (compactedCount > 0) coverageParts.push(`${compactedCount} compacted ${compactedCount === 1 ? 'transcript may' : 'transcripts may'} omit earlier turns`);
     if (coverage.results_truncated) coverageParts.push(`showing the first ${Number(coverage.result_limit) || 20} matches`);
