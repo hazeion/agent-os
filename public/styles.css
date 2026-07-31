@@ -8134,11 +8134,11 @@ h2,
    wall of theme buttons. */
 @media (max-width: 640px) {
   :is(
-    .home-focus-scope .today-project-select,
-    .home-schedule-link,
-    .agent-console-select,
-    .agent-console-command-bar .agent-console-form textarea,
-    .theme-select
+    :root[data-ui-shell] .home-focus-scope .today-project-select,
+    :root[data-ui-shell] .home-schedule-link,
+    :root[data-ui-shell] .agent-console-runtime-row .agent-console-select,
+    :root[data-ui-shell] .agent-console-command-bar .agent-console-form textarea,
+    :root[data-ui-shell] .theme-select
   ) {
     min-height: 44px;
   }

@@ -101,11 +101,11 @@ class VisualContractTests(unittest.TestCase):
    wall of theme buttons. */
 @media (max-width: 640px) {
   :is(
-    .home-focus-scope .today-project-select,
-    .home-schedule-link,
-    .agent-console-select,
-    .agent-console-command-bar .agent-console-form textarea,
-    .theme-select
+    :root[data-ui-shell] .home-focus-scope .today-project-select,
+    :root[data-ui-shell] .home-schedule-link,
+    :root[data-ui-shell] .agent-console-runtime-row .agent-console-select,
+    :root[data-ui-shell] .agent-console-command-bar .agent-console-form textarea,
+    :root[data-ui-shell] .theme-select
   ) {
     min-height: 44px;
   }
@@ -116,6 +116,46 @@ class VisualContractTests(unittest.TestCase):
 }"""
         self.assertEqual(mobile, expected)
         self.assertEqual(INDEX.count('id="theme-select"'), 1)
+
+    def test_phone_control_rule_has_enough_specificity_to_win_the_shell_cascade(self):
+        mobile = CSS[CSS.index("/* Mobile control ergonomics") :]
+        selector_pairs = (
+            (
+                ":root[data-ui-shell='emerald'] .home-focus-scope .today-project-select",
+                ":root[data-ui-shell] .home-focus-scope .today-project-select",
+            ),
+            (
+                ":root[data-ui-shell='emerald'] .agent-console-runtime-row .agent-console-select",
+                ":root[data-ui-shell] .agent-console-runtime-row .agent-console-select",
+            ),
+            (
+                ":root[data-ui-shell='emerald'] .agent-console-command-bar .agent-console-form textarea",
+                ":root[data-ui-shell] .agent-console-command-bar .agent-console-form textarea",
+            ),
+            (".theme-select", ":root[data-ui-shell] .theme-select"),
+        )
+
+        def specificity(selector):
+            ids = len(re.findall(r"#[\w-]+", selector))
+            class_like = len(
+                re.findall(r"\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+", selector)
+            )
+            elements = len(
+                re.findall(r"(?:^|[ >+~])([a-z][\w-]*)", selector)
+            )
+            return ids, class_like, elements
+
+        mobile_start = CSS.index("/* Mobile control ergonomics")
+        for competing, selector in selector_pairs:
+            with self.subTest(selector=selector):
+                self.assertIn(selector, mobile)
+                competing_start = CSS.index(f"{competing} {{")
+                competing_end = CSS.index("}", competing_start)
+                self.assertLess(competing_start, mobile_start)
+                self.assertNotIn("!important", CSS[competing_start:competing_end])
+                self.assertGreaterEqual(specificity(selector), specificity(competing))
+
+        self.assertNotIn("\n    .agent-console-select,", mobile)
 
     def test_legacy_agent_messages_ui_is_retired_but_context_packs_are_visible(self):
         self.assertNotIn("Agent Messages", INDEX)

@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- Ensured the shared 44px phone control target wins the final theme cascade for
+  Today filters, Agent Console controls, and Settings selectors in both UI
+  shells.
 - Phone layouts now use the same 44px interaction height for planner filters,
   Agent Console and managed-agent selectors, the Console prompt, Settings
   selectors, and the Today schedule link. Settings keeps its compact theme
