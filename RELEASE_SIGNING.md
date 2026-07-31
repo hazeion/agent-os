@@ -38,6 +38,18 @@ Apple's
 has the certificate creation details. The workflow submits with `notarytool`,
 waits for Apple, staples the ticket, and verifies the result.
 
+The hosted job downloads Apple's public **Developer ID G2** intermediate from
+Apple's certificate authority service and accepts it only when its SHA-256 is
+`F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A`.
+It temporarily adds that public certificate only when the exact certificate is
+absent, retains the runner's original keychain search list while signing, and
+explicitly keeps the login keychain searchable alongside the disposable private
+keychain. It avoids adding the login keychain twice when it is already in the
+original list, then restores the exact original list afterward. Cleanup removes
+the G2 certificate only when the job first confirmed it absent and attempted
+the import. The encrypted private bundle is created owner-only, imported into
+the disposable keychain, and removed during always-run cleanup.
+
 Add these seven **environment secrets** under **Repository settings →
 Environments → beta-release**:
 
