@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 import unittest
@@ -1628,6 +1629,7 @@ class RemoteSessionTests(unittest.TestCase):
         core_js = (Path(__file__).parents[1] / "public" / "core.js").read_text(encoding="utf-8")
         self.assertIn("messageSearchInFlight: false", core_js)
         self.assertIn("messageSearchPending: null", core_js)
+        self.assertIn("sessionMessageMatchIds: new Set()", core_js)
         self.assertIn("text.matchAll", core_js)
         self.assertIn("Array.from(String(value)).length", core_js)
         self.assertIn("result.match_text || term", search_renderer)
@@ -1635,6 +1637,48 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertIn('data-match-text="${escapeHtml(result.match_text', search_renderer)
         self.assertIn("result.dataset.matchText || result.dataset.query", app_js)
         self.assertIn("Remote search stays read-only", index_html)
+
+    def test_message_matches_keep_available_sessions_in_selector(self):
+        app_js = (Path(__file__).parents[1] / "public" / "app.js").read_text(encoding="utf-8")
+        index_html = (Path(__file__).parents[1] / "public" / "index.html").read_text(encoding="utf-8")
+        render_start = app_js.index("function renderSessions(payload = {})")
+        render_end = app_js.index("function renderMessageSearchResults", render_start)
+        renderer = app_js[render_start:render_end]
+        self.assertIn("sessionSearchMatches(state.sessions, state.sessionFilter", renderer)
+        self.assertIn("state.sessionMessageMatchIds.clear()", renderer)
+
+        request_start = app_js.index("async function runMessageSearchRequest(request)")
+        request_end = app_js.index("function queueMessageSearch", request_start)
+        request_runner = app_js[request_start:request_end]
+        self.assertIn("sessionMessageMatchIdsForResponse(", request_runner)
+        self.assertLess(
+            request_runner.index("if (nextMatchIds === null) return"),
+            request_runner.index("state.sessionMessageMatchIds = nextMatchIds"),
+        )
+        self.assertIn("renderSessions({ sessions: state.sessions })", request_runner)
+        self.assertIn("announceSessionSearch(", request_runner)
+        self.assertIn("const selectorMatchCount = sessionSearchMatches(", request_runner)
+
+        queue_start = request_end
+        queue_end = app_js.index("function renderGlobalSearchResults", queue_start)
+        queue = app_js[queue_start:queue_end]
+        self.assertIn("beginSessionMessageSearch(", queue)
+        self.assertLess(
+            queue.index("state.sessionMessageMatchIds = transition.matchIds"),
+            queue.index("if (searchQueryLength(term) < 2)"),
+        )
+        self.assertIn('id="session-search-status"', index_html)
+        self.assertIn('role="status" aria-live="polite" aria-atomic="true"', index_html)
+
+        contract = Path(__file__).with_name("session_selector_contract.mjs")
+        result = subprocess.run(
+            ["node", str(contract)],
+            cwd=Path(__file__).parents[1],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
 
 if __name__ == "__main__":

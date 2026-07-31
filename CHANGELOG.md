@@ -10,6 +10,10 @@ All notable changes to Mentat.
   Safe matches in the same bounded recent-session window remain searchable,
   and the coverage note reports only how many messages and sessions were
   privacy-filtered.
+- Session History now keeps current-list sessions in its selector when message
+  content matches even if the title does not. Search progress and the exact
+  title-plus-message match count are announced without adding visible layout
+  text.
 
 ### Safety
 - Schema, pagination, connection binding, capability, transport, and final

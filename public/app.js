@@ -4076,12 +4076,6 @@ async function assignFirstTaskToProfile(profileId) {
   $('#selected-task-detail input[name="title"]')?.focus();
 }
 
-function sessionMatches(session, query) {
-  if (!query) return true;
-  const haystack = `${session.title || ''} ${session.source || ''} ${session.message_count || ''} ${session.tool_call_count || ''}`.toLowerCase();
-  return haystack.includes(query.toLowerCase());
-}
-
 function modelLabel(session = {}) {
   const raw = String(session.model || '').trim();
   return raw || 'unknown';
@@ -4243,11 +4237,12 @@ function renderModelUsageChart(payload = {}) {
 
 function renderSessions(payload = {}) {
   state.sessions = payload.sessions || state.sessions || [];
-  const filtered = state.sessions.filter((session) => sessionMatches(session, state.sessionFilter));
+  const filtered = sessionSearchMatches(state.sessions, state.sessionFilter, state.sessionMessageMatchIds);
   const select = $('#session-select');
   if (!select) return;
   if (payload.error) {
     state.sessions = [];
+    state.sessionMessageMatchIds.clear();
     state.selectedSessionId = '';
     state.selectedSessionDetailPayload = null;
     state.selectedSessionDetailContext = null;
@@ -4284,6 +4279,12 @@ function renderSessions(payload = {}) {
     }).join('')}
   `;
 }
+
+function announceSessionSearch(message) {
+  const status = $('#session-search-status');
+  if (status) status.textContent = message;
+}
+
 function renderMessageSearchResults(payload = {}, query = '') {
   const container = $('#message-search-results');
   if (!container) return;
@@ -5999,11 +6000,30 @@ async function runMessageSearchRequest(request) {
   state.messageSearchInFlight = true;
   try {
     const payload = await searchMessages(request.term);
-    if (request.generation !== state.messageSearchRequestGeneration) return;
+    const nextMatchIds = sessionMessageMatchIdsForResponse(
+      request.generation,
+      state.messageSearchRequestGeneration,
+      payload,
+      state.sessions,
+    );
+    if (nextMatchIds === null) return;
+    state.sessionMessageMatchIds = nextMatchIds;
+    renderSessions({ sessions: state.sessions });
+    const selectorMatchCount = sessionSearchMatches(
+      state.sessions,
+      state.sessionFilter,
+      state.sessionMessageMatchIds,
+    ).length;
+    announceSessionSearch(payload.error
+      ? 'Session message search is unavailable.'
+      : `${selectorMatchCount} matching ${selectorMatchCount === 1 ? 'session is' : 'sessions are'} available in the selector.`);
     renderMessageSearchResults(payload, request.term);
   } catch (err) {
     if (request.generation !== state.messageSearchRequestGeneration) return;
     console.error(err);
+    state.sessionMessageMatchIds.clear();
+    renderSessions({ sessions: state.sessions });
+    announceSessionSearch('Session message search is unavailable.');
     renderMessageSearchResults({ error: err.message }, request.term);
   } finally {
     state.messageSearchInFlight = false;
@@ -6021,13 +6041,20 @@ async function runMessageSearchRequest(request) {
 function queueMessageSearch(query) {
   const term = (query || '').trim();
   clearTimeout(state.messageSearchTimer);
-  const requestGeneration = state.messageSearchRequestGeneration + 1;
-  state.messageSearchRequestGeneration = requestGeneration;
+  const transition = beginSessionMessageSearch(state.messageSearchRequestGeneration);
+  const requestGeneration = transition.generation;
+  state.messageSearchRequestGeneration = transition.generation;
   state.messageSearchPending = null;
+  state.sessionMessageMatchIds = transition.matchIds;
+  renderSessions({ sessions: state.sessions });
   if (searchQueryLength(term) < 2) {
+    announceSessionSearch(term
+      ? 'Type at least two characters to search session messages.'
+      : `Session search cleared. ${state.sessions.length} recent ${state.sessions.length === 1 ? 'session is' : 'sessions are'} available.`);
     renderMessageSearchResults({}, term);
     return;
   }
+  announceSessionSearch(`Searching sessions for “${term}”…`);
   const container = $('#message-search-results');
   if (container) container.innerHTML = `<div class="empty">Searching Hermes messages for “${escapeHtml(term)}”…</div>`;
   state.messageSearchTimer = setTimeout(() => {
@@ -6297,7 +6324,6 @@ const sessionSearch = $('#session-search');
 if (sessionSearch) {
   sessionSearch.addEventListener('input', (event) => {
     state.sessionFilter = event.target.value.trim();
-    renderSessions({ sessions: state.sessions });
     queueMessageSearch(state.sessionFilter);
   });
 }

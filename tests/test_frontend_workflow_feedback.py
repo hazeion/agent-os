@@ -29,7 +29,7 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
 
     def test_cron_queue_success_is_preserved_on_the_refreshed_card(self):
         render_start = APP_JS.index("function renderCrons(payload = {})")
-        render_end = APP_JS.index("function sessionMatches", render_start)
+        render_end = APP_JS.index("function modelLabel", render_start)
         render_block = APP_JS[render_start:render_end]
 
         self.assertIn("job.next_run ? ` · next ${humanDate(job.next_run)}`", render_block)
@@ -40,7 +40,7 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
 
     def test_cron_queue_controls_fail_closed_without_atomic_runtime_capability(self):
         render_start = APP_JS.index("function renderCrons(payload = {})")
-        render_end = APP_JS.index("function sessionMatches", render_start)
+        render_end = APP_JS.index("function modelLabel", render_start)
         render_block = APP_JS[render_start:render_end]
 
         self.assertIn("payload.capabilities?.['crons.queue_enabled'] === true", render_block)
@@ -50,7 +50,7 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
 
     def test_managed_profile_console_handoff_reports_load_failures(self):
         helper_start = APP_JS.index("async function useHermesProfileInConsole")
-        helper_end = APP_JS.index("function sessionMatches", helper_start)
+        helper_end = APP_JS.index("function modelLabel", helper_start)
         helper_block = APP_JS[helper_start:helper_end]
 
         self.assertIn("const consolePayload = await api(endpoints.agentConsole);", helper_block)
