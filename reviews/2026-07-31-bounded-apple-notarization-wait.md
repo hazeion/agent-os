@@ -214,8 +214,8 @@ strategy, verification record, and Apple-run context.
   package remains unpublished and a future resumable-status slice may be
   warranted only if the bounded failure recurs.
 - User authorization and scope: standing Road-to-Beta approval recorded above.
-- Commit hash: pending publication.
-- Ready PR URL: pending publication.
+- Implementation commit: `625553d` (`Bound Apple notarization waits`).
+- Ready PR URL: <https://github.com/hazeion/agent-os/pull/90>.
 
 ## Outcome review
 
