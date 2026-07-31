@@ -949,6 +949,10 @@ class RemoteSessionTests(unittest.TestCase):
             ("bracketed_human_password_hash", 'Release ["Password Hash": ordinary-private-value]'),
             ("bracketed_human_authorization_header", 'Release ["Authorization Header": ordinary-private-value]'),
             ("bracketed_human_credentials_json", 'Release ["Credentials JSON": ordinary-private-value]'),
+            ("quoted_punctuation_bracketed_api_key", 'Release ["api key!":ordinary-private-value]'),
+            ("unclosed_punctuation_bracketed_api_key", "Release config[apiKey!:ordinary-private-value"),
+            ("unclosed_empty_bracket_colon", "Release [:a"),
+            ("overlong_punctuation_bracket_key", f'Release [{"a" * 161}!:value]'),
             ("encoded_bracketed_human_key", "Release %5B%22API%20Key%22%3Aordinary-private-value%5D"),
             ("url_bracketed_human_key", "Release https://example.com/?data=%5B%22Password%20Hash%22%3Aordinary-private-value%5D"),
             ("quoted_comma_api_key", 'Release ["API, Key": ordinary-private-value]'),
@@ -1344,10 +1348,16 @@ class RemoteSessionTests(unittest.TestCase):
                 self.assertFalse(remote_hermes._contains_private_public_text(value))
                 self.assertLess(time.perf_counter() - started, validation_budget)
 
-        delimiter_dense = ":" * remote_hermes.SESSION_CONTENT_LIMIT
-        started = time.perf_counter()
-        self.assertFalse(remote_hermes._contains_private_public_text(delimiter_dense))
-        self.assertLess(time.perf_counter() - started, validation_budget)
+        for delimiter_dense in (
+            ":" * remote_hermes.SESSION_CONTENT_LIMIT,
+            "=" * remote_hermes.SESSION_CONTENT_LIMIT,
+            (":=" * remote_hermes.SESSION_CONTENT_LIMIT)[
+                :remote_hermes.SESSION_CONTENT_LIMIT
+            ],
+        ):
+            started = time.perf_counter()
+            self.assertFalse(remote_hermes._contains_private_public_text(delimiter_dense))
+            self.assertLess(time.perf_counter() - started, validation_budget)
 
         for delimiter_value in (
             ("a:" * (remote_hermes.SESSION_CONTENT_LIMIT // 2)),
