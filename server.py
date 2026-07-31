@@ -122,6 +122,7 @@ from hermes_transport import (
 from remote_hermes import (
     RemoteHermesError,
     SESSION_LIST_LIMIT as REMOTE_SESSION_LIST_LIMIT,
+    SESSION_MESSAGE_LIMIT as REMOTE_SESSION_MESSAGE_LIMIT,
     connection_diagnostics as remote_hermes_diagnostics,
     confirm_remembered_connection as confirm_remote_hermes_connection,
     preview_remembered_connection as preview_remote_hermes_connection,
@@ -2927,6 +2928,8 @@ def selected_message_search(query: str):
                 result_limit = REMOTE_MESSAGE_SEARCH_RESULT_LIMIT
                 results = []
                 messages_scanned = 0
+                filtered_messages = 0
+                sessions_with_filtered_messages = 0
                 compacted_sessions = 0
                 results_truncated = False
                 for session in sessions:
@@ -2941,10 +2944,21 @@ def selected_message_search(query: str):
                     )
                     if public_session.get("history_partial"):
                         compacted_sessions += 1
-                    messages = transport.get_session_messages(
+                    message_payload = transport.search_session_messages(
                         upstream_id,
                         structural_ids=known_identity_ids,
                     )
+                    messages = message_payload.get("messages") or []
+                    session_filtered_messages = message_payload.get("filtered_messages") or 0
+                    if (
+                        type(session_filtered_messages) is not int
+                        or session_filtered_messages < 0
+                        or session_filtered_messages > REMOTE_SESSION_MESSAGE_LIMIT
+                    ):
+                        raise HermesTransportError("remote_session_schema_invalid")
+                    filtered_messages += session_filtered_messages
+                    if session_filtered_messages:
+                        sessions_with_filtered_messages += 1
                     for message_id, message in enumerate(messages, start=1):
                         messages_scanned += 1
                         content = message.get("content") or ""
@@ -2977,6 +2991,8 @@ def selected_message_search(query: str):
                         "session_limit": REMOTE_SESSION_LIST_LIMIT,
                         "sessions_scanned": len(sessions),
                         "messages_scanned": messages_scanned,
+                        "filtered_messages": filtered_messages,
+                        "sessions_with_filtered_messages": sessions_with_filtered_messages,
                         "list_truncated": listing.get("truncated") is True,
                         "compacted_sessions": compacted_sessions,
                         "result_limit": result_limit,

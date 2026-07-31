@@ -3628,6 +3628,31 @@ class RemoteHermesClient:
         *,
         structural_ids: tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
+        return self._read_session_messages(
+            session_id,
+            structural_ids=structural_ids,
+            filter_private=False,
+        )["messages"]
+
+    def search_session_messages(
+        self,
+        session_id: str,
+        *,
+        structural_ids: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        return self._read_session_messages(
+            session_id,
+            structural_ids=structural_ids,
+            filter_private=True,
+        )
+
+    def _read_session_messages(
+        self,
+        session_id: str,
+        *,
+        structural_ids: tuple[str, ...],
+        filter_private: bool,
+    ) -> dict[str, Any]:
         session_id = self._validated_session_id(session_id)
         if not isinstance(structural_ids, tuple) or len(structural_ids) > 40:
             raise RemoteHermesError("remote_session_schema_invalid")
@@ -3649,6 +3674,7 @@ class RemoteHermesClient:
         if resolved_id != session_id:
             raise RemoteHermesError("remote_session_binding_changed")
         messages: list[dict[str, Any]] = []
+        filtered_messages = 0
         for item in data:
             if type(item) is not dict or len(item) > 32:
                 raise RemoteHermesError("remote_session_schema_invalid")
@@ -3669,9 +3695,15 @@ class RemoteHermesClient:
                     *private_session_ids,
                 ),
             ) or _contains_private_public_text(content):
+                if filter_private:
+                    filtered_messages += 1
+                    continue
                 raise RemoteHermesError("remote_private_reflection")
             messages.append({"role": role, "content": content, "timestamp": timestamp})
-        return messages
+        return {
+            "messages": messages,
+            "filtered_messages": filtered_messages,
+        }
 
     def _contains_private_inventory_text(self, value: Any) -> bool:
         endpoint_parts = urlsplit(self.endpoint)

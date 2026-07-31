@@ -142,6 +142,15 @@ class FakeSessionClient:
             {"role": "assistant", "content": "Plan complete", "timestamp": 1_721_000_099.0},
         ]
 
+    def search_session_messages(self, session_id, *, structural_ids=()):
+        return {
+            "messages": self.get_session_messages(
+                session_id,
+                structural_ids=structural_ids,
+            ),
+            "filtered_messages": 0,
+        }
+
 
 class RemoteSessionTests(unittest.TestCase):
     def setUp(self):
@@ -536,6 +545,8 @@ class RemoteSessionTests(unittest.TestCase):
             "session_limit": 12,
             "sessions_scanned": 2,
             "messages_scanned": 3,
+            "filtered_messages": 0,
+            "sessions_with_filtered_messages": 0,
             "list_truncated": True,
             "compacted_sessions": 1,
             "result_limit": 20,
@@ -669,6 +680,52 @@ class RemoteSessionTests(unittest.TestCase):
             },
         ])
         self.assertNotIn("image/png", json.dumps(messages))
+
+    def test_search_message_reader_omits_private_messages_but_strict_reader_still_fails(self):
+        response_payload = {
+            "object": "list",
+            "session_id": UPSTREAM_ID,
+            "data": [
+                {
+                    "session_id": UPSTREAM_ID,
+                    "role": "user",
+                    "content": "Inspect /Users/alice/private/plan.md",
+                    "timestamp": 1.0,
+                },
+                {
+                    "session_id": UPSTREAM_ID,
+                    "role": "assistant",
+                    "content": "The release checklist is ready",
+                    "timestamp": 2.0,
+                },
+            ],
+        }
+        strict_client = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=ResponseQueue([FakeResponse(200, response_payload)]),
+        )
+        with self.assertRaisesRegex(
+            remote_hermes.RemoteHermesError,
+            "remote_private_reflection",
+        ):
+            strict_client.get_session_messages(UPSTREAM_ID)
+
+        search_client = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=ResponseQueue([FakeResponse(200, response_payload)]),
+        )
+        payload = search_client.search_session_messages(UPSTREAM_ID)
+        self.assertEqual(payload, {
+            "messages": [{
+                "role": "assistant",
+                "content": "The release checklist is ready",
+                "timestamp": 2.0,
+            }],
+            "filtered_messages": 1,
+        })
+        self.assertNotIn("alice", json.dumps(payload))
 
     def test_remote_message_endpoint_rejects_partial_or_unknown_envelopes(self):
         for extra in ({"has_more": True}, {"next_cursor": "private-cursor"}, {"truncated": True}):
@@ -1058,7 +1115,23 @@ class RemoteSessionTests(unittest.TestCase):
 
                 self.assertEqual(payload["results"], [])
                 self.assertEqual(payload["count"], 0)
-                self.assertIn("error", payload)
+                if field in {
+                    "title",
+                    "encoded_title_id",
+                    "invisible_title_id",
+                    "encoded_preview_endpoint",
+                    "invisible_preview_endpoint",
+                    "model",
+                }:
+                    self.assertIn("error", payload)
+                else:
+                    self.assertNotIn("error", payload)
+                    self.assertEqual(payload["coverage"]["messages_scanned"], 0)
+                    self.assertEqual(payload["coverage"]["filtered_messages"], 1)
+                    self.assertEqual(
+                        payload["coverage"]["sessions_with_filtered_messages"],
+                        1,
+                    )
                 serialized = json.dumps(payload)
                 self.assertNotIn(private_text, serialized)
 
@@ -1429,6 +1502,34 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertEqual(payload["coverage"]["compacted_sessions"], 1)
         self.assertTrue(payload["coverage"]["results_truncated"])
 
+    def test_remote_message_search_reports_filtered_messages_and_keeps_safe_matches(self):
+        client = FakeSessionClient()
+        client.search_session_messages = Mock(return_value={
+            "messages": [{
+                "role": "assistant",
+                "content": "Release checklist ready",
+                "timestamp": 2.0,
+            }],
+            "filtered_messages": 2,
+        })
+        adapter = RemoteHermesConsoleTransport(
+            TransportBinding("remote", "Remote workshop", "b" * 32),
+            client=client,
+        )
+        with patch.object(adapter, "revalidate"), patch.object(
+            server,
+            "hermes_console_transport",
+            return_value=adapter,
+        ):
+            payload = server.selected_message_search("release")
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["results"][0]["snippet"], "Release checklist ready")
+        self.assertEqual(payload["coverage"]["messages_scanned"], 1)
+        self.assertEqual(payload["coverage"]["filtered_messages"], 2)
+        self.assertEqual(payload["coverage"]["sessions_with_filtered_messages"], 1)
+        self.assertNotIn("filtered_content", json.dumps(payload))
+
     def test_remote_message_search_fails_closed_on_partial_read_or_binding_change(self):
         other_id = "session_other_456"
         for failure in ("partial_read", "binding_change"):
@@ -1514,6 +1615,9 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertIn("'transcript may' : 'transcripts may'", search_renderer)
         self.assertIn("omit earlier turns", search_renderer)
         self.assertIn("results_truncated", search_renderer)
+        self.assertIn("filtered_messages", search_renderer)
+        self.assertIn("sessions_with_filtered_messages", search_renderer)
+        self.assertIn("omitted for privacy", search_renderer)
         self.assertIn("escapeHtml(coverageParts.join", search_renderer)
         self.assertIn("messageSearchRequestGeneration", app_js)
         self.assertIn("request.generation !== state.messageSearchRequestGeneration", app_js)
