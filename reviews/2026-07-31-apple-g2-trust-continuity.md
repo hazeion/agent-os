@@ -206,6 +206,10 @@ without weakening release gates or leaving altered keychain state behind.
   configuration and baseline remain unchanged.
 - Both independent reviewers rechecked the second annotation and found no
   P0/P1, scan-scope, or publication concern.
+- Pull request 82's third hosted quality-gate run passed the dependency/secret
+  scan, browser smoke, Python package/installed lifecycle, and required quality
+  aggregate. The authoritative hosted scanner therefore confirms both narrow
+  public-pin annotations without any baseline or configuration relaxation.
 
 ## Adversarial review
 
