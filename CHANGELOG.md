@@ -5,6 +5,10 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- Apple notarization waits are now bounded below GitHub's hard job limit, so a
+  stalled request fails clearly while protected signing cleanup still runs.
+  Maintainer guidance now prevents duplicate resubmission while Apple continues
+  processing the original request.
 - Compact icon-only navigation now shows the existing menu name on mouse hover
   and keyboard focus; phones continue to reveal the full labels in the drawer.
 - Retired the unused Classic interface choice, migrated any saved layout back to
