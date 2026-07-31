@@ -61,10 +61,9 @@ class AppleNotarizationTests(unittest.TestCase):
             "GITHUB_OUTPUT": str(self.output),
             "MENTAT_MACOS_NOTARY_DEADLINE_EPOCH": "11000",
             "MAC_NOTARY_APPLE_ID": "notary@example.invalid",
+            "MAC_NOTARY_PASSWORD": "test fixture",  # pragma: allowlist secret
             "MAC_NOTARY_TEAM_ID": "TEAM123456",
         }
-        credential_key = "MAC_NOTARY_" + "PASS" + "WORD"
-        self.environment[credential_key] = "test fixture"
 
     def tearDown(self):
         self.temp.cleanup()
