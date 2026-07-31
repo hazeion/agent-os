@@ -184,13 +184,13 @@ uploads or discard the request identity.
 - Branch and base: `codex/resumable-apple-notarization` to `main`.
 - Commit/PR title: `Make Apple notarization status resumable`.
 - User authorization: covered by the recorded standing Road-to-Beta approval.
-- Implementation commit: `39d1474` (`Make Apple notarization status resumable`).
-- Ready PR: <https://github.com/hazeion/agent-os/pull/94>.
-- Remaining publication requirements: green hosted checks and merge.
+- Implementation commit and ready PR: pending publication.
+- Remaining publication requirements: commit, ready PR, green hosted checks,
+  and merge.
 
 ## Outcome review
 
-- Classification: Successful.
+- Classification: Successful pending publication.
 - Acceptance criteria: AC-1 through AC-5 pass.
 - Compatibility: no package, credential, signing-identity, release-tag, or
   artifact-format change.
