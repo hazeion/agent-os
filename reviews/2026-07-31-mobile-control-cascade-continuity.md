@@ -148,5 +148,6 @@ and Agent Console controls in both supported UI shells.
 
 - Outcome: successful. The existing 44px phone-control contract now wins in
   Emerald and Classic without changing tablet or desktop density.
-- Publication: approved under the standing process exception; commit, push, and
-  ready pull request are recorded below after completion.
+- Publication: commit `adfc174` pushed on
+  `codex/mobile-control-cascade-continuity`; ready pull request
+  `https://github.com/hazeion/agent-os/pull/80` opened against `main`.
