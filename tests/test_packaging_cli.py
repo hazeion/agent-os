@@ -280,9 +280,14 @@ class PackagingContractTests(unittest.TestCase):
         python_job = section("  python-package:\n", "  macos-validation:\n")
         validation_job = section("  macos-validation:\n", "  release:\n")
         release_job = section("  release:\n")
+        submission_step = job_step(
+            macos_job,
+            "Submit macOS package for notarization",
+            "Wait for notarization and staple macOS package",
+        )
         notarization_step = job_step(
             macos_job,
-            "Notarize and staple macOS package",
+            "Wait for notarization and staple macOS package",
             "Smoke the exact signed macOS package",
         )
         smoke_step = job_step(
@@ -350,25 +355,42 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("contents: write", release_job)
         self.assertEqual(workflow.count("Verify trusted source revision"), 3)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
-        self.assertEqual(workflow.count("    timeout-minutes: 300\n"), 1)
+        self.assertEqual(workflow.count("    timeout-minutes: 360\n"), 1)
         self.assertIn(
             "    runs-on: macos-15-intel\n"
-            "    timeout-minutes: 300\n"
+            "    timeout-minutes: 360\n"
             "    environment: beta-release\n",
             macos_job,
         )
-        self.assertEqual(workflow.count("--timeout 4h"), 1)
-        notarytool_commands = [
-            line.strip()
-            for line in notarization_step.splitlines()
-            if "xcrun notarytool submit" in line
-        ]
-        self.assertEqual(len(notarytool_commands), 1)
-        self.assertTrue(notarytool_commands[0].endswith("--wait --timeout 4h"))
+        self.assertIn("Reserve macOS post-work window", macos_job)
+        self.assertIn("MENTAT_MACOS_NOTARY_DEADLINE_EPOCH", macos_job)
+        self.assertIn("+ 18000", macos_job)
+        self.assertIn(
+            'python scripts/apple_notarization.py submit "$signed_package"',
+            submission_step,
+        )
+        self.assertIn("id: submit-macos-notarization", submission_step)
+        self.assertIn(
+            "steps.submit-macos-notarization.outputs.submission_id",
+            notarization_step,
+        )
+        self.assertIn(
+            'python scripts/apple_notarization.py wait "$MAC_NOTARY_SUBMISSION_ID"',
+            notarization_step,
+        )
+        self.assertNotIn("apple_notarization.py submit", notarization_step)
+        self.assertNotIn("xcrun notarytool submit", notarization_step)
+        self.assertNotIn("--wait", notarization_step)
+        for notary_file in (
+            "mentat-notary-submission.json",
+            "mentat-notary-status.json",
+            "mentat-notary-log.json",
+        ):
+            self.assertIn(f'"$RUNNER_TEMP/{notary_file}"', cleanup_step)
         self.assertNotIn("continue-on-error:", notarization_step)
         self.assertNotIn("|| true", notarization_step)
         self.assertLess(
-            notarization_step.index("xcrun notarytool submit"),
+            notarization_step.index("python scripts/apple_notarization.py wait"),
             notarization_step.index("xcrun stapler staple"),
         )
         self.assertLess(

@@ -93,15 +93,26 @@ skipped, and the validation summary fails unless that isolation is true. The
 release-and-tag job is also skipped, so this mode cannot create a tag, GitHub
 release, or recovery bundle.
 
-The protected job gives Apple four hours to finish notarization and reserves
-the rest of its five-hour limit for validation and always-run credential
-cleanup. If that wait expires, Apple's service continues processing the
-existing submission, but Mentat's run fails before stapling, Gatekeeper checks,
-or upload and does not claim that package is usable. Keep the original
-submission ID from the run output and inspect that request through
-`notarytool info` or Apple Developer Support. **Do not immediately rerun** the
-workflow: first confirm whether the original request was accepted, rejected,
-or is still processing so a slow queue does not create duplicate submissions.
+The protected job uploads once in a short, separately completed step. That step
+validates Apple's submission ID, records it in the durable job summary, and
+passes it as a validated step output to a later poll-only step. The poll step
+checks that same request for up to four hours and has no upload invocation.
+Temporary status connection failures are retried without uploading the package
+again.
+Stapling, Gatekeeper checks, smoke testing, and artifact upload begin only after
+Apple explicitly reports `Accepted`; a rejected, unknown, unreachable, or
+timed-out request fails closed while always-run credential cleanup retains time
+to complete. The six-hour job records a job-relative status deadline at startup,
+caps the Apple phase at four hours, and reserves at least its final hour for
+stapling, Gatekeeper checks, smoke testing, upload, and cleanup.
+
+If the four-hour status deadline expires, Apple's service continues processing
+the existing submission, but Mentat does not claim that package is usable. Keep
+the original submission ID from the job summary and inspect that request
+through `notarytool info` or Apple Developer Support. **Do not immediately rerun**
+the workflow: first confirm whether the original request was accepted,
+rejected, or is still processing so a slow queue does not create duplicate
+submissions.
 
 ## 2. Prepare Windows signing
 

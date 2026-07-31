@@ -67,9 +67,13 @@ jobs:
     needs:
       - release-source
     runs-on: macos-15-intel
-    timeout-minutes: 300
+    timeout-minutes: 360
     environment: beta-release
     steps:
+      - name: Reserve macOS post-work window
+        shell: bash
+        run: echo "MENTAT_MACOS_NOTARY_DEADLINE_EPOCH=$(($(date +%s) + 18000))" >> "$GITHUB_ENV"
+
       - name: Check out repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
@@ -191,7 +195,8 @@ jobs:
           codesign --verify --deep --strict --verbose=2 dist/Mentat.app
           pkgutil --check-signature "$signed_package"
 
-      - name: Notarize and staple macOS package
+      - name: Submit macOS package for notarization
+        id: submit-macos-notarization
         shell: bash
         env:
           MAC_NOTARY_APPLE_ID: ${{ secrets.MAC_NOTARY_APPLE_ID }}
@@ -199,7 +204,18 @@ jobs:
           MAC_NOTARY_TEAM_ID: ${{ secrets.MAC_NOTARY_TEAM_ID }}
         run: |
           signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
-          xcrun notarytool submit "$signed_package" --apple-id "$MAC_NOTARY_APPLE_ID" --password "$MAC_NOTARY_PASSWORD" --team-id "$MAC_NOTARY_TEAM_ID" --wait --timeout 4h
+          python scripts/apple_notarization.py submit "$signed_package"
+
+      - name: Wait for notarization and staple macOS package
+        shell: bash
+        env:
+          MAC_NOTARY_APPLE_ID: ${{ secrets.MAC_NOTARY_APPLE_ID }}
+          MAC_NOTARY_PASSWORD: ${{ secrets.MAC_NOTARY_PASSWORD }}
+          MAC_NOTARY_TEAM_ID: ${{ secrets.MAC_NOTARY_TEAM_ID }}
+          MAC_NOTARY_SUBMISSION_ID: ${{ steps.submit-macos-notarization.outputs.submission_id }}
+        run: |
+          python scripts/apple_notarization.py wait "$MAC_NOTARY_SUBMISSION_ID"
+          signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
           xcrun stapler staple "$signed_package"
           xcrun stapler validate "$signed_package"
           spctl --assess --type execute --verbose=2 dist/Mentat.app
@@ -286,6 +302,9 @@ jobs:
             "$RUNNER_TEMP/mentat-g2-inventory.txt" \
             "$RUNNER_TEMP/mentat-g2-inventory-after.txt" \
             "$RUNNER_TEMP/mentat-g2-cleanup-inventory.txt" \
+            "$RUNNER_TEMP/mentat-notary-submission.json" \
+            "$RUNNER_TEMP/mentat-notary-status.json" \
+            "$RUNNER_TEMP/mentat-notary-log.json" \
             "$RUNNER_TEMP/mentat-g2-import-attempted" \
             "$RUNNER_TEMP/mentat-keychain-list-change-attempted" \
             "$RUNNER_TEMP/mentat-signing-keychain-create-attempted" || cleanup_status=$?
