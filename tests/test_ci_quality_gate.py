@@ -113,7 +113,15 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("name: Verify protected release source", workflow)
         self.assertIn("python scripts/verify_release_checks.py", workflow)
         self.assertIn("name: Signed release and tag required", workflow)
-        self.assertIn("if: ${{ always() }}", workflow)
+        self.assertIn(
+            "if: ${{ always() && inputs.validation_scope == 'full-release' }}",
+            workflow,
+        )
+        self.assertIn("name: macOS validation required", workflow)
+        self.assertIn(
+            "if: ${{ always() && inputs.validation_scope == 'macos-only' }}",
+            workflow,
+        )
         self.assertIn("MACOS_RESULT: ${{ needs.macos.result }}", workflow)
         self.assertIn("WINDOWS_RESULT: ${{ needs.windows.result }}", workflow)
         self.assertIn("PYTHON_RESULT: ${{ needs.python-package.result }}", workflow)

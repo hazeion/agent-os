@@ -74,6 +74,25 @@ Delete the exported `.p12` after the GitHub secret is saved and verified. The
 workflow creates its temporary keychain with a fresh random password for each
 run.
 
+### Validate Apple signing before Azure is ready
+
+The same protected workflow can validate the complete Apple path without
+creating a release candidate or requiring Azure:
+
+1. Open **Actions → Signed beta artifacts → Run workflow** on `main`.
+2. Choose `macos-only` for **validation_scope**.
+3. Leave **release_tag** blank.
+4. Approve the waiting `beta-release` macOS job after confirming the exact
+   source commit.
+
+This mode still verifies the protected `main` revision and its required checks,
+then signs, notarizes, staples, Gatekeeper-assesses, installs, starts, stops, and
+uninstalls the exact macOS package. It uploads that package as an ephemeral
+seven-day workflow artifact. The Windows and Python release jobs must remain
+skipped, and the validation summary fails unless that isolation is true. The
+release-and-tag job is also skipped, so this mode cannot create a tag, GitHub
+release, or recovery bundle.
+
 ## 2. Prepare Windows signing
 
 1. Follow Microsoft's
@@ -143,7 +162,7 @@ GitHub documents that behavior in
 ## 4. Create the first candidate
 
 From **Actions → Signed beta artifacts**, choose **Run workflow** on `main` and
-enter:
+choose `full-release`, then enter:
 
 ```text
 v0.1.0-beta.1-rc.1
