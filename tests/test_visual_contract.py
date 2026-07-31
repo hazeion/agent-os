@@ -157,6 +157,141 @@ class VisualContractTests(unittest.TestCase):
 
         self.assertNotIn("\n    .agent-console-select,", mobile)
 
+    def test_phone_shell_controls_complete_the_44px_target_contract(self):
+        def subject_sizing_rules(css_text, class_name, properties):
+            class_token = re.compile(rf"\.{re.escape(class_name)}(?![\w-])")
+            declarations = "|".join(re.escape(prop) for prop in properties)
+            sizing = re.compile(rf"(?:^|;)\s*(?:{declarations})\s*:", re.MULTILINE)
+            overrides = []
+            for selector_group, body in re.findall(
+                r"([^{}]+)\{([^{}]*)\}", css_text
+            ):
+                if not sizing.search(body):
+                    continue
+                for selector in selector_group.split(","):
+                    rightmost = re.split(r"\s+|[>+~]", selector.strip())[-1]
+                    match = class_token.search(rightmost)
+                    if match and not rightmost[match.end() :].startswith("::"):
+                        overrides.append((selector.strip(), body))
+            return overrides
+
+        final_shell_start = CSS.index("/* Final shell overrides for the operations top bar")
+        final_shell = CSS[final_shell_start:]
+        phone_start = final_shell.index("@media (max-width: 640px)")
+        phone = final_shell[phone_start : final_shell.index("/* The visible control box", phone_start)]
+        connection = re.search(
+            r":root\[data-ui-shell='emerald'\] \.connection-status-button\s*\{([^}]*)\}",
+            phone,
+        )
+        self.assertIsNotNone(connection)
+        self.assertIn("min-height: 44px", connection.group(1))
+        absolute_phone_start = final_shell_start + phone_start
+        preceding_connection_rules = re.findall(
+            r":root\[data-ui-shell='emerald'\] \.connection-status-button\s*\{([^}]*)\}",
+            CSS[:absolute_phone_start],
+        )
+        competing = next(
+            rule
+            for rule in reversed(preceding_connection_rules)
+            if "min-height:" in rule
+        )
+        self.assertIn("min-height: 42px", competing)
+        self.assertNotIn("!important", competing)
+        self.assertNotIn("!important", connection.group(1))
+        connection_selector = ":root[data-ui-shell='emerald'] .connection-status-button"
+        connection_properties = (
+            "height",
+            "min-height",
+            "max-height",
+            "block-size",
+            "min-block-size",
+            "max-block-size",
+        )
+        connection_rules = subject_sizing_rules(
+            CSS, "connection-status-button", connection_properties
+        )
+        self.assertEqual(
+            [selector for selector, _body in connection_rules],
+            [connection_selector, connection_selector, connection_selector],
+        )
+        self.assertEqual(
+            [
+                re.search(r"min-height:\s*(\d+px)", body).group(1)
+                for _selector, body in connection_rules
+            ],
+            ["40px", "42px", "44px"],
+        )
+        self.assertTrue(all("!important" not in body for _, body in connection_rules))
+        self.assertTrue(
+            subject_sizing_rules(
+                ".command-header .connection-status-button { min-height: 42px !important; }",
+                "connection-status-button",
+                ("min-height",),
+            )
+        )
+        self.assertEqual(
+            subject_sizing_rules(
+                ".connection-status-button::after { height: 2px; }",
+                "connection-status-button",
+                ("height",),
+            ),
+            [],
+        )
+
+        drawer_start = CSS.index("/* Drawer shell")
+        drawer_end = CSS.index("@media (max-width: 640px)", drawer_start)
+        drawer = CSS[drawer_start:drawer_end]
+        close = re.search(
+            r":root\[data-ui-shell='emerald'\] \.mobile-nav-close\s*\{([^}]*)\}",
+            drawer,
+        )
+        self.assertIsNotNone(close)
+        self.assertIn("width: 44px", close.group(1))
+        self.assertIn("height: 44px", close.group(1))
+        self.assertIn("flex: 0 0 44px", close.group(1))
+        close_properties = (
+            "width",
+            "height",
+            "min-width",
+            "min-height",
+            "max-width",
+            "max-height",
+            "inline-size",
+            "block-size",
+            "min-inline-size",
+            "min-block-size",
+            "max-inline-size",
+            "max-block-size",
+            "flex",
+            "flex-basis",
+        )
+        close_rules = subject_sizing_rules(CSS, "mobile-nav-close", close_properties)
+        self.assertEqual(
+            [selector for selector, _body in close_rules],
+            [":root[data-ui-shell='emerald'] .mobile-nav-close"],
+        )
+        self.assertNotIn("!important", close_rules[0][1])
+        self.assertTrue(
+            subject_sizing_rules(
+                ".sidebar .mobile-nav-close { width: 40px !important; }",
+                "mobile-nav-close",
+                close_properties,
+            )
+        )
+        self.assertEqual(
+            subject_sizing_rules(
+                ".mobile-nav-close svg { width: 20px; }",
+                "mobile-nav-close",
+                close_properties,
+            ),
+            [],
+        )
+
+        icon = CSS[CSS.index(".mobile-nav-close svg {") :]
+        icon = icon[: icon.index("}")]
+        self.assertIn("width: 20px", icon)
+        self.assertIn("height: 20px", icon)
+
     def test_legacy_agent_messages_ui_is_retired_but_context_packs_are_visible(self):
         self.assertNotIn("Agent Messages", INDEX)
         self.assertNotIn('id="agent-message-panel"', INDEX)
