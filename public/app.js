@@ -1056,6 +1056,7 @@ function parseSubtasksInput(value = '', existing = []) {
 }
 
 function openTaskEditor(mode = 'create', task = selectedTaskFrom(visibleTasks(state.tasks))) {
+  if (mode === 'create' && !state.projects.length) return false;
   state.taskEditorMode = mode;
   state.taskEditorTaskId = mode === 'edit' && task?.id ? String(task.id) : '';
   state.taskEditorDraft = null;
@@ -1070,6 +1071,7 @@ function openTaskEditor(mode = 'create', task = selectedTaskFrom(visibleTasks(st
   } else {
     flashTarget(detailPanel);
   }
+  return true;
 }
 
 function closeTaskEditor() {
@@ -1422,6 +1424,11 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
   const container = $('#selected-task-detail');
   if (!container) return;
 
+  if (state.taskEditorMode === 'create' && !state.projects.length) {
+    state.taskEditorMode = 'view';
+    state.taskEditorTaskId = '';
+    state.taskEditorDraft = null;
+  }
   const editorActive = state.taskEditorMode === 'create' || state.taskEditorMode === 'edit';
   if (editorActive) {
     const draft = taskEditorSeedTask(tasks);
@@ -1551,7 +1558,9 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
 
   const selected = selectedTaskFrom(tasks);
   if (!selected) {
-    container.innerHTML = `<div class="empty">No tasks match ${escapeHtml(filterSummary())}. Adjust the project, status, or search filter to inspect a task.</div>`;
+    container.innerHTML = state.projects.length
+      ? `<div class="empty">No tasks match ${escapeHtml(filterSummary())}. Adjust the project, status, or search filter to inspect a task.</div>`
+      : '<div class="empty">Create a project first, then add your first task.</div>';
     syncTaskEditorControls(tasks);
     return;
   }
@@ -1850,7 +1859,9 @@ function renderTaskList(tasks = []) {
         </div>
       </button>
     `;
-  }).join('') : `<div class="empty">No tasks match ${escapeHtml(filterSummary())}.</div>`;
+  }).join('') : state.projects.length
+    ? `<div class="empty">No tasks match ${escapeHtml(filterSummary())}.</div>`
+    : '<div class="empty">Create a project first, then add your first task.</div>';
 
   renderSelectedTaskInspector(filtered);
   renderCompletedWork(tasks);
@@ -2080,6 +2091,8 @@ async function submitProjectEditorForm(form) {
 
 function renderProjects(projects = []) {
   state.projects = projects;
+  const createTaskButton = $('#create-task-button');
+  if (createTaskButton) createTaskButton.hidden = !projects.length;
   const projectCount = $('#project-count');
   if (projectCount) projectCount.textContent = `${projects.length} project${projects.length === 1 ? '' : 's'}`;
   const editProjectButton = $('#edit-project-button');
@@ -4161,8 +4174,9 @@ async function testHermesProfile(profileId) {
 }
 
 async function assignFirstTaskToProfile(profileId) {
+  if (!state.projects.length) return false;
   await setView('projects', { refreshOnChange: false });
-  openTaskEditor('create');
+  if (!openTaskEditor('create')) return false;
   state.taskEditorDraft = {
     ...taskEditorSeedTask(),
     assignee: profileId,
@@ -4171,6 +4185,7 @@ async function assignFirstTaskToProfile(profileId) {
   };
   renderTaskList(state.tasks);
   $('#selected-task-detail input[name="title"]')?.focus();
+  return true;
 }
 
 function modelLabel(session = {}) {
@@ -4903,7 +4918,7 @@ function renderHermesProfiles(payload = {}) {
     <div class="managed-agent-detail-actions">
       <button class="action-button" type="button" data-use-hermes-profile="${escapeHtml(selectedProfile.id)}">Use in Console</button>
       <button class="mini-button" type="button" data-test-hermes-profile="${escapeHtml(selectedProfile.id)}">Test Agent</button>
-      <button class="mini-button" type="button" data-assign-first-task="${escapeHtml(selectedProfile.id)}">Assign First Task</button>
+      ${state.projects.length ? `<button class="mini-button" type="button" data-assign-first-task="${escapeHtml(selectedProfile.id)}">Assign First Task</button>` : ''}
       ${canDelete ? `<button class="mini-button managed-agent-delete" type="button" data-delete-hermes-profile="${escapeHtml(selectedProfile.id)}">Delete agent</button>` : `<button class="mini-button managed-agent-delete" type="button" disabled title="${escapeHtml(deleteReason)}">Delete agent</button>`}
     </div>
     ${deleteReason ? `<p class="item-meta mono">${escapeHtml(deleteReason)}</p>` : ''}
@@ -5303,7 +5318,7 @@ async function submitAgentCreator() {
         <div class="item-meta mono">${result.skill_selection ? `${result.skill_selection.enabled_builtin_skills?.length || 0} built-in skills enabled` : 'Hermes default skill configuration'}</div>
         <div class="task-delegation-actions">
           <button class="action-button" type="button" data-agent-creator-test="${escapeHtml(state.selectedHermesProfileId)}">Test Agent</button>
-          <button class="mini-button" type="button" data-agent-creator-assign-first-task="${escapeHtml(state.selectedHermesProfileId)}">Assign First Task</button>
+          ${state.projects.length ? `<button class="mini-button" type="button" data-agent-creator-assign-first-task="${escapeHtml(state.selectedHermesProfileId)}">Assign First Task</button>` : ''}
           <button class="mini-button" type="button" data-agent-creator-view-agents>View managed agents</button>
         </div>
       </article>
@@ -6019,7 +6034,16 @@ async function refresh() {
     const tasks = data.tasks.tasks || [];
     state.tasks = tasks;
     renderAndNotifyReminders(tasks);
-    renderIfChanged(`tasks-${state.taskStatusFilter}-${state.taskFilter}-${state.projectFilter}-${state.selectedTaskId}-${state.taskEditorMode}`, tasks, renderTaskList);
+    const taskRenderPayload = {
+      tasks,
+      projects_available: state.projects.length > 0,
+      status_filter: state.taskStatusFilter,
+      search_filter: state.taskFilter,
+      project_filter: state.projectFilter,
+      selected_task_id: state.selectedTaskId,
+      editor_mode: state.taskEditorMode,
+    };
+    renderIfChanged('tasks', taskRenderPayload, ({ tasks: renderTasks }) => renderTaskList(renderTasks));
     if (data.projects) renderIfChanged(`projects-${state.projectFilter}-${state.projectEditorMode}`, state.projects, renderProjects);
     renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
     renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
@@ -6035,7 +6059,13 @@ async function refresh() {
       renderIfChanged('crons', data.crons, renderCrons);
       if (activeView === 'today') renderHomeCrons(data.crons);
     }
-    if (data.hermesProfiles) renderIfChanged('hermes-profiles', data.hermesProfiles, renderHermesProfiles);
+    if (data.hermesProfiles) {
+      const profileRenderPayload = {
+        profiles: data.hermesProfiles,
+        projects_available: state.projects.length > 0,
+      };
+      renderIfChanged('hermes-profiles', profileRenderPayload, ({ profiles }) => renderHermesProfiles(profiles));
+    }
     if (data.sessions || data.agents) {
       if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
       if (data.sessions) renderIfChanged('model-usage', data.sessions, renderModelUsageChart);
@@ -7101,7 +7131,7 @@ document.addEventListener('click', async (event) => {
 
   if (event.target.closest('#create-task-button')) {
     await setView('projects', { refreshOnChange: false });
-    openTaskEditor('create');
+    if (!openTaskEditor('create')) $('#health-label').textContent = 'Create a project before adding a task.';
     return;
   }
 

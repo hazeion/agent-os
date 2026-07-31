@@ -807,6 +807,24 @@ class DashboardBehaviorTests(unittest.TestCase):
         self.assertIn("event.target.closest('[data-task-editor-cancel]')", app_js)
         self.assertIn("state.taskEditorDraft = taskPayloadFromForm(form);", app_js)
 
+    def test_first_task_creation_waits_for_a_real_project(self):
+        app_js = Path("public/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("createTaskButton.hidden = !projects.length;", app_js)
+        self.assertIn("if (mode === 'create' && !state.projects.length) return false;", app_js)
+        self.assertIn("Create a project first, then add your first task.", app_js)
+        self.assertIn("state.projects.length ? `<button class=\"mini-button\" type=\"button\" data-assign-first-task=", app_js)
+        self.assertIn("state.projects.length ? `<button class=\"mini-button\" type=\"button\" data-agent-creator-assign-first-task=", app_js)
+        self.assertIn("renderIfChanged('tasks', taskRenderPayload", app_js)
+        self.assertIn("renderIfChanged('hermes-profiles', profileRenderPayload", app_js)
+        self.assertGreaterEqual(app_js.count("projects_available: state.projects.length > 0"), 2)
+        self.assertNotIn("renderIfChanged(`tasks-", app_js)
+        self.assertNotIn("renderIfChanged(`hermes-profiles-", app_js)
+        render_start = app_js.index("function renderSelectedTaskInspector")
+        empty_transition_guard = app_js.index("if (state.taskEditorMode === 'create' && !state.projects.length) {", render_start)
+        editor_render = app_js.index("const editorActive =", render_start)
+        self.assertLess(empty_transition_guard, editor_render)
+
 
 if __name__ == "__main__":
     unittest.main()
