@@ -14,6 +14,42 @@ class LimitedBetaReadinessTests(unittest.TestCase):
     def test_tester_guide_is_short_safe_and_actionable(self):
         guide = self.read("BETA_TESTING.md")
         normalized = " ".join(guide.split())
+        self.assertIn("## First launch", guide)
+        self.assertIn("### macOS native", guide)
+        self.assertIn("### Windows native", guide)
+        self.assertIn("### pipx", guide)
+        self.assertIn("exact release candidate", normalized)
+        self.assertIn("SHA256SUMS", guide)
+        self.assertIn("do not install it", normalized.casefold())
+        self.assertIn("Open Mentat from Applications", guide)
+        self.assertIn("Open Mentat from the Start menu", guide)
+        self.assertIn("mentat setup", guide)
+        self.assertIn("mentat start --open-browser", guide)
+        macos = guide.split("### macOS native", 1)[1].split("### Windows native", 1)[0]
+        windows = guide.split("### Windows native", 1)[1].split("### pipx", 1)[0]
+        pipx = guide.split("### pipx", 1)[1].split("## Your checklist", 1)[0]
+        self.assertIn(
+            '"$HOME/Downloads/Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg"',
+            macos,
+        )
+        self.assertIn("SHA256SUMS", macos)
+        self.assertLess(macos.index("shasum -a 256"), macos.index("Open the `.pkg`"))
+        self.assertIn(
+            '"$env:USERPROFILE\\Downloads\\Mentat-0.1.0-beta.1-windows-x64.exe"',
+            windows,
+        )
+        self.assertIn("SHA256SUMS", windows)
+        self.assertLess(windows.index("Get-FileHash"), windows.index("Run the installer"))
+        self.assertIn("mentat_local-0.1.0b1-py3-none-any.whl", pipx)
+        self.assertIn("Python 3.11–3.13", pipx)
+        self.assertIn("official installation guide", pipx)
+        self.assertIn("SHA256SUMS", pipx)
+        self.assertIn("shasum -a 256", pipx)
+        self.assertIn("sha256sum", pipx)
+        self.assertIn("Get-FileHash", pipx)
+        self.assertIn("pipx install", pipx)
+        for checksum_command in ("shasum -a 256", "sha256sum", "Get-FileHash"):
+            self.assertLess(pipx.index(checksum_command), pipx.index("pipx install"))
         self.assertIn("## Your checklist", guide)
         self.assertIn("about two weeks", guide)
         self.assertIn("without maintainer help", guide)
@@ -28,6 +64,7 @@ class LimitedBetaReadinessTests(unittest.TestCase):
         self.assertIn("beta_feedback.yml", guide)
         self.assertIn("security/advisories/new", guide)
         self.assertIn("Never post", guide)
+        self.assertLess(guide.index("## First launch"), guide.index("## Your checklist"))
         self.assertLess(len(guide.split()), 900)
 
     def test_cohort_runbook_keeps_private_evidence_out_of_git(self):

@@ -132,9 +132,9 @@ This release candidate comes from source commit `{source_sha}`.
 
 - macOS: download the signed `.pkg`, verify it with `SHA256SUMS`, then open it.
 - Windows: download the signed `.exe`, verify its SHA-256 value, then run it.
-- pipx: `pipx install https://github.com/hazeion/agent-os/releases/download/{tag}/{wheel}`
+- pipx: download `{wheel}` and `SHA256SUMS`, verify the wheel, then install the verified local file.
 
-Use the [release rehearsal](https://github.com/hazeion/agent-os/blob/{tag}/RELEASE_REHEARSAL.md) for artifact installation and recovery. The [README](https://github.com/hazeion/agent-os/blob/{tag}/README.md) covers source-development setup.
+Follow the [beta tester guide](https://github.com/hazeion/agent-os/blob/{tag}/BETA_TESTING.md) before installing for the checksum-first commands and first workflow. Use the [release rehearsal](https://github.com/hazeion/agent-os/blob/{tag}/RELEASE_REHEARSAL.md) for assigned upgrade, recovery, rollback, and uninstall drills. The [README](https://github.com/hazeion/agent-os/blob/{tag}/README.md) covers source-development setup.
 
 ## Before upgrading
 
