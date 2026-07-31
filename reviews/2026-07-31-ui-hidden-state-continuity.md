@@ -176,3 +176,11 @@ Cancel action revealed by the corrected state transition.
 
 - Contract, test strategy, outcome handling, and publication are covered by the
   user's standing approval.
+
+## Publication result
+
+- Implementation commit: `0d037a7`.
+- Ready pull request: https://github.com/hazeion/agent-os/pull/77
+- Base: `main`.
+- Exact staged scope matched the publication packet.
+- User-owned `data/projects.json` and `design/` remained unstaged.
