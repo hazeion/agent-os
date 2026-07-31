@@ -181,3 +181,11 @@ search matches its message content even if its title does not match.
   `codex/remote-session-search-resilience`.
 - Proposed commit and ready PR title:
   `Keep message-matched sessions selectable`.
+
+## Publication result
+
+- Implementation commit: `24dc98a`.
+- Ready stacked PR: https://github.com/hazeion/agent-os/pull/76
+- Base: `codex/remote-session-search-resilience` (PR #75).
+- Exact staged scope matched the publication packet.
+- User-owned `data/projects.json` and `design/` remained unstaged.
