@@ -61,7 +61,7 @@ class AppleNotarizationTests(unittest.TestCase):
             "GITHUB_OUTPUT": str(self.output),
             "MENTAT_MACOS_NOTARY_DEADLINE_EPOCH": "11000",
             "MAC_NOTARY_APPLE_ID": "notary@example.invalid",
-            "MAC_NOTARY_PASSWORD": "private-password",
+            "MAC_NOTARY_PASSWORD": "private-password",  # pragma: allowlist secret
             "MAC_NOTARY_TEAM_ID": "TEAM123456",
         }
 
