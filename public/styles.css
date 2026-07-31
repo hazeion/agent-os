@@ -2359,6 +2359,9 @@ h2 {
   height: var(--session-control-height);
   min-height: var(--session-control-height);
 }
+.session-controls-card > .search-shell {
+  align-self: end;
+}
 .session-select-label {
   display: grid;
   gap: 7px;
@@ -8051,10 +8054,15 @@ h2,
   }
 }
 
-/* Editable controls own their focus treatment; composite shells remain still. */
-.search-shell input:focus-visible {
+/* The visible control box owns one outside focus ring. */
+.search-shell:focus-within {
   outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
-  outline-offset: 1px;
+  outline-offset: 2px;
+}
+
+.search-shell:focus-within input:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 :where(

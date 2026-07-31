@@ -9,7 +9,7 @@ INDEX = (ROOT / "public" / "index.html").read_text(encoding="utf-8")
 
 
 class InputFocusContinuityTests(unittest.TestCase):
-    def test_all_search_inputs_use_the_shared_editable_focus_contract(self):
+    def test_search_inputs_use_their_visible_control_box_for_focus(self):
         search_ids = set(
             re.findall(
                 r'<input[^>]*\bid="([^"]+)"[^>]*\btype="search"[^>]*>',
@@ -27,21 +27,45 @@ class InputFocusContinuityTests(unittest.TestCase):
                 "session-search",
             },
         )
-        self.assertIn("input[type='search']", CSS)
-        self.assertNotRegex(
-            CSS,
-            r"(?:search-shell|workspace-search|input-wrap)[^{]*:focus-within",
+        shell_search_ids = set(
+            re.findall(
+                r'<label class="[^"]*search-shell[^"]*"[^>]*>.*?'
+                r'<input[^>]*\bid="([^"]+)"[^>]*\btype="search"[^>]*>',
+                INDEX,
+                re.DOTALL,
+            )
         )
+        self.assertEqual(
+            shell_search_ids,
+            {
+                "agent-creator-skill-search",
+                "global-search",
+                "notes-search",
+                "session-search",
+            },
+        )
+        self.assertIn("input[type='search']", CSS)
 
-    def test_search_focus_belongs_to_the_editable_input_only(self):
-        self.assertNotIn(".search-shell:focus-within", CSS)
-        self.assertIn(".search-shell input:focus-visible", CSS)
-        focus_block = CSS[
-            CSS.index(".search-shell input:focus-visible")
-            : CSS.index("}", CSS.index(".search-shell input:focus-visible")) + 1
+    def test_search_focus_belongs_to_the_visible_outer_shell(self):
+        self.assertIn(".search-shell:focus-within", CSS)
+        self.assertIn(
+            ".search-shell:focus-within input:focus-visible",
+            CSS,
+        )
+        shell_focus_start = CSS.index(".search-shell:focus-within")
+        shell_focus_block = CSS[
+            shell_focus_start : CSS.index("}", shell_focus_start) + 1
         ]
-        self.assertIn("outline:", focus_block)
-        self.assertIn("outline-offset:", focus_block)
+        self.assertIn("outline:", shell_focus_block)
+        self.assertIn("outline-offset:", shell_focus_block)
+        input_focus_start = CSS.index(
+            ".search-shell:focus-within input:focus-visible"
+        )
+        input_focus_block = CSS[
+            input_focus_start : CSS.index("}", input_focus_start) + 1
+        ]
+        self.assertIn("outline: none;", input_focus_block)
+        self.assertIn("box-shadow: none;", input_focus_block)
 
     def test_session_selector_and_search_share_one_control_height(self):
         card_block = CSS[
@@ -63,6 +87,13 @@ class InputFocusContinuityTests(unittest.TestCase):
         ]
         self.assertIn("height: var(--session-control-height)", shared_block)
         self.assertIn("min-height: var(--session-control-height)", shared_block)
+        alignment_selector = ".session-controls-card > .search-shell"
+        self.assertIn(alignment_selector, CSS)
+        alignment_start = CSS.index(alignment_selector)
+        alignment_block = CSS[
+            alignment_start : CSS.index("}", alignment_start) + 1
+        ]
+        self.assertIn("align-self: end;", alignment_block)
 
     def test_agent_console_status_is_plain_dot_and_text(self):
         console = INDEX[

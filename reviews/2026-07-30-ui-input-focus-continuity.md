@@ -5,6 +5,198 @@ Slice: `ui-input-focus-continuity`
 Date: `2026-07-30`
 Review log: `reviews/2026-07-30-ui-input-focus-continuity.md`
 
+## Approved revision: outer focus and visible-box alignment
+
+Revision date: `2026-07-30`
+
+### Process exception
+
+- The user explicitly instructed Codex to assume approval for all slices and
+  related decisions moving forward.
+- This authorizes the completed contract, test strategy, outcome acceptance,
+  and publication actions for this revision and later slices without pausing
+  for repeated confirmation.
+- The remaining reviewed-feature-integration safeguards stay active: one slice
+  at a time, persistent evidence, complete verification, two independent
+  read-only reviewers, preservation of unrelated files, and a ready PR.
+
+### Revision contract
+
+Title: Session search alignment and outer focus
+
+Stable slug: `ui-session-outer-focus-alignment`
+
+User-visible goal:
+
+- The Session History selector and search box align on the same top and bottom
+  edges.
+- Shell-based search fields show one focus ring outside the visible search box,
+  with no second ring around the inner editable area.
+
+In scope:
+
+- Bottom-align the Session History search shell with the visible session
+  selector while preserving the selector's `Session` label.
+- Keep the existing matched 38px Classic, 40px Emerald, and 44px narrow control
+  heights.
+- Move shell-based search focus from the inner input to the outer
+  `.search-shell` for Global Search, Session History, Notes, and Agent Creator.
+- Preserve a clear outside focus ring on standalone editable controls whose
+  input or textarea is itself the visible box.
+- Preserve the plain Agent Console status and long-label containment from the
+  original slice.
+- Update the existing ready PR #74 rather than opening a competing PR.
+
+Out of scope:
+
+- Remote Hermes session-search behavior and API changes.
+- Workspace search controls whose input is already the visible standalone box.
+- Button, select, navigation, and non-text focus redesigns.
+- General UI/UX cleanup beyond the observed Session History and search-focus
+  regression.
+
+Acceptance criteria:
+
+| ID | Observable criterion | Evidence | Status |
+| --- | --- | --- | --- |
+| R-AC-1 | At desktop widths, the visible Session selector and search shell have equal top, bottom, and height measurements. | Computed rectangles in Emerald and Classic. | Pass |
+| R-AC-2 | At narrow widths, controls stack cleanly at full width with the existing 44px height and no horizontal overflow. | 640px and 390px rendered checks. | Pass |
+| R-AC-3 | Focusing any `.search-shell` input produces one outside ring on the shell and no ring or shadow on the inner input. | CSS contract plus computed focused styles for all four shell-based searches. | Pass |
+| R-AC-4 | Standalone text inputs and textareas retain one visible outside focus ring on their actual control box. | CSS contract and representative rendered checks. | Pass |
+| R-AC-5 | Agent Console status and all unrelated control focus behavior remain unchanged. | Focused regressions and rendered inspection. | Pass |
+| R-AC-6 | Focused checks, complete suite, and two independent adversarial reviews disclose no in-scope regression. | Verification and review evidence. | Pass; two unrelated local-state suite failures disclosed |
+
+Constraints and recovery:
+
+- Preserve visible keyboard focus and accessible labels.
+- Do not add a redundant visible `Search` label solely to compensate for the
+  grid alignment.
+- Do not alter remote data, Hermes state, user project data, or theme storage.
+- Rollback is the revision commit on
+  `codex/ui-input-focus-continuity`; no migration is involved.
+- Documentation targets are this review log, `CHANGELOG.md`, and PR #74.
+- `data/projects.json` and `design/` remain explicitly excluded.
+
+Alternatives considered:
+
+- Add a visible `Search` label above the search shell. This aligns the rows but
+  adds redundant copy and increases mobile height.
+- Remove the `Session` label. This simplifies geometry but weakens the selector
+  context.
+- Bottom-align only the search shell. This produces the intended visible-box
+  alignment without redundant UI and is the approved implementation direction.
+
+Likely follow-up:
+
+- A separate reviewed slice for resilient remote Hermes session search.
+
+### Revision test strategy
+
+| Criterion | Baseline gap | Evidence | Limitation |
+| --- | --- | --- | --- |
+| R-AC-1 | Live Emerald measurement shows equal 40px heights but a 20.453125px top and bottom offset. | Add a regression contract for explicit search-shell end alignment; measure computed rectangles after implementation in Emerald and Classic. | Native select painting may vary slightly by browser, but border-box geometry is measurable. |
+| R-AC-2 | Narrow stacking has not been rechecked after the alignment revision. | Render at 640px and 390px; assert 44px control heights, full-width stacking, and no overflow. | Chromium is the local rendered browser. |
+| R-AC-3 | Current computed focus is a 2px outline on `#session-search`; the shell has no outline. | Reverse the focused CSS assertions and inspect computed shell/input styles for all four `.search-shell` fields. | CSS contract complements, but does not replace, rendered inspection. |
+| R-AC-4 | The broad editable-control rule currently supplies standalone focus. | Retain the rule and inspect a representative task input and Console textarea. | Not every native input type is opened interactively. |
+| R-AC-5 | Original slice behavior is currently green. | Rerun input-continuity, visual-contract, Home, and Agent Console suites. | Existing unrelated local-state failures remain separately disclosed. |
+| R-AC-6 | Revision is not implemented or reviewed. | Run JavaScript syntax, patch hygiene, complete unit suite, and two independent review rounds. | Platform-specific skips remain documented. |
+
+Baseline evidence:
+
+- In-app Chromium, Emerald, 1280x720:
+  - session selector: `y=1526.4296875`, `height=40`
+  - session search shell: `y=1505.9765625`, `height=40`
+  - top and bottom offset: `20.453125px`
+- Focused session search:
+  - inner input: `2px` solid accent outline
+  - outer shell: no outline or shadow
+- PR #74 is open, ready for review, and mergeable at commit `2a56f58`.
+
+Approval:
+
+- The user supplied advance approval for this contract and test strategy and
+  authorized updating PR #74 after the full verification and review gates.
+
+### Revision implementation and verification
+
+Implementation:
+
+- Bottom-aligned the Session History search shell within its controls grid so
+  its visible box shares the selector's top and bottom edges.
+- Moved shell-based search focus to `.search-shell:focus-within` with a 2px
+  outside ring and suppressed the inner input outline and shadow.
+- Kept standalone editable controls on their existing control-owned focus rule.
+- Updated the release note to describe the final outer-ring behavior.
+
+Rendered evidence:
+
+- Emerald desktop: selector and search shell are both 40px with zero top and
+  bottom delta.
+- Classic desktop: selector and search shell are both 38px with zero top and
+  bottom delta.
+- In both layouts, the focused shell has a 2px outline with 2px offset. The
+  inner input's computed outline style is `none` and its shadow is `none`.
+- Global Search, Session History, Notes, and Agent Creator all render the same
+  shell-owned focus treatment. A representative standalone Agent Console
+  textarea retains its own visible focus ring.
+- At 640x900 and 390x844 in both layouts, the controls stack at full available
+  width, both controls are 44px tall, and the document has no horizontal
+  overflow.
+- The saved interface layout was restored to Emerald after Classic checks.
+
+Automated evidence:
+
+- Focused regression suite: 53 passed.
+- JavaScript syntax: `public/app.js` and `public/core.js` passed `node --check`.
+- Patch hygiene: `git diff --check` passed.
+- Complete suite: 901 run, 895 passed, 2 failed, 4 skipped. The two failures
+  reproduce the pre-existing local-state exceptions: the user-owned
+  `Daily Check` project conflicts with the tracked seed assertion, and the
+  selected remote Hermes connection yields zero local cron fixture jobs.
+- Neither complete-suite failure touches a file or behavior in this revision.
+
+Revision adversarial review:
+
+- Correctness/accessibility reviewer: no substantive finding. Confirmed the
+  inner-input reset wins the Emerald cascade and standalone controls retain
+  focus. Noted only the non-blocking limitation that rendered focus evidence is
+  Chromium/Compact Dark and does not directly exercise every theme or Safari.
+- Product/compatibility reviewer: no substantive CSS, responsive, theme, or
+  interaction finding. Reported one low, publication-blocking documentation
+  issue: this record still showed pending revision statuses and stale original
+  publication placeholders.
+- Reconciliation: accepted the documentation finding and updated the revision
+  statuses, historical-record label, original commit/PR record, and outcome.
+  The broad `:focus-within` selector is safe for the current four shells because
+  each contains only one focusable input and non-focusable decoration.
+- Round 2: both reviewers confirmed the documentation correction and current
+  shell structure leave no remaining finding or publication blocker.
+- Review outcome: no remaining substantive or publication-blocking finding.
+
+### Revision publication gate
+
+- Exact files:
+  - `CHANGELOG.md`
+  - `public/styles.css`
+  - `tests/test_input_focus_continuity.py`
+  - `reviews/2026-07-30-ui-input-focus-continuity.md`
+- Explicit exclusions: user-owned `data/projects.json` and `design/`.
+- Branch/PR: `codex/ui-input-focus-continuity` updating ready PR #74 against
+  `main`.
+- Revision commit: this commit (final hash recorded in the PR history).
+- Authorization: the user's standing approval covers staging, committing,
+  pushing, and updating the ready PR after this completed gate.
+- Outcome classification: successful, with the two unrelated full-suite
+  local-state failures disclosed.
+- Rollback: revert the revision commit; no migration or persistent state change
+  is involved.
+
+## Superseded original-slice record
+
+The sections below preserve the original implementation and publication
+history. Their inner-input focus direction was superseded by the approved
+outer-shell revision above.
+
 ## Slice contract
 
 ### Goal
@@ -245,12 +437,13 @@ highlight, while Agent Console status appears as lightweight inline information.
   staging the four proposed files, committing with the proposed message,
   pushing `codex/ui-input-focus-continuity`, and opening the ready PR against
   `main`. `data/projects.json` and `design/` remain excluded.
-- Commit hash: None.
-- Ready PR URL: None.
+- Commit hash: `2a56f58ed41f1026907bd49a56315cb12e60b67c`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/74
 
 ## Outcome review
 
-- Classification: Awaiting publication approval.
+- Classification: Original slice published successfully; focus direction later
+  superseded by the approved revision recorded above.
 - Acceptance criteria summary: AC-1 through AC-6 pass. AC-7 is qualified
   because the complete suite reproduces two unrelated local-state failures;
   focused verification and both adversarial reviews are clean.
