@@ -2100,7 +2100,7 @@ function renderProjects(projects = []) {
         </div>
       </button>
     `;
-  }).join('') : `<div class="empty">No projects found. For now, ask Hermes to add one to <code>data/projects.json</code>.</div>`;
+  }).join('') : `<div class="empty">No projects yet. Use Create Project above to start planning. Hermes is optional for planning.</div>`;
   requestAnimationFrame(updateProjectRailButtons);
   renderProjectStatus(projects, state.tasks);
   renderProjectEditor();

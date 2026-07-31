@@ -9,6 +9,18 @@ CORE = (ROOT / "public" / "core.js").read_text(encoding="utf-8")
 
 
 class UsabilityFeaturesUiTests(unittest.TestCase):
+    def test_zero_project_state_uses_existing_safe_planner_action(self):
+        render_projects = APP[
+            APP.index("function renderProjects") : APP.index("function isDateOnly")
+        ]
+        self.assertIn("No projects yet.", render_projects)
+        self.assertIn("Create Project", render_projects)
+        self.assertIn("Hermes is optional for planning", render_projects)
+        self.assertNotIn("ask Hermes", render_projects)
+        self.assertNotIn("data/projects.json", render_projects)
+        self.assertEqual(INDEX.count('id="create-project-button"'), 1)
+        self.assertNotIn("data-empty-create-project", INDEX + APP)
+
     def test_notes_can_be_searched_opened_and_attached(self):
         self.assertIn('id="notes-search"', INDEX)
         self.assertIn('id="notes-count"', INDEX)
