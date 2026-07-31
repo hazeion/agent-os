@@ -1,6 +1,6 @@
 # Feature Slice Review: Remote Public-Text Performance Stability
 
-Status: In progress
+Status: Successful
 Slice: `remote-public-text-performance`
 Date: `2026-07-31`
 Review log: `reviews/2026-07-31-remote-public-text-performance.md`
@@ -42,9 +42,9 @@ credential, host, URL, normalization, or browser-output safety boundary.
 
 | ID | Observable criterion | Evidence | Status |
 | --- | --- | --- | --- |
-| AC-1 | Non-empty delimiter-only text skips the expensive delimiter grammar, while every other value retains the original path. | Source inspection, targeted tests, and differential comparison | Pass locally |
-| AC-2 | Identifier, property, bracket, host/port, human credential phrase, URL, secret-token, and normalization decisions remain unchanged. | Complete remote-session test module, bracket regressions, and differential comparison | Pass locally |
-| AC-3 | Maximum delimiter-dense input remains under the unchanged platform-aware budget. | Existing performance contract locally; hosted CI pending | Pass locally |
+| AC-1 | Non-empty delimiter-only text skips the expensive delimiter grammar, while every other value retains the original path. | Source inspection, targeted tests, and differential comparison | Pass |
+| AC-2 | Identifier, property, bracket, host/port, human credential phrase, URL, secret-token, and normalization decisions remain unchanged. | Complete remote-session test module, bracket regressions, and differential comparison | Pass |
+| AC-3 | Maximum delimiter-dense input remains under the unchanged platform-aware budget. | Existing performance contract locally and hosted macOS CI | Pass |
 | AC-4 | The optimization remains linear and bounded for the maximum 100,000-character public input. | Algorithm inspection and benchmark evidence | Pass |
 | AC-5 | No unrelated application, release, or user-owned files enter the slice. | Scoped diff and staged-file inspection | Pass |
 | AC-6 | Two independent adversarial reviewers find no unresolved blocking correctness, safety, compatibility, or operability gap. | Review record | Pass |
@@ -152,8 +152,11 @@ credential, host, URL, normalization, or browser-output safety boundary.
   focused regression-test updates; this review record is the only other slice
   file.
 - User-owned `data/projects.json` and `design/` remain excluded.
-- Hosted multi-version/macOS validation and secret scanning remain pending
-  publication.
+- Pull request 84 ran 50 hosted checks and all 50 passed. The previously
+  failing `macos-15-intel / Python 3.12` shard passed in 4m03s without changing
+  the two-second assertion budget. macOS Python 3.11 and 3.13, Linux and
+  Windows matrices, native artifacts, browser smoke, packaging, quality, and
+  dependency/secret scanning also passed.
 
 ## Adversarial review
 
@@ -182,4 +185,7 @@ credential, host, URL, normalization, or browser-output safety boundary.
 
 ## Outcome
 
-- Pending final verification, independent review, and publication.
+- Successful. All acceptance criteria pass, both reviewers report no P0-P3
+  findings after the correction, and all 50 hosted checks pass. The change is
+  isolated to validation code, focused tests, and this review record; rollback
+  is a normal commit revert with no data migration or external cleanup.
