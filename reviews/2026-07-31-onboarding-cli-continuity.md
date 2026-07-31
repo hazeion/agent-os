@@ -140,3 +140,11 @@ planner-only users and users who intend to connect Hermes.
 
 - Contract, test strategy, outcome handling, and publication are covered by the
   user's standing approval.
+
+## Publication result
+
+- Implementation commit: `5ecf2c7`.
+- Ready pull request: https://github.com/hazeion/agent-os/pull/78
+- Base: `main`.
+- Exact staged scope matched the publication packet.
+- User-owned `data/projects.json` and `design/` remained unstaged.
