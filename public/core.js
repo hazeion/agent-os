@@ -57,6 +57,7 @@ const state = {
   greetingPrefix: 'Hello',
   appName: 'Mentat',
   sessionFilter: '',
+  sessionMessageMatchIds: new Set(),
   taskFilter: '',
   taskStatusFilter: 'open',
   projectFilter: '',
@@ -150,6 +151,36 @@ const state = {
   notesFilter: '',
   notesSearchTimer: null,
 };
+
+function beginSessionMessageSearch(currentGeneration) {
+  return {
+    generation: currentGeneration + 1,
+    matchIds: new Set(),
+  };
+}
+
+function sessionMessageMatchIdsForResponse(requestGeneration, currentGeneration, payload = {}, sessions = []) {
+  if (requestGeneration !== currentGeneration) return null;
+  if (payload.error) return new Set();
+  const availableSessionIds = new Set(sessions.map((session) => session.id));
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  return new Set(
+    results
+      .map((result) => result?.session_id)
+      .filter((sessionId) => availableSessionIds.has(sessionId)),
+  );
+}
+
+function sessionSearchIncludes(session, query, messageMatchIds = new Set()) {
+  if (messageMatchIds.has(session.id)) return true;
+  if (!query) return true;
+  const haystack = `${session.title || ''} ${session.source || ''} ${session.message_count || ''} ${session.tool_call_count || ''}`.toLowerCase();
+  return haystack.includes(query.toLowerCase());
+}
+
+function sessionSearchMatches(sessions, query, messageMatchIds = new Set()) {
+  return sessions.filter((session) => sessionSearchIncludes(session, query, messageMatchIds));
+}
 
 const taskStatusLabels = {
   open: 'Open',

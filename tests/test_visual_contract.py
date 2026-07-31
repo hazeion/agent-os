@@ -43,6 +43,16 @@ def png_rgba_contract(path):
 
 
 class VisualContractTests(unittest.TestCase):
+    def test_screen_reader_only_utility_is_globally_hidden(self):
+        start = CSS.index(".sr-only {")
+        sr_only = CSS[start : CSS.index("\n}", start)]
+        self.assertIn("position: absolute", sr_only)
+        self.assertIn("width: 1px", sr_only)
+        self.assertIn("height: 1px", sr_only)
+        self.assertIn("overflow: hidden", sr_only)
+        self.assertIn("clip-path: inset(50%)", sr_only)
+        self.assertIn("white-space: nowrap", sr_only)
+
     def test_dashboard_action_groups_use_edge_alignment_without_button_distribution(self):
         panel_controls = CSS[CSS.index(".panel-controls {") : CSS.index(".task-status-filter-shell")]
         item_actions = CSS[CSS.index(".item-actions {") : CSS.index(".action-button")]
