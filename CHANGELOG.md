@@ -2,6 +2,16 @@
 
 All notable changes to Mentat.
 
+## 2026-07-31
+
+### Fixed
+- Controls and panels marked `hidden` now stay out of layout even when a
+  component assigns its own flex, grid, or block display mode. This removes
+  leaked empty-state actions such as Clear project.
+- Task creation and editing now provide one immediately reachable Cancel action
+  in the form heading. The duplicate inspector-header Cancel is removed, and
+  Back to queue stays hidden while an editor is active.
+
 ## 2026-07-30
 
 ### Fixed

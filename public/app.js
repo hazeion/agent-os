@@ -990,7 +990,7 @@ function syncTaskEditorControls(tasks = visibleTasks(state.tasks)) {
   const editButton = $('#selected-task-edit');
   const deleteButton = $('#selected-task-delete');
   const delegateButton = $('#selected-task-delegate');
-  const cancelButton = $('#selected-task-cancel');
+  const backButton = $('#selected-task-back');
   const editorActive = state.taskEditorMode === 'create' || state.taskEditorMode === 'edit';
   const selected = selectedTaskFrom(tasks);
   if (editButton) {
@@ -1006,7 +1006,7 @@ function syncTaskEditorControls(tasks = visibleTasks(state.tasks)) {
     delegateButton.disabled = !selected;
     delegateButton.textContent = selected?.delegation ? 'Agent Work' : 'Delegate to Agent';
   }
-  if (cancelButton) cancelButton.hidden = !editorActive;
+  if (backButton) backButton.hidden = editorActive;
 }
 
 function taskPayloadFromForm(form) {
@@ -1350,8 +1350,13 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
       .join('');
     container.innerHTML = `
       <form id="task-editor-form" class="task-detail-card task-editor-form" data-mode="${escapeHtml(mode)}" data-task-id="${escapeHtml(String(draft?.id || ''))}">
-        <div class="task-detail-kicker mono">${mode === 'edit' ? 'task edit' : 'new task'} · project-owned write-back</div>
-        <h3>${mode === 'edit' ? 'Edit task details' : 'Create a new task'}</h3>
+        <div class="task-editor-heading">
+          <div>
+            <div class="task-detail-kicker mono">${mode === 'edit' ? 'task edit' : 'new task'} · project-owned write-back</div>
+            <h3>${mode === 'edit' ? 'Edit task details' : 'Create a new task'}</h3>
+          </div>
+          <button class="mini-button" type="button" data-task-editor-cancel>Cancel</button>
+        </div>
         <div class="task-editor-grid">
           <label class="task-editor-field field-span-2">
             <span class="task-editor-label mono">Title</span>
@@ -1443,7 +1448,6 @@ function renderSelectedTaskInspector(tasks = visibleTasks(state.tasks)) {
         </div>
         <div class="task-editor-actions">
           <button class="action-button" type="submit">${mode === 'edit' ? 'Save Changes' : 'Create Task'}</button>
-          <button class="mini-button" type="button" data-task-editor-cancel>Cancel</button>
         </div>
         <div class="task-editor-status mono" id="task-editor-status">Mentat writes only to project-owned task data and never mutates Hermes core files.</div>
       </form>
@@ -7100,7 +7104,7 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
-  if (event.target.closest('#selected-task-cancel') || event.target.closest('[data-task-editor-cancel]')) {
+  if (event.target.closest('[data-task-editor-cancel]')) {
     closeTaskEditor();
   }
 });

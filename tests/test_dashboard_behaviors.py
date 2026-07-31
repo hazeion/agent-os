@@ -796,14 +796,14 @@ class DashboardBehaviorTests(unittest.TestCase):
 
         self.assertIn('id="create-task-button"', index_html)
         self.assertIn('id="selected-task-edit"', index_html)
-        self.assertIn('id="selected-task-cancel"', index_html)
+        self.assertNotIn('id="selected-task-cancel"', index_html)
         self.assertIn('id="selected-task-detail"', index_html)
         self.assertIn('async function createTask(payload)', core_js)
         self.assertIn('async function saveTaskEdits(id, payload)', core_js)
         self.assertIn("document.addEventListener('click'", app_js)
         self.assertIn("event.target.closest('#create-task-button')", app_js)
         self.assertIn("event.target.closest('#selected-task-edit')", app_js)
-        self.assertIn("event.target.closest('#selected-task-cancel')", app_js)
+        self.assertNotIn("event.target.closest('#selected-task-cancel')", app_js)
         self.assertIn("event.target.closest('[data-task-editor-cancel]')", app_js)
         self.assertIn("state.taskEditorDraft = taskPayloadFromForm(form);", app_js)
 
