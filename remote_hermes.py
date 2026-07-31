@@ -2747,6 +2747,12 @@ def _overlength_human_candidate_is_safe(
 def _secret_shaped_text(value: str) -> bool:
     if _SECRET_TOKEN_TEXT.search(value):
         return True
+    # A non-empty string made only from assignment delimiters cannot contain a
+    # credential label, host, path, URL, or bracket expression. Handle this
+    # exact inert shape in one C-level scan instead of entering the bounded
+    # delimiter grammar once per character.
+    if value and value.strip(":=") == "":
+        return False
     # The detailed grammar below protects punctuation-, prose-, and
     # identifier-shaped credential labels. None of its ASCII credential
     # candidates can exist without one of these marker terms, so avoid the
