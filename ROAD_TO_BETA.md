@@ -496,11 +496,15 @@ Work in order:
 
 Repository tooling status: deterministic four-artifact checksums, manifest,
 release notes, numbered-RC validation, protected prerelease assembly, and the
-public recovery checklist are implemented. The protected macOS job bounds
-Apple's wait at four hours inside a five-hour job limit so a stalled request
-fails before GitHub's hard ceiling while always-run signing cleanup retains
-time to complete. Completion still requires the protected signed run and
-another person's clean tier-one rehearsal evidence.
+public recovery checklist are implemented. The protected macOS job uploads one
+Apple request in a separately completed step, durably records its validated
+submission ID before entering a poll-only step, tolerates temporary status-
+connection failures without duplicate submission, and bounds status checks at
+four hours inside a six-hour job with a job-relative final-hour post-work
+reserve. A non-accepted request fails before stapling or publication while
+always-run signing cleanup retains time to complete.
+Completion still requires the protected signed run and another person's clean
+tier-one rehearsal evidence.
 
 Exit criteria:
 
