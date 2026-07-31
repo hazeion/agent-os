@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- The empty Projects view now points new users to Mentat's existing project
+  creator and makes clear that planning does not require Hermes, replacing
+  obsolete direct-file guidance without adding a duplicate action.
 - Release-candidate notes now send invited testers to a short, channel-specific
   first-launch path instead of the full maintainer rehearsal; recovery and
   rollback drills remain in the rehearsal guide.
