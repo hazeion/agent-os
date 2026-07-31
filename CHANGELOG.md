@@ -5,6 +5,8 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- Text fields and search controls now highlight their visible border on focus
+  without drawing a second outline or glow outside the control.
 - The phone navigation Close button and Hermes connection control now match
   the shared 44px interaction target used by adjacent mobile controls.
 - Ensured the shared 44px phone control target wins the final theme cascade for

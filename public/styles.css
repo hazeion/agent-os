@@ -8080,18 +8080,20 @@ h2,
   }
 }
 
-/* The visible control box owns one outside focus ring. */
-.search-shell:focus-within {
-  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
-  outline-offset: 2px;
-}
-
-.search-shell:focus-within input:focus-visible {
+/* The visible control box highlights its border without drawing outside it. */
+:root[data-ui-shell] .search-shell:focus-within {
+  border-color: var(--accent);
   outline: none;
   box-shadow: none;
 }
 
-:where(
+.search-shell:focus-within input:focus-visible {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
+}
+
+:root[data-ui-shell] :where(
   input:not([type]),
   input[type='text'],
   input[type='search'],
@@ -8107,16 +8109,16 @@ h2,
   input[type='week'],
   textarea
 ):focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
-  outline-offset: 1px;
+  border-color: var(--accent);
+  outline: none;
   box-shadow: none;
 }
 
-.task-editor-field :is(input, textarea):focus,
-.agent-console-form textarea:focus-visible,
-.agent-console-workspace-search input:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
-  outline-offset: 1px;
+:root[data-ui-shell] .task-editor-field :is(input, textarea):focus,
+:root[data-ui-shell] .agent-console-form textarea:focus-visible,
+:root[data-ui-shell] .agent-console-workspace-search input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
   box-shadow: none;
 }
 

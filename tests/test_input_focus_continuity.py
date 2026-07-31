@@ -46,8 +46,8 @@ class InputFocusContinuityTests(unittest.TestCase):
         )
         self.assertIn("input[type='search']", CSS)
 
-    def test_search_focus_belongs_to_the_visible_outer_shell(self):
-        self.assertIn(".search-shell:focus-within", CSS)
+    def test_search_focus_highlights_the_visible_shell_border_only(self):
+        self.assertIn(":root[data-ui-shell] .search-shell:focus-within", CSS)
         self.assertIn(
             ".search-shell:focus-within input:focus-visible",
             CSS,
@@ -56,8 +56,10 @@ class InputFocusContinuityTests(unittest.TestCase):
         shell_focus_block = CSS[
             shell_focus_start : CSS.index("}", shell_focus_start) + 1
         ]
-        self.assertIn("outline:", shell_focus_block)
-        self.assertIn("outline-offset:", shell_focus_block)
+        self.assertIn("border-color:", shell_focus_block)
+        self.assertIn("outline: none;", shell_focus_block)
+        self.assertIn("box-shadow: none;", shell_focus_block)
+        self.assertNotIn("outline-offset:", shell_focus_block)
         input_focus_start = CSS.index(
             ".search-shell:focus-within input:focus-visible"
         )
@@ -66,6 +68,7 @@ class InputFocusContinuityTests(unittest.TestCase):
         ]
         self.assertIn("outline: none;", input_focus_block)
         self.assertIn("box-shadow: none;", input_focus_block)
+        self.assertIn("border-color: transparent;", input_focus_block)
 
     def test_session_selector_and_search_share_one_control_height(self):
         card_block = CSS[
@@ -136,14 +139,107 @@ class InputFocusContinuityTests(unittest.TestCase):
         ):
             self.assertIn(declaration, state_block)
 
-    def test_text_entry_focus_remains_visible_without_a_second_shadow(self):
-        focus_selector = ":where(\n  input:not([type]),\n  input[type='text'],"
+    def test_text_entry_focus_uses_its_border_without_an_outer_effect(self):
+        focus_selector = (
+            ":root[data-ui-shell] :where(\n"
+            "  input:not([type]),\n  input[type='text'],"
+        )
         self.assertIn(focus_selector, CSS)
         focus_start = CSS.index(focus_selector)
         focus_block = CSS[focus_start : CSS.index("}", focus_start) + 1]
         self.assertIn("textarea\n):focus-visible", focus_block)
-        self.assertIn("outline:", focus_block)
+        self.assertIn("border-color:", focus_block)
+        self.assertIn("outline: none;", focus_block)
         self.assertIn("box-shadow: none;", focus_block)
+        self.assertNotIn("outline-offset:", focus_block)
+
+        specific_selector = (
+            ":root[data-ui-shell] "
+            ".task-editor-field :is(input, textarea):focus,"
+        )
+        self.assertIn(specific_selector, CSS)
+        specific_start = CSS.index(specific_selector)
+        specific_block = CSS[specific_start : CSS.index("}", specific_start) + 1]
+        self.assertIn("border-color:", specific_block)
+        self.assertIn("outline: none;", specific_block)
+        self.assertIn("box-shadow: none;", specific_block)
+        self.assertNotIn("outline-offset:", specific_block)
+
+    def test_final_text_entry_focus_rules_win_the_emerald_cascade(self):
+        def specificity(selector):
+            selector = re.sub(
+                r":where\(.*\)(?=:focus-visible)",
+                "",
+                selector,
+                flags=re.DOTALL,
+            )
+            ids = len(re.findall(r"#[\w-]+", selector))
+            class_like = len(
+                re.findall(r"\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+", selector)
+            )
+            elements = len(
+                re.findall(r"(?:^|[ >+~])([a-z][\w-]*)", selector)
+            )
+            return ids, class_like, elements
+
+        competitor = (
+            ":root[data-ui-shell='emerald'] :where(\n"
+            "  button,\n  a,\n  input,"
+        )
+        competitor_start = CSS.index(competitor)
+        competitor_selector = CSS[competitor_start : CSS.index("{", competitor_start)]
+        competitor_block = CSS[
+            competitor_start : CSS.index("}", competitor_start) + 1
+        ]
+        self.assertIn("outline: 2px solid", competitor_block)
+        self.assertNotIn("!important", competitor_block)
+
+        final_selectors = (
+            ":root[data-ui-shell] :where(\n  input:not([type]),",
+            ":root[data-ui-shell] .task-editor-field :is(input, textarea):focus",
+            ":root[data-ui-shell] .agent-console-form textarea:focus-visible",
+            ":root[data-ui-shell] .agent-console-workspace-search input:focus-visible",
+            ".search-shell:focus-within input:focus-visible",
+        )
+        for selector in final_selectors:
+            with self.subTest(selector=selector):
+                start = CSS.index(selector)
+                self.assertGreater(start, competitor_start)
+                cascade_selector = (
+                    CSS[start : CSS.index("{", start)]
+                    if ":where(" in selector
+                    else selector
+                )
+                self.assertGreaterEqual(
+                    specificity(cascade_selector), specificity(competitor_selector)
+                )
+                block = CSS[start : CSS.index("}", start) + 1]
+                self.assertIn("outline: none;", block)
+                self.assertNotIn("!important", block)
+
+        search_base_selector = ":root[data-ui-shell='emerald'] .search-shell"
+        search_base_start = CSS.index(f"{search_base_selector} {{")
+        search_base_block = CSS[
+            search_base_start : CSS.index("}", search_base_start) + 1
+        ]
+        search_focus_selector = ":root[data-ui-shell] .search-shell:focus-within"
+        search_focus_start = CSS.index(f"{search_focus_selector} {{")
+        search_focus_block = CSS[
+            search_focus_start : CSS.index("}", search_focus_start) + 1
+        ]
+        self.assertGreater(search_focus_start, search_base_start)
+        self.assertGreater(
+            specificity(search_focus_selector), specificity(search_base_selector)
+        )
+        for declaration in (
+            "border-color: var(--accent);",
+            "outline: none;",
+            "box-shadow: none;",
+        ):
+            self.assertIn(declaration, search_focus_block)
+        self.assertNotIn("!important", search_base_block)
+        self.assertNotIn("!important", search_focus_block)
+        self.assertNotIn("\n.search-shell:focus-within {", CSS)
 
 
 if __name__ == "__main__":
