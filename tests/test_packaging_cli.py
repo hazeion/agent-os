@@ -169,7 +169,7 @@ class PackagingContractTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A",
+            "F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A",  # pragma: allowlist secret
             workflow,
         )
         self.assertIn('test "$actual_g2_sha256" = "$G2_SHA256"', workflow)

@@ -188,6 +188,19 @@ without weakening release gates or leaving altered keychain state behind.
 - The changed packaging module is independently green, and the user-owned data
   file and `design/` remain unmodified by this slice.
 
+### Publication checks
+
+- The first pull-request dependency/secret scan rejected the public pinned G2
+  SHA-256 assertion as a high-entropy candidate. This was a fail-closed false
+  positive, not secret exposure.
+- Added the repository's narrow `# pragma: allowlist secret` annotation only to
+  that exact public-fingerprint assertion. The workflow, guide, and evidence
+  continue to show the public pin intentionally; no secret baseline was broadly
+  weakened.
+- Both independent reviewers rechecked the publication fix and found no P0/P1
+  or publication concern. The local environment lacks the `detect_secrets`
+  package, so the hosted rerun remains the authoritative scanner result.
+
 ## Adversarial review
 
 - Correctness/safety review initially found blocking risks in piped
