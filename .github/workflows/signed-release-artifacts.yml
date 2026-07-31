@@ -67,6 +67,7 @@ jobs:
     needs:
       - release-source
     runs-on: macos-15-intel
+    timeout-minutes: 300
     environment: beta-release
     steps:
       - name: Check out repository
@@ -198,7 +199,7 @@ jobs:
           MAC_NOTARY_TEAM_ID: ${{ secrets.MAC_NOTARY_TEAM_ID }}
         run: |
           signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
-          xcrun notarytool submit "$signed_package" --apple-id "$MAC_NOTARY_APPLE_ID" --password "$MAC_NOTARY_PASSWORD" --team-id "$MAC_NOTARY_TEAM_ID" --wait
+          xcrun notarytool submit "$signed_package" --apple-id "$MAC_NOTARY_APPLE_ID" --password "$MAC_NOTARY_PASSWORD" --team-id "$MAC_NOTARY_TEAM_ID" --wait --timeout 4h
           xcrun stapler staple "$signed_package"
           xcrun stapler validate "$signed_package"
           spctl --assess --type execute --verbose=2 dist/Mentat.app

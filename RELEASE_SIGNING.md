@@ -93,6 +93,16 @@ skipped, and the validation summary fails unless that isolation is true. The
 release-and-tag job is also skipped, so this mode cannot create a tag, GitHub
 release, or recovery bundle.
 
+The protected job gives Apple four hours to finish notarization and reserves
+the rest of its five-hour limit for validation and always-run credential
+cleanup. If that wait expires, Apple's service continues processing the
+existing submission, but Mentat's run fails before stapling, Gatekeeper checks,
+or upload and does not claim that package is usable. Keep the original
+submission ID from the run output and inspect that request through
+`notarytool info` or Apple Developer Support. **Do not immediately rerun** the
+workflow: first confirm whether the original request was accepted, rejected,
+or is still processing so a slow queue does not create duplicate submissions.
+
 ## 2. Prepare Windows signing
 
 1. Follow Microsoft's

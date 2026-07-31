@@ -1,7 +1,7 @@
 # Mentat Road to Beta
 
 Status: Repository implementation complete through Milestone 8; public beta remains externally gated
-Last updated: 2026-07-29
+Last updated: 2026-07-31
 Beta release contract approved: 2026-07-17
 Remote architecture and license decisions approved: 2026-07-16
 
@@ -496,8 +496,11 @@ Work in order:
 
 Repository tooling status: deterministic four-artifact checksums, manifest,
 release notes, numbered-RC validation, protected prerelease assembly, and the
-public recovery checklist are implemented. Completion still requires the
-protected signed run and another person's clean tier-one rehearsal evidence.
+public recovery checklist are implemented. The protected macOS job bounds
+Apple's wait at four hours inside a five-hour job limit so a stalled request
+fails before GitHub's hard ceiling while always-run signing cleanup retains
+time to complete. Completion still requires the protected signed run and
+another person's clean tier-one rehearsal evidence.
 
 Exit criteria:
 

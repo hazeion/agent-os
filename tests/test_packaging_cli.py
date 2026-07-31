@@ -265,6 +265,14 @@ class PackagingContractTests(unittest.TestCase):
             end = workflow.index(end_marker, start) if end_marker else len(workflow)
             return workflow[start:end]
 
+        def job_step(job, name, next_name=None):
+            start_marker = f"      - name: {name}\n"
+            start = job.index(start_marker)
+            if next_name is None:
+                return job[start:]
+            end_marker = f"      - name: {next_name}\n"
+            return job[start : job.index(end_marker, start)]
+
         scope_input = section("      validation_scope:\n", "      release_tag:\n")
         release_tag_input = section("      release_tag:\n", "\npermissions:\n")
         macos_job = section("  macos:\n", "  windows:\n")
@@ -272,6 +280,22 @@ class PackagingContractTests(unittest.TestCase):
         python_job = section("  python-package:\n", "  macos-validation:\n")
         validation_job = section("  macos-validation:\n", "  release:\n")
         release_job = section("  release:\n")
+        notarization_step = job_step(
+            macos_job,
+            "Notarize and staple macOS package",
+            "Smoke the exact signed macOS package",
+        )
+        smoke_step = job_step(
+            macos_job,
+            "Smoke the exact signed macOS package",
+            "Upload signed macOS package",
+        )
+        upload_step = job_step(
+            macos_job,
+            "Upload signed macOS package",
+            "Remove signing material",
+        )
+        cleanup_step = job_step(macos_job, "Remove signing material")
 
         self.assertIn("workflow_dispatch", workflow)
         self.assertNotIn("pull_request:", workflow)
@@ -326,9 +350,48 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("contents: write", release_job)
         self.assertEqual(workflow.count("Verify trusted source revision"), 3)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
-        self.assertIn("notarytool submit", workflow)
-        self.assertIn("stapler validate", workflow)
-        self.assertIn("spctl --assess --type execute", workflow)
+        self.assertEqual(workflow.count("    timeout-minutes: 300\n"), 1)
+        self.assertIn(
+            "    runs-on: macos-15-intel\n"
+            "    timeout-minutes: 300\n"
+            "    environment: beta-release\n",
+            macos_job,
+        )
+        self.assertEqual(workflow.count("--timeout 4h"), 1)
+        notarytool_commands = [
+            line.strip()
+            for line in notarization_step.splitlines()
+            if "xcrun notarytool submit" in line
+        ]
+        self.assertEqual(len(notarytool_commands), 1)
+        self.assertTrue(notarytool_commands[0].endswith("--wait --timeout 4h"))
+        self.assertNotIn("continue-on-error:", notarization_step)
+        self.assertNotIn("|| true", notarization_step)
+        self.assertLess(
+            notarization_step.index("xcrun notarytool submit"),
+            notarization_step.index("xcrun stapler staple"),
+        )
+        self.assertLess(
+            notarization_step.index("xcrun stapler staple"),
+            notarization_step.index("xcrun stapler validate"),
+        )
+        self.assertLess(
+            notarization_step.index("xcrun stapler validate"),
+            notarization_step.index("spctl --assess --type execute"),
+        )
+        self.assertLess(
+            notarization_step.index("spctl --assess --type execute"),
+            notarization_step.index("spctl --assess --type install"),
+        )
+        self.assertNotIn("continue-on-error:", smoke_step)
+        self.assertNotIn("\n        if:", smoke_step)
+        self.assertIn("actions/upload-artifact@", upload_step)
+        self.assertNotIn("continue-on-error:", upload_step)
+        self.assertNotIn("\n        if:", upload_step)
+        self.assertEqual(cleanup_step.count("      - name:"), 1)
+        self.assertIn("        if: always()\n", cleanup_step)
+        self.assertNotIn("continue-on-error:", cleanup_step)
+        self.assertTrue(macos_job.rstrip().endswith(cleanup_step.rstrip()))
         self.assertIn("security import", workflow)
         self.assertIn(" -x -k ", workflow)
         self.assertIn('MAC_KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"', workflow)
@@ -471,7 +534,7 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("Upload exact release recovery bundle", workflow)
         self.assertIn("retention-days: 14", workflow)
         self.assertIn('git push origin "refs/tags/$RELEASE_TAG"', workflow)
-        self.assertIn("if: always()", workflow)
+        self.assertEqual(cleanup_step.count("if: always()"), 1)
         self.assertNotIn("actions/checkout@v", workflow)
         self.assertNotIn("actions/setup-python@v", workflow)
         self.assertNotIn("actions/upload-artifact@v", workflow)
@@ -492,6 +555,9 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("service principal exists", normalized_signing_guide)
         self.assertIn("**Selected branches and tags**", signing_guide)
         self.assertIn("exactly one allowed branch: `main`", normalized_signing_guide)
+        self.assertIn("four hours", normalized_signing_guide)
+        self.assertIn("continues processing", normalized_signing_guide)
+        self.assertIn("Do not immediately rerun", signing_guide)
         for name in (
             "MAC_CERTIFICATES_BASE64",
             "MAC_CERTIFICATES_PASSWORD",
