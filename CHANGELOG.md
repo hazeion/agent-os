@@ -5,6 +5,8 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- Installed CLI setup now reports the exact browser-opening launch command and
+  makes clear that Mentat's planning features work without Hermes.
 - Controls and panels marked `hidden` now stay out of layout even when a
   component assigns its own flex, grid, or block display mode. This removes
   leaked empty-state actions such as Clear project.
