@@ -43,6 +43,29 @@ def png_rgba_contract(path):
 
 
 class VisualContractTests(unittest.TestCase):
+    def test_hidden_attribute_remains_authoritative_over_component_display_rules(self):
+        hidden_rule = re.search(
+            r"(?m)^\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}",
+            CSS,
+        )
+        self.assertIsNotNone(hidden_rule)
+        self.assertIn('id="clear-project-filter" hidden', INDEX)
+        self.assertNotIn('id="selected-task-cancel"', INDEX)
+        self.assertEqual(INDEX.count('data-task-editor-cancel'), 0)
+        self.assertEqual(APP_JS.count('data-task-editor-cancel'), 2)
+        editor = APP_JS[
+            APP_JS.index('<form id="task-editor-form"') : APP_JS.index(
+                'syncTaskEditorControls(tasks);',
+                APP_JS.index('<form id="task-editor-form"'),
+            )
+        ]
+        self.assertEqual(editor.count('data-task-editor-cancel'), 1)
+        self.assertLess(
+            editor.index('data-task-editor-cancel'),
+            editor.index('class="task-editor-grid"'),
+        )
+        self.assertIn("if (backButton) backButton.hidden = editorActive", APP_JS)
+
     def test_screen_reader_only_utility_is_globally_hidden(self):
         start = CSS.index(".sr-only {")
         sr_only = CSS[start : CSS.index("\n}", start)]
