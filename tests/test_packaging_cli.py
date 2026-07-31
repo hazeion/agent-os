@@ -148,13 +148,71 @@ class PackagingContractTests(unittest.TestCase):
         signing_guide = (ROOT / "RELEASE_SIGNING.md").read_text(encoding="utf-8")
         normalized_signing_guide = " ".join(signing_guide.split())
         rehearsal = (ROOT / "RELEASE_REHEARSAL.md").read_text(encoding="utf-8")
+
+        def section(start_marker, end_marker=None):
+            start = workflow.index(start_marker)
+            end = workflow.index(end_marker, start) if end_marker else len(workflow)
+            return workflow[start:end]
+
+        scope_input = section("      validation_scope:\n", "      release_tag:\n")
+        release_tag_input = section("      release_tag:\n", "\npermissions:\n")
+        macos_job = section("  macos:\n", "  windows:\n")
+        windows_job = section("  windows:\n", "  python-package:\n")
+        python_job = section("  python-package:\n", "  macos-validation:\n")
+        validation_job = section("  macos-validation:\n", "  release:\n")
+        release_job = section("  release:\n")
+
         self.assertIn("workflow_dispatch", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertIn("environment: beta-release", workflow)
+        self.assertIn("default: full-release", scope_input)
+        self.assertIn("required: true", scope_input)
+        self.assertEqual(
+            [
+                line.removeprefix("- ")
+                for line in (item.strip() for item in scope_input.splitlines())
+                if line.startswith("- ")
+            ],
+            ["full-release", "macos-only"],
+        )
+        self.assertIn("required: false", release_tag_input)
+        self.assertIn("Validate protected dispatch inputs", workflow)
+        self.assertIn('test -n "$RELEASE_TAG"', workflow)
+        self.assertIn('test -z "$RELEASE_TAG"', workflow)
+        self.assertIn("Unsupported validation scope", workflow)
         self.assertEqual(
             workflow.count("github.ref == 'refs/heads/main' && github.ref_protected"),
             4,
         )
+        self.assertIn(
+            "if: github.ref == 'refs/heads/main' && github.ref_protected\n",
+            macos_job,
+        )
+        full_release_guard = (
+            "if: github.ref == 'refs/heads/main' && github.ref_protected "
+            "&& inputs.validation_scope == 'full-release'"
+        )
+        self.assertIn(full_release_guard, windows_job)
+        self.assertIn(full_release_guard, python_job)
+        self.assertIn(
+            "if: ${{ always() && inputs.validation_scope == 'macos-only' }}",
+            validation_job,
+        )
+        self.assertIn(
+            "if: ${{ always() && inputs.validation_scope == 'full-release' }}",
+            release_job,
+        )
+        for dependency in ("release-source", "macos", "windows", "python-package"):
+            self.assertIn(f"      - {dependency}\n", validation_job)
+            self.assertIn(f"      - {dependency}\n", release_job)
+        self.assertIn("Verify isolated macOS validation outcome", validation_job)
+        self.assertIn('test "$SOURCE_RESULT" = success', validation_job)
+        self.assertIn('test "$MACOS_RESULT" = success', validation_job)
+        self.assertIn('test "$WINDOWS_RESULT" = skipped', validation_job)
+        self.assertIn('test "$PYTHON_RESULT" = skipped', validation_job)
+        self.assertNotIn("contents: write", validation_job)
+        self.assertEqual(workflow.count("contents: write"), 1)
+        self.assertIn("contents: write", release_job)
         self.assertEqual(workflow.count("Verify trusted source revision"), 3)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("notarytool submit", workflow)

@@ -3,9 +3,17 @@ name: Signed beta artifacts
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: Exact numbered RC tag to create after both signed installers pass
+      validation_scope:
+        description: Build the full cross-platform RC or validate Apple signing only
         required: true
+        default: full-release
+        type: choice
+        options:
+          - full-release
+          - macos-only
+      release_tag:
+        description: Exact numbered RC tag; required for full-release and blank for macos-only
+        required: false
         type: string
 
 permissions:
@@ -29,10 +37,24 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate numbered release candidate tag
+      - name: Validate protected dispatch inputs
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: python scripts/release_rehearsal.py validate-rc-tag "$RELEASE_TAG"
+          VALIDATION_SCOPE: ${{ inputs.validation_scope }}
+        run: |
+          case "$VALIDATION_SCOPE" in
+            full-release)
+              test -n "$RELEASE_TAG"
+              python scripts/release_rehearsal.py validate-rc-tag "$RELEASE_TAG"
+              ;;
+            macos-only)
+              test -z "$RELEASE_TAG"
+              ;;
+            *)
+              echo 'Unsupported validation scope' >&2
+              exit 1
+              ;;
+          esac
 
       - name: Verify exact commit checks
         env:
@@ -270,7 +292,7 @@ jobs:
 
   windows:
     name: Signed Windows installer
-    if: github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.ref == 'refs/heads/main' && github.ref_protected && inputs.validation_scope == 'full-release'
     needs:
       - release-source
     runs-on: windows-2025
@@ -405,7 +427,7 @@ jobs:
 
   python-package:
     name: Verified Python release artifacts
-    if: github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.ref == 'refs/heads/main' && github.ref_protected && inputs.validation_scope == 'full-release'
     needs:
       - release-source
     runs-on: ubuntu-24.04
@@ -447,9 +469,35 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  macos-validation:
+    name: macOS validation required
+    if: ${{ always() && inputs.validation_scope == 'macos-only' }}
+    needs:
+      - release-source
+      - macos
+      - windows
+      - python-package
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify isolated macOS validation outcome
+        env:
+          MACOS_RESULT: ${{ needs.macos.result }}
+          PYTHON_RESULT: ${{ needs.python-package.result }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_RESULT: ${{ needs.release-source.result }}
+          VALIDATION_SCOPE: ${{ inputs.validation_scope }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: |
+          test "$VALIDATION_SCOPE" = macos-only
+          test -z "$RELEASE_TAG"
+          test "$SOURCE_RESULT" = success
+          test "$MACOS_RESULT" = success
+          test "$WINDOWS_RESULT" = skipped
+          test "$PYTHON_RESULT" = skipped
+
   release:
     name: Signed release and tag required
-    if: ${{ always() }}
+    if: ${{ always() && inputs.validation_scope == 'full-release' }}
     needs:
       - release-source
       - macos
