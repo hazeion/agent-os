@@ -5,6 +5,10 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- Phone layouts now use the same 44px interaction height for planner filters,
+  Agent Console and managed-agent selectors, the Console prompt, Settings
+  selectors, and the Today schedule link. Settings keeps its compact theme
+  selector on phones without repeating the full theme-button grid below it.
 - Installed CLI setup now reports the exact browser-opening launch command and
   makes clear that Mentat's planning features work without Hermes.
 - Controls and panels marked `hidden` now stay out of layout even when a
