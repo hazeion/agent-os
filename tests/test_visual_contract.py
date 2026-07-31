@@ -93,6 +93,30 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("flex-wrap: wrap", item_actions)
         self.assertIn("flex-wrap: wrap", calendar_actions)
 
+    def test_phone_controls_share_reachable_targets_without_duplicate_theme_buttons(self):
+        mobile_start = CSS.index("/* Mobile control ergonomics")
+        mobile = CSS[mobile_start:].strip()
+        expected = """/* Mobile control ergonomics: interactive controls share the same reachable
+   target height, and the compact theme selector avoids a duplicate phone-only
+   wall of theme buttons. */
+@media (max-width: 640px) {
+  :is(
+    .home-focus-scope .today-project-select,
+    .home-schedule-link,
+    .agent-console-select,
+    .agent-console-command-bar .agent-console-form textarea,
+    .theme-select
+  ) {
+    min-height: 44px;
+  }
+
+  #view-settings .theme-preview-grid {
+    display: none;
+  }
+}"""
+        self.assertEqual(mobile, expected)
+        self.assertEqual(INDEX.count('id="theme-select"'), 1)
+
     def test_legacy_agent_messages_ui_is_retired_but_context_packs_are_visible(self):
         self.assertNotIn("Agent Messages", INDEX)
         self.assertNotIn('id="agent-message-panel"', INDEX)
