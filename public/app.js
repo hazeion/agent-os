@@ -190,7 +190,14 @@ function setView(view, { refreshOnChange = true } = {}) {
 const mobileNavigationMedia = typeof window.matchMedia === 'function'
   ? window.matchMedia('(max-width: 900px)')
   : null;
+const compactNavigationMedia = typeof window.matchMedia === 'function'
+  ? window.matchMedia('(min-width: 901px) and (max-width: 1199px)')
+  : null;
 let navigationReturnFocus = null;
+let compactNavigationKeyboardInput = false;
+let compactNavigationKeyboardItem = null;
+let compactNavigationKeyboardDismissed = false;
+let compactNavigationViewportFrame = null;
 
 function usesMobileNavigation() {
   const narrowViewport = mobileNavigationMedia
@@ -327,6 +334,116 @@ function initializeMobileNavigation() {
   } else if (mobileNavigationMedia?.addListener) {
     mobileNavigationMedia.addListener(handleViewportChange);
   }
+}
+
+function hideCompactNavigationTooltip() {
+  const tooltip = $('#compact-nav-tooltip');
+  if (!tooltip) return;
+  tooltip.hidden = true;
+  tooltip.setAttribute('aria-hidden', 'true');
+  delete tooltip.dataset.visible;
+  tooltip.textContent = '';
+  tooltip.style.removeProperty('left');
+  tooltip.style.removeProperty('top');
+}
+
+function showCompactNavigationTooltip(item) {
+  const usesCompactRail = compactNavigationMedia
+    ? compactNavigationMedia.matches
+    : window.innerWidth >= 901 && window.innerWidth <= 1199;
+  const tooltip = $('#compact-nav-tooltip');
+  const label = item?.querySelector('span:last-child:not(:first-child)');
+  if (!usesCompactRail || !tooltip || !label) {
+    hideCompactNavigationTooltip();
+    return;
+  }
+  tooltip.textContent = label.textContent.trim();
+  tooltip.hidden = false;
+  tooltip.dataset.visible = 'true';
+  const itemRect = item.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const left = Math.min(
+    window.innerWidth - tooltipRect.width - 8,
+    itemRect.right + 10,
+  );
+  const top = Math.min(
+    window.innerHeight - tooltipRect.height - 8,
+    Math.max(8, itemRect.top + ((itemRect.height - tooltipRect.height) / 2)),
+  );
+  tooltip.style.left = `${Math.max(itemRect.right + 2, left)}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function restoreCompactNavigationKeyboardTooltip() {
+  if (
+    compactNavigationKeyboardInput
+    && compactNavigationKeyboardItem
+    && document.activeElement === compactNavigationKeyboardItem
+    && !compactNavigationKeyboardDismissed
+  ) {
+    showCompactNavigationTooltip(compactNavigationKeyboardItem);
+    return;
+  }
+  hideCompactNavigationTooltip();
+}
+
+function refreshCompactNavigationTooltip() {
+  hideCompactNavigationTooltip();
+  if (compactNavigationViewportFrame !== null) {
+    window.cancelAnimationFrame(compactNavigationViewportFrame);
+  }
+  compactNavigationViewportFrame = window.requestAnimationFrame(() => {
+    compactNavigationViewportFrame = null;
+    restoreCompactNavigationKeyboardTooltip();
+  });
+}
+
+function initializeCompactNavigationTooltips() {
+  $$('.nav-item').forEach((item) => {
+    const hideForPointerActivation = () => {
+      compactNavigationKeyboardInput = false;
+      compactNavigationKeyboardItem = null;
+      compactNavigationKeyboardDismissed = false;
+      hideCompactNavigationTooltip();
+    };
+    item.addEventListener('pointerenter', () => showCompactNavigationTooltip(item));
+    item.addEventListener('pointerdown', hideForPointerActivation);
+    item.addEventListener('mousedown', hideForPointerActivation);
+    item.addEventListener('pointerleave', restoreCompactNavigationKeyboardTooltip);
+    item.addEventListener('focus', () => {
+      if (compactNavigationKeyboardInput) {
+        compactNavigationKeyboardItem = item;
+        compactNavigationKeyboardDismissed = false;
+        showCompactNavigationTooltip(item);
+      }
+    });
+    item.addEventListener('blur', () => {
+      if (compactNavigationKeyboardItem === item) {
+        compactNavigationKeyboardItem = null;
+      }
+      compactNavigationKeyboardDismissed = false;
+      hideCompactNavigationTooltip();
+    });
+  });
+  document.addEventListener('pointerdown', () => {
+    compactNavigationKeyboardInput = false;
+    compactNavigationKeyboardItem = null;
+    compactNavigationKeyboardDismissed = false;
+  }, true);
+  document.addEventListener('keydown', (event) => {
+    compactNavigationKeyboardInput = true;
+    if (event.key === 'Escape') {
+      compactNavigationKeyboardDismissed = true;
+      hideCompactNavigationTooltip();
+    }
+  }, true);
+  if (compactNavigationMedia?.addEventListener) {
+    compactNavigationMedia.addEventListener('change', refreshCompactNavigationTooltip);
+  } else if (compactNavigationMedia?.addListener) {
+    compactNavigationMedia.addListener(refreshCompactNavigationTooltip);
+  }
+  window.addEventListener('resize', refreshCompactNavigationTooltip);
+  window.addEventListener('scroll', refreshCompactNavigationTooltip, true);
 }
 
 function sleep(ms) {
@@ -6112,6 +6229,7 @@ async function navigateGlobalSearchResult(result) {
 initializeTheme();
 initializeContrast();
 initializeMobileNavigation();
+initializeCompactNavigationTooltips();
 
 $('#refresh-rate').textContent = `${REFRESH_MS / 1000}s`;
 

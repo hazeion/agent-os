@@ -7604,6 +7604,29 @@ h2,
   }
 }
 
+:root[data-ui-shell='emerald'] .compact-nav-tooltip {
+  position: fixed;
+  z-index: 200;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 100px));
+  padding: 7px 9px;
+  border: 1px solid var(--operations-border-default);
+  border-radius: var(--operations-radius-sm);
+  background: var(--operations-surface-raised);
+  color: var(--operations-content-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .32);
+  font: 600 12px/16px var(--operations-font-sans);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+:root[data-ui-shell='emerald'] .compact-nav-tooltip[data-visible='true'] {
+  opacity: 1;
+  visibility: visible;
+}
+
 /* Drawer shell: the content remains present while navigation becomes modal. */
 @media (max-width: 900px) {
   :root[data-ui-shell='emerald'] .app-shell {

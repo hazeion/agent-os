@@ -426,6 +426,89 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("sidebar.setAttribute('role', 'dialog')", APP_JS)
         self.assertIn("sidebar.setAttribute('aria-modal', 'true')", APP_JS)
 
+    def test_compact_navigation_reveals_concise_labels_on_hover_and_focus(self):
+        expected_labels = (
+            "Home",
+            "Agents &amp; Sessions",
+            "Calendar",
+            "Projects &amp; Tasks",
+            "Notes &amp; Context",
+            "Settings",
+        )
+        nav = INDEX[
+            INDEX.index('<nav class="nav-groups"') : INDEX.index("</nav>")
+        ]
+        for label in expected_labels:
+            with self.subTest(label=label):
+                self.assertIn(f"<span>{label}</span>", nav)
+
+        compact_marker = CSS.index("/* Intermediate shell: a compact icon rail")
+        compact_start = CSS.index(
+            "@media (min-width: 901px) and (max-width: 1199px)",
+            compact_marker,
+        )
+        compact_end = CSS.index("@media (max-width: 900px)", compact_start)
+        compact = CSS[compact_start:compact_end]
+        self.assertIn('id="compact-nav-tooltip"', INDEX)
+        self.assertIn('aria-hidden="true" hidden', INDEX)
+        self.assertIn("function showCompactNavigationTooltip(item)", APP_JS)
+        self.assertIn("function hideCompactNavigationTooltip()", APP_JS)
+        self.assertIn("pointerenter", APP_JS)
+        self.assertIn("pointerdown", APP_JS)
+        self.assertIn("mousedown", APP_JS)
+        self.assertIn("item.addEventListener('focus'", APP_JS)
+        self.assertIn("let compactNavigationKeyboardInput = false", APP_JS)
+        self.assertIn("let compactNavigationKeyboardItem = null", APP_JS)
+        self.assertIn("let compactNavigationKeyboardDismissed = false", APP_JS)
+        self.assertIn("compactNavigationKeyboardInput = false", APP_JS)
+        self.assertIn("compactNavigationKeyboardInput = true", APP_JS)
+        self.assertIn(
+            "function restoreCompactNavigationKeyboardTooltip()",
+            APP_JS,
+        )
+        self.assertIn(
+            "item.addEventListener('pointerleave', "
+            "restoreCompactNavigationKeyboardTooltip)",
+            APP_JS,
+        )
+        self.assertIn(
+            "window.addEventListener('scroll', "
+            "refreshCompactNavigationTooltip, true)",
+            APP_JS,
+        )
+        self.assertIn("event.key === 'Escape'", APP_JS)
+        self.assertNotIn(
+            "tooltip.setAttribute('aria-hidden', 'false')",
+            APP_JS,
+        )
+        self.assertIn("itemRect.right + 10", APP_JS)
+        self.assertIn("window.innerWidth - tooltipRect.width - 8", APP_JS)
+        self.assertIn("window.innerHeight - tooltipRect.height - 8", APP_JS)
+
+        tooltip_start = CSS.index(
+            ":root[data-ui-shell='emerald'] .compact-nav-tooltip {"
+        )
+        tooltip = CSS[tooltip_start : CSS.index("}", tooltip_start) + 1]
+        self.assertIn("position: fixed;", tooltip)
+        self.assertIn("opacity: 0;", tooltip)
+        self.assertIn("visibility: hidden;", tooltip)
+        self.assertIn("pointer-events: none;", tooltip)
+        self.assertIn("width: max-content;", tooltip)
+        self.assertIn("white-space: nowrap;", tooltip)
+        visible_start = CSS.index(
+            ".compact-nav-tooltip[data-visible='true']"
+        )
+        visible = CSS[visible_start : CSS.index("}", visible_start) + 1]
+        self.assertIn("visibility: visible;", visible)
+        self.assertIn("opacity: 1;", visible)
+
+        drawer = CSS[CSS.index("@media (max-width: 900px)") :]
+        self.assertIn(
+            ".nav-item > span:last-child:not(:first-child)",
+            drawer,
+        )
+        self.assertIn("display: inline", drawer)
+
     def test_emerald_responsive_status_and_contrast_contracts(self):
         self.assertIn("@media (min-width: 901px) and (max-width: 1199px)", CSS)
         self.assertNotIn("@media (min-width: 900px) and (max-width: 1199px)", CSS)

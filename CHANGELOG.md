@@ -5,6 +5,8 @@ All notable changes to Mentat.
 ## 2026-07-31
 
 ### Fixed
+- Compact icon-only navigation now shows the existing menu name on mouse hover
+  and keyboard focus; phones continue to reveal the full labels in the drawer.
 - Retired the unused Classic interface choice, migrated any saved layout back to
   Emerald, and kept every Theme Studio preview card the same size.
 - Text fields, search controls, and dropdowns now highlight their visible border

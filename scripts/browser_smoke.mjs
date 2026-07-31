@@ -135,6 +135,167 @@ async function verifyAppearanceContinuity(client) {
   return appearance;
 }
 
+async function verifyCompactNavigationTooltip(client) {
+  await setViewport(client, 1024, 768);
+  const compactItem = await client.eval(`Boolean(document.querySelector('.nav-item[data-view="agents"]'))`);
+  if (!compactItem) throw new Error('Compact navigation item is missing');
+  const idleHidden = await client.eval(`(() => { const tooltip = document.querySelector('#compact-nav-tooltip'); return tooltip.hidden && tooltip.getAttribute('aria-hidden') === 'true'; })()`);
+  if (!idleHidden) throw new Error('Compact navigation tooltip is visible while idle');
+  await client.eval(`document.querySelector('.nav-item[data-view="today"]').focus()`);
+  await client.call('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Tab',
+    code: 'Tab',
+    windowsVirtualKeyCode: 9,
+    nativeVirtualKeyCode: 9,
+  });
+  await client.call('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Tab',
+    code: 'Tab',
+    windowsVirtualKeyCode: 9,
+    nativeVirtualKeyCode: 9,
+  });
+  await waitFor(
+    () => client.eval(`document.activeElement?.dataset.view === 'agents'`),
+    'keyboard focus on compact navigation item',
+  );
+  await sleep(180);
+  const tooltip = await client.eval(`(() => {
+    const item = document.querySelector('.nav-item[data-view="agents"]');
+    const label = document.querySelector('#compact-nav-tooltip');
+    const itemRect = item.getBoundingClientRect();
+    const labelRect = label.getBoundingClientRect();
+    const style = getComputedStyle(label);
+    label.style.pointerEvents = 'auto';
+    const hit = document.elementFromPoint(
+      labelRect.left + (labelRect.width / 2),
+      labelRect.top + (labelRect.height / 2),
+    );
+    label.style.removeProperty('pointer-events');
+    return {
+      text: label.textContent.trim(),
+      hidden: label.hidden,
+      ariaHidden: label.getAttribute('aria-hidden'),
+      opacity: style.opacity,
+      visibility: style.visibility,
+      pointerEvents: style.pointerEvents,
+      painted: hit === label,
+      leftOfTooltip: labelRect.left,
+      rightOfIcon: itemRect.right,
+      tooltipRight: labelRect.right,
+      viewportWidth: innerWidth,
+    };
+  })()`);
+  if (
+    tooltip.text !== 'Agents & Sessions'
+    || tooltip.hidden
+    || tooltip.ariaHidden !== 'true'
+    || tooltip.opacity !== '1'
+    || tooltip.visibility !== 'visible'
+    || tooltip.pointerEvents !== 'none'
+    || !tooltip.painted
+    || tooltip.leftOfTooltip < tooltip.rightOfIcon
+    || tooltip.tooltipRight > tooltip.viewportWidth
+  ) {
+    throw new Error(`Compact navigation tooltip failed: ${JSON.stringify(tooltip)}`);
+  }
+
+  const calendarTarget = await client.eval(`(() => { const rect = document.querySelector('.nav-item[data-view="calendar"]').getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; })()`);
+  await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...calendarTarget });
+  await waitFor(
+    () => client.eval(`document.querySelector('#compact-nav-tooltip').textContent.trim() === 'Calendar'`),
+    'pointer tooltip over a different keyboard-focused item',
+  );
+  await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 320, y: 320 });
+  await waitFor(
+    () => client.eval(`(() => { const tooltip = document.querySelector('#compact-nav-tooltip'); return !tooltip.hidden && tooltip.textContent.trim() === 'Agents & Sessions'; })()`),
+    'keyboard tooltip restoration after pointer leave',
+  );
+
+  const hiddenDuringScrollRefresh = await client.eval(`(() => {
+    const navigation = document.querySelector('.nav-groups');
+    navigation.dispatchEvent(new Event('scroll'));
+    return document.querySelector('#compact-nav-tooltip').hidden;
+  })()`);
+  if (!hiddenDuringScrollRefresh) throw new Error('Compact navigation tooltip did not refresh on scroll');
+  await waitFor(
+    () => client.eval(`(() => { const tooltip = document.querySelector('#compact-nav-tooltip'); return !tooltip.hidden && tooltip.textContent.trim() === 'Agents & Sessions'; })()`),
+    'keyboard tooltip restoration after scroll',
+  );
+
+  await client.call('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  await client.call('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  await waitFor(
+    () => client.eval(`document.querySelector('#compact-nav-tooltip').hidden`),
+    'compact navigation tooltip Escape dismissal',
+  );
+
+  const pointerTarget = await client.eval(`(() => { const rect = document.querySelector('.nav-item[data-view="agents"]').getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; })()`);
+  await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...pointerTarget });
+  await waitFor(
+    () => client.eval(`!document.querySelector('#compact-nav-tooltip').hidden`),
+    'pointer-opened compact navigation tooltip',
+  );
+  await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 320, y: 320 });
+  await waitFor(
+    () => client.eval(`document.querySelector('#compact-nav-tooltip').hidden`),
+    'pointer tooltip dismissal after leave',
+  );
+  await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...pointerTarget });
+  await waitFor(
+    () => client.eval(`!document.querySelector('#compact-nav-tooltip').hidden`),
+    'pointer tooltip reopened before activation',
+  );
+  await pointerClick(client, pointerTarget.x, pointerTarget.y);
+  await waitFor(
+    () => client.eval(`document.querySelector('#compact-nav-tooltip').hidden`),
+    'pointer tooltip dismissal after activation',
+  );
+
+  await setViewport(client, 390, 844);
+  await client.eval(`document.querySelector('#navigation-toggle').click()`);
+  await waitFor(
+    () => client.eval(`document.documentElement.dataset.navOpen === 'true'`),
+    'phone navigation drawer open',
+  );
+  const phoneLabel = await client.eval(`(() => {
+    const label = document.querySelector('.nav-item[data-view="agents"] > span:last-child');
+    const rect = label.getBoundingClientRect();
+    return {
+      text: label.textContent.trim(),
+      display: getComputedStyle(label).display,
+      width: rect.width,
+    };
+  })()`);
+  if (
+    phoneLabel.text !== 'Agents & Sessions'
+    || phoneLabel.display === 'none'
+    || phoneLabel.width <= 1
+  ) {
+    throw new Error(`Phone navigation label failed: ${JSON.stringify(phoneLabel)}`);
+  }
+  await client.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await waitFor(
+    () => client.eval(`document.documentElement.dataset.navOpen !== 'true'`),
+    'phone navigation drawer close',
+  );
+  await setViewport(client, 1024, 768);
+  return { tooltip, phoneLabel };
+}
+
 async function pointerClick(client, x, y) {
   const common = { x, y, button: 'left', clickCount: 1 };
   await client.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...common });
@@ -290,6 +451,12 @@ async function main() {
     if (process.env.MENTAT_APPEARANCE_SMOKE === '1') {
       const appearance = await verifyAppearanceContinuity(client);
       console.log(JSON.stringify({ ok: true, baseUrl, appearance }, null, 2));
+      await client.ws.close?.();
+      return;
+    }
+    if (process.env.MENTAT_NAV_TOOLTIP_SMOKE === '1') {
+      const navigation = await verifyCompactNavigationTooltip(client);
+      console.log(JSON.stringify({ ok: true, baseUrl, navigation }, null, 2));
       await client.ws.close?.();
       return;
     }
@@ -1886,6 +2053,8 @@ async function main() {
       }
     }
 
+    await verifyCompactNavigationTooltip(client);
+
     await setViewport(client, 1024, 768);
     const compactStatus = await client.eval(`(() => {
       const footer = document.querySelector('.sidebar-footer');
@@ -2051,7 +2220,7 @@ async function main() {
     );
     await setViewport(client, 1440, 1000);
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'compact navigation label tooltip', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
     await stopChild(chrome);
