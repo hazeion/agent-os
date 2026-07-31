@@ -1,6 +1,6 @@
 # Feature Slice Review: macOS Signing Validation Mode
 
-Status: Ready for publication
+Status: Successful
 Slice: `macos-signing-validation-mode`
 Date: `2026-07-31`
 Review log: `reviews/2026-07-31-macos-signing-validation-mode.md`
@@ -193,7 +193,13 @@ release, immutable tag, and prerelease gates.
 - No credential value, local private path, account identifier, certificate
   payload, or new external action is present. Existing secret references remain
   confined to the protected macOS job.
-- Hosted dependency/secret scan and workflow parsing remain pending publication.
+- Pull request 83 ran 50 hosted checks after merging the validated remote-text
+  performance fix from `main`; all 50 passed. This includes workflow parsing,
+  the complete Linux/macOS/Windows Python matrix, native installers, browser
+  smoke, package lifecycle, quality aggregation, and dependency/secret scan.
+- The previously failing macOS Python 3.12 shard passed with the isolated
+  performance correction present. No workflow or signing-validation check
+  failed.
 
 ## Adversarial review
 
@@ -216,6 +222,7 @@ release, immutable tag, and prerelease gates.
 
 ## Outcome
 
-- Local implementation, verification, and both independent reviews satisfy
-  AC-1 through AC-7 with no unresolved P0-P3 finding. The slice is ready for
-  user-approved publication; hosted checks remain the final publication gate.
+- Successful. Local implementation, verification, both independent reviews,
+  and all 50 hosted checks satisfy AC-1 through AC-7 with no unresolved P0-P3
+  finding. The mode remains non-publishing and rollback is a normal commit
+  revert with no credential or data migration.
