@@ -19,6 +19,12 @@ All notable changes to Mentat.
   confirms the match.
 
 ### Changed
+- Search and text-entry fields now keep keyboard focus on the editable control
+  instead of also highlighting an outer wrapper. Session History search now
+  matches the adjacent session selector height across desktop and narrow
+  layouts.
+- Agent Console keeps its Ready status and green indicator without a bordered
+  or filled status container.
 - Remote Agent Console turns now receive exact context used and total context
   window values from compatible Hermes Runs instead of showing them as
   unavailable.

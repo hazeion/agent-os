@@ -2344,6 +2344,7 @@ h2 {
 .agents-session-panel { min-width: 0; }
 .cron-panel-wide { max-width: 100%; }
 .session-controls-card {
+  --session-control-height: 38px;
   display: grid;
   grid-template-columns: minmax(280px, .95fr) minmax(260px, 1.05fr);
   gap: 12px;
@@ -2353,6 +2354,10 @@ h2 {
   border: 1px solid rgba(255,255,255,.075);
   border-radius: 8px;
   background: rgba(255,255,255,.026);
+}
+.session-controls-card :is(.session-select, .search-shell) {
+  height: var(--session-control-height);
+  min-height: var(--session-control-height);
 }
 .session-select-label {
   display: grid;
@@ -4479,18 +4484,21 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .home-console-state {
   width: auto;
   min-width: 0;
-  min-height: 32px;
-  margin-right: 0;
+  min-height: 0;
+  margin-right: auto;
   align-content: center;
-  overflow: hidden;
-  padding: 5px 8px;
-  border: 1px solid var(--operations-border-subtle);
-  border-radius: var(--operations-radius-sm);
-  background: var(--operations-surface-row);
-  flex: 1 1 260px;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  flex: 0 1 auto;
 }
 
 :root[data-ui-shell='emerald'] .home-console-state #agent-console-state {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   color: var(--operations-content-tertiary);
   font-size: 9px;
@@ -7283,11 +7291,6 @@ h2,
   color: var(--operations-content-tertiary);
 }
 
-:root[data-ui-shell='emerald'] .search-shell:focus-within {
-  border-color: var(--operations-focus);
-  box-shadow: 0 0 0 1px var(--operations-focus);
-}
-
 :root[data-ui-shell='emerald'] .search-shell input {
   min-width: 0;
   color: var(--operations-content-primary);
@@ -8045,5 +8048,50 @@ h2,
 
   :root[data-ui-shell='emerald'] .home-schedule-all-day {
     flex-wrap: wrap;
+  }
+}
+
+/* Editable controls own their focus treatment; composite shells remain still. */
+.search-shell input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 1px;
+}
+
+:where(
+  input:not([type]),
+  input[type='text'],
+  input[type='search'],
+  input[type='email'],
+  input[type='url'],
+  input[type='tel'],
+  input[type='password'],
+  input[type='number'],
+  input[type='date'],
+  input[type='time'],
+  input[type='datetime-local'],
+  input[type='month'],
+  input[type='week'],
+  textarea
+):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
+.task-editor-field :is(input, textarea):focus,
+.agent-console-form textarea:focus-visible,
+.agent-console-workspace-search input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
+:root[data-ui-shell='emerald'] .session-controls-card {
+  --session-control-height: 40px;
+}
+
+@media (max-width: 640px) {
+  .session-controls-card {
+    --session-control-height: 44px;
   }
 }
