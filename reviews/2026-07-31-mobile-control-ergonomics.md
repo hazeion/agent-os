@@ -226,8 +226,8 @@ duplicate wall of theme-choice buttons from the phone Settings flow.
 - Unresolved risks: none in scope; the unrelated user-owned fixture mismatch is
   excluded from this slice.
 - User authorization and scope: standing approval recorded above.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- Commit hash: `3d11041`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/79
 
 ## Outcome review
 
