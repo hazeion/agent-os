@@ -89,14 +89,19 @@ planner-only users and users who intend to connect Hermes.
 ## Verification
 
 - Python compilation and patch whitespace checks passed.
-- All 24 packaging/CLI tests passed, including default and custom setup paths,
-  installed lifecycle, native browser launch, and diagnostic privacy.
+- All 26 focused packaging/CLI tests passed, including default and custom setup
+  paths, installed lifecycle, native browser launch, and diagnostic privacy.
 - A real setup against a temporary data root returned the expected fixed base
   command, option-repeat signal, planner-only guidance, and no private path.
-- Complete suite: 908 run, 903 passed, 1 failed, 4 skipped.
-- The sole failure is the pre-existing user-owned `Daily Check` fixture conflict
-  in `test_only_mentat_project_remains_active_for_v1`; this slice does not edit
-  `data/projects.json`.
+- Latest complete suite: 908 run, 902 passed, 2 failed, 4 skipped.
+- Both failures are machine-local fixtures outside this slice:
+  - the pre-existing user-owned `Daily Check` fixture conflict in
+    `test_only_mentat_project_remains_active_for_v1`;
+  - the selected remote Hermes connection currently returns zero cron jobs to
+    `test_inventory_is_read_only_without_an_atomic_hermes_queue_capability`,
+    whose local fixture expects one.
+- This slice does not edit either source of those failures, and no setup, CLI,
+  packaging, lifecycle, or onboarding test failed.
 
 ## Adversarial review
 
@@ -121,8 +126,8 @@ planner-only users and users who intend to connect Hermes.
 ## Outcome review
 
 - Classification: successful.
-- AC-1 through AC-5 pass. The single full-suite failure belongs to the disclosed
-  user-owned local seed fixture and is unrelated.
+- AC-1 through AC-5 pass. The two full-suite failures belong to the disclosed
+  user-owned local seed and selected remote cron fixtures and are unrelated.
 - Migration: none. Rollback: revert the slice commit.
 
 ## Publication packet
