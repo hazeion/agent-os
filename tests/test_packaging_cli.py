@@ -1,6 +1,8 @@
+import ast
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import tomllib
@@ -140,6 +142,115 @@ class PackagingContractTests(unittest.TestCase):
         self.assertNotIn("actions/upload-artifact@v", workflow)
         self.assertNotIn("secrets.", workflow)
         self.assertNotIn("pull_request_target", workflow)
+
+    def test_signed_release_payload_counts_match_native_manifest(self):
+        spec_path = ROOT / "packaging" / "mentat.spec"
+        spec_text = spec_path.read_text(encoding="utf-8")
+        spec_tree = ast.parse(spec_text, filename=str(spec_path))
+        manifest_counts = {}
+        manifest_names = {"PUBLIC_ASSETS", "PUBLIC_SEEDS"}
+        for name in manifest_names:
+            assignments = [
+                statement
+                for statement in spec_tree.body
+                if isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == name
+                    for target in statement.targets
+                )
+            ]
+            self.assertEqual(len(assignments), 1, f"expected one literal {name} assignment")
+            self.assertIsInstance(
+                assignments[0].value,
+                ast.Tuple,
+                f"{name} must remain an immutable tuple literal",
+            )
+            writes = [
+                node
+                for node in ast.walk(spec_tree)
+                if isinstance(node, ast.Name)
+                and node.id == name
+                and isinstance(node.ctx, ast.Store)
+            ]
+            self.assertEqual(len(writes), 1, f"unsupported additional write to {name}")
+            manifest_counts[name] = len(ast.literal_eval(assignments[0].value))
+
+        datas_assignments = [
+            statement
+            for statement in spec_tree.body
+            if isinstance(statement, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "datas"
+                for target in statement.targets
+            )
+        ]
+        self.assertEqual(len(datas_assignments), 1)
+        public_comprehension = datas_assignments[0].value
+        self.assertIsInstance(public_comprehension, ast.ListComp)
+        self.assertEqual(len(public_comprehension.generators), 1)
+        public_generator = public_comprehension.generators[0]
+        self.assertIsInstance(public_generator.iter, ast.Name)
+        self.assertEqual(public_generator.iter.id, "PUBLIC_ASSETS")
+        self.assertIsInstance(public_comprehension.elt, ast.Tuple)
+        self.assertEqual(ast.literal_eval(public_comprehension.elt.elts[1]), "public")
+        seed_extensions = [
+            statement
+            for statement in spec_tree.body
+            if isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Attribute)
+            and statement.value.func.attr == "extend"
+            and isinstance(statement.value.func.value, ast.Name)
+            and statement.value.func.value.id == "datas"
+            and any(
+                isinstance(node, ast.Name)
+                and node.id == "PUBLIC_SEEDS"
+                and isinstance(node.ctx, ast.Load)
+                for node in ast.walk(statement.value)
+            )
+        ]
+        self.assertEqual(len(seed_extensions), 1)
+        seed_call = seed_extensions[0].value
+        self.assertEqual(len(seed_call.args), 1)
+        self.assertFalse(seed_call.keywords)
+        seed_comprehension = seed_call.args[0]
+        self.assertIsInstance(seed_comprehension, ast.GeneratorExp)
+        self.assertEqual(len(seed_comprehension.generators), 1)
+        seed_generator = seed_comprehension.generators[0]
+        self.assertIsInstance(seed_generator.iter, ast.Name)
+        self.assertEqual(seed_generator.iter.id, "PUBLIC_SEEDS")
+        self.assertIsInstance(seed_comprehension.elt, ast.Tuple)
+        self.assertEqual(ast.literal_eval(seed_comprehension.elt.elts[1]), "data")
+
+        workflow = (
+            ROOT / ".github" / "workflows" / "signed-release-artifacts.yml"
+        ).read_text(encoding="utf-8")
+        macos_job = workflow[
+            workflow.index("  macos:\n") : workflow.index("  windows:\n")
+        ]
+        inspection_step = macos_job[
+            macos_job.index("      - name: Build and inspect unsigned macOS content\n") :
+            macos_job.index("      - name: Import protected signing identities\n")
+        ]
+        workflow_matches = re.findall(
+            r'^          test "\$\(find dist/Mentat\.app/Contents/Resources/'
+            r"(public|data) -maxdepth 1 -type f \| wc -l \| tr -d ' '\)\" = ([0-9]+)$",
+            inspection_step,
+            flags=re.MULTILINE,
+        )
+        self.assertEqual(len(workflow_matches), 2)
+        self.assertEqual({directory for directory, _ in workflow_matches}, {"public", "data"})
+        workflow_counts = {
+            directory: int(count) for directory, count in workflow_matches
+        }
+
+        self.assertEqual(
+            manifest_counts,
+            {
+                "PUBLIC_ASSETS": workflow_counts.get("public"),
+                "PUBLIC_SEEDS": workflow_counts.get("data"),
+            },
+        )
 
     def test_signed_release_path_is_manual_protected_and_ephemeral(self):
         workflow = (

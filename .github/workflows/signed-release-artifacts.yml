@@ -92,7 +92,7 @@ jobs:
         shell: bash
         run: |
           python scripts/build_native.py
-          test "$(find dist/Mentat.app/Contents/Resources/public -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5
+          test "$(find dist/Mentat.app/Contents/Resources/public -maxdepth 1 -type f | wc -l | tr -d ' ')" = 6
           test "$(find dist/Mentat.app/Contents/Resources/data -maxdepth 1 -type f | wc -l | tr -d ' ')" = 9
           test ! -e dist/Mentat.app/Contents/Resources/data/private
           test ! -e dist/Mentat.app/Contents/Resources/data/runtime
