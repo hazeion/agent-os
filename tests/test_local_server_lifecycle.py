@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, call, patch
 
 import mentat_lifecycle as lifecycle
+import private_state
 from private_state import connection_server_reservation_path, mentat_server_active
 import server
 
@@ -28,6 +31,18 @@ class LocalServerLifecycleTests(unittest.TestCase):
     def test_managed_ports_include_only_the_configured_port(self):
         self.assertEqual(lifecycle.managed_ports(8888), [8888])
         self.assertEqual(lifecycle.managed_ports(9001), [9001])
+
+    def test_exited_process_does_not_keep_server_reservation_active(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            reservation = connection_server_reservation_path(root)
+            reservation.parent.mkdir(parents=True)
+            child = subprocess.Popen([sys.executable, "-c", "pass"])
+            child.wait(timeout=5)
+            reservation.write_text(json.dumps({"pid": child.pid}) + "\n", encoding="utf-8")
+
+            self.assertFalse(private_state._pid_is_running(child.pid))
+            self.assertFalse(mentat_server_active(root))
 
     def test_parse_netstat_listeners_extracts_listening_rows(self):
         output = """

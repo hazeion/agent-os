@@ -94,10 +94,22 @@ class AgentConsoleAttachmentUiTests(unittest.TestCase):
         renderer = CORE[CORE.index("function renderMarkdown(value"):CORE.index("async function api")]
         self.assertIn("^[A-Za-z0-9_+#.-]{1,32}$", renderer)
         self.assertIn("escapeHtml(language || 'plain text')", renderer)
-        self.assertIn("escapeHtml(code.trimEnd())", renderer)
+        self.assertIn("highlightCode(code.trimEnd(), normalizedLanguage)", renderer)
+        self.assertIn('class="language-${escapeHtml(normalizedLanguage', renderer)
         self.assertIn('class="markdown-code-block"', renderer)
         self.assertIn("data-copy-code", renderer)
         self.assertNotIn("innerHTML", renderer)
+
+    def test_code_highlighting_is_local_language_aware_and_escapes_every_token(self):
+        highlighter = CORE[CORE.index("const CODE_LANGUAGE_ALIASES"):CORE.index("function renderMarkdown(value")]
+        for language in ("javascript", "typescript", "python", "powershell", "sql", "markup"):
+            self.assertIn(language, highlighter)
+        for token in ("comment", "keyword", "string", "number", "literal", "function", "operator"):
+            self.assertIn(f"syntax-{token}", CORE + CSS)
+        self.assertIn("escapeHtml(value)", highlighter)
+        self.assertNotIn("innerHTML", highlighter)
+        self.assertIn("white-space: pre;", CSS)
+        self.assertIn("tab-size: 4;", CSS)
 
     def test_code_copy_reads_rendered_text_instead_of_an_html_attribute(self):
         copying = APP[APP.index("async function copyRenderedCode"):APP.index("function renderAgentConsoleAttachmentTray")]

@@ -943,6 +943,10 @@ h1, h2, h3, p { margin: 0; }
 .agent-console-log-row > span:nth-of-type(2) { color: var(--accent); font: 750 .68rem/1.45 var(--mono); }
 .agent-console-log-prompt > span { color: var(--accent-2) !important; }
 .agent-console-log-status { color: var(--muted); }
+.agent-console-current-status {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 62%, var(--line));
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
 .agent-console-log-status.tool\.started > span:last-child,
 .agent-console-log-status.tool\.completed > span:last-child { color: var(--accent); }
 .agent-console-runtime-notice {
@@ -960,9 +964,17 @@ h1, h2, h3, p { margin: 0; }
   min-width: 0;
 }
 .agent-console-reasoning-detail summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   cursor: pointer;
+  color: var(--accent);
+  font: 700 .62rem/1.45 var(--mono);
   overflow-wrap: anywhere;
 }
+.agent-console-reasoning-detail summary::marker { color: var(--accent); }
+.agent-console-reasoning-detail:not([open]) .reasoning-expanded-label,
+.agent-console-reasoning-detail[open] .reasoning-collapsed-label { display: none; }
 .agent-console-reasoning-detail summary:focus-visible {
   border-radius: 3px;
   outline: 2px solid var(--focus-ring);
@@ -2677,9 +2689,18 @@ h2 {
   border: 0;
   border-radius: 0;
   background: transparent;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow-x: auto;
+  tab-size: 4;
+  white-space: pre;
 }
+.markdown-code-block code { color: var(--text-secondary); }
+.markdown-code-block .syntax-comment { color: var(--muted-2); font-style: italic; }
+.markdown-code-block .syntax-keyword { color: var(--accent-2); font-weight: 750; }
+.markdown-code-block .syntax-string { color: var(--success); }
+.markdown-code-block .syntax-number { color: color-mix(in srgb, var(--danger) 66%, var(--text)); }
+.markdown-code-block .syntax-literal { color: color-mix(in srgb, var(--accent-2) 68%, var(--text)); font-weight: 700; }
+.markdown-code-block .syntax-function { color: var(--accent); }
+.markdown-code-block .syntax-operator { color: color-mix(in srgb, var(--text-secondary) 76%, var(--accent)); }
 .agent-console-artifacts { display: grid; gap: 7px; margin-top: 12px; }
 .agent-console-artifacts > h4 { margin: 0; color: var(--muted); font-size: .62rem; text-transform: uppercase; }
 .agent-console-artifact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 7px; }
@@ -6564,6 +6585,18 @@ h2,
   .agent-console-stop { grid-column: 1 / -1; }
   .agent-console-log-row,
   .agent-console-working { grid-template-columns: 56px 54px minmax(0, 1fr); gap: 7px; padding: 8px; }
+  .agent-console-log-response,
+  .agent-console-log-error { grid-template-columns: minmax(0, 1fr); }
+  .agent-console-log-response > span:first-child,
+  .agent-console-log-error > span:first-child,
+  .agent-console-log-response .message-content,
+  .agent-console-log-error .message-content { grid-column: 1; }
+  .agent-console-log-status.reasoning\.available {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+  .agent-console-log-status.reasoning\.available .agent-console-reasoning-detail {
+    grid-column: 1 / -1;
+  }
   .agent-console-command-option { grid-template-columns: 68px minmax(0, 1fr); }
   .managed-agent-layout { grid-template-columns: minmax(0, 1fr); }
   .managed-agent-config { grid-template-columns: minmax(0, 1fr); }

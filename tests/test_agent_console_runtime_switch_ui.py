@@ -205,13 +205,15 @@ class AgentConsoleRuntimeSwitchUiTests(unittest.TestCase):
         self.assertIn("const transportBinding = state.agentConsoleTransportBinding", retry)
         self.assertIn("requestGeneration !== state.agentConsoleRuntimeRequestGeneration", retry)
 
-    def test_tool_details_default_hidden_with_toggle_and_activity_summary(self):
-        self.assertIn("agentConsoleShowTools: false", CORE)
-        self.assertIn('id="agent-console-tool-toggle" aria-pressed="false">Show tools</button>', INDEX)
+    def test_activity_details_default_compact_with_toggle_and_tool_summary(self):
+        self.assertIn("agentConsoleShowActivity: false", CORE)
+        self.assertIn('id="agent-console-tool-toggle" aria-pressed="false">Show activity</button>', INDEX)
         render = self.app_block("function renderAgentConsole(payload = {})", "function scheduleAgentConsolePoll")
-        self.assertIn("eventType.startsWith('tool.') && !state.agentConsoleShowTools", render)
+        self.assertIn("agentConsoleVisibleEvents(", render)
+        self.assertIn("state.agentConsoleShowActivity", render)
+        self.assertIn("agent-console-current-status", render)
         self.assertIn("agentConsoleOutstandingToolCount(run.events || []) > 0", render)
-        self.assertIn("toolActivityBanner.hidden = !toolActivityActive || state.agentConsoleShowTools", render)
+        self.assertIn("toolActivityBanner.hidden = !toolActivityActive || state.agentConsoleShowActivity", render)
         self.assertIn("`${toolAgentName} is using tools`", render)
         self.assertIn("toolToggle.setAttribute('aria-pressed'", render)
         self.assertIn('id="agent-console-tool-activity-banner"', INDEX)
@@ -222,6 +224,25 @@ class AgentConsoleRuntimeSwitchUiTests(unittest.TestCase):
         self.assertIn("@keyframes agent-console-tool-dots", CSS)
         self.assertIn('content: "..";', CSS)
         self.assertIn('content: "...";', CSS)
+
+    def test_compact_activity_keeps_reasoning_and_only_the_latest_status(self):
+        compacting = self.app_block(
+            "function agentConsoleVisibleEvents",
+            "function agentConsoleRuntimeBlocked",
+        )
+        self.assertIn("if (showActivity) return eligible", compacting)
+        self.assertIn("latestStatusIndex = index", compacting)
+        self.assertIn("eventType !== 'reasoning.available'", compacting)
+        self.assertIn("!eventType.startsWith('tool.')", compacting)
+        self.assertIn("=== 'reasoning.available'", compacting)
+
+    def test_live_agent_elapsed_time_is_anchored_to_the_run_start(self):
+        timer = self.app_block("function activeRunElapsedTime", "function homeAgentObservation")
+        self.assertIn("[run.started_at, run.created_at]", timer)
+        self.assertIn("Date.now() - started", timer)
+        self.assertNotIn("run.updated_at", timer)
+        presentation = self.app_block("function renderHomeLiveAgents", "function renderHomeProjects")
+        self.assertIn("activeRunElapsedTime(row.activeRun)", presentation)
 
     def test_verified_switch_notice_is_browser_only(self):
         notice = self.app_block(

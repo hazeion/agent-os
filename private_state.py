@@ -147,14 +147,53 @@ def _pid_record_active(state: Path) -> bool | None:
         pid = payload.get("pid") if isinstance(payload, dict) else None
         if not isinstance(pid, int) or pid <= 0:
             return True
-        os.kill(pid, 0)
-        return True
+        return _pid_is_running(pid)
     except FileNotFoundError:
         return None
     except ProcessLookupError:
         return False
     except (OSError, UnicodeError, ValueError, TypeError):
         return True
+
+
+def _pid_is_running(pid: int) -> bool:
+    """Check PID liveness without relying on os.kill(pid, 0) on Windows."""
+
+    if os.name != "nt":
+        os.kill(pid, 0)
+        return True
+
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    wait_object_0 = 0x00000000
+    wait_timeout = 0x00000102
+    error_invalid_parameter = 87
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(synchronize, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == error_invalid_parameter:
+            return False
+        raise ctypes.WinError(error)
+    try:
+        wait_result = kernel32.WaitForSingleObject(handle, 0)
+        if wait_result == wait_timeout:
+            return True
+        if wait_result == wait_object_0:
+            return False
+        raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def connection_server_reservation_path(data_root: Path) -> Path:
