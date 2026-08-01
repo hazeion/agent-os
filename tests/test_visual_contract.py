@@ -767,8 +767,9 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("document.documentElement.dataset.uiShell = 'emerald'", head_block)
         self.assertIn("document.documentElement.dataset.contrast", head_block)
         self.assertIn("prefers-contrast: more", head_block)
-        self.assertIn('/core.js?v=emerald-shell-1', INDEX)
-        self.assertIn('/app.js?v=emerald-shell-1', INDEX)
+        self.assertIn('/styles.css?v=emerald-shell-2', INDEX)
+        self.assertIn('/core.js?v=emerald-shell-2', INDEX)
+        self.assertIn('/app.js?v=emerald-shell-2', INDEX)
         self.assertNotIn('compact-dark-board-1', INDEX)
         self.assertIn("applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id)", APP_JS)
 

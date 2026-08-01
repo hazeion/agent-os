@@ -506,6 +506,21 @@ function homeRelativeTime(value) {
   return deltaSeconds < 0 ? `in ${duration}` : `${duration} ago`;
 }
 
+function activeRunElapsedTime(run = {}) {
+  const startedAt = [run.started_at, run.created_at]
+    .find((value) => Number.isFinite(Date.parse(String(value || ''))));
+  const started = Date.parse(String(startedAt || ''));
+  if (!Number.isFinite(started)) return 'Active';
+  const totalSeconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const timer = hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${minutes}:${String(seconds).padStart(2, '0')}`;
+  return `${timer} active`;
+}
+
 function homeAgentObservation(profile = {}) {
   const profileId = normalizeFilterValue(profile.id || profile.name || '');
   if (!profileId) return null;
@@ -615,7 +630,9 @@ function renderHomeLiveAgents() {
     const health = row.tone === 'attention'
       ? row.observation?.stale ? 'Stale' : 'Review'
       : row.tone === 'working' ? 'Active' : row.available ? 'Available' : 'Unavailable';
-    const activityLabel = homeRelativeTime(row.lastActive);
+    const activityLabel = row.activeRun
+      ? activeRunElapsedTime(row.activeRun)
+      : homeRelativeTime(row.lastActive);
     const accessibleLabel = [
       `Open ${agent.name || agent.id || 'agent'} in Agents.`,
       `Status: ${row.status}.`,
@@ -3181,6 +3198,24 @@ function agentConsoleOutstandingToolCount(events = []) {
   return outstanding;
 }
 
+function agentConsoleVisibleEvents(events = [], showActivity = false) {
+  const eligible = events.filter((event) => (
+    event?.type !== 'session.started' && event?.kind !== 'session.started'
+  ));
+  if (showActivity) return eligible;
+  let latestStatusIndex = -1;
+  eligible.forEach((event, index) => {
+    const eventType = event?.type || event?.kind || 'status';
+    if (eventType !== 'reasoning.available' && !eventType.startsWith('tool.')) {
+      latestStatusIndex = index;
+    }
+  });
+  return eligible.filter((event, index) => (
+    (event?.type || event?.kind) === 'reasoning.available'
+    || index === latestStatusIndex
+  ));
+}
+
 function agentConsoleRuntimeBlocked() {
   return state.agentConsoleRuntimeLoading
     || state.agentConsoleRuntimeMutationInFlight
@@ -3415,8 +3450,8 @@ function renderAgentConsole(payload = {}) {
     button.disabled = runtimeBlocked || state.agentConsoleAttachmentsUploading;
   });
   if (toolToggle) {
-    toolToggle.textContent = state.agentConsoleShowTools ? 'Hide tools' : 'Show tools';
-    toolToggle.setAttribute('aria-pressed', state.agentConsoleShowTools ? 'true' : 'false');
+    toolToggle.textContent = state.agentConsoleShowActivity ? 'Hide activity' : 'Show activity';
+    toolToggle.setAttribute('aria-pressed', state.agentConsoleShowActivity ? 'true' : 'false');
   }
   if (runtimeRefresh) {
     runtimeRefresh.hidden = !state.agentConsoleRuntimeUnresolved;
@@ -3443,7 +3478,7 @@ function renderAgentConsole(payload = {}) {
   const toolActivityContext = `${state.agentConsoleTransportBinding || ''}:${selectedAgent.id}`;
   const toolAgentName = activeToolRun?.agent_name || selectedAgent.name || 'Agent';
   if (toolActivityBanner) {
-    toolActivityBanner.hidden = !toolActivityActive || state.agentConsoleShowTools;
+    toolActivityBanner.hidden = !toolActivityActive || state.agentConsoleShowActivity;
   }
   if (toolActivityText && toolActivityActive) {
     toolActivityText.textContent = `${toolAgentName} is using tools`;
@@ -3477,25 +3512,29 @@ function renderAgentConsole(payload = {}) {
     const sessionDivider = startsNewSession
       ? '<div class="agent-console-session-divider" role="separator" aria-label="New Hermes session started"><span aria-hidden="true">New Hermes session started</span></div>'
       : '';
-    const events = (run.events || []).filter(
-      (event) => event.type !== 'session.started' && event.kind !== 'session.started'
-    ).map((event) => {
+    const visibleEvents = agentConsoleVisibleEvents(
+      run.events || [],
+      state.agentConsoleShowActivity,
+    );
+    const events = visibleEvents.map((event) => {
       const eventType = event.type || event.kind || 'status';
-      if (eventType.startsWith('tool.') && !state.agentConsoleShowTools) return '';
       const eventSource = eventType.startsWith('tool.')
         ? 'Tool'
         : eventType === 'reasoning.available'
           ? 'Thinking'
           : runAgentName;
       const eventText = String(event.display_text || event.message || 'Working');
-      const eventContent = eventType === 'reasoning.available' && eventText.length > 100
-        ? `<details class="agent-console-reasoning-detail">
-            <summary aria-label="Show full reasoning summary">${escapeHtml(eventText.slice(0, 100))}...</summary>
+      const eventContent = eventType === 'reasoning.available'
+        ? `<details class="agent-console-reasoning-detail" open>
+            <summary><span class="reasoning-expanded-label">Collapse thinking</span><span class="reasoning-collapsed-label">Show thinking</span></summary>
             <div>${escapeHtml(eventText)}</div>
           </details>`
         : `<span>${escapeHtml(eventText)}</span>`;
+      const compactStatusClass = !state.agentConsoleShowActivity && eventType !== 'reasoning.available'
+        ? ' agent-console-current-status'
+        : '';
       return `
-      <div class="agent-console-log-row agent-console-log-status ${eventType.startsWith('tool.') ? 'agent-console-tool-event ' : ''}${escapeHtml(event.kind || 'status')}">
+      <div class="agent-console-log-row agent-console-log-status${compactStatusClass} ${eventType.startsWith('tool.') ? 'agent-console-tool-event ' : ''}${escapeHtml(event.kind || 'status')}">
         <time class="mono">${escapeHtml(timeFmt.format(new Date(event.timestamp || Date.now())))}</time><span>${escapeHtml(eventSource)}</span>${eventContent}
       </div>`;
     }).join('');
@@ -6661,7 +6700,7 @@ $('#agent-console-provider-select')?.addEventListener('change', async (event) =>
   });
 });
 $('#agent-console-tool-toggle')?.addEventListener('click', () => {
-  state.agentConsoleShowTools = !state.agentConsoleShowTools;
+  state.agentConsoleShowActivity = !state.agentConsoleShowActivity;
   renderAgentConsole({
     agents: state.agentConsoleAgents,
     provider_inventory: state.agentConsoleProviderInventory,
