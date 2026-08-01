@@ -160,7 +160,10 @@ def _pid_is_running(pid: int) -> bool:
     """Check PID liveness without relying on os.kill(pid, 0) on Windows."""
 
     if os.name != "nt":
-        os.kill(pid, 0)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
         return True
 
     import ctypes

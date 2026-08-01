@@ -973,7 +973,7 @@ async function main() {
     const structuredEventRendered = await client.eval(`(() => { renderAgentConsole({ agents: [{ id: 'event-smoke', name: 'Event Smoke', available: true, model: 'test/model' }], model_catalog: { profile_id: 'event-smoke', models: ['test/model'], current_model: 'test/model' }, runs: [{ id: 'run_event_smoke', agent_id: 'event-smoke', agent_name: 'Event Smoke', status: 'completed', prompt: 'Check events', response: 'Done', created_at: new Date().toISOString(), event_cursor: 1, events: [{ schema_version: 1, run_id: 'run_event_smoke', sequence: 1, cursor: 1, type: 'complete', kind: 'complete', timestamp: new Date().toISOString(), data: {}, display_text: 'Structured event rendered' }] }] }); return document.querySelector('#agent-console-chat')?.textContent.includes('Structured event rendered'); })()`);
     if (!structuredEventRendered) throw new Error('Structured Agent Console event render smoke failed');
     const hiddenToolState = await client.eval(`(() => {
-      state.agentConsoleShowTools = false;
+      state.agentConsoleShowActivity = false;
       renderAgentConsole({
         agents: [{ id: 'tool-smoke', name: 'Tool Smoke', available: true, provider: 'alpha', model: 'alpha-one' }],
         provider_inventory: {
@@ -1012,7 +1012,7 @@ async function main() {
       || !hiddenToolState.transcriptVisible
       || !hiddenToolState.activityVisible
       || !hiddenToolState.activityText.includes('Tool Smoke is using tools')
-      || hiddenToolState.toggleLabel !== 'Show tools'
+      || hiddenToolState.toggleLabel !== 'Show activity'
       || hiddenToolState.pressed !== 'false'
       || !hiddenToolState.animated
       || hiddenToolState.liveNodeCount !== 1
@@ -1034,13 +1034,13 @@ async function main() {
     if (
       !shownToolState.detailsVisible
       || !shownToolState.activityHidden
-      || shownToolState.toggleLabel !== 'Hide tools'
+      || shownToolState.toggleLabel !== 'Hide activity'
       || shownToolState.pressed !== 'true'
     ) {
       throw new Error(`Tool visibility toggle contract failed: ${JSON.stringify(shownToolState)}`);
     }
     const stableToolLiveState = await client.eval(`(() => {
-      state.agentConsoleShowTools = false;
+      state.agentConsoleShowActivity = false;
       const live = document.querySelector('#agent-console-tool-live-status');
       const observer = new MutationObserver(() => {});
       observer.observe(live, { childList: true, characterData: true, subtree: true });
@@ -1157,7 +1157,7 @@ async function main() {
           },
         };
       };
-      state.agentConsoleShowTools = false;
+      state.agentConsoleShowActivity = false;
       state.agentConsoleRuntimeNotices = [];
       state.agentConsoleSelectedProvider = '';
       state.agentConsoleSelectedModel = '';
