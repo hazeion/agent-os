@@ -32,7 +32,9 @@ source. You need:
 - [Git](https://git-scm.com/downloads)
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) for agent features
 
-macOS and Windows are the tier-one beta platforms; Linux is a preview.
+macOS and Windows are the tier-one beta platforms; Linux is a preview. The
+macOS release provides separate native Apple Silicon (recommended) and Intel
+installers.
 Before you begin, check the [supported platforms and known limitations](SUPPORT.md).
 
 Open a terminal and run:

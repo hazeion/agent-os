@@ -1,9 +1,9 @@
 # Release rehearsal
 
 This checklist proves a Mentat release candidate is safe to share. Use fresh
-Intel and Apple Silicon Macs, a fresh Windows machine, and a clean Python
-3.11–3.13 setup. The first macOS package is Intel; Apple Silicon testing uses
-Rosetta.
+Apple Silicon and Intel Macs, a fresh Windows machine, and a clean Python
+3.11–3.13 setup. Use the native package matching each Mac architecture; Apple
+Silicon is the recommended/default macOS path.
 
 ## 1. Build the candidate
 
@@ -16,7 +16,7 @@ Rosetta.
    upgrade baselines. For the first RC, use reviewed non-private fixture data.
 5. Run **Signed beta artifacts** on `main` with the next tag, such as
    `v0.1.0-beta.1-rc.1`.
-6. Download the four release files, `SHA256SUMS`, and
+6. Download the five release files, `SHA256SUMS`, and
    `release-manifest.json`. Do not test a file from another build.
 7. Verify every checksum. On macOS use `shasum -a 256 -c SHA256SUMS`; on
    Windows compare `Get-FileHash FILE -Algorithm SHA256` with `SHA256SUMS`.
@@ -27,6 +27,7 @@ Stop if a signature, notarization, checksum, or required workflow fails.
 
 Use these exact candidate filenames. Replace `TAG` only with the RC tag:
 
+- `Mentat-0.1.0-beta.1-macos-arm64-signed.pkg` (Apple Silicon, recommended)
 - `Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg`
 - `Mentat-0.1.0-beta.1-windows-x64.exe`
 - `mentat_local-0.1.0b1-py3-none-any.whl`
@@ -42,7 +43,8 @@ Use the Mentat command for the channel being tested:
 
 Install the exact candidate:
 
-- macOS: `sudo installer -pkg ./Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg -target /`
+- macOS Apple Silicon: `sudo installer -pkg ./Mentat-0.1.0-beta.1-macos-arm64-signed.pkg -target /`
+- macOS Intel: `sudo installer -pkg ./Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg -target /`
 - Windows PowerShell: `Start-Process .\Mentat-0.1.0-beta.1-windows-x64.exe -Wait`
 - pipx: `pipx install https://github.com/hazeion/agent-os/releases/download/TAG/mentat_local-0.1.0b1-py3-none-any.whl`
 
@@ -99,7 +101,7 @@ application-only uninstall.
 
 Record the result and tester for every row:
 
-| Check | Intel Mac | Apple Silicon + Rosetta | Windows | pipx |
+| Check | Apple Silicon native | Intel Mac native | Windows | pipx |
 | --- | --- | --- | --- | --- |
 | Clean install and first start |  |  |  |  |
 | Backup before upgrade |  |  |  |  |

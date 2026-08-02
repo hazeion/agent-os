@@ -11,10 +11,11 @@ upload, or paste signing material into an issue, pull request, or chat.
   [Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/quickstart).
 - Admin access to the `hazeion/agent-os` GitHub repository.
 
-The protected workflow uses an Apple Developer ID identity for macOS and Azure
-Artifact Signing for Windows. Windows authentication is passwordless: GitHub
-requests a short-lived Azure token through OpenID Connect (OIDC), and the
-Windows private key never enters GitHub.
+The protected workflow uses the same Apple Developer ID identities for native
+Apple Silicon and Intel macOS packages, and Azure Artifact Signing for Windows.
+Windows authentication is passwordless: GitHub requests a short-lived Azure
+token through OpenID Connect (OIDC), and the Windows private key never enters
+GitHub.
 
 ## 1. Prepare Apple signing
 
@@ -82,18 +83,19 @@ creating a release candidate or requiring Azure:
 1. Open **Actions → Signed beta artifacts → Run workflow** on `main`.
 2. Choose `macos-only` for **validation_scope**.
 3. Leave **release_tag** blank.
-4. Approve the waiting `beta-release` macOS job after confirming the exact
+4. Approve the waiting `beta-release` macOS jobs after confirming the exact
    source commit.
 
 This mode still verifies the protected `main` revision and its required checks,
-then signs, notarizes, staples, Gatekeeper-assesses, installs, starts, stops, and
-uninstalls the exact macOS package. It uploads that package as an ephemeral
-seven-day workflow artifact. The Windows and Python release jobs must remain
-skipped, and the validation summary fails unless that isolation is true. The
-release-and-tag job is also skipped, so this mode cannot create a tag, GitHub
-release, or recovery bundle.
+then independently signs, notarizes, staples, Gatekeeper-assesses, installs,
+starts, stops, and uninstalls the native Apple Silicon and Intel macOS packages.
+It uploads each package as a uniquely named ephemeral seven-day workflow
+artifact. The Windows and Python release jobs must remain skipped, and the
+validation summary fails unless both macOS matrix legs succeed and that
+isolation is true. The release-and-tag job is also skipped, so this mode cannot
+create a tag, GitHub release, or recovery bundle.
 
-The protected job uploads once in a short, separately completed step. That step
+Each protected matrix leg uploads once in a short, separately completed step. That step
 validates Apple's submission ID, records it in the durable job summary, and
 passes it as a validated step output to a later poll-only step. The poll step
 checks that same request for up to four hours and has no upload invocation.

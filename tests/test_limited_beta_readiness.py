@@ -29,11 +29,18 @@ class LimitedBetaReadinessTests(unittest.TestCase):
         windows = guide.split("### Windows native", 1)[1].split("### pipx", 1)[0]
         pipx = guide.split("### pipx", 1)[1].split("## Your checklist", 1)[0]
         self.assertIn(
+            '"$HOME/Downloads/Mentat-0.1.0-beta.1-macos-arm64-signed.pkg"',
+            macos,
+        )
+        self.assertIn(
             '"$HOME/Downloads/Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg"',
             macos,
         )
+        self.assertLess(macos.index("macos-arm64"), macos.index("macos-x86_64"))
         self.assertIn("SHA256SUMS", macos)
-        self.assertLess(macos.index("shasum -a 256"), macos.index("Open the `.pkg`"))
+        self.assertLess(
+            macos.index("shasum -a 256"), macos.index("Open the matching `.pkg`")
+        )
         self.assertIn(
             '"$env:USERPROFILE\\Downloads\\Mentat-0.1.0-beta.1-windows-x64.exe"',
             windows,
@@ -81,7 +88,7 @@ class LimitedBetaReadinessTests(unittest.TestCase):
             "P0 and P1",
             "Milestone 6 is marked complete",
             "Intel macOS",
-            "Apple Silicon with Rosetta",
+            "Apple Silicon native",
             "exact verified Hermes runtime/build",
             "Do not commit",
             "aggregate",
@@ -120,6 +127,12 @@ class LimitedBetaReadinessTests(unittest.TestCase):
         self.assertIn("Never include credentials", form)
         self.assertIn("endpoints, hostnames, IP addresses", form)
         self.assertIn('options: ["No", "Yes"]', form)
+        platform_options = (
+            "options: [macOS Apple Silicon native, macOS Intel native, "
+            "Windows, Linux preview]"
+        )
+        self.assertIn(platform_options, form)
+        self.assertNotIn("Rosetta", form)
 
         # GitHub dropdown options must be strings. Catch YAML 1.1 boolean-like
         # scalars even when a generic YAML parser accepts the document.
@@ -180,7 +193,7 @@ class LimitedBetaReadinessTests(unittest.TestCase):
             normalized = " ".join(text.split())
             self.assertIn("at least 80%", normalized)
             self.assertIn("Intel Mac native", normalized)
-            self.assertIn("Apple Silicon with Rosetta native", normalized)
+            self.assertIn("Apple Silicon native", normalized)
             self.assertIn("Windows native", normalized)
             self.assertIn("supported `pipx`", normalized)
             self.assertIn("first-workflow", normalized)

@@ -31,18 +31,22 @@ Choose the one install channel assigned by your invitation:
 
 ### macOS native
 
-1. Download `Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg` and `SHA256SUMS`
-   into Downloads.
-2. In Terminal, run the command below. Compare the printed value with the
-   package's line in `SHA256SUMS`.
+Apple Silicon is the recommended/default Mac path. Download the package that
+matches the Mac, plus `SHA256SUMS`, into Downloads:
+
+- Apple Silicon: `Mentat-0.1.0-beta.1-macos-arm64-signed.pkg`
+- Intel: `Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg`
+
+In Terminal, run the matching command and compare the printed value with the
+package's line in `SHA256SUMS`.
 
    ```text
+   shasum -a 256 "$HOME/Downloads/Mentat-0.1.0-beta.1-macos-arm64-signed.pkg"
    shasum -a 256 "$HOME/Downloads/Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg"
    ```
 
-3. Open the `.pkg` from Downloads and finish the installer.
-4. Open Mentat from Applications. The dashboard should open in your browser.
-   On Apple Silicon, use Rosetta only when your invitation assigns that path.
+Open the matching `.pkg` from Downloads and finish the installer. Then select
+**Open Mentat from Applications**. The dashboard should open in your browser.
 
 ### Windows native
 

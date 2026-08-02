@@ -122,6 +122,8 @@ Aggregate results
             self.assertIn(COHORT_URL, notes)
             self.assertIn("SUPPORT.md", notes)
             self.assertIn("SECURITY", notes)
+            self.assertIn("Apple Silicon and Intel have separate native", notes)
+            self.assertNotIn("Rosetta", notes)
 
     def test_candidate_inventory_manifest_checksums_and_bytes_are_exact(self):
         mutations = ("extra", "artifact", "manifest", "checksums", "wholesale")
@@ -308,6 +310,14 @@ Aggregate results
         self.assertIn("gh release create v0.1.0-beta.1", workflow)
         self.assertIn("verify-release", workflow)
         self.assertIn("gh release verify v0.1.0-beta.1", workflow)
+        self.assertLess(
+            workflow.index("candidate-assets/Mentat-0.1.0-beta.1-macos-arm64-signed.pkg"),
+            workflow.index("candidate-assets/Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg"),
+        )
+        self.assertIn(
+            'test "$(find promotion-recovery -maxdepth 1 -type f | wc -l | tr -d \' \')" = 10',
+            workflow,
+        )
         self.assertNotIn("--prerelease", workflow)
         self.assertNotIn("python -m build", workflow)
         self.assertNotIn("scripts/build_native.py", workflow)
