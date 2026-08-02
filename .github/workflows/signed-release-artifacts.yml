@@ -62,11 +62,19 @@ jobs:
         run: python scripts/verify_release_checks.py
 
   macos:
-    name: Signed and notarized macOS package
+    name: Signed and notarized macOS package (${{ matrix.architecture }})
     if: github.ref == 'refs/heads/main' && github.ref_protected
     needs:
       - release-source
-    runs-on: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+          - architecture: x86_64
+            runner: macos-15-intel
     timeout-minutes: 360
     environment: beta-release
     steps:
@@ -95,12 +103,18 @@ jobs:
 
       - name: Build and inspect unsigned macOS content
         shell: bash
+        env:
+          EXPECTED_MACOS_ARCHITECTURE: ${{ matrix.architecture }}
         run: |
           python scripts/build_native.py
+          test "$(uname -m)" = "$EXPECTED_MACOS_ARCHITECTURE"
+          test "$(find dist -maxdepth 1 -name "Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-unsigned.pkg" -type f | wc -l | tr -d ' ')" = 1
           test "$(find dist/Mentat.app/Contents/Resources/public -maxdepth 1 -type f | wc -l | tr -d ' ')" = 6
           test "$(find dist/Mentat.app/Contents/Resources/data -maxdepth 1 -type f | wc -l | tr -d ' ')" = 9
           test ! -e dist/Mentat.app/Contents/Resources/data/private
           test ! -e dist/Mentat.app/Contents/Resources/data/runtime
+          python scripts/verify_macos_architecture.py \
+            dist/Mentat.app --expected "$EXPECTED_MACOS_ARCHITECTURE"
 
       - name: Import protected signing identities
         shell: bash
@@ -170,6 +184,7 @@ jobs:
       - name: Build and sign macOS package
         shell: bash
         env:
+          EXPECTED_MACOS_ARCHITECTURE: ${{ matrix.architecture }}
           MAC_APPLICATION_IDENTITY: ${{ secrets.MAC_APPLICATION_IDENTITY }}
           MAC_INSTALLER_IDENTITY: ${{ secrets.MAC_INSTALLER_IDENTITY }}
         run: |
@@ -179,12 +194,14 @@ jobs:
             fi
           done
           codesign --force --options runtime --timestamp --sign "$MAC_APPLICATION_IDENTITY" dist/Mentat.app
-          unsigned_package=$(find dist -maxdepth 1 -name 'Mentat-*-unsigned.pkg' -print -quit)
-          test -n "$unsigned_package"
+          unsigned_packages=(dist/Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-unsigned.pkg)
+          test "${#unsigned_packages[@]}" = 1
+          unsigned_package="${unsigned_packages[0]}"
+          test -f "$unsigned_package"
           package_version=$(python -c 'from mentat.version import __version__; print(__version__)')
           display_version=$(python -c 'from mentat.version import DISPLAY_VERSION; print(DISPLAY_VERSION.removeprefix("v"))')
           rm "$unsigned_package"
-          signed_package="dist/Mentat-${display_version}-macos-x86_64-signed.pkg"
+          signed_package="dist/Mentat-${display_version}-macos-${EXPECTED_MACOS_ARCHITECTURE}-signed.pkg"
           package_root="$RUNNER_TEMP/mentat-signed-package-root"
           mkdir -p "$package_root/Applications"
           ditto dist/Mentat.app "$package_root/Applications/Mentat.app"
@@ -199,23 +216,27 @@ jobs:
         id: submit-macos-notarization
         shell: bash
         env:
+          EXPECTED_MACOS_ARCHITECTURE: ${{ matrix.architecture }}
           MAC_NOTARY_APPLE_ID: ${{ secrets.MAC_NOTARY_APPLE_ID }}
           MAC_NOTARY_PASSWORD: ${{ secrets.MAC_NOTARY_PASSWORD }}
           MAC_NOTARY_TEAM_ID: ${{ secrets.MAC_NOTARY_TEAM_ID }}
         run: |
-          signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
+          signed_package=$(find dist -maxdepth 1 -name "Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-signed.pkg" -print -quit)
+          test -n "$signed_package"
           python scripts/apple_notarization.py submit "$signed_package"
 
       - name: Wait for notarization and staple macOS package
         shell: bash
         env:
+          EXPECTED_MACOS_ARCHITECTURE: ${{ matrix.architecture }}
           MAC_NOTARY_APPLE_ID: ${{ secrets.MAC_NOTARY_APPLE_ID }}
           MAC_NOTARY_PASSWORD: ${{ secrets.MAC_NOTARY_PASSWORD }}
           MAC_NOTARY_TEAM_ID: ${{ secrets.MAC_NOTARY_TEAM_ID }}
           MAC_NOTARY_SUBMISSION_ID: ${{ steps.submit-macos-notarization.outputs.submission_id }}
         run: |
           python scripts/apple_notarization.py wait "$MAC_NOTARY_SUBMISSION_ID"
-          signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
+          signed_package=$(find dist -maxdepth 1 -name "Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-signed.pkg" -print -quit)
+          test -n "$signed_package"
           xcrun stapler staple "$signed_package"
           xcrun stapler validate "$signed_package"
           spctl --assess --type execute --verbose=2 dist/Mentat.app
@@ -223,8 +244,11 @@ jobs:
 
       - name: Smoke the exact signed macOS package
         shell: bash
+        env:
+          EXPECTED_MACOS_ARCHITECTURE: ${{ matrix.architecture }}
         run: |
-          signed_package=$(find dist -maxdepth 1 -name 'Mentat-*-signed.pkg' -print -quit)
+          signed_package=$(find dist -maxdepth 1 -name "Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-signed.pkg" -print -quit)
+          test -n "$signed_package"
           sudo installer -pkg "$signed_package" -target /
           export MENTAT_DATA_DIR="$RUNNER_TEMP/mentat-signed-data"
           /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8898 >"$RUNNER_TEMP/mentat-signed.log" 2>&1 &
@@ -250,8 +274,8 @@ jobs:
       - name: Upload signed macOS package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: mentat-macos-signed-notarized
-          path: dist/Mentat-*-signed.pkg
+          name: mentat-macos-${{ matrix.architecture }}-signed-notarized
+          path: dist/Mentat-*-macos-${{ matrix.architecture }}-signed.pkg
           if-no-files-found: error
           retention-days: 7
 
@@ -571,11 +595,12 @@ jobs:
         shell: bash
         run: |
           mkdir release-archive
+          cp release-input/Mentat-*-macos-arm64-signed.pkg release-archive/
           cp release-input/Mentat-*-macos-x86_64-signed.pkg release-archive/
           cp release-input/Mentat-*-windows-x64.exe release-archive/
           cp release-input/*.whl release-input/*.tar.gz release-archive/
           cp release-bundle/SHA256SUMS release-bundle/release-manifest.json release-bundle/RELEASE_NOTES.md release-archive/
-          test "$(find release-archive -maxdepth 1 -type f | wc -l | tr -d ' ')" = 7
+          test "$(find release-archive -maxdepth 1 -type f | wc -l | tr -d ' ')" = 8
           cd release-archive
           sha256sum --check SHA256SUMS
 
@@ -608,6 +633,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           gh release create "$RELEASE_TAG" \
+            release-archive/Mentat-*-macos-arm64-signed.pkg \
             release-archive/Mentat-*-macos-x86_64-signed.pkg \
             release-archive/Mentat-*-windows-x64.exe \
             release-archive/*.whl \

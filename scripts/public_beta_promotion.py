@@ -269,7 +269,7 @@ Read the [quick start](https://github.com/hazeion/agent-os/blob/{DISPLAY_VERSION
 
 The limited-beta exit summary is recorded in [this public issue]({cohort_url}). Security reports belong in [private advisories](https://github.com/hazeion/agent-os/security/advisories/new); ordinary bugs use the public issue forms.
 
-Updates are manual. Back up before upgrading. The macOS artifact is Intel; Apple Silicon requires Rosetta. Linux remains a `pipx` preview.
+Updates are manual. Back up before upgrading. Apple Silicon and Intel have separate native macOS packages; Apple Silicon is recommended for current Macs. Linux remains a `pipx` preview.
 """
 
 

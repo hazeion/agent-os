@@ -57,7 +57,7 @@ release contract for later implementation and release decisions.
 | Preview platform | Linux, covered by CI but not initially promised at the same support level | Approved 2026-07-17 |
 | Python | 3.11 through 3.13 | Approved 2026-07-17 |
 | Install channels | Native installers are primary on tier-one platforms; `pipx` from a tagged release remains supported as an advanced/fallback channel and is the Linux preview path | Approved 2026-07-17 |
-| Native installers | A signed and notarized native installer for macOS and a signed native installer for Windows are required public-beta artifacts; they bundle or manage the required runtime and launch loopback-only Mentat | Approved 2026-07-17 |
+| Native installers | Separate signed and notarized native Apple Silicon (recommended) and Intel installers for macOS, plus a signed native installer for Windows, are required public-beta artifacts; they bundle or manage the required runtime and launch loopback-only Mentat | Approved 2026-07-17; macOS architectures expanded 2026-08-02 |
 | Installer implementation | Exact installer formats and tooling are selected in Milestone 3; the current source-checkout flow remains in place until that work is complete | Approved 2026-07-17 |
 | Update model | Manual, versioned upgrades with a pre-upgrade backup | Approved 2026-07-17 |
 | Telemetry | Off and absent by default | Approved 2026-07-17 |
@@ -494,7 +494,7 @@ Work in order:
 7. Test uninstall/reinstall while preserving operator data.
 8. Practice revoking or replacing a bad release without hiding its history.
 
-Repository tooling status: deterministic four-artifact checksums, manifest,
+Repository tooling status: deterministic five-artifact checksums, manifest,
 release notes, numbered-RC validation, protected prerelease assembly, and the
 public recovery checklist are implemented. The protected macOS job uploads one
 Apple request in a separately completed step, durably records its validated
@@ -543,8 +543,8 @@ Exit criteria:
 - supported-platform installation succeeds without maintainer intervention for
   at least 80% of testers who begin an install; product-caused blocks,
   post-start install dropouts, and help-assisted installs remain in the
-  denominator and are not successes; Intel Mac native, Apple Silicon with
-  Rosetta native, Windows native, and supported `pipx` each have at least one
+  denominator and are not successes; Apple Silicon native, Intel Mac native,
+  Windows native, and supported `pipx` each have at least one
   no-help success, while first-workflow outcomes are measured separately;
 - backup and recovery have been exercised outside the maintainer environment;
 - the mandatory remote capability set has been exercised outside the
@@ -635,8 +635,8 @@ The release cannot be called public beta until all of the following are true:
 1. Configure the protected `beta-release` environment using the concise
    [Apple and Azure signing setup](RELEASE_SIGNING.md).
    Confirm release immutability and final-tag protection, then run the signed numbered-RC workflow.
-2. Have another person complete the exact clean Intel Mac, Apple Silicon with
-   Rosetta, Windows, `pipx`, upgrade, backup/restore, rollback, and
+2. Have another person complete the exact clean Apple Silicon native, Intel Mac
+   native, Windows, `pipx`, upgrade, backup/restore, rollback, and
    uninstall-preservation rehearsal against that immutable RC.
 3. Run the privacy-safe limited cohort to its documented exit criteria, close
    the public redacted exit summary, then dispatch the protected exact-byte

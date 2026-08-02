@@ -2,7 +2,8 @@
 
 Mentat uses one folder bundle on both tier-one platforms:
 
-- macOS: a `Mentat.app` bundle inside a signed and notarized `.pkg` installer.
+- macOS: separate native Apple Silicon (recommended) and Intel `Mentat.app`
+  bundles, each inside its own signed and notarized `.pkg` installer.
 - Windows: a `Mentat` folder bundle inside a signed Inno Setup `.exe` installer.
 
 PyInstaller bundles the matching platform's Python runtime, so operators do not
@@ -32,9 +33,10 @@ same hash-checked dependency set is used on macOS and Windows.
 
 ## Release candidates
 
-The protected **Signed beta artifacts** workflow builds the signed native
-installers and verified Python package from one exact `main` commit. It then
-creates checksums, a manifest, short release notes, and a numbered prerelease.
+The protected **Signed beta artifacts** workflow builds both macOS
+architectures, the signed Windows installer, and the verified Python package
+from one exact `main` commit. It then creates checksums, a manifest, short
+release notes, and a numbered prerelease.
 
 Before sharing one, complete [the release rehearsal](../RELEASE_REHEARSAL.md).
 The one-time Apple and Azure setup is in

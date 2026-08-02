@@ -22,6 +22,33 @@ class ReleaseRehearsalTests(unittest.TestCase):
         for index, name in enumerate(expected_artifacts(), start=1):
             (root / name).write_bytes(f"artifact-{index}".encode())
 
+    def test_expected_artifacts_require_both_native_macos_architectures(self):
+        expected = expected_artifacts()
+        names = list(expected)
+        self.assertEqual(
+            names[:2],
+            [
+                "Mentat-0.1.0-beta.1-macos-arm64-signed.pkg",
+                "Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg",
+            ],
+        )
+        self.assertIn("recommended", expected[names[0]])
+        self.assertIn("Intel", expected[names[1]])
+        for missing in names[:2]:
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                self.make_artifacts(artifacts)
+                (artifacts / missing).unlink()
+                with self.assertRaisesRegex(ValueError, "inventory mismatch"):
+                    build_bundle(
+                        artifacts,
+                        root / "output",
+                        "v0.1.0-beta.1-rc.1",
+                        "a" * 40,
+                    )
+
     def test_current_beta_and_positive_numbered_rc_tags_are_valid(self):
         for tag in ("v0.1.0-beta.1", "v0.1.0-beta.1-rc.1", "v0.1.0-beta.1-rc.12"):
             self.assertEqual(validate_release_tag(tag), tag)
@@ -83,7 +110,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
             combined = b"".join(path.read_bytes() for path in first.iterdir())
             self.assertNotIn(str(root).encode(), combined)
             manifest = json.loads((first / "release-manifest.json").read_text())
-            self.assertEqual(len(manifest["artifacts"]), 4)
+            self.assertEqual(len(manifest["artifacts"]), 5)
             self.assertEqual(manifest["source_sha"], "a" * 40)
             self.assertNotIn("created", manifest)
             notes = (first / "RELEASE_NOTES.md").read_text()
@@ -93,6 +120,12 @@ class ReleaseRehearsalTests(unittest.TestCase):
             self.assertIn(f"/blob/v0.1.0-beta.1-rc.1/BETA_TESTING.md", notes)
             self.assertIn("download `mentat_local-0.1.0b1-py3-none-any.whl`", notes)
             self.assertIn("install the verified local file", notes)
+            self.assertIn("macOS Apple Silicon (recommended)", notes)
+            self.assertIn("Mentat-0.1.0-beta.1-macos-arm64-signed.pkg", notes)
+            self.assertIn("Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg", notes)
+            self.assertLess(notes.index("macos-arm64"), notes.index("macos-x86_64"))
+            self.assertIn("Both macOS packages are native", notes)
+            self.assertNotIn("Rosetta", notes)
             self.assertNotIn("pipx install https://", notes)
             self.assertIn(
                 f"/blob/v0.1.0-beta.1-rc.1/RELEASE_REHEARSAL.md",
@@ -159,7 +192,8 @@ class ReleaseRehearsalTests(unittest.TestCase):
             "--confirm TOKEN_FROM_PREVIEW",
             "mentat-release-recovery-bundle",
             "Never rebuild or replace an asset",
-            "Apple Silicon + Rosetta",
+            "Apple Silicon native",
+            "Intel Mac native",
             "--data-dir RESTORE_DIR",
             "Require a `restored` result",
             "Install the recorded previous package—not the candidate",

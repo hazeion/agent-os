@@ -18,7 +18,7 @@ body:
     id: platform
     attributes:
       label: Platform
-      options: [macOS Intel, macOS Apple Silicon with Rosetta, Windows, Linux preview]
+      options: [macOS Apple Silicon native, macOS Intel native, Windows, Linux preview]
     validations:
       required: true
   - type: input

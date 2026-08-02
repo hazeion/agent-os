@@ -7,8 +7,8 @@ release rehearsal and is not evidence that the cohort has started.
 
 Begin invitations only after Milestone 6 is marked complete and every one of
 its exit criteria passes. The exact RC must have the full cross-platform and
-channel matrix in [the release rehearsal](RELEASE_REHEARSAL.md): Intel macOS,
-Apple Silicon with Rosetta, Windows, and supported `pipx`, including clean
+channel matrix in [the release rehearsal](RELEASE_REHEARSAL.md): native Apple
+Silicon and Intel macOS, Windows, and supported `pipx`, including clean
 install, upgrade, backup, restore, uninstall preservation, and rollback. Every
 tester receives one exact immutable RC and [the tester checklist](BETA_TESTING.md).
 
@@ -99,7 +99,7 @@ Invited / started / completed:
 Platform and install-channel counts:
 Installs without maintainer intervention:
 No-help install rate / 80% threshold:
-No-help numerator / denominator by Intel Mac native, Apple Silicon + Rosetta native, Windows native, and pipx:
+No-help numerator / denominator by Apple Silicon native, Intel Mac native, Windows native, and pipx:
 First-workflow time-bucket counts and median observed bucket:
 Local / remote Hermes exercises:
 Remote capability category passes / assigned:
@@ -127,7 +127,7 @@ reached` is reported separately and does not rewrite a completed install.
 Record demonstrably unrelated withdrawals separately; they never silently
 disappear from the cohort report.
 
-The cohort also needs at least one no-help success for the Intel Mac native,
-Apple Silicon with Rosetta native, Windows native, and supported `pipx` strata.
+The cohort also needs at least one no-help success for the Apple Silicon native,
+Intel Mac native, Windows native, and supported `pipx` strata.
 Report numerator and denominator separately for each; the 80% overall result
 cannot hide a stratum with no independent success.

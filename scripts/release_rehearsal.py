@@ -29,7 +29,8 @@ RC_TAG_PATTERN = re.compile(
 def expected_artifacts() -> dict[str, str]:
     display = DISPLAY_VERSION.removeprefix("v")
     return {
-        f"Mentat-{display}-macos-x86_64-signed.pkg": "macOS signed and notarized installer",
+        f"Mentat-{display}-macos-arm64-signed.pkg": "macOS Apple Silicon signed and notarized installer (recommended)",
+        f"Mentat-{display}-macos-x86_64-signed.pkg": "macOS Intel signed and notarized installer",
         f"Mentat-{display}-windows-x64.exe": "Windows signed installer",
         f"mentat_local-{__version__}-py3-none-any.whl": "Python wheel for pipx",
         f"mentat_local-{__version__}.tar.gz": "Python source distribution",
@@ -124,13 +125,20 @@ def inspect_artifacts(artifact_dir: Path) -> list[dict[str, object]]:
 
 def _release_notes(tag: str, source_sha: str, artifacts: list[dict[str, object]]) -> str:
     wheel = next(item["name"] for item in artifacts if str(item["name"]).endswith(".whl"))
+    macos_arm = next(
+        item["name"] for item in artifacts if "-macos-arm64-" in str(item["name"])
+    )
+    macos_intel = next(
+        item["name"] for item in artifacts if "-macos-x86_64-" in str(item["name"])
+    )
     return f"""# Mentat {tag}
 
 This release candidate comes from source commit `{source_sha}`.
 
 ## Install
 
-- macOS: download the signed `.pkg`, verify it with `SHA256SUMS`, then open it.
+- macOS Apple Silicon (recommended): download `{macos_arm}`, verify it with `SHA256SUMS`, then open it.
+- macOS Intel: download `{macos_intel}`, verify it with `SHA256SUMS`, then open it.
 - Windows: download the signed `.exe`, verify its SHA-256 value, then run it.
 - pipx: download `{wheel}` and `SHA256SUMS`, verify the wheel, then install the verified local file.
 
@@ -140,7 +148,7 @@ Follow the [beta tester guide](https://github.com/hazeion/agent-os/blob/{tag}/BE
 
 Native installs do not add `mentat` to PATH. Use `/Applications/Mentat.app/Contents/MacOS/Mentat backup` on macOS or `& "$env:LOCALAPPDATA\\Programs\\Mentat\\mentat.exe" backup` in Windows PowerShell. The reported `backup_name` is under the platform Mentat data folder's `backups` directory; copy it outside that folder before upgrading.
 
-The macOS artifact is Intel. Apple Silicon acceptance requires a clean Rosetta rehearsal. Linux remains a pipx preview.
+Both macOS packages are native to their named architecture. Choose Apple Silicon unless the Mac has an Intel processor. Linux remains a pipx preview.
 
 ## Roll back
 

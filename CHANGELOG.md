@@ -2,6 +2,20 @@
 
 All notable changes to Mentat.
 
+## 2026-08-02
+
+### Added
+- Native macOS release builds now cover Apple Silicon and Intel independently.
+  Apple Silicon is the recommended/default package, while both architectures
+  retain the complete signed, notarized, stapled, Gatekeeper-assessed,
+  install-smoked, and immutable-release path.
+
+### Safety
+- Protected and ordinary native workflows verify the fixed runner mapping and
+  every bundled Mach-O architecture before signing or publishing. Release
+  assembly, checksums, promotion, and recovery now fail closed unless both
+  exact macOS packages are present.
+
 ## 2026-07-31
 
 ### Fixed

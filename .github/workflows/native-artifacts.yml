@@ -16,14 +16,24 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.os }} unsigned installer
-    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.label }} unsigned installer
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - macos-15-intel
-          - windows-2025
+        include:
+          - label: macOS Apple Silicon
+            runner: macos-15
+            architecture: arm64
+            artifact_name: mentat-macos-arm64-unsigned
+          - label: macOS Intel
+            runner: macos-15-intel
+            architecture: x86_64
+            artifact_name: mentat-macos-x86_64-unsigned
+          - label: Windows x64
+            runner: windows-2025
+            architecture: x64
+            artifact_name: mentat-windows-x64-unsigned
 
     steps:
       - name: Check out repository
@@ -61,13 +71,18 @@ jobs:
       - name: Verify macOS artifact shape
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          EXPECTED_MACOS_ARCHITECTURE: ${{ matrix.architecture }}
         run: |
+          test "$(uname -m)" = "$EXPECTED_MACOS_ARCHITECTURE"
           test -d dist/Mentat.app
-          test -f dist/Mentat-*-macos-*-unsigned.pkg
+          test "$(find dist -maxdepth 1 -name "Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-unsigned.pkg" -type f | wc -l | tr -d ' ')" = 1
           test -f dist/Mentat.app/Contents/Resources/public/index.html
           test -f dist/Mentat.app/Contents/Resources/data/tasks.json
           test ! -e dist/Mentat.app/Contents/Resources/data/private
           test ! -e dist/Mentat.app/Contents/Resources/data/runtime
+          python scripts/verify_macos_architecture.py \
+            dist/Mentat.app --expected "$EXPECTED_MACOS_ARCHITECTURE"
 
       - name: Smoke install, run, and uninstall on macOS
         if: runner.os == 'macOS'
@@ -175,7 +190,7 @@ jobs:
       - name: Upload unsigned test installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: mentat-${{ runner.os }}-unsigned
+          name: ${{ matrix.artifact_name }}
           path: |
             dist/*.pkg
             dist/installer/*.exe

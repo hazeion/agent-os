@@ -38,7 +38,7 @@ and enter:
 
 The protected workflow verifies the candidate tag, source checks, checked exit
 attestations in the closed issue, immutable prerelease identity, GitHub's asset
-digests and attestation, exact six-file public inventory, manifest, checksums,
+digests and attestation, exact seven-file public inventory, manifest, checksums,
 and artifact bytes. It uploads a 90-day recovery bundle before creating the
 final tag at the candidate commit. The final GitHub release uses those same
 candidate bytes and generated public notes without the prerelease flag, then
@@ -61,7 +61,7 @@ Use only `mentat-public-beta-promotion-recovery` from that workflow run. Verify
 
 After the release is complete:
 
-- confirm the final page says **Immutable**, has six assets, and the checksums
+- confirm the final page says **Immutable**, has seven assets, and the checksums
   and release attestation pass;
 - install once from the final release URLs as a last link check;
 - keep the public issue forms and private security advisory path open;

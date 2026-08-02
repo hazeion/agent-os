@@ -94,6 +94,7 @@ def _source_files() -> set[str]:
         "requirements-native.lock",
         "requirements-native.txt",
         "scripts/build_native.py",
+        "scripts/verify_macos_architecture.py",
     }
     files.update(f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"])
     for package in project["tool"]["setuptools"]["packages"]:

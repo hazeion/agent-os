@@ -106,7 +106,7 @@ jobs:
           mkdir promotion-recovery
           cp candidate-assets/* promotion-recovery/
           cp candidate-release.json cohort-summary.json PUBLIC_BETA_NOTES.md promotion-recovery/
-          test "$(find promotion-recovery -maxdepth 1 -type f | wc -l | tr -d ' ')" = 9
+          test "$(find promotion-recovery -maxdepth 1 -type f | wc -l | tr -d ' ')" = 10
           cd promotion-recovery
           sha256sum --check SHA256SUMS
 
@@ -134,6 +134,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create v0.1.0-beta.1 \
+            candidate-assets/Mentat-0.1.0-beta.1-macos-arm64-signed.pkg \
             candidate-assets/Mentat-0.1.0-beta.1-macos-x86_64-signed.pkg \
             candidate-assets/Mentat-0.1.0-beta.1-windows-x64.exe \
             candidate-assets/mentat_local-0.1.0b1-py3-none-any.whl \

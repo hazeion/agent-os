@@ -3,6 +3,7 @@ include requirements-native.txt
 include requirements-native.in
 include requirements-native.lock
 include scripts/build_native.py
+include scripts/verify_macos_architecture.py
 recursive-include packaging *.md *.py *.spec *.iss
 include public/app.js
 include public/core.js

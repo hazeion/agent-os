@@ -29,8 +29,8 @@ public-safe problems and workarounds appear in [known beta issues](KNOWN_ISSUES.
 - Google Calendar, Obsidian notes, Hermes sessions, and Hermes cron inventory
   are read-only. Mentat does not queue or edit cron jobs.
 - Updates are manual. Back up your data before upgrading.
-- The first macOS package is `x86_64`; a native Apple Silicon package is not
-  available yet.
+- macOS releases use separate native packages. Apple Silicon (`arm64`) is the
+  recommended default; Intel Macs use the `x86_64` package.
 - Native signing/notarization and public release-channel settings remain release
   gates; they are not bypassed by source builds.
 

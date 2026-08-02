@@ -55,6 +55,11 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("prune data/private", manifest)
         self.assertIn("prune data/runtime", manifest)
         self.assertIn("include scripts/build_native.py", manifest)
+        self.assertIn("include scripts/verify_macos_architecture.py", manifest)
+        artifact_verifier = (
+            ROOT / "scripts" / "verify_python_artifacts.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"scripts/verify_macos_architecture.py"', artifact_verifier)
         self.assertIn("include requirements-native.lock", manifest)
         for name in SEED_FILE_NAMES:
             self.assertIn(f"include data/{name}", manifest)
@@ -113,7 +118,23 @@ class PackagingContractTests(unittest.TestCase):
         workflow = (
             ROOT / ".github" / "workflows" / "native-artifacts.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("macos-15-intel", workflow)
+        matrix = workflow.split("      matrix:\n", 1)[1].split("\n    steps:\n", 1)[0]
+        self.assertEqual(matrix.count("          - label:"), 3)
+        self.assertIn(
+            "          - label: macOS Apple Silicon\n"
+            "            runner: macos-15\n"
+            "            architecture: arm64\n",
+            matrix,
+        )
+        self.assertIn(
+            "          - label: macOS Intel\n"
+            "            runner: macos-15-intel\n"
+            "            architecture: x86_64\n",
+            matrix,
+        )
+        self.assertLess(workflow.index("runner: macos-15\n"), workflow.index("runner: macos-15-intel\n"))
+        self.assertIn("architecture: arm64", workflow)
+        self.assertIn("architecture: x86_64", workflow)
         self.assertIn("windows-2025", workflow)
         self.assertIn('python-version: "3.13.14"', workflow)
         self.assertIn("Expected Inno Setup 6.7.1", workflow)
@@ -124,6 +145,10 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn('pkgbuild --root "$fixture_root" --component-plist', workflow)
         self.assertIn("Mentat CLI survived uninstall", workflow)
         self.assertIn("python scripts/build_native.py", workflow)
+        self.assertIn("python scripts/verify_macos_architecture.py", workflow)
+        self.assertIn('test "$(uname -m)" = "$EXPECTED_MACOS_ARCHITECTURE"', workflow)
+        self.assertIn("mentat-macos-arm64-unsigned", workflow)
+        self.assertIn("mentat-macos-x86_64-unsigned", workflow)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("unsigned", workflow)
         self.assertIn("api/health", workflow)
@@ -356,11 +381,32 @@ class PackagingContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("Verify trusted source revision"), 3)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertEqual(workflow.count("    timeout-minutes: 360\n"), 1)
+        self.assertIn("    runs-on: ${{ matrix.runner }}\n", macos_job)
+        self.assertIn("      fail-fast: false\n", macos_job)
+        signed_matrix = macos_job.split("      matrix:\n", 1)[1].split(
+            "    timeout-minutes:", 1
+        )[0]
+        self.assertEqual(signed_matrix.count("          - architecture:"), 2)
+        self.assertLess(
+            macos_job.index("          - architecture: arm64\n            runner: macos-15\n"),
+            macos_job.index("          - architecture: x86_64\n            runner: macos-15-intel\n"),
+        )
+        self.assertIn("    timeout-minutes: 360\n", macos_job)
+        self.assertIn("    environment: beta-release\n", macos_job)
+        architecture_check = macos_job.index("python scripts/verify_macos_architecture.py")
+        identity_import = macos_job.index("- name: Import protected signing identities")
+        self.assertLess(architecture_check, identity_import)
         self.assertIn(
-            "    runs-on: macos-15-intel\n"
-            "    timeout-minutes: 360\n"
-            "    environment: beta-release\n",
+            'signed_package="dist/Mentat-${display_version}-macos-${EXPECTED_MACOS_ARCHITECTURE}-signed.pkg"',
             macos_job,
+        )
+        self.assertIn(
+            "name: mentat-macos-${{ matrix.architecture }}-signed-notarized",
+            upload_step,
+        )
+        self.assertIn(
+            "path: dist/Mentat-*-macos-${{ matrix.architecture }}-signed.pkg",
+            upload_step,
         )
         self.assertIn("Reserve macOS post-work window", macos_job)
         self.assertIn("MENTAT_MACOS_NOTARY_DEADLINE_EPOCH", macos_job)
@@ -553,6 +599,14 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("python scripts/verify_python_artifacts.py dist", workflow)
         self.assertIn("release-bundle/SHA256SUMS", workflow)
         self.assertIn("release-bundle/release-manifest.json", workflow)
+        self.assertLess(
+            release_job.index("release-input/Mentat-*-macos-arm64-signed.pkg"),
+            release_job.index("release-input/Mentat-*-macos-x86_64-signed.pkg"),
+        )
+        self.assertIn(
+            'test "$(find release-archive -maxdepth 1 -type f | wc -l | tr -d \' \')" = 8',
+            release_job,
+        )
         self.assertIn("Upload exact release recovery bundle", workflow)
         self.assertIn("retention-days: 14", workflow)
         self.assertIn('git push origin "refs/tags/$RELEASE_TAG"', workflow)
