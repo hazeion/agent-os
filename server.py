@@ -109,6 +109,13 @@ from hermes_provider_switching import (
     provider_inventory,
 )
 from hermes_profiles import discover_hermes_profiles
+from hermes_webhooks import (
+    MAX_BODY_BYTES as HERMES_WEBHOOK_MAX_BODY_BYTES,
+    WebhookBinding,
+    WebhookDeliveryCache,
+    WebhookValidationError,
+    verify_and_normalize,
+)
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
 from hermes_transport import (
@@ -307,6 +314,13 @@ HOST = DEFAULT_HOST
 PORT = DEFAULT_PORT
 DATA_DIR = BASE_DIR / "data"
 CONFIGURED_DATA_DIR = DATA_DIR
+HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryCache()
+HERMES_WEBHOOK_HINTS: list = []
+HERMES_WEBHOOK_HINTS_LOCK = threading.Lock()
+HERMES_WEBHOOK_HINT_CAPACITY = 256
+HERMES_WEBHOOK_SECRET_ENV_BY_BINDING = {
+    "local-default": "MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT",
+}
 DATA_MUTATION_LOCK = False
 PUBLIC_DIR = BASE_DIR / "public"
 HERMES_HOME = default_hermes_home()
@@ -9280,6 +9294,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.local_api_request_is_allowed():
             self.send_json({"error": "Mentat mutations are available only from this local dashboard origin."}, status=403)
             return
+        webhook_match = re.fullmatch(r"/api/integrations/hermes/webhooks/v1/([A-Za-z0-9_-]{1,48})", parsed.path)
+        if webhook_match:
+            self.handle_hermes_webhook(webhook_match.group(1))
+            return
         if parsed.path == "/api/diagnostics/bundle":
             try:
                 body = build_diagnostics_bundle(
@@ -9362,6 +9380,85 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.log_internal_error(f"mutation route {parsed.path}", exc)
             self.send_json({"error": "Mentat could not complete this mutation."}, status=500)
+
+    def handle_hermes_webhook(self, binding_id: str) -> None:
+        """Accept a signed local Hermes hint without doing a blocking refresh."""
+        if binding_id != binding_id.lower():
+            self.send_error_once(404)
+            return
+        secret_name = HERMES_WEBHOOK_SECRET_ENV_BY_BINDING.get(binding_id)
+        if not secret_name:
+            self.send_error_once(404)
+            return
+        secret = os.environ.get(secret_name, "").encode("utf-8")
+        try:
+            length_headers = (
+                self.headers.get_all("Content-Length")
+                if hasattr(self.headers, "get_all")
+                else [self.headers.get("Content-Length")]
+            )
+            length_headers = [value for value in length_headers if value is not None]
+            transfer_encoding_headers = (
+                self.headers.get_all("Transfer-Encoding") or []
+                if hasattr(self.headers, "get_all")
+                else self.headers.getall("Transfer-Encoding") or []
+                if hasattr(self.headers, "getall")
+                else [self.headers.get("Transfer-Encoding")]
+            )
+            transfer_encoding_headers = [value for value in transfer_encoding_headers if value is not None]
+            if len(length_headers) != 1 or transfer_encoding_headers:
+                self.send_error_once(400)
+                return
+            length = int(length_headers[0])
+        except ValueError:
+            self.send_error_once(400)
+            return
+        if length < 0:
+            self.send_error_once(400)
+            return
+        if length > HERMES_WEBHOOK_MAX_BODY_BYTES:
+            self.send_error_once(413)
+            return
+        try:
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                self.send_error_once(400)
+                return
+            event = verify_and_normalize(
+                raw,
+                self.headers,
+                WebhookBinding(binding_id, secret),
+            )
+        except WebhookValidationError as exc:
+            status = {
+                "invalid_signature": 401,
+                "binding_not_ready": 404,
+                "unsupported_content_type": 415,
+                "body_too_large": 413,
+                "stale_timestamp": 422,
+            }.get(exc.code, 400)
+            self.send_error_once(status)
+            return
+        except Exception as exc:
+            self.log_internal_error("Hermes webhook verification", exc)
+            self.send_error_once(503)
+            return
+        with HERMES_WEBHOOK_HINTS_LOCK:
+            if HERMES_WEBHOOK_DELIVERIES.contains(event):
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if len(HERMES_WEBHOOK_HINTS) >= HERMES_WEBHOOK_HINT_CAPACITY:
+                self.send_error_once(503)
+                return
+            # This foundation only buffers hints. The next reconciliation
+            # slice owns consuming them through authoritative Hermes reads.
+            HERMES_WEBHOOK_DELIVERIES.remember(event)
+            HERMES_WEBHOOK_HINTS.append(event)
+        self.send_response(202)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
 
 def serve_dashboard() -> None:
