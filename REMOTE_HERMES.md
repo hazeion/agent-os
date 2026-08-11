@@ -120,7 +120,7 @@ endpoints, paths, credential metadata, environment names, or tokens.
 The inventory covers the current integration modules `remote_hermes.py`, `hermes_transport.py`, `hermes_profiles.py`,
 `hermes_profile_creation.py`, `hermes_profile_identity.py`,
 `hermes_profile_deletion.py`, `hermes_provider_switching.py`,
-`hermes_skills.py`, `hermes_kanban.py`, the Hermes-backed paths in `server.py`,
+`hermes_skills.py`, `hermes_kanban.py`, `hermes_webhooks.py`, the Hermes-backed paths in `server.py`,
 the Console metadata boundary in `agent_run_history.py`, local/remote selection
 in `runtime_config.py` and `scripts/mentat_setup.py`, and diagnostics in
 `health_checks.py`.
