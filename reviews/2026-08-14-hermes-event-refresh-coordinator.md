@@ -298,6 +298,29 @@ only after a soak period may make the superseded path eligible for deletion.
   the evidence file is unignored and available for selective staging, and
   judged the amendment and PR #98 publication-ready.
 
+### Post-publication CI correction
+
+- PR #98 was updated to Lighthouse amendment commit
+  `39ea06f04e066b0aa1a2e1b0ab879b1d153bf4fc` after explicit user approval.
+- The refreshed `Dependency and secret scan` failed only because the retained
+  Lighthouse report SHA-256 was classified as a `Hex High Entropy String`.
+  Both dependency audits passed with no known vulnerabilities, and the
+  aggregate `Quality gates required` failure was downstream of that scan.
+- The digest is intentional integrity evidence rather than a credential. Its
+  exact hashed fingerprint was added to `.secrets.baseline`; no detector or
+  repository path was excluded, so all other new candidates still fail closed.
+- Local correction evidence: the exact pinned detect-secrets 1.5.0 repository
+  scan passed, `.secrets.baseline` parsed as JSON, all 9 CI quality-gate
+  contract tests passed, and `git diff --check` passed.
+- Publication correction inventory: `.secrets.baseline` and this review log
+  only. Two independent read-only amendment reviews are required before the
+  correction is committed or pushed.
+- Correction review result: Reviewer A and Reviewer B independently reported
+  no blocking or non-blocking findings and judged the correction
+  publication-ready. Both verified the exact SHA-1 fingerprint of the public
+  SHA-256 evidence value, unchanged detector/filter/scope configuration, and
+  count-based behavior that still reports additional matching occurrences.
+
 ## Documentation updates
 
 - Roadmap: records upstream v2026.8.13 and adds native-event migration and
@@ -316,7 +339,7 @@ only after a soak period may make the superseded path eligible for deletion.
   `REMOTE_HERMES.md`, `public/index.html`, `public/styles.css`,
   `tests/test_home_operations_ui.py`,
   `reviews/2026-08-14-hermes-event-refresh-coordinator-lighthouse.json`,
-  and this review log. `ROAD_TO_BETA.md` contains
+  `.secrets.baseline`, and this review log. `ROAD_TO_BETA.md` contains
   pre-existing user-owned edits in the same added Milestone 9 hunk, so it is
   intentionally left wholly unstaged rather than risking publication of
   unrelated work. The stock-Hermes migration/removal matrix remains published
