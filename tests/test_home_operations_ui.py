@@ -33,6 +33,38 @@ class HomeOperationsUiTests(unittest.TestCase):
         self.assertNotIn('function renderCards', APP)
         self.assertNotIn("#overview-cards", APP)
 
+    def test_home_reserves_async_panel_height_and_describes_the_document(self):
+        self.assertIn(
+            '<meta name="description" content="Mentat is a local-first planning and operations dashboard for Hermes-powered workflows." />',
+            INDEX,
+        )
+        focus_css = CSS[
+            CSS.index(":root[data-ui-shell='emerald'] .home-focus-panel {")
+            : CSS.index(":root[data-ui-shell='emerald'] #today-active-work-panel.home-focus-panel {")
+        ]
+        agents_css = CSS[
+            CSS.index(":root[data-ui-shell='emerald'] .home-live-agents-panel {")
+            : CSS.index(":root[data-ui-shell='emerald'] .home-today-panel {")
+        ]
+        self.assertIn("min-height: 430px", focus_css)
+        self.assertIn("min-height: 430px", agents_css)
+        mobile_start = CSS.index("@media (max-width: 900px)")
+        mobile_rule_start = CSS.index(
+            ":root[data-ui-shell='emerald'] .home-focus-panel,",
+            mobile_start,
+        )
+        mobile_rule = CSS[
+            mobile_rule_start
+            : CSS.index(
+                ":root[data-ui-shell='emerald'] .home-context-stack {",
+                mobile_rule_start,
+            )
+        ]
+        self.assertIn(".home-focus-panel,", mobile_rule)
+        self.assertIn(".home-live-agents-panel,", mobile_rule)
+        self.assertIn(".home-today-panel", mobile_rule)
+        self.assertIn("min-height: 0", mobile_rule)
+
     def test_home_refresh_loads_real_operational_sources_and_degrades_optional_inventory(self):
         refresh = self.app_block("async function refresh()", "async function runMessageSearchRequest")
         for source in (

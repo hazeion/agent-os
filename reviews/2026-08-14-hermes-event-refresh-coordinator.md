@@ -174,7 +174,27 @@ only after a soak period may make the superseded path eligible for deletion.
 
 ### Rendered or manual behavior
 
-- Not applicable; no visible UI change is in scope.
+- Computer-use smoke on an isolated loopback server opened Home, Managed
+  Agents, and Settings and found no console errors after the final reload.
+- The user-required Lighthouse gate exposed two pre-existing rendered baseline
+  gaps even though 9C itself has no new UI: asynchronous focus data shifted the
+  second dashboard row, and the document lacked a meta description. The active
+  goal explicitly requires every slice to reach perfect Lighthouse category
+  scores, so the slice contract was narrowly amended to reserve the known
+  three-task desktop footprint and add descriptive metadata. The responsive
+  single-column layout continues to reset panel minimum height.
+- Final Lighthouse 13 desktop/provided audit on isolated local data:
+  Performance 100, Accessibility 100, Best Practices 100, SEO 100; FCP 0.4 s,
+  LCP 0.6 s, TBT 0 ms, CLS 0.054.
+- Canonical local-product gate command:
+  `CHROME_PATH='/Applications/Chromium.app/Contents/MacOS/Chromium' npx --yes lighthouse@13.4.1 http://127.0.0.1:8894/ --output=json --output-path=<temporary-output>/lighthouse-final.json --only-categories=performance,accessibility,best-practices,seo --preset=desktop --throttling-method=provided --chrome-flags='--headless --no-sandbox --disable-gpu' --quiet`.
+  This desktop/provided profile is canonical because Mentat is a locally served
+  desktop dashboard; the separately observed simulated-mobile result is not
+  substituted for this product gate. Effective screen emulation was 1350 × 940
+  at device scale 1. The compact retained artifact is
+  `reviews/2026-08-14-hermes-event-refresh-coordinator-lighthouse.json`;
+  it records the full report SHA-256
+  `2ab419b24b8874fa3269841ecfba6e097e815172325d4a47189ee88247cf6127`.
 
 ## Adversarial review
 
@@ -247,6 +267,37 @@ only after a soak period may make the superseded path eligible for deletion.
   deferred because the checks are explicit, adjacent malformed Kanban paths are
   covered, and focused/full/package verification is green.
 
+### Round 4 Lighthouse amendment
+
+- Process exception: the skill defaults to at most three review rounds, but the
+  user's standing goal explicitly requires a perfect Lighthouse gate after
+  each slice and authorizes continued feature work. A fourth, read-only review
+  is therefore required for the narrow post-publication layout/metadata
+  amendment before it is pushed to PR #98.
+- Amendment files: `public/index.html`, `public/styles.css`, and
+  `tests/test_home_operations_ui.py`, the retained Lighthouse summary artifact,
+  plus this evidence log.
+- Focused evidence command:
+  `python3 -m unittest tests.test_home_operations_ui tests.test_visual_contract tests.test_daily_workflow_ui -q`; 47 tests passed.
+- Full-suite evidence: the exact committed 9C slice plus only this amendment
+  passed all 968 tests in a detached clean worktree, with 4 skips.
+- Rendered evidence: computer-use navigation passes without console errors;
+  Lighthouse category scores are 100/100/100/100.
+- Reviewer A and Reviewer B initially agreed that the source amendment was
+  sound but blocked publication because the canonical evidence command,
+  settings, artifact, and amendment publication inventory were incomplete.
+  Both also identified a non-blocking test weakness: the mobile rule assertion
+  searched an unbounded CSS suffix.
+- Disposition: recorded the exact pinned command and effective profile, added
+  the compact JSON evidence plus full-report digest, added every amendment file
+  to the publication inventory, and bounded the test to the exact responsive
+  rule. Both reviewers then found that the first `reviews/artifacts/` location
+  was ignored by repository policy; the artifact was moved unchanged into the
+  tracked `reviews/` namespace.
+- Final re-review: both reviewers independently reported no findings, confirmed
+  the evidence file is unignored and available for selective staging, and
+  judged the amendment and PR #98 publication-ready.
+
 ## Documentation updates
 
 - Roadmap: records upstream v2026.8.13 and adds native-event migration and
@@ -262,7 +313,10 @@ only after a soak period may make the superseded path eligible for deletion.
 - Proposed files: `hermes_event_refresh.py`, `server.py`, `pyproject.toml`,
   `scripts/verify_python_artifacts.py`, `tests/test_hermes_event_refresh.py`,
   `tests/test_hermes_webhook_routes.py`, `tests/test_packaging_cli.py`,
-  `REMOTE_HERMES.md`, and this review log. `ROAD_TO_BETA.md` contains
+  `REMOTE_HERMES.md`, `public/index.html`, `public/styles.css`,
+  `tests/test_home_operations_ui.py`,
+  `reviews/2026-08-14-hermes-event-refresh-coordinator-lighthouse.json`,
+  and this review log. `ROAD_TO_BETA.md` contains
   pre-existing user-owned edits in the same added Milestone 9 hunk, so it is
   intentionally left wholly unstaged rather than risking publication of
   unrelated work. The stock-Hermes migration/removal matrix remains published
@@ -285,8 +339,8 @@ only after a soak period may make the superseded path eligible for deletion.
   is recorded as the user's process exception authorizing selective staging,
   commit, push, and a ready PR for this completed slice; it does not authorize
   staging unrelated dirty files.
-- Commit hash: None.
-- Ready PR URL: None.
+- Commit hash: `4f68851a0e7a8d806aa991f08858e36fd09b51b3`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/98
 
 ## Outcome review
 
