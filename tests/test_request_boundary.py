@@ -136,6 +136,29 @@ class RequestBoundaryTests(unittest.TestCase):
         rejected_build.assert_not_called()
         self.assertEqual(rejected.send_json.call_args.kwargs["status"], 403)
 
+    def test_webhook_probe_uses_local_boundary_before_dispatch(self):
+        body = b"{}"
+        rejected = self.handler(
+            headers=self.local_headers(
+                Origin="https://attacker.example",
+                **{
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(body)),
+                },
+            )
+        )
+        rejected.path = "/api/hermes/webhooks/probe"
+        rejected.rfile = BytesIO(body)
+        rejected.send_json = Mock()
+        with patch.object(server, "handle_post_route") as dispatch, patch.object(
+            server, "run_hermes_webhook_probe"
+        ) as probe:
+            rejected.do_POST()
+
+        dispatch.assert_not_called()
+        probe.assert_not_called()
+        self.assertEqual(rejected.send_json.call_args.kwargs["status"], 403)
+
     def test_diagnostics_response_is_a_nonsniffable_private_download(self):
         instance = self.handler(headers=self.local_headers())
         instance.wfile = BytesIO()

@@ -55,6 +55,7 @@ def _health_record() -> dict[str, Any]:
         "accepted_hint_count": 0,
         "coalesced_hint_count": 0,
         "queue_drop_count": 0,
+        "unresolved_drop_count": 0,
         "refresh_success_count": 0,
         "refresh_failure_count": 0,
         "degraded_projection_count": 0,
@@ -113,6 +114,7 @@ class HermesRefreshCoordinator:
         self._stop = threading.Event()
         self._accepting = True
         self._thread: threading.Thread | None = None
+        self._started_at: str | None = None
 
     @property
     def capacity(self) -> int:
@@ -122,12 +124,25 @@ class HermesRefreshCoordinator:
     def pending_count(self) -> int:
         return self._queue.qsize()
 
+    @property
+    def is_running(self) -> bool:
+        """Whether the coordinator can currently accept and process hints."""
+        with self._state_lock:
+            thread = self._thread
+            return bool(
+                self._accepting
+                and not self._stop.is_set()
+                and thread is not None
+                and thread.is_alive()
+            )
+
     def start(self) -> None:
         with self._state_lock:
             if self._thread is not None and self._thread.is_alive():
                 return
             if self._stop.is_set():
                 raise RuntimeError("stopped coordinators cannot be restarted")
+            self._started_at = _utc_now()
             thread = threading.Thread(
                 target=self._run,
                 daemon=True,
@@ -146,11 +161,13 @@ class HermesRefreshCoordinator:
             self._known_bindings.add(hint.binding_id)
             if not self._accepting:
                 health["queue_drop_count"] += 1
+                health["unresolved_drop_count"] += 1
                 return False
             try:
                 self._queue.put_nowait(hint)
             except queue.Full:
                 health["queue_drop_count"] += 1
+                health["unresolved_drop_count"] += 1
                 return False
             health["accepted_hint_count"] += 1
             health["last_event_name"] = hint.event_name
@@ -182,7 +199,9 @@ class HermesRefreshCoordinator:
     def health_snapshot(self, binding_id: str) -> dict[str, Any]:
         """Return bounded, payload-free process health for tests and future 9D."""
         with self._state_lock:
-            return dict(self._health.get(binding_id, _health_record()))
+            snapshot = dict(self._health.get(binding_id, _health_record()))
+            snapshot["coordinator_started_at"] = self._started_at
+            return snapshot
 
     def projection_snapshot(self, binding_id: str, projection: str) -> Any:
         """Return the last authoritative adapter result, never webhook fields."""
@@ -254,11 +273,20 @@ class HermesRefreshCoordinator:
             bindings = tuple(sorted(self._known_bindings))
         for binding_id in bindings:
             with self._state_lock:
+                unresolved_before_sweep = self._health.setdefault(
+                    binding_id, _health_record()
+                )["unresolved_drop_count"]
+            for projection in sorted(self._adapters):
+                self._refresh_projection(binding_id, projection)
+            with self._state_lock:
                 health = self._health.setdefault(binding_id, _health_record())
                 health["reconciliation_count"] += 1
                 health["last_reconciled_at"] = _utc_now()
-            for projection in sorted(self._adapters):
-                self._refresh_projection(binding_id, projection)
+                if not any(failed_binding == binding_id for failed_binding, _ in self._failures):
+                    health["unresolved_drop_count"] = max(
+                        0,
+                        health["unresolved_drop_count"] - unresolved_before_sweep,
+                    )
 
     def _refresh_projection(self, binding_id: str, projection: str) -> None:
         adapter = self._adapters.get(projection)

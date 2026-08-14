@@ -29,6 +29,8 @@ const endpoints = {
   hermesSkillCatalog: '/api/hermes/skills/catalog',
   hermesKanbanCapabilities: '/api/hermes/kanban/capabilities',
   hermesCapabilities: '/api/hermes/capabilities',
+  hermesWebhookHealth: '/api/hermes/webhooks/health',
+  hermesWebhookProbe: '/api/hermes/webhooks/probe',
   notes: '/api/obsidian-notes',
   health: '/api/health',
   diagnosticsBundle: '/api/diagnostics/bundle',
@@ -122,6 +124,7 @@ const state = {
   agentCreatorPreview: null,
   agentCreatorStep: 'details',
   hermesProfiles: [],
+  hermesWebhookHealth: null,
   selectedHermesProfileId: '',
   hermesProfileCapabilities: {},
   activeHermesProfileId: '',
@@ -610,6 +613,14 @@ async function refreshTaskDelegation(id) {
 
 async function refreshHomeDelegations() {
   return sendJson(endpoints.homeDelegationRefresh, {}, { method: 'POST' });
+}
+
+async function fetchHermesWebhookHealth() {
+  return api(endpoints.hermesWebhookHealth);
+}
+
+async function verifyHermesWebhookProbe() {
+  return sendJson(endpoints.hermesWebhookProbe, {}, { method: 'POST' });
 }
 
 async function previewDelegationRebind(id) {

@@ -648,6 +648,26 @@
           <div class="section-divider"></div>
           <div class="panel-head compact-head">
             <div>
+              <h2>Webhook Health</h2>
+              <p class="section-copy">Verify Mentat’s signed local Hermes receiver and copy manual setup guidance. Mentat never edits Hermes configuration.</p>
+            </div>
+            <div class="panel-controls webhook-health-controls">
+              <button class="mini-button" type="button" id="copy-webhook-setup" disabled>Copy Setup</button>
+              <button class="mini-button" type="button" id="verify-webhook-probe" disabled>Verify Signed Probe</button>
+            </div>
+          </div>
+          <p id="webhook-health-status" class="section-copy" role="status" aria-live="polite" aria-atomic="true">Loading signed receiver health…</p>
+          <div id="webhook-health-summary" class="settings-list">
+            <div class="empty">Webhook health will appear after Settings loads.</div>
+          </div>
+          <details class="webhook-setup-disclosure">
+            <summary>Manual Hermes setup</summary>
+            <p class="section-copy">Set one private shared secret in both processes, add this target to Hermes, then start a new Hermes CLI session or restart the Gateway.</p>
+            <pre id="webhook-setup-text" class="config-pre webhook-setup-text" aria-label="Manual Hermes webhook setup">Setup guidance is loading…</pre>
+          </details>
+          <div class="section-divider"></div>
+          <div class="panel-head compact-head">
+            <div>
               <h2>Theme Studio</h2>
             </div>
           </div>

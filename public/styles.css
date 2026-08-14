@@ -3412,6 +3412,38 @@ h2 {
   border-color: rgba(255,107,138,.26);
   background: linear-gradient(135deg, rgba(255,107,138,.075), rgba(255,255,255,.02));
 }
+.health-item.health-off {
+  border-color: rgba(255,255,255,.12);
+  background: rgba(255,255,255,.025);
+}
+.webhook-health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.webhook-health-grid span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--muted);
+}
+.webhook-health-grid strong {
+  color: var(--text);
+  font-weight: 700;
+}
+.webhook-setup-disclosure {
+  margin-top: 12px;
+}
+.webhook-setup-disclosure > summary {
+  color: var(--accent);
+  cursor: pointer;
+  font: 750 .76rem/1.4 var(--mono);
+}
+.webhook-setup-text {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .section-divider {
   height: 1px;
   margin: 18px 0;
@@ -7943,6 +7975,10 @@ h2,
 
   :root[data-ui-shell='emerald'] .metric-card {
     min-height: 74px;
+  }
+
+  .webhook-health-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   :root[data-ui-shell='emerald'] .panel {

@@ -29,6 +29,14 @@ def event(name="on_session_end", delivery="delivery-1", binding="local-default")
 
 
 class HermesEventRefreshTests(unittest.TestCase):
+    def test_running_state_tracks_worker_lifecycle(self):
+        coordinator = HermesRefreshCoordinator({}, binding_ids=("local-default",))
+        self.assertFalse(coordinator.is_running)
+        coordinator.start()
+        self.assertTrue(coordinator.is_running)
+        coordinator.stop(timeout=1)
+        self.assertFalse(coordinator.is_running)
+
     def test_event_matrix_is_exact_and_read_only(self):
         self.assertEqual(
             EVENT_PROJECTIONS,
@@ -129,11 +137,48 @@ class HermesEventRefreshTests(unittest.TestCase):
             coordinator.health_snapshot("local-default")["reconciliation_count"],
             1,
         )
+        health = coordinator.health_snapshot("local-default")
+        self.assertEqual(health["queue_drop_count"], 1)
+        self.assertEqual(health["unresolved_drop_count"], 0)
         self.assertEqual(
             coordinator.projection_snapshot("local-default", "sessions"),
             {"sessions": []},
         )
         self.assertTrue(coordinator.stop(timeout=1))
+
+    def test_reconciliation_preserves_a_drop_that_arrives_during_the_sweep(self):
+        sweep_started = threading.Event()
+        release_sweep = threading.Event()
+        calls = []
+
+        def adapter(_binding):
+            calls.append("read")
+            if len(calls) == 2:
+                sweep_started.set()
+                self.assertTrue(release_sweep.wait(1))
+            return {"sessions": []}
+
+        coordinator = HermesRefreshCoordinator(
+            {"sessions": adapter},
+            binding_ids=("local-default",),
+            capacity=1,
+            coalesce_window=0,
+            reconciliation_interval=0.1,
+        )
+        self.assertTrue(coordinator.enqueue(event("on_session_start", "queued-before")))
+        self.assertFalse(coordinator.enqueue(event("on_session_start", "dropped-before")))
+        coordinator.start()
+        self.assertTrue(sweep_started.wait(1))
+        self.assertTrue(coordinator.enqueue(event("on_session_start", "queued-during")))
+        self.assertFalse(coordinator.enqueue(event("on_session_start", "dropped-during")))
+        release_sweep.set()
+        deadline = time.monotonic() + 1
+        while coordinator.health_snapshot("local-default")["reconciliation_count"] < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(coordinator.stop(timeout=1))
+        health = coordinator.health_snapshot("local-default")
+        self.assertEqual(health["queue_drop_count"], 2)
+        self.assertEqual(health["unresolved_drop_count"], 1)
 
     def test_out_of_order_events_never_become_authoritative_state(self):
         snapshots = []
