@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "gate": "mentat-local-desktop",
+  "lighthouse_version": "13.4.1",
+  "audited_at": "2026-08-14T19:41:59.121Z",
+  "url": "http://127.0.0.1:8894/",
+  "command": "CHROME_PATH='/Applications/Chromium.app/Contents/MacOS/Chromium' npx --yes lighthouse@13.4.1 http://127.0.0.1:8894/ --output=json --output-path=<temporary-output>/lighthouse-final.json --only-categories=performance,accessibility,best-practices,seo --preset=desktop --throttling-method=provided --chrome-flags='--headless --no-sandbox --disable-gpu' --quiet",
+  "effective_settings": {
+    "form_factor": "desktop",
+    "throttling_method": "provided",
+    "screen_emulation": {
+      "mobile": false,
+      "width": 1350,
+      "height": 940,
+      "device_scale_factor": 1
+    },
+    "only_categories": [
+      "performance",
+      "accessibility",
+      "best-practices",
+      "seo"
+    ]
+  },
+  "category_scores": {
+    "performance": 100,
+    "accessibility": 100,
+    "best_practices": 100,
+    "seo": 100
+  },
+  "metrics": {
+    "first_contentful_paint_ms": 371.669,
+    "largest_contentful_paint_ms": 576.719,
+    "total_blocking_time_ms": 0,
+    "cumulative_layout_shift": 0.05351137378513265
+  },
+  "full_report_sha256": "2ab419b24b8874fa3269841ecfba6e097e815172325d4a47189ee88247cf6127"
+}
