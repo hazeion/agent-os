@@ -29,7 +29,7 @@ PUBLIC_MODULES = {
     "agent_run_history",
     "command_manifest", "data_backup_restore", "data_layout", "data_migration",
     "data_schema", "delegation_artifacts", "diagnostics_bundle", "health_checks",
-    "hermes_kanban", "hermes_profile_creation",
+    "hermes_event_refresh", "hermes_kanban", "hermes_profile_creation",
     "hermes_profile_deletion", "hermes_profile_identity", "hermes_profiles",
     "hermes_provider_switching", "hermes_skills", "hermes_transport", "hermes_webhooks", "json_store",
     "mentat_db", "mentat_lifecycle", "private_console_migration",
