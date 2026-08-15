@@ -13,8 +13,8 @@ import hmac
 import json
 import re
 from typing import Any, Mapping
-from collections import OrderedDict
 import threading
+import time
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_DELIVERY_ID_LENGTH = 128
@@ -57,34 +57,40 @@ class VerifiedHermesEvent:
     platform: str | None
 
 
-class WebhookDeliveryCache:
-    """Bounded process-local retry dedupe for the first receiver slice.
+class PerBindingRateLimiter:
+    """Small process-local token bucket keyed only by safe binding ID."""
 
-    Durable SQLite retention is intentionally a follow-up migration; this
-    cache still prevents Hermes' immediate retry from causing duplicate hints
-    during one Mentat process lifetime.
-    """
-
-    def __init__(self, capacity: int = 4096):
-        self.capacity = capacity
-        self._items: OrderedDict[tuple[str, str], None] = OrderedDict()
+    def __init__(
+        self,
+        *,
+        capacity: int = 120,
+        refill_per_second: float = 2.0,
+        clock=time.monotonic,
+    ) -> None:
+        if capacity <= 0 or refill_per_second <= 0:
+            raise ValueError("rate limiter capacity and refill must be positive")
+        self.capacity = int(capacity)
+        self.refill_per_second = float(refill_per_second)
+        self._clock = clock
+        self._buckets: dict[str, tuple[float, float]] = {}
         self._lock = threading.Lock()
 
-    def remember(self, event: VerifiedHermesEvent) -> bool:
-        key = (event.binding_id, event.delivery_digest)
+    def allow(self, binding_id: str) -> bool:
+        now = float(self._clock())
         with self._lock:
-            if key in self._items:
-                self._items.move_to_end(key)
+            tokens, updated_at = self._buckets.get(
+                binding_id, (float(self.capacity), now)
+            )
+            elapsed = max(0.0, now - updated_at)
+            tokens = min(
+                float(self.capacity),
+                tokens + elapsed * self.refill_per_second,
+            )
+            if tokens < 1.0:
+                self._buckets[binding_id] = (tokens, now)
                 return False
-            self._items[key] = None
-            while len(self._items) > self.capacity:
-                self._items.popitem(last=False)
+            self._buckets[binding_id] = (tokens - 1.0, now)
             return True
-
-    def contains(self, event: VerifiedHermesEvent) -> bool:
-        key = (event.binding_id, event.delivery_digest)
-        with self._lock:
-            return key in self._items
 
 
 def _header_values(headers: Mapping[str, str], name: str) -> list[str]:
@@ -165,9 +171,16 @@ def verify_and_normalize(
         raise WebhookValidationError("stale_timestamp")
 
     digest = hmac.new(binding.secret, (binding.binding_id + "\0" + delivery_id).encode(), hashlib.sha256).hexdigest()
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+
+    def lifecycle_value(name: str) -> Any:
+        value = payload.get(name)
+        return value if value is not None else extra.get(name)
+
+    platform_value = lifecycle_value("platform")
     platform = None
-    if isinstance(payload.get("platform"), str):
-        candidate = payload["platform"].strip().lower()
+    if isinstance(platform_value, str):
+        candidate = platform_value.strip().lower()
         if len(candidate) <= MAX_PLATFORM_LENGTH:
             platform = candidate if candidate in ALLOWED_PLATFORMS else "other"
         else:
@@ -178,7 +191,15 @@ def verify_and_normalize(
         delivery_digest=digest,
         occurred_at=occurred_at,
         received_at=received_at,
-        completed=payload.get("completed") if isinstance(payload.get("completed"), bool) else None,
-        interrupted=payload.get("interrupted") if isinstance(payload.get("interrupted"), bool) else None,
+        completed=(
+            lifecycle_value("completed")
+            if isinstance(lifecycle_value("completed"), bool)
+            else None
+        ),
+        interrupted=(
+            lifecycle_value("interrupted")
+            if isinstance(lifecycle_value("interrupted"), bool)
+            else None
+        ),
         platform=platform,
     )

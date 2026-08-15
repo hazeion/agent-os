@@ -1,6 +1,6 @@
 # Milestone 9 implementation plan — Hermes 0.20 webhooks
 
-Status: In progress through reviewed slice 9D
+Status: In progress at slice 9F; local verification complete, review/CI pending
 Prepared: 2026-08-03
 Scope: Signed local Hermes lifecycle events, bounded refresh wakeups, health
 evidence, and a separate redirect-capability decision
@@ -591,7 +591,7 @@ on `codex/hermes-webhook-refresh-coordinator`; persistent evidence lives in
 
 ### 9E — Busy-input steer capability
 
-Status: **Implementation in progress 2026-08-14.** Current upstream Hermes
+Status: **Implemented and accepted 2026-08-14.** Current upstream Hermes
 advertises `run_steer` with the fixed authenticated
 `POST /v1/runs/{run_id}/steer` operation. Hermes defines this as guidance that
 arrives after a tool boundary, not a replacement of the active model turn.
@@ -640,6 +640,11 @@ Estimated effort: 1–2 focused engineering days.
 
 ### 9F — Live Hermes 0.20 validation and rollout
 
+Status: **Implementation and local verification complete 2026-08-14; dual
+review and CI publication pending.** The isolated baseline is stock Hermes
+0.20.1, release tag `v2026.8.13`, commit
+`f80f453ae0679347e38abc917c7f94f717bf96c5`.
+
 Deliverables:
 
 - configure one local test profile manually;
@@ -659,6 +664,15 @@ Exit gate:
 - rollback is proven by disabling the binding and removing the Hermes target.
 
 Estimated effort: 1–2 focused engineering days plus review time.
+
+Verification evidence is retained in
+`reviews/2026-08-14-hermes-020-live-validation.md` and its sanitized JSON
+companion. The live harness proved real CLI and Gateway lifecycle registration,
+all four stock dispatcher events, exact-body retries, process-restart replay,
+safe mode, disabled binding, rollback, dropped-hint reconciliation,
+out-of-order notification semantics, privacy canaries, and a 1,000-request
+storm. Durable replay uses owner-only SQLite with bounded 24-hour cleanup;
+per-binding admission uses a 120-event burst and two-event-per-second refill.
 
 ### 9G — Remaining Hermes 0.20 product decisions
 

@@ -32,7 +32,7 @@ PUBLIC_MODULES = {
     "hermes_event_refresh", "hermes_kanban", "hermes_profile_creation",
     "hermes_profile_deletion", "hermes_profile_identity", "hermes_profiles",
     "hermes_provider_switching", "hermes_skills", "hermes_transport", "hermes_webhooks",
-    "hermes_webhook_health", "json_store",
+    "hermes_webhook_health", "hermes_webhook_store", "json_store",
     "mentat_db", "mentat_lifecycle", "private_console_migration",
     "private_console_unit", "private_state", "remote_hermes", "runtime_config",
     "server", "task_planning",

@@ -55,6 +55,10 @@ class PackagingContractTests(unittest.TestCase):
             "hermes_webhook_health",
             document["tool"]["setuptools"]["py-modules"],
         )
+        self.assertIn(
+            "hermes_webhook_store",
+            document["tool"]["setuptools"]["py-modules"],
+        )
 
     def test_source_manifest_allowlists_public_seed_files(self):
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")

@@ -18,7 +18,7 @@ from private_state import (
 
 
 DATABASE_NAME = "mentat.sqlite3"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -113,6 +113,28 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON task_artifacts(attachment_id);
         CREATE INDEX IF NOT EXISTS idx_task_artifacts_binding
             ON task_artifacts(binding_id);
+        """,
+    ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS hermes_webhook_deliveries (
+            binding_id TEXT NOT NULL,
+            delivery_digest TEXT NOT NULL,
+            event_name TEXT NOT NULL CHECK (
+                event_name IN (
+                    'on_session_start', 'on_session_end',
+                    'subagent_start', 'subagent_stop'
+                )
+            ),
+            received_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'duplicate')),
+            PRIMARY KEY (binding_id, delivery_digest)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_hermes_webhook_deliveries_expiry
+            ON hermes_webhook_deliveries(expires_at);
         """,
     ),
 )

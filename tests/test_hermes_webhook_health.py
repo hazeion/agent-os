@@ -4,6 +4,8 @@ import json
 import os
 import threading
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import server
@@ -17,6 +19,7 @@ from hermes_webhook_health import (
     public_health_payload,
 )
 from hermes_webhooks import WebhookBinding, verify_and_normalize
+from hermes_webhook_store import WebhookDeliveryStore
 
 
 NOW = datetime(2026, 8, 14, 20, 0, tzinfo=timezone.utc)
@@ -50,7 +53,12 @@ class HermesWebhookHealthTests(unittest.TestCase):
         self.original_deliveries = server.HERMES_WEBHOOK_DELIVERIES
         self.original_port = server.PORT
         self.original_host = server.HOST
-        server.HERMES_WEBHOOK_DELIVERIES = server.WebhookDeliveryCache(capacity=32)
+        self.original_limiter = server.HERMES_WEBHOOK_RATE_LIMITER
+        self.temporary = TemporaryDirectory()
+        server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(
+            Path(self.temporary.name) / "data"
+        )
+        server.HERMES_WEBHOOK_RATE_LIMITER = server.PerBindingRateLimiter()
 
     def install_coordinator(self):
         coordinator = HermesRefreshCoordinator({}, binding_ids=("local-default",))
@@ -64,8 +72,10 @@ class HermesWebhookHealthTests(unittest.TestCase):
             coordinator.stop(timeout=1)
         server.HERMES_EVENT_REFRESH = self.original_coordinator
         server.HERMES_WEBHOOK_DELIVERIES = self.original_deliveries
+        server.HERMES_WEBHOOK_RATE_LIMITER = self.original_limiter
         server.PORT = self.original_port
         server.HOST = self.original_host
+        self.temporary.cleanup()
 
     def test_public_health_state_matrix(self):
         off = public_health_payload(configured=False, coordinator_available=False, snapshot=None, now=NOW)

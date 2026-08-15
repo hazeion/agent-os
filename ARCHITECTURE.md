@@ -112,6 +112,19 @@ Special-use DNS suffixes and nested/adjacent URL-path hybrids are rejected;
 Markdown, backtick, and emphasis wrappers are parsed outside the URL span.
 Supported structured messages contribute only bounded allowlisted text parts;
 image, tool, and reasoning content is omitted.
+Milestone 9 adds a loopback-only signed Hermes lifecycle receiver as an
+observation wakeup. The receiver authenticates the exact raw body, accepts only
+four lifecycle events, stores only a keyed delivery digest in owner-only
+SQLite, atomically deduplicates concurrent and post-restart retries, expires
+records through bounded 24-hour cleanup, and applies a bounded per-binding
+token bucket. Accepted events carry only allowlisted scalar hints into a
+bounded coalescing coordinator; every projected state change still comes from
+an authoritative Hermes adapter read. Dropped, delayed, duplicate, and
+out-of-order deliveries therefore affect freshness only, while periodic
+reconciliation remains the correctness and recovery boundary. Stock Hermes
+0.20.1 is the locally validated candidate webhook baseline pending cross-
+platform CI; Hermes 0.19, absent,
+unconfigured, disabled, and safe-mode runtimes retain quiet polling fallback.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other

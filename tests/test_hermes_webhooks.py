@@ -4,7 +4,7 @@ import json
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from hermes_webhooks import WebhookBinding, WebhookDeliveryCache, WebhookValidationError, verify_and_normalize
+from hermes_webhooks import PerBindingRateLimiter, WebhookBinding, WebhookValidationError, verify_and_normalize
 
 
 class HermesWebhookTests(unittest.TestCase):
@@ -40,6 +40,23 @@ class HermesWebhookTests(unittest.TestCase):
         body, headers = self.request(self.payload(platform="unexpected-platform"))
         event = verify_and_normalize(body, headers, self.binding, now=self.now)
         self.assertEqual(event.platform, "other")
+
+    def test_normalizes_stock_020_lifecycle_fields_from_extra(self):
+        body, headers = self.request(
+            self.payload(
+                extra={
+                    "completed": True,
+                    "interrupted": False,
+                    "platform": "gateway",
+                    "child_summary": "must not be retained",
+                }
+            )
+        )
+        event = verify_and_normalize(body, headers, self.binding, now=self.now)
+        self.assertTrue(event.completed)
+        self.assertFalse(event.interrupted)
+        self.assertEqual(event.platform, "gateway")
+        self.assertFalse(hasattr(event, "child_summary"))
         body, headers = self.request(self.payload(platform="x" * 10_000))
         event = verify_and_normalize(body, headers, self.binding, now=self.now)
         self.assertEqual(event.platform, "other")
@@ -79,22 +96,37 @@ class HermesWebhookTests(unittest.TestCase):
         with self.assertRaisesRegex(WebhookValidationError, "invalid_timestamp"):
             verify_and_normalize(body, headers, self.binding, now=self.now)
 
-    def test_delivery_cache_deduplicates_and_bounds_hints(self):
-        body, headers = self.request(self.payload())
-        event = verify_and_normalize(body, headers, self.binding, now=self.now)
-        cache = WebhookDeliveryCache(capacity=1)
-        self.assertTrue(cache.remember(event))
-        self.assertFalse(cache.remember(event))
+    def test_per_binding_rate_limiter_is_bounded_and_refills(self):
+        now = [100.0]
+        limiter = PerBindingRateLimiter(
+            capacity=2,
+            refill_per_second=1,
+            clock=lambda: now[0],
+        )
+        self.assertTrue(limiter.allow("first"))
+        self.assertTrue(limiter.allow("first"))
+        self.assertFalse(limiter.allow("first"))
+        self.assertTrue(limiter.allow("second"))
+        now[0] += 1
+        self.assertTrue(limiter.allow("first"))
+        self.assertFalse(limiter.allow("first"))
 
-        bounded = WebhookDeliveryCache(capacity=2)
-        events = []
-        for delivery in ("one", "two", "three"):
-            body, headers = self.request(self.payload(delivery_id=delivery), delivery=delivery)
-            events.append(verify_and_normalize(body, headers, self.binding, now=self.now))
-        for event in events:
-            bounded.remember(event)
-        self.assertEqual(len(bounded._items), 2)
-        self.assertFalse(bounded.contains(events[0]))
+    def test_one_thousand_event_storm_is_bounded_per_binding(self):
+        limiter = PerBindingRateLimiter(
+            capacity=120,
+            refill_per_second=2,
+            clock=lambda: 100.0,
+        )
+        outcomes = [limiter.allow("local-default") for _ in range(1_000)]
+        self.assertEqual(outcomes.count(True), 120)
+        self.assertEqual(outcomes.count(False), 880)
+        self.assertEqual(set(limiter._buckets), {"local-default"})
+
+    def test_rate_limiter_rejects_invalid_configuration(self):
+        with self.assertRaises(ValueError):
+            PerBindingRateLimiter(capacity=0)
+        with self.assertRaises(ValueError):
+            PerBindingRateLimiter(refill_per_second=0)
 
 
 if __name__ == "__main__":
