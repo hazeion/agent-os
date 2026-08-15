@@ -99,6 +99,7 @@ _KNOWN_BOOLEAN_FEATURES = frozenset(
         "run_pending_action_status",
         "run_runtime_identity",
         "run_stop",
+        "run_steer",
         "run_approval_response",
         "run_approval_request_binding",
         "run_approval_structured_preview",
@@ -147,6 +148,7 @@ _RUN_ENDPOINTS = {
     "run_status": ("GET", "/v1/runs/{run_id}", "run_status"),
     "run_events": ("GET", "/v1/runs/{run_id}/events", "run_events_sse"),
     "run_stop": ("POST", "/v1/runs/{run_id}/stop", "run_stop"),
+    "run_steer": ("POST", "/v1/runs/{run_id}/steer", "run_steer"),
 }
 _SESSION_ENDPOINTS = {
     "sessions": ("GET", "/api/sessions"),
@@ -4037,10 +4039,18 @@ class RemoteHermesClient:
     ) -> Mapping[str, Any]:
         run_path = re.fullmatch(r"/v1/runs/(run_[0-9a-f]{32})", path)
         stop_path = re.fullmatch(r"/v1/runs/(run_[0-9a-f]{32})/stop", path)
+        steer_path = re.fullmatch(r"/v1/runs/(run_[0-9a-f]{32})/steer", path)
         allowed = (
             (method == "POST" and path == "/v1/runs" and expected_status == 202 and body is not None)
             or (method == "GET" and run_path is not None and expected_status == 200 and body is None)
             or (method == "POST" and stop_path is not None and expected_status == 200 and body == {})
+            or (
+                method == "POST"
+                and steer_path is not None
+                and expected_status == 200
+                and type(body) is dict
+                and set(body) == {"input"}
+            )
         )
         if not allowed:
             raise RemoteHermesError("remote_path_not_allowed")
@@ -4090,6 +4100,20 @@ class RemoteHermesClient:
                         "remote_run_rejected"
                         if deterministic_rejection
                         else "remote_submission_unverified"
+                    )
+                if method == "POST" and steer_path is not None:
+                    deterministic_rejection = status in {
+                        400,
+                        404,
+                        409,
+                        413,
+                        415,
+                        422,
+                    }
+                    raise RemoteHermesError(
+                        "remote_steer_rejected"
+                        if deterministic_rejection
+                        else "remote_steer_unverified"
                     )
                 raise RemoteHermesError("remote_run_rejected")
             content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().casefold()
@@ -5156,6 +5180,42 @@ class RemoteHermesClient:
             raise RemoteHermesError("remote_run_schema_invalid")
         return {"status": "stopping"}
 
+    def steer_run(self, run_id: str, text: str) -> dict[str, bool]:
+        """Send bounded text guidance through Hermes' fixed Runs steer route."""
+
+        run_id = self._validated_run_id(run_id)
+        if (
+            not isinstance(text, str)
+            or not text.strip()
+            or len(text) > 20_000
+            or "\x00" in text
+        ):
+            raise RemoteHermesError("remote_run_request_invalid")
+        self._require_features("run_steer")
+        try:
+            payload = self._run_json_request(
+                "POST",
+                f"/v1/runs/{run_id}/steer",
+                expected_status=200,
+                body={"input": text.strip()},
+            )
+        except RemoteHermesError as exc:
+            if exc.code in {
+                "remote_steer_rejected",
+                "remote_run_request_invalid",
+                "remote_authentication_failed",
+            }:
+                raise
+            raise RemoteHermesError("remote_steer_unverified") from exc
+        if (
+            set(payload) != {"object", "run_id", "accepted"}
+            or payload.get("object") != "hermes.run.steer"
+            or payload.get("run_id") != run_id
+            or payload.get("accepted") is not True
+        ):
+            raise RemoteHermesError("remote_steer_unverified")
+        return {"accepted": True}
+
     def _normalize_run_event(self, payload: Mapping[str, Any], run_id: str) -> dict[str, Any]:
         if payload.get("run_id") != run_id:
             raise RemoteHermesError("remote_run_schema_invalid")
@@ -5308,6 +5368,10 @@ class RemoteHermesClient:
                 "type": event_type,
                 "runtime": {"provider": provider, "model": model},
             }
+        if event_type == "run.steered":
+            if payload.get("accepted") is not True:
+                raise RemoteHermesError("remote_run_schema_invalid")
+            return {"type": event_type, "accepted": True}
         if event_type in {"run.cancelled", "run.failed"}:
             return {"type": event_type}
         if event_type == "run.completed":

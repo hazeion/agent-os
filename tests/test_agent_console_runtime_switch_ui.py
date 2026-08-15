@@ -114,9 +114,10 @@ class AgentConsoleRuntimeSwitchUiTests(unittest.TestCase):
     def test_unverified_runtime_blocks_execution_until_explicit_retry(self):
         render = self.app_block("function renderAgentConsole(payload = {})", "function scheduleAgentConsolePoll")
         self.assertIn("const runtimeBlocked = agentConsoleRuntimeBlocked()", render)
-        self.assertIn("if (prompt) prompt.disabled", render)
-        self.assertIn("if (send) send.disabled", render)
-        self.assertIn("if (attach) attach.disabled", render)
+        self.assertIn("const composerBlocked = activeRun ? !steerMode : runtimeBlocked", render)
+        self.assertIn("prompt.disabled = !available || composerBlocked", render)
+        self.assertIn("send.disabled = !available || composerBlocked", render)
+        self.assertIn("attach.disabled = !available || Boolean(activeRun) || runtimeBlocked", render)
         self.assertIn("runtimeRefresh.hidden = !state.agentConsoleRuntimeUnresolved", render)
         self.assertIn('id="agent-console-runtime-refresh"', INDEX)
         transcript = INDEX[

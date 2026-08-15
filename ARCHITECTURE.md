@@ -570,8 +570,30 @@ fail-closed recovery source when retained history is unavailable.
 Agent Console slash commands come from Mentat's versioned, project-owned safe
 command manifest. Each entry declares its dashboard handler, arguments,
 description, and safety classification. The frontend accepts only the current
-schema and a fixed handler registry. The initial allowlist is `/model`, `/new`,
-and `/help`; this is intentionally distinct from the full Hermes CLI.
+schema and a fixed handler registry. The allowlist is `/model`, `/new`,
+`/steer`, and `/help`; this is intentionally distinct from the full Hermes
+CLI. `/steer` is a remote-control command, not CLI passthrough: it dispatches
+the same fixed, revision-bound server operation as the active Console's Steer
+button.
+
+Remote active-run steering is available only when Hermes advertises
+`run_steer` with the exact `POST /v1/runs/{run_id}/steer` endpoint. Mentat
+requires a running remote run bound to the current connection, profile,
+transport instance, and local control revision; it verifies status before the
+mutation, validates Hermes' exact acceptance response, and reads the same run
+back afterward. An accepted action whose read-back fails is reported as a
+partial failure and is never retried automatically. The steer text and remote
+run identifier remain private and are not persisted; only a bounded text-free
+status event enters Console history.
+
+While a compatible run is active, the existing Console textbox remains
+writable but changes visibly and accessibly from Send mode to text-only Steer
+mode. Attachments, ordinary Send, new-session, profile/provider changes, and
+parallel run submission remain locked. Local one-shot CLI runs and remote hosts
+without the exact capability keep the composer locked. Stop remains a separate
+hard-stop control. Attachment steering remains unavailable until Hermes
+advertises a versioned media contract with exact bounds and verifiable
+read-back.
 
 Future command sources must be introduced as an explicit capability and emit
 the stable Mentat schema. Mentat does not parse CLI help/output to discover

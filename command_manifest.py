@@ -40,6 +40,18 @@ _COMMAND_MANIFEST = {
             "safety": "local_state",
         },
         {
+            "command": "/steer",
+            "handler": "agent_console.steer_active_run",
+            "arguments": [{
+                "name": "guidance",
+                "required": True,
+                "variadic": True,
+                "description": "Text guidance for the active remote Hermes run.",
+            }],
+            "description": "Guide the active remote Hermes run",
+            "safety": "remote_control",
+        },
+        {
             "command": "/help",
             "handler": "agent_console.show_help",
             "arguments": [],

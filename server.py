@@ -506,6 +506,12 @@ def active_agent_console_run_ids() -> tuple[str, ...]:
         )
 
 
+def agent_console_input_staging_blocked() -> bool:
+    """Fail closed when Console input context would overlap an active run."""
+
+    return bool(active_agent_console_run_ids())
+
+
 def trim_agent_console_runs_locked() -> None:
     """Keep the in-memory Console history bounded while preserving active runs."""
     if len(AGENT_CONSOLE_RUNS) <= AGENT_CONSOLE_RUN_LIMIT:
@@ -569,6 +575,8 @@ def agent_console_attachment_gc_loop() -> None:
 def create_agent_console_attachment(
     *, original_name: str, content_type: str, content: bytes
 ) -> tuple[dict, int]:
+    if agent_console_input_staging_blocked():
+        return {"error": "Stop the active Hermes run before staging attachments."}, 409
     content_length = len(content)
     if content_length <= 0:
         return {"error": "Attachment content is required"}, 400
@@ -644,6 +652,8 @@ def workspace_files_payload(query: str) -> tuple[dict, int]:
 
 
 def create_workspace_attachment(payload) -> tuple[dict, int]:
+    if agent_console_input_staging_blocked():
+        return {"error": "Stop the active Hermes run before staging workspace context."}, 409
     if not isinstance(payload, dict):
         return {"error": "Workspace selection must be a JSON object"}, 400
     root_id = compact_text(payload.get("root_id"), max_length=64)
@@ -5314,6 +5324,8 @@ def stage_context_pack(pack_id: str, _payload=None):
     # Lock order: connection selection, then Context Pack mutation, then run
     # state. Remote submission uses the same order through queue publication.
     with HERMES_CONNECTION_OPERATION_LOCK, CONTEXT_PACK_OPERATION_LOCK:
+        if agent_console_input_staging_blocked():
+            return {"error": "Stop the active Hermes run before staging a Context Pack."}, 409
         pack = context_pack_record(pack_id)
         if pack is None:
             return {"error": "Context pack not found"}, 404
@@ -6453,11 +6465,33 @@ def agent_console_event(run: dict, message: str, kind: str = "status", data: dic
 
 
 def agent_console_snapshot(run: dict) -> dict:
-    return {
+    snapshot = {
         key: value
         for key, value in run.items()
         if key not in {"process"} and not str(key).startswith("_")
     }
+    remote_transport = run.get("_remote_transport")
+    remote_run_id = run.get("_remote_run_id")
+    revision = run.get("_steer_revision", 0)
+    if type(revision) is not int or revision < 0:
+        revision = 0
+    steer_available = (
+        run.get("transport_mode") == "remote"
+        and run.get("status") == "running"
+        and isinstance(remote_transport, RemoteHermesConsoleTransport)
+        and isinstance(remote_run_id, str)
+        and remote_transport.steer_available
+        and run.get("_steer_inflight") is not True
+    )
+    snapshot["controls"] = {
+        "steer": {
+            "available": steer_available,
+            "revision": revision,
+            "text_only": True,
+            "max_characters": AGENT_CONSOLE_PROMPT_LIMIT,
+        }
+    }
+    return snapshot
 
 
 def agent_console_payload():
@@ -6985,6 +7019,8 @@ def _claim_remote_console_stop_locked(
     current = AGENT_CONSOLE_RUNS.get(run_id)
     if not current or current.get("_remote_stop_attempted"):
         return False
+    if current.get("_remote_control_claim"):
+        return False
     if (
         current.get("_remote_transport") is not transport
         or current.get("_remote_run_id") != remote_run_id
@@ -6993,6 +7029,7 @@ def _claim_remote_console_stop_locked(
             return False
         raise HermesTransportError("transport_binding_changed")
     current["_remote_stop_attempted"] = True
+    current["_remote_control_claim"] = "stop"
     return True
 
 
@@ -7168,6 +7205,23 @@ def _apply_remote_console_event(run_id: str, event: dict) -> bool:
                 "status",
                 {"phase": "approval" if event_type == "approval.responded" else "clarification"},
             )
+        elif event_type == "run.steered":
+            run["_remote_steer_event_counter"] = int(
+                run.get("_remote_steer_event_counter") or 0
+            ) + 1
+            suppress = int(run.get("_remote_steer_event_suppress") or 0)
+            if suppress > 0:
+                if suppress == 1:
+                    run.pop("_remote_steer_event_suppress", None)
+                else:
+                    run["_remote_steer_event_suppress"] = suppress - 1
+            else:
+                agent_console_event(
+                    run,
+                    "Remote Hermes received steering guidance",
+                    "run.steered",
+                    {"phase": "steer"},
+                )
         elif event_type in {"run.completed", "run.failed", "run.cancelled"}:
             agent_console_event(
                 run,
@@ -7958,6 +8012,182 @@ def respond_to_remote_console_action(run_id: str, payload):
     return {"error": "The remote response was accepted but Mentat could not update the run state.", "partial": True}, 502
 
 
+def steer_remote_console_run(run_id: str, payload):
+    """Send one revision-bound text-only steer to the exact active remote run."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "text",
+        "control_revision",
+        "agent_id",
+    }:
+        return {"error": "Steer requires text and the current Console run binding."}, 400
+    text = payload.get("text")
+    revision = payload.get("control_revision")
+    requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower()
+    if requested_agent_id == "hermes":
+        requested_agent_id = "default"
+    if (
+        not isinstance(text, str)
+        or not text.strip()
+        or len(text) > AGENT_CONSOLE_PROMPT_LIMIT
+        or "\x00" in text
+    ):
+        return {
+            "error": f"Steering guidance must be {AGENT_CONSOLE_PROMPT_LIMIT:,} characters or fewer."
+        }, 400
+    if type(revision) is not int or not (0 <= revision <= 10**9):
+        return {"error": "The Console steer control changed. Refresh and try again."}, 409
+
+    with AGENT_CONSOLE_LOCK:
+        run = AGENT_CONSOLE_RUNS.get(run_id)
+        if not run:
+            return {"error": "Agent run not found"}, 404
+        current_agent_id = compact_text(run.get("agent_id"), max_length=64).lower() or "default"
+        if current_agent_id == "hermes":
+            current_agent_id = "default"
+        current_revision = run.get("_steer_revision", 0)
+        if type(current_revision) is not int or current_revision < 0:
+            current_revision = 0
+        if requested_agent_id != current_agent_id:
+            return {"error": "The active Hermes profile changed. Refresh before steering."}, 409
+        if run.get("status") != "running" or run.get("transport_mode") != "remote":
+            return {"error": "That Console run is not currently accepting steering."}, 409
+        if revision != current_revision:
+            return {"error": "The Console steer control changed. Refresh and try again."}, 409
+        if run.get("_remote_control_claim") or run.get("_steer_inflight") is True:
+            return {"error": "Steering guidance is already being verified."}, 409
+        transport = run.get("_remote_transport")
+        remote_run_id = run.get("_remote_run_id")
+        if (
+            not isinstance(transport, RemoteHermesConsoleTransport)
+            or not isinstance(remote_run_id, str)
+            or not transport.steer_available
+        ):
+            return {"error": "This Hermes run does not advertise verified steering."}, 409
+        if run.get("connection_binding_id") != transport.binding.binding_id:
+            return {"error": "The Hermes connection changed. Refresh before steering."}, 409
+        bound_agent_id = run.get("agent_id")
+        bound_connection_id = run.get("connection_binding_id")
+        event_counter = int(run.get("_remote_steer_event_counter") or 0)
+        claim_token = f"steer:{current_revision}"
+        run["_remote_control_claim"] = claim_token
+        run["_steer_inflight"] = True
+
+    uncertain = False
+    accepted = False
+    error: HermesTransportError | None = None
+    try:
+        transport.revalidate(DATA_DIR)
+        before = transport.get_run(remote_run_id)
+        if before.get("status") != "running":
+            raise HermesTransportError("remote_steer_rejected")
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if (
+                current is not run
+                or current.get("_remote_control_claim") != claim_token
+                or current.get("_remote_transport") is not transport
+                or current.get("_remote_run_id") != remote_run_id
+                or current.get("connection_binding_id") != bound_connection_id
+                or current.get("agent_id") != bound_agent_id
+                or current.get("_steer_revision", 0) != current_revision
+                or current.get("status") != "running"
+            ):
+                raise HermesTransportError("transport_binding_changed")
+        transport.steer_run(remote_run_id, text.strip())
+        accepted = True
+        after = transport.get_run(remote_run_id)
+        if after.get("status") not in {
+            "running",
+            "waiting_for_approval",
+            "waiting_for_clarification",
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise HermesTransportError("remote_steer_unverified")
+    except HermesTransportError as exc:
+        error = exc
+        uncertain = accepted or exc.code == "remote_steer_unverified"
+
+    with AGENT_CONSOLE_LOCK:
+        current = AGENT_CONSOLE_RUNS.get(run_id)
+        authority_changed = (
+            current is not run
+            or current.get("_remote_control_claim") != claim_token
+            or current.get("_remote_transport") is not transport
+            or current.get("_remote_run_id") != remote_run_id
+            or current.get("connection_binding_id") != bound_connection_id
+            or current.get("agent_id") != bound_agent_id
+            or current.get("_steer_revision", 0) != current_revision
+            or current.get("status") not in {
+                "running",
+                "waiting_for_approval",
+                "waiting_for_clarification",
+            }
+        ) if current else True
+        if current is run and current.get("_remote_control_claim") == claim_token:
+            current.pop("_remote_control_claim", None)
+            current.pop("_steer_inflight", None)
+        if accepted and authority_changed:
+            uncertain = True
+            error = HermesTransportError("remote_steer_unverified")
+        if uncertain:
+            if current:
+                current["_steer_revision"] = current_revision + 1
+                current["partial"] = True
+                if (
+                    accepted
+                    and int(current.get("_remote_steer_event_counter") or 0) == event_counter
+                ):
+                    current["_remote_steer_event_suppress"] = int(
+                        current.get("_remote_steer_event_suppress") or 0
+                    ) + 1
+                agent_console_event(
+                    current,
+                    "Remote Hermes may have received steering guidance; verification was incomplete",
+                    "error",
+                    {"phase": "steer", "partial": True},
+                )
+                persist_agent_console_runs()
+                snapshot = agent_console_snapshot(current)
+            else:
+                snapshot = None
+            return {
+                "error": HermesTransportError("remote_steer_unverified").public_message,
+                "error_code": "remote_steer_unverified",
+                "partial": True,
+                **({"run": snapshot} if snapshot is not None else {}),
+            }, 502
+        if error is not None:
+            status = 409 if error.code in {
+                "transport_binding_changed",
+                "remote_steer_capability_unavailable",
+                "remote_steer_rejected",
+            } else 400 if error.code == "remote_run_request_invalid" else 503
+            return {"error": error.public_message, "error_code": error.code}, status
+        if not current:
+            return {
+                "error": HermesTransportError("remote_steer_unverified").public_message,
+                "error_code": "remote_steer_unverified",
+                "partial": True,
+            }, 502
+        current["_steer_revision"] = current_revision + 1
+        if int(current.get("_remote_steer_event_counter") or 0) == event_counter:
+            agent_console_event(
+                current,
+                "Remote Hermes received steering guidance",
+                "run.steered",
+                {"phase": "steer"},
+            )
+            current["_remote_steer_event_suppress"] = int(
+                current.get("_remote_steer_event_suppress") or 0
+            ) + 1
+        persist_agent_console_runs()
+        snapshot = agent_console_snapshot(current)
+    return {"ok": True, "accepted": True, "run": snapshot}, 200
+
+
 def _start_agent_console_run_locked(payload):
     start_new_session = payload.get("start_new_session", False)
     if type(start_new_session) is not bool:
@@ -8498,6 +8728,11 @@ def cancel_agent_console_run(run_id: str):
             return {"error": "Agent run not found"}, 404
         if run.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES:
             return {"error": "Agent run is no longer active", "run": agent_console_snapshot(run)}, 409
+        if run.get("_remote_control_claim") not in {None, "stop"}:
+            return {
+                "error": "Another remote control action is being verified. Try Stop again shortly.",
+                "run": agent_console_snapshot(run),
+            }, 409
         run["status"] = "cancelling"
         agent_console_event(run, "Stopping Hermes", "status", {"phase": "cancelling"})
         process = AGENT_CONSOLE_PROCESSES.get(run_id)
@@ -8965,6 +9200,7 @@ POST_ROUTES = [
     (re.compile(r"^/api/agent-messages/([^/]+)/state$"), update_agent_message_state, True),
     (re.compile(r"^/api/agent-console/runs$"), start_agent_console_run, True),
     (re.compile(r"^/api/agent-console/runs/([^/]+)/response$"), respond_to_remote_console_action, True),
+    (re.compile(r"^/api/agent-console/runs/([^/]+)/steer$"), steer_remote_console_run, True),
     (re.compile(r"^/api/agent-console/workspace-attachments$"), create_workspace_attachment, True),
     (re.compile(r"^/api/agent-console/models/refresh$"), refresh_agent_console_models, True),
     (re.compile(r"^/api/agent-console/provider/preview$"), preview_agent_console_provider_switch, True),
