@@ -605,13 +605,17 @@ def _wait_reconciliation(port: int, prior_count: int, timeout: float = 70) -> di
     raise RuntimeError("Mentat reconciliation did not run")
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hermes-source", type=Path, required=True)
     parser.add_argument("--hermes-python", type=Path, required=True)
-    parser.add_argument("--legacy-hermes", type=Path)
+    parser.add_argument("--legacy-hermes", type=Path, required=True)
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[1])
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main() -> int:
+    args = _parse_args()
     source = args.hermes_source.resolve()
     # Preserve the virtual-environment path even when its interpreter is a
     # symlink into uv's shared runtime; sibling console scripts live beside it.

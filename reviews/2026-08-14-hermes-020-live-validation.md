@@ -1,6 +1,6 @@
 # Feature Slice Review: Hermes 0.20.1 Live Validation and Rollout
 
-Status: Ready for publication; cross-platform CI pending
+Status: Ready for corrective publication; cross-platform CI rerun pending
 Slice: `hermes-020-live-validation`
 Date: `2026-08-14`
 Review log: `reviews/2026-08-14-hermes-020-live-validation.md`
@@ -187,6 +187,39 @@ safe mode, and rollback against the real loopback receiver.
 | `uv build` plus `scripts/verify_python_artifacts.py` | Host build cache, temporary artifact directory | 0 | Wheel and sdist verified | Both artifacts contain `hermes_webhook_store.py` and match the exact public inventory. |
 | Clean wheel install/import/version smoke | Temporary Python 3.11 virtual environment | 0 | Pass | Installed pinned dependencies, imported `hermes_webhook_store` and `server`, and reported `v0.1.0-beta.1`. |
 
+### Publication CI diagnosis
+
+| Check | Result at commit `44254b5` | Root cause | Corrective action |
+| --- | --- | --- | --- |
+| Dependency and secret scan | Fail | The stock Hermes commit ID in the harness/evidence was intentionally retained provenance, but its reviewed fingerprint was absent from `.secrets.baseline`. | Add the exact non-secret commit fingerprint for both tracked files; retain the immutable provenance value. |
+| Ubuntu Python 3.11/3.13 and Windows Python 3.11/3.12/3.13 group 2 | Fail | One route test used a brittle `< 0.1s` wall-clock threshold. Loaded runners returned in 109–181 ms while still completing before the intentionally blocked refresh adapter. | Assert the behavioral boundary directly: the 202 response must return while the adapter is entered but not completed, then release it in guaranteed cleanup. |
+| Aggregate CI/quality gates | Fail | Expected downstream consequence of the two primary failures above. | Re-run the complete matrices after the focused correction passes locally. |
+| Reproducible live qualification | Reviewer B P2, corroborated by Reviewer A | `--legacy-hermes` was optional and the aggregate considered only evidence keys that existed, allowing a future run to omit required AC-4 evidence yet report success. The retained run did supply and pass Hermes 0.19, so its result remains valid. | Require `--legacy-hermes` at argument parsing and add a parser contract test proving omission fails before qualification begins. |
+
+The initial matrix otherwise passed Ubuntu Python 3.12, all three macOS
+versions, 33 of 36 Windows groups, package/install, browser smoke, and both
+unsigned installer builds. No product-runtime failure was reported.
+
+Corrective local verification:
+
+- `python -m unittest tests.test_hermes_webhook_routes -v` on authorized macOS
+  loopback: 13 passed.
+- `python -m unittest discover -s tests -q` in an isolated temporary worktree:
+  1,021 passed, 4 skipped, exit 0 in 129.612 seconds.
+- `python scripts/check_tracked_secrets.py` with the exact hash-locked quality
+  environment, both in the source worktree and isolated verification worktree:
+  passed with no unreviewed candidate.
+- After the qualification-gate review fix, the isolated full suite passed
+  1,022 tests with 4 skipped in 153.322 seconds; the focused qualification
+  module passed 11 tests, and the exact secret scan remained green.
+- The complete redacted live harness was rerun with explicit stock Hermes
+  0.20.1 and legacy Hermes 0.19 executables. Every gate passed, including
+  `legacy_019_quiet_fallback`; the 32-client storm accepted 123 requests and
+  safely rate-limited 877.
+- Product/frontend code did not change in the corrective delta, so the exact
+  final Lighthouse 100/100/100/100 artifact above remains the rendered build
+  evidence for this slice; no score-affecting bytes changed.
+
 ### Rendered or manual behavior
 
 - Opened Settings in the in-app browser against an isolated Mentat server.
@@ -249,6 +282,29 @@ safe mode, and rollback against the real loopback receiver.
 - Reviewer B (compatibility/product): no findings after round 3.
 - Remaining dissent: none. Both completed reviewer agents were closed.
 
+### Corrective publication review
+
+- Reviewer A independently reported no findings on the complete slice and
+  initial CI correction.
+- Reviewer B reported B-5 (P2 blocking): the live harness could omit the
+  required Hermes 0.19 gate and still aggregate only the evidence keys that
+  existed. Reviewer A independently critiqued the exact finding and maintained
+  it as blocking and in scope. The retained evidence remained valid because
+  its invocation supplied and passed Hermes 0.19.
+- Reviewer B reported B-6 (P3 non-blocking): the publication line still said
+  focused/full/security verification was pending after those checks had
+  completed. Reviewer A independently maintained that documentation finding.
+- Disposition: accepted both. `--legacy-hermes` is now required by the
+  qualification parser, a regression test proves omission exits before a run,
+  and the publication line now names only final re-review/publication as
+  pending.
+- Post-fix evidence: 11 qualification/verifier tests passed; 1,022 full-suite
+  tests passed with 4 skipped; exact tracked-secret scan passed; the complete
+  stock 0.20.1 plus legacy 0.19 redacted live harness passed every gate.
+- Final corrective re-review: Reviewer A and Reviewer B independently reported
+  **No findings** on the complete slice and corrective delta. Remaining dissent:
+  none. Both reviewer agents may be closed.
+
 ### Reverification
 
 - Focused tests: 74 webhook/coordinator/packaging tests passed before the final
@@ -285,8 +341,10 @@ safe mode, and rollback against the real loopback receiver.
   best-effort and rely on authoritative reconciliation.
 - User authorization and scope: standing approval recorded; exact publication
   inventory will still be logged before action.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- Initial commit hash: `44254b5376db3765107671eb477ee9674170ae2b`.
+- Ready PR URL: <https://github.com/hazeion/agent-os/pull/101>.
+- Corrective commit: Pending staging, commit, and push under the recorded
+  standing publication approval.
 
 ## Outcome review
 

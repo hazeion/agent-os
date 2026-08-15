@@ -1,10 +1,25 @@
 import hashlib
 import hmac
+import io
 import json
 import unittest
+from contextlib import redirect_stderr
 from datetime import datetime, timedelta, timezone
 
 from hermes_webhooks import PerBindingRateLimiter, WebhookBinding, WebhookValidationError, verify_and_normalize
+from scripts.hermes_webhook_live_validation import _parse_args
+
+
+class HermesWebhookLiveQualificationTests(unittest.TestCase):
+    def test_legacy_runtime_is_required_for_qualification(self):
+        required = ["--hermes-source", "stock", "--hermes-python", "python"]
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                _parse_args(required)
+        self.assertEqual(raised.exception.code, 2)
+
+        args = _parse_args([*required, "--legacy-hermes", "legacy-hermes"])
+        self.assertEqual(str(args.legacy_hermes), "legacy-hermes")
 
 
 class HermesWebhookTests(unittest.TestCase):

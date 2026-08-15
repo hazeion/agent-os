@@ -4,7 +4,6 @@ import io
 import json
 import os
 import threading
-import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -106,10 +105,12 @@ class HermesWebhookRouteTests(unittest.TestCase):
     def test_acknowledgement_does_not_wait_for_slow_refresh_adapter(self):
         entered = threading.Event()
         release = threading.Event()
+        completed = threading.Event()
 
         def slow_refresh(_binding):
             entered.set()
             release.wait(2)
+            completed.set()
             return {"sessions": []}
 
         server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
@@ -119,13 +120,13 @@ class HermesWebhookRouteTests(unittest.TestCase):
         )
         server.HERMES_EVENT_REFRESH.start()
         body, headers = self.request(delivery="slow-adapter")
-        started = time.monotonic()
-        harness = self.invoke(body, headers)
-        elapsed = time.monotonic() - started
-        self.assertEqual(self.status(harness), 202)
-        self.assertLess(elapsed, 0.1)
-        self.assertTrue(entered.wait(1))
-        release.set()
+        try:
+            harness = self.invoke(body, headers)
+            self.assertEqual(self.status(harness), 202)
+            self.assertTrue(entered.wait(1))
+            self.assertFalse(completed.is_set())
+        finally:
+            release.set()
         self.assertTrue(server.HERMES_EVENT_REFRESH.wait_idle(1))
 
     def test_duplicate_delivery_returns_no_content_and_is_not_requeued(self):
