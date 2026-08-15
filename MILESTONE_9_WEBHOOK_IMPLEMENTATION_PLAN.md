@@ -1,6 +1,6 @@
 # Milestone 9 implementation plan — Hermes 0.20 webhooks
 
-Status: In progress at slice 9F; local verification complete, review/CI pending
+Status: In progress at slice 9G; slices 9A–9F implemented and accepted
 Prepared: 2026-08-03
 Scope: Signed local Hermes lifecycle events, bounded refresh wakeups, health
 evidence, and a separate redirect-capability decision
@@ -640,9 +640,8 @@ Estimated effort: 1–2 focused engineering days.
 
 ### 9F — Live Hermes 0.20 validation and rollout
 
-Status: **Implementation and local verification complete 2026-08-14; dual
-review and CI publication pending.** The isolated baseline is stock Hermes
-0.20.1, release tag `v2026.8.13`, commit
+Status: **Implemented and accepted 2026-08-14.** The maintained local webhook
+baseline is stock Hermes 0.20.1, release tag `v2026.8.13`, commit
 `f80f453ae0679347e38abc917c7f94f717bf96c5`.
 
 Deliverables:
@@ -806,19 +805,19 @@ means no Mentat steer mode.
 
 ## Milestone exit checklist
 
-- [ ] Four lifecycle events are contract-tested and live-verified.
-- [ ] Receiver is loopback-only and versioned.
-- [ ] HMAC uses raw bytes and constant-time comparison.
-- [ ] Timestamp, delivery, event, size, type, binding, rate, and replay gates
+- [x] Four lifecycle events are contract-tested and live-verified.
+- [x] Receiver is loopback-only and versioned.
+- [x] HMAC uses raw bytes and constant-time comparison.
+- [x] Timestamp, delivery, event, size, type, binding, rate, and replay gates
       fail closed.
-- [ ] Raw payloads and private identifiers are never persisted or exposed.
-- [ ] Accepted events only enqueue read-only refreshes.
-- [ ] Reconciliation repairs missed, delayed, and out-of-order delivery.
-- [ ] Hermes 0.19 and unconfigured 0.20 remain quiet and safe.
-- [ ] Health UI exposes useful evidence without secrets.
-- [ ] Full tests, browser smoke, local Hermes 0.20 E2E, and two adversarial
+- [x] Raw payloads and private identifiers are never persisted or exposed.
+- [x] Accepted events only enqueue read-only refreshes.
+- [x] Reconciliation repairs missed, delayed, and out-of-order delivery.
+- [x] Hermes 0.19 and unconfigured 0.20 remain quiet and safe.
+- [x] Health UI exposes useful evidence without secrets.
+- [x] Full tests, browser smoke, local Hermes 0.20 E2E, and two adversarial
       reviews pass.
-- [ ] Redirect is separately exposed only if the selected transport advertises
+- [x] Redirect is separately exposed only if the selected transport advertises
       and verifies it.
 
 ## Recommendation

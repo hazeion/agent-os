@@ -122,8 +122,8 @@ bounded coalescing coordinator; every projected state change still comes from
 an authoritative Hermes adapter read. Dropped, delayed, duplicate, and
 out-of-order deliveries therefore affect freshness only, while periodic
 reconciliation remains the correctness and recovery boundary. Stock Hermes
-0.20.1 is the locally validated candidate webhook baseline pending cross-
-platform CI; Hermes 0.19, absent,
+0.20.1 is the maintained local webhook baseline after live qualification and
+Linux, macOS, and Windows CI; Hermes 0.19, absent,
 unconfigured, disabled, and safe-mode runtimes retain quiet polling fallback.
 Private migration and restore use exact reservations, verified old/new states,
 source or recovery evidence, and startup refusal while incomplete. Runtime

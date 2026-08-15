@@ -1,6 +1,6 @@
 # Feature Slice Review: Hermes 0.20.1 Live Validation and Rollout
 
-Status: Ready for corrective publication; cross-platform CI rerun pending
+Status: Successful
 Slice: `hermes-020-live-validation`
 Date: `2026-08-14`
 Review log: `reviews/2026-08-14-hermes-020-live-validation.md`
@@ -54,11 +54,11 @@ safe mode, and rollback against the real loopback receiver.
 | AC-1 | Stock Hermes v0.20.1 sends signed raw bodies that Mentat accepts for the four allowlisted lifecycle events through real CLI/Gateway paths where available. | Redacted live harness transcript, exact stock source/fixture provenance, receiver health counters. | Pass |
 | AC-2 | Valid retries are idempotent across concurrent requests and a Mentat process restart; replay state expires through bounded 24-hour cleanup in owner-only private SQLite. | Migration/store unit tests, concurrent HTTP test, restart integration test, file-mode checks. | Pass |
 | AC-3 | Per-binding storms are bounded and rate limited; dropped and out-of-order hints cannot create false terminal state and converge through authoritative reconciliation. | Token-bucket tests, 1,000-event stress test, dropped/out-of-order/reconciliation tests. | Pass |
-| AC-4 | Clock skew, malformed signatures, safe mode, disabled binding, and unconfigured/0.19 runtimes fail closed and remain quiet. | Negative contract tests plus stock safe-mode/disabled and isolated 0.19 fallback runs. | In progress pending Windows CI |
+| AC-4 | Clock skew, malformed signatures, safe mode, disabled binding, and unconfigured/0.19 runtimes fail closed and remain quiet. | Negative contract tests plus stock safe-mode/disabled and isolated 0.19 fallback runs. | Pass |
 | AC-5 | No payload-private value reaches tracked files, request/error logs, SQLite values exposed to users, health APIs, diagnostics, or rendered UI. | Canary scan of live artifacts/logs/database/API/DOM; tracked-secret scan; browser contracts. | Pass |
 | AC-6 | Rollback works by disabling the Mentat binding, removing the operator-managed Hermes target in the isolated fixture, and restarting while polling/reconciliation remains available. | Isolated rollback transcript and post-rollback health/read-path checks. | Pass |
-| AC-7 | Maintained runtime documentation changes from Hermes 0.19.0 to stock 0.20.1 only after AC-1 through AC-6 pass, with capability-gated fallback retained. | Documentation diff and contract tests. | In progress |
-| AC-8 | Focused/full tests, package checks, computer-use, Lighthouse 100/100/100/100, two-reviewer adversarial review, ready PR, and CI all pass. | Recorded commands, artifacts, reviews, PR checks. | In progress |
+| AC-7 | Maintained runtime documentation changes from Hermes 0.19.0 to stock 0.20.1 only after AC-1 through AC-6 pass, with capability-gated fallback retained. | Documentation diff and contract tests. | Pass |
+| AC-8 | Focused/full tests, package checks, computer-use, Lighthouse 100/100/100/100, two-reviewer adversarial review, ready PR, and CI all pass. | Recorded commands, artifacts, reviews, PR checks. | Pass |
 
 ### Constraints and recovery
 
@@ -318,9 +318,12 @@ Corrective local verification:
   edits and is intentionally excluded from this slice rather than overwritten.
 - Changelog: updated with the 9F operator-visible behavior and safety semantics.
 - Architecture/operator docs: `ARCHITECTURE.md` and `REMOTE_HERMES.md` updated;
-  0.20.1 remains a locally validated candidate until cross-platform CI passes.
+  stock Hermes 0.20.1 is now the maintained local webhook baseline.
 - Project/session notes: this review log.
 - Documentation verification: exact clean full-suite contract tests passed.
+- Post-CI baseline-promotion verification: 27 beta, next-phase, and CI contract
+  tests passed in an isolated clean worktree; tracked-secret scan and
+  `git diff --check` passed.
 
 ## Publication gate
 
@@ -336,25 +339,28 @@ Corrective local verification:
 - PR title: `feat: qualify stock Hermes 0.20 webhooks`
 - PR summary: durable replay and storm admission, stock 0.20.1/legacy 0.19 live
   qualification, package inventory, privacy/rollback evidence, and docs.
-- Unresolved risks: Windows behavior awaits PR CI; 0.20.1 remains a candidate
-  baseline until that gate passes. Rate-limited wakeups are intentionally
-  best-effort and rely on authoritative reconciliation.
+- Unresolved risks: rate-limited wakeups are intentionally best-effort and rely
+  on authoritative reconciliation; this is a documented transport property,
+  not an unresolved acceptance gap.
 - User authorization and scope: standing approval recorded; exact publication
   inventory will still be logged before action.
 - Initial commit hash: `44254b5376db3765107671eb477ee9674170ae2b`.
 - Ready PR URL: <https://github.com/hazeion/agent-os/pull/101>.
-- Corrective commit: Pending staging, commit, and push under the recorded
-  standing publication approval.
+- Corrective commit: `b31419bc01bedc276f9e889827cadfc53c7a3dca`.
+- PR CI: all quality, security, package, native-installer, Ubuntu Python
+  3.11–3.13, macOS Python 3.11–3.13, and 36 Windows shard checks passed in runs
+  `31863627628`, `31863627626`, and `31863627597`.
 
 ## Outcome review
 
-- Classification: Locally accepted; publication and cross-platform CI pending.
-- Acceptance criteria summary: AC-1 through AC-6 pass locally; AC-7 and AC-8
-  await the ready PR's cross-platform CI before baseline promotion.
-- Potential bugs or untested paths: OS-level telemetry is outside harness scope;
-  Windows is covered by repository tests only after CI runs.
+- Classification: Successful.
+- Acceptance criteria summary: AC-1 through AC-8 pass; stock Hermes 0.20.1 is
+  promoted to the maintained local webhook baseline.
+- Potential bugs or untested paths: OS-level telemetry remains outside the
+  bounded harness scope; no required test path remains unverified.
 - Remaining reviewer dissent: none.
 - Compatibility/migration/rollback concerns: schema migration is additive;
   0.19/unconfigured/disabled fallback and target-removal rollback passed.
-- User decision: standing acceptance applies after every required gate passes.
-- Next slice authorized: No
+- User decision: accepted under the recorded standing approval after every
+  required gate passed.
+- Next slice authorized: Yes, proceed to 9G under the standing approval.
