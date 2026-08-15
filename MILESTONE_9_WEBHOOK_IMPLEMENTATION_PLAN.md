@@ -675,9 +675,61 @@ per-binding admission uses a 120-event burst and two-event-per-second refill.
 
 ### 9G — Remaining Hermes 0.20 product decisions
 
-Record bounded, separate decisions for A2A v1.0, grounded citations, desktop
-artifacts, and voice. None is implied by the receiver and none becomes a new
-Mentat authority without its own approved contract.
+Status: **Implemented and locally accepted 2026-08-14; publication CI
+pending.** The decisions are recorded in
+`HERMES_020_PRODUCT_DECISIONS.md`.
+
+Record bounded, separate decisions for A2A v1.0, grounded citations,
+deliverable artifacts, and voice. None is implied by the receiver and none
+becomes a new Mentat authority without its own approved contract.
+
+- A2A remains an opt-in native Hermes capability; a Mentat task/control surface
+  is deferred until it has its own authenticated remote-authority contract.
+- Grounded citations remain safely rendered response Markdown; xAI-specific raw
+  `x_search` tool results stay private, and trusted citation objects require a
+  future provider-independent structured provenance contract.
+- Mentat retains run-owned export discovery and authenticated remote Kanban
+  artifact import; it rejects response-path and `MEDIA:` discovery. Stock
+  Hermes 0.20.1 remains summary-only for the custom Kanban artifact API.
+- Voice remains native to Hermes surfaces until Mentat has explicit browser
+  audio privacy and transport-advertised, verified interruption contracts.
+
+### 9H — Native event migration
+
+Status: **Pending.** No additional event family is qualified by 9G.
+
+Expand the receiver only through separately reviewed, privacy-minimized stock
+Hermes event contracts. Prefer lifecycle, API-usage, tool, model/provider,
+subagent, and Kanban observer hooks as bounded wakeups for authoritative
+read-backs. Add a Mentat-to-browser push channel before reducing browser
+polling. Prompts, tool arguments/results, paths, response text, artifact bytes,
+audio, and transcripts remain outside persisted projections and browser APIs.
+Use `on_kanban_task_updated` for manual field edits, but do not treat it as
+coverage for claim, complete, or block transitions. Require an exact
+event-to-transition matrix plus dispatcher/worker process-registration proof;
+discard summaries from completion events and always verify live Kanban state
+through the adapter. Periodic reconciliation must converge when any emitter
+process or delivery is absent.
+
+Each event family needs exact stock source/runtime evidence, a minimized schema,
+binding rules, storm/replay handling, dropped-event convergence, compatibility,
+privacy scans, rollback, and soak evidence before activation.
+
+### 9I — Fallback retirement and fork audit
+
+Status: **Pending.** 9G records decisions but retires no fallback or fork
+contract.
+
+Reduce or remove only a polling or custom telemetry path that a qualified
+native event path has actually superseded. Audit every remaining custom-fork
+contract separately: webhooks can replace observation wakeups, not approvals,
+continuation, provider mutation, artifact download, Kanban mutation, or another
+command/API authority.
+
+Stock-Hermes compatibility requires every required custom contract to have an
+upstream equivalent, a supported fallback, or an explicitly approved product
+removal. Compatibility, rollback, dropped-event convergence, and soak evidence
+remain mandatory before retirement.
 
 ### Recommended implementation total
 
