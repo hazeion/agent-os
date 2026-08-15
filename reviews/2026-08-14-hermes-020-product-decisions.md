@@ -264,8 +264,8 @@ environmental evidence.
   `CHANGELOG.md`, and `MILESTONE_9_WEBHOOK_IMPLEMENTATION_PLAN.md`.
 - Verification artifacts: this log, the compact Lighthouse JSON evidence, and
   the decision-contract test module.
-- Proposed publication inventory is exactly seven files:
-  `ARCHITECTURE.md`, `CHANGELOG.md`,
+- Proposed publication inventory is eight files after the CI correction:
+  `.secrets.baseline`, `ARCHITECTURE.md`, `CHANGELOG.md`,
   `MILESTONE_9_WEBHOOK_IMPLEMENTATION_PLAN.md`,
   `HERMES_020_PRODUCT_DECISIONS.md`,
   `tests/test_hermes_020_product_decisions.py`, this review log, and
@@ -279,10 +279,21 @@ environmental evidence.
   unavailable until their separate entry gates are met.
 - Authorization: the user explicitly instructed the workflow to assume approval
   for in-scope features and publication. This standing-approval process
-  exception authorizes staging only the seven files above, committing, pushing,
+  exception authorizes staging only the eight files above, committing, pushing,
   and opening a ready (non-draft) stacked PR. It does not authorize destructive
   actions or scope expansion.
-- Commit hash and ready PR URL: pending publication.
+- Initial commit: `41c648fe63fdac656d95646f11af50517af3b771`.
+- Ready PR: `https://github.com/hazeion/agent-os/pull/102`.
+- Initial PR CI correction: Dependency and secret scan correctly rejected the
+  immutable upstream commit SHA in the contract test and the Lighthouse report
+  SHA-256 as unreviewed high-entropy strings. Both values are public integrity
+  identifiers, not credentials. Their exact file-bound fingerprints were added
+  to `.secrets.baseline`; no detector or scan rule was weakened.
+- Round 4 correction review: both original independent reviewers reported
+  **No findings**. They verified the exact filename/type/fingerprint bindings,
+  public integrity provenance, unchanged detectors/thresholds/filters, passing
+  18-test focused gate, and audit-log accuracy. Repeating either identifier in
+  another file or occurrence remains detectable.
 
 ## Outcome review
 
@@ -295,6 +306,6 @@ environmental evidence.
   intentionally not exercised or exposed.
 - Remaining reviewer dissent: none.
 - Compatibility/migration/rollback: documentation/tests only; rollback removes
-  these seven files/edits and requires no runtime or Hermes-state migration.
+  these eight files/edits and requires no runtime or Hermes-state migration.
 - User decision: standing acceptance applies after the ready PR is green.
 - Next slice authorized: 9H, after 9G publication and CI succeed.
