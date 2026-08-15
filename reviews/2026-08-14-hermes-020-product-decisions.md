@@ -1,6 +1,6 @@
 # Feature Slice Review: Hermes 0.20 Product Decisions
 
-Status: Locally successful; publication and CI pending
+Status: Successful
 Slice: `hermes-020-product-decisions`
 Date: `2026-08-14`
 Review log: `reviews/2026-08-14-hermes-020-product-decisions.md`
@@ -57,7 +57,7 @@ an unreviewed authority.
 | AC-5 | Voice is deferred until a transport advertises explicit audio and verified interruption semantics with browser privacy controls. | Voice transport analysis and future entry gate. | Pass |
 | AC-6 | None of the four decisions expands the signed webhook receiver or weakens loopback, privacy, confirmation, or read-back rules. | Exact receiver allowlist regression and documentation assertions. | Pass |
 | AC-7 | Detailed planning includes 9H native-event migration and 9I fallback/fork audit without changing the user's dirty roadmap file. | Plan diff and worktree status. | Pass |
-| AC-8 | Focused/full/browser/Lighthouse/reviewer/CI gates pass, including 100/100/100/100 Lighthouse. | Recorded verification and two independent reviewer conclusions. | Pending |
+| AC-8 | Focused/full/browser/Lighthouse/reviewer/CI gates pass, including 100/100/100/100 Lighthouse. | Recorded verification and two independent reviewer conclusions. | Pass |
 
 ### Constraints and recovery
 
@@ -183,8 +183,8 @@ an unreviewed authority.
 | --- | --- | --- | --- | --- |
 | `python3 -m unittest discover -s tests -v` | macOS host with loopback integration access | 0 | 1,031 passed, 4 skipped | Required post-fix full suite; skips are native-Windows-only platform coverage. |
 
-Post-fix focused and full verification are current. Publication CI remains
-pending.
+Post-fix focused and full verification are current. Ready PR #102 passed its
+complete refreshed cross-platform CI after the narrow baseline correction.
 
 ### Package, browser, and quality gates
 
@@ -294,18 +294,24 @@ environmental evidence.
   public integrity provenance, unchanged detectors/thresholds/filters, passing
   18-test focused gate, and audit-log accuracy. Repeating either identifier in
   another file or occurrence remains detectable.
+- Corrected PR head `8a97196` passed Browser smoke, dependency/secret scan,
+  package/install lifecycle, quality-required, native-artifacts-required, all
+  Ubuntu 3.11-3.13 jobs, all Intel macOS 3.11-3.13 jobs, all 36 Windows shards,
+  all three unsigned native installers, and aggregate CI-required. Workflow runs:
+  quality `31865345701`, matrix `31865345696`, native `31865345693`.
 
 ## Outcome review
 
-- Classification: locally successful; publication CI pending.
-- Acceptance criteria: AC-1 through AC-7 pass; AC-8 has passing focused, full,
-  package, computer-use, Lighthouse, secret-scan, and dual-review evidence, with
-  ready-PR CI still pending.
+- Classification: successful.
+- Acceptance criteria: AC-1 through AC-8 pass, including focused/full/package,
+  computer-use, Lighthouse 100/100/100/100, secret scan, dual review, and the
+  complete ready-PR CI matrix.
 - Potential bugs or untested paths: no runtime surface was added. Deferred A2A,
   structured citations, response-path artifact discovery, and voice paths were
   intentionally not exercised or exposed.
 - Remaining reviewer dissent: none.
 - Compatibility/migration/rollback: documentation/tests only; rollback removes
   these eight files/edits and requires no runtime or Hermes-state migration.
-- User decision: standing acceptance applies after the ready PR is green.
-- Next slice authorized: 9H, after 9G publication and CI succeed.
+- User decision: accepted under the recorded standing approval after the ready
+  PR became green.
+- Next slice authorized: 9H.

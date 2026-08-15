@@ -675,8 +675,9 @@ per-binding admission uses a 120-event burst and two-event-per-second refill.
 
 ### 9G — Remaining Hermes 0.20 product decisions
 
-Status: **Implemented and locally accepted 2026-08-14; publication CI
-pending.** The decisions are recorded in
+Status: **Completed and accepted 2026-08-14.** Ready PR #102 passed all local,
+browser, Lighthouse, adversarial-review, package, and cross-platform CI gates.
+The decisions are recorded in
 `HERMES_020_PRODUCT_DECISIONS.md`.
 
 Record bounded, separate decisions for A2A v1.0, grounded citations,
