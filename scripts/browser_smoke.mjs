@@ -499,7 +499,7 @@ async function main() {
       );
     })()`), 'reference-aligned Home render', 30000);
     await waitFor(
-      () => client.eval(`state.agentConsoleCommandManifest?.commands?.length === 3`),
+      () => client.eval(`state.agentConsoleCommandManifest?.commands?.length === 4`),
       'Mentat Agent Console command manifest bootstrap',
       30000,
     );
@@ -1898,7 +1898,7 @@ async function main() {
     })()`);
     await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/'; prompt.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await waitFor(() => client.eval(`(() => { const menu = document.querySelector('#agent-console-command-menu'); return Boolean(menu && !menu.hidden && menu.textContent.includes('/model')); })()`), 'agent console command completion');
-    const commandManifestOk = await client.eval(`fetch('/api/agent-console/commands').then((response) => response.json()).then((payload) => payload.schema_version === 1 && payload.source === 'mentat' && payload.capabilities?.['commands.hermes_cli_passthrough'] === false && payload.commands?.map((item) => item.command).join(',') === '/model,/new,/help')`);
+    const commandManifestOk = await client.eval(`fetch('/api/agent-console/commands').then((response) => response.json()).then((payload) => payload.schema_version === 1 && payload.source === 'mentat' && payload.capabilities?.['commands.hermes_cli_passthrough'] === false && payload.commands?.map((item) => item.command).join(',') === '/model,/new,/steer,/help')`);
     if (!commandManifestOk) throw new Error('Mentat command manifest contract smoke failed');
     await client.eval(`(() => { const prompt = document.querySelector('#agent-console-prompt'); prompt.value = '/help'; prompt.form.requestSubmit(); })()`);
     await waitFor(() => client.eval(`document.querySelector('#agent-console-form-status')?.textContent.includes('/model — Refresh current provider models')`), 'manifest-driven agent console help');

@@ -1,6 +1,6 @@
 # Feature Slice Review: Hermes Active-Run Steer
 
-Status: Ready for publication approval
+Status: Ready PR open; CI correction verified locally
 Slice: `hermes-active-run-steer`
 Date: `2026-08-14`
 Review log: `reviews/2026-08-14-hermes-active-run-steer.md`
@@ -295,7 +295,7 @@ capability-advertised Runs steer operation.
 
 ## Publication gate
 
-- Proposed files: `ARCHITECTURE.md`,
+- Published files: `ARCHITECTURE.md`,
   `MILESTONE_9_WEBHOOK_IMPLEMENTATION_PLAN.md`, `command_manifest.py`,
   `hermes_transport.py`, `public/app.js`, `public/core.js`, `remote_hermes.py`,
   `server.py`, `tests/test_active_run_steer.py`,
@@ -303,8 +303,10 @@ capability-advertised Runs steer operation.
   `tests/test_command_manifest.py`,
   `tests/test_frontend_workflow_feedback.py`,
   `tests/test_remote_console_runs.py`, this review log, and its compact
-  Lighthouse JSON artifact. Unrelated `ROAD_TO_BETA.md`, tracked data changes,
-  and untracked design/video/tmp/lock files are excluded.
+  Lighthouse JSON artifact. A focused CI follow-up adds
+  `scripts/browser_smoke.mjs` and `.secrets.baseline`. Unrelated
+  `ROAD_TO_BETA.md`, tracked data changes, and untracked design/video/tmp/lock
+  files remain excluded.
 - Branch and base: `codex/hermes-active-run-steer` onto
   `codex/hermes-webhook-health-setup`.
 - Commit message: `feat: add verified active-run steering`
@@ -318,15 +320,28 @@ capability-advertised Runs steer operation.
   transport contracts, read-back/partial paths, browser interaction, and the
   complete regression suite cover the approved substitute. Steer attachments
   and broader slash-command parity remain deliberately deferred.
-- User authorization and scope: implementation approved; publication approval
-  must be requested after final evidence under the skill.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- User authorization and scope: implementation and publication approved.
+- Implementation commit hash: `13034ba162f1e9700514330dabc419285e7e732b`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/100
+
+### Publication CI correction
+
+- GitHub's browser smoke retained the pre-9E three-command expectation, so it
+  timed out waiting for a manifest that now correctly contains four commands.
+  The bootstrap assertion now expects four commands, and the exact manifest
+  assertion now includes `/steer` in its declared order.
+- The tracked-secret scan correctly required review of the new Lighthouse
+  report's SHA-256 evidence value. Its non-secret fingerprint is recorded in
+  the existing reviewed `.secrets.baseline`, matching the prior 9C/9D evidence
+  pattern.
+- Local correction verification: CI/manifest/steer tests 25/25; full loopback
+  browser smoke passed; pinned `detect-secrets` 1.5.0 tracked-file scan passed;
+  JavaScript syntax, baseline JSON, and `git diff --check` passed.
 
 ## Outcome review
 
-- Classification: Implementation and review complete; publication and user
-  outcome review pending.
+- Classification: Implementation and review complete and the ready PR is
+  published; correction checks and user outcome review remain pending.
 - Acceptance criteria summary: Pending.
 - Potential bugs or untested paths: Pending.
 - Remaining reviewer dissent: Pending.
