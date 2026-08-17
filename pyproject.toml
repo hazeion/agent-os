@@ -59,6 +59,7 @@ py-modules = [
   "hermes_provider_switching",
   "hermes_skills",
   "hermes_transport",
+  "hermes_webhooks",
   "json_store",
   "mentat_db",
   "mentat_lifecycle",
