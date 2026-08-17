@@ -112,14 +112,16 @@ Special-use DNS suffixes and nested/adjacent URL-path hybrids are rejected;
 Markdown, backtick, and emphasis wrappers are parsed outside the URL span.
 Supported structured messages contribute only bounded allowlisted text parts;
 image, tool, and reasoning content is omitted.
-Milestone 9 adds a loopback-only signed Hermes lifecycle receiver as an
-observation wakeup. The receiver authenticates the exact raw body, accepts only
-four lifecycle events, stores only a keyed delivery digest in owner-only
-SQLite, atomically deduplicates concurrent and post-restart retries, expires
-records through bounded 24-hour cleanup, and applies a bounded per-binding
-token bucket. Accepted events carry only allowlisted scalar hints into a
-bounded coalescing coordinator; every projected state change still comes from
-an authoritative Hermes adapter read. Dropped, delayed, duplicate, and
+Milestone 9 adds a loopback-only signed Hermes native-event receiver as an
+observation wakeup. The receiver authenticates the exact raw body, accepts an
+exact 17-event lifecycle, post-operation, and Kanban observer allowlist, stores
+only a keyed delivery digest in owner-only SQLite, atomically deduplicates
+concurrent and post-restart retries, expires records through bounded 24-hour
+cleanup, and applies a bounded per-binding token bucket. Accepted events retain
+only the configuration-bound routing envelope; event-specific payload fields
+are discarded before entering the bounded coalescing coordinator. Every
+projected state change still comes from an authoritative Hermes adapter read.
+Dropped, delayed, duplicate, and
 out-of-order deliveries therefore affect freshness only, while periodic
 reconciliation remains the correctness and recovery boundary. Stock Hermes
 0.20.1 is the maintained local webhook baseline after live qualification and
@@ -623,6 +625,28 @@ read-back.
 Future command sources must be introduced as an explicit capability and emit
 the stable Mentat schema. Mentat does not parse CLI help/output to discover
 commands, and it never provides arbitrary Hermes CLI passthrough.
+
+### Native Hermes event wakeups
+
+Mentat accepts a reviewed subset of stock Hermes outbound events only through
+the signed, loopback webhook receiver. In addition to session and subagent
+lifecycle events, this subset covers completed API/error observations,
+completed tool observations, and post-commit Kanban task, worker, and dispatcher
+observations. Every event is reduced to its configuration-bound identity and a
+fixed projection class; prompts, arguments, results, summaries, reasons,
+task/session IDs, models, token values, paths, and raw bodies do not enter
+projected state.
+
+The event-to-projection table in `hermes_event_refresh.py` is the authority for
+wakeups. Kanban claim, complete, block, manual update, worker lifecycle, and
+dispatcher-tick events all cause live adapter readback; no event payload proves
+a transition. Successful readbacks publish only fixed projection names through
+the same-origin `/api/hermes/events` Server-Sent Events endpoint. Its bounded
+history and client count limit resource use, while reconnect overflow requests
+a full projection refresh. The browser coalesces these hints and uses existing
+APIs. Periodic browser polling and server reconciliation remain recovery paths
+for old Hermes versions, Safe Mode, absent emitter processes, dropped queues,
+oversized private payloads, disconnections, and readback failure.
 
 ## Initial agent-creator scope
 

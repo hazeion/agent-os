@@ -22,7 +22,7 @@ from agent_console_attachments import (
     resolve_blob_path,
     unbind_run_attachments,
 )
-from mentat_db import connect, database_path, schema_version
+from mentat_db import SCHEMA_VERSION, connect, database_path, schema_version
 
 
 PNG = base64.b64decode(
@@ -45,7 +45,7 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
                 now=1_000,
             )
 
-            self.assertEqual(schema_version(data_dir), 3)
+            self.assertEqual(schema_version(data_dir), SCHEMA_VERSION)
             self.assertEqual(metadata["kind"], "image")
             self.assertEqual(metadata["mime_type"], "image/png")
             self.assertEqual(metadata["state"], "staged")

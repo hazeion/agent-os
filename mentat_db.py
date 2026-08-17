@@ -18,7 +18,7 @@ from private_state import (
 
 
 DATABASE_NAME = "mentat.sqlite3"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -137,6 +137,47 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON hermes_webhook_deliveries(expires_at);
         """,
     ),
+    (
+        4,
+        """
+        ALTER TABLE hermes_webhook_deliveries
+            RENAME TO hermes_webhook_deliveries_v3;
+        DROP INDEX IF EXISTS idx_hermes_webhook_deliveries_expiry;
+
+        CREATE TABLE hermes_webhook_deliveries (
+            binding_id TEXT NOT NULL,
+            delivery_digest TEXT NOT NULL,
+            event_name TEXT NOT NULL CHECK (
+                event_name IN (
+                    'on_session_start', 'on_session_end',
+                    'on_session_finalize', 'on_session_reset',
+                    'subagent_start', 'subagent_stop',
+                    'post_api_request', 'api_request_error', 'post_tool_call',
+                    'kanban_task_claimed', 'kanban_task_completed',
+                    'kanban_task_blocked', 'on_kanban_worker_spawned',
+                    'on_kanban_worker_exited', 'on_kanban_worker_stale_claim',
+                    'on_kanban_task_updated', 'on_kanban_dispatch_tick'
+                )
+            ),
+            received_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'duplicate')),
+            PRIMARY KEY (binding_id, delivery_digest)
+        );
+
+        INSERT INTO hermes_webhook_deliveries (
+            binding_id, delivery_digest, event_name,
+            received_at, expires_at, outcome
+        )
+        SELECT binding_id, delivery_digest, event_name,
+               received_at, expires_at, outcome
+        FROM hermes_webhook_deliveries_v3;
+
+        DROP TABLE hermes_webhook_deliveries_v3;
+        CREATE INDEX idx_hermes_webhook_deliveries_expiry
+            ON hermes_webhook_deliveries(expires_at);
+        """,
+    ),
 )
 
 
@@ -245,12 +286,19 @@ def migrate(connection: sqlite3.Connection) -> None:
     for version, script in MIGRATIONS:
         if version in applied:
             continue
-        connection.executescript(script)
-        connection.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-            (version, time.time()),
-        )
-    connection.commit()
+        try:
+            # executescript otherwise commits before running its statements.
+            # Open the transaction inside the script and leave it active so
+            # the schema rewrite and its version receipt commit together.
+            connection.executescript("BEGIN IMMEDIATE;\n" + script)
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (version, time.time()),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def connect(data_dir: Path) -> sqlite3.Connection:

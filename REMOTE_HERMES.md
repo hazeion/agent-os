@@ -29,8 +29,9 @@ configured reference, signatures, delivery or session identifiers, payloads,
 profile identifiers, local paths, or internal exception text.
 
 **Copy Setup** produces a Hermes configuration block with the current local
-Mentat port, the fixed signed receiver target, the four supported lifecycle
-events, and a `<YOUR_PRIVATE_SECRET_ENV>` placeholder. Mentat currently reads
+Mentat port, the fixed signed receiver target, the qualified lifecycle,
+post-operation, and Kanban observer events, and a
+`<YOUR_PRIVATE_SECRET_ENV>` placeholder. Mentat currently reads
 its private receiver value from `MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT`; never
 put that value in tracked configuration. Replace the Hermes template's
 placeholder with an owner-private Hermes environment-variable name containing
@@ -47,7 +48,10 @@ verification, replay gate, and bounded refresh queue as Hermes deliveries. A
 successful probe proves the local receiver path; it does not prove that a live
 Hermes process is configured or replace the slower reconciliation backstop.
 Remote Hermes cannot call a loopback-only Mentat instance, and this feature
-does not add a relay, public listener, or browser push channel.
+does not add a relay or public listener. After an authoritative readback
+succeeds, `hermes_browser_events.py` sends an open local dashboard only fixed
+projection names through a bounded same-origin event stream; polling remains
+the compatibility fallback.
 
 This document defines the complete target contract. Mentat now has owner-only
 connection selection plus bounded authenticated health/capability discovery.
@@ -96,7 +100,7 @@ partial rather than claiming the remote run stopped.
 | Authenticated readiness and capability discovery | `remote_hermes.py` validates fixed `/health/detailed` and `/v1/capabilities` responses and returns an allowlisted summary | Hermes documents bearer-authenticated `GET /health/detailed` and machine-readable `GET /v1/capabilities` in its [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) | API-server bearer key over verified HTTPS | Validate schema/version, endpoint identity, advertised auth, bounded readiness, model, and capability set | **Required**; complete inventory stays capability-gated |
 | Hermes configuration and overview summary | `server.py` reads local `CONFIG_PATH` metadata and combines it with normalized profile/provider discovery | Remote health, capabilities, and model endpoints can supply bounded connection/profile/model status; remote configuration-file metadata is unnecessary | API-server bearer key; never request or expose raw remote configuration | Normalize an allowlisted summary and suppress upstream errors, paths, headers, and secret-shaped values | Safe connection/profile/model status is **Required**; file/configuration details remain local-only |
 | Agent Console conversation and streaming | `hermes_transport.py` selects a binding-aware transport, preserves the profile-scoped local CLI launch, and implements the active remote profile Runs adapter | Hermes documents Chat Completions, Responses, run submission, SSE events, approvals, and session chat in the [API Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) and [programmatic integration guide](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md) | API-server bearer key over verified HTTPS; key remains in Mentat's server process | Bind each run to the active endpoint; keep one stream through interactive waits; verify monotonic cursors and bounded replay; never retry submission | **Required**; bounded Context Pack text and capability-gated images are supported; general Console file output is not |
-| Hermes lifecycle webhook hints | `hermes_webhooks.py` validates and normalizes signed payloads; `hermes_webhook_store.py` provides durable replay protection; `server.py` rate-limits accepted hints and schedules authoritative refreshes | Stock Hermes `0.20.1` outbound hooks emit signed session and subagent lifecycle events | Per-binding HMAC secret held by Mentat's server process; the browser receives health metadata only | Verify the raw-body signature before parsing, atomically claim a keyed delivery digest, bound per-binding admission, and reconcile through authoritative Hermes reads | **Optional optimization**; local stock-runtime contract live-validated, while unsupported or disabled hosts retain polling |
+| Hermes native webhook hints | `hermes_webhooks.py` validates and minimizes signed payloads; `hermes_webhook_store.py` provides durable replay protection; `hermes_event_refresh.py` schedules authoritative reads; `hermes_browser_events.py` emits projection-only same-origin wakeups; `server.py` rate-limits and binds the routes | Stock Hermes `0.20.1` outbound hooks emit signed session/subagent lifecycle, post-API/error, post-tool, and Kanban task/worker/dispatcher observations | Per-binding HMAC secret held by Mentat's server process; the browser receives safe health metadata and fixed projection names only | Verify the raw-body signature before parsing, atomically claim a keyed delivery digest, bound per-binding admission, discard event-specific fields, read authoritative state, then publish a bounded browser hint; reconcile independently | **Optional optimization**; exact stock event/registration topology validated, while unsupported or disabled hosts retain polling |
 | Run status, progress, approval, cancellation, and stopping | `server.py` and `agent_run_history.py` normalize remote events/status and keep upstream run identity private | Fixed Runs, status, replayable SSE, stop, and request-bound approval endpoints are capability-advertised by the verified runtime | Same API-server bearer boundary | Capability match before action, exact live-run/request binding, authoritative pending-action recovery, one claimed stop attempt, and post-action status read-back | **Required**; approval choices are enabled only with the exact bound-preview contract |
 | Clarification requests and responses | `server.py` retains bounded run interaction state and posts a typed response through `hermes_transport.py` | The verified runtime advertises a typed request/response endpoint with exact request binding | API-server bearer key | Require a machine-readable request event, typed bounded response, exact run/request binding, and post-response status verification | **Required** for the verified runtime; unavailable without the contract |
 | Session list, replay, continuation, and search | `server.py` preserves local `state.db` reads and routes selected remote history through `remote_hermes.py` | The verified runtime advertises an exact revision-bound, stoppable continuation descriptor as well as session reads | API-server bearer key; no remote database access; upstream IDs remain process-private | Normalize bounded user/assistant history, bind opaque aliases to the selected projected identity, label compressed history partial, require a fresh exact continuation descriptor | **Required**; continuation is enabled only with that exact capability |
@@ -154,7 +158,7 @@ The inventory covers the current integration modules `remote_hermes.py`, `hermes
 `hermes_profile_creation.py`, `hermes_profile_identity.py`,
 `hermes_profile_deletion.py`, `hermes_provider_switching.py`,
 `hermes_skills.py`, `hermes_kanban.py`, `hermes_webhooks.py`,
-`hermes_webhook_store.py`,
+`hermes_webhook_store.py`, `hermes_browser_events.py`,
 `hermes_event_refresh.py`, `hermes_webhook_health.py`, the Hermes-backed paths in `server.py`,
 the Console metadata boundary in `agent_run_history.py`, local/remote selection
 in `runtime_config.py` and `scripts/mentat_setup.py`, and diagnostics in

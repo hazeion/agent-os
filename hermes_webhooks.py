@@ -19,12 +19,26 @@ import time
 MAX_BODY_BYTES = 64 * 1024
 MAX_DELIVERY_ID_LENGTH = 128
 MAX_EVENT_AGE_SECONDS = 5 * 60
-MAX_PLATFORM_LENGTH = 32
 ALLOWED_EVENTS = frozenset(
-    {"on_session_start", "on_session_end", "subagent_start", "subagent_stop"}
-)
-ALLOWED_PLATFORMS = frozenset(
-    {"cli", "gateway", "telegram", "discord", "slack", "whatsapp", "signal", "email"}
+    {
+        "on_session_start",
+        "on_session_end",
+        "on_session_finalize",
+        "on_session_reset",
+        "subagent_start",
+        "subagent_stop",
+        "post_api_request",
+        "api_request_error",
+        "post_tool_call",
+        "kanban_task_claimed",
+        "kanban_task_completed",
+        "kanban_task_blocked",
+        "on_kanban_worker_spawned",
+        "on_kanban_worker_exited",
+        "on_kanban_worker_stale_claim",
+        "on_kanban_task_updated",
+        "on_kanban_dispatch_tick",
+    }
 )
 _SIGNATURE_RE = re.compile(r"^sha256=[0-9a-f]{64}$")
 _DELIVERY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -52,9 +66,6 @@ class VerifiedHermesEvent:
     delivery_digest: str
     occurred_at: datetime
     received_at: datetime
-    completed: bool | None
-    interrupted: bool | None
-    platform: str | None
 
 
 class PerBindingRateLimiter:
@@ -171,35 +182,10 @@ def verify_and_normalize(
         raise WebhookValidationError("stale_timestamp")
 
     digest = hmac.new(binding.secret, (binding.binding_id + "\0" + delivery_id).encode(), hashlib.sha256).hexdigest()
-    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
-
-    def lifecycle_value(name: str) -> Any:
-        value = payload.get(name)
-        return value if value is not None else extra.get(name)
-
-    platform_value = lifecycle_value("platform")
-    platform = None
-    if isinstance(platform_value, str):
-        candidate = platform_value.strip().lower()
-        if len(candidate) <= MAX_PLATFORM_LENGTH:
-            platform = candidate if candidate in ALLOWED_PLATFORMS else "other"
-        else:
-            platform = "other"
     return VerifiedHermesEvent(
         binding_id=binding.binding_id,
         event_name=event_name,
         delivery_digest=digest,
         occurred_at=occurred_at,
         received_at=received_at,
-        completed=(
-            lifecycle_value("completed")
-            if isinstance(lifecycle_value("completed"), bool)
-            else None
-        ),
-        interrupted=(
-            lifecycle_value("interrupted")
-            if isinstance(lifecycle_value("interrupted"), bool)
-            else None
-        ),
-        platform=platform,
     )

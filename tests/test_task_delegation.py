@@ -625,6 +625,52 @@ class TaskDelegationTests(unittest.TestCase):
             ["task-0", "task-1", "task-2"],
         )
 
+    def test_home_refresh_includes_only_current_local_binding(self):
+        tasks = [
+            {
+                "id": "local-task",
+                "title": "Local work",
+                "delegation": {
+                    "connection_binding_id": "local-default",
+                    "board_id": "default",
+                    "kanban_task_id": "t_local",
+                    "state": "running",
+                },
+            },
+            {
+                "id": "remote-task",
+                "title": "Remote work",
+                "delegation": {
+                    "connection_binding_id": "b" * 32,
+                    "board_id": "default",
+                    "kanban_task_id": "t_remote",
+                    "state": "running",
+                },
+            },
+        ]
+        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        with (
+            patch.object(
+                server,
+                "load_remote_hermes_connection",
+                return_value=SimpleNamespace(
+                    mode="local",
+                    binding_id="local-default",
+                ),
+            ),
+            patch.object(
+                server,
+                "refresh_task_delegation",
+                return_value=({"ok": True}, 200),
+            ) as refresh_task,
+        ):
+            payload, status = server.refresh_home_delegations()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["refreshed"], 1)
+        self.assertEqual(payload["skipped"], 1)
+        refresh_task.assert_called_once_with("local-task")
+
     def test_home_refresh_respects_terminal_and_retry_artifact_states(self):
         tasks = [
             {

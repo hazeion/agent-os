@@ -94,22 +94,32 @@ class WebhookDeliveryStore:
                         (event.binding_id, event.delivery_digest, now_epoch),
                     )
                     self._cleanup_locked(connection, now_epoch)
-                    cursor = connection.execute(
-                        """
-                        INSERT OR IGNORE INTO hermes_webhook_deliveries (
-                            binding_id, delivery_digest, event_name,
-                            received_at, expires_at, outcome
-                        ) VALUES (?, ?, ?, ?, ?, 'accepted')
-                        """,
-                        (
-                            event.binding_id,
-                            event.delivery_digest,
-                            event.event_name,
-                            now_epoch,
-                            now_epoch + self.retention_seconds,
-                        ),
-                    )
-                    if cursor.rowcount != 1:
+                    try:
+                        connection.execute(
+                            """
+                            INSERT INTO hermes_webhook_deliveries (
+                                binding_id, delivery_digest, event_name,
+                                received_at, expires_at, outcome
+                            ) VALUES (?, ?, ?, ?, ?, 'accepted')
+                            """,
+                            (
+                                event.binding_id,
+                                event.delivery_digest,
+                                event.event_name,
+                                now_epoch,
+                                now_epoch + self.retention_seconds,
+                            ),
+                        )
+                    except sqlite3.IntegrityError:
+                        existing = connection.execute(
+                            """
+                            SELECT 1 FROM hermes_webhook_deliveries
+                            WHERE binding_id = ? AND delivery_digest = ?
+                            """,
+                            (event.binding_id, event.delivery_digest),
+                        ).fetchone()
+                        if existing is None:
+                            raise
                         connection.commit()
                         return "duplicate"
                     if not admit():

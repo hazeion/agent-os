@@ -6406,6 +6406,7 @@ async function refresh() {
         })
         .finally(() => {
           state.homeDelegationRefreshInFlight = false;
+          schedulePendingHermesProjectionRefresh();
         });
     }
   } catch (err) {
@@ -6419,6 +6420,139 @@ async function refresh() {
       refresh();
     }
   }
+}
+
+const HERMES_EVENT_PROJECTIONS = new Set(['sessions', 'agents', 'attention', 'kanban']);
+
+function schedulePendingHermesProjectionRefresh() {
+  if (!state.hermesPendingProjections.size || state.hermesProjectionRefreshTimer) return;
+  state.hermesProjectionRefreshTimer = window.setTimeout(() => {
+    void applyHermesProjectionRefresh();
+  }, 150);
+}
+
+async function applyHermesProjectionRefresh() {
+  state.hermesProjectionRefreshTimer = null;
+  const projections = new Set(state.hermesPendingProjections);
+  state.hermesPendingProjections.clear();
+  if (!projections.size) return;
+
+  if (projections.has('kanban') && state.homeDelegationRefreshInFlight) {
+    for (const projection of projections) state.hermesPendingProjections.add(projection);
+    return;
+  }
+
+  if (projections.has('kanban')) {
+    state.homeDelegationRefreshInFlight = true;
+    try {
+      await refreshHomeDelegations();
+      await refresh();
+    } catch (err) {
+      // Signed events are wakeups only. The retained periodic poll and server
+      // reconciliation remain the recovery path when a readback is unavailable.
+      console.debug('Hermes Kanban wakeup will retry during reconciliation.');
+    } finally {
+      state.homeDelegationRefreshInFlight = false;
+      schedulePendingHermesProjectionRefresh();
+    }
+    return;
+  }
+  await refresh();
+}
+
+function scheduleHermesProjectionRefresh(projections) {
+  for (const projection of projections) {
+    if (HERMES_EVENT_PROJECTIONS.has(projection)) {
+      state.hermesPendingProjections.add(projection);
+    }
+  }
+  schedulePendingHermesProjectionRefresh();
+}
+
+function receiveHermesProjectionPayload(payload) {
+  if (payload?.schema_version !== 1 || !Array.isArray(payload.projections)) return;
+  scheduleHermesProjectionRefresh(payload.projections);
+}
+
+function parseHermesProjectionFrame(frame) {
+  const lines = String(frame || '').split('\n');
+  let eventName = '';
+  let eventId = '';
+  const dataLines = [];
+  for (const rawLine of lines) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (line.startsWith('event:')) eventName = line.slice(6).trim();
+    if (line.startsWith('id:')) eventId = line.slice(3).trim();
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+  }
+  if (eventName !== 'projections' || !dataLines.length) return;
+  if (/^[0-9]{1,16}$/.test(eventId)) state.hermesFetchStreamCursor = eventId;
+  try {
+    receiveHermesProjectionPayload(JSON.parse(dataLines.join('\n')));
+  } catch (_err) {
+    // Invalid advisory frames are ignored; polling remains authoritative.
+  }
+}
+
+function scheduleHermesFetchReconnect() {
+  if (state.hermesFetchReconnectTimer) return;
+  state.hermesFetchReconnectTimer = window.setTimeout(() => {
+    state.hermesFetchReconnectTimer = null;
+    void runHermesFetchStream();
+  }, 2000);
+}
+
+async function runHermesFetchStream() {
+  if (state.hermesFetchStreamActive) return;
+  state.hermesFetchStreamActive = true;
+  try {
+    const headers = { Accept: 'text/event-stream' };
+    if (state.hermesFetchStreamCursor) headers['Last-Event-ID'] = state.hermesFetchStreamCursor;
+    const response = await fetch(endpoints.hermesEvents, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+      credentials: 'same-origin',
+    });
+    if (!response.ok || !response.body) throw new Error('event stream unavailable');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n');
+      if (buffer.length > 16_384) buffer = buffer.slice(-16_384);
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        parseHermesProjectionFrame(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+  } catch (_err) {
+    // Reconnect below. The 30-second poll remains the correctness fallback.
+  } finally {
+    state.hermesFetchStreamActive = false;
+    scheduleHermesFetchReconnect();
+  }
+}
+
+function startHermesProjectionStream() {
+  if ('EventSource' in window) {
+    if (state.hermesEventSource) return;
+    const source = new EventSource(endpoints.hermesEvents);
+    state.hermesEventSource = source;
+    source.addEventListener('projections', (event) => {
+      try {
+        receiveHermesProjectionPayload(JSON.parse(event.data));
+      } catch (_err) {
+        // Invalid advisory frames are ignored; polling remains authoritative.
+      }
+    });
+    return;
+  }
+  void runHermesFetchStream();
 }
 
 async function runMessageSearchRequest(request) {
@@ -7736,4 +7870,5 @@ $('#message-search-results').addEventListener('click', (event) => {
 loadDismissedAgentPulseIds();
 setView('today');
 refresh();
+startHermesProjectionStream();
 setInterval(refresh, REFRESH_MS);

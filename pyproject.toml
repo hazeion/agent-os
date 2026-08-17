@@ -51,6 +51,7 @@ py-modules = [
   "delegation_artifacts",
   "diagnostics_bundle",
   "health_checks",
+  "hermes_browser_events",
   "hermes_event_refresh",
   "hermes_kanban",
   "hermes_profile_creation",

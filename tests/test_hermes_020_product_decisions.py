@@ -87,17 +87,12 @@ class Hermes020ProductDecisionTests(unittest.TestCase):
         ):
             self.assertIn(phrase, DECISIONS_FLAT)
 
-    def test_receiver_allowlist_remains_the_four_qualified_lifecycle_events(self):
-        self.assertEqual(
-            ALLOWED_EVENTS,
-            frozenset(
-                {
-                    "on_session_start",
-                    "on_session_end",
-                    "subagent_start",
-                    "subagent_stop",
-                }
-            ),
+    def test_receiver_preserves_the_four_original_qualified_lifecycle_events(self):
+        self.assertTrue(
+            {
+                "on_session_start", "on_session_end",
+                "subagent_start", "subagent_stop",
+            } <= ALLOWED_EVENTS
         )
 
     def test_detailed_plan_preserves_native_migration_and_retirement_slices(self):
@@ -107,7 +102,7 @@ class Hermes020ProductDecisionTests(unittest.TestCase):
         section_9h = " ".join(PLAN[start_9h:start_9i].split())
         section_9i = " ".join(PLAN[start_9i:end_9i].split())
 
-        self.assertIn("Status: **Pending.**", section_9h)
+        self.assertIn("Status: **In progress.**", section_9h)
         self.assertIn("lifecycle, API-usage, tool, model/provider, subagent, and Kanban", section_9h)
         self.assertIn("Mentat-to-browser push channel before reducing browser polling", section_9h)
         self.assertIn("authoritative read-backs", section_9h)

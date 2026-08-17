@@ -8,12 +8,14 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 from http.client import HTTPConnection
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 
 import server
+from hermes_browser_events import HermesBrowserEventBroker
 from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_webhook_store import WebhookDeliveryStore
 from hermes_webhooks import PerBindingRateLimiter
@@ -128,6 +130,91 @@ class HermesWebhookRouteTests(unittest.TestCase):
         finally:
             release.set()
         self.assertTrue(server.HERMES_EVENT_REFRESH.wait_idle(1))
+
+    def test_signed_local_kanban_event_wakes_verified_task_synchronization(self):
+        task = {
+            "id": "local-kanban-task",
+            "title": "Local Kanban work",
+            "description": "",
+            "project": "Mentat",
+            "status": "open",
+            "priority": "medium",
+            "source": "test",
+            "tags": [],
+            "review_required": False,
+            "needs_attention": False,
+            "created_at": "2026-08-14T20:00:00+00:00",
+            "updated_at": "2026-08-14T20:00:00+00:00",
+            "delegation": {
+                "connection_binding_id": "local-default",
+                "board_id": "default",
+                "kanban_task_id": "kanban-local-1",
+                "profile_id": "default",
+                "state": "running",
+                "sync_state": "synced",
+                "review_state": "pending",
+                "attempts": 0,
+                "created_at": "2026-08-14T20:00:00+00:00",
+                "updated_at": "2026-08-14T20:00:00+00:00",
+            },
+        }
+        self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tasks_path = self.data_dir / "tasks.json"
+        tasks_path.write_text(json.dumps([task]), encoding="utf-8")
+        tasks_path.chmod(0o600)
+        remote = {
+            "ok": True,
+            "task": {
+                "id": "kanban-local-1",
+                "status": "done",
+                "session_id": "session-local-1",
+            },
+            "runs": [],
+            "comments": [],
+        }
+        adapter = MagicMock()
+        adapter.get_task.return_value = remote
+        broker = HermesBrowserEventBroker()
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
+            {"kanban": server._refresh_webhook_kanban},
+            coalesce_window=0,
+            reconciliation_interval=60,
+            on_refresh=broker.publish,
+        )
+        server.HERMES_EVENT_REFRESH.start()
+
+        with (
+            patch.object(server, "DATA_DIR", self.data_dir),
+            patch.object(server, "HERMES_HOME", Path(self.temporary.name) / "hermes"),
+            patch.object(server, "HermesKanbanAdapter", return_value=adapter),
+            patch.object(server, "kanban_adapter", return_value=adapter),
+            patch.object(
+                server,
+                "load_remote_hermes_connection",
+                return_value=SimpleNamespace(
+                    mode="local",
+                    binding_id="local-default",
+                ),
+            ),
+        ):
+            body, headers = self.request(
+                event="kanban_task_completed",
+                delivery="kanban-local-completed",
+            )
+            accepted = self.invoke(body, headers)
+            self.assertEqual(self.status(accepted), 202)
+            self.assertTrue(server.HERMES_EVENT_REFRESH.wait_idle(2))
+            wakeup = broker.wait_after(0, timeout=0)
+            self.assertEqual(wakeup.projections, ("kanban",))
+
+            refreshed, status = server.refresh_home_delegations()
+            self.assertEqual(status, 200)
+            self.assertEqual(refreshed["refreshed"], 1)
+            visible = server.tasks_payload()["tasks"]
+
+        self.assertEqual(visible[0]["delegation"]["state"], "ready_for_review")
+        self.assertEqual(visible[0]["planning_state"], "review")
+        self.assertTrue(visible[0]["needs_attention"])
 
     def test_duplicate_delivery_returns_no_content_and_is_not_requeued(self):
         body, headers = self.request()
