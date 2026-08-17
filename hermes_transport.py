@@ -47,6 +47,9 @@ class HermesTransportError(RuntimeError):
         "remote_run_request_invalid": "The remote Hermes Console request is invalid.",
         "remote_submission_unverified": "Mentat could not verify whether the remote run started.",
         "remote_stop_unverified": "Mentat could not verify that the remote run stopped.",
+        "remote_steer_capability_unavailable": "This Hermes host does not support active-run steering.",
+        "remote_steer_rejected": "Remote Hermes did not accept steering for this run.",
+        "remote_steer_unverified": "Mentat could not verify whether Remote Hermes accepted the steering guidance.",
         "console_request_invalid": "The Hermes Console request is invalid.",
     }
 
@@ -154,6 +157,7 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         self.event_replay_available = False
         self.pending_action_status_available = False
         self.runtime_identity_available = False
+        self.steer_available = False
 
     @property
     def console_available(self) -> bool:
@@ -170,6 +174,7 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
         self.event_replay_available = "run_event_replay" in capabilities
         self.pending_action_status_available = "run_pending_action_status" in capabilities
         self.runtime_identity_available = "run_runtime_identity" in capabilities
+        self.steer_available = "run_steer" in capabilities
         self._ready = True
         return {
             "model": self.model,
@@ -365,6 +370,14 @@ class RemoteHermesConsoleTransport(HermesConsoleTransport):
     def stop_run(self, remote_run_id: str) -> dict[str, str]:
         try:
             return self._client.stop_run(remote_run_id)
+        except RemoteHermesError as exc:
+            raise HermesTransportError(exc.code) from exc
+
+    def steer_run(self, remote_run_id: str, text: str) -> dict[str, bool]:
+        if not self._ready or not self.steer_available:
+            raise HermesTransportError("remote_steer_capability_unavailable")
+        try:
+            return self._client.steer_run(remote_run_id, text)
         except RemoteHermesError as exc:
             raise HermesTransportError(exc.code) from exc
 

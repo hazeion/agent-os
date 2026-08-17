@@ -45,7 +45,7 @@ def capability_payload(**feature_updates):
         "run_stop": True,
     }
     features.update(feature_updates)
-    return {
+    payload = {
         "object": "hermes.api_server.capabilities",
         "platform": "hermes-agent",
         "model": "anthropic/claude-test",
@@ -65,6 +65,12 @@ def capability_payload(**feature_updates):
             "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
         },
     }
+    if features.get("run_steer") is True:
+        payload["endpoints"]["run_steer"] = {
+            "method": "POST",
+            "path": "/v1/runs/{run_id}/steer",
+        }
+    return payload
 
 
 def runtime_capability_payload(**feature_updates):
@@ -208,6 +214,7 @@ class FakeRunClient:
         self.stopped = []
         self.approvals = []
         self.clarifications = []
+        self.steered = []
         self.iter_calls = 0
         self.last_event_ids = []
 
@@ -242,6 +249,11 @@ class FakeRunClient:
         self.assert_run_id(run_id)
         self.stopped.append(run_id)
         return {"status": "stopping"}
+
+    def steer_run(self, run_id, text):
+        self.assert_run_id(run_id)
+        self.steered.append(text)
+        return {"accepted": True}
 
     def respond_to_approval(self, run_id, request_id, choice):
         self.assert_run_id(run_id)
@@ -509,6 +521,85 @@ class RemoteConsoleRunTests(unittest.TestCase):
             else:
                 with self.assertRaises(remote_hermes.RemoteHermesError):
                     stop_client.stop_run(REMOTE_RUN_ID)
+
+    def test_steer_requires_exact_capability_endpoint_and_response(self):
+        capabilities = capability_payload(run_steer=True)
+        queue = ResponseQueue([
+            FakeResponse(200, capabilities),
+            FakeResponse(200, {
+                "object": "hermes.run.steer",
+                "run_id": REMOTE_RUN_ID,
+                "accepted": True,
+            }),
+        ])
+        client = remote_hermes.RemoteHermesClient(
+            ENDPOINT,
+            SECRET,
+            connection_factory=queue,
+        )
+
+        self.assertEqual(client.steer_run(REMOTE_RUN_ID, "Focus on the safe fix"), {"accepted": True})
+        self.assertEqual(
+            [(call["method"], call["path"]) for call in queue.calls],
+            [("GET", "/v1/capabilities"), ("POST", f"/v1/runs/{REMOTE_RUN_ID}/steer")],
+        )
+        self.assertEqual(
+            json.loads(queue.calls[1]["body"].decode("utf-8")),
+            {"input": "Focus on the safe fix"},
+        )
+
+        for mutation in ("missing", "method", "path"):
+            changed = capability_payload(run_steer=True)
+            if mutation == "missing":
+                changed["features"]["run_steer"] = False
+            elif mutation == "method":
+                changed["endpoints"]["run_steer"]["method"] = "GET"
+            else:
+                changed["endpoints"]["run_steer"]["path"] = "/unsafe"
+            changed_queue = ResponseQueue([FakeResponse(200, changed)])
+            with self.subTest(mutation=mutation), self.assertRaises(remote_hermes.RemoteHermesError):
+                remote_hermes.RemoteHermesClient(
+                    ENDPOINT,
+                    SECRET,
+                    connection_factory=changed_queue,
+                ).steer_run(REMOTE_RUN_ID, "Stay focused")
+
+        malformed_responses = (
+            {"object": "wrong", "run_id": REMOTE_RUN_ID, "accepted": True},
+            {"object": "hermes.run.steer", "run_id": "run_" + ("c" * 32), "accepted": True},
+            {"object": "hermes.run.steer", "run_id": REMOTE_RUN_ID, "accepted": False},
+            {"object": "hermes.run.steer", "run_id": REMOTE_RUN_ID},
+            {"object": "hermes.run.steer", "run_id": REMOTE_RUN_ID, "accepted": True, "extra": True},
+        )
+        for malformed in malformed_responses:
+            malformed_queue = ResponseQueue([
+                FakeResponse(200, capabilities),
+                FakeResponse(200, malformed),
+            ])
+            with self.subTest(malformed=malformed), self.assertRaisesRegex(
+                remote_hermes.RemoteHermesError,
+                "remote_steer_unverified",
+            ):
+                remote_hermes.RemoteHermesClient(
+                    ENDPOINT,
+                    SECRET,
+                    connection_factory=malformed_queue,
+                ).steer_run(REMOTE_RUN_ID, "Stay focused")
+
+    def test_run_steered_event_is_text_free_and_schema_bound(self):
+        client = remote_hermes.RemoteHermesClient(ENDPOINT, SECRET)
+        self.assertEqual(
+            client._normalize_run_event(
+                {"event": "run.steered", "run_id": REMOTE_RUN_ID, "accepted": True},
+                REMOTE_RUN_ID,
+            ),
+            {"type": "run.steered", "accepted": True},
+        )
+        with self.assertRaisesRegex(remote_hermes.RemoteHermesError, "remote_run_schema_invalid"):
+            client._normalize_run_event(
+                {"event": "run.steered", "run_id": REMOTE_RUN_ID, "accepted": False},
+                REMOTE_RUN_ID,
+            )
 
     def test_malformed_optional_remote_context_is_omitted_not_promoted(self):
         for context_tokens, context_length in (

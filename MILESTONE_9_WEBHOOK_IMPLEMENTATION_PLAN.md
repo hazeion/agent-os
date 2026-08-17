@@ -589,7 +589,13 @@ Version-control strategy: branch `codex/hermes-webhook-health-setup`, stacked
 on `codex/hermes-webhook-refresh-coordinator`; persistent evidence lives in
 `reviews/2026-08-14-hermes-webhook-health-setup.md`.
 
-### 9E — Busy-input redirect capability spike
+### 9E — Busy-input steer capability
+
+Status: **Implementation in progress 2026-08-14.** Current upstream Hermes
+advertises `run_steer` with the fixed authenticated
+`POST /v1/runs/{run_id}/steer` operation. Hermes defines this as guidance that
+arrives after a tool boundary, not a replacement of the active model turn.
+Mentat therefore labels the action **Steer**, never redirect or correction.
 
 Deliverables:
 
@@ -597,16 +603,38 @@ Deliverables:
   redirect/steer operation;
 - require capability advertisement, stable run/session identity, text-only
   input bounds, and post-action read-back;
-- specify separate **Correct active turn**, **Stop**, **Save draft**, and
-  **Queued follow-up** behaviors without overloading ordinary Send;
-- keep the composer lock when the selected transport cannot verify redirect.
+- expose an explicit text-only **Steer** composer mode and `/steer <guidance>`
+  command while that exact remote capability is active;
+- keep **Stop** separate and keep ordinary Send, attachments, new-session, and
+  provider/profile changes locked while a run is active;
+- keep the composer lock when the selected transport cannot verify steer.
+
+Transport decision matrix:
+
+| Mentat transport | Native operation | Mentat decision |
+| --- | --- | --- |
+| Local one-shot `hermes chat -q` | Process-local interactive steer exists, but the spawned one-shot run exposes no fixed external control channel | Unavailable; keep the busy composer locked |
+| Remote Hermes Runs API with exact `run_steer` advertisement | `POST /v1/runs/{run_id}/steer`, exact acceptance response, `run.steered`, and pollable run status | Available as text-only Steer with pre-check, acceptance validation, and post-action read-back |
+| Remote Runs API without the exact feature and endpoint | None trusted | Unavailable; fail closed without a button or command dispatch |
+| Hermes TUI/Desktop gateway | `session.redirect` and interactive commands exist, but Mentat is not connected to that transport | Out of scope; do not infer support for the current Mentat transport |
+
+The current Runs steer schema does not advertise media or attachment input.
+Mentat keeps the attachment picker disabled during an active run. A future
+steer-attachment path requires an upstream versioned capability with exact
+media bounds and post-action verification; Mentat must not flatten files into
+text and call that native attachment steering.
+
+Hermes-style slash-command parity is a follow-up product surface. Commands may
+be added only through Mentat's fixed versioned command manifest and fixed
+handlers; CLI help scraping and arbitrary passthrough remain prohibited.
 
 Exit gate:
 
-- Mentat exposes no redirect claim without a supported operation and verified
+- Mentat exposes no steer claim without a supported operation and verified
   post-action state;
-- the decision and transport matrix are documented even if the result is
-  “capability unavailable.”
+- the decision and transport matrix are documented;
+- text entered during a compatible active run reaches only the guarded steer
+  operation, while incompatible transports remain locked.
 
 Estimated effort: 1–2 focused engineering days.
 
@@ -729,7 +757,7 @@ remove the operator-managed Hermes outbound target, restart Hermes, and leave
 the dedupe/health rows to expire. Mentat continues through its existing polling
 and reconciliation paths.
 
-## Redirect and the current input lock
+## Steer and the current input lock
 
 The webhook receiver does not unlock the Agent Console composer. The current
 lock has two independent layers:
@@ -737,10 +765,10 @@ lock has two independent layers:
 - the browser disables composer/send controls while a run is active;
 - the server rejects a second prompt for an active run.
 
-Hermes 0.20's interactive redirect feature proves that Hermes can steer an
-active turn on some native surfaces. It does not prove that Mentat's local
-one-shot `hermes chat -q` transport or authenticated remote Runs API exposes a
-supported redirect operation.
+Hermes' interactive redirect feature proves that Hermes can redirect an active
+turn on some native surfaces. Separately, the current authenticated Runs API
+advertises text-only `run_steer`, which injects guidance after a tool boundary.
+Mentat implements only the latter semantics for its remote Runs transport.
 
 Run a separate capability spike after 9B begins:
 
@@ -748,18 +776,19 @@ Run a separate capability spike after 9B begins:
    fixed redirect/steer operation;
 2. require a stable run/session identifier, text-only input schema, explicit
    capability advertisement, and post-operation read-back;
-3. if available, design **Correct active turn** as a distinct action bound to
-   the current connection, profile, transport, run revision, and session;
+3. if available, expose **Steer** as a distinct mode bound to the current
+   connection, profile, transport, Mentat control revision, and remote run;
 4. keep attachments unsupported for correction unless Hermes explicitly
    defines them;
 5. preserve **Stop** as a hard stop with different language and confirmation;
 6. if no supported redirect operation exists, allow only **Save draft** or an
    explicitly labeled **Queued follow-up** whose eventual delivery is verified;
-7. do not overload ordinary Send with ambiguous interrupt, queue, or parallel
-   run behavior.
+7. change the visible submit label and accessible name from **Send** to
+   **Steer** while this mode is active, so the same textbox remains writable
+   without ambiguous ordinary-send behavior.
 
 The decision gate is simple: no capability plus no post-action verification
-means no Mentat redirect button.
+means no Mentat steer mode.
 
 ## Milestone exit checklist
 

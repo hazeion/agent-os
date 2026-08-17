@@ -106,6 +106,7 @@ const state = {
   agentConsoleToolActivityActive: false,
   agentConsoleSelectedAgentId: '',
   agentConsoleRunId: '',
+  agentConsoleSteerInFlight: false,
   agentConsoleSessionId: '',
   agentConsoleStartFresh: false,
   agentConsolePollTimer: null,
@@ -735,6 +736,14 @@ async function startAgentConsoleRun(payload) {
 
 async function respondToAgentConsoleRequest(id, payload) {
   return sendJson(`${endpoints.agentConsole}/runs/${encodeURIComponent(id)}/response`, payload, { method: 'POST' });
+}
+
+async function steerAgentConsoleRun(id, text, controlRevision, agentId) {
+  return sendJson(`${endpoints.agentConsole}/runs/${encodeURIComponent(id)}/steer`, {
+    text,
+    control_revision: controlRevision,
+    agent_id: agentId,
+  }, { method: 'POST' });
 }
 
 async function uploadAgentConsoleAttachment(file) {

@@ -19,12 +19,16 @@ class CommandManifestTests(unittest.TestCase):
         self.assertTrue(payload["capabilities"]["commands.manifest.read"])
         self.assertFalse(payload["capabilities"]["commands.external_source"])
         self.assertFalse(payload["capabilities"]["commands.hermes_cli_passthrough"])
-        self.assertEqual([item["command"] for item in payload["commands"]], ["/model", "/new", "/help"])
+        self.assertEqual([item["command"] for item in payload["commands"]], ["/model", "/new", "/steer", "/help"])
         for command in payload["commands"]:
             self.assertIn("handler", command)
             self.assertIsInstance(command["arguments"], list)
             self.assertTrue(command["description"])
-            self.assertIn(command["safety"], {"read_only", "local_state"})
+            self.assertIn(command["safety"], {"read_only", "local_state", "remote_control"})
+
+        steer = next(item for item in payload["commands"] if item["command"] == "/steer")
+        self.assertEqual(steer["handler"], "agent_console.steer_active_run")
+        self.assertTrue(steer["arguments"][0]["variadic"])
 
     def test_payload_is_not_mutable_shared_state(self):
         first = command_manifest_payload()
@@ -40,7 +44,8 @@ class CommandManifestTests(unittest.TestCase):
         self.assertIn("function normalizeAgentConsoleCommandManifest", APP_JS)
         self.assertIn("agentConsoleCommands().filter", APP_JS)
         self.assertIn("const definition = agentConsoleCommands().find", APP_JS)
-        self.assertIn("agentConsoleCommands().map", APP_JS)
+        self.assertIn(".filter((item) => !activeRun || agentConsoleCommandAllowedDuringRun(item))", APP_JS)
+        self.assertIn(".map((item) => `${item.command} — ${item.description}`)", APP_JS)
         self.assertNotIn("const agentConsoleCommands = [", APP_JS)
 
     def test_frontend_fails_closed_to_fixed_handler_registry(self):

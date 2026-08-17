@@ -2756,6 +2756,7 @@ function renderEmail(payload = {}) {
 const agentConsoleCommandHandlers = new Set([
   'agent_console.refresh_models',
   'agent_console.new_session',
+  'agent_console.steer_active_run',
   'agent_console.show_help',
 ]);
 
@@ -2771,9 +2772,12 @@ function normalizeAgentConsoleCommandManifest(payload = {}) {
       typeof argument?.name === 'string'
       && typeof argument.required === 'boolean'
       && typeof argument.description === 'string'
+      && (argument.variadic === undefined || typeof argument.variadic === 'boolean')
     ))
     && typeof item.description === 'string'
-    && ['read_only', 'local_state'].includes(item.safety)
+    && ['read_only', 'local_state', 'remote_control'].includes(item.safety)
+    && item.arguments.filter((argument) => argument.variadic).length <= 1
+    && (!item.arguments.some((argument) => argument.variadic) || item.arguments.at(-1)?.variadic === true)
   )) : [];
   if (!commands.length || commands.length !== payload.commands?.length) return null;
   if (new Set(commands.map((item) => item.command)).size !== commands.length) return null;
@@ -2819,6 +2823,20 @@ function currentAgentConsoleRuns() {
   return state.agentConsoleRuns.filter(agentConsoleRunMatchesCurrentBinding);
 }
 
+function agentConsoleHasActiveRun() {
+  return currentAgentConsoleRuns().some(agentConsoleRunIsActive);
+}
+
+function agentConsoleCommandAllowedDuringRun(command = {}) {
+  return ['agent_console.steer_active_run', 'agent_console.show_help'].includes(command.handler);
+}
+
+function agentConsoleAttachmentMutationBlocked(status = null) {
+  if (!agentConsoleHasActiveRun()) return false;
+  if (status) status.textContent = 'Active-run steering is text-only; stop the run before staging context.';
+  return true;
+}
+
 function agentConsoleEventCursor(run = {}) {
   const cursors = (run.events || []).map((event) => Number(event.cursor || event.sequence || 0));
   return Math.max(Number(run.event_cursor || 0), ...cursors, 0);
@@ -2841,7 +2859,10 @@ function mergeAgentConsoleRunUpdate(current = {}, incoming = {}, events = [], re
 function agentConsoleCommandSuggestions(value = '') {
   const query = String(value || '').trim().toLowerCase();
   if (!query.startsWith('/')) return [];
-  return agentConsoleCommands().filter((item) => item.command.startsWith(query) || query === '/help');
+  return agentConsoleCommands().filter((item) => (
+    (!agentConsoleHasActiveRun() || agentConsoleCommandAllowedDuringRun(item))
+    && (item.command.startsWith(query) || query === '/help')
+  ));
 }
 
 function renderAgentConsoleCommandMenu() {
@@ -3074,6 +3095,7 @@ function queueAgentConsoleWorkspaceSearch() {
 }
 
 function openAgentConsoleWorkspacePicker() {
+  if (agentConsoleAttachmentMutationBlocked($('#agent-console-form-status'))) return;
   const choices = $('#agent-console-attachment-choices');
   const picker = $('#agent-console-workspace-picker');
   if (choices) choices.hidden = true;
@@ -3086,6 +3108,7 @@ function openAgentConsoleWorkspacePicker() {
 
 async function addAgentConsoleWorkspaceFile(rootId, relativePath) {
   const status = $('#agent-console-form-status');
+  if (agentConsoleAttachmentMutationBlocked(status)) return;
   const choice = safeAgentConsoleWorkspaceChoice(rootId, relativePath);
   if (agentConsoleRuntimeBlocked()) {
     if (status) status.textContent = 'Wait until Hermes confirms the current provider and model.';
@@ -3106,6 +3129,7 @@ async function addAgentConsoleWorkspaceFile(rootId, relativePath) {
   renderAgentConsoleWorkspaceResults({}, 'loading');
   try {
     const payload = await createAgentConsoleWorkspaceAttachment(choice.root_id, choice.relative_path);
+    if (agentConsoleAttachmentMutationBlocked(status)) return;
     const attachment = payload.attachment || payload;
     if (!attachment?.id) throw new Error('Mentat returned an invalid workspace attachment.');
     if (!state.agentConsoleAttachments.some((item) => item.id === attachment.id)) {
@@ -3139,6 +3163,7 @@ async function addAgentConsoleWorkspaceFile(rootId, relativePath) {
 
 async function addAgentConsoleFiles(files = []) {
   const status = $('#agent-console-form-status');
+  if (agentConsoleAttachmentMutationBlocked(status)) return;
   if (agentConsoleRuntimeBlocked()) {
     if (status) status.textContent = 'Wait until Hermes confirms the current provider and model.';
     return;
@@ -3161,11 +3186,13 @@ async function addAgentConsoleFiles(files = []) {
   try {
     const knownIds = new Set(state.agentConsoleAttachments.map((item) => item.id));
     const uploaded = await uploadAgentConsoleAttachments(files, (item) => {
+      if (agentConsoleHasActiveRun()) return;
       if (!item?.id || knownIds.has(item.id)) return;
       knownIds.add(item.id);
       state.agentConsoleAttachments.push(item);
       renderAgentConsoleAttachmentTray();
     });
+    if (agentConsoleAttachmentMutationBlocked(status)) return;
     if (status) status.textContent = `${uploaded.length} attachment${uploaded.length === 1 ? '' : 's'} ready.`;
   } catch (err) {
     state.agentConsoleAttachmentError = agentConsoleUploadErrorMessage(err);
@@ -3281,7 +3308,15 @@ function renderAgentConsole(payload = {}) {
   }
 
   const agents = Array.isArray(payload.agents) ? payload.agents : state.agentConsoleAgents;
-  const requestedAgentId = state.agentConsoleSelectedAgentId || agentSelect.value || payload.selected_agent_id || 'default';
+  const runs = Array.isArray(payload.runs) ? payload.runs : state.agentConsoleRuns;
+  const boundActiveRun = runs
+    .filter(agentConsoleRunMatchesCurrentBinding)
+    .find(agentConsoleRunIsActive);
+  const requestedAgentId = boundActiveRun?.agent_id
+    || state.agentConsoleSelectedAgentId
+    || agentSelect.value
+    || payload.selected_agent_id
+    || 'default';
   const selectedAgentId = agents.some((agent) => agent.id === requestedAgentId)
     ? requestedAgentId
     : agents[0]?.id || 'default';
@@ -3302,7 +3337,6 @@ function renderAgentConsole(payload = {}) {
       ? state.agentConsoleProviderInventory
       : {};
   const providers = Array.isArray(providerInventory.providers) ? providerInventory.providers : [];
-  const runs = Array.isArray(payload.runs) ? payload.runs : state.agentConsoleRuns;
   state.agentConsoleAgents = agents;
   state.agentConsoleModelCatalog = catalog;
   state.agentConsoleProviderInventory = providerInventory;
@@ -3388,6 +3422,12 @@ function renderAgentConsole(payload = {}) {
 
   const bindingRuns = runs.filter(agentConsoleRunMatchesCurrentBinding);
   const activeRun = bindingRuns.find(agentConsoleRunIsActive);
+  if (activeRun && (state.agentConsoleAttachments.length || state.agentConsoleRemoteContext)) {
+    state.agentConsoleAttachments = [];
+    clearAgentConsoleRemoteContext();
+    state.agentConsoleAttachmentError = '';
+    renderAgentConsoleAttachmentTray();
+  }
   const selectedRuns = bindingRuns.filter((run) => (run.agent_id || 'default') === selectedAgent.id);
   const latestRun = selectedRuns[0];
   const selectedActiveRun = selectedRuns.find(agentConsoleRunIsActive);
@@ -3439,15 +3479,33 @@ function renderAgentConsole(payload = {}) {
   }
   if (presence) presence.className = `agent-console-presence ${activeRun ? 'working' : state.agentConsoleRuntimeUnresolved ? 'offline' : available ? 'ready' : 'offline'}`;
   const runtimeBlocked = agentConsoleRuntimeBlocked();
-  if (prompt) prompt.disabled = !available || Boolean(activeRun) || runtimeBlocked;
-  if (send) send.disabled = !available || Boolean(activeRun) || runtimeBlocked;
+  const steerControl = activeRun?.controls?.steer || {};
+  const steerMode = Boolean(
+    activeRun
+    && activeRun === selectedActiveRun
+    && steerControl.available === true
+    && steerControl.text_only === true
+  );
+  const composerBlocked = activeRun ? !steerMode : runtimeBlocked;
+  if (prompt) {
+    prompt.disabled = !available || composerBlocked;
+    prompt.placeholder = steerMode ? 'Guide the active Hermes run…' : 'Ask your agent something…';
+    prompt.setAttribute('aria-label', steerMode ? 'Steer active Hermes run' : 'Prompt Hermes');
+  }
+  if (send) {
+    send.disabled = !available || composerBlocked || state.agentConsoleSteerInFlight;
+    send.textContent = steerMode ? 'Steer' : 'Send';
+    send.setAttribute('aria-label', steerMode ? 'Steer active run' : 'Send prompt');
+  }
+  const form = $('#agent-console-form');
+  if (form) form.dataset.mode = steerMode ? 'steer' : 'send';
   const attach = $('#agent-console-attach');
   if (attach) attach.disabled = !available || Boolean(activeRun) || runtimeBlocked || state.agentConsoleAttachmentsUploading;
-  if (agentSelect) agentSelect.disabled = state.agentConsoleRuntimeMutationInFlight || state.agentConsoleAttachmentsUploading;
+  if (agentSelect) agentSelect.disabled = Boolean(activeRun) || state.agentConsoleRuntimeMutationInFlight || state.agentConsoleAttachmentsUploading;
   if (providerSelect) providerSelect.disabled = !available || !providerSwitchAvailable || Boolean(activeRun) || runtimeBlocked || state.agentConsoleAttachmentsUploading || !scopedProviders.length;
   if (modelSelect) modelSelect.disabled = !available || !providerSwitchAvailable || Boolean(activeRun) || runtimeBlocked || state.agentConsoleAttachmentsUploading || !selectableModels.length;
   $$('[data-use-context-pack], [data-apply-context-pack]').forEach((button) => {
-    button.disabled = runtimeBlocked || state.agentConsoleAttachmentsUploading;
+    button.disabled = Boolean(activeRun) || runtimeBlocked || state.agentConsoleAttachmentsUploading;
   });
   if (toolToggle) {
     toolToggle.textContent = state.agentConsoleShowActivity ? 'Hide activity' : 'Show activity';
@@ -3942,7 +4000,8 @@ async function submitAgentConsolePrompt() {
   const prompt = $('#agent-console-prompt');
   const status = $('#agent-console-form-status');
   const value = prompt?.value.trim() || '';
-  if (agentConsoleRuntimeBlocked()) {
+  const activeRun = currentAgentConsoleRuns().find(agentConsoleRunIsActive);
+  if (!activeRun && agentConsoleRuntimeBlocked()) {
     if (status) status.textContent = 'Wait until Hermes confirms the current provider and model.';
     return;
   }
@@ -3957,7 +4016,13 @@ async function submitAgentConsolePrompt() {
     const definition = agentConsoleCommands().find((item) => item.command === command);
     if (!definition) {
       if (status) status.textContent = `${command} is not supported by the Mentat dashboard.`;
-    } else if (args.length > definition.arguments.length) {
+    } else if (activeRun && !agentConsoleCommandAllowedDuringRun(definition)) {
+      if (status) status.textContent = `${command} is unavailable while a Hermes run is active.`;
+      return;
+    } else if (
+      args.length > definition.arguments.length
+      && !definition.arguments.some((item) => item.variadic === true)
+    ) {
       const usage = [definition.command, ...definition.arguments.map((item) => item.required ? `<${item.name}>` : `[${item.name}]`)].join(' ');
       if (status) status.textContent = `Usage: ${usage}`;
     } else if (definition.handler === 'agent_console.refresh_models') {
@@ -3983,13 +4048,27 @@ async function submitAgentConsolePrompt() {
         agentId: state.agentConsoleSelectedAgentId,
         silent: true,
       });
+    } else if (definition.handler === 'agent_console.steer_active_run') {
+      if (!argument) {
+        if (status) status.textContent = 'Usage: /steer <guidance>';
+        return;
+      }
+      await submitAgentConsoleSteer(activeRun, argument);
+      return;
     } else if (definition.handler === 'agent_console.show_help') {
-      const help = agentConsoleCommands().map((item) => `${item.command} — ${item.description}`).join('; ');
+      const help = agentConsoleCommands()
+        .filter((item) => !activeRun || agentConsoleCommandAllowedDuringRun(item))
+        .map((item) => `${item.command} — ${item.description}`)
+        .join('; ');
       if (status) status.textContent = `Dashboard commands: ${help}.`;
     }
     prompt.value = '';
     resizeAgentConsolePrompt();
     $('#agent-console-command-menu').hidden = true;
+    return;
+  }
+  if (activeRun) {
+    await submitAgentConsoleSteer(activeRun, value);
     return;
   }
   if (status) status.textContent = 'Sending to Hermes…';
@@ -4022,6 +4101,58 @@ async function submitAgentConsolePrompt() {
       renderAgentConsoleAttachmentTray();
     }
     if (status) status.textContent = err.message;
+  }
+}
+
+async function submitAgentConsoleSteer(run, text) {
+  const prompt = $('#agent-console-prompt');
+  const status = $('#agent-console-form-status');
+  const control = run?.controls?.steer || {};
+  const guidance = String(text || '').trim();
+  if (!run || control.available !== true || control.text_only !== true) {
+    if (status) status.textContent = 'This active Hermes run does not advertise verified steering.';
+    return;
+  }
+  if (!guidance || guidance.length > Number(control.max_characters || 20000)) {
+    if (status) status.textContent = 'Type bounded text guidance before steering.';
+    return;
+  }
+  if (state.agentConsoleAttachments.length || state.agentConsoleRemoteContext) {
+    if (status) status.textContent = 'Active-run steering is text-only; remove staged context before steering.';
+    return;
+  }
+  if (state.agentConsoleSteerInFlight) return;
+  state.agentConsoleSteerInFlight = true;
+  if (status) status.textContent = 'Steering active Hermes run…';
+  renderAgentConsole({
+    agents: state.agentConsoleAgents,
+    model_catalog: state.agentConsoleModelCatalog,
+    provider_inventory: state.agentConsoleProviderInventory,
+    runs: state.agentConsoleRuns,
+  });
+  try {
+    const payload = await steerAgentConsoleRun(
+      run.id,
+      guidance,
+      Number(control.revision || 0),
+      run.agent_id || 'default',
+    );
+    state.agentConsoleRuns = state.agentConsoleRuns.map((item) => (
+      item.id === payload.run?.id ? payload.run : item
+    ));
+    if (prompt) prompt.value = '';
+    resizeAgentConsolePrompt();
+    if (status) status.textContent = 'Steering guidance accepted.';
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  } finally {
+    state.agentConsoleSteerInFlight = false;
+    renderAgentConsole({
+      agents: state.agentConsoleAgents,
+      model_catalog: state.agentConsoleModelCatalog,
+      provider_inventory: state.agentConsoleProviderInventory,
+      runs: state.agentConsoleRuns,
+    });
   }
 }
 
@@ -4119,6 +4250,11 @@ async function submitCronTrigger() {
 
 async function useHermesProfileInConsole(profileId = 'default') {
   const requestedProfileId = profileId || 'default';
+  if (agentConsoleHasActiveRun()) {
+    const status = $('#agent-console-form-status');
+    if (status) status.textContent = 'Stop the active Hermes run before changing Console profiles.';
+    return false;
+  }
   let profileSelectionStarted = false;
   state.agentConsoleRuntimeLoading = true;
   state.agentConsoleRuntimeUnresolved = false;
@@ -4136,6 +4272,9 @@ async function useHermesProfileInConsole(profileId = 'default') {
     const requestedAgent = (consolePayload.agents || []).find((agent) => agent.id === requestedProfileId);
     if (!requestedAgent) {
       throw new Error(`Hermes profile ${requestedProfileId} is no longer available.`);
+    }
+    if (agentConsoleHasActiveRun()) {
+      throw new Error('A Hermes run became active before the profile could be selected.');
     }
     state.agentConsoleSelectedAgentId = requestedProfileId;
     state.selectedHermesProfileId = requestedProfileId;
@@ -4203,8 +4342,14 @@ async function useHermesProfileInConsole(profileId = 'default') {
 }
 
 async function testHermesProfile(profileId) {
+  if (agentConsoleHasActiveRun()) {
+    const status = $('#agent-console-form-status');
+    if (status) status.textContent = 'Stop the active Hermes run before testing an agent.';
+    return;
+  }
   const ready = await useHermesProfileInConsole(profileId);
   if (!ready) return;
+  if (agentConsoleHasActiveRun()) return;
   const prompt = $('#agent-console-prompt');
   if (!prompt) return;
   prompt.value = 'Identity check: without relying on this message for the answer, state your name and briefly describe your role.';
@@ -5068,8 +5213,8 @@ function renderHermesProfiles(payload = {}) {
       </div>
     </details>
     <div class="managed-agent-detail-actions">
-      <button class="action-button" type="button" data-use-hermes-profile="${escapeHtml(selectedProfile.id)}">Use in Console</button>
-      <button class="mini-button" type="button" data-test-hermes-profile="${escapeHtml(selectedProfile.id)}">Test Agent</button>
+      <button class="action-button" type="button" data-use-hermes-profile="${escapeHtml(selectedProfile.id)}" ${consoleBusy ? 'disabled' : ''}>Use in Console</button>
+      <button class="mini-button" type="button" data-test-hermes-profile="${escapeHtml(selectedProfile.id)}" ${consoleBusy ? 'disabled' : ''}>Test Agent</button>
       ${state.projects.length ? `<button class="mini-button" type="button" data-assign-first-task="${escapeHtml(selectedProfile.id)}">Assign First Task</button>` : ''}
       ${canDelete ? `<button class="mini-button managed-agent-delete" type="button" data-delete-hermes-profile="${escapeHtml(selectedProfile.id)}">Delete agent</button>` : `<button class="mini-button managed-agent-delete" type="button" disabled title="${escapeHtml(deleteReason)}">Delete agent</button>`}
     </div>
@@ -5469,7 +5614,7 @@ async function submitAgentCreator() {
         <div class="item-desc">The Hermes profile and its runtime name/role are synchronized and now appear in Managed Agents.</div>
         <div class="item-meta mono">${result.skill_selection ? `${result.skill_selection.enabled_builtin_skills?.length || 0} built-in skills enabled` : 'Hermes default skill configuration'}</div>
         <div class="task-delegation-actions">
-          <button class="action-button" type="button" data-agent-creator-test="${escapeHtml(state.selectedHermesProfileId)}">Test Agent</button>
+          <button class="action-button" type="button" data-agent-creator-test="${escapeHtml(state.selectedHermesProfileId)}" ${agentConsoleHasActiveRun() ? 'disabled' : ''}>Test Agent</button>
           ${state.projects.length ? `<button class="mini-button" type="button" data-agent-creator-assign-first-task="${escapeHtml(state.selectedHermesProfileId)}">Assign First Task</button>` : ''}
           <button class="mini-button" type="button" data-agent-creator-view-agents>View managed agents</button>
         </div>
@@ -5839,7 +5984,7 @@ function renderNotes(payload = {}) {
 
 function renderContextPacks(payload = {}) {
   const packs = Array.isArray(payload.context_packs) ? payload.context_packs : [];
-  const consoleContextBlocked = agentConsoleRuntimeBlocked() || state.agentConsoleAttachmentsUploading;
+  const consoleContextBlocked = agentConsoleHasActiveRun() || agentConsoleRuntimeBlocked() || state.agentConsoleAttachmentsUploading;
   state.contextPacks = packs;
   const list = $('#context-pack-list');
   if (list) list.innerHTML = packs.length ? packs.map((pack) => `
@@ -5854,13 +5999,14 @@ function renderContextPacks(payload = {}) {
 function renderAgentConsoleContextPackPicker() {
   const results = $('#agent-console-context-pack-results');
   if (!results) return;
-  const consoleContextBlocked = agentConsoleRuntimeBlocked() || state.agentConsoleAttachmentsUploading;
+  const consoleContextBlocked = agentConsoleHasActiveRun() || agentConsoleRuntimeBlocked() || state.agentConsoleAttachmentsUploading;
   results.innerHTML = state.contextPacks.length ? state.contextPacks.map((pack) => `
     <button type="button" class="agent-console-workspace-result" role="option" data-apply-context-pack="${escapeHtml(pack.id)}" ${consoleContextBlocked ? 'disabled' : ''}><strong>${escapeHtml(pack.name)}</strong><span class="mono">${(pack.note_paths || []).length + (pack.workspace_files || []).length} attachments</span></button>
   `).join('') : '<div class="agent-console-workspace-state mono">Create a context pack from the Notes view first.</div>';
 }
 
 function openAgentConsoleContextPackPicker() {
+  if (agentConsoleAttachmentMutationBlocked($('#agent-console-form-status'))) return;
   $('#agent-console-attachment-choices').hidden = true;
   $('#agent-console-workspace-picker').hidden = true;
   $('#agent-console-context-pack-picker').hidden = false;
@@ -5869,6 +6015,7 @@ function openAgentConsoleContextPackPicker() {
 
 async function applyContextPackToConsole(packId) {
   const status = $('#agent-console-form-status');
+  if (agentConsoleAttachmentMutationBlocked(status)) return;
   if (agentConsoleRuntimeBlocked()) {
     if (status) status.textContent = 'Wait until Hermes confirms the current provider and model.';
     return;
@@ -5898,7 +6045,8 @@ async function applyContextPackToConsole(packId) {
   try {
     const payload = await stageContextPack(packId);
     if (
-      agentConsoleRuntimeBlocked()
+      agentConsoleHasActiveRun()
+      || agentConsoleRuntimeBlocked()
       || transportBinding !== state.agentConsoleTransportBinding
       || agentId !== state.agentConsoleSelectedAgentId
     ) {
@@ -6665,6 +6813,7 @@ $('#agent-console-command-menu')?.addEventListener('click', (event) => {
 
 $('#agent-console-attach')?.addEventListener('click', (event) => {
   event.stopPropagation();
+  if (agentConsoleAttachmentMutationBlocked($('#agent-console-form-status'))) return;
   const menu = $('#agent-console-attachment-menu');
   setAgentConsoleAttachmentMenu(Boolean(menu?.hidden));
 });
@@ -6750,7 +6899,7 @@ document.addEventListener('click', (event) => {
 });
 
 $('#agent-console-agent')?.addEventListener('change', async (event) => {
-  if (state.agentConsoleRuntimeMutationInFlight || state.agentConsoleAttachmentsUploading) return;
+  if (agentConsoleHasActiveRun() || state.agentConsoleRuntimeMutationInFlight || state.agentConsoleAttachmentsUploading) return;
   const requestedAgentId = event.target.value || 'default';
   state.agentConsoleSelectedAgentId = requestedAgentId;
   state.agentConsoleRuntimePending = null;
@@ -6791,7 +6940,7 @@ $('#agent-console-agent')?.addEventListener('change', async (event) => {
 });
 
 $('#agent-console-model-select')?.addEventListener('change', async (event) => {
-  if (state.agentConsoleAttachmentsUploading) {
+  if (agentConsoleHasActiveRun() || state.agentConsoleAttachmentsUploading) {
     event.target.value = state.agentConsoleSelectedModel;
     return;
   }
@@ -6802,7 +6951,7 @@ $('#agent-console-model-select')?.addEventListener('change', async (event) => {
   });
 });
 $('#agent-console-provider-select')?.addEventListener('change', async (event) => {
-  if (state.agentConsoleAttachmentsUploading) {
+  if (agentConsoleHasActiveRun() || state.agentConsoleAttachmentsUploading) {
     event.target.value = state.agentConsoleSelectedProvider;
     return;
   }
@@ -6890,7 +7039,7 @@ document.addEventListener('change', (event) => {
   }
 });
 $('#agent-console-new-session')?.addEventListener('click', () => {
-  if (agentConsoleRuntimeBlocked()) return;
+  if (agentConsoleHasActiveRun() || agentConsoleRuntimeBlocked()) return;
   state.agentConsoleSessionId = '';
   state.agentConsoleStartFresh = true;
   const status = $('#agent-console-form-status');

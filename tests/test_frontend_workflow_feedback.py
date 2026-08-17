@@ -20,8 +20,9 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
             "const runtimeBlocked = agentConsoleRuntimeBlocked();",
             render_block,
         )
-        self.assertIn("if (prompt) prompt.disabled = !available || Boolean(activeRun) || runtimeBlocked;", render_block)
-        self.assertIn("if (send) send.disabled = !available || Boolean(activeRun) || runtimeBlocked;", render_block)
+        self.assertIn("const composerBlocked = activeRun ? !steerMode : runtimeBlocked;", render_block)
+        self.assertIn("prompt.disabled = !available || composerBlocked;", render_block)
+        self.assertIn("send.disabled = !available || composerBlocked || state.agentConsoleSteerInFlight;", render_block)
         self.assertNotIn(
             "if (send) send.disabled = !available || !providerSwitchAvailable",
             render_block,

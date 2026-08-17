@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "gate": "mentat-local-desktop",
+  "lighthouse_version": "13.4.1",
+  "audited_at": "2026-08-15T00:27:54.561Z",
+  "url": "http://127.0.0.1:8894/",
+  "command": "CHROME_PATH='/Applications/Chromium.app/Contents/MacOS/Chromium' npx --yes lighthouse@13.4.1 http://127.0.0.1:8894/ --output=json --output-path=<temporary-output>/lighthouse-canonical.json --only-categories=performance,accessibility,best-practices,seo --preset=desktop --throttling-method=provided --chrome-flags='--headless --no-sandbox --disable-gpu' --quiet",
+  "effective_settings": {
+    "form_factor": "desktop",
+    "throttling_method": "provided",
+    "screen_emulation": {
+      "mobile": false,
+      "width": 1350,
+      "height": 940,
+      "device_scale_factor": 1
+    }
+  },
+  "category_scores": {
+    "performance": 100,
+    "accessibility": 100,
+    "best_practices": 100,
+    "seo": 100
+  },
+  "metrics": {
+    "first_contentful_paint_ms": 297,
+    "largest_contentful_paint_ms": 434,
+    "total_blocking_time_ms": 0,
+    "cumulative_layout_shift": 0.02783914618174124
+  },
+  "audit_context": "First navigation after a fresh server start with tracked seed data, fresh empty Hermes and Obsidian roots, and HERMES_COMMAND=/usr/bin/false to represent a deterministic unconfigured Hermes installation.",
+  "server_setup": {
+    "slice_materialization": "Clean local clone at the accepted 9D baseline with only the 9E publication inventory copied byte-for-byte from the working tree.",
+    "start_command": "HERMES_COMMAND='/usr/bin/false' MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT='<FIXED_TEST_SECRET>' python server.py --config <clean-slice>/mentat.toml --data-dir <clean-slice>/data --public-dir <clean-slice>/public --hermes-home <fresh-empty-root> --obsidian-vault <fresh-empty-root> --host 127.0.0.1 --port 8894",
+    "readiness_sequence": "Wait for the fresh server process to yield its live listener session; make no HTTP readiness or warm-up request; run the recorded Lighthouse command as the first HTTP navigation."
+  },
+  "full_report_sha256": "54955b2aa7d1f89233176a8f656868e6cd43c7c9a17e3c30c17ddf52d071cb2f"
+}
