@@ -116,6 +116,7 @@ from hermes_webhooks import (
     WebhookValidationError,
     verify_and_normalize,
 )
+from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
 from hermes_transport import (
@@ -315,9 +316,9 @@ PORT = DEFAULT_PORT
 DATA_DIR = BASE_DIR / "data"
 CONFIGURED_DATA_DIR = DATA_DIR
 HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryCache()
-HERMES_WEBHOOK_HINTS: list = []
 HERMES_WEBHOOK_HINTS_LOCK = threading.Lock()
 HERMES_WEBHOOK_HINT_CAPACITY = 256
+HERMES_EVENT_REFRESH: HermesRefreshCoordinator | None = None
 HERMES_WEBHOOK_SECRET_ENV_BY_BINDING = {
     "local-default": "MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT",
 }
@@ -1377,7 +1378,7 @@ def merge_agents_with_session_observations(registered_agents: list[dict], observ
     return merged
 
 
-def agents_payload():
+def agents_payload(*, session_payload: dict | None = None):
     agents = read_json_file("agents.json", [])
     if isinstance(agents, dict) and agents.get("error"):
         return agents
@@ -1385,7 +1386,8 @@ def agents_payload():
         return {"error": "agents.json must contain a list"}
 
     now = datetime.now().astimezone()
-    session_payload = sessions_payload(local_limit=AGENT_DERIVED_SESSIONS_LIMIT)
+    if session_payload is None:
+        session_payload = sessions_payload(local_limit=AGENT_DERIVED_SESSIONS_LIMIT)
     session_agents = synthesize_live_session_agents(session_payload, now=now)
     merged = merge_agents_with_session_observations([agent for agent in agents if isinstance(agent, dict)], session_agents)
 
@@ -8950,6 +8952,154 @@ GET_ROUTES = {
 }
 
 
+def _require_local_webhook_binding(binding_id: str) -> None:
+    if binding_id != "local-default":
+        raise RuntimeError("webhook_binding_unavailable")
+
+
+def _validated_webhook_sessions_projection(payload: dict) -> dict:
+    if not isinstance(payload, dict) or payload.get("error"):
+        raise RuntimeError("webhook_refresh_failed")
+    if type(payload.get("exists")) is not bool or not isinstance(payload.get("sessions"), list):
+        raise RuntimeError("webhook_refresh_failed")
+    if any(not isinstance(session, dict) for session in payload["sessions"]):
+        raise RuntimeError("webhook_refresh_failed")
+    return payload
+
+
+def _validated_webhook_agents_projection(payload: dict) -> dict:
+    if not isinstance(payload, dict) or payload.get("error"):
+        raise RuntimeError("webhook_refresh_failed")
+    if (
+        not isinstance(payload.get("agents"), list)
+        or not isinstance(payload.get("sessions"), list)
+        or not isinstance(payload.get("summary"), dict)
+        or not isinstance(payload.get("guidance"), dict)
+    ):
+        raise RuntimeError("webhook_refresh_failed")
+    if any(not isinstance(item, dict) for item in (*payload["agents"], *payload["sessions"])):
+        raise RuntimeError("webhook_refresh_failed")
+    return payload
+
+
+def _refresh_webhook_sessions(binding_id: str) -> dict:
+    _require_local_webhook_binding(binding_id)
+    return _validated_webhook_sessions_projection(
+        recent_sessions(limit=AGENT_DERIVED_SESSIONS_LIMIT)
+    )
+
+
+def _refresh_webhook_agents(binding_id: str) -> dict:
+    _require_local_webhook_binding(binding_id)
+    sessions = _validated_webhook_sessions_projection(
+        recent_sessions(limit=AGENT_DERIVED_SESSIONS_LIMIT)
+    )
+    return _validated_webhook_agents_projection(agents_payload(session_payload=sessions))
+
+
+def _refresh_webhook_attention(binding_id: str) -> dict:
+    _require_local_webhook_binding(binding_id)
+    attention = read_json_file("attention.json", [])
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(attention, list) or not isinstance(tasks, list):
+        raise RuntimeError("webhook_refresh_failed")
+    if any(not isinstance(item, dict) for item in (*attention, *tasks)):
+        raise RuntimeError("webhook_refresh_failed")
+    return {"attention": open_attention_items(attention, tasks)}
+
+
+_WEBHOOK_KANBAN_STATUSES = frozenset(
+    {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+)
+
+
+def _refresh_webhook_kanban(binding_id: str) -> dict:
+    """Read a bounded local delegation projection without writing task state."""
+    _require_local_webhook_binding(binding_id)
+    adapter = HermesKanbanAdapter(
+        hermes_command_path(),
+        env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
+    )
+    adapter.connection_binding_id = binding_id
+    tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        raise RuntimeError("webhook_refresh_failed")
+    candidates = [
+        task
+        for task in tasks
+        if isinstance(task, dict)
+        and isinstance(task.get("delegation"), dict)
+        and task["delegation"].get("kanban_task_id")
+        and task["delegation"].get("connection_binding_id") == binding_id
+        and str(task["delegation"].get("state") or "")
+        in {"queued", "running", "needs_input"}
+    ]
+    state_priority = {"needs_input": 0, "running": 1, "queued": 2}
+    candidates.sort(
+        key=lambda task: (
+            state_priority.get(str((task.get("delegation") or {}).get("state") or ""), 9),
+            str(
+                (task.get("delegation") or {}).get("updated_at")
+                or task.get("updated_at")
+                or ""
+            ),
+        )
+    )
+    projected = []
+    for task in candidates[:3]:
+        delegation = task["delegation"]
+        remote = adapter.get_task(
+            delegation.get("board_id") or "default",
+            delegation["kanban_task_id"],
+        )
+        remote_task = remote.get("task") if isinstance(remote, dict) else None
+        if (
+            not isinstance(remote, dict)
+            or remote.get("ok") is not True
+            or not isinstance(remote_task, dict)
+            or str(remote_task.get("id") or "") != str(delegation["kanban_task_id"])
+            or not isinstance(remote_task.get("status"), str)
+            or remote_task["status"] not in _WEBHOOK_KANBAN_STATUSES
+            or not isinstance(remote.get("runs"), list)
+            or not isinstance(remote.get("comments"), list)
+        ):
+            raise RuntimeError("webhook_refresh_failed")
+        synchronized = synchronized_delegation(delegation, remote)
+        projected.append(
+            {
+                "mentat_task_id": str(task.get("id") or ""),
+                "state": synchronized.get("state"),
+                "review_state": synchronized.get("review_state"),
+                "attempts": synchronized.get("attempts"),
+            }
+        )
+    return {
+        "tasks": projected,
+        "refreshed": len(projected),
+        "skipped": max(0, len(candidates) - len(projected)),
+    }
+
+
+def build_hermes_refresh_coordinator() -> HermesRefreshCoordinator:
+    ready_bindings = tuple(
+        binding_id
+        for binding_id, secret_name in HERMES_WEBHOOK_SECRET_ENV_BY_BINDING.items()
+        if os.environ.get(secret_name, "")
+    )
+    return HermesRefreshCoordinator(
+        {
+            "sessions": _refresh_webhook_sessions,
+            "agents": _refresh_webhook_agents,
+            "attention": _refresh_webhook_attention,
+            "kanban": _refresh_webhook_kanban,
+        },
+        binding_ids=ready_bindings,
+        capacity=HERMES_WEBHOOK_HINT_CAPACITY,
+        coalesce_window=0.25,
+        reconciliation_interval=60.0,
+    )
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"Mentat/{__version__}"
 
@@ -9449,13 +9599,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            if len(HERMES_WEBHOOK_HINTS) >= HERMES_WEBHOOK_HINT_CAPACITY:
+            coordinator = HERMES_EVENT_REFRESH
+            if coordinator is None or not coordinator.enqueue(event):
                 self.send_error_once(503)
                 return
-            # This foundation only buffers hints. The next reconciliation
-            # slice owns consuming them through authoritative Hermes reads.
             HERMES_WEBHOOK_DELIVERIES.remember(event)
-            HERMES_WEBHOOK_HINTS.append(event)
         self.send_response(202)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -9463,6 +9611,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve_dashboard() -> None:
     """Run one reserved dashboard process and always release its reservation."""
+
+    global HERMES_EVENT_REFRESH
 
     try:
         # Complete a legacy connection migration before publishing the startup
@@ -9475,6 +9625,7 @@ def serve_dashboard() -> None:
         pass
     reserve_mentat_server(DATA_DIR)
     server = None
+    refresh_coordinator = None
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -9490,6 +9641,10 @@ def serve_dashboard() -> None:
             name="mentat-attachment-gc",
         )
         attachment_gc_thread.start()
+        refresh_coordinator = build_hermes_refresh_coordinator()
+        refresh_coordinator.start()
+        with HERMES_WEBHOOK_HINTS_LOCK:
+            HERMES_EVENT_REFRESH = refresh_coordinator
         server = server_class_for_host(HOST)((HOST, PORT), Handler)
         launcher_pid = start_launcher_watch(server)
         write_runtime_state()
@@ -9511,6 +9666,11 @@ def serve_dashboard() -> None:
         try:
             AGENT_CONSOLE_ATTACHMENT_GC_STOP.set()
             try:
+                with HERMES_WEBHOOK_HINTS_LOCK:
+                    if HERMES_EVENT_REFRESH is refresh_coordinator:
+                        HERMES_EVENT_REFRESH = None
+                if refresh_coordinator is not None:
+                    refresh_coordinator.stop(timeout=2.0)
                 stop_agent_console_processes()
             finally:
                 try:

@@ -3,6 +3,8 @@ import hmac
 import io
 import json
 import os
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -10,6 +12,7 @@ from http.client import HTTPConnection
 from threading import Thread
 
 import server
+from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_webhooks import WebhookDeliveryCache
 
 
@@ -42,14 +45,16 @@ class HermesWebhookRouteTests(unittest.TestCase):
 
     def setUp(self):
         self.original_cache = server.HERMES_WEBHOOK_DELIVERIES
-        self.original_hints = server.HERMES_WEBHOOK_HINTS
+        self.original_coordinator = server.HERMES_EVENT_REFRESH
         self.original_capacity = server.HERMES_WEBHOOK_HINT_CAPACITY
         server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryCache(capacity=16)
-        server.HERMES_WEBHOOK_HINTS = []
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator({}, capacity=16)
 
     def tearDown(self):
+        if server.HERMES_EVENT_REFRESH is not None:
+            server.HERMES_EVENT_REFRESH.stop(timeout=1)
         server.HERMES_WEBHOOK_DELIVERIES = self.original_cache
-        server.HERMES_WEBHOOK_HINTS = self.original_hints
+        server.HERMES_EVENT_REFRESH = self.original_coordinator
         server.HERMES_WEBHOOK_HINT_CAPACITY = self.original_capacity
 
     def request(self, *, event="on_session_end", delivery="delivery-1", body_overrides=None, content_type="application/json"):
@@ -83,14 +88,39 @@ class HermesWebhookRouteTests(unittest.TestCase):
         body, headers = self.request()
         harness = self.invoke(body, headers)
         self.assertEqual(self.status(harness), 202)
-        self.assertEqual(len(server.HERMES_WEBHOOK_HINTS), 1)
+        self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 1)
+
+    def test_acknowledgement_does_not_wait_for_slow_refresh_adapter(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_refresh(_binding):
+            entered.set()
+            release.wait(2)
+            return {"sessions": []}
+
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
+            {"sessions": slow_refresh},
+            coalesce_window=0,
+            reconciliation_interval=60,
+        )
+        server.HERMES_EVENT_REFRESH.start()
+        body, headers = self.request(delivery="slow-adapter")
+        started = time.monotonic()
+        harness = self.invoke(body, headers)
+        elapsed = time.monotonic() - started
+        self.assertEqual(self.status(harness), 202)
+        self.assertLess(elapsed, 0.1)
+        self.assertTrue(entered.wait(1))
+        release.set()
+        self.assertTrue(server.HERMES_EVENT_REFRESH.wait_idle(1))
 
     def test_duplicate_delivery_returns_no_content_and_is_not_requeued(self):
         body, headers = self.request()
         self.assertEqual(self.status(self.invoke(body, headers)), 202)
         duplicate = self.invoke(body, headers)
         self.assertEqual(self.status(duplicate), 204)
-        self.assertEqual(len(server.HERMES_WEBHOOK_HINTS), 1)
+        self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 1)
 
     def test_real_loopback_http_lifecycle_dispatches_and_checks_host(self):
         httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -226,7 +256,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
                     self.assertEqual(response.status, expected)
                     self.assertLessEqual(len(response.read()), 512)
                     connection.close()
-            self.assertEqual(server.HERMES_WEBHOOK_HINTS, [])
+            self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 0)
         finally:
             httpd.shutdown()
             httpd.server_close()
@@ -234,12 +264,13 @@ class HermesWebhookRouteTests(unittest.TestCase):
 
     def test_queue_saturation_retries_without_deduplicating_delivery(self):
         server.HERMES_WEBHOOK_HINT_CAPACITY = 1
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator({}, capacity=1)
         first_body, first_headers = self.request(delivery="first")
         self.assertEqual(self.status(self.invoke(first_body, first_headers)), 202)
         second_body, second_headers = self.request(delivery="second")
         second = self.invoke(second_body, second_headers)
         self.assertEqual(next(value for kind, value in second.responses if kind == "error"), 503)
-        server.HERMES_WEBHOOK_HINTS.clear()
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator({}, capacity=1)
         retried = self.invoke(second_body, second_headers)
         self.assertEqual(self.status(retried), 202)
 
@@ -249,7 +280,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             server.Handler.handle_hermes_webhook(harness, self.binding_id)
         self.assertEqual(next(value for kind, value in harness.responses if kind == "error"), 404)
-        self.assertEqual(server.HERMES_WEBHOOK_HINTS, [])
+        self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 0)
 
 
 if __name__ == "__main__":
