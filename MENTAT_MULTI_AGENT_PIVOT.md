@@ -549,3 +549,12 @@ The pivotal product proof after that is:
 > Mentat can display and operate a Hermes agent and a Codex agent concurrently through the same Agent/Task/Run/Event model.
 
 Once that works, Mentat is no longer a Hermes dashboard. It is a multi-agent orchestrator.
+
+### Implementation status
+
+The first additive Phase 1 seam is implemented on
+`codex/mentat-agent-runtime-boundary`: runtime-neutral domain/protocol contracts,
+one runtime registry, normalized Hermes run/event projections, and compatibility
+delegation to the existing Hermes Console handlers. Durable Mentat Agent
+persistence, generic task dispatch, concurrency, runtime #2, and the new web UI
+remain separate follow-up slices.

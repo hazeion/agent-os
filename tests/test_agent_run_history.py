@@ -338,6 +338,91 @@ super-private-material
         self.assertTrue(stored["prompt_truncated"])
         server.AGENT_CONSOLE_RUNS.clear()
 
+    def test_schema_three_preserves_orchestration_binding_and_rejects_other_runtime(self):
+        summary = agent_run_history.summarize_run(
+            sample_run(
+                "run_orchestrated",
+                "2026-08-17T12:00:00+00:00",
+                runtime_type="hermes",
+                mentat_agent_id="agent_researcher",
+                task_id="task_research",
+            )
+        )
+        hydrated = agent_run_history._hydrate(summary)
+
+        self.assertEqual(agent_run_history.SCHEMA_VERSION, 3)
+        self.assertEqual(hydrated["runtime_type"], "hermes")
+        self.assertEqual(hydrated["mentat_agent_id"], "agent_researcher")
+        self.assertEqual(hydrated["task_id"], "task_research")
+        self.assertIsNone(agent_run_history._hydrate({**summary, "runtime_type": "codex"}))
+
+    def test_runtime_binding_survives_a_prior_reader_dropping_top_level_fields(self):
+        summary = agent_run_history.summarize_run(
+            sample_run(
+                "run_rollback",
+                "2026-08-17T12:00:00+00:00",
+                runtime_type="hermes",
+                mentat_agent_id="agent_rollback",
+                task_id="task_rollback",
+                events=[{
+                    "id": "event_binding",
+                    "run_id": "run_rollback",
+                    "sequence": 1,
+                    "type": "runtime.bound",
+                    "timestamp": "2026-08-17T12:00:00+00:00",
+                    "display_text": "Mentat task bound",
+                    "data": {
+                        "mentat_agent_id": "agent_rollback",
+                        "task_id": "task_rollback",
+                    },
+                }],
+            )
+        )
+        prior_reader_rewrite = {
+            key: value
+            for key, value in summary.items()
+            if key not in {"mentat_agent_id", "task_id"}
+        }
+        hydrated = agent_run_history._hydrate(prior_reader_rewrite)
+
+        self.assertEqual(hydrated["mentat_agent_id"], "agent_rollback")
+        self.assertEqual(hydrated["task_id"], "task_rollback")
+
+    def test_runtime_binding_survives_more_than_event_retention_updates(self):
+        events = [{
+            "id": "event_binding",
+            "run_id": "run_rollback_long",
+            "sequence": 1,
+            "type": "runtime.bound",
+            "timestamp": "2026-08-17T12:00:00+00:00",
+            "display_text": "Mentat task bound",
+            "data": {
+                "mentat_agent_id": "agent_rollback",
+                "task_id": "task_rollback",
+            },
+        }]
+        events.extend({
+            "id": f"event_{sequence}",
+            "run_id": "run_rollback_long",
+            "sequence": sequence,
+            "type": "status",
+            "timestamp": "2026-08-17T12:00:01+00:00",
+            "display_text": "Working",
+        } for sequence in range(2, agent_run_history.EVENT_RETENTION + 20))
+
+        retained = agent_run_history.normalize_events("run_rollback_long", events)
+        prior_reader_summary = agent_run_history.summarize_run(sample_run(
+            "run_rollback_long",
+            "2026-08-17T12:00:00+00:00",
+            events=retained,
+        ))
+        hydrated = agent_run_history._hydrate(prior_reader_summary)
+
+        self.assertEqual(len(retained), agent_run_history.EVENT_RETENTION)
+        self.assertEqual(retained[0]["type"], "runtime.bound")
+        self.assertEqual(hydrated["mentat_agent_id"], "agent_rollback")
+        self.assertEqual(hydrated["task_id"], "task_rollback")
+
 
 if __name__ == "__main__":
     unittest.main()

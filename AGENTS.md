@@ -4,7 +4,8 @@ This file is the quick project guide for contributors and coding agents working 
 
 ## Overview
 
-Mentat is a small local-first dashboard for Hermes-powered workflows.
+Mentat is a local-first multi-agent operations console in a strangler migration
+from its original Hermes-powered dashboard architecture.
 
 Goals:
 
@@ -54,6 +55,7 @@ Current priorities:
 - day planning, review, and personal task-management depth
 - durable task delegation through Hermes' supported Kanban adapter
 - read-only Hermes session visibility
+- runtime-neutral orchestration with capability-scoped runtime adapters
 - capability-scoped Hermes control through fixed, supported interfaces
 - safe project-owned write paths
 
@@ -61,11 +63,17 @@ The project is still a work in progress. Some areas are complete enough to use, 
 
 ## Boundaries
 
-### Hermes capability boundary
+### Runtime and Hermes capability boundary
 
-Mentat is a local-first, capability-scoped Hermes control plane. A named
-Hermes profile is the canonical executable agent identity; `data/agents.json`
-contains heartbeat observations and must not become a competing registry.
+Mentat owns the target canonical Agent identity, workflow, tasks, runs, events,
+and authority. Runtime identities are implementation references beneath an
+Agent. During the migration, legacy browser `agent_id` values remain Hermes
+profile IDs for compatibility; do not treat that alias or `data/agents.json`
+heartbeat observations as the durable Mentat Agent registry.
+
+Hermes remains the first capability-scoped runtime adapter. New orchestration
+code must use the runtime-neutral boundary and must not depend directly on
+Hermes-specific execution schemas.
 
 Hermes mutations are allowed only when an approved adapter operation uses a
 fixed Hermes CLI/API call with validation, capability checks, confirmation,

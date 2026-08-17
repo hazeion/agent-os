@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mentat-local"
 dynamic = ["version"]
-description = "A friendly local dashboard for Hermes-powered projects and tasks."
+description = "A local-first multi-agent operations console and orchestrator."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -39,6 +39,7 @@ version = { attr = "mentat.version.__version__" }
 [tool.setuptools]
 packages = ["mentat"]
 py-modules = [
+  "agent_runtime",
   "agent_console_artifacts",
   "agent_console_attachments",
   "agent_console_telemetry",
@@ -58,6 +59,7 @@ py-modules = [
   "hermes_profile_deletion",
   "hermes_profile_identity",
   "hermes_profiles",
+  "hermes_runtime",
   "hermes_provider_switching",
   "hermes_skills",
   "hermes_stock_compatibility",
