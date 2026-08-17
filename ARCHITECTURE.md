@@ -648,6 +648,14 @@ APIs. Periodic browser polling and server reconciliation remain recovery paths
 for old Hermes versions, Safe Mode, absent emitter processes, dropped queues,
 oversized private payloads, disconnections, and readback failure.
 
+The Milestone 9I stock-compatibility audit intentionally retires none of these
+fallbacks. Native hooks reduce freshness latency but are not liveness proof,
+data-bearing telemetry, or mutation authority. The 30-second browser refresh,
+60-second server reconciliation, optional private local Console telemetry, and
+capability-gated remote contracts remain until their separate retirement gates
+pass. The complete machine-checked inventory and stock degradation behavior are
+in [HERMES_STOCK_COMPATIBILITY.md](HERMES_STOCK_COMPATIBILITY.md).
+
 ## Initial agent-creator scope
 
 The first version may create a fresh profile or clone approved configuration

@@ -2,6 +2,24 @@
 
 All notable changes to Mentat.
 
+## 2026-08-17
+
+### Changed
+- Completed the Hermes stock-compatibility and fork audit after native-event
+  migration. Every polling, telemetry, and custom remote contract now has an
+  explicit stock-equivalent, partial, custom-required, or Mentat-local class.
+- Retained the 30-second browser refresh, 60-second server reconciliation, and
+  optional private local Console telemetry because webhook delivery is best
+  effort and the required production soak evidence does not yet exist.
+
+### Safety
+- Webhooks remain payload-discarding freshness hints. They do not become token,
+  tool, model, approval, continuation, provider, artifact, Kanban, cron, or
+  command authority merely because stock Hermes exposes a related event or API.
+- Related stock endpoints do not weaken Mentat's exact capability validators.
+  Unsupported hosts continue to fail closed or show the documented degraded
+  behavior until an upstream equivalent or separately approved removal exists.
+
 ## 2026-08-14
 
 ### Added

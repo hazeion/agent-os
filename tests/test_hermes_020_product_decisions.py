@@ -102,7 +102,7 @@ class Hermes020ProductDecisionTests(unittest.TestCase):
         section_9h = " ".join(PLAN[start_9h:start_9i].split())
         section_9i = " ".join(PLAN[start_9i:end_9i].split())
 
-        self.assertIn("Status: **In progress.**", section_9h)
+        self.assertIn("Status: **Implemented and reviewed.**", section_9h)
         self.assertIn("lifecycle, API-usage, tool, model/provider, subagent, and Kanban", section_9h)
         self.assertIn("Mentat-to-browser push channel before reducing browser polling", section_9h)
         self.assertIn("authoritative read-backs", section_9h)
@@ -111,7 +111,7 @@ class Hermes020ProductDecisionTests(unittest.TestCase):
         self.assertIn("dispatcher/worker process-registration proof", section_9h)
         self.assertIn("Periodic reconciliation must converge", section_9h)
 
-        self.assertIn("Status: **Pending.**", section_9i)
+        self.assertIn("Status: **Implemented and reviewed.**", section_9i)
         self.assertIn("qualified native event path has actually superseded", section_9i)
         self.assertIn("Audit every remaining custom-fork contract separately", section_9i)
         self.assertIn("not approvals, continuation, provider mutation, artifact download, Kanban mutation", section_9i)

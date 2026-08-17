@@ -18,6 +18,11 @@ class HermesNativeEventSourceTests(unittest.TestCase):
         self.assertIn("cli.py", REQUIRED_SOURCE_MARKERS)
         self.assertIn("hermes_cli/main.py", REQUIRED_SOURCE_MARKERS)
         self.assertIn("gateway/run.py", REQUIRED_SOURCE_MARKERS)
+        self.assertIn("agent/turn_finalizer.py", REQUIRED_SOURCE_MARKERS)
+        self.assertIn("tools/delegate_tool.py", REQUIRED_SOURCE_MARKERS)
+        self.assertIn('"on_session_end"', REQUIRED_SOURCE_MARKERS["agent/turn_finalizer.py"])
+        self.assertIn('"subagent_start"', REQUIRED_SOURCE_MARKERS["tools/delegate_tool.py"])
+        self.assertIn('"subagent_stop"', REQUIRED_SOURCE_MARKERS["tools/delegate_tool.py"])
         worker = REQUIRED_SOURCE_MARKERS["hermes_cli/kanban_db.py"]
         self.assertIn('"--accept-hooks"', worker)
         self.assertIn("subprocess.Popen", worker)

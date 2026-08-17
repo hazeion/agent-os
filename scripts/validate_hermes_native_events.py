@@ -16,6 +16,7 @@ EXPECTED_COMMIT = "f80f453ae0679347e38abc917c7f94f717bf96c5"
 EXPECTED_SOURCE_SHA256 = {
     "agent/conversation_loop.py": "0b88b0d56dc3ecec63cb9a00ebebf60d87b7c02fd7d99623e1a2ac44bc25ff2a",
     "agent/outbound_webhooks.py": "c4e62b873b3413d9f3ca4d71ed95a650c443d66c86786d2cabb9029e1a5caf56",
+    "agent/turn_finalizer.py": "95771d4cf06fe43440703de10766c6df24aa2c62cfa938eb3bc7d26ddb5d7e58",
     "cli.py": "a22440657da66a7f4debaff4b4220a8917ce84437614d425fd0d8321e6f7fc19",
     "gateway/run.py": "54deb156ec7aa699e5bbd36aee9691d1a1e8cccfbb15266d42a559b39f1db742",
     "hermes_cli/kanban_db.py": "467770190ee6d9fa04b02e854ee4fc08c93365f90858b5245c9048e9dc1ab091",
@@ -23,6 +24,7 @@ EXPECTED_SOURCE_SHA256 = {
     "hermes_cli/plugins.py": "fef960a63a926abe277e6441523656372a29f6862de070d20db24c617d495b6c",
     "model_tools.py": "770e2bc1f7d4eda7e6a4f83b2079073a50b09a13c7166ce9ce9544e98a2cf8ed",
     "run_agent.py": "5226bface19b4ed867de9a0dcd4e5f949e5e476d724969d8163353f5dfe7945f",
+    "tools/delegate_tool.py": "eff2c5ad3609a8572ad8cd133a0f799a1b83cb23f4cb01fc232ef577428011a5",
 }
 
 REQUIRED_SOURCE_MARKERS = {
@@ -44,9 +46,11 @@ REQUIRED_SOURCE_MARKERS = {
     ),
     "hermes_cli/main.py": ("register_outbound_webhooks(_hooks_cfg)",),
     "gateway/run.py": ("register_outbound_webhooks(_hooks_cfg)",),
-    "agent/conversation_loop.py": ('"post_api_request"',),
+    "agent/conversation_loop.py": ('"on_session_start"', '"post_api_request"'),
+    "agent/turn_finalizer.py": ('"on_session_end"',),
     "run_agent.py": ('"api_request_error"',),
     "model_tools.py": ('"post_tool_call"',),
+    "tools/delegate_tool.py": ('"subagent_start"', '"subagent_stop"'),
     "hermes_cli/kanban_db.py": (
         '"kanban_task_claimed"', '"kanban_task_completed"',
         '"kanban_task_blocked"', '"on_kanban_worker_spawned"',
