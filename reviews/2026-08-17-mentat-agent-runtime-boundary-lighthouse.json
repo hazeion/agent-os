@@ -1,0 +1,27 @@
+{
+  "categories": {
+    "accessibility": 100,
+    "best_practices": 100,
+    "performance": 100,
+    "seo": 100
+  },
+  "environment": {
+    "fixture": "owner-private isolated Mentat data, Hermes, and Obsidian roots",
+    "lighthouse": "13.4.1",
+    "mode": "desktop",
+    "throttling_method": "provided"
+  },
+  "full_report_sha256": "f172f383e88043a78d39d445dfdf69fd512570c352668a6ebb7a6028369176be",
+  "metrics": {
+    "cumulative_layout_shift": 0.02783332790656102,
+    "first_contentful_paint_ms": 327.92,
+    "largest_contentful_paint_ms": 528.657,
+    "total_blocking_time_ms": 0
+  },
+  "notes": [
+    "The complete browser smoke interaction and responsive matrix passed first.",
+    "In-app browser navigation reached Managed Agents with no console errors.",
+    "Background throttling was disabled to remove a headless Chromium occlusion artifact observed in two rejected audits."
+  ],
+  "schema_version": 1
+}

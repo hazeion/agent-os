@@ -38,9 +38,11 @@ from agent_run_history import (
     EVENT_SCHEMA_VERSION,
     load_run_summaries,
     normalize_transport_binding,
+    retained_event_window,
     save_run_summaries,
     secure_history_permissions,
 )
+from agent_runtime import AgentRuntimeRegistry
 from private_state import (
     console_root as private_console_root,
     history_path as private_history_path,
@@ -131,6 +133,7 @@ from hermes_transport import (
     TransportBinding,
     select_hermes_console_transport,
 )
+from hermes_runtime import HermesCompatibilityHandlers, HermesRuntime
 from remote_hermes import (
     RemoteHermesError,
     SESSION_LIST_LIMIT as REMOTE_SESSION_LIST_LIMIT,
@@ -5760,13 +5763,30 @@ def local_hermes_console_transport(
     )
 
 
-def hermes_console_transport() -> HermesConsoleTransport:
-    """Select Console transport from the owner-private connection record."""
-
+def _select_legacy_hermes_console_transport() -> HermesConsoleTransport:
+    """Build the mature Hermes transport behind the runtime adapter."""
     return select_hermes_console_transport(
         DATA_DIR,
         local_builder=local_hermes_console_transport,
     )
+
+
+HERMES_RUNTIME = HermesRuntime(
+    transport_factory=_select_legacy_hermes_console_transport,
+)
+AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry((HERMES_RUNTIME,))
+
+
+def hermes_console_transport() -> HermesConsoleTransport:
+    """Resolve Hermes through Mentat's runtime registry, then select transport."""
+
+    runtime = AGENT_RUNTIME_REGISTRY.require("hermes")
+    if not isinstance(runtime, HermesRuntime):
+        raise HermesTransportError("transport_unavailable")
+    transport = runtime.console_transport()
+    if not isinstance(transport, HermesConsoleTransport):
+        raise HermesTransportError("transport_unavailable")
+    return transport
 
 
 def agent_console_profile(profile_id: str | None, discovery: dict | None = None) -> dict | None:
@@ -6463,9 +6483,41 @@ def agent_console_event(run: dict, message: str, kind: str = "status", data: dic
         "timestamp": now_iso(),
     })
     if len(events) > EVENT_RETENTION:
-        del events[:-EVENT_RETENTION]
+        events[:] = retained_event_window(events)
     run["event_cursor"] = sequence
     run["updated_at"] = now_iso()
+
+
+def finalize_agent_console_runtime_event(run_id: str) -> None:
+    """Persist one stable post-artifact terminal boundary for orchestration."""
+
+    with AGENT_CONSOLE_LOCK:
+        run = AGENT_CONSOLE_RUNS.get(run_id)
+        if not run or run.get("status") not in {
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }:
+            return
+        if not all(
+            isinstance(run.get(name), str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", run[name])
+            for name in ("mentat_agent_id", "task_id")
+        ):
+            return
+        if any(
+            isinstance(event, dict) and event.get("type") == "runtime.finalized"
+            for event in run.get("events", [])
+        ):
+            return
+        agent_console_event(
+            run,
+            "Run finalized",
+            "runtime.finalized",
+            {"phase": "finalized"},
+        )
+        persist_agent_console_runs()
 
 
 def agent_console_snapshot(run: dict) -> dict:
@@ -6659,8 +6711,18 @@ def agent_console_run_payload(run_id: str, after_cursor: str | None = None):
         if cursor > current_cursor:
             return {"error": "Event cursor is ahead of this run", "current_cursor": current_cursor}, 409
         events = [item for item in retained if int(item.get("cursor") or 0) > cursor]
-        oldest_cursor = int(retained[0].get("cursor") or 0) if retained else current_cursor
-        cursor_reset_required = bool(retained and cursor < oldest_cursor - 1)
+        event_cursors = [int(item.get("cursor") or 0) for item in events]
+        cursor_reset_required = bool(
+            cursor < current_cursor
+            and (
+                not event_cursors
+                or event_cursors[0] != cursor + 1
+                or any(
+                    current != previous + 1
+                    for previous, current in zip(event_cursors, event_cursors[1:])
+                )
+            )
+        )
         snapshot["events"] = events
         return {
             "schema_version": EVENT_SCHEMA_VERSION,
@@ -6986,6 +7048,7 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
             cleanup_run_input_directory(DATA_DIR, run_id)
         except (ConsoleArtifactValidationError, OSError):
             pass
+        finalize_agent_console_runtime_event(run_id)
         with AGENT_CONSOLE_LOCK:
             AGENT_CONSOLE_PROCESSES.pop(run_id, None)
 
@@ -7673,11 +7736,14 @@ def run_remote_hermes_agent(
                 current.pop("_remote_stop_attempted", None)
                 current.pop("_remote_response_claim", None)
             AGENT_CONSOLE_REMOTE_WORKERS.pop(run_id, None)
+        finalize_agent_console_runtime_event(run_id)
 
 
 def _start_remote_agent_console_run(
     payload: dict,
     transport: RemoteHermesConsoleTransport,
+    *,
+    orchestration_identity: dict[str, str] | None = None,
 ):
     start_new_session = payload.get("start_new_session", False)
     requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
@@ -7822,6 +7888,7 @@ def _start_remote_agent_console_run(
             }, 409
         run = {
             "id": run_id,
+            "runtime_type": "hermes",
             "agent_id": requested_agent_id,
             "agent_name": requested_agent_id,
             # The discovery model is endpoint-global and may not describe this
@@ -7849,6 +7916,14 @@ def _start_remote_agent_console_run(
             "_remote_continuation": remote_continuation,
             "_remote_image_data_urls": remote_image_data_urls,
         }
+        if orchestration_identity is not None:
+            run.update(orchestration_identity)
+            agent_console_event(
+                run,
+                "Mentat task bound",
+                "runtime.bound",
+                orchestration_identity,
+            )
         agent_console_event(run, "Prompt queued for remote Hermes", "queued", {"agent_id": requested_agent_id})
         AGENT_CONSOLE_RUNS[run_id] = run
         trim_agent_console_runs_locked()
@@ -8192,7 +8267,11 @@ def steer_remote_console_run(run_id: str, payload):
     return {"ok": True, "accepted": True, "run": snapshot}, 200
 
 
-def _start_agent_console_run_locked(payload):
+def _start_agent_console_run_locked(
+    payload,
+    *,
+    orchestration_identity: dict[str, str] | None = None,
+):
     start_new_session = payload.get("start_new_session", False)
     if type(start_new_session) is not bool:
         return {"error": "start_new_session must be true or false."}, 400
@@ -8210,8 +8289,16 @@ def _start_agent_console_run_locked(payload):
             return {"error": "Hermes connection settings are unavailable."}, 503
         if payload.get("remote_context_token"):
             with CONTEXT_PACK_OPERATION_LOCK:
-                return _start_remote_agent_console_run(payload, transport)
-        return _start_remote_agent_console_run(payload, transport)
+                return _start_remote_agent_console_run(
+                    payload,
+                    transport,
+                    orchestration_identity=orchestration_identity,
+                )
+        return _start_remote_agent_console_run(
+            payload,
+            transport,
+            orchestration_identity=orchestration_identity,
+        )
     requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
     if requested_agent_id == "hermes":
         requested_agent_id = "default"
@@ -8336,6 +8423,7 @@ def _start_agent_console_run_locked(payload):
         image_path = execution_context.get("_image_path")
         run = {
             "id": run_id,
+            "runtime_type": "hermes",
             "agent_id": agent_id,
             "agent_name": profile.get("name") or agent_id,
             "model": profile.get("model") or agent_console_model(agent_id, discovery),
@@ -8358,6 +8446,14 @@ def _start_agent_console_run_locked(payload):
             "_execution_prompt": execution_prompt,
             "_image_path": image_path,
         }
+        if orchestration_identity is not None:
+            run.update(orchestration_identity)
+            agent_console_event(
+                run,
+                "Mentat task bound",
+                "runtime.bound",
+                orchestration_identity,
+            )
         agent_console_event(
             run,
             f"Prompt queued for {profile.get('name') or agent_id}",
@@ -9170,6 +9266,71 @@ def probe_hermes_webhook(payload=None) -> tuple[dict, int]:
     if payload not in (None, {}):
         return {"error": "webhook_probe_payload_invalid"}, 400
     return run_hermes_webhook_probe(PORT)
+
+
+# Preserve the established handlers as the Hermes compatibility bridge, then
+# expose the same browser callables through the runtime registry. This keeps
+# mature validation, locking, verification, and response shapes unchanged.
+_start_hermes_console_run = start_agent_console_run
+_respond_to_hermes_console_action = respond_to_remote_console_action
+_steer_hermes_console_run = steer_remote_console_run
+_cancel_hermes_console_run = cancel_agent_console_run
+_hermes_console_run_payload = agent_console_run_payload
+
+
+def _start_hermes_runtime_task(task, context):
+    payload = {
+        "agent_id": context.runtime_agent_ref,
+        "prompt": task.objective,
+        "start_new_session": True,
+    }
+    identity = {
+        "mentat_agent_id": context.agent_id,
+        "task_id": task.id,
+    }
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        return _start_agent_console_run_locked(
+            payload,
+            orchestration_identity=identity,
+        )
+
+HERMES_RUNTIME.bind_compatibility_handlers(
+    HermesCompatibilityHandlers(
+        start=_start_hermes_console_run,
+        start_task=_start_hermes_runtime_task,
+        message=_steer_hermes_console_run,
+        response=_respond_to_hermes_console_action,
+        stop=_cancel_hermes_console_run,
+        status=_hermes_console_run_payload,
+    )
+)
+
+
+def _registered_hermes_runtime() -> HermesRuntime:
+    runtime = AGENT_RUNTIME_REGISTRY.require("hermes")
+    if not isinstance(runtime, HermesRuntime):
+        raise HermesTransportError("transport_unavailable")
+    return runtime
+
+
+def start_agent_console_run(payload):
+    return _registered_hermes_runtime().start_compatibility(payload)
+
+
+def respond_to_remote_console_action(run_id: str, payload):
+    return _registered_hermes_runtime().response_compatibility(run_id, payload)
+
+
+def steer_remote_console_run(run_id: str, payload):
+    return _registered_hermes_runtime().message_compatibility(run_id, payload)
+
+
+def cancel_agent_console_run(run_id: str):
+    return _registered_hermes_runtime().stop_compatibility(run_id)
+
+
+def agent_console_run_payload(run_id: str, after_cursor: str | None = None):
+    return _registered_hermes_runtime().status_compatibility(run_id, after_cursor)
 
 
 POST_ROUTES = [

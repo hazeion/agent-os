@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import agent_run_history
 import server
@@ -86,6 +87,51 @@ class AgentRunEventTests(unittest.TestCase):
         self.assertTrue(stale["cursor_reset_required"])
         self.assertEqual(len(stale["events"]), agent_run_history.EVENT_RETENTION)
 
+    def test_runtime_binding_is_pinned_inside_bounded_event_history(self):
+        run = self.make_run("run_bound")
+        run.update({"mentat_agent_id": "agent_bound", "task_id": "task_bound"})
+        server.agent_console_event(
+            run,
+            "Mentat task bound",
+            "runtime.bound",
+            {"mentat_agent_id": "agent_bound", "task_id": "task_bound"},
+        )
+        for index in range(agent_run_history.EVENT_RETENTION + 10):
+            server.agent_console_event(run, f"Update {index}")
+
+        self.assertEqual(len(run["events"]), agent_run_history.EVENT_RETENTION)
+        self.assertEqual(run["events"][0]["type"], "runtime.bound")
+        normalized = agent_run_history.normalize_events(run["id"], run["events"])
+        self.assertEqual(normalized[0]["type"], "runtime.bound")
+        server.AGENT_CONSOLE_RUNS[run["id"]] = run
+        gap, status = server.agent_console_run_payload(run["id"], "1")
+        contiguous, contiguous_status = server.agent_console_run_payload(
+            run["id"],
+            str(run["events"][1]["cursor"] - 1),
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(gap["cursor_reset_required"])
+        self.assertEqual(contiguous_status, 200)
+        self.assertFalse(contiguous["cursor_reset_required"])
+
+    def test_finalized_marker_is_only_added_to_runtime_bound_runs(self):
+        legacy = self.make_run("run_legacy_finalize")
+        legacy["status"] = "completed"
+        bound = self.make_run("run_bound_finalize")
+        bound.update({
+            "status": "completed",
+            "mentat_agent_id": "agent_bound",
+            "task_id": "task_bound",
+        })
+        server.AGENT_CONSOLE_RUNS.update({legacy["id"]: legacy, bound["id"]: bound})
+
+        with patch.object(server, "persist_agent_console_runs"):
+            server.finalize_agent_console_runtime_event(legacy["id"])
+            server.finalize_agent_console_runtime_event(bound["id"])
+
+        self.assertEqual(legacy["events"], [])
+        self.assertEqual(bound["events"][-1]["type"], "runtime.finalized")
+
     def test_legacy_history_migrates_and_v3_round_trip_preserves_events(self):
         legacy = {
             "schema_version": 1,
@@ -115,7 +161,7 @@ class AgentRunEventTests(unittest.TestCase):
         self.assertFalse(recovered)
         self.assertEqual(runs[0]["events"][0]["sequence"], 1)
         self.assertEqual(runs[0]["events"][0]["run_id"], "run_legacy")
-        self.assertEqual(stored["schema_version"], 3)
+        self.assertEqual(stored["schema_version"], agent_run_history.SCHEMA_VERSION)
         self.assertNotIn("secret-value", stored_text)
         self.assertEqual(stored["runs"][0]["event_cursor"], 1)
 

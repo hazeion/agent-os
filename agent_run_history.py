@@ -40,6 +40,35 @@ _SECRET_PATTERNS = (
     ),
 )
 _SECRET_KEY_PATTERN = re.compile(r"(?i)(api[_-]?key|token|password|secret|credential|authorization|auth)")
+_ORCHESTRATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+def _valid_runtime_binding_event(item: Any) -> bool:
+    if not isinstance(item, dict) or item.get("type") != "runtime.bound":
+        return False
+    data = item.get("data")
+    return isinstance(data, dict) and all(
+        isinstance(data.get(name), str)
+        and _ORCHESTRATION_ID_PATTERN.fullmatch(data[name])
+        for name in ("mentat_agent_id", "task_id")
+    )
+
+
+def retained_event_window(raw_events: Any) -> list[dict]:
+    """Retain newest events while pinning one valid runtime binding."""
+    if not isinstance(raw_events, list):
+        return []
+    events = [item for item in raw_events if isinstance(item, dict)]
+    if len(events) <= EVENT_RETENTION:
+        return events
+    newest = events[-EVENT_RETENTION:]
+    if any(_valid_runtime_binding_event(item) for item in newest):
+        return newest
+    binding = next(
+        (item for item in reversed(events[:-EVENT_RETENTION]) if _valid_runtime_binding_event(item)),
+        None,
+    )
+    return ([binding] + events[-(EVENT_RETENTION - 1):]) if binding else newest
 
 
 def redact_sensitive_text(value: Any) -> str:
@@ -90,7 +119,7 @@ def normalize_events(run_id: str, raw_events: Any) -> list[dict]:
         return []
     normalized: list[dict] = []
     last_sequence = 0
-    for item in raw_events[-EVENT_RETENTION:]:
+    for item in retained_event_window(raw_events):
         if not isinstance(item, dict):
             continue
         try:
@@ -239,8 +268,11 @@ def summarize_run(run: dict) -> dict:
     )
     if transport is None:
         raise ValueError("Invalid Agent Console transport binding")
-    return {
+    if run.get("runtime_type", "hermes") != "hermes":
+        raise ValueError("Invalid Agent Console runtime type")
+    summary = {
         "id": str(run.get("id") or ""),
+        "runtime_type": "hermes",
         "agent_id": str(run.get("agent_id") or "hermes"),
         "agent_name": str(run.get("agent_name") or "Hermes"),
         "model": str(run.get("model") or ""),
@@ -272,6 +304,11 @@ def summarize_run(run: dict) -> dict:
         "attachments": normalize_attachments(run.get("attachments")),
         "artifacts": normalize_artifacts(run.get("artifacts")),
     }
+    for name in ("mentat_agent_id", "task_id"):
+        value = run.get(name)
+        if isinstance(value, str) and _ORCHESTRATION_ID_PATTERN.fullmatch(value):
+            summary[name] = value
+    return summary
 
 
 def _sort_key(run: dict) -> tuple[str, str]:
@@ -387,9 +424,12 @@ def _hydrate(summary: dict) -> dict | None:
     )
     if transport is None:
         return None
+    if summary.get("runtime_type", "hermes") != "hermes":
+        return None
     events = normalize_events(run_id, summary.get("events"))
-    return {
+    run = {
         "id": run_id,
+        "runtime_type": "hermes",
         "agent_id": str(summary.get("agent_id") or "hermes"),
         "agent_name": str(summary.get("agent_name") or "Hermes"),
         "model": str(summary.get("model") or ""),
@@ -422,6 +462,31 @@ def _hydrate(summary: dict) -> dict | None:
         "duration_seconds": summary.get("duration_seconds"),
         "persisted_summary": True,
     }
+    binding: dict[str, str] = {}
+    for name in ("mentat_agent_id", "task_id"):
+        value = summary.get(name)
+        if isinstance(value, str) and _ORCHESTRATION_ID_PATTERN.fullmatch(value):
+            binding[name] = value
+    if len(binding) != 2:
+        for event in reversed(events):
+            if event.get("type") != "runtime.bound":
+                continue
+            data = event.get("data")
+            if not isinstance(data, dict):
+                continue
+            candidate = {
+                name: data.get(name) for name in ("mentat_agent_id", "task_id")
+            }
+            if all(
+                isinstance(value, str)
+                and _ORCHESTRATION_ID_PATTERN.fullmatch(value)
+                for value in candidate.values()
+            ):
+                binding = candidate
+                break
+    if len(binding) == 2:
+        run.update(binding)
+    return run
 
 
 def load_run_summaries(
@@ -472,6 +537,26 @@ def load_run_summaries(
                 )
             else:
                 run["error"] = "Mentat restarted before this run finished."
+            if run.get("mentat_agent_id") and run.get("task_id") and not any(
+                event.get("type") == "runtime.finalized"
+                for event in run.get("events", [])
+                if isinstance(event, dict)
+            ):
+                sequence = int(run.get("event_cursor") or 0) + 1
+                run.setdefault("events", []).append({
+                    "schema_version": EVENT_SCHEMA_VERSION,
+                    "id": f"event_{run['id']}_{sequence}",
+                    "run_id": run["id"],
+                    "sequence": sequence,
+                    "cursor": sequence,
+                    "type": "runtime.finalized",
+                    "kind": "runtime.finalized",
+                    "timestamp": interrupted_at,
+                    "data": {"phase": "restart"},
+                    "display_text": "Run finalized",
+                    "message": "Run finalized",
+                })
+                run["event_cursor"] = sequence
             next_sequence = int(run.get("event_cursor") or 0) + 1
             run["events"].append({
                 "schema_version": EVENT_SCHEMA_VERSION,

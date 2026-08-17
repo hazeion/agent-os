@@ -154,7 +154,8 @@ idempotency, active-run locking, API-key inventory, and both exact profile
 runtime endpoints are advertised together. These contracts never expose
 endpoints, paths, credential metadata, environment names, or tokens.
 
-The inventory covers the current integration modules `remote_hermes.py`, `hermes_transport.py`, `hermes_profiles.py`,
+The inventory covers the current integration modules `agent_runtime.py`,
+`hermes_runtime.py`, `remote_hermes.py`, `hermes_transport.py`, `hermes_profiles.py`,
 `hermes_profile_creation.py`, `hermes_profile_identity.py`,
 `hermes_profile_deletion.py`, `hermes_provider_switching.py`,
 `hermes_skills.py`, `hermes_stock_compatibility.py`, `hermes_kanban.py`, `hermes_webhooks.py`,

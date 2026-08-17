@@ -2,21 +2,34 @@
 
 ## Product role
 
-Mentat is a local-first, capability-scoped Hermes control plane. The Mentat
-server and browser remain on the operator's device, while one active Hermes
-connection may eventually be local or an operator-managed remote HTTPS
-endpoint. Mentat is not only a read-only viewer, and it is not a general-purpose
-editor for Hermes files. It may observe Hermes state broadly, but it may mutate
-Hermes only through explicit, supported capabilities implemented by the Hermes
-adapter.
+Mentat is migrating from a local-first, capability-scoped Hermes control plane
+into a runtime-neutral multi-agent operations console and orchestrator. The
+strangler migration is governed by [MENTAT_MULTI_AGENT_PIVOT.md](MENTAT_MULTI_AGENT_PIVOT.md):
+Mentat owns workflow and authority, while Hermes remains the first supported
+execution runtime behind an adapter. The current server and browser remain on
+the operator's device, and all existing Hermes safety contracts continue to
+apply during the migration.
+
+Mentat is not a general-purpose editor for runtime files. It may observe Hermes
+state broadly, but it may mutate Hermes only through explicit, supported
+capabilities implemented by the Hermes adapter. Future runtimes must provide
+their own capability-scoped adapters without weakening this boundary.
 
 ## Identity model
 
-- A Hermes **profile** is the canonical executable agent identity.
-- A Mentat **heartbeat agent** is an observation about a running or recently
-  completed process. Records in `data/agents.json` are not profile definitions.
-- A Hermes **session** is conversation history owned by a specific profile.
-- Mentat must not create a second agent registry that competes with Hermes.
+- A Mentat **Agent** is the target canonical worker identity.
+- A runtime identity, such as a Hermes profile, is an adapter-owned execution
+  reference and must not become a Mentat Agent ID.
+- During the compatibility phase, the legacy browser `agent_id` field still
+  carries a Hermes profile ID. New orchestration code must not copy that alias
+  into the canonical Agent model.
+- A Mentat **heartbeat agent** remains an observation about a running or
+  recently completed process. Records in `data/agents.json` are not the new
+  canonical Agent registry.
+- A Hermes **session** remains conversation history owned by a specific Hermes
+  profile and is a runtime reference, not Mentat workflow authority.
+- Durable Mentat Agent persistence is a later additive migration. This first
+  seam defines the identity contract without inventing profile-derived IDs.
 
 ## Data ownership and layout
 
@@ -188,10 +201,15 @@ contract. A later server-side outbound connection to one remote Hermes endpoint
 is allowed only under [REMOTE_HERMES.md](REMOTE_HERMES.md); that does not expose
 Mentat itself or permit the browser to call Hermes directly.
 
-In the current local mode, Agent Console execution is globally single-run.
+In the current Hermes compatibility mode, Agent Console execution is globally
+single-run. This is a Hermes adapter capacity constraint, not the target Mentat
+orchestrator concurrency model.
 Every run records its Hermes profile id, launches with a fixed
 `-p <profile>` selector, and may resume only a session already associated with
-that same profile. `hermes_transport.py` owns the transport-neutral launch
+that same profile. `agent_runtime.py` owns the runtime-neutral domain/protocol
+boundary; `hermes_runtime.py` registers Hermes as the first runtime, normalizes
+its run and event projections, and delegates compatibility routes to the
+existing handlers. `hermes_transport.py` remains the Hermes local/remote launch
 boundary: it preserves the exact local command/environment/process contract,
 binds retained runs to the selected opaque connection identity, and revalidates
 that identity before queue and launch. Its remote implementation supports one

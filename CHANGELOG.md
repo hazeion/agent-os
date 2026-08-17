@@ -4,7 +4,19 @@ All notable changes to Mentat.
 
 ## 2026-08-17
 
+### Added
+- Introduced the first runtime-neutral Mentat contracts for Agent, Task, Run,
+  AgentEvent, RuntimeContext, capabilities, and AgentRuntime.
+- Registered Hermes as the first runtime adapter. Existing Console transport
+  and compatibility routes now cross the registry before delegating to the
+  unchanged capability-gated Hermes handlers.
+- Added a bounded Hermes-to-Mentat run/event projection that keeps runtime
+  references and event payload data out of the normalized domain model.
+
 ### Changed
+- Began the documented multi-agent strangler migration. Mentat Agent identity
+  is now distinct from runtime identity; the legacy browser `agent_id` profile
+  alias remains temporarily for compatibility.
 - Completed the Hermes stock-compatibility and fork audit after native-event
   migration. Every polling, telemetry, and custom remote contract now has an
   explicit stock-equivalent, partial, custom-required, or Mentat-local class.
@@ -13,6 +25,9 @@ All notable changes to Mentat.
   effort and the required production soak evidence does not yet exist.
 
 ### Safety
+- The new runtime seam does not add concurrency, a second runtime, credentials,
+  durable Agent persistence, or new mutation authority. Existing Hermes locks,
+  confirmation, verification, polling, and reconciliation behaviors are retained.
 - Webhooks remain payload-discarding freshness hints. They do not become token,
   tool, model, approval, continuation, provider, artifact, Kanban, cron, or
   command authority merely because stock Hermes exposes a related event or API.
