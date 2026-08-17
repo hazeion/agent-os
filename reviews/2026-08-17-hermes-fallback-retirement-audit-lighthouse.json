@@ -1,0 +1,27 @@
+{
+  "categories": {
+    "accessibility": 100,
+    "best_practices": 100,
+    "performance": 100,
+    "seo": 100
+  },
+  "environment": {
+    "fixture": "cold owner-private isolated Mentat data root",
+    "lighthouse": "13.4.1",
+    "mode": "desktop",
+    "throttling_method": "provided"
+  },
+  "full_report_sha256": "1c3bccf07e05330b7e87664ed5b34587f0384959c3f77c9c300ca83c149a6051",
+  "metrics": {
+    "cumulative_layout_shift": 0.02783004229234159,
+    "first_contentful_paint_ms": 319.818,
+    "largest_contentful_paint_ms": 563.664,
+    "total_blocking_time_ms": 0
+  },
+  "notes": [
+    "Browser smoke passed its complete responsive and interaction matrix.",
+    "Lighthouse reported no browser-console errors.",
+    "The first rejected attempt used incorrectly permissioned copied fixture files; the corrected owner-private fixture returned healthy APIs before this final run."
+  ],
+  "schema_version": 1
+}

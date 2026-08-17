@@ -157,12 +157,21 @@ endpoints, paths, credential metadata, environment names, or tokens.
 The inventory covers the current integration modules `remote_hermes.py`, `hermes_transport.py`, `hermes_profiles.py`,
 `hermes_profile_creation.py`, `hermes_profile_identity.py`,
 `hermes_profile_deletion.py`, `hermes_provider_switching.py`,
-`hermes_skills.py`, `hermes_kanban.py`, `hermes_webhooks.py`,
+`hermes_skills.py`, `hermes_stock_compatibility.py`, `hermes_kanban.py`, `hermes_webhooks.py`,
 `hermes_webhook_store.py`, `hermes_browser_events.py`,
 `hermes_event_refresh.py`, `hermes_webhook_health.py`, the Hermes-backed paths in `server.py`,
 the Console metadata boundary in `agent_run_history.py`, local/remote selection
 in `runtime_config.py` and `scripts/mentat_setup.py`, and diagnostics in
 `health_checks.py`.
+
+The Milestone 9I fork audit in
+[`HERMES_STOCK_COMPATIBILITY.md`](HERMES_STOCK_COMPATIBILITY.md) distinguishes
+stock equivalents from related-but-incomplete APIs and custom required
+contracts. Outbound webhooks replace observation wakeup latency only. They do
+not replace Runs request binding, continuation, profile mutation, Kanban
+mutation, artifact transfer, cron inventory, or private local Console
+telemetry. Mentat must keep each exact capability gate and degrade safely on
+stock hosts that do not advertise the complete contract.
 
 ## Connection and credential contract
 

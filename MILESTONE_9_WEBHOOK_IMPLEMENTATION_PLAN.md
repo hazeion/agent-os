@@ -1,6 +1,6 @@
 # Milestone 9 implementation plan — Hermes 0.20 webhooks
 
-Status: In progress at slice 9H; slices 9A–9G implemented and accepted
+Status: Implementation and adversarial review complete through slice 9I; final publication pending
 Prepared: 2026-08-03
 Scope: Signed local Hermes lifecycle events, bounded refresh wakeups, health
 evidence, and a separate redirect-capability decision
@@ -755,7 +755,7 @@ becomes a new Mentat authority without its own approved contract.
 
 ### 9H — Native event migration
 
-Status: **In progress.** The approved 9H contract and evidence matrix are in
+Status: **Implemented and reviewed.** The approved 9H contract and evidence matrix are in
 `reviews/2026-08-14-hermes-native-event-migration.md`.
 
 The qualified expansion is `on_session_finalize`, `on_session_reset`,
@@ -766,7 +766,8 @@ The qualified expansion is `on_session_finalize`, `on_session_reset`,
 `on_kanban_dispatch_tick`, in addition to the four original lifecycle events.
 All event-specific fields are discarded. Successful authoritative readbacks
 emit only fixed projection names over a bounded same-origin browser event
-stream; polling and reconciliation remain enabled until 9I.
+stream; 9I audited polling and reconciliation and retained both because the
+required production soak evidence does not yet exist.
 
 Expand the receiver only through separately reviewed, privacy-minimized stock
 Hermes event contracts. Prefer lifecycle, API-usage, tool, model/provider,
@@ -787,8 +788,8 @@ privacy scans, rollback, and soak evidence before activation.
 
 ### 9I — Fallback retirement and fork audit
 
-Status: **Pending.** 9G records decisions but retires no fallback or fork
-contract.
+Status: **Implemented and reviewed.** The exact inventory and retirement gates
+are in `HERMES_STOCK_COMPATIBILITY.md`.
 
 Reduce or remove only a polling or custom telemetry path that a qualified
 native event path has actually superseded. Audit every remaining custom-fork
@@ -800,6 +801,15 @@ Stock-Hermes compatibility requires every required custom contract to have an
 upstream equivalent, a supported fallback, or an explicitly approved product
 removal. Compatibility, rollback, dropped-event convergence, and soak evidence
 remain mandatory before retirement.
+
+No fallback is retired in 9I. The 30-second browser refresh and 60-second
+server reconciliation remain compatibility and correctness backstops because
+the required full-day production soak has not occurred. Custom local telemetry
+also remains an optional, private enhancement: stock Hermes safely degrades to
+generic progress and unavailable usage rather than deriving token/tool/model
+details from discarded webhook payloads. Every custom remote authority remains
+capability-gated until stock provides the same binding, verification, and
+privacy contract or a separate product decision removes the feature.
 
 ### Recommended implementation total
 

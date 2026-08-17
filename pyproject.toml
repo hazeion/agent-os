@@ -60,6 +60,7 @@ py-modules = [
   "hermes_profiles",
   "hermes_provider_switching",
   "hermes_skills",
+  "hermes_stock_compatibility",
   "hermes_transport",
   "hermes_webhooks",
   "hermes_webhook_health",
