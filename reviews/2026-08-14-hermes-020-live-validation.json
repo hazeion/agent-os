@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "stock_runtime": {
+    "version": "0.20.1",
+    "release_tag": "v2026.8.13",
+    "commit": "f80f453ae0679347e38abc917c7f94f717bf96c5"
+  },
+  "results": {
+    "passed": true,
+    "stock_commit_verified": true,
+    "stock_version_verified": true,
+    "legacy_019_quiet_fallback": true,
+    "all_four_stock_events": true,
+    "real_cli_lifecycle": true,
+    "real_gateway_lifecycle": true,
+    "retry_same_raw_delivery": true,
+    "restart_replay_deduplicated": true,
+    "live_duplicate_is_idempotent": true,
+    "live_storm_rate_limited": true,
+    "dropped_hint_reconciles": true,
+    "out_of_order_hints_remain_notifications": true,
+    "safe_mode_quiet": true,
+    "disabled_binding_fails_closed": true,
+    "rollback_quiet_and_readable": true,
+    "private_canaries_absent": true
+  },
+  "observations": {
+    "initial_events": [
+      "on_session_end",
+      "on_session_start",
+      "subagent_start",
+      "subagent_stop"
+    ],
+    "initial_accepted": 4,
+    "initial_relay_attempts": 4,
+    "restart_replay_status": 204,
+    "storm_total": 1000,
+    "storm_accepted": 128,
+    "storm_rate_limited": 872,
+    "storm_concurrency": 32,
+    "privacy_surfaces": [
+      "captured_process_output",
+      "gateway_log",
+      "mentat_log",
+      "private_data",
+      "public_health_and_diagnostics",
+      "tracked_diff"
+    ],
+    "rollback_fallbacks": [
+      "session_read",
+      "agent_read",
+      "home_delegation_refresh"
+    ]
+  }
+}

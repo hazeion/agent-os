@@ -45,7 +45,7 @@ class AgentConsoleAttachmentTests(unittest.TestCase):
                 now=1_000,
             )
 
-            self.assertEqual(schema_version(data_dir), 2)
+            self.assertEqual(schema_version(data_dir), 3)
             self.assertEqual(metadata["kind"], "image")
             self.assertEqual(metadata["mime_type"], "image/png")
             self.assertEqual(metadata["state"], "staged")

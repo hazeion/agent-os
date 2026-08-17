@@ -11,12 +11,28 @@ All notable changes to Mentat.
 - Operators can copy a placeholder-only stock-Hermes hook template and run one
   fixed signed loopback probe without giving the browser access to the shared
   secret.
+- Stock Hermes 0.20.1 lifecycle webhooks now have a reproducible local
+  qualification harness covering real CLI and Gateway turns, all four
+  allowlisted lifecycle events, safe mode, rollback, restart replay, dropped
+  hints, out-of-order delivery, privacy canaries, and event storms.
+
+### Changed
+- Webhook replay protection now survives Mentat restarts in owner-only SQLite,
+  expires through bounded 24-hour cleanup, and admits traffic through a
+  per-binding token bucket before scheduling authoritative refreshes.
+- Lifecycle normalization accepts stock Hermes 0.20.1's `extra`-nested
+  completion, interruption, and platform fields while preserving the earlier
+  top-level fixture shape.
 
 ### Safety
 - Webhook health and probe responses omit secret references, signatures,
   delivery and session identifiers, payloads, profile identifiers, paths, and
   internal exception text. Webhooks remain refresh wakeups; authoritative
   read-back and periodic reconciliation remain the correctness boundary.
+- Duplicate claims remain atomic under concurrent receiver threads, raw
+  delivery identifiers never enter SQLite, and a queue rejection rolls its
+  claim back atomically before returning retryable 503. Rate-limited wakeups are
+  intentionally best-effort 429 responses and converge through reconciliation.
 
 ## 2026-08-02
 

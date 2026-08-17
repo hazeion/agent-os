@@ -4,16 +4,19 @@ import io
 import json
 import os
 import threading
-import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from http.client import HTTPConnection
 from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
 
 import server
 from hermes_event_refresh import HermesRefreshCoordinator
-from hermes_webhooks import WebhookDeliveryCache
+from hermes_webhook_store import WebhookDeliveryStore
+from hermes_webhooks import PerBindingRateLimiter
 
 
 class _WebhookHandlerHarness:
@@ -38,6 +41,9 @@ class _WebhookHandlerHarness:
     def log_internal_error(self, context, exc):
         self.responses.append(("internal_error", context))
 
+    def log_webhook_error(self, code):
+        self.responses.append(("webhook_error", code))
+
 
 class HermesWebhookRouteTests(unittest.TestCase):
     binding_id = "local-default"
@@ -47,15 +53,21 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.original_cache = server.HERMES_WEBHOOK_DELIVERIES
         self.original_coordinator = server.HERMES_EVENT_REFRESH
         self.original_capacity = server.HERMES_WEBHOOK_HINT_CAPACITY
-        server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryCache(capacity=16)
+        self.original_limiter = server.HERMES_WEBHOOK_RATE_LIMITER
+        self.temporary = TemporaryDirectory()
+        self.data_dir = Path(self.temporary.name) / "data"
+        server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(self.data_dir)
+        server.HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter()
         server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator({}, capacity=16)
 
     def tearDown(self):
         if server.HERMES_EVENT_REFRESH is not None:
             server.HERMES_EVENT_REFRESH.stop(timeout=1)
         server.HERMES_WEBHOOK_DELIVERIES = self.original_cache
+        server.HERMES_WEBHOOK_RATE_LIMITER = self.original_limiter
         server.HERMES_EVENT_REFRESH = self.original_coordinator
         server.HERMES_WEBHOOK_HINT_CAPACITY = self.original_capacity
+        self.temporary.cleanup()
 
     def request(self, *, event="on_session_end", delivery="delivery-1", body_overrides=None, content_type="application/json"):
         payload = {
@@ -93,10 +105,12 @@ class HermesWebhookRouteTests(unittest.TestCase):
     def test_acknowledgement_does_not_wait_for_slow_refresh_adapter(self):
         entered = threading.Event()
         release = threading.Event()
+        completed = threading.Event()
 
         def slow_refresh(_binding):
             entered.set()
             release.wait(2)
+            completed.set()
             return {"sessions": []}
 
         server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
@@ -106,13 +120,13 @@ class HermesWebhookRouteTests(unittest.TestCase):
         )
         server.HERMES_EVENT_REFRESH.start()
         body, headers = self.request(delivery="slow-adapter")
-        started = time.monotonic()
-        harness = self.invoke(body, headers)
-        elapsed = time.monotonic() - started
-        self.assertEqual(self.status(harness), 202)
-        self.assertLess(elapsed, 0.1)
-        self.assertTrue(entered.wait(1))
-        release.set()
+        try:
+            harness = self.invoke(body, headers)
+            self.assertEqual(self.status(harness), 202)
+            self.assertTrue(entered.wait(1))
+            self.assertFalse(completed.is_set())
+        finally:
+            release.set()
         self.assertTrue(server.HERMES_EVENT_REFRESH.wait_idle(1))
 
     def test_duplicate_delivery_returns_no_content_and_is_not_requeued(self):
@@ -121,6 +135,98 @@ class HermesWebhookRouteTests(unittest.TestCase):
         duplicate = self.invoke(body, headers)
         self.assertEqual(self.status(duplicate), 204)
         self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 1)
+
+    def test_duplicate_delivery_remains_deduplicated_after_store_restart(self):
+        body, headers = self.request(delivery="restart-safe")
+        self.assertEqual(self.status(self.invoke(body, headers)), 202)
+        server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(self.data_dir)
+        duplicate = self.invoke(body, headers)
+        self.assertEqual(self.status(duplicate), 204)
+        self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 1)
+
+    def test_simultaneous_http_duplicates_accept_exactly_once(self):
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        body, headers = self.request(delivery="concurrent-http")
+
+        def deliver(_):
+            connection = HTTPConnection("127.0.0.1", httpd.server_port, timeout=5)
+            connection.request(
+                "POST",
+                "/api/integrations/hermes/webhooks/v1/local-default",
+                body,
+                headers,
+            )
+            response = connection.getresponse()
+            status = response.status
+            response.read()
+            connection.close()
+            return status
+
+        try:
+            with patch.dict(
+                os.environ,
+                {"MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT": self.secret.decode()},
+                clear=False,
+            ):
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    statuses = list(pool.map(deliver, range(8)))
+            self.assertEqual(statuses.count(202), 1)
+            self.assertEqual(statuses.count(204), 7)
+            self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 1)
+            self.assertNotIn(b"concurrent-http", (self.data_dir / "private" / "console" / "mentat.sqlite3").read_bytes())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=3)
+
+    def test_rate_limit_returns_429_without_deduplicating_retry(self):
+        server.HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter(
+            capacity=1,
+            refill_per_second=0.000001,
+        )
+        first_body, first_headers = self.request(delivery="rate-first")
+        self.assertEqual(self.status(self.invoke(first_body, first_headers)), 202)
+        second_body, second_headers = self.request(delivery="rate-second")
+        limited = self.invoke(second_body, second_headers)
+        self.assertEqual(
+            next(value for kind, value in limited.responses if kind == "error"),
+            429,
+        )
+        server.HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter()
+        self.assertEqual(self.status(self.invoke(second_body, second_headers)), 202)
+
+    def test_store_failure_returns_503_and_does_not_enqueue(self):
+        server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(
+            Path(self.temporary.name) / "unsafe-data"
+        )
+        unsafe_console = Path(self.temporary.name) / "unsafe-data" / "private" / "console"
+        unsafe_console.mkdir(parents=True)
+        (unsafe_console / "mentat.sqlite3").mkdir()
+        body, headers = self.request(delivery="store-failure")
+        failed = self.invoke(body, headers)
+        self.assertEqual(
+            next(value for kind, value in failed.responses if kind == "error"),
+            503,
+        )
+        self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 0)
+        self.assertIn(("webhook_error", "webhook_store_unavailable"), failed.responses)
+
+    def test_commit_failure_after_queue_admission_is_acknowledged_once(self):
+        class AdmittedUnrecordedStore:
+            def claim_and_admit(self, _event, admit):
+                self.admitted = admit()
+                return "admitted_unrecorded"
+
+        store = AdmittedUnrecordedStore()
+        server.HERMES_WEBHOOK_DELIVERIES = store
+        body, headers = self.request(delivery="commit-after-admission")
+        result = self.invoke(body, headers)
+        self.assertTrue(store.admitted)
+        self.assertEqual(self.status(result), 202)
+        self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 1)
+        self.assertIn(("webhook_error", "webhook_store_unavailable"), result.responses)
 
     def test_real_loopback_http_lifecycle_dispatches_and_checks_host(self):
         httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)

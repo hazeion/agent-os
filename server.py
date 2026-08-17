@@ -112,11 +112,12 @@ from hermes_provider_switching import (
 from hermes_profiles import discover_hermes_profiles
 from hermes_webhooks import (
     MAX_BODY_BYTES as HERMES_WEBHOOK_MAX_BODY_BYTES,
+    PerBindingRateLimiter,
     WebhookBinding,
-    WebhookDeliveryCache,
     WebhookValidationError,
     verify_and_normalize,
 )
+from hermes_webhook_store import WebhookDeliveryStore
 from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_webhook_health import build_probe_request, public_health_payload
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
@@ -317,7 +318,8 @@ HOST = DEFAULT_HOST
 PORT = DEFAULT_PORT
 DATA_DIR = BASE_DIR / "data"
 CONFIGURED_DATA_DIR = DATA_DIR
-HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryCache()
+HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(lambda: DATA_DIR)
+HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter()
 HERMES_WEBHOOK_HINTS_LOCK = threading.Lock()
 HERMES_WEBHOOK_HINT_CAPACITY = 256
 HERMES_EVENT_REFRESH: HermesRefreshCoordinator | None = None
@@ -9443,6 +9445,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def log_webhook_error(self, code: str) -> None:
+        """Log only an allowlisted webhook code, never traceback or payload data."""
+        try:
+            self.log_error("Hermes webhook failure: %s", code)
+        except Exception:
+            pass
+
     def send_json(self, payload, status=200) -> bool:
         body = json.dumps(payload, indent=2, default=str).encode("utf-8")
         try:
@@ -9896,16 +9905,39 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error_once(503)
             return
         with HERMES_WEBHOOK_HINTS_LOCK:
-            if HERMES_WEBHOOK_DELIVERIES.contains(event):
+            # Admission is intentionally best effort. Stock Hermes does not
+            # retry 429 responses; periodic reconciliation repairs a dropped
+            # wakeup without letting a signed storm consume SQLite/worker
+            # resources.
+            if not HERMES_WEBHOOK_RATE_LIMITER.allow(binding_id):
+                self.send_error_once(429)
+                return
+            coordinator = HERMES_EVENT_REFRESH
+            if coordinator is None:
+                self.send_error_once(503)
+                return
+            try:
+                admission = HERMES_WEBHOOK_DELIVERIES.claim_and_admit(
+                    event,
+                    lambda: coordinator.enqueue(event),
+                )
+            except Exception:
+                self.log_webhook_error("webhook_store_unavailable")
+                self.send_error_once(503)
+                return
+            if admission == "duplicate":
                 self.send_response(204)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            coordinator = HERMES_EVENT_REFRESH
-            if coordinator is None or not coordinator.enqueue(event):
+            if admission == "rejected":
                 self.send_error_once(503)
                 return
-            HERMES_WEBHOOK_DELIVERIES.remember(event)
+            if admission == "admitted_unrecorded":
+                # The wakeup is already in the idempotent/coalescing queue.
+                # Acknowledge it rather than asking Hermes to retry a side
+                # effect whose durable replay marker failed to commit.
+                self.log_webhook_error("webhook_store_unavailable")
         self.send_response(202)
         self.send_header("Content-Length", "0")
         self.end_headers()
