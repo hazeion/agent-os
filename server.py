@@ -119,6 +119,7 @@ from hermes_webhooks import (
 )
 from hermes_webhook_store import WebhookDeliveryStore
 from hermes_event_refresh import HermesRefreshCoordinator
+from hermes_browser_events import HermesBrowserEventBroker
 from hermes_webhook_health import build_probe_request, public_health_payload
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
@@ -323,6 +324,7 @@ HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter()
 HERMES_WEBHOOK_HINTS_LOCK = threading.Lock()
 HERMES_WEBHOOK_HINT_CAPACITY = 256
 HERMES_EVENT_REFRESH: HermesRefreshCoordinator | None = None
+HERMES_BROWSER_EVENTS = HermesBrowserEventBroker()
 HERMES_WEBHOOK_SECRET_ENV_BY_BINDING = {
     "local-default": "MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT",
 }
@@ -4521,7 +4523,7 @@ def confirm_delegation_rebind(task_id: str, payload=None):
 def refresh_home_delegations(payload=None):
     """Refresh a small current-connection work set before Home renders."""
     selection = load_remote_hermes_connection(DATA_DIR)
-    if selection.mode != "remote" or not selection.binding_id:
+    if selection.mode not in {"local", "remote"} or not selection.binding_id:
         return {"ok": True, "refreshed": 0, "skipped": 0}, 200
     tasks = read_json_file("tasks.json", [])
     if not isinstance(tasks, list):
@@ -9401,6 +9403,7 @@ def build_hermes_refresh_coordinator() -> HermesRefreshCoordinator:
         capacity=HERMES_WEBHOOK_HINT_CAPACITY,
         coalesce_window=0.25,
         reconciliation_interval=60.0,
+        on_refresh=HERMES_BROWSER_EVENTS.publish,
     )
 
 
@@ -9514,6 +9517,77 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.log_internal_error("error response transmission", exc)
             return False
+
+    def send_hermes_browser_events(self, *, max_frames: int | None = None) -> None:
+        """Stream minimized projection hints to one same-origin dashboard."""
+        accept = str(self.headers.get("Accept") or "")
+        if "text/event-stream" not in accept.lower():
+            self.send_error_once(406)
+            return
+        cursor_header = str(self.headers.get("Last-Event-ID") or "").strip()
+        if cursor_header:
+            try:
+                cursor = int(cursor_header)
+            except ValueError:
+                self.send_error_once(400)
+                return
+            if cursor < 0 or cursor > 9_007_199_254_740_991:
+                self.send_error_once(400)
+                return
+        else:
+            cursor = 0
+        if not HERMES_BROWSER_EVENTS.acquire_client():
+            try:
+                self.send_response(503)
+                self.send_header("Retry-After", "5")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except Exception:
+                self.close_connection = True
+            return
+
+        frames_sent = 0
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            # Resolve native EventSource/streaming fetch immediately. Waiting
+            # for the first 15-second heartbeat can delay first paint in some
+            # embedded Chromium builds even though the stream is advisory.
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while max_frames is None or frames_sent < max_frames:
+                event = HERMES_BROWSER_EVENTS.wait_after(cursor, timeout=15.0)
+                if event is None:
+                    self.wfile.write(b": heartbeat\n\n")
+                else:
+                    payload = json.dumps(
+                        event.public_payload(),
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode("utf-8")
+                    frame = (
+                        f"id: {event.sequence}\n"
+                        "event: projections\n"
+                        "data: "
+                    ).encode("ascii") + payload + b"\n\n"
+                    self.wfile.write(frame)
+                    cursor = event.sequence
+                self.wfile.flush()
+                frames_sent += 1
+        except (BrokenPipeError, ConnectionError, OSError):
+            pass
+        except Exception as exc:
+            self.log_internal_error("Hermes browser event stream", exc)
+        finally:
+            HERMES_BROWSER_EVENTS.release_client()
+            self.close_connection = True
 
     def send_attachment_content(self, metadata: dict, content) -> None:
         """Send content already verified against private blob metadata."""
@@ -9662,6 +9736,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/") and not self.local_api_request_is_allowed():
             self.send_json({"error": "Mentat APIs are available only from this local dashboard origin."}, status=403)
+            return
+        if parsed.path == "/api/hermes/events":
+            self.send_hermes_browser_events()
             return
         attachment_match = re.fullmatch(
             r"/api/agent-console/attachments/([^/]+)/content", parsed.path

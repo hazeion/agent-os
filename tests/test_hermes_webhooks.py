@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stderr
 from datetime import datetime, timedelta, timezone
 
-from hermes_webhooks import PerBindingRateLimiter, WebhookBinding, WebhookValidationError, verify_and_normalize
+from hermes_webhooks import ALLOWED_EVENTS, PerBindingRateLimiter, WebhookBinding, WebhookValidationError, verify_and_normalize
 from scripts.hermes_webhook_live_validation import _parse_args
 
 
@@ -43,22 +43,79 @@ class HermesWebhookTests(unittest.TestCase):
         value.update(overrides)
         return value
 
-    def test_verifies_raw_body_and_normalizes_allowlisted_fields(self):
+    def test_verifies_raw_body_and_normalizes_only_routing_envelope(self):
         body, headers = self.request(self.payload(completed=True, platform="cli", ignored={"secret": "no"}))
         event = verify_and_normalize(body, headers, self.binding, now=self.now)
         self.assertEqual(event.event_name, "on_session_end")
-        self.assertTrue(event.completed)
-        self.assertEqual(event.platform, "cli")
         self.assertEqual(len(event.delivery_digest), 64)
+        self.assertEqual(
+            set(vars(event)),
+            {"binding_id", "event_name", "delivery_digest", "occurred_at", "received_at"},
+        )
 
-    def test_platform_is_bounded_and_normalized(self):
-        body, headers = self.request(self.payload(platform="unexpected-platform"))
-        event = verify_and_normalize(body, headers, self.binding, now=self.now)
-        self.assertEqual(event.platform, "other")
+    def test_every_native_event_is_explicitly_allowlisted_and_payload_minimized(self):
+        expected = {
+            "on_session_start", "on_session_end", "on_session_finalize",
+            "on_session_reset", "subagent_start", "subagent_stop",
+            "post_api_request", "api_request_error", "post_tool_call",
+            "kanban_task_claimed", "kanban_task_completed",
+            "kanban_task_blocked", "on_kanban_worker_spawned",
+            "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
+            "on_kanban_task_updated", "on_kanban_dispatch_tick",
+        }
+        self.assertEqual(ALLOWED_EVENTS, frozenset(expected))
+        private_values = {
+            "prompt": "POISON_PROMPT",
+            "args": {"token": "POISON_ARGUMENT"},
+            "result": "POISON_RESULT",
+            "summary": "POISON_SUMMARY",
+            "reason": "POISON_REASON",
+            "workspace_path": "/POISON/PATH",
+            "model": "POISON_MODEL",
+            "usage": {"total_tokens": 999},
+        }
+        for index, event_name in enumerate(sorted(expected)):
+            with self.subTest(event_name=event_name):
+                delivery = f"native-{index}"
+                body, headers = self.request(
+                    self.payload(
+                        hook_event_name=event_name,
+                        delivery_id=delivery,
+                        tool_input=private_values["args"],
+                        cwd=private_values["workspace_path"],
+                        completed=True,
+                        interrupted=False,
+                        platform="cli",
+                        extra={
+                            **private_values,
+                            "completed": True,
+                            "interrupted": False,
+                            "platform": "gateway",
+                        },
+                    ),
+                    event=event_name,
+                    delivery=delivery,
+                )
+                normalized = verify_and_normalize(body, headers, self.binding, now=self.now)
+                self.assertEqual(
+                    set(vars(normalized)),
+                    {
+                        "binding_id", "event_name", "delivery_digest",
+                        "occurred_at", "received_at",
+                    },
+                )
+                rendered = repr(normalized)
+                for poison in ("POISON_PROMPT", "POISON_ARGUMENT", "POISON_RESULT",
+                               "POISON_SUMMARY", "POISON_REASON", "/POISON/PATH",
+                               "POISON_MODEL", "total_tokens"):
+                    self.assertNotIn(poison, rendered)
 
-    def test_normalizes_stock_020_lifecycle_fields_from_extra(self):
+    def test_discards_stock_020_lifecycle_fields_from_top_level_and_extra(self):
         body, headers = self.request(
             self.payload(
+                completed=False,
+                interrupted=True,
+                platform="cli",
                 extra={
                     "completed": True,
                     "interrupted": False,
@@ -68,13 +125,9 @@ class HermesWebhookTests(unittest.TestCase):
             )
         )
         event = verify_and_normalize(body, headers, self.binding, now=self.now)
-        self.assertTrue(event.completed)
-        self.assertFalse(event.interrupted)
-        self.assertEqual(event.platform, "gateway")
-        self.assertFalse(hasattr(event, "child_summary"))
-        body, headers = self.request(self.payload(platform="x" * 10_000))
-        event = verify_and_normalize(body, headers, self.binding, now=self.now)
-        self.assertEqual(event.platform, "other")
+        for field in ("completed", "interrupted", "platform", "child_summary"):
+            self.assertFalse(hasattr(event, field))
+            self.assertNotIn(field, repr(event))
 
     def test_duplicate_security_headers_fail_closed(self):
         class DuplicateHeaders(dict):

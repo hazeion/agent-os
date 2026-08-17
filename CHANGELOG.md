@@ -5,6 +5,16 @@ All notable changes to Mentat.
 ## 2026-08-14
 
 ### Added
+- Stock Hermes session-finalize/reset, post-API/error, post-tool, and Kanban
+  task/worker/dispatcher events can now wake Mentat's existing authoritative
+  read adapters without persisting their event-specific payload fields.
+- Open dashboards receive bounded, projection-only same-origin refresh hints
+  after successful readbacks while retaining polling and reconciliation as
+  compatibility and recovery paths.
+- A version-pinned source validator now proves the Hermes v2026.8.13 event and
+  dispatcher/worker outbound-hook registration topology used by this migration.
+- Private database schema version 4 expands durable webhook replay protection
+  to every qualified native event while preserving existing replay rows.
 - Settings now reports signed local Hermes webhook health as Off, Ready,
   Receiving, or Degraded, with bounded event, refresh, and reconciliation
   evidence.
@@ -20,9 +30,9 @@ All notable changes to Mentat.
 - Webhook replay protection now survives Mentat restarts in owner-only SQLite,
   expires through bounded 24-hour cleanup, and admits traffic through a
   per-binding token bucket before scheduling authoritative refreshes.
-- Lifecycle normalization accepts stock Hermes 0.20.1's `extra`-nested
-  completion, interruption, and platform fields while preserving the earlier
-  top-level fixture shape.
+- Native-event normalization now retains only the fixed routing envelope;
+  lifecycle completion, interruption, platform, and every other event-specific
+  payload field are discarded before refresh scheduling.
 
 ### Safety
 - Webhook health and probe responses omit secret references, signatures,

@@ -25,8 +25,21 @@ PROJECTION_KINDS = frozenset({"sessions", "agents", "attention", "kanban"})
 EVENT_PROJECTIONS: dict[str, frozenset[str]] = {
     "on_session_start": frozenset({"sessions", "agents"}),
     "on_session_end": frozenset({"sessions", "agents", "attention"}),
+    "on_session_finalize": frozenset({"sessions", "agents", "attention"}),
+    "on_session_reset": frozenset({"sessions", "agents", "attention"}),
     "subagent_start": frozenset({"agents"}),
     "subagent_stop": frozenset({"agents", "attention", "kanban"}),
+    "post_api_request": frozenset({"sessions", "agents"}),
+    "api_request_error": frozenset({"sessions", "agents", "attention"}),
+    "post_tool_call": frozenset({"sessions", "agents", "attention"}),
+    "kanban_task_claimed": frozenset({"kanban", "agents"}),
+    "kanban_task_completed": frozenset({"kanban", "agents", "attention"}),
+    "kanban_task_blocked": frozenset({"kanban", "agents", "attention"}),
+    "on_kanban_worker_spawned": frozenset({"kanban", "agents"}),
+    "on_kanban_worker_exited": frozenset({"kanban", "agents", "attention"}),
+    "on_kanban_worker_stale_claim": frozenset({"kanban", "agents", "attention"}),
+    "on_kanban_task_updated": frozenset({"kanban"}),
+    "on_kanban_dispatch_tick": frozenset({"kanban"}),
 }
 
 
@@ -88,6 +101,7 @@ class HermesRefreshCoordinator:
         reconciliation_interval: float = 60.0,
         base_backoff: float = 1.0,
         max_backoff: float = 30.0,
+        on_refresh: Callable[[str, frozenset[str]], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         if capacity < 1:
@@ -104,6 +118,7 @@ class HermesRefreshCoordinator:
         self._reconciliation_interval = reconciliation_interval
         self._base_backoff = max(0.01, base_backoff)
         self._max_backoff = max(self._base_backoff, max_backoff)
+        self._on_refresh = on_refresh
         self._clock = clock
         self._known_bindings = set(binding_ids)
         self._health: dict[str, dict[str, Any]] = {}
@@ -265,8 +280,11 @@ class HermesRefreshCoordinator:
                     "coalesced_hint_count"
                 ] += max(0, count - 1)
         for binding_id in sorted(pending):
+            refreshed: set[str] = set()
             for projection in sorted(pending[binding_id]):
-                self._refresh_projection(binding_id, projection)
+                if self._refresh_projection(binding_id, projection):
+                    refreshed.add(projection)
+            self._notify_refresh(binding_id, refreshed)
 
     def _reconcile(self) -> None:
         with self._state_lock:
@@ -276,8 +294,11 @@ class HermesRefreshCoordinator:
                 unresolved_before_sweep = self._health.setdefault(
                     binding_id, _health_record()
                 )["unresolved_drop_count"]
+            refreshed: set[str] = set()
             for projection in sorted(self._adapters):
-                self._refresh_projection(binding_id, projection)
+                if self._refresh_projection(binding_id, projection):
+                    refreshed.add(projection)
+            self._notify_refresh(binding_id, refreshed)
             with self._state_lock:
                 health = self._health.setdefault(binding_id, _health_record())
                 health["reconciliation_count"] += 1
@@ -288,17 +309,27 @@ class HermesRefreshCoordinator:
                         health["unresolved_drop_count"] - unresolved_before_sweep,
                     )
 
-    def _refresh_projection(self, binding_id: str, projection: str) -> None:
+    def _notify_refresh(self, binding_id: str, projections: set[str]) -> None:
+        if not projections or self._on_refresh is None:
+            return
+        try:
+            self._on_refresh(binding_id, frozenset(projections))
+        except Exception:
+            # Browser notification is advisory and must never degrade the
+            # authoritative adapter refresh that already succeeded.
+            return
+
+    def _refresh_projection(self, binding_id: str, projection: str) -> bool:
         adapter = self._adapters.get(projection)
         if adapter is None:
-            return
+            return False
         key = (binding_id, projection)
         now = self._clock()
         with self._state_lock:
             health = self._health.setdefault(binding_id, _health_record())
             if now < self._retry_after.get(key, 0):
                 health["backoff_skip_count"] += 1
-                return
+                return False
         try:
             snapshot = deepcopy(adapter(binding_id))
         except Exception:
@@ -317,11 +348,11 @@ class HermesRefreshCoordinator:
                     if failed_binding == binding_id
                 )
                 health["last_error_code"] = "webhook_refresh_failed"
-            return
+            return False
 
         with self._state_lock:
             if self._stop.is_set():
-                return
+                return False
             self._snapshots[key] = snapshot
             self._failures.pop(key, None)
             self._retry_after.pop(key, None)
@@ -337,6 +368,7 @@ class HermesRefreshCoordinator:
                 if health["degraded_projection_count"]
                 else None
             )
+        return True
 
 
 def _utc_now() -> str:

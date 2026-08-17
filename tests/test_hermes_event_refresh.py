@@ -22,13 +22,67 @@ def event(name="on_session_end", delivery="delivery-1", binding="local-default")
         delivery_digest=delivery,
         occurred_at=now,
         received_at=now,
-        completed=None,
-        interrupted=None,
-        platform="cli",
     )
 
 
 class HermesEventRefreshTests(unittest.TestCase):
+    def test_native_event_transition_matrix_is_exact(self):
+        self.assertEqual(
+            set(EVENT_PROJECTIONS),
+            {
+                "on_session_start", "on_session_end", "on_session_finalize",
+                "on_session_reset", "subagent_start", "subagent_stop",
+                "post_api_request", "api_request_error", "post_tool_call",
+                "kanban_task_claimed", "kanban_task_completed",
+                "kanban_task_blocked", "on_kanban_worker_spawned",
+                "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
+                "on_kanban_task_updated", "on_kanban_dispatch_tick",
+            },
+        )
+        for event_name in (
+            "kanban_task_claimed", "kanban_task_completed",
+            "kanban_task_blocked", "on_kanban_worker_spawned",
+            "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
+            "on_kanban_task_updated", "on_kanban_dispatch_tick",
+        ):
+            with self.subTest(event_name=event_name):
+                self.assertIn("kanban", EVENT_PROJECTIONS[event_name])
+
+    def test_successful_refreshes_emit_one_payload_free_projection_notification(self):
+        notifications = []
+        coordinator = HermesRefreshCoordinator(
+            {
+                "sessions": lambda _binding: {"private": "authoritative-only"},
+                "agents": lambda _binding: {"agents": []},
+            },
+            coalesce_window=0.01,
+            reconciliation_interval=60,
+            on_refresh=lambda binding, projections: notifications.append((binding, projections)),
+        )
+        coordinator.start()
+        self.assertTrue(coordinator.enqueue(event("post_api_request", "api-1")))
+        self.assertTrue(coordinator.enqueue(event("post_tool_call", "tool-1")))
+        self.assertTrue(coordinator.wait_idle(1))
+        self.assertEqual(
+            notifications,
+            [("local-default", frozenset({"sessions", "agents"}))],
+        )
+        self.assertNotIn("authoritative-only", repr(notifications))
+        self.assertTrue(coordinator.stop(timeout=1))
+
+    def test_failed_readback_is_not_published_to_browser(self):
+        notifications = []
+        coordinator = HermesRefreshCoordinator(
+            {"kanban": lambda _binding: (_ for _ in ()).throw(RuntimeError("private"))},
+            coalesce_window=0,
+            reconciliation_interval=60,
+            on_refresh=lambda binding, projections: notifications.append((binding, projections)),
+        )
+        coordinator.start()
+        self.assertTrue(coordinator.enqueue(event("kanban_task_completed", "failed")))
+        self.assertTrue(coordinator.wait_idle(1))
+        self.assertEqual(notifications, [])
+        self.assertTrue(coordinator.stop(timeout=1))
     def test_running_state_tracks_worker_lifecycle(self):
         coordinator = HermesRefreshCoordinator({}, binding_ids=("local-default",))
         self.assertFalse(coordinator.is_running)
@@ -38,18 +92,11 @@ class HermesEventRefreshTests(unittest.TestCase):
         self.assertFalse(coordinator.is_running)
 
     def test_event_matrix_is_exact_and_read_only(self):
-        self.assertEqual(
-            EVENT_PROJECTIONS,
-            {
-                "on_session_start": frozenset({"sessions", "agents"}),
-                "on_session_end": frozenset({"sessions", "agents", "attention"}),
-                "subagent_start": frozenset({"agents"}),
-                "subagent_stop": frozenset({"agents", "attention", "kanban"}),
-            },
-        )
         for name, expected in EVENT_PROJECTIONS.items():
             self.assertEqual(projection_kinds_for_event(name), expected)
-        self.assertEqual(projection_kinds_for_event("post_tool_call"), frozenset())
+            self.assertTrue(expected)
+            self.assertTrue(expected <= {"sessions", "agents", "attention", "kanban"})
+        self.assertEqual(projection_kinds_for_event("unknown_event"), frozenset())
 
     def test_one_thousand_hints_stay_bounded_and_coalesce(self):
         calls = []

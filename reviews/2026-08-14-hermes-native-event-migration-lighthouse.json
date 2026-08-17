@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "gate": "mentat-local-desktop",
+  "slice": "hermes-native-event-migration",
+  "lighthouse_version": "13.4.1",
+  "audited_at": "2026-08-17T19:21:27.201Z",
+  "url": "http://127.0.0.1:<ephemeral-port>/",
+  "command": "CHROME_PATH=<chromium> npx --yes lighthouse@13.4.1 http://127.0.0.1:<ephemeral-port>/ --output=json --output-path=<temporary-output>/lighthouse-final.json --only-categories=performance,accessibility,best-practices,seo --preset=desktop --throttling-method=provided --chrome-flags='--headless --no-sandbox --disable-gpu' --quiet",
+  "effective_settings": {
+    "form_factor": "desktop",
+    "throttling_method": "provided",
+    "screen_emulation": {
+      "mobile": false,
+      "width": 1350,
+      "height": 940,
+      "device_scale_factor": 1
+    }
+  },
+  "category_scores": {
+    "performance": 100,
+    "accessibility": 100,
+    "best_practices": 100,
+    "seo": 100
+  },
+  "metrics": {
+    "first_contentful_paint_ms": 361.137,
+    "largest_contentful_paint_ms": 526.021,
+    "total_blocking_time_ms": 0,
+    "cumulative_layout_shift": 0.02783661352078044
+  },
+  "audit_context": "Cold isolated 9H worktree, owner-only copied seed data, empty Hermes and Obsidian roots, HERMES_COMMAND=/usr/bin/false, and Lighthouse as the first HTTP navigation after listener readiness.",
+  "prior_gate_attempts": [
+    {
+      "category_scores": {
+        "performance": 76,
+        "accessibility": 100,
+        "best_practices": 100,
+        "seo": 100
+      },
+      "disposition": "Not accepted. Operator data invoked live Hermes reads and exposed the stream first-byte delay; the product was fixed to flush an immediate connected comment."
+    },
+    {
+      "category_scores": {
+        "performance": 100,
+        "accessibility": 100,
+        "best_practices": 96,
+        "seo": 100
+      },
+      "disposition": "Not accepted. The copied seed fixture had repository permissions instead of Mentat's required owner-private runtime permissions; the fixture was corrected and restarted cold."
+    },
+    {
+      "category_scores": {
+        "performance": 55,
+        "accessibility": 100,
+        "best_practices": 100,
+        "seo": 100
+      },
+      "disposition": "Not accepted. The post-review audit ran concurrently with the release build and recorded an 8.1-second renderer paint delay despite all requests completing within 350 ms."
+    },
+    {
+      "category_scores": {
+        "performance": 99,
+        "accessibility": 100,
+        "best_practices": 100,
+        "seo": 100
+      },
+      "disposition": "Not accepted. An uncontended cold rerun had healthy 0.77-second LCP but 67 ms of host-variant renderer blocking time; the absolute gate required another fresh cold run."
+    }
+  ],
+  "full_report_sha256": "3d6a621d8d26c4c4c0d569543b9190090e8b5d764f60fc901896ccd3d5485157"
+}

@@ -1,6 +1,6 @@
 # Milestone 9 implementation plan — Hermes 0.20 webhooks
 
-Status: In progress at slice 9G; slices 9A–9F implemented and accepted
+Status: In progress at slice 9H; slices 9A–9G implemented and accepted
 Prepared: 2026-08-03
 Scope: Signed local Hermes lifecycle events, bounded refresh wakeups, health
 evidence, and a separate redirect-capability decision
@@ -11,12 +11,17 @@ Build the first Hermes webhook integration as a small, loopback-only event
 receiver that can **wake** Mentat's existing read paths. Do not make webhook
 payloads a second source of truth.
 
-The first release should accept only four lifecycle events:
+The 9A baseline accepted four lifecycle events:
 
 - `on_session_start`
 - `on_session_end`
 - `subagent_start`
 - `subagent_stop`
+
+Slice 9H supersedes that baseline with the exact 17-event allowlist recorded in
+its section below and in the configuration examples. All event-specific fields
+are now discarded; this document retains four-event references only where they
+describe historical 9A–9G implementation and test gates.
 
 Each accepted event must pass raw-body HMAC verification, header/body matching,
 timestamp freshness, replay deduplication, an event allowlist, a body-size cap,
@@ -66,7 +71,7 @@ Official contract references:
 
 ## Scope boundaries
 
-### In the first shippable slice
+### In the first shippable slice (historical 9A baseline)
 
 - one versioned POST endpoint on Mentat's existing loopback server;
 - configuration-bound receiver identities;
@@ -85,7 +90,7 @@ Official contract references:
 - remote Hermes calling a local Mentat instance;
 - a public listener, tunnel, relay, or non-loopback bind;
 - unsigned webhook targets;
-- `pre_tool_call`, `post_tool_call`, `pre_llm_call`, or `post_llm_call`;
+- `pre_tool_call`, `pre_llm_call`, or `post_llm_call`;
 - storage or display of `tool_input`, `cwd`, prompts, responses, or raw event
   bodies;
 - direct writes to `~/.hermes/config.yaml` or `~/.hermes/.env`;
@@ -102,7 +107,7 @@ flowchart LR
     E["POST /api/integrations/hermes/webhooks/v1/{binding_id}"]
     V["Request gate\nsize • content type • HMAC • freshness"]
     D["Replay gate\nheader/body match • keyed delivery digest"]
-    N["Normalizer\nfour event allowlist • bounded safe fields"]
+    N["Normalizer\n17-event allowlist • routing envelope only"]
     Q["Refresh coordinator\nbounded queue • coalescing • backpressure"]
     A["Existing read adapters\nsessions • agents • Kanban"]
     P["Mentat projections\nhealth • presence • attention"]
@@ -124,7 +129,7 @@ flowchart LR
    constant time with `X-Hermes-Signature-256`.
 6. Only after signature verification does Mentat parse JSON.
 7. The normalizer verifies event and delivery headers against the signed body,
-   checks timestamp freshness, and accepts only the four lifecycle events.
+   checks timestamp freshness, and accepts only the exact 17-event allowlist.
 8. A keyed digest of the binding ID and delivery ID is inserted into the
    existing owner-only Mentat SQLite database. A uniqueness constraint makes
    Hermes' retry idempotent.
@@ -158,12 +163,12 @@ shared HMAC secret. It is not a profile name, session ID, or secret.
 | Event header | `X-Hermes-Event`, exact match to `hook_event_name` |
 | Delivery header | `X-Hermes-Delivery`, exact match to `delivery_id` |
 | Timestamp | RFC 3339 UTC, no more than 5 minutes in the past or future |
-| Event | One of the four Phase 1 lifecycle events |
+| Event | One of the exact 17 qualified native event names |
 | Binding | Must exist and be enabled in local Mentat configuration |
 
-Unknown top-level JSON fields may be ignored for forward compatibility, but
-Mentat extracts only the allowlisted fields and applies strict type/length
-bounds to them. Unknown event names fail closed.
+Unknown top-level JSON fields are ignored for forward compatibility. Mentat
+retains only the fixed routing envelope and applies strict type/length bounds
+to it; event-specific fields are discarded. Unknown event names fail closed.
 
 ### Response behavior
 
@@ -203,8 +208,21 @@ secret_env = "MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT"
 events = [
   "on_session_start",
   "on_session_end",
+  "on_session_finalize",
+  "on_session_reset",
   "subagent_start",
   "subagent_stop",
+  "post_api_request",
+  "api_request_error",
+  "post_tool_call",
+  "kanban_task_claimed",
+  "kanban_task_completed",
+  "kanban_task_blocked",
+  "on_kanban_worker_spawned",
+  "on_kanban_worker_exited",
+  "on_kanban_worker_stale_claim",
+  "on_kanban_task_updated",
+  "on_kanban_dispatch_tick",
 ]
 ```
 
@@ -215,7 +233,24 @@ hooks:
   outbound:
     - name: mentat-local-default
       url: http://127.0.0.1:8888/api/integrations/hermes/webhooks/v1/local-default
-      events: [on_session_start, on_session_end, subagent_start, subagent_stop]
+      events:
+        - on_session_start
+        - on_session_end
+        - on_session_finalize
+        - on_session_reset
+        - subagent_start
+        - subagent_stop
+        - post_api_request
+        - api_request_error
+        - post_tool_call
+        - kanban_task_claimed
+        - kanban_task_completed
+        - kanban_task_blocked
+        - on_kanban_worker_spawned
+        - on_kanban_worker_exited
+        - on_kanban_worker_stale_claim
+        - on_kanban_task_updated
+        - on_kanban_dispatch_tick
       secret_env: MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT
       timeout: 3
 ```
@@ -298,7 +333,7 @@ to tracked JSON fixtures.
 | --- | --- |
 | `binding_id` | Local configured binding identifier |
 | `delivery_digest` | HMAC/keyed digest of binding ID + delivery ID; never raw ID |
-| `event_name` | One of the four allowlisted event names |
+| `event_name` | One of the exact 17 qualified event names |
 | `received_at` | Local receipt time |
 | `expires_at` | Dedupe retention boundary |
 | `outcome` | `accepted` or `duplicate`; bounded enum |
@@ -337,20 +372,30 @@ class VerifiedHermesEvent:
     event_name: Literal[
         "on_session_start",
         "on_session_end",
+        "on_session_finalize",
+        "on_session_reset",
         "subagent_start",
         "subagent_stop",
+        "post_api_request",
+        "api_request_error",
+        "post_tool_call",
+        "kanban_task_claimed",
+        "kanban_task_completed",
+        "kanban_task_blocked",
+        "on_kanban_worker_spawned",
+        "on_kanban_worker_exited",
+        "on_kanban_worker_stale_claim",
+        "on_kanban_task_updated",
+        "on_kanban_dispatch_tick",
     ]
     delivery_digest: str
     occurred_at: datetime
     received_at: datetime
-    completed: bool | None
-    interrupted: bool | None
-    platform: str | None
 ```
 
-`platform` is optional, normalized to a small allowlist or `other`, and is not
-required to schedule a refresh. All other body fields are ignored after
-verification.
+Only this routing envelope survives verification. Every event-specific body
+field, including lifecycle completion/interruption and platform metadata, is
+discarded before scheduling a refresh.
 
 ## Event-to-refresh matrix
 
@@ -358,8 +403,21 @@ verification.
 | --- | --- | --- |
 | `on_session_start` | Mark session/agent projections stale; show recent activity pulse | Refresh recent sessions and observed agent presence |
 | `on_session_end` | Mark session/attention projections stale | Refresh recent sessions, active run state, and attention |
+| `on_session_finalize` | Mark session/agent/attention projections stale | Refresh recent sessions, observed agents, and attention |
+| `on_session_reset` | Mark session/agent/attention projections stale | Refresh recent sessions, observed agents, and attention |
 | `subagent_start` | Mark agent-presence projection stale | Refresh observed agents/subagent status when supported |
 | `subagent_stop` | Mark agent and relevant task projections stale | Refresh agents and linked Kanban/task observations |
+| `post_api_request` | Mark session/agent projections stale | Refresh recent sessions and observed agents |
+| `api_request_error` | Mark session/agent/attention projections stale | Refresh recent sessions, observed agents, and attention |
+| `post_tool_call` | Mark session/agent/attention projections stale | Refresh recent sessions, observed agents, and attention |
+| `kanban_task_claimed` | Mark Kanban/agent projections stale | Refresh verified linked tasks and observed agents |
+| `kanban_task_completed` | Mark Kanban/agent/attention projections stale | Refresh verified linked tasks, observed agents, and attention |
+| `kanban_task_blocked` | Mark Kanban/agent/attention projections stale | Refresh verified linked tasks, observed agents, and attention |
+| `on_kanban_worker_spawned` | Mark Kanban/agent projections stale | Refresh verified linked tasks and observed agents |
+| `on_kanban_worker_exited` | Mark Kanban/agent/attention projections stale | Refresh verified linked tasks, observed agents, and attention |
+| `on_kanban_worker_stale_claim` | Mark Kanban/agent/attention projections stale | Refresh verified linked tasks, observed agents, and attention |
+| `on_kanban_task_updated` | Mark Kanban projection stale | Refresh verified linked tasks |
+| `on_kanban_dispatch_tick` | Mark Kanban projection stale | Refresh verified linked tasks |
 
 No row directly completes a Mentat task, closes attention, changes Kanban,
 changes a provider, starts a run, or sends a prompt.
@@ -400,7 +458,7 @@ Show:
 - last successful refresh age;
 - last reconciliation age;
 - safe counters for accepted, duplicate, rejected, and locally dropped events;
-- the four configured event names;
+- the exact 17 configured event names;
 - a copyable endpoint URL and non-secret setup instructions.
 
 Never show:
@@ -697,7 +755,18 @@ becomes a new Mentat authority without its own approved contract.
 
 ### 9H — Native event migration
 
-Status: **Pending.** No additional event family is qualified by 9G.
+Status: **In progress.** The approved 9H contract and evidence matrix are in
+`reviews/2026-08-14-hermes-native-event-migration.md`.
+
+The qualified expansion is `on_session_finalize`, `on_session_reset`,
+`post_api_request`, `api_request_error`, `post_tool_call`,
+`kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked`,
+`on_kanban_worker_spawned`, `on_kanban_worker_exited`,
+`on_kanban_worker_stale_claim`, `on_kanban_task_updated`, and
+`on_kanban_dispatch_tick`, in addition to the four original lifecycle events.
+All event-specific fields are discarded. Successful authoritative readbacks
+emit only fixed projection names over a bounded same-origin browser event
+stream; polling and reconciliation remain enabled until 9I.
 
 Expand the receiver only through separately reviewed, privacy-minimized stock
 Hermes event contracts. Prefer lifecycle, API-usage, tool, model/provider,
@@ -813,8 +882,8 @@ patch.
 2. Enable one local profile and run the signed probe.
 3. Observe a full day of real lifecycle traffic with reconciliation enabled.
 4. Enable additional local profiles one binding at a time.
-5. Keep tool/LLM events disabled until a separately reviewed privacy case
-   exists.
+5. Keep pre-tool and LLM-content events disabled. Enable only the separately
+   reviewed, payload-discarding `post_tool_call` wakeup from 9H.
 6. Promote Hermes 0.20 to the maintained baseline only after the live gate and
    adversarial reviews pass.
 
