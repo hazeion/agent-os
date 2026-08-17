@@ -25,6 +25,7 @@ import time
 from uuid import uuid4
 from datetime import date, datetime, timedelta, timezone
 from calendar import monthrange
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -117,6 +118,7 @@ from hermes_webhooks import (
     verify_and_normalize,
 )
 from hermes_event_refresh import HermesRefreshCoordinator
+from hermes_webhook_health import build_probe_request, public_health_payload
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
 from hermes_transport import (
@@ -8869,7 +8871,70 @@ def test_hermes_connection(payload=None):
         return public_remote_hermes_error(exc)
 
 
+def hermes_webhook_health_payload() -> dict:
+    """Return minimized browser-safe health for the fixed local binding."""
+    secret_name = HERMES_WEBHOOK_SECRET_ENV_BY_BINDING.get("local-default", "")
+    configured = bool(secret_name and os.environ.get(secret_name, ""))
+    coordinator = HERMES_EVENT_REFRESH
+    snapshot = None
+    if coordinator is not None:
+        try:
+            snapshot = coordinator.health_snapshot("local-default")
+        except Exception:
+            snapshot = None
+    return public_health_payload(
+        configured=configured,
+        coordinator_available=bool(coordinator is not None and coordinator.is_running),
+        snapshot=snapshot,
+    )
+
+
+def run_hermes_webhook_probe(port: int) -> tuple[dict, int]:
+    """Send one fixed synthetic event through the real loopback receiver."""
+    secret_name = HERMES_WEBHOOK_SECRET_ENV_BY_BINDING.get("local-default", "")
+    secret = os.environ.get(secret_name, "").encode("utf-8") if secret_name else b""
+    if not secret:
+        return {"error": "webhook_receiver_off"}, 409
+    if HERMES_EVENT_REFRESH is None or not HERMES_EVENT_REFRESH.is_running:
+        return {"error": "webhook_receiver_degraded"}, 503
+    if type(port) is not int or not (1 <= port <= 65_535):
+        return {"error": "webhook_probe_failed"}, 503
+
+    try:
+        body, headers = build_probe_request(
+            secret,
+            delivery_id=f"mentat-probe-{uuid4().hex}",
+        )
+        probe_host = "::1" if HOST.strip().lower() == "::1" else "127.0.0.1"
+        connection = HTTPConnection(probe_host, port, timeout=3)
+        try:
+            connection.request(
+                "POST",
+                "/api/integrations/hermes/webhooks/v1/local-default",
+                body,
+                headers,
+            )
+            response = connection.getresponse()
+            response_body = response.read(513)
+            accepted = response.status == 202 and not response_body
+        finally:
+            connection.close()
+    except (OSError, TimeoutError, HTTPException, ValueError):
+        return {"error": "webhook_probe_failed"}, 503
+    if not accepted:
+        return {"error": "webhook_probe_failed"}, 503
+    return {"ok": True, "result": "webhook_probe_accepted"}, 200
+
+
+def probe_hermes_webhook(payload=None) -> tuple[dict, int]:
+    """Validate the browser contract before running the fixed probe."""
+    if payload not in (None, {}):
+        return {"error": "webhook_probe_payload_invalid"}, 400
+    return run_hermes_webhook_probe(PORT)
+
+
 POST_ROUTES = [
+    (re.compile(r"^/api/hermes/webhooks/probe$"), probe_hermes_webhook, True),
     (re.compile(r"^/api/attention/([^/]+)/resolve$"), resolve_attention_item, False),
     (re.compile(r"^/api/agents/heartbeat$"), upsert_agent_heartbeat, True),
     (re.compile(r"^/api/tasks$"), create_task, True),
@@ -8940,6 +9005,7 @@ API_ROUTES = {
     "/api/hermes/kanban/capabilities": kanban_capabilities_payload,
     "/api/hermes/connection": hermes_connection_payload,
     "/api/hermes/capabilities": hermes_capability_inventory_payload,
+    "/api/hermes/webhooks/health": hermes_webhook_health_payload,
     "/api/health": health,
 }
 

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "gate": "mentat-local-desktop",
+  "lighthouse_version": "13.4.1",
+  "audited_at": "2026-08-14T22:48:43.964Z",
+  "url": "http://127.0.0.1:8894/",
+  "command": "CHROME_PATH='/Applications/Chromium.app/Contents/MacOS/Chromium' npx --yes lighthouse@13.4.1 http://127.0.0.1:8894/ --output=json --output-path=<temporary-output>/lighthouse-final.json --only-categories=performance,accessibility,best-practices,seo --preset=desktop --throttling-method=provided --chrome-flags='--headless --no-sandbox --disable-gpu' --quiet",
+  "effective_settings": {
+    "form_factor": "desktop",
+    "throttling_method": "provided",
+    "screen_emulation": {
+      "mobile": false,
+      "width": 1350,
+      "height": 940,
+      "device_scale_factor": 1
+    },
+    "only_categories": [
+      "performance",
+      "accessibility",
+      "best-practices",
+      "seo"
+    ]
+  },
+  "category_scores": {
+    "performance": 100,
+    "accessibility": 100,
+    "best_practices": 100,
+    "seo": 100
+  },
+  "metrics": {
+    "first_contentful_paint_ms": 291.096,
+    "largest_contentful_paint_ms": 384.624,
+    "total_blocking_time_ms": 0,
+    "cumulative_layout_shift": 0.0278
+  },
+  "audit_context": "First navigation after a fresh server start with tracked seed data, empty Hermes and Obsidian roots, and HERMES_COMMAND=/usr/bin/false to represent a deterministic unconfigured Hermes installation.",
+  "server_setup": {
+    "slice_materialization": "Detached worktree at the slice base with the exact 21-file publication inventory copied byte-for-byte from the reviewed workspace.",
+    "prepare_command": "mkdir -p /private/tmp/mentat-9d-hermes-empty /private/tmp/mentat-9d-obsidian-empty",
+    "start_command": "HERMES_COMMAND='/usr/bin/false' MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT='<FIXED_TEST_SECRET>' <source-workspace>/.venv/bin/python server.py --config /private/tmp/mentat-9d-clean/mentat.toml --data-dir /private/tmp/mentat-9d-clean/data --public-dir /private/tmp/mentat-9d-clean/public --hermes-home /private/tmp/mentat-9d-hermes-empty --obsidian-vault /private/tmp/mentat-9d-obsidian-empty --host 127.0.0.1 --port 8894",
+    "readiness_sequence": "Wait for the fresh server process to yield its live listener session; do not make an HTTP readiness or warm-up request; run the recorded Lighthouse command as the first HTTP navigation.",
+    "reproduction_root_guidance": "The recorded fixed roots were empty for this audit. Future reproductions should allocate fresh roots with mktemp -d and substitute those paths into the start command."
+  },
+  "full_report_sha256": "be1af5b5a8fd12c8e79b6278e722b5261ccc5c8e9a6ab2af6ca2836a17c8423d"
+}

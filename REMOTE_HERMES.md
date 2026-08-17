@@ -17,6 +17,36 @@ The connection is server-to-server: Mentat's Python server calls Hermes, while
 the browser continues to call only its local Mentat origin. Hermes credentials
 must never be returned to the browser.
 
+## Local Hermes webhook health and setup
+
+Mentat's stock-Hermes webhook receiver is a local observation wakeup, not a
+second source of truth. Open **Settings → Webhook Health** to see one of four
+safe states: **Off**, **Ready**, **Receiving**, or **Degraded**. The panel shows
+only bounded counters and elapsed ages. It never shows the shared secret or its
+configured reference, signatures, delivery or session identifiers, payloads,
+profile identifiers, local paths, or internal exception text.
+
+**Copy Setup** produces a Hermes configuration block with the current local
+Mentat port, the fixed signed receiver target, the four supported lifecycle
+events, and a `<YOUR_PRIVATE_SECRET_ENV>` placeholder. Mentat currently reads
+its private receiver value from `MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT`; never
+put that value in tracked configuration. Replace the Hermes template's
+placeholder with an owner-private Hermes environment-variable name containing
+the same random value. The two process-side variable names may differ; their
+secret values must match. Add the block through Hermes's operator-supported
+configuration workflow; Mentat does not edit Hermes configuration. Start a new
+Hermes CLI session or restart the Gateway after changing the hook
+configuration.
+
+**Verify Signed Probe** is available only when Mentat's private receiver secret
+and refresh coordinator are ready. It sends one fixed synthetic
+`on_session_start` event through the real loopback receiver using the same HMAC
+verification, replay gate, and bounded refresh queue as Hermes deliveries. A
+successful probe proves the local receiver path; it does not prove that a live
+Hermes process is configured or replace the slower reconciliation backstop.
+Remote Hermes cannot call a loopback-only Mentat instance, and this feature
+does not add a relay, public listener, or browser push channel.
+
 This document defines the complete target contract. Mentat now has owner-only
 connection selection plus bounded authenticated health/capability discovery.
 Agent Console now selects a binding-aware local or remote transport, preserves
@@ -121,7 +151,7 @@ The inventory covers the current integration modules `remote_hermes.py`, `hermes
 `hermes_profile_creation.py`, `hermes_profile_identity.py`,
 `hermes_profile_deletion.py`, `hermes_provider_switching.py`,
 `hermes_skills.py`, `hermes_kanban.py`, `hermes_webhooks.py`,
-`hermes_event_refresh.py`, the Hermes-backed paths in `server.py`,
+`hermes_event_refresh.py`, `hermes_webhook_health.py`, the Hermes-backed paths in `server.py`,
 the Console metadata boundary in `agent_run_history.py`, local/remote selection
 in `runtime_config.py` and `scripts/mentat_setup.py`, and diagnostics in
 `health_checks.py`.

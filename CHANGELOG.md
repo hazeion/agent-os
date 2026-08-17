@@ -2,6 +2,22 @@
 
 All notable changes to Mentat.
 
+## 2026-08-14
+
+### Added
+- Settings now reports signed local Hermes webhook health as Off, Ready,
+  Receiving, or Degraded, with bounded event, refresh, and reconciliation
+  evidence.
+- Operators can copy a placeholder-only stock-Hermes hook template and run one
+  fixed signed loopback probe without giving the browser access to the shared
+  secret.
+
+### Safety
+- Webhook health and probe responses omit secret references, signatures,
+  delivery and session identifiers, payloads, profile identifiers, paths, and
+  internal exception text. Webhooks remain refresh wakeups; authoritative
+  read-back and periodic reconciliation remain the correctness boundary.
+
 ## 2026-08-02
 
 ### Added

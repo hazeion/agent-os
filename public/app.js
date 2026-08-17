@@ -4569,6 +4569,119 @@ function renderConfig(payload = {}) {
   text.textContent = payload.masked_config || '{}';
 }
 
+const WEBHOOK_HEALTH_STATES = new Set(['off', 'ready', 'receiving', 'degraded']);
+
+function webhookAgeLabel(value) {
+  if (value === null || value === undefined) return 'Not yet';
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < 0) return 'Unavailable';
+  return `${humanDurationApprox(seconds)} ago`;
+}
+
+function webhookSetupText(payload = {}) {
+  const targetPath = String(payload.target_path || '');
+  const events = Array.isArray(payload.events)
+    ? payload.events.filter((event) => typeof event === 'string' && /^[a-z_]{1,48}$/.test(event))
+    : [];
+  if (!targetPath.startsWith('/api/integrations/hermes/webhooks/v1/') || !events.length) return '';
+  const localOrigin = window.location.origin;
+  return [
+    'hooks:',
+    '  outbound:',
+    '    - name: mentat-local',
+    `      url: ${localOrigin}${targetPath}`,
+    `      events: [${events.join(', ')}]`,
+    '      secret_env: <YOUR_PRIVATE_SECRET_ENV>',
+    '      timeout: 3',
+  ].join('\n');
+}
+
+function renderWebhookHealth(payload = {}) {
+  const container = $('#webhook-health-summary');
+  const status = $('#webhook-health-status');
+  const setup = $('#webhook-setup-text');
+  const copyButton = $('#copy-webhook-setup');
+  const probeButton = $('#verify-webhook-probe');
+  if (!container || !status || !setup || !copyButton || !probeButton) return;
+
+  const receivedState = String(payload.state || '');
+  const webhookState = WEBHOOK_HEALTH_STATES.has(receivedState) ? receivedState : 'degraded';
+  const stateLabel = webhookState === receivedState
+    ? String(payload.state_label || receivedState)
+    : 'Degraded';
+  const summary = webhookState === receivedState
+    ? String(payload.summary || 'Webhook health is available.')
+    : 'Webhook health returned an unsupported state.';
+  const tone = webhookState === 'degraded' ? 'warn' : webhookState === 'off' ? '' : 'success';
+  const cardTone = webhookState === 'degraded' ? 'degraded' : webhookState === 'off' ? 'off' : 'healthy';
+  const ages = payload.ages_seconds && typeof payload.ages_seconds === 'object' ? payload.ages_seconds : {};
+  const counters = payload.counters && typeof payload.counters === 'object' ? payload.counters : {};
+  const safeCounter = (name) => {
+    const value = Number(counters[name]);
+    return Number.isInteger(value) && value >= 0 ? humanNumber(value) : '0';
+  };
+
+  state.hermesWebhookHealth = payload;
+  status.textContent = summary;
+  container.innerHTML = `
+    <article class="item health-item health-${cardTone}">
+      <div class="item-title"><span>Signed local receiver</span><span class="pill ${tone}">${escapeHtml(stateLabel)}</span></div>
+      <div class="item-desc">${escapeHtml(summary)}</div>
+      <div class="webhook-health-grid mono" aria-label="Webhook receiver timing">
+        <span>Last event <strong>${escapeHtml(webhookAgeLabel(ages.last_event))}</strong></span>
+        <span>Last refresh <strong>${escapeHtml(webhookAgeLabel(ages.last_refresh))}</strong></span>
+        <span>Last reconciliation <strong>${escapeHtml(webhookAgeLabel(ages.last_reconciliation))}</strong></span>
+      </div>
+      <div class="item-meta mono">Accepted ${safeCounter('accepted')} · Coalesced ${safeCounter('coalesced')} · Dropped ${safeCounter('dropped')} · Refreshes ${safeCounter('refresh_successes')} · Failures ${safeCounter('refresh_failures')} · Reconciliations ${safeCounter('reconciliations')}</div>
+    </article>
+  `;
+  const guidance = webhookSetupText(payload);
+  setup.textContent = guidance || 'Setup guidance is unavailable.';
+  copyButton.disabled = !guidance;
+  probeButton.disabled = !Boolean(payload.probe_available);
+}
+
+async function copyWebhookSetup() {
+  const button = $('#copy-webhook-setup');
+  const status = $('#webhook-health-status');
+  const setup = $('#webhook-setup-text');
+  if (!button || !status || !setup || button.disabled) return;
+  button.disabled = true;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+    await navigator.clipboard.writeText(setup.textContent || '');
+    status.textContent = 'Manual Hermes setup copied. Replace the placeholder with your private secret environment name.';
+  } catch (_err) {
+    status.textContent = 'Copy is unavailable. Select the setup block and copy it manually.';
+  } finally {
+    button.disabled = !(setup.textContent || '').startsWith('hooks:');
+  }
+}
+
+async function verifyWebhookProbe() {
+  const button = $('#verify-webhook-probe');
+  const status = $('#webhook-health-status');
+  if (!button || !status || button.disabled) return;
+  button.disabled = true;
+  status.textContent = 'Sending one signed probe through the local receiver…';
+  try {
+    await verifyHermesWebhookProbe();
+    const health = await fetchHermesWebhookHealth();
+    renderWebhookHealth(health);
+    status.textContent = 'Signed probe accepted. The receiver and refresh queue are responding.';
+  } catch (err) {
+    const messages = {
+      webhook_receiver_off: 'The receiver is off. Configure the same private shared secret in Mentat and Hermes, then restart both processes.',
+      webhook_receiver_degraded: 'The receiver is configured, but its refresh coordinator is unavailable.',
+      webhook_probe_payload_invalid: 'Mentat rejected an invalid probe request.',
+      webhook_probe_failed: 'The signed probe did not complete. Check the local receiver and try again.',
+    };
+    status.textContent = messages[err.message] || 'The signed probe could not be verified.';
+  } finally {
+    button.disabled = !Boolean(state.hermesWebhookHealth?.probe_available);
+  }
+}
+
 function replayStatusTone(status = 'unknown') {
   const normalized = String(status || 'unknown').toLowerCase();
   if (normalized === 'completed') return 'success';
@@ -6055,6 +6168,7 @@ async function refresh() {
   if (activeView === 'settings') {
     requests.config = api(endpoints.config);
     requests.hermesCapabilities = api(endpoints.hermesCapabilities);
+    requests.hermesWebhookHealth = fetchHermesWebhookHealth();
   }
 
   try {
@@ -6121,6 +6235,7 @@ async function refresh() {
     if (data.contextPacks) renderContextPacks(data.contextPacks);
     if (data.config) renderIfChanged('config', data.config, renderConfig);
     if (data.hermesCapabilities) renderIfChanged('hermes-capabilities', data.hermesCapabilities, renderHermesCapabilityInventory);
+    if (data.hermesWebhookHealth) renderIfChanged('hermes-webhook-health', data.hermesWebhookHealth, renderWebhookHealth);
 
     renderIfChanged('health', data.health, renderHealth);
     state.hasBootstrapped = true;
@@ -6387,6 +6502,8 @@ $('#enable-reminders-button')?.addEventListener('click', async () => {
 });
 
 $('#download-diagnostics')?.addEventListener('click', () => void downloadDiagnosticsBundle());
+$('#copy-webhook-setup')?.addEventListener('click', () => void copyWebhookSetup());
+$('#verify-webhook-probe')?.addEventListener('click', () => void verifyWebhookProbe());
 
 $('#focus-task-list').addEventListener('change', (event) => {
   const projectSelect = event.target.closest('#today-project-select');

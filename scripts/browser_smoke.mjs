@@ -747,10 +747,22 @@ async function main() {
         provider_inventory: { profile_id: 'default', providers: [], capabilities: { 'providers.switch': false } },
         runs,
       };
+      const originalHomeRefreshAgentConsoleModels = refreshAgentConsoleModels;
+      refreshAgentConsoleModels = async (agentId) => ({
+        model_catalog: {
+          ...(baseConsole.model_catalog || {}),
+          profile_id: agentId,
+        },
+        provider_inventory: {
+          ...(baseConsole.provider_inventory || {}),
+          profile_id: agentId,
+        },
+      });
       renderAgentConsole({
         ...baseConsole,
         transport: { mode: 'local', binding_id: 'local-default', console_available: true },
       });
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const localWaiting = {
         promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
         stopVisible: !document.querySelector('#agent-console-stop')?.hidden,
@@ -778,23 +790,13 @@ async function main() {
         runs: clarificationRuns,
         transport: { mode: 'local', binding_id: 'local-default', console_available: true },
       });
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const localClarification = {
         promptDisabled: document.querySelector('#agent-console-prompt')?.disabled,
         stopVisible: !document.querySelector('#agent-console-stop')?.hidden,
         state: document.querySelector('#agent-console-state')?.textContent,
         questionVisible: document.querySelector('#agent-console-chat')?.textContent.includes('Which option should Hermes use?'),
       };
-      const originalHomeRefreshAgentConsoleModels = refreshAgentConsoleModels;
-      refreshAgentConsoleModels = async (agentId) => ({
-        model_catalog: {
-          ...(baseConsole.model_catalog || {}),
-          profile_id: agentId,
-        },
-        provider_inventory: {
-          ...(baseConsole.provider_inventory || {}),
-          profile_id: agentId,
-        },
-      });
       renderAgentConsole({
         ...baseConsole,
         transport: { mode: 'remote', binding_id: remoteBinding, console_available: true },
@@ -970,7 +972,7 @@ async function main() {
       throw new Error(`Reference-aligned Home mobile layout failed: ${JSON.stringify(homeMobileLayout)}`);
     }
     await setViewport(client, 1440, 1000);
-    const structuredEventRendered = await client.eval(`(() => { renderAgentConsole({ agents: [{ id: 'event-smoke', name: 'Event Smoke', available: true, model: 'test/model' }], model_catalog: { profile_id: 'event-smoke', models: ['test/model'], current_model: 'test/model' }, runs: [{ id: 'run_event_smoke', agent_id: 'event-smoke', agent_name: 'Event Smoke', status: 'completed', prompt: 'Check events', response: 'Done', created_at: new Date().toISOString(), event_cursor: 1, events: [{ schema_version: 1, run_id: 'run_event_smoke', sequence: 1, cursor: 1, type: 'complete', kind: 'complete', timestamp: new Date().toISOString(), data: {}, display_text: 'Structured event rendered' }] }] }); return document.querySelector('#agent-console-chat')?.textContent.includes('Structured event rendered'); })()`);
+    const structuredEventRendered = await client.eval(`(() => { state.agentConsoleSelectedAgentId = 'event-smoke'; state.agentConsoleTransportBinding = 'local:local-default'; renderAgentConsole({ agents: [{ id: 'event-smoke', name: 'Event Smoke', available: true, model: 'test/model' }], selected_agent_id: 'event-smoke', model_catalog: { profile_id: 'event-smoke', models: ['test/model'], current_model: 'test/model' }, runs: [{ id: 'run_event_smoke', agent_id: 'event-smoke', agent_name: 'Event Smoke', status: 'completed', transport_mode: 'local', connection_binding_id: 'local-default', prompt: 'Check events', response: 'Done', created_at: new Date().toISOString(), event_cursor: 1, events: [{ schema_version: 1, run_id: 'run_event_smoke', sequence: 1, cursor: 1, type: 'complete', kind: 'complete', timestamp: new Date().toISOString(), data: {}, display_text: 'Structured event rendered' }] }] }); return document.querySelector('#agent-console-chat')?.textContent.includes('Structured event rendered'); })()`);
     if (!structuredEventRendered) throw new Error('Structured Agent Console event render smoke failed');
     const hiddenToolState = await client.eval(`(() => {
       state.agentConsoleShowActivity = false;
@@ -1963,6 +1965,71 @@ async function main() {
     await waitFor(() => client.eval(`document.querySelector('#mentat-version')?.textContent.startsWith('v0.1.0')`), 'Mentat version display');
     const supportActionsVisible = await client.eval(`Boolean(document.querySelector('#download-diagnostics') && document.querySelector('a[href*="issues/new?template=bug_report.yml"]') && document.querySelector('a[href$="#quick-start"]'))`);
     if (!supportActionsVisible) throw new Error('Settings support actions smoke failed');
+    await waitFor(() => client.eval(`['off', 'ready', 'receiving', 'degraded'].includes(state.hermesWebhookHealth?.state)`), 'webhook health render');
+    const webhookHealthContract = await client.eval(`(() => {
+      const setup = document.querySelector('#webhook-setup-text')?.textContent || '';
+      const summary = document.querySelector('#webhook-health-summary')?.textContent || '';
+      return {
+        setup,
+        summary,
+        copyEnabled: !document.querySelector('#copy-webhook-setup')?.disabled,
+      };
+    })()`);
+    if (
+      !webhookHealthContract.setup.startsWith('hooks:')
+      || !webhookHealthContract.setup.includes('secret_env: <YOUR_PRIVATE_SECRET_ENV>')
+      || webhookHealthContract.setup.includes('MENTAT_HERMES_WEBHOOK_SECRET_DEFAULT')
+      || !webhookHealthContract.summary.includes('Signed local receiver')
+      || !webhookHealthContract.copyEnabled
+    ) {
+      throw new Error(`Webhook health contract smoke failed: ${JSON.stringify(webhookHealthContract)}`);
+    }
+    const webhookInteractions = await client.eval(`(async () => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (value) => { window.__webhookCopiedSetup = value; } },
+      });
+      document.querySelector('#copy-webhook-setup').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const copyStatus = document.querySelector('#webhook-health-status')?.textContent || '';
+      renderWebhookHealth({
+        state: 'ready', state_label: 'Ready',
+        summary: 'The signed receiver is ready and waiting for its first verified event.',
+        probe_available: true,
+        target_path: '/api/integrations/hermes/webhooks/v1/local-default',
+        events: ['on_session_end', 'on_session_start', 'subagent_start', 'subagent_stop'],
+        ages_seconds: { last_event: null, last_refresh: null, last_reconciliation: 12 },
+        counters: { accepted: 0, coalesced: 0, dropped: 0, refresh_successes: 0, refresh_failures: 0 },
+      });
+      verifyHermesWebhookProbe = async () => ({ ok: true, result: 'webhook_probe_accepted' });
+      fetchHermesWebhookHealth = async () => ({
+        state: 'receiving', state_label: 'Receiving',
+        summary: 'The signed receiver has accepted verified Hermes events.',
+        probe_available: true,
+        target_path: '/api/integrations/hermes/webhooks/v1/local-default',
+        events: ['on_session_end', 'on_session_start', 'subagent_start', 'subagent_stop'],
+        ages_seconds: { last_event: 0, last_refresh: 0, last_reconciliation: 12 },
+        counters: { accepted: 1, coalesced: 0, dropped: 0, refresh_successes: 1, refresh_failures: 0 },
+      });
+      document.querySelector('#verify-webhook-probe').click();
+      for (let attempt = 0; attempt < 20 && !document.querySelector('#webhook-health-status')?.textContent.includes('Signed probe accepted'); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return {
+        copied: window.__webhookCopiedSetup || '',
+        copyStatus,
+        probeStatus: document.querySelector('#webhook-health-status')?.textContent || '',
+        state: state.hermesWebhookHealth?.state || '',
+      };
+    })()`);
+    if (
+      !webhookInteractions.copied.startsWith('hooks:')
+      || !webhookInteractions.copyStatus.includes('Manual Hermes setup copied')
+      || !webhookInteractions.probeStatus.includes('Signed probe accepted')
+      || webhookInteractions.state !== 'receiving'
+    ) {
+      throw new Error(`Webhook interaction smoke failed: ${JSON.stringify(webhookInteractions)}`);
+    }
     const diagnosticsDownloadSafe = await client.eval(`fetch('/api/diagnostics/bundle', { method: 'POST', headers: { Accept: 'application/zip' } }).then(async (response) => { const bytes = new Uint8Array(await response.arrayBuffer()); return response.status === 200 && response.headers.get('content-type') === 'application/zip' && response.headers.get('content-disposition') === 'attachment; filename=mentat-diagnostics.zip' && bytes[0] === 80 && bytes[1] === 75; })`);
     if (!diagnosticsDownloadSafe) throw new Error('Redacted diagnostics download smoke failed');
     const settingsScreenshot = await client.call('Page.captureScreenshot', { format: 'png', fromSurface: true });
