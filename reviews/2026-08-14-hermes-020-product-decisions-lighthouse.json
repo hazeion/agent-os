@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "gate": "mentat-local-desktop",
+  "slice": "hermes-020-product-decisions",
+  "lighthouse_version": "13.4.1",
+  "audited_at": "2026-08-15T04:31:46.317Z",
+  "url": "http://127.0.0.1:<ephemeral-port>/",
+  "command": "CHROME_PATH=<chromium> npx --yes lighthouse@13.4.1 http://127.0.0.1:<ephemeral-port>/ --output=json --output-path=<temporary-output>/lighthouse.json --only-categories=performance,accessibility,best-practices,seo --preset=desktop --throttling-method=provided --chrome-flags='--headless --no-sandbox --disable-gpu' --quiet",
+  "effective_settings": {
+    "form_factor": "desktop",
+    "throttling_method": "provided",
+    "screen_emulation": {
+      "mobile": false,
+      "width": 1350,
+      "height": 940,
+      "device_scale_factor": 1
+    }
+  },
+  "category_scores": {
+    "performance": 100,
+    "accessibility": 100,
+    "best_practices": 100,
+    "seo": 100
+  },
+  "metrics": {
+    "first_contentful_paint_ms": 477.793,
+    "largest_contentful_paint_ms": 581.768,
+    "total_blocking_time_ms": 0,
+    "cumulative_layout_shift": 0.02784024138648104
+  },
+  "audit_context": "Isolated 9G worktree, owner-only copied seed data, empty Hermes and Obsidian roots, HERMES_COMMAND=/usr/bin/false, and no production/frontend byte changes in the slice.",
+  "prior_gate_attempt": {
+    "category_scores": {
+      "performance": 97,
+      "accessibility": 100,
+      "best_practices": 100,
+      "seo": 100
+    },
+    "disposition": "Not accepted. The exact gate was rerun only after the isolated server stabilized."
+  },
+  "full_report_sha256": "060c44194f72ea44b1916553d1be4ad96d939b46af9243f51df1c996febd7e49"
+}

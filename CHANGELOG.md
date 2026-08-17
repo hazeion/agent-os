@@ -33,6 +33,12 @@ All notable changes to Mentat.
   delivery identifiers never enter SQLite, and a queue rejection rolls its
   claim back atomically before returning retryable 503. Rate-limited wakeups are
   intentionally best-effort 429 responses and converge through reconciliation.
+- A2A, grounded citations, deliverable artifacts, and voice now have explicit
+  Hermes 0.20 adoption decisions. None expands the webhook receiver: Mentat
+  keeps A2A native-only, treats citations as response Markdown, retains its
+  run-owned/authenticated artifact boundaries instead of parsing response
+  paths, and defers voice until browser-audio and verified-interruption
+  contracts exist.
 
 ## 2026-08-02
 
