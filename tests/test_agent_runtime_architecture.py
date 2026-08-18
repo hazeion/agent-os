@@ -35,9 +35,11 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
         ):
             self.assertIn(method, SERVER)
 
-    def test_pivot_plan_marks_only_the_approved_registry_slice_active(self):
-        self.assertIn("| 1B | In progress |", PIVOT_PLAN)
-        self.assertIn("| 1C | Provisional |", PIVOT_PLAN)
+    def test_pivot_plan_marks_registry_complete_and_sqlite_foundation_active(self):
+        self.assertIn("| 1B | Complete |", PIVOT_PLAN)
+        self.assertIn("| 1C-A | In progress |", PIVOT_PLAN)
+        self.assertIn("| 1C-B | Provisional |", PIVOT_PLAN)
+        self.assertIn("reviews/2026-08-18-mentat-sqlite-task-foundation.md", PIVOT_PLAN)
         self.assertIn("Next.js + React + TypeScript", PIVOT_PLAN)
         self.assertIn("MENTAT_PIVOT_IMPLEMENTATION_PLAN.md", AGENT_GUIDE)
         self.assertIn("/api/orchestration/agents", ARCHITECTURE)

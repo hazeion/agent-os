@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1 durable-data boundary complete through 1F upgrade/uninstall preservation coverage
+Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 1C-A SQLite Task foundation active
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -108,6 +108,23 @@ an explicit merge rule; silently recopying a seed is forbidden.
 The server's allowlisted JSON mutation boundary still applies. Listing a file
 as a seed does not make every file browser-writable.
 
+### SQLite Task foundation and source-of-truth transition
+
+Pivot Slice 1C-A adds a canonical Task repository to
+`<data-root>/private/console/mentat.sqlite3`, including ordered tags,
+dependency edges, bounded planning metadata, compatibility fields, and
+internal optimistic revisions. This does not yet move live behavior:
+`<data-root>/tasks.json` remains the only runtime Task authority through 1C-A.
+The SQLite rows may be populated only by the test-scoped transactional import
+primitive; production exposes a read-only `mentat task-migration` preview and
+no confirmation or startup import.
+
+Slice 1C-B will perform the exact one-way import and then remove every live
+Task read/write dependency on `tasks.json` without a dual-authority interval.
+The tracked `data/tasks.json` may remain a public-safe packaged seed until a
+later packaging cleanup, but it must not regain runtime authority after that
+cutover.
+
 ## Current mutable-path inventory and target mapping
 
 Milestone 1A records current locations so later slices cannot move only the
@@ -124,7 +141,7 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 | Current surface | Target class | Notes |
 | --- | --- | --- |
 | Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | Redacted retained Console history; durable according to its retention policy. |
-| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, and run-reference metadata; live WAL/SHM remain SQLite-owned beside the database. |
+| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, run-reference, and canonical Task repository metadata; live WAL/SHM remain SQLite-owned beside the database. Task rows are additive and non-authoritative until Slice 1C-B. |
 | Canonical Mentat Agent registry | `<data-root>/private/console/agent-registry.sqlite3` | Independently versioned Agent identities and private runtime bindings; capped at 128 records and semantically validated during backup/restore. |
 | Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
 | Remote connection selection | `<data-root>/private/remote-hermes-connection-v1.json` | Schema-v2, server-only, owner-only, and atomically replaced. Stores the active mode, local label, one remembered remote label/endpoint, binding ID, and credential-source reference—but no API-key value. The historical filename is retained for compatible migration. A missing record means local mode. |
@@ -519,6 +536,9 @@ snapshot captured through SQLite's backup API and pruned to retained run
 references, an independently versioned and semantically validated Agent
 registry SQLite snapshot, and exactly the verified ready blobs referenced by
 that snapshot.
+The Console SQLite snapshot also carries canonical Task rows, records their
+count in private-unit evidence, and must pass semantic reconstruction plus
+foreign-key validation before backup or restore can succeed.
 The manifest records format and data-schema versions, classifications, sizes,
 integrity metadata, and every excluded class. It contains no absolute paths,
 credentials, unreferenced/staged Console bytes, runtime state, caches, logs, browser state,
@@ -545,6 +565,19 @@ match the token-bound old-or-new set. Unknown state fails closed, and startup
 blocks while any reservation or restore temporary remains. An exact uncommitted
 temporary has its own previewed, confirmed cleanup path and is never silently
 deleted.
+
+Format-2 and format-3 private snapshots containing the previously released
+exact Console schema 4 remain supported. They are restored without rewriting
+the source archive and migrate transactionally to schema 5 on the next normal
+database open. Before downgrading to a pre-1C-A build, stop Mentat while the
+schema-5-capable build is still installed, keep a current backup, and use that
+same build to restore an exact schema-4 private Console backup. Do not reopen
+the newer build; install and start the pre-1C-A build next. Without such a
+backup, the only safe fallback is an explicit
+reinitialization of the private Console unit, which loses private Console
+history, attachment metadata, and replay metadata but must preserve
+`tasks.json` and every other durable operator JSON document. No automatic
+SQLite downgrade is supported.
 
 For versions 2 and 3, private restore exchanges a complete staged Console
 directory, keeps the old directory until new-state verification, and resumes

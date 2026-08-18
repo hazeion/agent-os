@@ -65,6 +65,36 @@ class PrivateConsoleStateTests(unittest.TestCase):
         self.assertEqual(result.status, "migrated")
         return target
 
+    def schema_four_unit(
+        self,
+        unit: private_console_unit.PrivateConsoleUnit,
+    ) -> private_console_unit.PrivateConsoleUnit:
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mentat.sqlite3"
+            path.write_bytes(unit.database_raw)
+            connection = sqlite3.connect(path)
+            try:
+                for name in (
+                    "idx_mentat_task_dependencies_target",
+                    "idx_mentat_tasks_assigned_agent",
+                    "idx_mentat_tasks_project_order",
+                    "idx_mentat_tasks_status_order",
+                ):
+                    connection.execute(f"DROP INDEX {name}")
+                connection.execute("DROP TABLE mentat_task_dependencies")
+                connection.execute("DROP TABLE mentat_task_tags")
+                connection.execute("DROP TABLE mentat_tasks")
+                connection.execute("DELETE FROM schema_migrations WHERE version = 5")
+                connection.commit()
+            finally:
+                connection.close()
+            return private_console_unit.PrivateConsoleUnit(
+                history_raw=unit.history_raw,
+                database_raw=path.read_bytes(),
+                registry_database_raw=unit.registry_database_raw,
+                blobs=unit.blobs,
+            )
+
     def add_retained_attachment(self, root: Path, run_id: str, content: bytes) -> dict:
         attachment = create_attachment(root, original_name="note.txt", content=content)
         bind_run_attachment(root, attachment["id"], run_id)
@@ -567,6 +597,58 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 AgentRegistry(target, supported_runtime_types={"hermes"}).list_agents(),
                 (),
             )
+
+    def test_released_schema_four_v2_and_v3_backups_restore_and_migrate(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source", "source")
+            documents = data_backup_restore._load_live_documents(source, None)
+            schema_four = self.schema_four_unit(capture_private_console_unit(source))
+            self.assertEqual(schema_four.task_count, 0)
+
+            for format_version in (2, 3):
+                with self.subTest(format_version=format_version):
+                    raw = data_backup_restore._build_backup(
+                        documents,
+                        schema_four,
+                        format_version=format_version,
+                    )
+                    name = data_backup_restore._backup_name(
+                        documents,
+                        schema_four,
+                        format_version=format_version,
+                    )
+                    path = base / name
+                    path.write_bytes(raw)
+                    if os.name == "posix":
+                        path.chmod(0o600)
+                    target = self.make_current(
+                        base,
+                        f"target-{format_version}",
+                        f"target-{format_version}",
+                    )
+                    preview = data_backup_restore.preview_durable_restore(target, path)
+                    self.assertEqual(preview.status, "ready")
+                    private_item = next(
+                        item for item in preview.items if item["name"] == "private_console"
+                    )
+                    self.assertEqual(private_item["task_count"], 0)
+                    result = data_backup_restore.restore_durable_backup(
+                        target,
+                        path,
+                        confirmation_token=preview.confirmation_token or "",
+                    )
+                    self.assertEqual(result.status, "restored")
+                    migrated = connect(target)
+                    try:
+                        self.assertEqual(
+                            migrated.execute(
+                                "SELECT MAX(version) FROM schema_migrations"
+                            ).fetchone()[0],
+                            5,
+                        )
+                    finally:
+                        migrated.close()
 
     def test_upgrade_resumes_genuine_protocol_2_restore_receipts(self):
         with TemporaryDirectory() as temporary:

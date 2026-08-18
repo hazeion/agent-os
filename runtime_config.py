@@ -41,6 +41,7 @@ from data_schema import (
     schema_status_under_lock,
 )
 from data_layout import (
+    _absolute_without_following,
     _initialization_lock,
     _pinned_root_identity,
     initialize_data_root,
@@ -515,6 +516,11 @@ def parse_cli_args(argv=None):
         help="Execute the exact private Console migration preview identified by TOKEN.",
     )
     operation.add_argument(
+        "--preview-task-sqlite-migration",
+        action="store_true",
+        help="Preview the exact tasks.json to SQLite migration without writing Task rows.",
+    )
+    operation.add_argument(
         "--create-backup",
         action="store_true",
         help="Create a validated backup of durable operator JSON and retained private Console state.",
@@ -630,6 +636,35 @@ def run_private_console_migration_cli(
     )
     summary = result.public_summary()
     return summary, 0 if result.status in {"migrated", "resumed"} else 2
+
+
+def run_task_sqlite_migration_cli(
+    cli_args: argparse.Namespace,
+    config: AppConfig,
+) -> tuple[dict, int]:
+    """Run the Slice 1C-A read-only Task migration preview."""
+
+    from task_repository import TaskRepositoryError, preview_task_sqlite_migration
+
+    required_mode = (
+        None
+        if _absolute_without_following(config.data_dir)
+        == _absolute_without_following(PACKAGED_SEED_DIR)
+        else 0o600
+    )
+    try:
+        preview = preview_task_sqlite_migration(
+            config.data_dir,
+            required_source_mode=required_mode,
+        )
+    except TaskRepositoryError as exc:
+        return {
+            "status": "blocked",
+            "error_code": exc.code,
+            "writes_performed": False,
+        }, 2
+    summary = preview.public_summary()
+    return summary, 0 if preview.status == "ready" else 2
 
 
 def run_backup_restore_cli(

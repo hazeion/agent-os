@@ -18,7 +18,7 @@ from private_state import (
 
 
 DATABASE_NAME = "mentat.sqlite3"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -176,6 +176,90 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         DROP TABLE hermes_webhook_deliveries_v3;
         CREATE INDEX idx_hermes_webhook_deliveries_expiry
             ON hermes_webhook_deliveries(expires_at);
+        """,
+    ),
+    (
+        5,
+        """
+        CREATE TABLE mentat_tasks (
+            id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 160),
+            sort_order INTEGER NOT NULL UNIQUE CHECK (sort_order >= 0),
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 160),
+            description TEXT NOT NULL CHECK (length(description) <= 16777216),
+            project TEXT NOT NULL CHECK (length(project) BETWEEN 1 AND 120),
+            status TEXT NOT NULL CHECK (
+                status IN ('todo', 'in progress', 'waiting', 'needs attention', 'completed')
+            ),
+            priority TEXT NOT NULL CHECK (priority IN ('high', 'medium', 'low')),
+            assignee TEXT CHECK (assignee IS NULL OR length(assignee) BETWEEN 1 AND 120),
+            assigned_agent_id TEXT CHECK (
+                assigned_agent_id IS NULL OR length(assigned_agent_id) BETWEEN 1 AND 160
+            ),
+            assigned_agent_id_present INTEGER NOT NULL DEFAULT 0 CHECK (
+                assigned_agent_id_present IN (0, 1)
+            ),
+            due_date TEXT CHECK (due_date IS NULL OR length(due_date) = 10),
+            source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 32),
+            review_required INTEGER NOT NULL CHECK (review_required IN (0, 1)),
+            needs_attention INTEGER NOT NULL CHECK (needs_attention IN (0, 1)),
+            planned_for_today INTEGER CHECK (planned_for_today IN (0, 1)),
+            manual_rank INTEGER CHECK (manual_rank BETWEEN 0 AND 1000000),
+            estimated_minutes INTEGER CHECK (estimated_minutes BETWEEN 1 AND 10080),
+            recurrence_parent_id TEXT CHECK (
+                recurrence_parent_id IS NULL OR length(recurrence_parent_id) BETWEEN 1 AND 160
+            ),
+            planning_state TEXT CHECK (
+                planning_state IS NULL OR planning_state IN (
+                    'inbox', 'planned', 'in_progress', 'waiting', 'review',
+                    'someday', 'blocked', 'done'
+                )
+            ),
+            depends_on_present INTEGER NOT NULL DEFAULT 0 CHECK (
+                depends_on_present IN (0, 1)
+            ),
+            nested_planning_json TEXT NOT NULL DEFAULT '{}' CHECK (
+                length(nested_planning_json) <= 16777216
+            ),
+            extensions_json TEXT NOT NULL DEFAULT '{}' CHECK (
+                length(extensions_json) <= 16777216
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            completed_at TEXT CHECK (
+                completed_at IS NULL OR length(completed_at) BETWEEN 1 AND 64
+            )
+        );
+
+        CREATE TABLE mentat_task_tags (
+            task_id TEXT NOT NULL REFERENCES mentat_tasks(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+            tag TEXT NOT NULL CHECK (length(tag) BETWEEN 1 AND 48),
+            PRIMARY KEY (task_id, ordinal),
+            UNIQUE (task_id, tag)
+        );
+
+        CREATE TABLE mentat_task_dependencies (
+            task_id TEXT NOT NULL,
+            dependency_task_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+            PRIMARY KEY (task_id, ordinal),
+            UNIQUE (task_id, dependency_task_id),
+            CHECK (task_id != dependency_task_id),
+            FOREIGN KEY (task_id) REFERENCES mentat_tasks(id)
+                ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+            FOREIGN KEY (dependency_task_id) REFERENCES mentat_tasks(id)
+                ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+        );
+
+        CREATE INDEX idx_mentat_tasks_status_order
+            ON mentat_tasks(status, sort_order);
+        CREATE INDEX idx_mentat_tasks_project_order
+            ON mentat_tasks(project, sort_order);
+        CREATE INDEX idx_mentat_tasks_assigned_agent
+            ON mentat_tasks(assigned_agent_id, status, sort_order);
+        CREATE INDEX idx_mentat_task_dependencies_target
+            ON mentat_task_dependencies(dependency_task_id, task_id);
         """,
     ),
 )
@@ -344,7 +428,11 @@ def transaction(connection: sqlite3.Connection, *, immediate: bool = False) -> I
         connection.rollback()
         raise
     else:
-        connection.commit()
+        try:
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def schema_version(data_dir: Path) -> int:

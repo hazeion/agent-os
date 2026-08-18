@@ -36,6 +36,7 @@ from agent_run_history import (
 )
 from mentat_db import MIGRATIONS, SCHEMA_VERSION as DATABASE_SCHEMA_VERSION
 from private_state import blobs_root, console_root, database_path, ensure_console_root, history_path
+from task_repository import TaskRepositoryError, validate_repository_connection
 
 
 MAX_HISTORY_BYTES = 4 * 1024 * 1024
@@ -44,6 +45,11 @@ MAX_REGISTRY_DATABASE_BYTES = 4 * 1024 * 1024
 MAX_BLOB_BYTES = 10 * 1024 * 1024
 MAX_BLOBS = 100
 MAX_PRIVATE_UNIT_BYTES = 64 * 1024 * 1024
+PREVIOUS_DATABASE_SCHEMA_VERSION = 4
+SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
+    PREVIOUS_DATABASE_SCHEMA_VERSION,
+    DATABASE_SCHEMA_VERSION,
+}
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
 
@@ -76,6 +82,10 @@ class PrivateConsoleUnit:
     @property
     def agent_count(self) -> int:
         return _registry_agent_count(self.registry_database_raw)
+
+    @property
+    def task_count(self) -> int:
+        return _database_task_count(self.database_raw)
 
 
 def _canonical_json(value: object) -> bytes:
@@ -216,12 +226,22 @@ def empty_private_console_unit() -> PrivateConsoleUnit:
         )
 
 
-def _initialize_database(path: Path) -> None:
+def _initialize_database(
+    path: Path,
+    *,
+    schema_version: int = DATABASE_SCHEMA_VERSION,
+) -> None:
+    if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
+        raise PrivateConsoleUnitError("private_database_unsupported")
     connection = sqlite3.connect(path)
     try:
-        for _version, script in MIGRATIONS:
+        for version, script in MIGRATIONS:
+            if version > schema_version:
+                continue
             connection.executescript(script)
         for version, _script in MIGRATIONS:
+            if version > schema_version:
+                continue
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, 0)",
                 (version,),
@@ -261,6 +281,35 @@ def _registry_agent_count(raw: bytes) -> int:
         if os.name != "nt":
             path.chmod(0o600)
         return _validate_registry_snapshot(path)
+
+
+def _database_task_count(raw: bytes) -> int:
+    if len(raw) > MAX_DATABASE_BYTES:
+        raise PrivateConsoleUnitError("private_database_invalid")
+    with TemporaryDirectory(prefix="mentat-task-count-") as temporary:
+        path = Path(temporary) / "mentat.sqlite3"
+        path.write_bytes(raw)
+        connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            versions = [
+                int(row[0])
+                for row in connection.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                )
+            ]
+            version = max(versions, default=0)
+            if version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
+                raise PrivateConsoleUnitError("private_database_unsupported")
+            if _schema_signature(connection) != _expected_schema_signature(version):
+                raise PrivateConsoleUnitError("private_database_schema_invalid")
+            if version == PREVIOUS_DATABASE_SCHEMA_VERSION:
+                return 0
+            return validate_repository_connection(connection)
+        except TaskRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        finally:
+            connection.close()
 
 
 def _sqlite_backup(
@@ -350,11 +399,13 @@ def _schema_signature(connection: sqlite3.Connection) -> tuple[tuple[str, str, s
     )
 
 
-@lru_cache(maxsize=1)
-def _expected_schema_signature() -> tuple[tuple[str, str, str, str], ...]:
+@lru_cache(maxsize=None)
+def _expected_schema_signature(
+    schema_version: int = DATABASE_SCHEMA_VERSION,
+) -> tuple[tuple[str, str, str, str], ...]:
     with TemporaryDirectory(prefix="mentat-schema-signature-") as temporary:
         database = Path(temporary) / "mentat.sqlite3"
-        _initialize_database(database)
+        _initialize_database(database, schema_version=schema_version)
         connection = sqlite3.connect(database)
         try:
             return _schema_signature(connection)
@@ -371,10 +422,16 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         if integrity is None or integrity[0] != "ok":
             raise PrivateConsoleUnitError("private_database_invalid")
         versions = [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")]
-        if not versions or max(versions) != DATABASE_SCHEMA_VERSION:
+        schema_version = max(versions, default=0)
+        if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
-        if _schema_signature(connection) != _expected_schema_signature():
+        if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
+        if schema_version == DATABASE_SCHEMA_VERSION:
+            try:
+                validate_repository_connection(connection)
+            except TaskRepositoryError as exc:
+                raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
         placeholders = ",".join("?" for _ in retained)
         if retained:
             connection.execute(
@@ -409,6 +466,11 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         connection.execute("VACUUM")
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise PrivateConsoleUnitError("private_database_invalid")
+        if schema_version == DATABASE_SCHEMA_VERSION:
+            try:
+                validate_repository_connection(connection)
+            except TaskRepositoryError as exc:
+                raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
     except sqlite3.Error as exc:
         raise PrivateConsoleUnitError("private_database_invalid") from exc
     finally:
@@ -423,10 +485,16 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise PrivateConsoleUnitError("private_database_invalid")
         versions = [int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")]
-        if not versions or max(versions) != DATABASE_SCHEMA_VERSION:
+        schema_version = max(versions, default=0)
+        if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
-        if _schema_signature(connection) != _expected_schema_signature():
+        if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
+        if schema_version == DATABASE_SCHEMA_VERSION:
+            try:
+                validate_repository_connection(connection)
+            except TaskRepositoryError as exc:
+                raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
         database_runs = {str(row[0]) for row in connection.execute("SELECT DISTINCT run_id FROM run_attachments")}
         if not database_runs.issubset(retained):
             raise PrivateConsoleUnitError("private_database_not_filtered")
