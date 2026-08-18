@@ -435,7 +435,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
             server._read_webhook_tasks_snapshot()
             local_snapshot_complete.set()
             external_started.set()
-            release_external.wait(2)
+            release_external.wait()
             return {"sessions": []}
 
         server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
@@ -451,37 +451,40 @@ class HermesWebhookRouteTests(unittest.TestCase):
         )
         self.assertTrue(server.HERMES_EVENT_REFRESH.enqueue(older_event))
 
-        with patch.object(server, "read_json_file", return_value=[]):
-            server.HERMES_EVENT_REFRESH.start()
-            self.assertTrue(local_snapshot_complete.wait(1))
-            self.assertTrue(external_started.is_set())
+        coordinator = server.HERMES_EVENT_REFRESH
+        try:
+            with patch.object(server, "read_json_file", return_value=[]):
+                server.HERMES_EVENT_REFRESH.start()
+                self.assertTrue(local_snapshot_complete.wait(2))
+                self.assertTrue(external_started.is_set())
 
-            newer_body, newer_headers = self.request(delivery="newer-while-external")
-            responses = []
-            response_complete = threading.Event()
+                newer_body, newer_headers = self.request(delivery="newer-while-external")
+                responses = []
+                response_complete = threading.Event()
 
-            def submit_newer():
-                responses.append(self.invoke(newer_body, newer_headers))
-                response_complete.set()
+                def submit_newer():
+                    responses.append(self.invoke(newer_body, newer_headers))
+                    response_complete.set()
 
-            request_thread = Thread(target=submit_newer)
-            request_thread.start()
-            self.assertTrue(response_complete.wait(0.5))
-            request_thread.join(timeout=1)
-            self.assertFalse(request_thread.is_alive())
-            self.assertEqual(self.status(responses[0]), 202)
+                request_thread = Thread(target=submit_newer)
+                request_thread.start()
+                self.assertTrue(response_complete.wait(5))
+                self.assertFalse(release_external.is_set())
+                request_thread.join(timeout=1)
+                self.assertFalse(request_thread.is_alive())
+                self.assertEqual(self.status(responses[0]), 202)
 
-            coordinator = server.HERMES_EVENT_REFRESH
-            started = time.monotonic()
-            self.assertFalse(
-                server.detach_and_stop_hermes_refresh(
-                    coordinator,
-                    timeout=0.05,
+                started = time.monotonic()
+                self.assertFalse(
+                    server.detach_and_stop_hermes_refresh(
+                        coordinator,
+                        timeout=0.05,
+                    )
                 )
-            )
-            self.assertLess(time.monotonic() - started, 0.25)
+                self.assertLess(time.monotonic() - started, 0.25)
+        finally:
+            release_external.set()
 
-        release_external.set()
         self.assertIsNone(server.HERMES_EVENT_REFRESH)
         self.assertTrue(coordinator.stop(timeout=1))
 

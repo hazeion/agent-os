@@ -820,3 +820,46 @@ and the isolated macOS timing job must rerun successfully before merge.
 
 **Approved for publication checkpoint.** The two-file CI correction is not
 staged, committed, or pushed until the user gives immediate approval.
+
+### Post-publication inverse-test timing correction
+
+Commit `e1d62c8` published the approved Windows fixture correction. The three
+formerly failing Windows group-1 jobs passed on Python 3.11, 3.12, and 3.13,
+and the macOS Python 3.12 timing outlier reran successfully. One different job,
+Windows Python 3.11 group 11, then exposed a scheduler-sensitive assertion in
+the inverse concurrency regression: the newer request did not receive a thread
+slice within the test's fixed 500-millisecond wait.
+
+The regression now makes the concurrency proof structural. Simulated external
+Hermes work waits on an explicit gate with no automatic timeout. The newer
+webhook must complete while that gate remains unreleased, proving that no lock
+dependency on external work exists. A `finally` block always releases the gate
+so an assertion cannot strand the coordinator worker. The wait budget is now a
+runner-scheduling allowance, not the proof itself; the existing bounded-stop
+assertion remains unchanged.
+
+Verification and same-reviewer review are pending. This correction is not
+staged, committed, or pushed.
+
+#### Inverse-test timing correction verification
+
+| Command or action | Result | Evidence |
+| --- | --- | --- |
+| Exact inverse and database concurrency set | Pass | The corrected inverse test, delivery setup exclusion, and snapshot lock-order regression all pass. |
+| Complete webhook route module | Pass | All 19 route tests pass, including real loopback HTTP, duplicate admission, transaction exclusion, structural external-work independence, and bounded shutdown. |
+| Static checks | Pass | The changed test compiles and `git diff --check` is clean. |
+
+The published production implementation is unchanged. Same-reviewer review is
+pending; native Windows CI remains the decisive scheduling/platform proof.
+
+#### Inverse-test timing correction reviewer decisions
+
+Both original reviewers independently returned **approved** with no findings.
+Each confirmed that completion with HTTP 202 while the explicit external gate
+remains closed is a structural proof of A10 response independence, while the
+unchanged 50-millisecond stop timeout and 250-millisecond elapsed ceiling retain
+the bounded-shutdown proof. Both confirmed that `finally` cleanup prevents a
+failed assertion from stranding the worker.
+
+**Approved for publication checkpoint.** The two-file test/log correction is
+not staged, committed, or pushed until the user gives immediate approval.
