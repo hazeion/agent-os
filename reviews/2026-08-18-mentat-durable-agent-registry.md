@@ -229,6 +229,15 @@ separate from the Hermes runtime/profile binding used to execute work.
 - Final reviewer verdict: two independent approvals; no unresolved blocking
   findings or reviewer dissent.
 
+### Publication CI correction
+
+- GitHub's dependency and secret scan flagged the literal test canary
+  `api_key: must-not-be-accepted` as an unreviewed `Secret Keyword`; no secret
+  value was present, and all other required jobs passed.
+- With explicit user approval, the canary received the repository-standard
+  `pragma: allowlist secret` annotation. Test semantics are unchanged: the API
+  must still reject credential-shaped Agent fields.
+
 ## Documentation updates
 
 - Roadmap: `MENTAT_PIVOT_IMPLEMENTATION_PLAN.md` records Slice 1B as the active

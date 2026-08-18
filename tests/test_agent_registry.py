@@ -360,7 +360,7 @@ class AgentRegistryTests(unittest.TestCase):
                 "capabilities": ["research.web"],
             }
             attempts = (
-                ({**valid, "api_key": "must-not-be-accepted"}, 400),
+                ({**valid, "api_key": "must-not-be-accepted"}, 400),  # pragma: allowlist secret
                 ({**valid, "runtime_type": "codex"}, 400),
                 ({**valid, "runtime_agent_ref": "../profile"}, 400),
             )
