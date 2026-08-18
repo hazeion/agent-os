@@ -516,7 +516,8 @@ class TaskRepositoryTests(unittest.TestCase):
 
     def test_preview_supports_uri_special_characters_without_writes(self):
         with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir) / "data ?# segment"
+            segment = "data # % segment" if os.name == "nt" else "data ?# % segment"
+            root = Path(tmpdir) / segment
             write_tasks(root, [task("task_uri")])
             connection = connect(root)
             connection.close()
@@ -534,6 +535,10 @@ class TaskRepositoryTests(unittest.TestCase):
             self.assertEqual(preview.destination.state, "empty")
             self.assertEqual(after, before)
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows does not permit replacing an open source file",
+    )
     def test_preview_rejects_atomic_source_replacement_during_read(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

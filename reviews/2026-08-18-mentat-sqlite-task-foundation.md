@@ -1,6 +1,6 @@
 # Feature Slice Review: SQLite Task Foundation and Migration Preview
 
-Status: Reviewed; awaiting publication authorization
+Status: Published; GitHub CI rerun pending
 Slice: `mentat-sqlite-task-foundation`
 Date: `2026-08-18`
 Review log: `reviews/2026-08-18-mentat-sqlite-task-foundation.md`
@@ -286,6 +286,21 @@ Round 3 uses the same two reviewers and the complete corrected diff.
 - Final disposition: no unresolved blocking or non-blocking implementation
   finding remains.
 
+### Publication CI portability follow-up
+
+- PR #107's first Windows Python 3.11 group-8 run found two test-harness
+  portability assumptions in `tests/test_task_repository.py`; production code
+  was not implicated.
+- The URI test used `?` in a directory name, which Windows rejects before the
+  preview runs. It now combines space, `#`, and `%` on Windows while retaining
+  `?` coverage on platforms where it is a valid path character.
+- The atomic source-replacement race depends on POSIX replacement of an open
+  file. Windows forbids that filesystem operation, so the test now records an
+  explicit Windows platform skip while remaining mandatory on POSIX.
+- Local repository coverage remains 24/24 passing, and the broader repository,
+  private-state, and backup/restore selection passed 86 tests. Both original
+  reviewers rechecked the narrow test-only follow-up and issued **APPROVE**.
+
 ## Documentation updates
 
 - Roadmap: split orchestration into 1C-A through 1C-D and record Slice 3C as
@@ -312,13 +327,12 @@ Round 3 uses the same two reviewers and the complete corrected diff.
   migration preview, test-only atomic importer, deterministic export,
   backup/restore compatibility, focused verification, and architecture/design
   documentation without changing the live `tasks.json` authority.
-- Unresolved risks: no known implementation or review blocker; final
-  publication authorization remains.
-- User authorization and scope: standing approval does not replace immediate
-  explicit commit/push/ready-PR authorization required by the reviewed-feature
-  workflow.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- Unresolved risks: no known implementation or review blocker; the corrected
+  Windows CI shard and remaining matrix must rerun on the follow-up commit.
+- User authorization and scope: the user gave immediate explicit approval to
+  stage, commit, push, and open the ready PR on 2026-08-18.
+- Initial commit hash: `a7403cb2f4ec8d6d413803c9a3e5ecb40bf7ef77`.
+- Ready PR URL: `https://github.com/hazeion/agent-os/pull/107`.
 
 ## Outcome review
 
