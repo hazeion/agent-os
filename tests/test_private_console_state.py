@@ -30,7 +30,7 @@ from agent_run_history import save_run_summaries
 from private_console_migration import migrate_private_console, preview_private_console_migration
 from private_console_unit import capture_private_console_unit
 from private_state import history_path, private_state_lock
-from mentat_db import MentatDatabaseError, connect
+from mentat_db import SCHEMA_VERSION as DATABASE_SCHEMA_VERSION, MentatDatabaseError, connect
 from runtime_config import AppConfig, prepare_data_root_for_startup
 
 
@@ -84,7 +84,8 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 connection.execute("DROP TABLE mentat_task_dependencies")
                 connection.execute("DROP TABLE mentat_task_tags")
                 connection.execute("DROP TABLE mentat_tasks")
-                connection.execute("DELETE FROM schema_migrations WHERE version = 5")
+                connection.execute("DROP TABLE mentat_task_store_state")
+                connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6)")
                 connection.commit()
             finally:
                 connection.close()
@@ -645,7 +646,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                             migrated.execute(
                                 "SELECT MAX(version) FROM schema_migrations"
                             ).fetchone()[0],
-                            5,
+                            DATABASE_SCHEMA_VERSION,
                         )
                     finally:
                         migrated.close()

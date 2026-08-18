@@ -3,7 +3,10 @@ import hmac
 import io
 import json
 import os
+import subprocess
+import sys
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +22,8 @@ from hermes_browser_events import HermesBrowserEventBroker
 from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_webhook_store import WebhookDeliveryStore
 from hermes_webhooks import PerBindingRateLimiter
+from delegation_artifacts import binding_ids as delegation_artifact_binding_ids
+from task_repository import ensure_task_sqlite_authority, mutate_authoritative_tasks
 
 
 class _WebhookHandlerHarness:
@@ -60,7 +65,10 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.data_dir = Path(self.temporary.name) / "data"
         server.HERMES_WEBHOOK_DELIVERIES = WebhookDeliveryStore(self.data_dir)
         server.HERMES_WEBHOOK_RATE_LIMITER = PerBindingRateLimiter()
-        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator({}, capacity=16)
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
+            {},
+            capacity=16,
+        )
 
     def tearDown(self):
         if server.HERMES_EVENT_REFRESH is not None:
@@ -162,6 +170,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
         tasks_path = self.data_dir / "tasks.json"
         tasks_path.write_text(json.dumps([task]), encoding="utf-8")
         tasks_path.chmod(0o600)
+        ensure_task_sqlite_authority(self.data_dir)
         remote = {
             "ok": True,
             "task": {
@@ -314,6 +323,338 @@ class HermesWebhookRouteTests(unittest.TestCase):
         self.assertEqual(self.status(result), 202)
         self.assertEqual(server.HERMES_EVENT_REFRESH.pending_count, 1)
         self.assertIn(("webhook_error", "webhook_store_unavailable"), result.responses)
+
+    def test_older_queued_hint_waits_for_newer_delivery_transaction_to_close(self):
+        snapshot_started = threading.Event()
+        transaction_open = threading.Event()
+        release_transaction = threading.Event()
+        delivery_results = []
+
+        def snapshot_adapter(_binding):
+            server._read_webhook_tasks_snapshot()
+            snapshot_started.set()
+            return {"sessions": []}
+
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
+            {"sessions": snapshot_adapter},
+            coalesce_window=0,
+            reconciliation_interval=60,
+        )
+        older_body, older_headers = self.request(delivery="older-hint")
+        self.assertTrue(
+            server.HERMES_EVENT_REFRESH.enqueue(
+                server.verify_and_normalize(
+                    older_body,
+                    older_headers,
+                    server.WebhookBinding(self.binding_id, self.secret),
+                )
+            )
+        )
+
+        def pause_newer_delivery():
+            body, headers = self.request(delivery="newer-open-transaction")
+            verified = server.verify_and_normalize(
+                body,
+                headers,
+                server.WebhookBinding(self.binding_id, self.secret),
+            )
+            delivery_results.append(
+                server.HERMES_WEBHOOK_DELIVERIES.claim_and_admit(
+                    verified,
+                    lambda: transaction_open.set() or release_transaction.wait(2),
+                )
+            )
+
+        delivery_thread = Thread(target=pause_newer_delivery)
+        delivery_thread.start()
+        self.assertTrue(transaction_open.wait(1))
+        with patch.object(server, "read_json_file", return_value=[]):
+            server.HERMES_EVENT_REFRESH.start()
+            try:
+                self.assertFalse(snapshot_started.wait(0.1))
+            finally:
+                release_transaction.set()
+                delivery_thread.join(timeout=2)
+            self.assertTrue(snapshot_started.wait(1))
+        self.assertFalse(delivery_thread.is_alive())
+        self.assertEqual(delivery_results, ["accepted"])
+        self.assertTrue(server.HERMES_EVENT_REFRESH.wait_idle(1))
+
+    def test_reconciliation_waits_for_delivery_transaction_to_close(self):
+        snapshot_started = threading.Event()
+        transaction_open = threading.Event()
+        release_transaction = threading.Event()
+        delivery_results = []
+
+        def snapshot_adapter(_binding):
+            server._read_webhook_tasks_snapshot()
+            snapshot_started.set()
+            return {"sessions": []}
+
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
+            {"sessions": snapshot_adapter},
+            binding_ids=(self.binding_id,),
+            coalesce_window=0,
+            reconciliation_interval=0.01,
+        )
+
+        def pause_delivery():
+            body, headers = self.request(delivery="reconciliation-open-transaction")
+            verified = server.verify_and_normalize(
+                body,
+                headers,
+                server.WebhookBinding(self.binding_id, self.secret),
+            )
+            delivery_results.append(
+                server.HERMES_WEBHOOK_DELIVERIES.claim_and_admit(
+                    verified,
+                    lambda: transaction_open.set() or release_transaction.wait(2),
+                )
+            )
+
+        delivery_thread = Thread(target=pause_delivery)
+        delivery_thread.start()
+        self.assertTrue(transaction_open.wait(1))
+        with patch.object(server, "read_json_file", return_value=[]):
+            server.HERMES_EVENT_REFRESH.start()
+            try:
+                self.assertFalse(snapshot_started.wait(0.1))
+            finally:
+                release_transaction.set()
+                delivery_thread.join(timeout=2)
+            self.assertTrue(snapshot_started.wait(1))
+        self.assertFalse(delivery_thread.is_alive())
+        self.assertEqual(delivery_results, ["accepted"])
+
+    def test_slow_external_projection_does_not_delay_newer_webhook_or_shutdown(self):
+        local_snapshot_complete = threading.Event()
+        external_started = threading.Event()
+        release_external = threading.Event()
+
+        def slow_after_snapshot(_binding):
+            server._read_webhook_tasks_snapshot()
+            local_snapshot_complete.set()
+            external_started.set()
+            release_external.wait()
+            return {"sessions": []}
+
+        server.HERMES_EVENT_REFRESH = HermesRefreshCoordinator(
+            {"sessions": slow_after_snapshot},
+            coalesce_window=0,
+            reconciliation_interval=60,
+        )
+        older_body, older_headers = self.request(delivery="older-slow-external")
+        older_event = server.verify_and_normalize(
+            older_body,
+            older_headers,
+            server.WebhookBinding(self.binding_id, self.secret),
+        )
+        self.assertTrue(server.HERMES_EVENT_REFRESH.enqueue(older_event))
+
+        coordinator = server.HERMES_EVENT_REFRESH
+        try:
+            with patch.object(server, "read_json_file", return_value=[]):
+                server.HERMES_EVENT_REFRESH.start()
+                self.assertTrue(local_snapshot_complete.wait(2))
+                self.assertTrue(external_started.is_set())
+
+                newer_body, newer_headers = self.request(delivery="newer-while-external")
+                responses = []
+                response_complete = threading.Event()
+
+                def submit_newer():
+                    responses.append(self.invoke(newer_body, newer_headers))
+                    response_complete.set()
+
+                request_thread = Thread(target=submit_newer)
+                request_thread.start()
+                self.assertTrue(response_complete.wait(5))
+                self.assertFalse(release_external.is_set())
+                request_thread.join(timeout=1)
+                self.assertFalse(request_thread.is_alive())
+                self.assertEqual(self.status(responses[0]), 202)
+
+                started = time.monotonic()
+                self.assertFalse(
+                    server.detach_and_stop_hermes_refresh(
+                        coordinator,
+                        timeout=0.05,
+                    )
+                )
+                self.assertLess(time.monotonic() - started, 0.25)
+        finally:
+            release_external.set()
+
+        self.assertIsNone(server.HERMES_EVENT_REFRESH)
+        self.assertTrue(coordinator.stop(timeout=1))
+
+    def test_delivery_transaction_excludes_all_live_database_connection_setup(self):
+        self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tasks_path = self.data_dir / "tasks.json"
+        tasks_path.write_bytes(b"[]")
+        if os.name != "nt":
+            tasks_path.chmod(0o600)
+        ensure_task_sqlite_authority(self.data_dir)
+
+        transaction_open = threading.Event()
+        release_transaction = threading.Event()
+        delivery_results = []
+        body, headers = self.request(delivery="global-connection-barrier")
+        verified = server.verify_and_normalize(
+            body,
+            headers,
+            server.WebhookBinding(self.binding_id, self.secret),
+        )
+
+        def pause_delivery():
+            delivery_results.append(
+                server.HERMES_WEBHOOK_DELIVERIES.claim_and_admit(
+                    verified,
+                    lambda: transaction_open.set() or release_transaction.wait(2),
+                )
+            )
+
+        operations = {
+            "task_read": lambda: server.tasks_payload(),
+            "task_mutation": lambda: mutate_authoritative_tasks(
+                self.data_dir,
+                lambda tasks: (tasks, "mutated"),
+            ),
+            "artifact_read": lambda: delegation_artifact_binding_ids(self.data_dir),
+        }
+        completed = {name: threading.Event() for name in operations}
+        results = {}
+        failures = []
+
+        def run_operation(name, operation):
+            try:
+                results[name] = operation()
+            except Exception as exc:
+                failures.append((name, exc))
+            finally:
+                completed[name].set()
+
+        delivery_thread = Thread(target=pause_delivery)
+        delivery_thread.start()
+        self.assertTrue(transaction_open.wait(1))
+        operation_threads = [
+            Thread(target=run_operation, args=(name, operation))
+            for name, operation in operations.items()
+        ]
+        with patch.object(server, "DATA_DIR", self.data_dir):
+            try:
+                for thread in operation_threads:
+                    thread.start()
+                for done in completed.values():
+                    self.assertFalse(done.wait(0.1))
+            finally:
+                release_transaction.set()
+                delivery_thread.join(timeout=2)
+                for thread in operation_threads:
+                    thread.join(timeout=2)
+
+        self.assertFalse(delivery_thread.is_alive())
+        self.assertTrue(all(not thread.is_alive() for thread in operation_threads))
+        self.assertEqual(delivery_results, ["accepted"])
+        self.assertEqual(failures, [])
+        self.assertEqual(results["task_read"], {"tasks": []})
+        self.assertEqual(results["task_mutation"], "mutated")
+        self.assertEqual(results["artifact_read"], ())
+
+    def test_webhook_snapshot_preserves_private_then_database_lock_order(self):
+        script = r'''
+import json
+import os
+import sys
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import server
+from private_state import private_state_lock
+from task_repository import ensure_task_sqlite_authority
+
+with TemporaryDirectory(prefix="mentat-webhook-lock-order-") as temporary:
+    data_dir = Path(temporary) / "data"
+    data_dir.mkdir(mode=0o700)
+    tasks_path = data_dir / "tasks.json"
+    tasks_path.write_bytes(b"[]")
+    if os.name != "nt":
+        tasks_path.chmod(0o600)
+    ensure_task_sqlite_authority(data_dir)
+    server.DATA_DIR = data_dir
+
+    original_snapshot_lock = server.private_state_lock
+    private_held = threading.Event()
+    snapshot_lock_attempted = threading.Event()
+    ordinary_results = []
+    snapshot_results = []
+    failures = []
+
+    @contextmanager
+    def observed_snapshot_lock(root, *args, **kwargs):
+        snapshot_lock_attempted.set()
+        with original_snapshot_lock(root, *args, **kwargs) as descriptor:
+            yield descriptor
+
+    server.private_state_lock = observed_snapshot_lock
+
+    def ordinary_read():
+        try:
+            with private_state_lock(data_dir):
+                private_held.set()
+                if not snapshot_lock_attempted.wait(2):
+                    raise RuntimeError("snapshot did not attempt private-state lock")
+                ordinary_results.append(server.tasks_payload())
+        except Exception as exc:
+            failures.append(f"ordinary:{type(exc).__name__}:{exc}")
+
+    def webhook_snapshot():
+        try:
+            snapshot_results.append(server._read_webhook_tasks_snapshot())
+        except Exception as exc:
+            failures.append(f"snapshot:{type(exc).__name__}:{exc}")
+
+    ordinary_thread = threading.Thread(target=ordinary_read)
+    snapshot_thread = threading.Thread(target=webhook_snapshot)
+    ordinary_thread.start()
+    if not private_held.wait(2):
+        raise RuntimeError("ordinary read did not acquire private-state lock")
+    snapshot_thread.start()
+    ordinary_thread.join(3)
+    snapshot_thread.join(3)
+
+    result = {
+        "ordinary_alive": ordinary_thread.is_alive(),
+        "snapshot_alive": snapshot_thread.is_alive(),
+        "ordinary_results": ordinary_results,
+        "snapshot_results": snapshot_results,
+        "failures": failures,
+    }
+    print(json.dumps(result, sort_keys=True))
+    if (
+        result["ordinary_alive"]
+        or result["snapshot_alive"]
+        or failures
+        or ordinary_results != [{"tasks": []}]
+        or snapshot_results != [[]]
+    ):
+        sys.exit(1)
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(server.__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout={result.stdout!r}\nstderr={result.stderr!r}",
+        )
 
     def test_real_loopback_http_lifecycle_dispatches_and_checks_host(self):
         httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)

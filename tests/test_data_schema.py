@@ -17,6 +17,7 @@ import data_schema
 import json_store
 import runtime_config
 import server
+import task_repository
 
 
 class DataSchemaTests(unittest.TestCase):
@@ -612,6 +613,13 @@ class DataSchemaTests(unittest.TestCase):
                 patch.object(server, "DATA_MUTATION_LOCK", True),
             )
             selected = target / "tasks.json"
+            selected.write_text(
+                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                encoding="utf-8",
+            )
+            if os.name == "posix":
+                selected.chmod(0o600)
+            task_repository.ensure_task_sqlite_authority(target)
             selected.unlink()
             if os.name == "nt":
                 try:
@@ -621,14 +629,18 @@ class DataSchemaTests(unittest.TestCase):
             else:
                 selected.symlink_to(outside)
             with common[0], common[1], common[2]:
-                with self.assertRaises(OSError):
-                    server.read_json_file("tasks.json", [])
-                with self.assertRaises(OSError):
+                self.assertEqual(
+                    [item["id"] for item in server.read_json_file("tasks.json", [])],
+                    ["operator-task"],
+                )
+                self.assertEqual(
                     server.update_json_file(
                         "tasks.json",
                         [],
-                        lambda _current: ([{"id": "must-not-write"}], None),
-                    )
+                        lambda current: (current, "unchanged"),
+                    ),
+                    "unchanged",
+                )
             self.assertEqual(outside.read_text(encoding="utf-8"), '[{"id":"outside"}]\n')
 
             selected.unlink()
@@ -637,14 +649,18 @@ class DataSchemaTests(unittest.TestCase):
                 patch.object(server, "CONFIGURED_DATA_DIR", approved),
                 patch.object(server, "DATA_MUTATION_LOCK", True),
             ):
-                with self.assertRaises(FileNotFoundError):
-                    server.read_json_file("tasks.json", [])
-                with self.assertRaises(FileNotFoundError):
+                self.assertEqual(
+                    [item["id"] for item in server.read_json_file("tasks.json", [])],
+                    ["operator-task"],
+                )
+                self.assertEqual(
                     server.update_json_file(
                         "tasks.json",
                         [],
-                        lambda _current: ([{"id": "must-not-recreate"}], None),
-                    )
+                        lambda current: (current, "unchanged"),
+                    ),
+                    "unchanged",
+                )
             self.assertFalse(selected.exists())
 
     def test_json_writers_reject_preexisting_root_and_ancestor_redirects(self):
@@ -727,27 +743,48 @@ class DataSchemaTests(unittest.TestCase):
             with patch.object(runtime_config, "PACKAGED_SEED_DIR", seeds):
                 self.assertIsNone(runtime_config.prepare_data_root_for_startup(self.config(target)))
             approved = data_layout._absolute_without_following(target)
+            (target / "tasks.json").write_text(
+                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                encoding="utf-8",
+            )
+            if os.name == "posix":
+                (target / "tasks.json").chmod(0o600)
+            task_repository.ensure_task_sqlite_authority(target, required_source_mode=None)
             before = (target / "tasks.json").read_bytes()
             common = (
                 patch.object(server, "DATA_DIR", approved),
                 patch.object(server, "CONFIGURED_DATA_DIR", approved),
                 patch.object(server, "DATA_MUTATION_LOCK", True),
-                patch.object(server, "MAX_PREFLIGHT_JSON_BYTES", 128),
             )
-            with common[0], common[1], common[2], common[3]:
-                with self.assertRaises(ValueError):
-                    server.update_json_file(
-                        "tasks.json",
-                        [],
-                        lambda _current: ({"wrong": "shape"}, None),
-                    )
-                with self.assertRaises(ValueError):
-                    server.update_json_file(
-                        "tasks.json",
-                        [],
-                        lambda _current: ([{"text": "x" * 256}], None),
-                    )
+            with common[0], common[1], common[2]:
+                wrong_shape, wrong_shape_status = server.update_json_file(
+                    "tasks.json",
+                    [],
+                    lambda _current: ({"wrong": "shape"}, None),
+                )
+                oversized, oversized_status = server.update_json_file(
+                    "tasks.json",
+                    [],
+                    lambda current: (
+                        [
+                            {
+                                **current[0],
+                                "description": "x"
+                                * (task_repository.MAX_TASK_DOCUMENT_BYTES + 1),
+                            }
+                        ],
+                        None,
+                    ),
+                )
+            self.assertEqual(wrong_shape_status, 503)
+            self.assertIn("tasks.invalid", wrong_shape["error"])
+            self.assertEqual(oversized_status, 503)
+            self.assertIn("description.invalid", oversized["error"])
             self.assertEqual((target / "tasks.json").read_bytes(), before)
+            self.assertEqual(
+                [item["id"] for item in task_repository.read_authoritative_tasks(target)],
+                ["operator-task"],
+            )
             self.assertEqual(data_schema.schema_startup_status(target), "current")
 
     def test_windows_product_write_rejects_file_reparse_point(self):
@@ -760,6 +797,11 @@ class DataSchemaTests(unittest.TestCase):
             self.write_inventory(target, private=True)
             outside.write_text('[]\n', encoding="utf-8")
             selected = target / "tasks.json"
+            selected.write_text(
+                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                encoding="utf-8",
+            )
+            task_repository.ensure_task_sqlite_authority(target)
             selected.unlink()
             try:
                 selected.symlink_to(outside)
@@ -771,12 +813,13 @@ class DataSchemaTests(unittest.TestCase):
                 patch.object(server, "CONFIGURED_DATA_DIR", approved),
                 patch.object(server, "DATA_MUTATION_LOCK", True),
             ):
-                with self.assertRaises(OSError):
+                self.assertIsNone(
                     server.update_json_file(
                         "tasks.json",
                         [],
                         lambda current: (current, None),
                     )
+                )
             self.assertEqual(outside.read_text(encoding="utf-8"), "[]\n")
 
     def test_newer_manifest_refuses_recovery_without_deleting_temporary(self):
@@ -2685,16 +2728,29 @@ class DataSchemaTests(unittest.TestCase):
             changed = root / "changed"
             self.write_inventory(approved, private=True)
             self.write_inventory(changed, private=True)
+            (changed / "tasks.json").write_text(
+                json.dumps([{"id": "operator-task", "title": "Operator task"}]) + "\n",
+                encoding="utf-8",
+            )
+            if os.name == "posix":
+                (changed / "tasks.json").chmod(0o600)
+            task_repository.ensure_task_sqlite_authority(changed)
             (changed / "tasks.json").unlink()
             with (
                 patch.object(server, "DATA_DIR", data_layout._absolute_without_following(changed)),
                 patch.object(server, "CONFIGURED_DATA_DIR", data_layout._absolute_without_following(approved)),
                 patch.object(server, "DATA_MUTATION_LOCK", False),
             ):
-                with self.assertRaises(FileNotFoundError):
-                    server.read_json_file("tasks.json", [])
-                with self.assertRaises(FileNotFoundError):
-                    server.update_json_file("tasks.json", [], lambda _value: ([], None))
+                self.assertEqual(
+                    [item["id"] for item in server.read_json_file("tasks.json", [])],
+                    ["operator-task"],
+                )
+                self.assertEqual(
+                    server.update_json_file(
+                        "tasks.json", [], lambda value: (value, "unchanged")
+                    ),
+                    "unchanged",
+                )
             self.assertFalse((changed / "tasks.json").exists())
 
             (changed / "tasks.json").write_text("[]\n", encoding="utf-8")
@@ -2705,8 +2761,10 @@ class DataSchemaTests(unittest.TestCase):
                     patch.object(server, "CONFIGURED_DATA_DIR", data_layout._absolute_without_following(approved)),
                     patch.object(server, "DATA_MUTATION_LOCK", False),
                 ):
-                    with self.assertRaises(OSError):
-                        server.read_json_file("tasks.json", [])
+                    self.assertEqual(
+                        [item["id"] for item in server.read_json_file("tasks.json", [])],
+                        ["operator-task"],
+                    )
 
     def test_email_is_allowlisted_for_reads_but_never_for_writes(self):
         with TemporaryDirectory() as tmpdir:

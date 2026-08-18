@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from task_repository import ensure_task_sqlite_authority
 
 
 class TaskNoteContextTests(unittest.TestCase):
@@ -15,6 +16,7 @@ class TaskNoteContextTests(unittest.TestCase):
             vault.mkdir()
             (vault / "Plan.md").write_text("Safe context", encoding="utf-8")
             (root / "tasks.json").write_text(json.dumps([{"id": "task-1", "title": "Task", "project": "Mentat"}]), encoding="utf-8")
+            ensure_task_sqlite_authority(root, required_source_mode=None)
             (root / "projects.json").write_text(json.dumps([{"id": "project-1", "name": "Mentat"}]), encoding="utf-8")
             with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root), patch.object(server, "OBSIDIAN_VAULT", vault):
                 accepted, accepted_status = server.attach_task_note("task-1", {"relative_path": "Plan.md"})

@@ -17,6 +17,31 @@ All notable changes to Mentat.
   deterministic reconstruction, and optimistic revision conflicts.
 - Added `mentat task-migration`, a bounded read-only preview that binds the
   exact `tasks.json` source and destination state without performing a cutover.
+- Added schema-6 Task authority receipts and an atomic one-time startup cutover
+  that imports the exact legacy Task collection and makes SQLite the sole live
+  Task source, including for an intentionally empty collection.
+- Added `mentat task-export`, an offline preview/confirmation workflow for
+  producing an exact `tasks.json` downgrade snapshot without creating a second
+  live authority; `--compatible-root` creates a validated schema-5 sibling data
+  root with empty Task tables and exported JSON as the old build's sole Task
+  authority while preserving the source.
+  Compatible-root export fails closed for active remote-Hermes selection rather
+  than silently creating a sibling pointed at local Hermes, and expected
+  private capture/recovery failures now return bounded CLI results.
+  Exact-limit exports no longer gain an optional newline, and compatible-root
+  publication now fsyncs its staged directory hierarchy and final parent rename
+  with phase-aware partial-failure reporting.
+  Final export verification compares exact bytes without stripping whitespace;
+  Windows compatible-root publication now uses missing-only
+  `MOVEFILE_WRITE_THROUGH` semantics.
+
+### Changed
+- Routed all existing Task creation, editing, deletion, planning, recurrence,
+  calendar, search, delegation, artifact, and webhook refresh workflows through
+  the canonical SQLite repository without changing their public payloads.
+- Historical sparse Tasks, timezone-naive timestamps, and legacy delegation
+  links receive deterministic canonical defaults during import; stale
+  `tasks.json` is retained but ignored after cutover.
 
 ### Documentation
 - Added a canonical multi-agent pivot implementation plan that separates
@@ -34,8 +59,8 @@ All notable changes to Mentat.
   validation; legacy format-2 backups remain restorable as an empty registry.
 - Private Console backup/restore snapshots now retain Task rows, report Task
   counts, and reject malformed Task documents or broken dependency references.
-- Live Task APIs remain solely `tasks.json`-backed in this foundation slice;
-  no production import, startup migration, shadow read, or dual write exists.
+- Task rows and the authority receipt commit together. No post-cutover runtime
+  path reads, writes, shadows, synchronizes, or falls back to `tasks.json`.
 - The registry does not auto-import or mutate Hermes profiles, dispatch work,
   add concurrency, or change current Console behavior.
 

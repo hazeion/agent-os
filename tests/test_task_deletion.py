@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from task_repository import TaskRepositoryError, ensure_task_sqlite_authority
 
 
 class TaskDeletionTests(unittest.TestCase):
@@ -14,6 +15,11 @@ class TaskDeletionTests(unittest.TestCase):
         (root / "tasks.json").write_text(
             json.dumps(tasks, indent=2) + "\n", encoding="utf-8"
         )
+        try:
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+        except TaskRepositoryError:
+            # Invalid legacy source tests assert the bounded startup refusal.
+            pass
 
     def test_preview_and_confirmation_delete_only_the_selected_task(self):
         tasks = [
@@ -41,7 +47,7 @@ class TaskDeletionTests(unittest.TestCase):
                         "confirmation_id": preview["confirmation_id"],
                     },
                 )
-            stored = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
+                stored = server.read_json_file("tasks.json", [])
 
         self.assertEqual(preview_status, 200)
         self.assertTrue(preview["requires_confirmation"])
@@ -61,8 +67,11 @@ class TaskDeletionTests(unittest.TestCase):
             self.write_tasks(root, [original])
             with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 preview, _ = server.preview_task_deletion("task_review")
-                changed = {**original, "title": "Changed title"}
-                self.write_tasks(root, [changed])
+                server.update_json_file(
+                    "tasks.json",
+                    [],
+                    lambda tasks: ([{**tasks[0], "title": "Changed title"}], None),
+                )
                 payload, status = server.delete_confirmed_task(
                     "task_review",
                     {
@@ -70,11 +79,11 @@ class TaskDeletionTests(unittest.TestCase):
                         "confirmation_id": preview["confirmation_id"],
                     },
                 )
-            stored = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
+                stored = server.read_json_file("tasks.json", [])
 
         self.assertEqual(status, 409)
         self.assertIn("changed after preview", payload["error"])
-        self.assertEqual(stored, [changed])
+        self.assertEqual(stored[0]["title"], "Changed title")
 
     def test_delete_requires_confirmation_and_reports_missing_tasks(self):
         with TemporaryDirectory() as tmpdir:
@@ -110,10 +119,10 @@ class TaskDeletionTests(unittest.TestCase):
                 )
             stored = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(preview_status, 409)
-        self.assertIn("duplicated", preview["error"])
-        self.assertEqual(status, 409)
-        self.assertIn("duplicated", payload["error"])
+        self.assertEqual(preview_status, 500)
+        self.assertIn("must contain a list", preview["error"])
+        self.assertEqual(status, 503)
+        self.assertIn("Task storage is unavailable", payload["error"])
         self.assertEqual(stored, duplicate_tasks)
 
     def test_deletion_is_blocked_while_other_tasks_depend_on_target(self):

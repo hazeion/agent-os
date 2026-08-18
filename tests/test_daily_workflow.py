@@ -7,11 +7,14 @@ import unittest
 from unittest.mock import patch
 
 import server
+from task_repository import ensure_task_sqlite_authority
 
 
 class DailyWorkflowTests(unittest.TestCase):
     def write_json(self, root: Path, name: str, payload) -> None:
         (root / name).write_text(json.dumps(payload), encoding="utf-8")
+        if name == "tasks.json":
+            ensure_task_sqlite_authority(root, required_source_mode=None)
 
     def test_today_reorder_swaps_planned_rank_atomically(self):
         tasks = [

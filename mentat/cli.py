@@ -87,9 +87,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     task_migration = commands.add_parser(
         "task-migration",
-        help="Preview the exact migration from tasks.json to Mentat's SQLite Task store.",
+        help="Preview the exact Task cutover or report existing SQLite authority.",
     )
     _runtime_arguments(task_migration)
+
+    task_export = commands.add_parser(
+        "task-export",
+        help="Export authoritative Tasks to tasks.json for an intentional downgrade.",
+    )
+    _runtime_arguments(task_export)
+    task_export.add_argument("--confirm", metavar="TOKEN")
+    task_export.add_argument(
+        "--compatible-root",
+        action="store_true",
+        help="Create a schema-5 sibling data root for a pre-cutover Mentat build.",
+    )
 
     connection = commands.add_parser(
         "connection",
@@ -298,6 +310,58 @@ def run_task_migration(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def run_task_export(args: argparse.Namespace) -> int:
+    from task_repository import (
+        TaskRepositoryError,
+        confirm_task_compatible_export,
+        confirm_task_legacy_export,
+        preview_task_compatible_export,
+        preview_task_legacy_export,
+    )
+
+    runtime_config, config = _load_config(args)
+    required_destination_mode = (
+        None
+        if runtime_config._absolute_without_following(config.data_dir)
+        == runtime_config._absolute_without_following(runtime_config.PACKAGED_SEED_DIR)
+        else 0o600
+    )
+    try:
+        if args.compatible_root and args.confirm:
+            payload = confirm_task_compatible_export(
+                config.data_dir,
+                args.confirm,
+            )
+        elif args.compatible_root:
+            payload = preview_task_compatible_export(config.data_dir).public_summary()
+        elif args.confirm:
+            payload = confirm_task_legacy_export(
+                config.data_dir,
+                args.confirm,
+                required_destination_mode=required_destination_mode,
+            )
+        else:
+            payload = preview_task_legacy_export(
+                config.data_dir,
+                required_destination_mode=required_destination_mode,
+            ).public_summary()
+    except TaskRepositoryError as exc:
+        writes_performed = getattr(exc, "writes_performed", False)
+        _print_json(
+            {
+                "ok": False,
+                "status": (
+                    "blocked" if writes_performed is False else "partial"
+                ),
+                "error_code": exc.code,
+                "writes_performed": writes_performed,
+            }
+        )
+        return 2
+    _print_json({"ok": True, **payload})
+    return 0
+
+
 def _connection_server_running(config) -> bool:
     import mentat_lifecycle
     from private_state import mentat_server_active
@@ -466,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         "backup": run_backup,
         "restore": run_restore,
         "task-migration": run_task_migration,
+        "task-export": run_task_export,
         "connection": run_connection,
     }
     return handlers[args.command](args)

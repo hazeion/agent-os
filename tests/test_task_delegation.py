@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import server
 from hermes_kanban import RemoteHermesKanbanAdapter
+from task_repository import ensure_task_sqlite_authority, normalize_legacy_task_collection
 
 
 class FakeKanban:
@@ -84,6 +85,7 @@ class TaskDelegationTests(unittest.TestCase):
             "updated_at": "2026-07-12T10:00:00-07:00",
         }]), encoding="utf-8")
         (self.root / "projects.json").write_text(json.dumps([{"id": "project-1", "name": "Mentat"}]), encoding="utf-8")
+        ensure_task_sqlite_authority(self.root, required_source_mode=None)
         self.adapter = FakeKanban()
         self.patches = [
             patch.object(server, "DATA_DIR", self.root), patch.object(server, "CONFIGURED_DATA_DIR", self.root),
@@ -100,6 +102,17 @@ class TaskDelegationTests(unittest.TestCase):
 
     def intent(self):
         return {"profile_id": "researcher", "board_id": "default", "workspace": "scratch", "instructions": "Cite sources"}
+
+    def read_tasks(self):
+        return server.read_json_file("tasks.json", [])
+
+    def replace_tasks(self, tasks):
+        normalized = list(normalize_legacy_task_collection(tasks))
+        return server.update_json_file(
+            "tasks.json",
+            [],
+            lambda _current: (normalized, None),
+        )
 
     def test_preview_binds_exact_task_and_target(self):
         preview, status = server.preview_task_delegation("task-1", self.intent())
@@ -127,9 +140,9 @@ class TaskDelegationTests(unittest.TestCase):
 
     def test_changed_task_invalidates_confirmation(self):
         preview, _ = server.preview_task_delegation("task-1", self.intent())
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["title"] = "Changed"
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         payload, status = server.delegate_confirmed_task("task-1", {
             **self.intent(), "confirmed": True, "confirmation_id": preview["confirmation_id"]
         })
@@ -164,9 +177,9 @@ class TaskDelegationTests(unittest.TestCase):
     def test_accept_review_completes_mentat_task_without_extra_hermes_mutation(self):
         preview, _ = server.preview_task_delegation("task-1", self.intent())
         server.delegate_confirmed_task("task-1", {**self.intent(), "confirmed": True, "confirmation_id": preview["confirmation_id"]})
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"]["state"] = "ready_for_review"
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         self.adapter.remote_status = "review"
         timestamp_counter = [0]
 
@@ -237,7 +250,7 @@ class TaskDelegationTests(unittest.TestCase):
                     "children": [],
                 }
 
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"] = {
             "profile_id": "researcher",
             "board_id": "default",
@@ -247,7 +260,7 @@ class TaskDelegationTests(unittest.TestCase):
             "sync_state": "pending",
             "review_state": "pending",
         }
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         adapter = RemoteHermesKanbanAdapter(
             RemoteClient(),
             connection_binding_id="b" * 32,
@@ -277,13 +290,13 @@ class TaskDelegationTests(unittest.TestCase):
         self.assertIsNotNone(payload["task"])
         self.assertEqual(payload["delegation"]["artifact_sync_state"], "synced")
         self.assertEqual(payload["delegation"]["artifact_count"], 2)
-        stored = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))[0]
+        stored = self.read_tasks()[0]
         self.assertEqual(stored["delegation"]["artifact_sync_state"], "synced")
         self.assertEqual(stored["delegation"]["artifact_count"], 2)
         importer.assert_called_once()
 
     def test_archived_remote_task_can_import_files_on_first_refresh(self):
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"] = {
             "profile_id": "researcher",
             "board_id": "default",
@@ -293,7 +306,7 @@ class TaskDelegationTests(unittest.TestCase):
             "sync_state": "pending",
             "review_state": "pending",
         }
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         adapter = RemoteHermesKanbanAdapter(
             object(),
             connection_binding_id="b" * 32,
@@ -358,7 +371,7 @@ class TaskDelegationTests(unittest.TestCase):
         second_remote["runs"] = [
             {"id": 8, "status": "done", "outcome": "completed"}
         ]
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"] = {
             "profile_id": "researcher",
             "board_id": "default",
@@ -373,7 +386,7 @@ class TaskDelegationTests(unittest.TestCase):
             "artifact_count": 0,
             "artifact_rejected_count": 0,
         }
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         adapter = RemoteHermesKanbanAdapter(
             object(),
             connection_binding_id="b" * 32,
@@ -408,10 +421,10 @@ class TaskDelegationTests(unittest.TestCase):
         self.assertIn("profiles are unavailable", payload["error"])
 
     def test_preview_blocks_incomplete_dependencies(self):
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["depends_on"] = ["task-dependency"]
         tasks.append({"id": "task-dependency", "title": "Dependency", "status": "todo"})
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
 
         payload, status = server.preview_task_delegation("task-1", self.intent())
 
@@ -443,7 +456,7 @@ class TaskDelegationTests(unittest.TestCase):
                 "confirmation_id": preview["confirmation_id"],
             },
         )
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"].update(
             {
                 "artifact_sync_state": "synced",
@@ -453,16 +466,14 @@ class TaskDelegationTests(unittest.TestCase):
                 "artifact_sync_attempts": 0,
             }
         )
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         self.adapter.remote_status = "review"
         action_preview, status = server.preview_delegation_action(
             "task-1",
             {"action": "accept"},
         )
         self.assertEqual(status, 200)
-        current = json.loads(
-            (self.root / "tasks.json").read_text(encoding="utf-8")
-        )[0]
+        current = self.read_tasks()[0]
 
         for changed_field, changed_value in (
             ("board_id", "changed-board"),
@@ -568,9 +579,9 @@ class TaskDelegationTests(unittest.TestCase):
         reconcile.assert_called_once()
 
     def test_activity_groups_linked_tasks_by_decision_state(self):
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"] = {"profile_id": "researcher", "state": "needs_input", "review_state": "pending"}
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         payload = server.agent_activity_payload()
         self.assertEqual(payload["counts"]["needs_input"], 1)
         self.assertEqual(payload["groups"]["needs_input"][0]["task_id"], "task-1")
@@ -601,7 +612,7 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             }
         )
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         with (
             patch.object(
                 server,
@@ -648,7 +659,7 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             },
         ]
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         with (
             patch.object(
                 server,
@@ -709,7 +720,7 @@ class TaskDelegationTests(unittest.TestCase):
                 },
             },
         ]
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         with (
             patch.object(
                 server,
@@ -732,14 +743,14 @@ class TaskDelegationTests(unittest.TestCase):
         refresh_task.assert_called_once_with("due")
 
     def test_legacy_remote_delegation_requires_verified_rebind(self):
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"] = {
             "profile_id": "researcher",
             "board_id": "default",
             "kanban_task_id": "t-hermes-1",
             "state": "running",
         }
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         adapter = RemoteHermesKanbanAdapter(
             object(),
             connection_binding_id="b" * 32,
@@ -772,21 +783,21 @@ class TaskDelegationTests(unittest.TestCase):
 
         self.assertEqual(confirm_status, 200)
         self.assertTrue(result["ok"])
-        stored = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))[0]
+        stored = self.read_tasks()[0]
         self.assertEqual(
             stored["delegation"]["connection_binding_id"],
             "b" * 32,
         )
 
     def test_legacy_rebind_rejects_connection_swap_after_preview(self):
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"] = {
             "profile_id": "researcher",
             "board_id": "default",
             "kanban_task_id": "t-hermes-1",
             "state": "running",
         }
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         first = RemoteHermesKanbanAdapter(
             object(),
             connection_binding_id="a" * 32,
@@ -828,18 +839,18 @@ class TaskDelegationTests(unittest.TestCase):
 
         self.assertEqual(confirm_status, 409)
         self.assertIn("changed after preview", result["error"])
-        stored = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))[0]
+        stored = self.read_tasks()[0]
         self.assertNotIn("connection_binding_id", stored["delegation"])
 
     def test_legacy_rebind_expected_state_rejects_task_race(self):
-        tasks = json.loads((self.root / "tasks.json").read_text(encoding="utf-8"))
+        tasks = self.read_tasks()
         tasks[0]["delegation"] = {
             "profile_id": "researcher",
             "board_id": "default",
             "kanban_task_id": "t-hermes-1",
             "state": "running",
         }
-        (self.root / "tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+        self.replace_tasks(tasks)
         adapter = RemoteHermesKanbanAdapter(
             object(),
             connection_binding_id="b" * 32,
@@ -869,14 +880,9 @@ class TaskDelegationTests(unittest.TestCase):
             nonlocal adapter_calls
             adapter_calls += 1
             if adapter_calls == 2:
-                changed = json.loads(
-                    (self.root / "tasks.json").read_text(encoding="utf-8")
-                )
+                changed = self.read_tasks()
                 changed[0]["description"] = "Changed during confirmation"
-                (self.root / "tasks.json").write_text(
-                    json.dumps(changed),
-                    encoding="utf-8",
-                )
+                self.replace_tasks(changed)
             return adapter
 
         with (

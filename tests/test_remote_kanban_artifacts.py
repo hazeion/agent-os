@@ -15,6 +15,7 @@ from hermes_kanban import RemoteHermesKanbanAdapter
 from mentat_db import connect
 from remote_hermes import RemoteHermesClient, RemoteHermesError
 import server
+from task_repository import ensure_task_sqlite_authority
 
 
 def artifact(content=b"# Result\n", **updates):
@@ -417,6 +418,7 @@ class PrivateArtifactSnapshotTests(unittest.TestCase):
                 '"board_id":"default","kanban_task_id":"t_12345678"}}]',
                 encoding="utf-8",
             )
+            ensure_task_sqlite_authority(data_dir, required_source_mode=None)
             import_remote_task_artifacts(
                 data_dir,
                 mentat_task_id="task_local",
@@ -455,6 +457,7 @@ class PrivateArtifactSnapshotTests(unittest.TestCase):
                 '"board_id":"default","kanban_task_id":"t_12345678"}}]',
                 encoding="utf-8",
             )
+            ensure_task_sqlite_authority(data_dir, required_source_mode=None)
             client = AdapterClient()
             adapter = RemoteHermesKanbanAdapter(
                 client,

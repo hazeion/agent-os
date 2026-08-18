@@ -87,13 +87,30 @@ legacy heartbeat-observation surface and must not be merged into or substituted
 for the canonical registry. The registry is capped at 128 Agents and is part of
 the validated private Console backup/restore consistency unit.
 
-Pivot Slice 1C-A adds canonical Task tables and a revision-aware repository to
-the existing owner-private `mentat.sqlite3`, but live Task behavior remains
-exclusively `tasks.json`-backed until the approved 1C-B cutover. Do not add
-shadow reads, dual writes, startup import, or production import confirmation in
-1C-A. `mentat task-migration` is a read-only exact preview; deterministic export
-and the transactional import primitive are recovery/test infrastructure, not
-alternate runtime authorities.
+Pivot Slice 1C-B makes the canonical Task tables in owner-private
+`mentat.sqlite3` authoritative. The exact one-time startup import and singleton
+authority receipt commit in the same transaction. After the receipt exists,
+live Task paths must use SQLite exclusively and must never read, write, shadow,
+synchronize, or fall back to stale `tasks.json`; the tracked file is only a
+packaged seed/recovery artifact. `mentat task-migration` remains read-only and
+reports existing authority without consulting stale JSON. Deterministic export
+is recovery infrastructure, not an alternate runtime authority. The offline
+`mentat task-export` command may replace `tasks.json` only after an exact
+preview/confirmation while no Mentat server is active; live code must still
+ignore that file while the SQLite authority receipt exists. Use its
+`--compatible-root` mode for an actual pre-cutover build: it publishes a new
+schema-5 sibling data root whose Task tables are empty and whose exported
+`tasks.json` is the old build's sole Task authority. It must leave the
+authoritative schema-6 root unchanged. Compatible-root export must fail closed
+while the source actively selects remote Hermes because connection credentials
+are deliberately excluded; the operator must explicitly return the source to
+local mode and reconfigure the sibling before any remote operation.
+The exact canonical Task export must remain within the shared document limit;
+do not append or ignore optional formatting bytes during write or verification.
+Compatible sibling publication must fsync its populated staged hierarchy and
+pinned parent on POSIX, or use missing-only Windows directory publication with
+`MOVEFILE_WRITE_THROUGH`, before reporting durable success. Post-rename failures
+must be reported as partial writes.
 
 Hermes remains the first capability-scoped runtime adapter. New orchestration
 code must use the runtime-neutral boundary and must not depend directly on

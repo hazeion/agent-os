@@ -518,7 +518,7 @@ def parse_cli_args(argv=None):
     operation.add_argument(
         "--preview-task-sqlite-migration",
         action="store_true",
-        help="Preview the exact tasks.json to SQLite migration without writing Task rows.",
+        help="Preview the exact tasks.json to SQLite cutover or report existing SQLite authority.",
     )
     operation.add_argument(
         "--create-backup",
@@ -642,7 +642,7 @@ def run_task_sqlite_migration_cli(
     cli_args: argparse.Namespace,
     config: AppConfig,
 ) -> tuple[dict, int]:
-    """Run the Slice 1C-A read-only Task migration preview."""
+    """Run the read-only Task migration/authority preview."""
 
     from task_repository import TaskRepositoryError, preview_task_sqlite_migration
 
@@ -664,7 +664,7 @@ def run_task_sqlite_migration_cli(
             "writes_performed": False,
         }, 2
     summary = preview.public_summary()
-    return summary, 0 if preview.status == "ready" else 2
+    return summary, 0 if preview.status in {"ready", "already_cut_over"} else 2
 
 
 def run_backup_restore_cli(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,7 +19,11 @@ from private_state import (
 
 
 DATABASE_NAME = "mentat.sqlite3"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+# Connection validation, WAL configuration, migration, and identity checks
+# must not overlap a webhook delivery transaction on Windows. Ordinary queries
+# release this process-wide boundary as soon as their connection is ready.
+DATABASE_OPEN_BARRIER = threading.RLock()
 
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -262,6 +267,23 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON mentat_task_dependencies(dependency_task_id, task_id);
         """,
     ),
+    (
+        6,
+        """
+        CREATE TABLE mentat_task_store_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            authority TEXT NOT NULL CHECK (authority = 'sqlite'),
+            migration_contract TEXT NOT NULL CHECK (
+                migration_contract = 'mentat-task-sqlite-cutover-v1'
+            ),
+            source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+            source_task_count INTEGER NOT NULL CHECK (
+                source_task_count BETWEEN 0 AND 2048
+            ),
+            cutover_at REAL NOT NULL CHECK (cutover_at > 0)
+        );
+        """,
+    ),
 )
 
 
@@ -385,8 +407,9 @@ def migrate(connection: sqlite3.Connection) -> None:
             raise
 
 
-def connect(data_dir: Path) -> sqlite3.Connection:
-    """Open a migrated SQLite connection with Mentat's local concurrency defaults."""
+def _connect_with_identity_locked(
+    data_dir: Path,
+) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
     private = ensure_private_console_dir(data_dir)
     path = private / DATABASE_NAME
     _validate_database_set(path, private)
@@ -412,10 +435,26 @@ def connect(data_dir: Path) -> sqlite3.Connection:
         for candidate, identity in identities.items():
             if identity is not None and verified.get(candidate) != identity:
                 raise MentatDatabaseError("Mentat database file identity changed while opening")
-        return connection
+        return connection, verified
     except Exception:
         connection.close()
         raise
+
+
+def connect_with_identity(
+    data_dir: Path,
+) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
+    """Open SQLite after serialized validation, WAL setup, and migration."""
+
+    with DATABASE_OPEN_BARRIER:
+        return _connect_with_identity_locked(data_dir)
+
+
+def connect(data_dir: Path) -> sqlite3.Connection:
+    """Open a migrated SQLite connection with Mentat's local concurrency defaults."""
+
+    connection, _identities = connect_with_identity(data_dir)
+    return connection
 
 
 @contextmanager

@@ -331,6 +331,8 @@ class HermesRefreshCoordinator:
                 health["backoff_skip_count"] += 1
                 return False
         try:
+            if self._stop.is_set():
+                return False
             snapshot = deepcopy(adapter(binding_id))
         except Exception:
             with self._state_lock:
@@ -349,7 +351,6 @@ class HermesRefreshCoordinator:
                 )
                 health["last_error_code"] = "webhook_refresh_failed"
             return False
-
         with self._state_lock:
             if self._stop.is_set():
                 return False
