@@ -769,3 +769,54 @@ focused and exact concurrency suites.
 superseding verification evidence satisfy the reviewed-feature technical gate.
 Nothing is staged, committed, pushed, or republished until the user gives the
 immediate publication approval required by the workflow.
+
+### Post-publication CI correction
+
+The approved Round-12 commit `bd35864` was published to PR #108. Native
+artifact smoke, quality gates, and all but four CI matrix jobs passed. Three
+Windows group-1 jobs, one for each supported Python version, consistently
+failed the compatible-export remote-state fixture with
+`task_export.capture_unavailable`. The fixture applied the production owner-
+only writer to the connection file but left its parent private directory with
+the inherited Windows ACL. Production correctly validates both directory and
+file before parsing the record and therefore failed closed.
+
+The fixture now applies the same production Windows owner-only ACL helper to
+the existing private directory before writing the connection record. This is
+test setup only; no production permission contract is weakened. A fourth
+failure on macOS Python 3.12 was unrelated: the existing maximum-text
+performance assertion took 2.354 seconds against a 2.0-second budget while the
+same test passed elsewhere. No performance threshold or production validation
+is changed for that single timing outlier.
+
+Post-publication correction verification and same-reviewer review are pending.
+The correction is not staged, committed, or pushed.
+
+#### Post-publication correction verification
+
+| Command or action | Result | Evidence |
+| --- | --- | --- |
+| Exact Windows fixture path on host | Pass | The compatible remote-export case reaches the expected safe refusal after constructing a valid directory-and-file private boundary. |
+| Task repository module | Pass | All 53 Task repository tests pass. |
+| Unrelated timing regression | Pass | The maximum slash-free public-text validation test passed three consecutive runs without changing its 2.0-second assertion. |
+| Static checks | Pass | The changed test compiles and `git diff --check` is clean. |
+
+The production diff remains identical to the two-reviewer-approved Round-12
+commit. Only the Windows fixture and this persistent verification record have
+changed. Native Windows execution remains the decisive fixture proof after the
+correction is published. Same-reviewer review is pending.
+
+#### Post-publication correction reviewer decisions
+
+Both original reviewers independently returned **approved** with no findings.
+Each confirmed that the fixture now matches production's complete Windows
+privacy sequence: protected owner-only private directory first, then protected
+owner-only connection file, with read-only loading still validating both.
+Neither found any production or security-contract change.
+
+The reviewers independently repeated the exact fixture and Task repository
+checks. Native Windows CI remains the decisive proof of the Win32 ACL branch,
+and the isolated macOS timing job must rerun successfully before merge.
+
+**Approved for publication checkpoint.** The two-file CI correction is not
+staged, committed, or pushed until the user gives immediate approval.

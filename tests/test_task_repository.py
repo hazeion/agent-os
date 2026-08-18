@@ -1617,6 +1617,11 @@ class TaskRepositoryTests(unittest.TestCase):
             write_seed_root(root, [task("task_a")])
             ensure_task_sqlite_authority(root)
             connection = remote_hermes.connection_path(root)
+            if os.name == "nt":
+                remote_hermes._windows_set_owner_only(
+                    connection.parent,
+                    directory=True,
+                )
             remote_hermes._write_connection_record(
                 connection,
                 remote_hermes.ConnectionState(
