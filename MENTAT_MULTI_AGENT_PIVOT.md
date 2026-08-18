@@ -451,6 +451,11 @@ Do not make an LLM supervisor the foundational authority. Mentat should remain d
 
 ## 16. Implementation phases
 
+`MENTAT_PIVOT_IMPLEMENTATION_PLAN.md` translates these phases into the current
+reviewable slice sequence. Use that plan to determine what is complete, active,
+proposed, or provisional, and use each active slice's review log for its exact
+approved contract and evidence.
+
 ### Phase 0 — Complete Hermes webhooks
 
 Deliver:
@@ -558,3 +563,9 @@ one runtime registry, normalized Hermes run/event projections, and compatibility
 delegation to the existing Hermes Console handlers. Durable Mentat Agent
 persistence, generic task dispatch, concurrency, runtime #2, and the new web UI
 remain separate follow-up slices.
+
+The durable Agent Registry and separate Hermes runtime-binding slice is now in
+progress on `codex/mentat-durable-agent-registry`. The maintained ordering and
+status of all follow-up slices lives in `MENTAT_PIVOT_IMPLEMENTATION_PLAN.md`;
+do not infer implementation authorization from this architectural summary
+alone.

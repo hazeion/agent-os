@@ -2,6 +2,32 @@
 
 All notable changes to Mentat.
 
+## 2026-08-18
+
+### Added
+- Added an owner-private durable registry for canonical Mentat Agents and
+  separate one-to-one runtime configurations, with Hermes as the only accepted
+  runtime in this slice. The registry uses its own versioned SQLite file so the
+  prior Console database schema remains usable during rollback.
+- Added runtime-neutral create/list API operations at
+  `/api/orchestration/agents` without changing the legacy `/api/agents`
+  heartbeat surface.
+
+### Documentation
+- Added a canonical multi-agent pivot implementation plan that separates
+  complete, active, proposed, provisional, and deferred slices and records the
+  current resume point.
+
+### Safety
+- Agent creation is atomic and serialized with private backup/restore. Public
+  projections omit adapter-owned runtime references, and the registry stores no
+  credentials or arbitrary runtime options. A transactional 128-Agent ceiling
+  keeps create/list and recovery behavior bounded.
+- Backup format 3 includes the registry with relationship and semantic
+  validation; legacy format-2 backups remain restorable as an empty registry.
+- The registry does not auto-import or mutate Hermes profiles, dispatch work,
+  add concurrency, or change current Console behavior.
+
 ## 2026-08-17
 
 ### Added

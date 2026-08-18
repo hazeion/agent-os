@@ -138,6 +138,7 @@ class DataBackupRestoreTests(unittest.TestCase):
                         *(f"data/{name}" for name in data_layout.SEED_FILE_NAMES),
                         "private/history.json",
                         "private/mentat.sqlite3",
+                        "private/agent-registry.sqlite3",
                     ],
                 )
                 manifest = json.loads(archive.read("manifest.json"))
@@ -472,7 +473,7 @@ class DataBackupRestoreTests(unittest.TestCase):
     def test_zip_entry_count_is_bounded_before_zipfile_construction(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
-            for index in range(1 + len(data_layout.SEED_FILE_NAMES) + 2 + backup_restore.MAX_BLOBS + 1):
+            for index in range(1 + len(data_layout.SEED_FILE_NAMES) + 3 + backup_restore.MAX_BLOBS + 1):
                 archive.writestr(f"entry-{index}", b"")
         with patch.object(
             backup_restore.zipfile,

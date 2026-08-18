@@ -42,7 +42,16 @@ from agent_run_history import (
     save_run_summaries,
     secure_history_permissions,
 )
-from agent_runtime import AgentRuntimeRegistry
+from agent_runtime import AgentRuntimeError, AgentRuntimeRegistry
+from agent_registry import (
+    AgentRegistry,
+    AgentRegistryConflict,
+    AgentRegistryError,
+    AgentRegistryLimitError,
+    AgentRegistryUnavailableError,
+    AgentRegistryValidationError,
+    public_agent_record,
+)
 from private_state import (
     console_root as private_console_root,
     history_path as private_history_path,
@@ -1461,6 +1470,68 @@ def upsert_agent_heartbeat(payload):
         return next_agents, ({"ok": True, "agent": normalized, "agents": next_agents, "summary": agent_summary(next_agents)}, status)
 
     return update_json_file("agents.json", [], mutator)
+
+
+def _mentat_agent_registry() -> AgentRegistry:
+    runtime_types = {
+        str(item["runtime_type"])
+        for item in AGENT_RUNTIME_REGISTRY.public_inventory()
+    }
+    return AgentRegistry(DATA_DIR, supported_runtime_types=runtime_types)
+
+
+def mentat_agents_payload():
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise AgentRegistryError("agent_registry.restore_in_progress")
+        agents = _mentat_agent_registry().list_agents()
+    return {
+        "schema_version": 1,
+        "agents": [public_agent_record(agent) for agent in agents],
+        "count": len(agents),
+    }
+
+
+def create_mentat_agent(payload):
+    if not isinstance(payload, dict):
+        return {"error": "Agent payload must be a JSON object."}, 400
+    allowed = {"name", "runtime_type", "runtime_agent_ref", "capabilities"}
+    if set(payload) - allowed:
+        return {"error": "Agent payload contains unsupported fields."}, 400
+    if not allowed - {"capabilities"} <= set(payload):
+        return {"error": "Agent name and runtime binding are required."}, 400
+    capabilities = payload.get("capabilities", [])
+    if not isinstance(capabilities, list):
+        return {"error": "Agent capabilities must be a list."}, 400
+    runtime_type = payload.get("runtime_type")
+    if not isinstance(runtime_type, str):
+        return {"error": "Agent runtime type is invalid."}, 400
+    try:
+        AGENT_RUNTIME_REGISTRY.require(runtime_type)
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                return {"error": "Agent storage is unavailable during recovery."}, 503
+            agent = _mentat_agent_registry().create_agent(
+                agent_id=f"agent_{uuid4().hex}",
+                name=payload.get("name"),
+                runtime_config_id=f"runtime_config_{uuid4().hex}",
+                runtime_type=runtime_type,
+                runtime_agent_ref=payload.get("runtime_agent_ref"),
+                capabilities=capabilities,
+            )
+    except (AgentRegistryValidationError, AgentRuntimeError, ValueError):
+        return {"error": "Agent or runtime binding is invalid."}, 400
+    except AgentRegistryConflict:
+        return {"error": "That Agent identity or runtime binding already exists."}, 409
+    except AgentRegistryLimitError:
+        return {"error": "The local Agent registry is full."}, 409
+    except AgentRegistryUnavailableError:
+        return {"error": "Agent storage is temporarily unavailable."}, 503
+    except AgentRegistryError:
+        return {"error": "Mentat could not store this Agent."}, 500
+    except OSError:
+        return {"error": "Agent storage is temporarily unavailable."}, 503
+    return {"ok": True, "agent": public_agent_record(agent)}, 201
 
 
 def file_mtime_iso(path: Path) -> str | None:
@@ -9337,6 +9408,7 @@ POST_ROUTES = [
     (re.compile(r"^/api/hermes/webhooks/probe$"), probe_hermes_webhook, True),
     (re.compile(r"^/api/attention/([^/]+)/resolve$"), resolve_attention_item, False),
     (re.compile(r"^/api/agents/heartbeat$"), upsert_agent_heartbeat, True),
+    (re.compile(r"^/api/orchestration/agents$"), create_mentat_agent, True),
     (re.compile(r"^/api/tasks$"), create_task, True),
     (re.compile(r"^/api/tasks/delegations/refresh-home$"), refresh_home_delegations, False),
     (re.compile(r"^/api/tasks/([^/]+)/delete/preview$"), preview_task_deletion, True),
@@ -9961,6 +10033,23 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.log_internal_error("calendar", exc)
                 self.send_json({"error": "Calendar is unavailable."}, status=500)
+            return
+        if parsed.path == "/api/orchestration/agents":
+            try:
+                self.send_json(mentat_agents_payload())
+            except AgentRegistryUnavailableError as exc:
+                self.log_internal_error("Mentat Agent registry", exc)
+                self.send_json({"error": "Mentat Agents are temporarily unavailable."}, status=503)
+            except AgentRegistryError as exc:
+                self.log_internal_error("Mentat Agent registry", exc)
+                status = 503 if exc.code == "agent_registry.restore_in_progress" else 500
+                self.send_json({"error": "Mentat Agents are temporarily unavailable."}, status=status)
+            except OSError as exc:
+                self.log_internal_error("Mentat Agent registry", exc)
+                self.send_json({"error": "Mentat Agents are temporarily unavailable."}, status=503)
+            except Exception as exc:
+                self.log_internal_error("Mentat Agent registry", exc)
+                self.send_json({"error": "Mentat Agents are temporarily unavailable."}, status=500)
             return
         if parsed.path in API_ROUTES:
             try:

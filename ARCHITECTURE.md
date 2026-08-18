@@ -26,10 +26,19 @@ their own capability-scoped adapters without weakening this boundary.
 - A Mentat **heartbeat agent** remains an observation about a running or
   recently completed process. Records in `data/agents.json` are not the new
   canonical Agent registry.
+- Canonical Mentat Agents are persisted in an independently versioned,
+  owner-private `agent-registry.sqlite3`, separately from the schema-versioned
+  Console database and from one-to-one adapter runtime configurations. The runtime configuration retains
+  the private runtime-owned Agent reference; ordinary browser projections omit
+  that reference and expose only Mentat identity, runtime type/config identity,
+  and declared capabilities. The local registry is transactionally capped at
+  128 Agents so create/list responses and private recovery remain bounded.
+- The additive registry supports create/list behavior only during its first
+  slice. It does not auto-import or mutate Hermes profiles, store credentials,
+  dispatch tasks, edit/delete Agents, or replace heartbeat observations.
 - A Hermes **session** remains conversation history owned by a specific Hermes
   profile and is a runtime reference, not Mentat workflow authority.
-- Durable Mentat Agent persistence is a later additive migration. This first
-  seam defines the identity contract without inventing profile-derived IDs.
+- Durable Agent persistence remains additive without inventing profile-derived IDs.
 
 ## Data ownership and layout
 
@@ -216,6 +225,15 @@ that identity before queue and launch. Its remote implementation supports one
 profile-scoped turn through fixed Runs API operations, reads only the advertised
 complete profile/runtime inventories, and can neither inspect nor launch local
 Hermes.
+
+The runtime-neutral Agent registry is available at
+`/api/orchestration/agents`, separate from the legacy `/api/agents` heartbeat
+projection. Creation is serialized with the durable backup/restore boundary,
+stores the Agent and Hermes binding atomically, accepts only a registered
+runtime, and never returns the adapter-owned runtime reference. A configured
+Agent does not itself authorize or start work; generic dispatch is a later
+slice. Backup format 3 includes and semantically validates the registry;
+pre-registry format-2 backups remain restorable and produce an empty registry.
 
 ## Remote Hermes connection boundary
 

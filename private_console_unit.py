@@ -21,6 +21,12 @@ from functools import lru_cache
 from tempfile import TemporaryDirectory
 from typing import Iterable
 
+from agent_registry import (
+    AgentRegistryError,
+    REGISTRY_DATABASE_NAME,
+    initialize_registry_file,
+    validate_registry_connection,
+)
 from agent_run_history import (
     DEFAULT_RETENTION,
     LEGACY_SCHEMA_VERSIONS,
@@ -34,6 +40,7 @@ from private_state import blobs_root, console_root, database_path, ensure_consol
 
 MAX_HISTORY_BYTES = 4 * 1024 * 1024
 MAX_DATABASE_BYTES = 32 * 1024 * 1024
+MAX_REGISTRY_DATABASE_BYTES = 4 * 1024 * 1024
 MAX_BLOB_BYTES = 10 * 1024 * 1024
 MAX_BLOBS = 100
 MAX_PRIVATE_UNIT_BYTES = 64 * 1024 * 1024
@@ -59,11 +66,16 @@ class PrivateBlob:
 class PrivateConsoleUnit:
     history_raw: bytes
     database_raw: bytes
+    registry_database_raw: bytes
     blobs: tuple[PrivateBlob, ...]
 
     @property
     def run_count(self) -> int:
         return len(_history_run_ids(self.history_raw))
+
+    @property
+    def agent_count(self) -> int:
+        return _registry_agent_count(self.registry_database_raw)
 
 
 def _canonical_json(value: object) -> bytes:
@@ -190,13 +202,16 @@ def empty_private_console_unit() -> PrivateConsoleUnit:
 
     with TemporaryDirectory(prefix="mentat-private-empty-") as temporary:
         database = Path(temporary) / "mentat.sqlite3"
+        registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
         _initialize_database(database)
+        initialize_registry_file(registry_database)
         rows = _validate_and_filter_database(database, ())
         if rows:
             raise PrivateConsoleUnitError("private_database_invalid")
         return PrivateConsoleUnit(
             history_raw=_empty_history(),
             database_raw=database.read_bytes(),
+            registry_database_raw=registry_database.read_bytes(),
             blobs=(),
         )
 
@@ -223,6 +238,29 @@ def _sqlite_readonly_uri(path: Path) -> str:
 
     absolute = Path(os.path.abspath(os.fspath(path)))
     return f"{absolute.as_uri()}?mode=ro"
+
+
+def _validate_registry_snapshot(path: Path) -> int:
+    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        agents = validate_registry_connection(connection, supported_runtime_types=("hermes",))
+        return len(agents)
+    except AgentRegistryError as exc:
+        raise PrivateConsoleUnitError("private_agent_registry_invalid") from exc
+    finally:
+        connection.close()
+
+
+def _registry_agent_count(raw: bytes) -> int:
+    if len(raw) > MAX_REGISTRY_DATABASE_BYTES:
+        raise PrivateConsoleUnitError("private_agent_registry_invalid")
+    with TemporaryDirectory(prefix="mentat-agent-count-") as temporary:
+        path = Path(temporary) / REGISTRY_DATABASE_NAME
+        path.write_bytes(raw)
+        if os.name != "nt":
+            path.chmod(0o600)
+        return _validate_registry_snapshot(path)
 
 
 def _sqlite_backup(
@@ -453,6 +491,8 @@ def capture_private_console_unit(
     history_raw = _canonical_json(history_payload)
     database = source / database_path(data_root).name
     database_source = database if database.exists() else None
+    registry_database = source / REGISTRY_DATABASE_NAME
+    registry_source = registry_database if registry_database.exists() else None
     with TemporaryDirectory(prefix="mentat-console-capture-") as temporary:
         snapshot_path = Path(temporary) / "mentat.sqlite3"
         _sqlite_backup(database_source, snapshot_path, copy_source=copy_sqlite_source)
@@ -468,6 +508,16 @@ def capture_private_console_unit(
         if database_references != _history_reference_pairs(history_raw):
             raise PrivateConsoleUnitError("private_history_database_mismatch")
         database_raw = _safe_regular(snapshot_path, maximum=MAX_DATABASE_BYTES)
+        registry_snapshot = Path(temporary) / REGISTRY_DATABASE_NAME
+        if registry_source is None:
+            initialize_registry_file(registry_snapshot)
+        else:
+            _sqlite_backup(registry_source, registry_snapshot, copy_source=copy_sqlite_source)
+        _validate_registry_snapshot(registry_snapshot)
+        registry_database_raw = _safe_regular(
+            registry_snapshot,
+            maximum=MAX_REGISTRY_DATABASE_BYTES,
+        )
     source_blobs = source / "blobs" / "sha256"
     blobs: list[PrivateBlob] = []
     for storage_key, expected_digest, expected_size in blob_rows:
@@ -475,9 +525,20 @@ def capture_private_console_unit(
         if len(raw) != expected_size or hashlib.sha256(raw).hexdigest() != expected_digest:
             raise PrivateConsoleUnitError("private_blob_content_invalid")
         blobs.append(PrivateBlob(storage_key=storage_key, raw=raw))
-    if len(history_raw) + len(database_raw) + sum(len(blob.raw) for blob in blobs) > MAX_PRIVATE_UNIT_BYTES:
+    if (
+        len(history_raw)
+        + len(database_raw)
+        + len(registry_database_raw)
+        + sum(len(blob.raw) for blob in blobs)
+        > MAX_PRIVATE_UNIT_BYTES
+    ):
         raise PrivateConsoleUnitError("private_unit_too_large")
-    return PrivateConsoleUnit(history_raw=history_raw, database_raw=database_raw, blobs=tuple(blobs))
+    return PrivateConsoleUnit(
+        history_raw=history_raw,
+        database_raw=database_raw,
+        registry_database_raw=registry_database_raw,
+        blobs=tuple(blobs),
+    )
 
 
 def validate_private_console_stage_inventory(
@@ -505,7 +566,11 @@ def validate_private_console_stage_inventory(
         or (os.name == "posix" and stat.S_IMODE(root_details.st_mode) != 0o700)
     ):
         raise PrivateConsoleUnitError("private_stage_inventory_invalid")
-    expected_files = {history_path(data_root).name, database_path(data_root).name}
+    expected_files = {
+        history_path(data_root).name,
+        database_path(data_root).name,
+        REGISTRY_DATABASE_NAME,
+    }
     expected_directories = {"blobs", "blobs/sha256"}
     for blob in unit.blobs:
         match = STORAGE_KEY_RE.fullmatch(blob.storage_key)
@@ -551,7 +616,13 @@ def validate_private_console_stage_inventory(
 def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUnit:
     """Validate archive-supplied bytes and their complete relationship graph."""
 
-    if len(unit.history_raw) + len(unit.database_raw) + sum(len(blob.raw) for blob in unit.blobs) > MAX_PRIVATE_UNIT_BYTES:
+    if (
+        len(unit.history_raw)
+        + len(unit.database_raw)
+        + len(unit.registry_database_raw)
+        + sum(len(blob.raw) for blob in unit.blobs)
+        > MAX_PRIVATE_UNIT_BYTES
+    ):
         raise PrivateConsoleUnitError("private_unit_too_large")
     run_ids = _history_run_ids(unit.history_raw)
     with TemporaryDirectory(prefix="mentat-private-validate-") as temporary:
@@ -570,6 +641,11 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
             connection.close()
         if database_references != _history_reference_pairs(unit.history_raw):
             raise PrivateConsoleUnitError("private_history_database_mismatch")
+        registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
+        registry_database.write_bytes(unit.registry_database_raw)
+        if os.name != "nt":
+            registry_database.chmod(0o600)
+        _validate_registry_snapshot(registry_database)
     expected = {key: (digest, size) for key, digest, size in rows}
     supplied = {blob.storage_key: blob for blob in unit.blobs}
     if len(supplied) != len(unit.blobs) or set(supplied) != set(expected):
@@ -591,12 +667,57 @@ def private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
             logical_database = "\n".join(connection.iterdump()).encode("utf-8")
         finally:
             connection.close()
+        registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
+        registry_database.write_bytes(unit.registry_database_raw)
+        connection = sqlite3.connect(_sqlite_readonly_uri(registry_database), uri=True)
+        try:
+            logical_registry = "\n".join(connection.iterdump()).encode("utf-8")
+        finally:
+            connection.close()
+    identity = {
+        "history": hashlib.sha256(unit.history_raw).hexdigest(),
+        "database": hashlib.sha256(logical_database).hexdigest(),
+        "agent_registry": hashlib.sha256(logical_registry).hexdigest(),
+        "blobs": [(blob.storage_key, blob.sha256, len(blob.raw)) for blob in unit.blobs],
+    }
+    return hashlib.sha256(_canonical_json(identity)).hexdigest()
+
+
+def legacy_private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
+    """Reproduce the format-2 private-unit receipt used before Agent registry data."""
+
+    validate_private_console_unit(unit)
+    with TemporaryDirectory(prefix="mentat-private-legacy-identity-") as temporary:
+        database = Path(temporary) / "mentat.sqlite3"
+        database.write_bytes(unit.database_raw)
+        connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
+        try:
+            logical_database = "\n".join(connection.iterdump()).encode("utf-8")
+        finally:
+            connection.close()
     identity = {
         "history": hashlib.sha256(unit.history_raw).hexdigest(),
         "database": hashlib.sha256(logical_database).hexdigest(),
         "blobs": [(blob.storage_key, blob.sha256, len(blob.raw)) for blob in unit.blobs],
     }
     return hashlib.sha256(_canonical_json(identity)).hexdigest()
+
+
+def agent_registry_digest(unit: PrivateConsoleUnit) -> str:
+    """Return a logical digest of only the validated Agent registry snapshot."""
+
+    with TemporaryDirectory(prefix="mentat-agent-registry-identity-") as temporary:
+        database = Path(temporary) / REGISTRY_DATABASE_NAME
+        database.write_bytes(unit.registry_database_raw)
+        if os.name != "nt":
+            database.chmod(0o600)
+        _validate_registry_snapshot(database)
+        connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
+        try:
+            logical_registry = "\n".join(connection.iterdump()).encode("utf-8")
+        finally:
+            connection.close()
+    return hashlib.sha256(logical_registry).hexdigest()
 
 
 def _write_private_file(path: Path, raw: bytes) -> None:
@@ -632,6 +753,7 @@ def materialize_private_console_unit(
     try:
         _write_private_file(destination / history_path(data_root).name, unit.history_raw)
         _write_private_file(destination / database_path(data_root).name, unit.database_raw)
+        _write_private_file(destination / REGISTRY_DATABASE_NAME, unit.registry_database_raw)
         blob_root = destination / "blobs" / "sha256"
         blob_root.mkdir(parents=True, mode=0o700)
         if os.name != "nt":
@@ -646,6 +768,10 @@ def materialize_private_console_unit(
         staged_unit = PrivateConsoleUnit(
             history_raw=_safe_regular(destination / history_path(data_root).name, maximum=MAX_HISTORY_BYTES),
             database_raw=_safe_regular(destination / database_path(data_root).name, maximum=MAX_DATABASE_BYTES),
+            registry_database_raw=_safe_regular(
+                destination / REGISTRY_DATABASE_NAME,
+                maximum=MAX_REGISTRY_DATABASE_BYTES,
+            ),
             blobs=tuple(
                 PrivateBlob(
                     storage_key=blob.storage_key,

@@ -19,6 +19,7 @@ import data_schema
 import json_store
 import private_console_migration
 import private_console_unit
+from agent_registry import AgentRegistry
 from agent_console_attachments import (
     AttachmentError,
     bind_run_attachment,
@@ -517,6 +518,117 @@ class PrivateConsoleStateTests(unittest.TestCase):
             )
             self.assertEqual(legacy_result.status, "restored")
             self.assertEqual(resolve_blob_path(legacy_target, preserved["id"]).read_bytes(), b"preserved")
+
+    def test_pre_registry_v2_backup_restores_with_an_empty_registry(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source", "source")
+            documents = data_backup_restore._load_live_documents(source, None)
+            source_unit = capture_private_console_unit(source)
+            v2_raw = data_backup_restore._build_backup(
+                documents,
+                source_unit,
+                format_version=2,
+            )
+            v2_name = data_backup_restore._backup_name(
+                documents,
+                source_unit,
+                format_version=2,
+            )
+            v2_path = base / v2_name
+            v2_path.write_bytes(v2_raw)
+            if os.name == "posix":
+                v2_path.chmod(0o600)
+
+            target = self.make_current(base, "target", "target")
+            AgentRegistry(target, supported_runtime_types={"hermes"}).create_agent(
+                agent_id="agent_target",
+                name="Target Agent",
+                runtime_config_id="runtime_config_target",
+                runtime_type="hermes",
+                runtime_agent_ref="target-profile",
+                capabilities=(),
+            )
+            preview = data_backup_restore.preview_durable_restore(target, v2_path)
+            self.assertEqual(preview.status, "ready")
+            private_item = next(
+                item for item in preview.items if item["name"] == "private_console"
+            )
+            self.assertEqual(private_item["agent_count"], 0)
+            self.assertEqual(private_item["target_agent_count"], 1)
+            self.assertEqual(private_item["agent_registry_action"], "clear")
+            result = data_backup_restore.restore_durable_backup(
+                target,
+                v2_path,
+                confirmation_token=preview.confirmation_token or "",
+            )
+            self.assertEqual(result.status, "restored")
+            self.assertEqual(
+                AgentRegistry(target, supported_runtime_types={"hermes"}).list_agents(),
+                (),
+            )
+
+    def test_upgrade_resumes_genuine_protocol_2_restore_receipts(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source", "source")
+            source_documents = data_backup_restore._load_live_documents(source, None)
+            source_unit = capture_private_console_unit(source)
+            source_raw = data_backup_restore._build_backup(
+                source_documents,
+                source_unit,
+                format_version=2,
+            )
+            source_name = data_backup_restore._backup_name(
+                source_documents,
+                source_unit,
+                format_version=2,
+            )
+            source_path = base / source_name
+            source_path.write_bytes(source_raw)
+            if os.name == "posix":
+                source_path.chmod(0o600)
+
+            target = self.make_current(base, "target", "target")
+            real_build = data_backup_restore._build_backup
+
+            def protocol_2_build(documents, private_unit=None, **kwargs):
+                kwargs.setdefault("format_version", 2)
+                return real_build(documents, private_unit, **kwargs)
+
+            with (
+                patch.object(data_backup_restore, "RESTORE_PROTOCOL_VERSION", 2),
+                patch.object(data_backup_restore, "_build_backup", side_effect=protocol_2_build),
+            ):
+                preview = data_backup_restore.preview_durable_restore(target, source_path)
+                with patch.object(
+                    data_backup_restore,
+                    "_restore_private_console_under_lock",
+                    side_effect=OSError("simulated legacy interruption"),
+                ):
+                    partial = data_backup_restore.restore_durable_backup(
+                        target,
+                        source_path,
+                        confirmation_token=preview.confirmation_token or "",
+                    )
+            self.assertEqual(partial.status, "partial_failure")
+            state = json.loads(
+                (target / "config" / data_backup_restore.RESTORE_STATE_NAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(state["protocol_version"], 2)
+            self.assertTrue(state["source_backup_name"].startswith("mentat-backup-v2-"))
+            self.assertTrue(state["recovery_backup_name"].startswith("mentat-backup-v2-"))
+
+            resume = data_backup_restore.preview_durable_restore(target, source_path)
+            self.assertEqual(resume.status, "resume_required")
+            completed = data_backup_restore.restore_durable_backup(
+                target,
+                source_path,
+                confirmation_token=resume.confirmation_token or "",
+            )
+            self.assertEqual(completed.status, "resumed")
 
     def test_restore_preview_does_not_create_or_change_live_sqlite_sidecars(self):
         with TemporaryDirectory() as temporary:
