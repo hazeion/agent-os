@@ -1,6 +1,6 @@
 # Feature Slice Review: SQLite Task Foundation and Migration Preview
 
-Status: Published; GitHub CI rerun pending
+Status: Ready for outcome review
 Slice: `mentat-sqlite-task-foundation`
 Date: `2026-08-18`
 Review log: `reviews/2026-08-18-mentat-sqlite-task-foundation.md`
@@ -300,6 +300,10 @@ Round 3 uses the same two reviewers and the complete corrected diff.
 - Local repository coverage remains 24/24 passing, and the broader repository,
   private-state, and backup/restore selection passed 86 tests. Both original
   reviewers rechecked the narrow test-only follow-up and issued **APPROVE**.
+- The corrected PR head passed all 51 GitHub checks: Linux, Intel macOS,
+  Windows Python 3.11-3.13 shards, browser smoke, package lifecycle,
+  dependency/secret gates, native artifact smoke, and aggregate required
+  checks. There were no failures, cancellations, skips, or pending checks.
 
 ## Documentation updates
 
@@ -327,19 +331,32 @@ Round 3 uses the same two reviewers and the complete corrected diff.
   migration preview, test-only atomic importer, deterministic export,
   backup/restore compatibility, focused verification, and architecture/design
   documentation without changing the live `tasks.json` authority.
-- Unresolved risks: no known implementation or review blocker; the corrected
-  Windows CI shard and remaining matrix must rerun on the follow-up commit.
+- Unresolved risks: no known implementation, review, or CI blocker.
 - User authorization and scope: the user gave immediate explicit approval to
   stage, commit, push, and open the ready PR on 2026-08-18.
 - Initial commit hash: `a7403cb2f4ec8d6d413803c9a3e5ecb40bf7ef77`.
+- CI portability follow-up commit:
+  `eca685e911cc690d06f6489a5446d5f3d3d212e2`.
 - Ready PR URL: `https://github.com/hazeion/agent-os/pull/107`.
 
 ## Outcome review
 
-- Classification: Pending.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending.
-- Remaining reviewer dissent: Pending.
-- Compatibility/migration/rollback concerns: Pending.
+- Classification: Ready for user acceptance.
+- Acceptance criteria summary: AC-1 through AC-9 pass. The schema/repository,
+  no-write preview, test-only atomic import, deterministic export, private
+  backup/restore compatibility, production JSON-authority boundary,
+  documentation, package checks, local suites, browser smoke, independent
+  reviews, and 51-check GitHub matrix are verified.
+- Potential bugs or untested paths: the Windows platform cannot exercise the
+  POSIX replace-an-open-file race; that regression remains mandatory on POSIX.
+  Live Task cutover, Run/Event orchestration, high-contention load, React, and
+  final Lighthouse gates intentionally remain outside Slice 1C-A.
+- Remaining reviewer dissent: none; both reviewers approved the implementation
+  and the CI portability correction.
+- Compatibility/migration/rollback concerns: live Task authority remains
+  `tasks.json`. Downgrade requires the documented schema-5-build restoration of
+  an exact schema-4 backup before installing an older build; alternatively,
+  private Console state may be explicitly reinitialized without removing
+  durable JSON data.
 - User decision: Pending.
 - Next slice authorized: No
