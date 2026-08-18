@@ -36,7 +36,7 @@ PUBLIC_MODULES = {
     "hermes_webhook_health", "hermes_webhook_store", "json_store",
     "mentat_db", "mentat_lifecycle", "private_console_migration",
     "private_console_unit", "private_state", "remote_hermes", "runtime_config",
-    "server", "task_planning",
+    "server", "task_planning", "task_repository",
 }
 PUBLIC_PACKAGES = {"mentat"}
 PUBLIC_DATA_FILES = {

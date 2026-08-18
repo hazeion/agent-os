@@ -78,6 +78,7 @@ py-modules = [
   "runtime_config",
   "server",
   "task_planning",
+  "task_repository",
 ]
 
 [tool.setuptools.data-files]

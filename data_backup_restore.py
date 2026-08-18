@@ -690,9 +690,11 @@ def _backup_item_summaries(
                 "run_count": private_unit.run_count,
                 "blob_count": len(private_unit.blobs),
                 "agent_count": private_unit.agent_count,
+                "task_count": private_unit.task_count,
                 **(
                     {
                         "target_agent_count": target_private.agent_count,
+                        "target_task_count": target_private.task_count,
                         "agent_registry_action": registry_action,
                     }
                     if target_private is not None

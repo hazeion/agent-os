@@ -173,6 +173,7 @@ from runtime_config import (
     run_legacy_migration_cli,
     run_private_console_migration_cli,
     run_schema_migration_cli,
+    run_task_sqlite_migration_cli,
 )
 from data_layout import (
     MAX_PREFLIGHT_JSON_BYTES,
@@ -10361,6 +10362,10 @@ if __name__ == "__main__":
         private_summary, private_exit = run_private_console_migration_cli(cli_args, APP_CONFIG)
         print(json.dumps(private_summary, indent=2))
         raise SystemExit(private_exit)
+    if cli_args.preview_task_sqlite_migration:
+        task_summary, task_exit = run_task_sqlite_migration_cli(cli_args, APP_CONFIG)
+        print(json.dumps(task_summary, indent=2))
+        raise SystemExit(task_exit)
     if cli_args.create_backup or cli_args.preview_restore or cli_args.confirm_restore:
         backup_summary, backup_exit = run_backup_restore_cli(cli_args, APP_CONFIG)
         print(json.dumps(backup_summary, indent=2))

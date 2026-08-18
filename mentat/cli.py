@@ -85,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("backup_file", type=Path)
     restore.add_argument("--confirm", metavar="TOKEN")
 
+    task_migration = commands.add_parser(
+        "task-migration",
+        help="Preview the exact migration from tasks.json to Mentat's SQLite Task store.",
+    )
+    _runtime_arguments(task_migration)
+
     connection = commands.add_parser(
         "connection",
         help="Configure, test, or select local and remote Hermes.",
@@ -281,6 +287,17 @@ def run_restore(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def run_task_migration(args: argparse.Namespace) -> int:
+    import runtime_config
+
+    forwarded = [*_forward_runtime_arguments(args), "--preview-task-sqlite-migration"]
+    cli_args = runtime_config.parse_cli_args(forwarded)
+    config = runtime_config.load_app_config(cli_args)
+    payload, exit_code = runtime_config.run_task_sqlite_migration_cli(cli_args, config)
+    _print_json(payload)
+    return exit_code
+
+
 def _connection_server_running(config) -> bool:
     import mentat_lifecycle
     from private_state import mentat_server_active
@@ -448,6 +465,7 @@ def main(argv: list[str] | None = None) -> int:
         "doctor": run_doctor,
         "backup": run_backup,
         "restore": run_restore,
+        "task-migration": run_task_migration,
         "connection": run_connection,
     }
     return handlers[args.command](args)

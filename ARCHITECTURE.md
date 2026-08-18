@@ -134,6 +134,46 @@ Special-use DNS suffixes and nested/adjacent URL-path hybrids are rejected;
 Markdown, backtick, and emphasis wrappers are parsed outside the URL span.
 Supported structured messages contribute only bounded allowlisted text parts;
 image, tool, and reasoning content is omitted.
+
+### SQLite Task persistence transition
+
+Pivot Slice 1C-A advances the existing owner-private Console database to schema
+5 and adds canonical `mentat_tasks`, ordered tag, and ordered dependency tables.
+Scalar planning fields are indexed columns; bounded nested planning/delegation
+objects and safe unknown compatibility fields are stored once in separate JSON
+columns. Internal monotonically increasing revisions provide compare-and-swap
+replacement semantics, while deferred foreign keys and collection validation
+reject missing, self-referential, or cyclic dependencies.
+
+This foundation is additive only. Live dashboard/API Task reads and writes,
+delegation reservations, calendar links, search, and recurrence still use the
+single authoritative `tasks.json` document until Slice 1C-B performs an exact
+one-way cutover. There is no shadow read, dual write, startup import, or
+production confirmation route in 1C-A.
+
+The operator command `mentat task-migration` performs a bounded read-only
+preview. It validates and binds the exact source bytes/file identity and the
+destination schema/occupancy, reports no local path or Task content, and does
+not create a database or WAL sidecar. The transaction-tested import primitive
+is deliberately unreachable from production entry points until the cutover
+slice adds recovery and exact confirmation. Deterministic export is a bounded
+diagnostic/recovery representation, not another authority. Existing private
+backup/restore snapshots retain Task rows and now validate Task semantics and
+dependency integrity.
+
+Released format-2 and format-3 backups whose Console database is still exact
+schema 4 remain valid. Restore preserves that verified snapshot, and the normal
+database open migrates it transactionally to schema 5 before use. A newer
+schema is never interpreted by older code. To downgrade before the Task
+cutover, stop Mentat while still using the schema-5-capable build, create and
+retain a current backup, and use that same build to restore an exact pre-1C-A
+schema-4 private Console backup. Do not reopen the newer build afterward;
+install and start the pre-1C-A build next. If no schema-4 backup exists,
+reinitializing only the private Console unit is a deliberate
+private-history/attachment/replay-metadata loss operation; the still-authoritative
+`tasks.json` and other durable operator JSON must be preserved. Mentat does not
+perform an automatic schema downgrade.
+
 Milestone 9 adds a loopback-only signed Hermes native-event receiver as an
 observation wakeup. The receiver authenticates the exact raw body, accepts an
 exact 17-event lifecycle, post-operation, and Kanban observer allowlist, stores

@@ -12,11 +12,18 @@ All notable changes to Mentat.
 - Added runtime-neutral create/list API operations at
   `/api/orchestration/agents` without changing the legacy `/api/agents`
   heartbeat surface.
+- Added schema-5 canonical Task tables to the existing private
+  `mentat.sqlite3`, with ordered tags/dependencies, bounded planning metadata,
+  deterministic reconstruction, and optimistic revision conflicts.
+- Added `mentat task-migration`, a bounded read-only preview that binds the
+  exact `tasks.json` source and destination state without performing a cutover.
 
 ### Documentation
 - Added a canonical multi-agent pivot implementation plan that separates
   complete, active, proposed, provisional, and deferred slices and records the
   current resume point.
+- Added the SQLite orchestration system-design reference and documented the
+  no-dual-authority Task migration sequence and later unified-database target.
 
 ### Safety
 - Agent creation is atomic and serialized with private backup/restore. Public
@@ -25,6 +32,10 @@ All notable changes to Mentat.
   keeps create/list and recovery behavior bounded.
 - Backup format 3 includes the registry with relationship and semantic
   validation; legacy format-2 backups remain restorable as an empty registry.
+- Private Console backup/restore snapshots now retain Task rows, report Task
+  counts, and reject malformed Task documents or broken dependency references.
+- Live Task APIs remain solely `tasks.json`-backed in this foundation slice;
+  no production import, startup migration, shadow read, or dual write exists.
 - The registry does not auto-import or mutate Hermes profiles, dispatch work,
   add concurrency, or change current Console behavior.
 

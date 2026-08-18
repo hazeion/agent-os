@@ -34,6 +34,7 @@ server.py
 hermes_kanban.py
 hermes_profile_identity.py
 task_planning.py
+task_repository.py
 runtime_config.py
 mentat_lifecycle.py
 mentat.toml
@@ -85,6 +86,14 @@ must not expose adapter-owned runtime references. `data/agents.json` remains a
 legacy heartbeat-observation surface and must not be merged into or substituted
 for the canonical registry. The registry is capped at 128 Agents and is part of
 the validated private Console backup/restore consistency unit.
+
+Pivot Slice 1C-A adds canonical Task tables and a revision-aware repository to
+the existing owner-private `mentat.sqlite3`, but live Task behavior remains
+exclusively `tasks.json`-backed until the approved 1C-B cutover. Do not add
+shadow reads, dual writes, startup import, or production import confirmation in
+1C-A. `mentat task-migration` is a read-only exact preview; deterministic export
+and the transactional import primitive are recovery/test infrastructure, not
+alternate runtime authorities.
 
 Hermes remains the first capability-scoped runtime adapter. New orchestration
 code must use the runtime-neutral boundary and must not depend directly on
