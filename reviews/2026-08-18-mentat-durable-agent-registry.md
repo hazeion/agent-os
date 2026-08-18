@@ -257,10 +257,11 @@ separate from the Hermes runtime/profile binding used to execute work.
 - Unresolved risks: Windows filesystem behavior remains dependent on platform
   CI; older binaries intentionally ignore the registry and cannot read format-3
   backups; UI management, additional runtimes, and dispatch remain deferred.
-- User authorization and scope: implementation authorized; staging, commit,
-  push, and ready PR still require a fresh explicit publication approval.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- User authorization and scope: on 2026-08-18 the user explicitly approved
+  staging the 18 slice-owned files, committing, pushing the feature branch, and
+  opening the ready PR.
+- Commit hash: `50b5509c5bac8769a0f453b447ca3a55f88a964b`.
+- Ready PR URL: <https://github.com/hazeion/agent-os/pull/106>.
 
 ## Outcome review
 
@@ -276,5 +277,6 @@ separate from the Hermes runtime/profile binding used to execute work.
 - Compatibility/migration/rollback concerns: shared Console schema stays at 4;
   format 2 restores an explicit empty registry and genuine protocol-2 restore
   receipts resume after upgrade; prior binaries ignore the separate registry.
-- User decision: pending.
+- User decision: accepted for publication; ready PR opened for repository CI
+  and merge review.
 - Next slice authorized: No.
