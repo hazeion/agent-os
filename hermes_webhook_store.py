@@ -5,11 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
-import threading
 from typing import Callable, Literal
 
 from hermes_webhooks import VerifiedHermesEvent
-from mentat_db import connect, transaction
+from mentat_db import DATABASE_OPEN_BARRIER, connect, transaction
 
 
 DELIVERY_RETENTION_SECONDS = 24 * 60 * 60
@@ -35,10 +34,10 @@ class WebhookDeliveryStore:
         self.retention_seconds = int(retention_seconds)
         self.cleanup_batch = int(cleanup_batch)
         self._connect = connection_factory
-        # Opening a migrated Mentat database configures WAL mode. Serialize that
-        # setup for concurrent receiver threads before SQLite's transaction-level
-        # locking takes over.
-        self._connection_lock = threading.RLock()
+        # Every live Mentat SQLite connection uses this boundary for setup.
+        # Retain it through delivery transaction close so no connection can
+        # configure WAL or run migrations against the open transaction.
+        self._transaction_barrier = DATABASE_OPEN_BARRIER
 
     @property
     def data_dir(self) -> Path:
@@ -79,7 +78,7 @@ class WebhookDeliveryStore:
     ) -> Literal["accepted", "admitted_unrecorded", "duplicate", "rejected"]:
         """Retain a claim when admitted, distinguishing a failed final commit."""
         now_epoch = self._epoch(event.received_at)
-        with self._connection_lock:
+        with self._transaction_barrier:
             connection = self._connect(self.data_dir)
             preserve_admitted_result = False
             try:
@@ -151,7 +150,7 @@ class WebhookDeliveryStore:
 
     def cleanup(self, *, now: datetime | None = None) -> int:
         """Delete at most one bounded batch of expired replay records."""
-        with self._connection_lock:
+        with self._transaction_barrier:
             connection = self._connect(self.data_dir)
             try:
                 with transaction(connection, immediate=True):

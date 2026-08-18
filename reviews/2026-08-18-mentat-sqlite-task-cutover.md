@@ -514,3 +514,258 @@ covered locally; native Windows CI must pass before merge.
 documentation, downgrade/re-upgrade behavior, and recorded verification satisfy
 the slice contract. Nothing is staged, committed, pushed, or published until
 the user gives immediate explicit publication approval.
+
+### Round 9 CI correction authorization and implementation
+
+After publication, native Windows CI exposed three unique failures across four
+jobs. The GitHub CI-fix workflow identified two fixture-portability defects and
+one real delivery/readback race. The user explicitly approved the focused
+correction plan, including verification, review, commit, and push.
+
+| CI failure | Root cause | Round-9 correction |
+| --- | --- | --- |
+| Stale JSON byte assertion observed CRLF on Windows. | The test used text-mode writing for an exact-byte invariant, allowing platform newline translation. | The fixture now writes the exact stale bytes with `write_bytes()`. |
+| Remote-mode compatible export returned capture unavailable. | The test manually created a connection record without the required owner-private Windows ACL, so production correctly failed closed before parsing its mode. | The fixture now uses the production connection-record writer and therefore exercises a valid owner-private remote selection on every platform. |
+| Verified Kanban wakeup produced no browser projection on Windows. | `claim_and_admit()` queued the refresh while its delivery-record transaction was still open. The worker could immediately open the same SQLite database before commit; Windows file locking made the authoritative readback fail. | A per-admission gate reserves the bounded queue slot immediately but prevents adapter reads until `claim_and_admit()` returns and closes or rolls back its connection. Duplicate, rejected, queue-full, admitted-unrecorded, shutdown, coalescing, and periodic-reconciliation behavior remain intact. |
+
+#### Round-9 verification evidence
+
+| Command or action | Result | Evidence |
+| --- | --- | --- |
+| Exact CI regressions | Pass | Six focused tests cover exact stale bytes, valid owner-private remote state, delayed adapter entry, bounded unreleased-gate shutdown, route commit ordering, and verified Kanban wakeup. |
+| Webhook/coordinator/Task regression | Pass | All 91 tests passed, including real loopback HTTP lifecycle coverage. |
+| Complete host suite | Pass | 1,171 tests passed with four platform-specific skips. |
+| Syntax and whitespace | Pass | Changed Python files compile; JavaScript entry points parse; `git diff --check` is clean. |
+| Fresh package verification | Pass | A new wheel and sdist were built and passed exact-inventory verification. |
+| Tracked secret scan | Pass | The pinned baseline reported no unreviewed secret candidates. |
+| Rendered Chromium smoke | Pass | All 46 named browser checks passed against a fresh schema-6 startup cutover. |
+
+#### Round-9 reviewer decisions
+
+Reviewer B approved the complete correction with no findings. Reviewer A found
+one new cross-delivery concurrency blocker. After receiving the exact finding
+and evidence, Reviewer B independently inspected it and maintained it as
+Medium/blocking.
+
+| Root cause | Review evidence | Disposition |
+| --- | --- | --- |
+| A per-hint gate cannot represent a newer delivery transaction that has begun but has not reached `admit()`, and it does not cover periodic reconciliation. | A9-01 Medium/blocking; both reviewers maintained that an older queued hint or reconciliation sweep could still enter a projection adapter while the newer transaction remained open. | Valid. Replace the per-hint gate with one shared transaction/projection barrier acquired before delivery-store connection/`BEGIN` and held through commit or rollback and connection close. Acquire the same barrier centrally around every projection adapter read with stop-aware timed waiting. |
+
+## Round-9 outcome
+
+**Paused after Round 9.** The Windows fixture corrections remain valid, but the
+per-hint coordination fix does not close cross-delivery or reconciliation
+races. Nothing from the correction is staged, committed, or pushed.
+
+### Round 10 authorization and correction
+
+The user explicitly approved the CI correction plan. Round 10 replaces the
+unpublished per-hint gate with a shared reentrant barrier. The webhook delivery
+store holds that barrier before opening SQLite and through transaction outcome
+and connection close. The refresh coordinator acquires it around every adapter
+read, so older queued hints and periodic reconciliation cannot overlap an
+active delivery transaction. Timed acquisition observes coordinator shutdown,
+preserving bounded stop behavior and immediate bounded queue reservation.
+
+Two deterministic regressions pause a real newer delivery after
+`BEGIN IMMEDIATE` and before admission: one positions an older queued hint and
+the other positions periodic reconciliation. Neither adapter enters while the
+transaction is open; both proceed only after the delivery commits and closes.
+
+#### Round-10 verification evidence
+
+| Command or action | Result | Evidence |
+| --- | --- | --- |
+| Exact CI and A9-01 regressions | Pass | Six focused tests cover exact stale bytes, valid owner-private remote state, older-hint transaction ordering, reconciliation transaction ordering, stop-aware barrier waiting, and verified Kanban wakeup. |
+| Focused webhook/store/Task regression | Pass | `python -m unittest -v tests.test_hermes_event_refresh tests.test_hermes_webhook_routes tests.test_hermes_webhook_store tests.test_task_repository` passed all 104 tests with real loopback coverage. |
+| Complete host suite | Pass | `python -m unittest discover -s tests` passed 1,171 tests with four platform-specific skips. |
+| Syntax and whitespace | Pass | Changed Python files compile; both frontend entry points and the browser-smoke script parse; `git diff --check` is clean. |
+| Fresh package verification | Pass | A fresh wheel and sdist built with the hash-locked native environment and passed exact-inventory verification. |
+| Tracked secret scan | Pass | The hash-locked quality environment reported no unreviewed secret candidates. |
+| Rendered Chromium smoke | Pass after one retry | The first run timed out restoring the existing compact-navigation tooltip after scroll. A clean Chromium retry on a fresh debug port passed all 46 named checks. No UI code changed in Round 10. |
+
+#### Round-10 reviewer decisions
+
+Both original reviewers independently returned **not approved** for the same
+inverse-order latency defect. Because the root cause and required evidence are
+corroborated, no peer-consensus step is needed.
+
+| Root cause | Review evidence | Disposition |
+| --- | --- | --- |
+| The coordinator holds the shared barrier across the complete projection adapter, including external Hermes CLI work, while a newer request must acquire that barrier inside `claim_and_admit()` before it can acknowledge the webhook. | A10-01 and B10-01, both Medium/blocking. Both reviewers independently reproduced a newer delivery remaining blocked until an older slow adapter was released. The production Kanban projection can perform capability work and three external reads with 15-second subprocess timeouts. | Valid. A9-01 is resolved, but its whole-adapter barrier can delay later acknowledgements and prevent shutdown from acquiring the hints lock. Narrow the shared barrier to the short Mentat SQLite snapshot phase, keep external Hermes work outside it, and add inverse-order acknowledgement and shutdown regressions while retaining the older-hint and reconciliation transaction-exclusion proofs. |
+
+Both reviewers confirmed that the Windows fixture corrections are valid, every
+Round-1 through Round-8 finding remains resolved, and the focused 104-test
+suite passes. Native Windows execution remains required after publication.
+
+## Round-10 outcome
+
+**Paused after Round 10.** Cross-delivery SQLite safety is restored, but the
+whole-adapter critical section introduces a corroborated webhook-response and
+shutdown regression. A Round-11 snapshot-narrowing correction and same-reviewer
+recheck require explicit user authorization. Nothing is staged, committed, or
+pushed.
+
+### Round 11 authorization and correction
+
+The user explicitly authorized Round 11. The refresh coordinator is again
+lock-agnostic: it never holds the delivery barrier across a projection adapter.
+Only the local authoritative Task snapshot used by attention and Kanban
+projections acquires the shared barrier. Kanban constructs and calls the Hermes
+adapter only after that snapshot lock is released. The delivery store continues
+to hold the same barrier from before opening SQLite through transaction outcome
+and connection close.
+
+The existing server shutdown sequence is now a small reusable operation that
+first detaches the coordinator under the hints lock and then performs the
+already-bounded worker stop. This makes the actual production ordering directly
+testable without changing its two-second production timeout.
+
+The older-hint and reconciliation regressions now assert that their Mentat Task
+snapshot cannot begin while a newer delivery transaction is open. A new inverse
+regression completes that snapshot, blocks simulated external projection work,
+and proves that a newer signed webhook still receives `202` within 500 ms and
+that detach/stop returns within its requested timeout. Existing queue-full tests
+continue to prove that a claim is not committed when queue admission fails.
+
+#### Round-11 verification evidence
+
+| Command or action | Result | Evidence |
+| --- | --- | --- |
+| Exact CI and concurrency regressions | Pass | Six focused tests cover exact stale bytes, valid owner-private remote state, older-hint snapshot exclusion, reconciliation snapshot exclusion, newer-webhook and shutdown responsiveness during slow external work, and verified Kanban wakeup. |
+| Focused webhook/store/Task regression | Pass | `python -m unittest -v tests.test_hermes_event_refresh tests.test_hermes_webhook_routes tests.test_hermes_webhook_store tests.test_task_repository` passed all 104 tests with real loopback coverage. |
+| Complete host suite | Pass | `python -m unittest discover -s tests` passed 1,171 tests with four platform-specific skips. |
+| Syntax and whitespace | Pass | Changed Python files compile; both frontend entry points and the browser-smoke script parse; `git diff --check` is clean. |
+| Fresh package verification | Pass | A fresh wheel and sdist built with the hash-locked native environment and passed exact-inventory verification. |
+| Tracked secret scan | Pass | The hash-locked quality environment reported no unreviewed secret candidates. |
+| Rendered Chromium smoke | Pass | All 46 named checks passed on the first Round-11 run against a fresh schema-6 startup cutover. No UI code changed. |
+
+#### Round-11 reviewer decisions
+
+Reviewer B initially approved with no findings. Reviewer A returned **not
+approved** with one new Medium/blocking finding. After receiving the exact
+finding and evidence, Reviewer B independently reproduced the overlap and
+maintained the finding as Medium/blocking.
+
+| Root cause | Review evidence | Disposition |
+| --- | --- | --- |
+| Snapshot-only coordination protects attention and Kanban, but every ordinary live `mentat.sqlite3` connection still performs WAL and migration/schema setup without the delivery barrier. `/api/tasks`, Task mutations, attachments, and delegation artifacts therefore retain the same Windows setup race exposed by CI. | A11-01 Medium/blocking. Reviewer A demonstrated an ordinary authoritative Task read entering while a real delivery transaction remained open. Reviewer B independently reproduced the overlap and confirmed that all cited consumers use the same `connect_with_identity()` setup path. | Valid. Move the shared reentrant barrier to `mentat_db`; acquire it only around connection validation/open/WAL/migration/identity verification. Have the delivery store hold that same barrier through its transaction and close. Do not hold it through ordinary queries, mutations, attachment processing, or Hermes work. Add paused-delivery regressions for ordinary Task read, Task mutation, and one attachment or artifact consumer. |
+
+Both reviewers confirmed that A9-01 and A10-01/B10-01 are resolved by Round 11,
+that the inverse response/shutdown regression is valid, and that all earlier
+findings remain resolved. The required expansion is limited to the shared
+connection-setup boundary rather than complete connection lifetimes.
+
+## Round-11 outcome
+
+**Paused after Round 11.** Projection snapshots are safe and external Hermes
+work no longer delays acknowledgement, but the demonstrated Windows setup race
+still applies to ordinary Mentat database consumers. A Round-12 global
+connection-setup correction and same-reviewer recheck require explicit user
+authorization. Nothing is staged, committed, or pushed.
+
+### Round 12 authorization and correction
+
+The user explicitly authorized Round 12. The shared reentrant barrier now
+belongs to `mentat_db`, the common live Mentat SQLite connection boundary.
+Every normal connection holds it only while validating the database set,
+opening SQLite, configuring WAL and foreign keys, running migrations, applying
+private permissions, and verifying path identity. The barrier is released
+before the caller performs an ordinary query, mutation, artifact operation, or
+external Hermes work.
+
+The webhook delivery store uses the same non-configurable barrier and retains
+it from before connection setup through transaction outcome and connection
+close. Reentrancy lets its own connection setup pass while preventing any other
+live Mentat setup from racing the open transaction on Windows. Projection Task
+snapshots retain their whole-snapshot exclusion, while the inverse slow-Hermes
+test continues to prove that external work cannot delay later acknowledgement
+or bounded shutdown.
+
+A deterministic regression pauses a real delivery after `BEGIN IMMEDIATE` and
+starts three representative live consumers: the ordinary `/api/tasks` read, a
+Task collection mutation, and delegation-artifact metadata lookup. All three
+remain outside connection setup until the delivery closes, then complete
+successfully. A direct-source audit confirms that other live Mentat consumers
+use `mentat_db.connect`; remaining direct SQLite opens are in-memory schema
+construction, offline Task snapshots/exports, separate Agent Registry storage,
+private backup tooling, or read-only Hermes state.
+
+#### Round-12 verification evidence
+
+| Command or action | Result | Evidence |
+| --- | --- | --- |
+| Exact A11-01 and inverse regressions | Pass | Four focused tests prove ordinary Task read/mutation/artifact setup exclusion, older-hint and reconciliation snapshot exclusion, and newer-webhook/shutdown responsiveness during slow external work. |
+| Focused webhook/store/Task regression | Pass | `python -m unittest -v tests.test_hermes_event_refresh tests.test_hermes_webhook_routes tests.test_hermes_webhook_store tests.test_task_repository` passed all 105 tests, including three real loopback HTTP cases. |
+| Complete host suite | Pass | `python -m unittest discover -s tests` completed successfully; discovery contains 1,172 tests with the existing four platform-specific skips. |
+| Syntax and whitespace | Pass | Changed Python files compile; both frontend entry points and the browser-smoke script parse; `git diff --check` is clean. |
+| Fresh package verification | Pass | A fresh wheel and sdist built with the hash-locked native environment and passed exact-inventory verification. |
+| Tracked secret scan | Pass | The pinned quality environment reported no unreviewed secret candidates. |
+| Rendered Chromium smoke | Pass | The complete 46-check browser workflow completed against a disposable schema-6 data root on loopback. No UI code changed. |
+
+Same-reviewer Round 12 is pending. Native Windows CI remains required after
+publication because the original failure is platform-specific. Nothing is
+staged, committed, or pushed.
+
+#### Round-12 initial reviewer finding and correction
+
+Reviewer B initially approved with no findings after independently running the
+105 focused tests and an additional reverse-order database diagnostic.
+Reviewer A returned **not approved** with A12-01 High/blocking: the retained
+webhook snapshot acquired the database barrier before entering the Task
+repository's private-state lock, while every ordinary Task operation acquired
+those locks in the reverse order. Reviewer A reproduced a permanent two-thread
+cycle. After receiving only the concrete finding and evidence, Reviewer B
+independently reproduced the same cycle and changed to **not approved**.
+
+The snapshot now follows the repository's established order:
+`private_state_lock` first, then `DATABASE_OPEN_BARRIER`. Both locks are
+reentrant on the snapshot thread, so the nested authoritative Task read remains
+safe, while an ordinary Task operation can no longer hold private state and
+wait on a barrier owned by a projection waiting for that private state.
+
+A new isolated-process regression stages the exact inverse order. An ordinary
+Task reader holds private state, a webhook snapshot attempts that lock, and the
+ordinary reader then completes its real `tasks_payload()` connection and read
+before releasing private state. Both threads must finish with exact snapshots.
+The old ordering times out in the disposable child process rather than leaving
+the parent test runner with poisoned locks.
+
+#### Round-12 corrected verification evidence
+
+| Command or action | Result | Evidence |
+| --- | --- | --- |
+| Exact lock and delivery concurrency regressions | Pass | Five focused tests prove the inverse Task/snapshot lock order, ordinary Task read/mutation/artifact setup exclusion, older-hint and reconciliation exclusion, and newer-webhook/shutdown responsiveness. |
+| Focused webhook/store/Task regression | Pass | The corrected suite passed all 106 tests, including real loopback HTTP cases and the isolated-process deadlock regression. |
+| Complete host suite | Pass | The corrected complete host suite finished successfully; discovery now contains 1,173 tests with the existing four platform-specific skips. |
+| Syntax, whitespace, and tracked secrets | Pass | Python and JavaScript parse, `git diff --check` is clean, and the pinned scan reports no unreviewed secret candidates. |
+| Fresh corrected package verification | Pass | A newly rebuilt wheel and sdist passed exact-inventory verification after the server correction. |
+| Fresh corrected Chromium smoke | Pass | The complete 46-check browser workflow passed again against a new disposable schema-6 data root. |
+
+Same-reviewer re-review of the corrected Round 12 diff is pending. Native
+Windows CI remains required after publication. Nothing is staged, committed,
+or pushed.
+
+#### Round-12 final reviewer decisions
+
+Both original reviewers independently returned **approved** with no findings.
+Each passed the five exact concurrency regressions and all 106 focused tests.
+Both confirmed that A12-01 is resolved by the consistent private-state-before-
+database-barrier order, A11-01 remains resolved by the common live connection-
+setup boundary, and A9-01 plus A10-01/B10-01 remain resolved without reopening
+cross-delivery races or response/shutdown latency. All Round-1 through Round-8
+findings remain resolved and AC-1 through AC-8 satisfy the technical review
+gate.
+
+The reviewers retain one shared verification limitation: native Windows CI
+must pass after publication because the original SQLite setup failure was
+Windows-specific. The complete host suite, package, secret, syntax, diff, and
+Chromium evidence was inspected; the reviewers independently repeated the
+focused and exact concurrency suites.
+
+## Round-12 outcome
+
+**Approved for publication checkpoint.** The complete corrected diff and
+superseding verification evidence satisfy the reviewed-feature technical gate.
+Nothing is staged, committed, pushed, or republished until the user gives the
+immediate publication approval required by the workflow.

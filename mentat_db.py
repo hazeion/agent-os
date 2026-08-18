@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +20,10 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 SCHEMA_VERSION = 6
+# Connection validation, WAL configuration, migration, and identity checks
+# must not overlap a webhook delivery transaction on Windows. Ordinary queries
+# release this process-wide boundary as soon as their connection is ready.
+DATABASE_OPEN_BARRIER = threading.RLock()
 
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -402,11 +407,9 @@ def migrate(connection: sqlite3.Connection) -> None:
             raise
 
 
-def connect_with_identity(
+def _connect_with_identity_locked(
     data_dir: Path,
 ) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
-    """Open SQLite and return the exact path identities verified before return."""
-
     private = ensure_private_console_dir(data_dir)
     path = private / DATABASE_NAME
     _validate_database_set(path, private)
@@ -436,6 +439,15 @@ def connect_with_identity(
     except Exception:
         connection.close()
         raise
+
+
+def connect_with_identity(
+    data_dir: Path,
+) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
+    """Open SQLite after serialized validation, WAL setup, and migration."""
+
+    with DATABASE_OPEN_BARRIER:
+        return _connect_with_identity_locked(data_dir)
 
 
 def connect(data_dir: Path) -> sqlite3.Connection:

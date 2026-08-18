@@ -132,6 +132,7 @@ from hermes_webhook_store import WebhookDeliveryStore
 from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_browser_events import HermesBrowserEventBroker
 from hermes_webhook_health import build_probe_request, public_health_payload
+from mentat_db import DATABASE_OPEN_BARRIER
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
 from hermes_transport import (
@@ -9567,11 +9568,24 @@ def _refresh_webhook_agents(binding_id: str) -> dict:
     return _validated_webhook_agents_projection(agents_payload(session_payload=sessions))
 
 
+def _read_webhook_tasks_snapshot() -> list:
+    """Read Mentat Tasks without overlapping a webhook delivery transaction."""
+    # Task repository operations already establish this order. Preserve it here
+    # so an ordinary Task caller cannot hold private state while this snapshot
+    # holds the database barrier and waits for that same private-state lock.
+    with private_state_lock(DATA_DIR):
+        with DATABASE_OPEN_BARRIER:
+            tasks = read_json_file("tasks.json", [])
+    if not isinstance(tasks, list):
+        raise RuntimeError("webhook_refresh_failed")
+    return tasks
+
+
 def _refresh_webhook_attention(binding_id: str) -> dict:
     _require_local_webhook_binding(binding_id)
     attention = read_json_file("attention.json", [])
-    tasks = read_json_file("tasks.json", [])
-    if not isinstance(attention, list) or not isinstance(tasks, list):
+    tasks = _read_webhook_tasks_snapshot()
+    if not isinstance(attention, list):
         raise RuntimeError("webhook_refresh_failed")
     if any(not isinstance(item, dict) for item in (*attention, *tasks)):
         raise RuntimeError("webhook_refresh_failed")
@@ -9586,14 +9600,12 @@ _WEBHOOK_KANBAN_STATUSES = frozenset(
 def _refresh_webhook_kanban(binding_id: str) -> dict:
     """Read a bounded local delegation projection without writing task state."""
     _require_local_webhook_binding(binding_id)
+    tasks = _read_webhook_tasks_snapshot()
     adapter = HermesKanbanAdapter(
         hermes_command_path(),
         env={**os.environ, "HERMES_HOME": str(HERMES_HOME)},
     )
     adapter.connection_binding_id = binding_id
-    tasks = read_json_file("tasks.json", [])
-    if not isinstance(tasks, list):
-        raise RuntimeError("webhook_refresh_failed")
     candidates = [
         task
         for task in tasks
@@ -9669,6 +9681,22 @@ def build_hermes_refresh_coordinator() -> HermesRefreshCoordinator:
         reconciliation_interval=60.0,
         on_refresh=HERMES_BROWSER_EVENTS.publish,
     )
+
+
+def detach_and_stop_hermes_refresh(
+    coordinator: HermesRefreshCoordinator | None,
+    *,
+    timeout: float = 2.0,
+) -> bool:
+    """Stop publishing to a coordinator before a bounded worker shutdown."""
+    global HERMES_EVENT_REFRESH
+
+    with HERMES_WEBHOOK_HINTS_LOCK:
+        if HERMES_EVENT_REFRESH is coordinator:
+            HERMES_EVENT_REFRESH = None
+    if coordinator is None:
+        return True
+    return coordinator.stop(timeout=timeout)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -10362,11 +10390,7 @@ def serve_dashboard() -> None:
         try:
             AGENT_CONSOLE_ATTACHMENT_GC_STOP.set()
             try:
-                with HERMES_WEBHOOK_HINTS_LOCK:
-                    if HERMES_EVENT_REFRESH is refresh_coordinator:
-                        HERMES_EVENT_REFRESH = None
-                if refresh_coordinator is not None:
-                    refresh_coordinator.stop(timeout=2.0)
+                detach_and_stop_hermes_refresh(refresh_coordinator)
                 stop_agent_console_processes()
             finally:
                 try:

@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 import server
 import data_backup_restore
 import private_console_unit
+import remote_hermes
 import task_repository
 from mentat.cli import main as mentat_cli_main
 from mentat_db import SCHEMA_VERSION, MentatDatabaseError, connect, database_path, transaction
@@ -928,7 +929,7 @@ class TaskRepositoryTests(unittest.TestCase):
             ):
                 server.ensure_task_authority()
                 stale = source.read_bytes()
-                source.write_text("not json\n", encoding="utf-8")
+                source.write_bytes(b"not json\n")
                 if os.name != "nt":
                     source.chmod(0o600)
                 with (
@@ -1615,30 +1616,24 @@ class TaskRepositoryTests(unittest.TestCase):
             root = Path(tmpdir) / "data"
             write_seed_root(root, [task("task_a")])
             ensure_task_sqlite_authority(root)
-            connection = root / "private" / "remote-hermes-connection-v1.json"
-            connection.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 2,
-                        "mode": "remote",
-                        "local": {"label": "Local Hermes"},
-                        "remote": {
-                            "label": "Workshop remote",
-                            "endpoint": "https://hermes.example",
-                            "credential": {
-                                "kind": "environment",
-                                "name": "MENTAT_REMOTE_HERMES_API_KEY",
-                            },
-                        },
-                        "binding_id": "a" * 32,
-                    },
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
+            connection = remote_hermes.connection_path(root)
+            remote_hermes._write_connection_record(
+                connection,
+                remote_hermes.ConnectionState(
+                    mode="remote",
+                    local_label="Local Hermes",
+                    remote=remote_hermes.RememberedRemote(
+                        label="Workshop remote",
+                        endpoint="https://hermes.example",
+                        credential=remote_hermes.CredentialSource(
+                            "environment",
+                            "MENTAT_REMOTE_HERMES_API_KEY",
+                        ),
+                    ),
+                    binding_id="a" * 32,
+                ),
+                parent_fd=None,
             )
-            if os.name != "nt":
-                connection.chmod(0o600)
             output = io.StringIO()
             with redirect_stdout(output):
                 exit_code = mentat_cli_main(
