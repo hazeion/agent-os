@@ -19,6 +19,7 @@ from hermes_browser_events import HermesBrowserEventBroker
 from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_webhook_store import WebhookDeliveryStore
 from hermes_webhooks import PerBindingRateLimiter
+from task_repository import ensure_task_sqlite_authority
 
 
 class _WebhookHandlerHarness:
@@ -162,6 +163,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
         tasks_path = self.data_dir / "tasks.json"
         tasks_path.write_text(json.dumps([task]), encoding="utf-8")
         tasks_path.chmod(0o600)
+        ensure_task_sqlite_authority(self.data_dir)
         remote = {
             "ok": True,
             "task": {

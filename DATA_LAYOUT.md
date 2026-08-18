@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 1C-A SQLite Task foundation active
+Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 1C-B SQLite Task cutover active
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -110,17 +110,23 @@ as a seed does not make every file browser-writable.
 
 ### SQLite Task foundation and source-of-truth transition
 
-Pivot Slice 1C-A adds a canonical Task repository to
+Pivot Slice 1C-A added a canonical Task repository to
 `<data-root>/private/console/mentat.sqlite3`, including ordered tags,
 dependency edges, bounded planning metadata, compatibility fields, and
-internal optimistic revisions. This does not yet move live behavior:
-`<data-root>/tasks.json` remains the only runtime Task authority through 1C-A.
-The SQLite rows may be populated only by the test-scoped transactional import
-primitive; production exposes a read-only `mentat task-migration` preview and
-no confirmation or startup import.
+internal optimistic revisions.
 
-Slice 1C-B will perform the exact one-way import and then remove every live
-Task read/write dependency on `tasks.json` without a dual-authority interval.
+Pivot Slice 1C-B performs one automatic, exact startup cutover after Mentat
+acquires its exclusive server reservation and before it opens a listener or
+publishes runtime state. The import validates the bounded source bytes
+and identity, requires an empty Task repository, reconstructs the canonical
+collection, and commits those rows together with the singleton SQLite authority
+receipt in one immediate transaction. A failure commits neither rows nor
+receipt. A receipt with zero rows is still authoritative, preventing a later
+seed from resurrecting removed Tasks.
+
+After that receipt exists, every dashboard/API Task read and mutation uses
+SQLite under the shared private-state boundary. No runtime path reads, writes,
+shadows, synchronizes, or falls back to `tasks.json`.
 The tracked `data/tasks.json` may remain a public-safe packaged seed until a
 later packaging cleanup, but it must not regain runtime authority after that
 cutover.
@@ -141,7 +147,7 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 | Current surface | Target class | Notes |
 | --- | --- | --- |
 | Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | Redacted retained Console history; durable according to its retention policy. |
-| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, run-reference, and canonical Task repository metadata; live WAL/SHM remain SQLite-owned beside the database. Task rows are additive and non-authoritative until Slice 1C-B. |
+| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, run-reference, authoritative Task repository, and Task authority receipt; live WAL/SHM remain SQLite-owned beside the database. |
 | Canonical Mentat Agent registry | `<data-root>/private/console/agent-registry.sqlite3` | Independently versioned Agent identities and private runtime bindings; capped at 128 records and semantically validated during backup/restore. |
 | Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
 | Remote connection selection | `<data-root>/private/remote-hermes-connection-v1.json` | Schema-v2, server-only, owner-only, and atomically replaced. Stores the active mode, local label, one remembered remote label/endpoint, binding ID, and credential-source reference—but no API-key value. The historical filename is retained for compatible migration. A missing record means local mode. |
@@ -566,18 +572,50 @@ blocks while any reservation or restore temporary remains. An exact uncommitted
 temporary has its own previewed, confirmed cleanup path and is never silently
 deleted.
 
-Format-2 and format-3 private snapshots containing the previously released
-exact Console schema 4 remain supported. They are restored without rewriting
-the source archive and migrate transactionally to schema 5 on the next normal
-database open. Before downgrading to a pre-1C-A build, stop Mentat while the
-schema-5-capable build is still installed, keep a current backup, and use that
-same build to restore an exact schema-4 private Console backup. Do not reopen
-the newer build; install and start the pre-1C-A build next. Without such a
-backup, the only safe fallback is an explicit
-reinitialization of the private Console unit, which loses private Console
-history, attachment metadata, and replay metadata but must preserve
-`tasks.json` and every other durable operator JSON document. No automatic
-SQLite downgrade is supported.
+Format-2 and format-3 private snapshots containing exact released Console
+schemas 4 and 5 remain supported. They are restored without rewriting the
+source archive and migrate transactionally to schema 6 on the next normal
+database open. Schema 6 adds the Task authority receipt; normal startup imports
+the exact retained `tasks.json` only when that receipt is absent and the Task
+repository is empty.
+
+After cutover, a current backup is the supported lossless recovery unit because
+it includes authoritative SQLite. `tasks.json` is deliberately stale. To run a
+pre-1C-B build without losing later Task mutations, stop Mentat and create the
+state-bound compatible sibling root below. Preview performs no write;
+confirmation refuses a live server, revalidates the source, and atomically
+publishes a new `<data-root-name>-schema5-downgrade` directory. It carries the
+current durable JSON documents, exact exported Tasks, retained private Console
+history/attachments/blobs, Agent registry, and a validated schema-5 Console
+database whose Task tables are empty. The exported `tasks.json` is the old
+build's sole Task authority, and any old-build changes import exactly if the
+sibling is upgraded again. The authoritative schema-6 source root remains
+unchanged.
+
+Connection credentials remain excluded. If the source actively selects remote
+Hermes, compatible-root export fails closed instead of creating a sibling that
+would silently fall back to local Hermes. Stop Mentat, explicitly switch the
+source to local mode, create the sibling, then configure remote Hermes in that
+old-build data root before performing any operation. Interrupted private
+recovery or unavailable capture/digest state returns a bounded no-write error.
+The exact canonical `tasks.json` bytes carry no optional trailing newline and
+verification strips nothing, so the inclusive document-size limit and reported
+digest identify the actual file. Confirmation fsyncs populated staged
+directories and the final sibling-parent rename on POSIX; Windows uses an
+exclusive write-through directory move. A post-publication durability failure
+reports a partial write and leaves the sibling for operator inspection.
+
+```bash
+mentat task-export --data-dir "/path/to/mentat-data" --compatible-root
+mentat task-export --data-dir "/path/to/mentat-data" --compatible-root --confirm TOKEN_FROM_PREVIEW
+```
+
+Run the older build with that reported sibling as its data root. The plain
+`mentat task-export` form refreshes only stale `tasks.json` and is not a complete
+old-build environment. Restoring a pre-cutover backup remains an alternative
+that discards later Task mutations. Running Mentat never automatically falls
+back to stale `tasks.json`, and neither export mode removes or downgrades the
+source SQLite authority receipt.
 
 For versions 2 and 3, private restore exchanges a complete staged Console
 directory, keeps the old directory until new-state verification, and resumes

@@ -137,42 +137,72 @@ image, tool, and reasoning content is omitted.
 
 ### SQLite Task persistence transition
 
-Pivot Slice 1C-A advances the existing owner-private Console database to schema
-5 and adds canonical `mentat_tasks`, ordered tag, and ordered dependency tables.
+Pivot Slice 1C-A advanced the existing owner-private Console database to schema
+5 and added canonical `mentat_tasks`, ordered tag, and ordered dependency tables.
 Scalar planning fields are indexed columns; bounded nested planning/delegation
 objects and safe unknown compatibility fields are stored once in separate JSON
 columns. Internal monotonically increasing revisions provide compare-and-swap
 replacement semantics, while deferred foreign keys and collection validation
 reject missing, self-referential, or cyclic dependencies.
 
-This foundation is additive only. Live dashboard/API Task reads and writes,
-delegation reservations, calendar links, search, and recurrence still use the
-single authoritative `tasks.json` document until Slice 1C-B performs an exact
-one-way cutover. There is no shadow read, dual write, startup import, or
-production confirmation route in 1C-A.
+Pivot Slice 1C-B advances that database to schema 6 with an exact singleton
+Task-authority receipt. After acquiring its exclusive server reservation and
+before opening a listener, Mentat takes the shared private-state lock, validates
+the exact bounded `tasks.json` bytes and
+identity, requires an empty repository, imports and reconstructs the collection,
+and commits both Tasks and the receipt in one immediate transaction. Sparse
+historical Tasks receive deterministic canonical defaults; duplicate IDs,
+invalid dependency graphs, unsafe metadata, source drift, occupied destinations,
+and partial writes fail closed.
 
-The operator command `mentat task-migration` performs a bounded read-only
-preview. It validates and binds the exact source bytes/file identity and the
-destination schema/occupancy, reports no local path or Task content, and does
-not create a database or WAL sidecar. The transaction-tested import primitive
-is deliberately unreachable from production entry points until the cutover
-slice adds recovery and exact confirmation. Deterministic export is a bounded
-diagnostic/recovery representation, not another authority. Existing private
-backup/restore snapshots retain Task rows and now validate Task semantics and
-dependency integrity.
+Once the receipt exists, every live Task workflow—including delegation
+reservations, calendar links, search, recurrence, attachment reconciliation,
+and webhook-triggered refresh—reads and mutates SQLite. The centralized list
+mutator adapter preserves public payloads and order while maintaining internal
+monotonic revisions. A zero-Task receipt is authoritative. Runtime code never
+reads, writes, shadows, or falls back to stale `tasks.json` after cutover.
 
-Released format-2 and format-3 backups whose Console database is still exact
-schema 4 remain valid. Restore preserves that verified snapshot, and the normal
-database open migrates it transactionally to schema 5 before use. A newer
-schema is never interpreted by older code. To downgrade before the Task
-cutover, stop Mentat while still using the schema-5-capable build, create and
-retain a current backup, and use that same build to restore an exact pre-1C-A
-schema-4 private Console backup. Do not reopen the newer build afterward;
-install and start the pre-1C-A build next. If no schema-4 backup exists,
-reinitializing only the private Console unit is a deliberate
-private-history/attachment/replay-metadata loss operation; the still-authoritative
-`tasks.json` and other durable operator JSON must be preserved. Mentat does not
-perform an automatic schema downgrade.
+The operator command `mentat task-migration` remains read-only. Before cutover
+it validates and binds the exact source bytes/file identity and destination
+schema/occupancy without creating a database or sidecar. After cutover it
+reports existing SQLite authority without consulting stale JSON. Deterministic
+export is an explicit offline recovery action, not another runtime authority.
+`mentat task-export` first previews a token bound to the authoritative export
+and current `tasks.json` identity; confirmation refuses an active server,
+revalidates both states, atomically replaces only `tasks.json`, and verifies the
+published bytes. This Task-only form is a recovery artifact, not a complete old
+build environment. `mentat task-export --compatible-root` instead creates a
+new validated sibling data root containing current durable documents, exported
+Tasks, retained Console/attachment/blob state, the Agent registry, and an exact
+schema-5 copy of the Console database with empty Task tables. Exported
+`tasks.json` is therefore the sibling's sole Task authority, so changes made by
+the old build import exactly if that sibling is later upgraded. The schema-6
+source root stays unchanged.
+
+Remote Hermes selection is separate private state and its credential is not a
+downgrade artifact. Compatible-root preview and confirmation therefore fail
+closed while the source is actively in remote mode. The operator must
+deliberately switch the stopped source to local mode, create the sibling, and
+configure remote Hermes in the old build before it performs any operation.
+Missing, interrupted, malformed, or unavailable private state must produce a
+bounded Task-export error rather than a traceback.
+Canonical export bytes are published and verified exactly, without adding or
+stripping an optional trailing newline, so both the digest and accepted
+maximum-size repository identify the actual old-build document. Compatible
+publication synchronizes populated staged directories bottom-up, the complete
+stage root, and the pinned parent after its exclusive POSIX rename. Windows
+uses missing-only `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`. A durability
+failure after publication is a partial write, never a no-write result or
+success.
+
+Released format-2 and format-3 backups with exact Console schema 4 or 5 remain
+valid and migrate transactionally to schema 6. Current backups retain the Task
+rows and authority receipt as one recovery unit. To downgrade after live Task
+mutations, stop Mentat, preview `mentat task-export --compatible-root`, confirm
+its exact token, and point the older build at the reported schema-5 sibling
+data-root name. Restoring a pre-cutover backup remains an alternative that
+discards later Task mutations. Mentat never uses stale `tasks.json`
+automatically and never downgrades the authoritative schema-6 source database.
 
 Milestone 9 adds a loopback-only signed Hermes native-event receiver as an
 observation wakeup. The receiver authenticates the exact raw body, accepts an
@@ -509,8 +539,10 @@ into needs input, ready for review, running, failed, and recently completed.
 ## Calendar, notes, and search boundaries
 
 Google Calendar access remains read-only. Creating a Mentat task from a verified
-event, linking a selected task, or assigning a scheduled block writes only to
-`data/tasks.json`. Mentat never edits, deletes, or reschedules the Google event.
+event, linking a selected task, or assigning a scheduled block mutates the
+authoritative Task collection through the SQLite Task repository. These
+operations never mutate live `data/tasks.json`. Mentat never edits, deletes, or
+reschedules the Google event.
 The week view accepts only a validated Sunday start, a fixed seven-day range,
 and a validated IANA timezone. Google and local-fallback results are filtered to
 the exact half-open week window, including events that overlap a boundary. The

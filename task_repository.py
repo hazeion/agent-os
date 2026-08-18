@@ -1,16 +1,13 @@
-"""Canonical SQLite repository and migration-preview boundary for Mentat Tasks.
-
-Slice 1C-A deliberately does not route production Task reads or writes through
-this module.  It establishes and verifies the storage contract used by the
-one-way source-of-truth cutover in Slice 1C-B.
-"""
+"""Canonical SQLite repository and one-way authority boundary for Mentat Tasks."""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+import ctypes
 import hashlib
 import hmac
 import json
@@ -20,8 +17,10 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import sys
+import time
 from tempfile import TemporaryDirectory
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from data_layout import MAX_PREFLIGHT_JSON_BYTES, _open_readonly_no_follow
 from json_store import (
@@ -29,6 +28,7 @@ from json_store import (
     _pinned_root_matches,
     _validate_private_descriptor,
     lock_for,
+    write_json_bytes_atomic,
 )
 from mentat_db import (
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
@@ -36,6 +36,7 @@ from mentat_db import (
     MentatDatabaseError,
     _validate_database_set,
     connect as connect_database,
+    connect_with_identity as connect_database_with_identity,
     database_path,
     transaction,
 )
@@ -48,6 +49,7 @@ MAX_TASK_DOCUMENT_BYTES = MAX_PREFLIGHT_JSON_BYTES
 MAX_EXPORT_BYTES = MAX_PREFLIGHT_JSON_BYTES
 MAX_DATABASE_BYTES = 32 * 1024 * 1024
 MAX_DATABASE_SIDECAR_BYTES = 64 * 1024 * 1024
+TASK_AUTHORITY_CONTRACT = "mentat-task-sqlite-cutover-v1"
 TASK_STATUSES = frozenset({"todo", "in progress", "waiting", "needs attention", "completed"})
 TASK_PRIORITIES = frozenset({"high", "medium", "low"})
 NESTED_PLANNING_FIELDS = frozenset(
@@ -123,6 +125,14 @@ class TaskRepositoryUnavailable(TaskRepositoryError):
     """The private database or source document is unavailable."""
 
 
+class TaskRepositoryPartialFailure(TaskRepositoryError):
+    """An offline publication failed after its write state became uncertain."""
+
+    def __init__(self, code: str, *, writes_performed: bool | None):
+        super().__init__(code)
+        self.writes_performed = writes_performed
+
+
 @dataclass(frozen=True)
 class TaskSourceSnapshot:
     raw: bytes
@@ -142,11 +152,23 @@ class TaskDestinationSnapshot:
 @dataclass(frozen=True)
 class TaskMigrationPreview:
     status: str
-    source: TaskSourceSnapshot
+    source: TaskSourceSnapshot | None
     destination: TaskDestinationSnapshot
     confirmation_token: str
 
     def public_summary(self) -> dict[str, Any]:
+        if self.source is None:
+            return {
+                "status": self.status,
+                "source": None,
+                "destination": {
+                    "state": self.destination.state,
+                    "schema_version": self.destination.schema_version,
+                    "task_count": self.destination.task_count,
+                },
+                "confirmation_token": None,
+                "writes_performed": False,
+            }
         return {
             "status": self.status,
             "source": {
@@ -184,6 +206,54 @@ class TaskSnapshot:
     revision: int
 
 
+@dataclass(frozen=True)
+class TaskAuthorityReceipt:
+    source_sha256: str
+    source_task_count: int
+    cutover_at: float
+
+
+@dataclass(frozen=True)
+class TaskLegacyExportPreview:
+    export: TaskExport
+    destination_sha256: str | None
+    destination_identity: tuple[int, int, int, int, int] | None
+    confirmation_token: str
+
+    def public_summary(self) -> dict[str, Any]:
+        return {
+            "status": "ready",
+            "task_count": self.export.task_count,
+            "export_sha256": self.export.sha256,
+            "destination": "replace" if self.destination_identity is not None else "create",
+            "confirmation_token": self.confirmation_token,
+            "writes_performed": False,
+        }
+
+
+@dataclass(frozen=True)
+class TaskCompatibleExportPreview:
+    export: TaskExport
+    target_name: str
+    source_digest: str
+    private_digest: str
+    confirmation_token: str
+
+    def public_summary(self) -> dict[str, Any]:
+        return {
+            "status": "ready",
+            "task_count": self.export.task_count,
+            "export_sha256": self.export.sha256,
+            "destination": "new_schema5_data_root",
+            "target_name": self.target_name,
+            "confirmation_token": self.confirmation_token,
+            "writes_performed": False,
+        }
+
+
+R = TypeVar("R")
+
+
 def _fail(code: str) -> None:
     raise TaskRepositoryValidationError(code)
 
@@ -214,6 +284,20 @@ def _timestamp(value: Any, field: str, *, nullable: bool = False) -> str | None:
     if parsed.tzinfo is None:
         _fail(f"task.{field}.invalid")
     return result
+
+
+def _legacy_timestamp(value: Any) -> Any:
+    """Give shipped timezone-naive Task timestamps one deterministic meaning."""
+
+    if not isinstance(value, str) or ("T" not in value and " " not in value):
+        return value
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        return f"{value}+00:00"
+    return value
 
 
 def _due_date(value: Any) -> str | None:
@@ -390,15 +474,149 @@ def normalize_task_collection(tasks: Sequence[Mapping[str, Any]]) -> tuple[dict[
     return normalized
 
 
+def normalize_legacy_task_collection(
+    tasks: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Upgrade sparse historical JSON Tasks to the canonical public shape."""
+
+    if not isinstance(tasks, (list, tuple)):
+        _fail("tasks.invalid")
+    fallback_timestamp = "1970-01-01T00:00:00+00:00"
+    upgraded: list[dict[str, Any]] = []
+    for item in tasks:
+        if not isinstance(item, Mapping):
+            _fail("task.invalid")
+        task = dict(item)
+        task.setdefault("description", "")
+        task.setdefault("project", "General")
+        task.setdefault("status", "todo")
+        task.setdefault("priority", "medium")
+        task.setdefault("assignee", None)
+        task.setdefault("due_date", None)
+        task.setdefault("source", "legacy")
+        task.setdefault("tags", [])
+        task.setdefault("review_required", False)
+        task.setdefault("needs_attention", False)
+        task.setdefault("created_at", fallback_timestamp)
+        task.setdefault("updated_at", task["created_at"])
+        task.setdefault("completed_at", None)
+        for field in ("created_at", "updated_at", "completed_at"):
+            if task.get(field) is not None:
+                task[field] = _legacy_timestamp(task[field])
+        if isinstance(task.get("status"), str):
+            task["status"] = task["status"].strip().lower().replace("_", " ")
+            task["status"] = {
+                "open": "todo",
+                "ready": "todo",
+                "done": "completed",
+            }.get(task["status"], task["status"])
+        if isinstance(task.get("priority"), str):
+            task["priority"] = task["priority"].strip().lower()
+        if isinstance(task.get("delegation"), Mapping):
+            delegation = dict(task["delegation"])
+            delegation.setdefault("profile_id", "legacy-unbound")
+            task["delegation"] = delegation
+        upgraded.append(task)
+    return normalize_task_collection(upgraded)
+
+
 def _canonical_json(value: Any) -> str:
     return _json_bytes(value, code="task.document.invalid").decode("utf-8")
+
+
+class _DatabaseIdentityGuard:
+    """Bind a live repository connection to the database path it opened."""
+
+    def __init__(
+        self,
+        data_root: Path,
+        opening_identities: Mapping[Path, tuple[int, int] | None],
+    ):
+        selected = database_path(data_root)
+        self.private = selected.parent.resolve(strict=True)
+        self.path = self.private / selected.name
+        self.main_identity = opening_identities.get(self.path)
+        if self.main_identity is None:
+            raise TaskRepositoryUnavailable("task_repository.database_changed")
+        self.verify(opening_identities)
+
+    def capture(self) -> dict[Path, tuple[int, int] | None]:
+        try:
+            identities = _validate_database_set(self.path, self.private)
+        except (MentatDatabaseError, OSError) as exc:
+            raise TaskRepositoryUnavailable("task_repository.database_changed") from exc
+        if identities.get(self.path) != self.main_identity:
+            raise TaskRepositoryUnavailable("task_repository.database_changed")
+        return identities
+
+    def verify(self, expected: Mapping[Path, tuple[int, int] | None]) -> None:
+        if self.capture() != dict(expected):
+            raise TaskRepositoryUnavailable("task_repository.database_changed")
+
+
+@contextmanager
+def _guarded_transaction(
+    connection: sqlite3.Connection,
+    guard: _DatabaseIdentityGuard | None,
+    *,
+    immediate: bool = False,
+):
+    if guard is None:
+        with transaction(connection, immediate=immediate):
+            yield
+        return
+    guard.capture()
+    connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+    expected = guard.capture()
+    try:
+        yield
+        guard.verify(expected)
+    except Exception:
+        connection.rollback()
+        raise
+    try:
+        connection.commit()
+        guard.verify(expected)
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+
+
+@contextmanager
+def _open_repository_database(data_root: Path):
+    """Open and close one bounded repository connection with path identity."""
+
+    connection = None
+    try:
+        connection, opening_identities = connect_database_with_identity(data_root)
+        guard = _DatabaseIdentityGuard(data_root, opening_identities)
+        yield connection, guard
+        guard.capture()
+    except TaskRepositoryError:
+        raise
+    except sqlite3.IntegrityError as exc:
+        raise TaskRepositoryValidationError("task_repository.integrity") from exc
+    except (MentatDatabaseError, OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        raise TaskRepositoryUnavailable("task_repository.unavailable") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 class TaskRepository:
     """Transaction-friendly repository over an already-open Mentat database."""
 
-    def __init__(self, connection: sqlite3.Connection):
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        allow_pre_authority_schema: bool = False,
+        identity_guard: _DatabaseIdentityGuard | None = None,
+    ):
         self.connection = connection
+        self.allow_pre_authority_schema = allow_pre_authority_schema
+        self.identity_guard = identity_guard
         self.connection.row_factory = sqlite3.Row
         self._require_schema()
 
@@ -409,11 +627,14 @@ class TaskRepository:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        if not {
+        required_tables = {
             "mentat_tasks",
             "mentat_task_tags",
             "mentat_task_dependencies",
-        }.issubset(names):
+        }
+        if not self.allow_pre_authority_schema:
+            required_tables.add("mentat_task_store_state")
+        if not required_tables.issubset(names):
             raise TaskRepositoryError("task_repository.schema_unsupported")
         try:
             row = self.connection.execute(
@@ -422,21 +643,53 @@ class TaskRepository:
             version = int(row[0] or 0)
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise TaskRepositoryError("task_repository.schema_unsupported") from exc
-        if version != DATABASE_SCHEMA_VERSION:
+        allowed_versions = (
+            {DATABASE_SCHEMA_VERSION - 1, DATABASE_SCHEMA_VERSION}
+            if self.allow_pre_authority_schema
+            else {DATABASE_SCHEMA_VERSION}
+        )
+        if version not in allowed_versions:
             raise TaskRepositoryError("task_repository.schema_unsupported")
-        if _task_schema_fingerprint(self.connection) != _expected_task_schema_fingerprint():
+        if _task_schema_fingerprint(self.connection) != _expected_task_schema_fingerprint(version):
             raise TaskRepositoryError("task_repository.schema_unsupported")
 
     def count(self) -> int:
         row = self.connection.execute("SELECT COUNT(*) FROM mentat_tasks").fetchone()
         return int(row[0])
 
+    def authority_receipt(self, *, required: bool = False) -> TaskAuthorityReceipt | None:
+        rows = self.connection.execute(
+            "SELECT authority, migration_contract, source_sha256, "
+            "source_task_count, cutover_at FROM mentat_task_store_state "
+            "WHERE singleton = 1"
+        ).fetchall()
+        if not rows:
+            if required:
+                raise TaskRepositoryUnavailable("task_repository.authority_missing")
+            return None
+        if len(rows) != 1:
+            raise TaskRepositoryError("task_repository.corrupt")
+        row = rows[0]
+        source_sha256 = str(row["source_sha256"])
+        source_task_count = int(row["source_task_count"])
+        cutover_at = float(row["cutover_at"])
+        if (
+            row["authority"] != "sqlite"
+            or row["migration_contract"] != TASK_AUTHORITY_CONTRACT
+            or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+            or not 0 <= source_task_count <= MAX_TASKS
+            or not math.isfinite(cutover_at)
+            or cutover_at <= 0
+        ):
+            raise TaskRepositoryError("task_repository.corrupt")
+        return TaskAuthorityReceipt(source_sha256, source_task_count, cutover_at)
+
     @contextmanager
     def _snapshot(self):
         if self.connection.in_transaction:
             yield
             return
-        with transaction(self.connection):
+        with _guarded_transaction(self.connection, self.identity_guard):
             yield
 
     @staticmethod
@@ -508,6 +761,33 @@ class TaskRepository:
                 )
             for task in normalized:
                 self._insert_children(task)
+
+    def claim_authority(self, source: TaskSourceSnapshot) -> TaskAuthorityReceipt:
+        """Record SQLite authority inside the caller's import transaction."""
+
+        if not self.connection.in_transaction:
+            raise TaskRepositoryError("task_repository.transaction_required")
+        if self.authority_receipt() is not None:
+            raise TaskRepositoryConflict("task_repository.already_authoritative")
+        cutover_at = time.time()
+        self.connection.execute(
+            "INSERT INTO mentat_task_store_state("
+            "singleton, authority, migration_contract, source_sha256, "
+            "source_task_count, cutover_at) VALUES (1, 'sqlite', ?, ?, ?, ?)",
+            (
+                TASK_AUTHORITY_CONTRACT,
+                source.sha256,
+                len(source.tasks),
+                cutover_at,
+            ),
+        )
+        receipt = self.authority_receipt(required=True)
+        if (
+            receipt.source_sha256 != source.sha256
+            or receipt.source_task_count != len(source.tasks)
+        ):
+            raise TaskRepositoryError("task_migration.receipt_invalid")
+        return receipt
 
     def list_tasks(self) -> list[dict[str, Any]]:
         with self._snapshot():
@@ -610,7 +890,11 @@ class TaskRepository:
     @contextmanager
     def _mutation(self):
         if not self.connection.in_transaction:
-            with transaction(self.connection, immediate=True):
+            with _guarded_transaction(
+                self.connection,
+                self.identity_guard,
+                immediate=True,
+            ):
                 self._require_schema()
                 yield
             return
@@ -689,6 +973,71 @@ class TaskRepository:
             raise TaskRepositoryError("task_repository.corrupt")
         return result_snapshot
 
+    def mutate_collection(
+        self,
+        mutator: Callable[[list[dict[str, Any]]], tuple[Any, R]],
+    ) -> R:
+        """Map the legacy whole-list mutator contract to one SQLite transaction."""
+
+        if not callable(mutator):
+            raise TaskRepositoryValidationError("task_repository.mutator_invalid")
+        with self._mutation():
+            self.authority_receipt(required=True)
+            current = self._list_tasks()
+            revisions = {
+                str(row["id"]): int(row["revision"])
+                for row in self.connection.execute(
+                    "SELECT id, revision FROM mentat_tasks"
+                ).fetchall()
+            }
+            working = deepcopy(current)
+            outcome = mutator(working)
+            if not isinstance(outcome, tuple) or len(outcome) != 2:
+                raise TaskRepositoryValidationError("task_repository.mutator_invalid")
+            candidate, result = outcome
+            if candidate is working:
+                return result
+            normalized = list(normalize_task_collection(candidate))
+            if normalized == current:
+                return result
+
+            current_by_id = {task["id"]: task for task in current}
+            current_order = {
+                task["id"]: sort_order for sort_order, task in enumerate(current)
+            }
+            self.connection.execute("DELETE FROM mentat_task_dependencies")
+            self.connection.execute("DELETE FROM mentat_task_tags")
+            self.connection.execute("DELETE FROM mentat_tasks")
+            for sort_order, task in enumerate(normalized):
+                previous = current_by_id.get(task["id"])
+                revision = (
+                    revisions[task["id"]]
+                    if previous == task and current_order[task["id"]] == sort_order
+                    else revisions[task["id"]] + 1
+                    if previous is not None
+                    else 1
+                )
+                self.connection.execute(
+                    "INSERT INTO mentat_tasks ("
+                    "id, sort_order, revision, title, description, project, status, priority, "
+                    "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
+                    "review_required, needs_attention, planned_for_today, manual_rank, "
+                    "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
+                    "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        task["id"],
+                        sort_order,
+                        revision,
+                        *self._storage_values(task, sort_order)[1:],
+                    ),
+                )
+            for task in normalized:
+                self._insert_children(task)
+            if self._list_tasks() != normalized:
+                raise TaskRepositoryError("task_repository.reconstruction_failed")
+            return result
+
     def export(self) -> TaskExport:
         tasks = self.list_tasks()
         raw = _json_bytes(tasks, code="task_repository.export_invalid")
@@ -743,7 +1092,11 @@ def _read_source_snapshot(
                         chunks.append(chunk)
                         remaining -= len(chunk)
                     raw = b"".join(chunks)
-                    after = os.fstat(descriptor)
+                    after = _validate_private_descriptor(
+                        descriptor,
+                        required_mode=required_mode,
+                        maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+                    )
                 finally:
                     os.close(descriptor)
             if not _pinned_root_matches(path.parent, root_descriptor):
@@ -772,7 +1125,7 @@ def _read_source_snapshot(
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, list):
             _fail("tasks.invalid")
-        tasks = normalize_task_collection(payload)
+        tasks = normalize_legacy_task_collection(payload)
         return TaskSourceSnapshot(
             raw=raw,
             tasks=tasks,
@@ -801,7 +1154,8 @@ def _task_schema_fingerprint(connection: sqlite3.Connection) -> str:
     rows = connection.execute(
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
         "WHERE tbl_name IN ("
-        "'mentat_tasks', 'mentat_task_tags', 'mentat_task_dependencies'"
+        "'mentat_tasks', 'mentat_task_tags', 'mentat_task_dependencies', "
+        "'mentat_task_store_state'"
         ") ORDER BY type, name"
     ).fetchall()
     canonical = [
@@ -811,12 +1165,13 @@ def _task_schema_fingerprint(connection: sqlite3.Connection) -> str:
     return hashlib.sha256(_json_bytes(canonical, code="task_repository.schema_invalid")).hexdigest()
 
 
-@lru_cache(maxsize=1)
-def _expected_task_schema_fingerprint() -> str:
+@lru_cache(maxsize=2)
+def _expected_task_schema_fingerprint(schema_version: int = DATABASE_SCHEMA_VERSION) -> str:
     connection = sqlite3.connect(":memory:")
     try:
-        script = next(script for version, script in MIGRATIONS if version == 5)
-        connection.executescript(script)
+        for version, script in MIGRATIONS:
+            if version == 5 or (version == 6 and schema_version >= 6):
+                connection.executescript(script)
         return _task_schema_fingerprint(connection)
     finally:
         connection.close()
@@ -971,13 +1326,23 @@ def _inspect_destination(data_dir: Path) -> TaskDestinationSnapshot:
             schema_version = max(versions, default=0)
             if schema_version > DATABASE_SCHEMA_VERSION:
                 raise TaskRepositoryError("task_repository.schema_newer")
+            if schema_version == DATABASE_SCHEMA_VERSION - 1:
+                task_count = validate_repository_connection(connection)
+                return TaskDestinationSnapshot(
+                    "occupied" if task_count else "requires_schema_migration",
+                    schema_version,
+                    task_count,
+                    _task_schema_fingerprint(connection),
+                )
             if schema_version < DATABASE_SCHEMA_VERSION:
                 return TaskDestinationSnapshot(
                     "requires_schema_migration", schema_version, 0, f"schema-{schema_version}"
                 )
             task_count = validate_repository_connection(connection)
+            repository = TaskRepository(connection)
+            receipt = repository.authority_receipt()
             return TaskDestinationSnapshot(
-                "empty" if task_count == 0 else "occupied",
+                "authoritative" if receipt is not None else "empty" if task_count == 0 else "occupied",
                 schema_version,
                 task_count,
                 _task_schema_fingerprint(connection),
@@ -1013,11 +1378,18 @@ def preview_task_sqlite_migration(
 ) -> TaskMigrationPreview:
     """Return an exact, bounded, no-write preview for the future cutover."""
 
+    destination = _inspect_destination(Path(data_dir))
+    if destination.state == "authoritative":
+        return TaskMigrationPreview(
+            status="already_cut_over",
+            source=None,
+            destination=destination,
+            confirmation_token="",
+        )
     source = _read_source_snapshot(
         Path(data_dir) / "tasks.json",
         required_mode=required_source_mode,
     )
-    destination = _inspect_destination(Path(data_dir))
     status = "ready" if destination.state in {"missing", "requires_schema_migration", "empty"} else "blocked"
     return TaskMigrationPreview(
         status=status,
@@ -1037,6 +1409,8 @@ def import_tasks_from_preview(
 
     if preview.status != "ready":
         raise TaskRepositoryConflict("task_migration.preview_blocked")
+    if preview.source is None:
+        raise TaskRepositoryConflict("task_migration.preview_blocked")
     data_root = Path(data_dir)
     with private_state_lock(data_root):
         current_source = _read_source_snapshot(
@@ -1053,10 +1427,9 @@ def import_tasks_from_preview(
         current_destination = _inspect_destination(data_root)
         if current_destination != preview.destination:
             raise TaskRepositoryConflict("task_migration.destination_changed")
-        connection = connect_database(data_root)
-        try:
-            with transaction(connection, immediate=True):
-                repository = TaskRepository(connection)
+        with _open_repository_database(data_root) as (connection, guard):
+            with _guarded_transaction(connection, guard, immediate=True):
+                repository = TaskRepository(connection, identity_guard=guard)
                 if repository.count() != 0:
                     raise TaskRepositoryConflict("task_repository.occupied")
                 repository.insert_collection(current_source.tasks)
@@ -1067,28 +1440,800 @@ def import_tasks_from_preview(
                 if not hmac.compare_digest(exported.raw, expected):
                     raise TaskRepositoryError("task_migration.reconstruction_failed")
             return exported
-        except sqlite3.IntegrityError as exc:
-            raise TaskRepositoryValidationError("task_repository.integrity") from exc
-        except sqlite3.OperationalError as exc:
-            raise TaskRepositoryUnavailable("task_repository.unavailable") from exc
-        finally:
-            connection.close()
 
 
-def export_tasks(data_dir: Path) -> TaskExport:
+def ensure_task_sqlite_authority(
+    data_dir: Path,
+    *,
+    required_source_mode: int | None = 0o600,
+) -> TaskAuthorityReceipt:
+    """Atomically establish SQLite as the sole Task authority exactly once."""
+
+    data_root = Path(data_dir)
+    with private_state_lock(data_root):
+        with _open_repository_database(data_root) as (connection, guard):
+            repository = TaskRepository(connection, identity_guard=guard)
+            receipt = repository.authority_receipt()
+            if receipt is not None:
+                return receipt
+            if repository.count() != 0:
+                raise TaskRepositoryConflict("task_repository.occupied")
+            source = _read_source_snapshot(
+                data_root / "tasks.json",
+                required_mode=required_source_mode,
+                cross_process_lock=True,
+            )
+            with _guarded_transaction(connection, guard, immediate=True):
+                repository = TaskRepository(connection, identity_guard=guard)
+                if repository.authority_receipt() is not None:
+                    raise TaskRepositoryConflict("task_repository.already_authoritative")
+                if repository.count() != 0:
+                    raise TaskRepositoryConflict("task_repository.occupied")
+                repository.insert_collection(source.tasks)
+                exported = repository.export()
+                expected = _json_bytes(
+                    list(source.tasks), code="task_migration.source_invalid"
+                )
+                if not hmac.compare_digest(exported.raw, expected):
+                    raise TaskRepositoryError("task_migration.reconstruction_failed")
+                current_source = _read_source_snapshot(
+                    data_root / "tasks.json",
+                    required_mode=required_source_mode,
+                    cross_process_lock=True,
+                )
+                if (
+                    current_source.sha256 != source.sha256
+                    or current_source.identity != source.identity
+                    or current_source.tasks != source.tasks
+                ):
+                    raise TaskRepositoryConflict("task_migration.source_changed")
+                return repository.claim_authority(source)
+
+
+def read_authoritative_tasks(data_dir: Path) -> list[dict[str, Any]]:
+    """Read one committed Task snapshot without consulting legacy JSON."""
+
+    data_root = Path(data_dir)
+    with private_state_lock(data_root):
+        with _open_repository_database(data_root) as (connection, guard):
+            repository = TaskRepository(connection, identity_guard=guard)
+            repository.authority_receipt(required=True)
+            return repository.list_tasks()
+
+
+def mutate_authoritative_tasks(
+    data_dir: Path,
+    mutator: Callable[[list[dict[str, Any]]], tuple[Any, R]],
+) -> R:
+    """Run one existing Task list mutator against authoritative SQLite."""
+
+    data_root = Path(data_dir)
+    with private_state_lock(data_root):
+        with _open_repository_database(data_root) as (connection, guard):
+            return TaskRepository(
+                connection,
+                identity_guard=guard,
+            ).mutate_collection(mutator)
+
+
+def export_tasks(data_dir: Path, *, require_authority: bool = False) -> TaskExport:
     """Return a deterministic read-only export from an initialized repository."""
 
     data_root = Path(data_dir)
     with private_state_lock(data_root):
         destination = _inspect_destination(data_root)
-        if destination.state not in {"empty", "occupied"}:
+        if destination.state not in {"empty", "occupied", "authoritative"}:
             raise TaskRepositoryUnavailable("task_repository.schema_unsupported")
+        if require_authority and destination.state != "authoritative":
+            raise TaskRepositoryUnavailable("task_repository.authority_missing")
         path = database_path(data_root)
         private = path.parent.resolve(strict=True)
         path = private / path.name
         with _read_database_snapshot(path, private) as connection:
-            exported = TaskRepository(connection).export()
+            repository = TaskRepository(connection)
+            if destination.state == "authoritative":
+                repository.authority_receipt(required=True)
+            exported = repository.export()
         return exported
+
+
+def _legacy_export_destination(
+    data_root: Path,
+    *,
+    required_mode: int | None,
+) -> tuple[str | None, tuple[int, int, int, int, int] | None]:
+    path = Path(data_root) / "tasks.json"
+    try:
+        with _durable_mutation_lock(path.parent) as root_descriptor:
+            if not _pinned_root_matches(path.parent, root_descriptor):
+                raise OSError("task export root changed")
+            try:
+                current = (
+                    os.stat(path.name, dir_fd=root_descriptor, follow_symlinks=False)
+                    if root_descriptor is not None and os.stat in os.supports_dir_fd
+                    else os.lstat(path)
+                )
+            except FileNotFoundError:
+                return None, None
+            if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+                raise OSError("task export destination is unsafe")
+            with lock_for(path):
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_BINARY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NONBLOCK", 0)
+                )
+                descriptor = (
+                    os.open(path.name, flags, dir_fd=root_descriptor)
+                    if root_descriptor is not None
+                    else _open_readonly_no_follow(path)
+                )
+                try:
+                    before = _validate_private_descriptor(
+                        descriptor,
+                        required_mode=required_mode,
+                        maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+                    )
+                    chunks: list[bytes] = []
+                    remaining = MAX_PREFLIGHT_JSON_BYTES + 1
+                    while remaining > 0:
+                        chunk = os.read(descriptor, min(64 * 1024, remaining))
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        remaining -= len(chunk)
+                    raw = b"".join(chunks)
+                    after = _validate_private_descriptor(
+                        descriptor,
+                        required_mode=required_mode,
+                        maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+                    )
+                finally:
+                    os.close(descriptor)
+            if not _pinned_root_matches(path.parent, root_descriptor):
+                raise OSError("task export root changed")
+            current = (
+                os.stat(path.name, dir_fd=root_descriptor, follow_symlinks=False)
+                if root_descriptor is not None and os.stat in os.supports_dir_fd
+                else os.lstat(path)
+            )
+        if (
+            len(raw) > MAX_PREFLIGHT_JSON_BYTES
+            or not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or (
+                os.name == "posix"
+                and (
+                    current.st_uid != os.getuid()
+                    or (
+                        required_mode is not None
+                        and stat.S_IMODE(current.st_mode) != required_mode
+                    )
+                )
+            )
+            or (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            )
+            or (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                current.st_dev,
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+            )
+        ):
+            raise OSError("task export destination changed")
+        identity = (
+            int(before.st_dev),
+            int(before.st_ino),
+            int(before.st_size),
+            int(before.st_mtime_ns),
+            int(stat.S_IMODE(before.st_mode)),
+        )
+        return hashlib.sha256(raw).hexdigest(), identity
+    except (OSError, ValueError, TypeError) as exc:
+        raise TaskRepositoryUnavailable("task_export.destination_unavailable") from exc
+
+
+def _task_export_confirmation_token(
+    exported: TaskExport,
+    destination_sha256: str | None,
+    destination_identity: tuple[int, int, int, int, int] | None,
+) -> str:
+    evidence = {
+        "contract": "mentat-task-legacy-export-v1",
+        "export_sha256": exported.sha256,
+        "task_count": exported.task_count,
+        "destination_sha256": destination_sha256,
+        "destination_identity": list(destination_identity) if destination_identity else None,
+    }
+    digest = hashlib.sha256(
+        _json_bytes(evidence, code="task_export.preview_invalid")
+    ).hexdigest()
+    return f"task_export_{digest}"
+
+
+@contextmanager
+def _task_export_private_state_lock(
+    data_root: Path,
+    *,
+    write_state: Mapping[str, bool] | None = None,
+):
+    """Translate expected private-state failures at the complete CLI boundary."""
+
+    try:
+        with private_state_lock(data_root) as root_descriptor:
+            yield root_descriptor
+    except TaskRepositoryError:
+        raise
+    except (
+        OSError,
+        sqlite3.Error,
+        ValueError,
+        TypeError,
+        UnicodeError,
+        RecursionError,
+    ) as exc:
+        if write_state is not None and write_state.get("performed") is True:
+            raise TaskRepositoryPartialFailure(
+                "task_export.verification_failed",
+                writes_performed=True,
+            ) from exc
+        raise TaskRepositoryUnavailable("task_export.capture_unavailable") from exc
+
+
+def preview_task_legacy_export(
+    data_dir: Path,
+    *,
+    required_destination_mode: int | None = 0o600,
+) -> TaskLegacyExportPreview:
+    """Preview an exact offline replacement of stale ``tasks.json``."""
+
+    from private_state import mentat_server_active
+
+    data_root = Path(data_dir)
+    with _task_export_private_state_lock(data_root):
+        if mentat_server_active(data_root):
+            raise TaskRepositoryConflict("task_export.server_active")
+        exported = export_tasks(data_root, require_authority=True)
+        destination_sha256, destination_identity = _legacy_export_destination(
+            data_root,
+            required_mode=required_destination_mode,
+        )
+        return TaskLegacyExportPreview(
+            export=exported,
+            destination_sha256=destination_sha256,
+            destination_identity=destination_identity,
+            confirmation_token=_task_export_confirmation_token(
+                exported,
+                destination_sha256,
+                destination_identity,
+            ),
+        )
+
+
+def confirm_task_legacy_export(
+    data_dir: Path,
+    confirmation_token: str,
+    *,
+    required_destination_mode: int | None = 0o600,
+) -> dict[str, Any]:
+    """Publish a token-bound downgrade snapshot while Mentat is stopped."""
+
+    from private_state import mentat_server_active
+
+    data_root = Path(data_dir)
+    write_state = {"performed": False}
+    with _task_export_private_state_lock(
+        data_root,
+        write_state=write_state,
+    ) as root_descriptor:
+        if mentat_server_active(data_root):
+            raise TaskRepositoryConflict("task_export.server_active")
+        exported = export_tasks(data_root, require_authority=True)
+        destination_sha256, destination_identity = _legacy_export_destination(
+            data_root,
+            required_mode=required_destination_mode,
+        )
+        expected = _task_export_confirmation_token(
+            exported,
+            destination_sha256,
+            destination_identity,
+        )
+        if not isinstance(confirmation_token, str) or not hmac.compare_digest(
+            confirmation_token,
+            expected,
+        ):
+            raise TaskRepositoryConflict("task_export.confirmation_invalid")
+        path = data_root / "tasks.json"
+        try:
+            write_json_bytes_atomic(
+                path,
+                exported.raw,
+                expected_type=list,
+                mode=0o600,
+                parent_fd=root_descriptor,
+                maximum_bytes=MAX_EXPORT_BYTES,
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            raise TaskRepositoryPartialFailure(
+                "task_export.write_uncertain",
+                writes_performed=None,
+            ) from exc
+        write_state["performed"] = True
+        try:
+            published = _read_source_snapshot(path, required_mode=0o600)
+            verified = (
+                published.tasks == tuple(exported.payload())
+                and published.raw == exported.raw
+            )
+        except TaskRepositoryError as exc:
+            raise TaskRepositoryPartialFailure(
+                "task_export.verification_failed",
+                writes_performed=True,
+            ) from exc
+        if not verified:
+            raise TaskRepositoryPartialFailure(
+                "task_export.verification_failed",
+                writes_performed=True,
+            )
+        return {
+            "status": "exported",
+            "task_count": exported.task_count,
+            "export_sha256": exported.sha256,
+            "writes_performed": True,
+        }
+
+
+def _compatible_downgrade_target(data_root: Path) -> Path:
+    resolved = Path(data_root).resolve(strict=True)
+    return resolved.with_name(f"{resolved.name}-schema5-downgrade")
+
+
+@contextmanager
+def _pinned_publication_parent(path: Path):
+    """Pin the publication parent while an exclusive sibling is installed."""
+
+    if os.name == "nt":
+        metadata = os.lstat(path)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise OSError("compatible export parent invalid")
+        yield None
+        return
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or not _pinned_root_matches(
+            path,
+            descriptor,
+        ):
+            raise OSError("compatible export parent invalid")
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _publish_directory_noreplace(
+    source: Path,
+    target: Path,
+    parent_descriptor: int | None,
+) -> None:
+    """Atomically publish one sibling directory without replacing any entry."""
+
+    if source.parent != target.parent:
+        raise OSError("compatible export publication boundary invalid")
+    if os.name == "nt":
+        _windows_publish_directory_write_through(source, target)
+        return
+    if parent_descriptor is None or not _pinned_root_matches(
+        target.parent,
+        parent_descriptor,
+    ):
+        raise OSError("compatible export parent changed")
+    library = ctypes.CDLL(None, use_errno=True)
+    source_name = os.fsencode(source.name)
+    target_name = os.fsencode(target.name)
+    if sys.platform == "darwin":
+        rename = getattr(library, "renameatx_np", None)
+        if rename is None:
+            raise OSError("atomic exclusive directory publication unavailable")
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(
+            parent_descriptor,
+            source_name,
+            parent_descriptor,
+            target_name,
+            0x00000004,  # RENAME_EXCL
+        )
+    elif sys.platform.startswith("linux"):
+        rename = getattr(library, "renameat2", None)
+        if rename is None:
+            raise OSError("atomic exclusive directory publication unavailable")
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(
+            parent_descriptor,
+            source_name,
+            parent_descriptor,
+            target_name,
+            0x00000001,  # RENAME_NOREPLACE
+        )
+    else:
+        raise OSError("atomic exclusive directory publication unavailable")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), os.fspath(target))
+
+
+def _windows_publish_directory_write_through(source: Path, target: Path) -> None:
+    """Publish one missing Windows directory with durable no-replace semantics."""
+
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    move_file = kernel32.MoveFileExW
+    move_file.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+    move_file.restype = wintypes.BOOL
+    movefile_write_through = 0x00000008
+    # Omitting MOVEFILE_REPLACE_EXISTING preserves the missing-only contract.
+    if not move_file(
+        os.fspath(source),
+        os.fspath(target),
+        movefile_write_through,
+    ):
+        error = ctypes.get_last_error()
+        raise OSError(
+            error,
+            "Windows write-through directory publication failed",
+            os.fspath(target),
+        )
+
+
+def _fsync_staged_directory(path: Path) -> None:
+    """Synchronize one trusted staged directory before publication."""
+
+    if os.name != "posix":
+        # Windows synchronizes the staged hierarchy as part of the final
+        # MOVEFILE_WRITE_THROUGH directory publication.
+        return
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise OSError("compatible export staged directory invalid")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_publication_parent(parent_descriptor: int | None) -> None:
+    """Make the exclusive sibling rename durable before reporting success."""
+
+    if os.name == "posix":
+        if parent_descriptor is None:
+            raise OSError("compatible export parent unavailable")
+        os.fsync(parent_descriptor)
+    # Windows has no POSIX-style parent-directory fsync. The final
+    # MOVEFILE_WRITE_THROUGH call is the durability boundary there.
+
+
+def _schema5_private_unit(unit):
+    from private_console_unit import PrivateConsoleUnit, validate_private_console_unit
+
+    with TemporaryDirectory(prefix="mentat-schema5-export-") as temporary:
+        path = Path(temporary) / "mentat.sqlite3"
+        path.write_bytes(unit.database_raw)
+        if os.name != "nt":
+            path.chmod(0o600)
+        connection = sqlite3.connect(path)
+        try:
+            with transaction(connection, immediate=True):
+                version = int(
+                    connection.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0]
+                    or 0
+                )
+                if version != DATABASE_SCHEMA_VERSION:
+                    raise TaskRepositoryError("task_export.schema_unsupported")
+                connection.execute("DELETE FROM mentat_task_dependencies")
+                connection.execute("DELETE FROM mentat_task_tags")
+                connection.execute("DELETE FROM mentat_tasks")
+                connection.execute("DROP TABLE mentat_task_store_state")
+                connection.execute(
+                    "DELETE FROM schema_migrations WHERE version = ?",
+                    (DATABASE_SCHEMA_VERSION,),
+                )
+            connection.execute("VACUUM")
+            if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise TaskRepositoryError("task_export.schema5_invalid")
+            validate_repository_connection(connection)
+        except sqlite3.Error as exc:
+            raise TaskRepositoryUnavailable("task_export.schema5_unavailable") from exc
+        finally:
+            connection.close()
+        database_raw = path.read_bytes()
+    return validate_private_console_unit(
+        PrivateConsoleUnit(
+            history_raw=unit.history_raw,
+            database_raw=database_raw,
+            registry_database_raw=unit.registry_database_raw,
+            blobs=unit.blobs,
+        )
+    )
+
+
+def _load_compatible_non_task_documents(
+    data_root: Path,
+    root_descriptor: int,
+) -> dict[str, bytes]:
+    """Capture every durable document except obsolete Task JSON."""
+
+    from data_backup_restore import _document_from_raw
+    from data_layout import SEED_FILE_NAMES
+    from data_schema import _read_private_artifact_at
+
+    documents: dict[str, bytes] = {}
+    for name in SEED_FILE_NAMES:
+        if name == "tasks.json":
+            continue
+        raw, state = _read_private_artifact_at(
+            data_root / name,
+            root_descriptor,
+            maximum=MAX_PREFLIGHT_JSON_BYTES,
+            maximum_links=1,
+        )
+        if state.st_nlink != 1:
+            raise OSError("durable document links invalid")
+        documents[name] = _document_from_raw(name, raw).raw
+    return documents
+
+
+def _capture_compatible_downgrade(data_root: Path, root_descriptor):
+    from private_console_unit import (
+        capture_private_console_unit,
+        private_console_unit_digest,
+    )
+    from remote_hermes import RemoteHermesError, load_connection_state_read_only
+
+    exported = export_tasks(data_root, require_authority=True)
+    try:
+        connection_state = load_connection_state_read_only(data_root)
+        if connection_state.mode == "remote":
+            raise TaskRepositoryConflict(
+                "task_export.compatible_remote_reconfigure_required"
+            )
+        documents = _load_compatible_non_task_documents(data_root, root_descriptor)
+        private_unit = _schema5_private_unit(capture_private_console_unit(data_root))
+        target = _compatible_downgrade_target(data_root)
+        if os.path.lexists(os.fspath(target)):
+            raise TaskRepositoryConflict("task_export.compatible_target_exists")
+        source_digest = hashlib.sha256(
+            _json_bytes(
+                [
+                    [name, hashlib.sha256(raw).hexdigest()]
+                    for name, raw in sorted(documents.items())
+                ],
+                code="task_export.compatible_source_invalid",
+            )
+        ).hexdigest()
+        private_digest = private_console_unit_digest(private_unit)
+        evidence = {
+            "contract": "mentat-task-compatible-downgrade-v1",
+            "export_sha256": exported.sha256,
+            "task_count": exported.task_count,
+            "source_digest": source_digest,
+            "private_digest": private_digest,
+            "target_name": target.name,
+            "target_absent": True,
+        }
+        confirmation_token = "task_compatible_" + hashlib.sha256(
+            _json_bytes(evidence, code="task_export.compatible_preview_invalid")
+        ).hexdigest()
+    except TaskRepositoryError:
+        raise
+    except RemoteHermesError as exc:
+        raise TaskRepositoryUnavailable("task_export.capture_unavailable") from exc
+    except (
+        OSError,
+        sqlite3.Error,
+        ValueError,
+        TypeError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ) as exc:
+        raise TaskRepositoryUnavailable("task_export.capture_unavailable") from exc
+    return exported, documents, private_unit, target, source_digest, private_digest, confirmation_token
+
+
+def preview_task_compatible_export(data_dir: Path) -> TaskCompatibleExportPreview:
+    """Preview a runnable schema-5 sibling data root for an old Mentat build."""
+
+    from private_state import mentat_server_active
+
+    data_root = Path(data_dir)
+    with _task_export_private_state_lock(data_root) as root_descriptor:
+        if mentat_server_active(data_root):
+            raise TaskRepositoryConflict("task_export.server_active")
+        (
+            exported,
+            _documents,
+            _private_unit,
+            target,
+            source_digest,
+            private_digest,
+            confirmation_token,
+        ) = _capture_compatible_downgrade(data_root, root_descriptor)
+        return TaskCompatibleExportPreview(
+            export=exported,
+            target_name=target.name,
+            source_digest=source_digest,
+            private_digest=private_digest,
+            confirmation_token=confirmation_token,
+        )
+
+
+def confirm_task_compatible_export(
+    data_dir: Path,
+    confirmation_token: str,
+) -> dict[str, Any]:
+    """Atomically publish a validated schema-5 sibling data root."""
+
+    from data_backup_restore import _load_live_documents
+    from data_layout import DATA_ROOT_DIRECTORY_NAMES, SEED_ROOT_TYPES
+    from private_console_unit import (
+        capture_private_console_unit,
+        materialize_private_console_unit,
+        private_console_unit_digest,
+    )
+    from private_state import mentat_server_active
+
+    data_root = Path(data_dir)
+    write_state = {"performed": False}
+    with _task_export_private_state_lock(
+        data_root,
+        write_state=write_state,
+    ) as root_descriptor:
+        if mentat_server_active(data_root):
+            raise TaskRepositoryConflict("task_export.server_active")
+        (
+            exported,
+            documents,
+            private_unit,
+            target,
+            source_digest,
+            private_digest,
+            expected,
+        ) = _capture_compatible_downgrade(data_root, root_descriptor)
+        if not isinstance(confirmation_token, str) or not hmac.compare_digest(
+            confirmation_token,
+            expected,
+        ):
+            raise TaskRepositoryConflict("task_export.confirmation_invalid")
+        source_documents = dict(documents)
+        source_documents["tasks.json"] = exported.raw
+        published = False
+        try:
+            with _pinned_publication_parent(target.parent) as parent_descriptor:
+                with TemporaryDirectory(
+                    prefix=f".{target.name}-",
+                    dir=target.parent,
+                ) as temporary:
+                    stage = Path(temporary)
+                    if os.name != "nt":
+                        stage.chmod(0o700)
+                    for name in DATA_ROOT_DIRECTORY_NAMES:
+                        directory = stage / name
+                        directory.mkdir(mode=0o700)
+                        if os.name != "nt":
+                            directory.chmod(0o700)
+                    with _durable_mutation_lock(stage) as stage_descriptor:
+                        for name, raw in source_documents.items():
+                            write_json_bytes_atomic(
+                                stage / name,
+                                raw,
+                                expected_type=SEED_ROOT_TYPES[name],
+                                mode=0o600,
+                                parent_fd=stage_descriptor,
+                                maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+                            )
+                    materialize_private_console_unit(
+                        stage,
+                        private_unit,
+                        stage / "private" / "console",
+                    )
+                    staged_documents = _load_live_documents(stage, None)
+                    staged_private = capture_private_console_unit(stage)
+                    if (
+                        {item.name: item.raw for item in staged_documents}
+                        != source_documents
+                        or private_console_unit_digest(staged_private) != private_digest
+                    ):
+                        raise TaskRepositoryError(
+                            "task_export.compatible_verification_failed"
+                        )
+                    _fsync_staged_directory(stage)
+                    _publish_directory_noreplace(
+                        stage,
+                        target,
+                        parent_descriptor,
+                    )
+                    published = True
+                    write_state["performed"] = True
+                    _fsync_publication_parent(parent_descriptor)
+                    if parent_descriptor is not None and not _pinned_root_matches(
+                        target.parent,
+                        parent_descriptor,
+                    ):
+                        raise OSError("compatible export parent changed")
+            final_documents = _load_live_documents(target, None)
+            final_private = capture_private_console_unit(target)
+            if (
+                {item.name: item.raw for item in final_documents} != source_documents
+                or private_console_unit_digest(final_private) != private_digest
+            ):
+                raise TaskRepositoryError("task_export.compatible_verification_failed")
+        except TaskRepositoryError:
+            if published:
+                raise TaskRepositoryPartialFailure(
+                    "task_export.compatible_verification_failed",
+                    writes_performed=True,
+                )
+            raise
+        except (OSError, ValueError, TypeError) as exc:
+            raise TaskRepositoryPartialFailure(
+                "task_export.compatible_write_failed",
+                writes_performed=True if published else False,
+            ) from exc
+        return {
+            "status": "exported",
+            "task_count": exported.task_count,
+            "export_sha256": exported.sha256,
+            "destination": "new_schema5_data_root",
+            "target_name": target.name,
+            "source_digest": source_digest,
+            "writes_performed": True,
+        }
 
 
 def repository_task_count(connection: sqlite3.Connection) -> int:
@@ -1097,13 +2242,26 @@ def repository_task_count(connection: sqlite3.Connection) -> int:
     return TaskRepository(connection).count()
 
 
-def validate_repository_connection(connection: sqlite3.Connection) -> int:
+def validate_repository_connection(
+    connection: sqlite3.Connection,
+    *,
+    require_authority_consistency: bool = False,
+) -> int:
     """Validate Task semantics and dependency integrity in one SQLite snapshot."""
 
-    repository = TaskRepository(connection)
+    row = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    schema_version = int(row[0] or 0)
+    repository = TaskRepository(
+        connection,
+        allow_pre_authority_schema=schema_version == DATABASE_SCHEMA_VERSION - 1,
+    )
     violations = connection.execute("PRAGMA foreign_key_check").fetchall()
     if violations:
         raise TaskRepositoryError("task_repository.references_invalid")
     tasks = repository.list_tasks()
     normalize_task_collection(tasks)
+    if require_authority_consistency and schema_version == DATABASE_SCHEMA_VERSION:
+        receipt = repository.authority_receipt()
+        if tasks and receipt is None:
+            raise TaskRepositoryError("task_repository.authority_missing")
     return len(tasks)

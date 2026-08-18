@@ -158,6 +158,12 @@ from remote_hermes import (
     test_selected_connection as test_remote_hermes_connection,
 )
 from task_planning import TASK_PLANNING_FIELDS, validate_task_planning
+from task_repository import (
+    TaskRepositoryError,
+    ensure_task_sqlite_authority,
+    mutate_authoritative_tasks,
+    read_authoritative_tasks,
+)
 from runtime_config import (
     AppConfig,
     DEFAULT_APP_NAME,
@@ -1562,7 +1568,27 @@ def dashboard_data_path(name: str, *, write: bool = False) -> Path:
     return _absolute_without_following(DATA_DIR) / name
 
 
+def task_source_required_mode() -> int | None:
+    durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
+        DATA_DIR
+    ) != _absolute_without_following(CONFIGURED_DATA_DIR)
+    return 0o600 if durable_policy else None
+
+
+def ensure_task_authority():
+    return ensure_task_sqlite_authority(
+        DATA_DIR,
+        required_source_mode=task_source_required_mode(),
+    )
+
+
 def read_json_file(name: str, default):
+    if name == "tasks.json":
+        dashboard_data_path(name)
+        try:
+            return read_authoritative_tasks(DATA_DIR)
+        except TaskRepositoryError as exc:
+            return {"error": f"Task storage is unavailable ({exc.code})."}
     path = dashboard_data_path(name)
     durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
         DATA_DIR
@@ -1586,6 +1612,13 @@ def read_json_file(name: str, default):
 
 def update_json_file(name: str, default, mutator):
     """Run a locked project-owned JSON read/modify/write cycle."""
+    if name == "tasks.json":
+        dashboard_data_path(name, write=True)
+        try:
+            with HERMES_KANBAN_LOCK:
+                return mutate_authoritative_tasks(DATA_DIR, mutator)
+        except TaskRepositoryError as exc:
+            return {"error": f"Task storage is unavailable ({exc.code})."}, 503
     path = dashboard_data_path(name, write=True)
     durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
         DATA_DIR
@@ -1607,9 +1640,6 @@ def update_json_file(name: str, default, mutator):
             )
 
     try:
-        if name == "tasks.json":
-            with HERMES_KANBAN_LOCK:
-                return update_under_restore_guard()
         return update_under_restore_guard()
     except json.JSONDecodeError as exc:
         return {"error": f"Invalid JSON in {path}: {exc}"}, 500
@@ -10289,6 +10319,10 @@ def serve_dashboard() -> None:
     server = None
     refresh_coordinator = None
     try:
+        # Hold the exclusive server reservation across the authority cutover so
+        # an older live process cannot keep mutating the legacy Task source.
+        # The listener and runtime state are not published until this succeeds.
+        ensure_task_authority()
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
         load_agent_console_runs()
@@ -10381,6 +10415,7 @@ if __name__ == "__main__":
 
     try:
         serve_dashboard()
-    except OSError as exc:
-        print(f"Mentat could not reserve its local server runtime: {compact_text(exc, max_length=240)}")
+    except (OSError, TaskRepositoryError) as exc:
+        detail = exc.code if isinstance(exc, TaskRepositoryError) else compact_text(exc, max_length=240)
+        print(f"Mentat could not prepare its local Task storage: {detail}")
         raise SystemExit(2)

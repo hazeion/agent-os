@@ -39,9 +39,8 @@ The first additive Phase 1 seam is also complete: Mentat now has runtime-neutral
 Agent, Task, Run, AgentEvent, RuntimeContext, capability, registry, and
 AgentRuntime contracts, with Hermes wrapped as the first runtime adapter.
 
-Slice 1B, the durable Agent Registry and runtime-binding boundary, is complete.
-The active slice is **1C-A — SQLite Task Foundation and Migration
-Preview**. The new Next.js frontend begins only after the minimum durable
+Slices 1B and 1C-A are complete. The active slice is **1C-B — SQLite Task
+Authority Cutover**. The new Next.js frontend begins only after the minimum durable
 orchestration state and dispatch boundaries exist, so it can consume real
 Mentat-owned APIs instead of embedding Hermes profiles or temporary mock data.
 
@@ -52,8 +51,8 @@ Mentat-owned APIs instead of embedding Hermes profiles or temporary mock data.
 | 0 | Complete | Hermes webhooks wake authoritative Mentat readbacks; compatibility fallbacks are classified and retained or retired deliberately. | Existing Hermes integration |
 | 1A | Complete | Runtime-neutral contracts and `HermesRuntime` adapter surround existing Console execution. | Slice 0 |
 | 1B | Complete | Durable Mentat Agent identities and separate runtime-configuration bindings. | Slice 1A |
-| 1C-A | In progress | Extend the existing private `mentat.sqlite3` with a canonical Task repository, exact migration preview, deterministic export, and backup-safe schema migration; do not cut over live APIs yet. | Slice 1B |
-| 1C-B | Provisional | Atomically migrate `tasks.json` and cut every live Task workflow over to SQLite with no dual reads or writes. | Slice 1C-A |
+| 1C-A | Complete | Extend the existing private `mentat.sqlite3` with a canonical Task repository, exact migration preview, deterministic export, and backup-safe schema migration; do not cut over live APIs yet. | Slice 1B |
+| 1C-B | In progress | Atomically migrate `tasks.json` and cut every live Task workflow over to SQLite with no dual reads or writes. | Slice 1C-A |
 | 1C-C | Provisional | Durable Run and AgentEvent journals, generic runtime-neutral dispatch, reconciliation, and bounded retention. | Slice 1C-B |
 | 1C-D | Provisional | Remove obsolete Task JSON runtime paths, finish operational evidence and compatibility cleanup, and enforce browser/Lighthouse quality gates. | Slice 1C-C |
 | 2A | Provisional | Next.js/React/TypeScript/Tailwind application foundation and shared Mentat design system. | Slice 1C-D |
@@ -119,7 +118,7 @@ evidence, and resume point are recorded in
 
 ### Slices 1C-A through 1C-D — SQLite orchestration foundation and cutover
 
-Status: **1C-A in progress; later slices provisional**
+Status: **1C-A complete; 1C-B in progress; later slices provisional**
 
 Approved architectural boundary:
 
@@ -142,7 +141,17 @@ destructive source-of-truth cutover:
    transaction-tested import primitive, deterministic export, and private
    backup/restore evidence. Live task APIs continue to use `tasks.json`.
 2. **1C-B:** exact state-bound import and atomic API/storage cutover. After
-   success, no runtime Task path reads or writes `tasks.json`.
+   success, no runtime Task path reads or writes `tasks.json`. A singleton
+   SQLite authority receipt commits with the exact imported collection, so an
+   empty store is still durably cut over and stale JSON can never be re-imported
+   or used as fallback. An explicit server-stopped, token-bound `mentat
+   task-export` workflow can refresh the legacy document, while its
+   `--compatible-root` mode publishes a validated schema-5 sibling data root
+   with empty Task tables and exported JSON as the old build's sole Task
+   authority, without changing live authority. Because credentials are
+   excluded, compatible-root export fails closed for an actively selected
+   remote Hermes connection and requires explicit remote reconfiguration in
+   the old-build sibling.
 3. **1C-C:** durable Runs, append-only AgentEvents, dispatch reservations,
    reconciliation, and fixed bounded retention that never removes active or
    waiting Runs and marks truncated timelines explicitly.
@@ -153,7 +162,7 @@ System design reference:
 `design/system-design/MENTAT_SQLITE_ORCHESTRATION_SYSTEM_DESIGN.docx`
 
 Active contract and evidence:
-`reviews/2026-08-18-mentat-sqlite-task-foundation.md`
+`reviews/2026-08-18-mentat-sqlite-task-cutover.md`
 
 ### Slice 2A — New frontend foundation
 

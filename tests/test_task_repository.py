@@ -7,10 +7,16 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 from tempfile import TemporaryDirectory
+from threading import Barrier, Thread
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import server
+import data_backup_restore
+import private_console_unit
+import task_repository
 from mentat.cli import main as mentat_cli_main
 from mentat_db import SCHEMA_VERSION, MentatDatabaseError, connect, database_path, transaction
 from private_console_unit import (
@@ -24,10 +30,18 @@ from task_repository import (
     TaskRepositoryError,
     TaskRepositoryUnavailable,
     TaskRepositoryValidationError,
+    confirm_task_compatible_export,
+    confirm_task_legacy_export,
+    ensure_task_sqlite_authority,
     export_tasks,
     import_tasks_from_preview,
+    normalize_legacy_task_collection,
     normalize_task_collection,
+    preview_task_compatible_export,
+    preview_task_legacy_export,
     preview_task_sqlite_migration,
+    read_authoritative_tasks,
+    mutate_authoritative_tasks,
 )
 
 
@@ -129,8 +143,73 @@ def write_tasks(root: Path, tasks: list[dict]) -> Path:
     return path
 
 
+def write_seed_root(root: Path, tasks: list[dict]) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    for fixture in (ROOT / "data").glob("*.json"):
+        destination = root / fixture.name
+        destination.write_bytes(fixture.read_bytes())
+        if os.name != "nt":
+            destination.chmod(0o600)
+    return write_tasks(root, tasks)
+
+
+def task_with_export_size(size: int) -> dict:
+    candidate = task("task_size_boundary")
+    candidate["description"] = ""
+    base = task_repository._json_bytes(
+        normalize_task_collection([candidate]),
+        code="test.task_size_boundary",
+    )
+    padding = size - len(base)
+    if padding < 0:
+        raise ValueError("requested Task export size is too small")
+    candidate["description"] = "x" * padding
+    raw = task_repository._json_bytes(
+        normalize_task_collection([candidate]),
+        code="test.task_size_boundary",
+    )
+    if len(raw) != size:
+        raise AssertionError("Task export boundary fixture is not exact")
+    return candidate
+
+
 class TaskRepositoryTests(unittest.TestCase):
-    def test_schema_five_is_additive_exact_and_forward_refusing(self):
+    def test_legacy_timestamp_eras_upgrade_deterministically(self):
+        fixtures = (
+            ({"id": "sparse", "title": "Sparse"}, "1970-01-01T00:00:00+00:00"),
+            (
+                {
+                    "id": "naive",
+                    "title": "Naive",
+                    "created_at": "2025-02-03T04:05:06",
+                    "updated_at": "2025-02-03 04:06:07",
+                    "completed_at": "2025-02-03T04:07:08.123456",
+                    "status": "done",
+                },
+                "2025-02-03T04:05:06+00:00",
+            ),
+            (
+                {
+                    "id": "aware",
+                    "title": "Aware",
+                    "created_at": "2026-08-18T09:00:00-07:00",
+                    "updated_at": "2026-08-18T09:05:00Z",
+                },
+                "2026-08-18T09:00:00-07:00",
+            ),
+        )
+        for source, expected_created_at in fixtures:
+            with self.subTest(task_id=source["id"]):
+                normalized = normalize_legacy_task_collection([source])[0]
+                self.assertEqual(normalized["created_at"], expected_created_at)
+                self.assertIsNotNone(normalized["updated_at"])
+                if source["id"] == "naive":
+                    self.assertEqual(
+                        normalized["completed_at"],
+                        "2025-02-03T04:07:08.123456+00:00",
+                    )
+
+    def test_schema_six_is_additive_exact_and_forward_refusing(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             connection = connect(root)
@@ -150,9 +229,14 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 5)
+            self.assertEqual(SCHEMA_VERSION, 6)
             self.assertTrue(
-                {"mentat_tasks", "mentat_task_tags", "mentat_task_dependencies"}.issubset(tables)
+                {
+                    "mentat_tasks",
+                    "mentat_task_tags",
+                    "mentat_task_dependencies",
+                    "mentat_task_store_state",
+                }.issubset(tables)
             )
             self.assertEqual(
                 {row[2] for row in dependency_fks},
@@ -207,7 +291,8 @@ class TaskRepositoryTests(unittest.TestCase):
                     connection.execute("DROP TABLE mentat_task_dependencies")
                     connection.execute("DROP TABLE mentat_task_tags")
                     connection.execute("DROP TABLE mentat_tasks")
-                    connection.execute("DELETE FROM schema_migrations WHERE version = 5")
+                    connection.execute("DROP TABLE mentat_task_store_state")
+                    connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6)")
             finally:
                 connection.close()
             path = database_path(root)
@@ -243,7 +328,7 @@ class TaskRepositoryTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     migrated.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                    5,
+                    SCHEMA_VERSION,
                 )
                 self.assertEqual(TaskRepository(migrated).count(), 0)
             finally:
@@ -678,7 +763,7 @@ class TaskRepositoryTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             source_root = Path(tmpdir) / "source"
             write_tasks(source_root, [task("task_parent"), full_task()])
-            import_tasks_from_preview(source_root, preview_task_sqlite_migration(source_root))
+            ensure_task_sqlite_authority(source_root)
             unit = capture_private_console_unit(source_root)
             self.assertEqual(unit.task_count, 2)
 
@@ -726,12 +811,1114 @@ class TaskRepositoryTests(unittest.TestCase):
             with self.assertRaises(PrivateConsoleUnitError):
                 capture_private_console_unit(restored)
 
-    def test_no_production_import_confirmation_or_startup_reachability_exists(self):
+    def test_production_cutover_is_reachable_without_a_confirmation_passthrough(self):
         for source in (SERVER_SOURCE, RUNTIME_CONFIG_SOURCE, CLI_SOURCE):
             self.assertNotIn("import_tasks_from_preview", source)
             self.assertNotIn("confirm-task-sqlite-migration", source)
         self.assertIn("--preview-task-sqlite-migration", RUNTIME_CONFIG_SOURCE)
         self.assertIn('"task-migration"', CLI_SOURCE)
+        self.assertIn("ensure_task_sqlite_authority", SERVER_SOURCE)
+
+    def test_cutover_imports_and_receipts_atomically_then_ignores_stale_source(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = write_tasks(root, [task("task_a")])
+            receipt = ensure_task_sqlite_authority(root)
+            self.assertEqual(receipt.source_task_count, 1)
+            self.assertEqual([item["id"] for item in read_authoritative_tasks(root)], ["task_a"])
+
+            source.write_text("not json\n", encoding="utf-8")
+            if os.name != "nt":
+                source.chmod(0o600)
+            second = ensure_task_sqlite_authority(root)
+            self.assertEqual(second, receipt)
+            self.assertEqual([item["id"] for item in read_authoritative_tasks(root)], ["task_a"])
+            preview = preview_task_sqlite_migration(root)
+            self.assertEqual(preview.status, "already_cut_over")
+            self.assertIsNone(preview.source)
+
+    def test_empty_cutover_never_reimports_a_later_seed(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [])
+            ensure_task_sqlite_authority(root)
+            write_tasks(root, [task("stale")])
+            ensure_task_sqlite_authority(root)
+            self.assertEqual(read_authoritative_tasks(root), [])
+
+    def test_collection_mutation_preserves_revisions_and_rolls_back_invalid_state(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task("task_a"), task("task_b")])
+            ensure_task_sqlite_authority(root)
+
+            def change(tasks):
+                tasks[1] = {**tasks[1], "title": "Changed"}
+                tasks.append(task("task_c"))
+                return list(tasks), "done"
+
+            self.assertEqual(mutate_authoritative_tasks(root, change), "done")
+            connection = connect(root)
+            try:
+                revisions = {
+                    row["id"]: row["revision"]
+                    for row in connection.execute(
+                        "SELECT id, revision FROM mentat_tasks ORDER BY id"
+                    )
+                }
+            finally:
+                connection.close()
+            self.assertEqual(revisions, {"task_a": 1, "task_b": 2, "task_c": 1})
+
+            mutate_authoritative_tasks(
+                root,
+                lambda tasks: ([tasks[1], tasks[0], tasks[2]], None),
+            )
+            connection = connect(root)
+            try:
+                reordered_revisions = {
+                    row["id"]: row["revision"]
+                    for row in connection.execute(
+                        "SELECT id, revision FROM mentat_tasks ORDER BY id"
+                    )
+                }
+            finally:
+                connection.close()
+            self.assertEqual(
+                reordered_revisions,
+                {"task_a": 2, "task_b": 3, "task_c": 1},
+            )
+
+            with self.assertRaises(TaskRepositoryValidationError):
+                mutate_authoritative_tasks(
+                    root,
+                    lambda tasks: ([{**tasks[0], "id": tasks[1]["id"]}, *tasks[1:]], None),
+                )
+            self.assertEqual(
+                [item["id"] for item in read_authoritative_tasks(root)],
+                ["task_b", "task_a", "task_c"],
+            )
+
+    def test_cutover_failure_rolls_back_tasks_and_authority_receipt_together(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task("task_a")])
+            with patch.object(
+                TaskRepository,
+                "claim_authority",
+                side_effect=TaskRepositoryError("injected_failure"),
+            ):
+                with self.assertRaisesRegex(TaskRepositoryError, "injected_failure"):
+                    ensure_task_sqlite_authority(root)
+            connection = connect(root)
+            try:
+                repository = TaskRepository(connection)
+                self.assertEqual(repository.count(), 0)
+                self.assertIsNone(repository.authority_receipt())
+            finally:
+                connection.close()
+
+    def test_server_task_helpers_never_use_json_after_cutover(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = write_tasks(root, [task("task_a")])
+            with (
+                patch.object(server, "DATA_DIR", root),
+                patch.object(server, "CONFIGURED_DATA_DIR", root),
+            ):
+                server.ensure_task_authority()
+                stale = source.read_bytes()
+                source.write_text("not json\n", encoding="utf-8")
+                if os.name != "nt":
+                    source.chmod(0o600)
+                with (
+                    patch.object(
+                        server,
+                        "store_read_json",
+                        side_effect=AssertionError("legacy Task JSON read"),
+                    ),
+                    patch.object(
+                        server,
+                        "store_update_json",
+                        side_effect=AssertionError("legacy Task JSON write"),
+                    ),
+                ):
+                    self.assertEqual(server.read_json_file("tasks.json", [])[0]["id"], "task_a")
+                    result = server.update_json_file(
+                        "tasks.json",
+                        [],
+                        lambda tasks: ([{**tasks[0], "title": "SQLite only"}], "ok"),
+                    )
+                    self.assertEqual(result, "ok")
+                    self.assertEqual(
+                        server.read_json_file("tasks.json", [])[0]["title"],
+                        "SQLite only",
+                    )
+                self.assertNotEqual(source.read_bytes(), stale)
+                self.assertEqual(source.read_bytes(), b"not json\n")
+
+    def test_live_server_helpers_fail_closed_without_invoking_cutover(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task("stale")])
+            with (
+                patch.object(server, "DATA_DIR", root),
+                patch.object(server, "CONFIGURED_DATA_DIR", root),
+                patch.object(
+                    task_repository,
+                    "_read_source_snapshot",
+                    side_effect=AssertionError("live fallback read"),
+                ),
+            ):
+                read_result = server.read_json_file("tasks.json", [])
+                write_result, status = server.update_json_file(
+                    "tasks.json",
+                    [],
+                    lambda tasks: (tasks, None),
+                )
+            self.assertIn("authority_missing", read_result["error"])
+            self.assertEqual(status, 503)
+            self.assertIn("authority_missing", write_result["error"])
+
+    def test_cutover_rechecks_source_adjacent_to_receipt_commit(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = write_tasks(root, [task("task_a")])
+            read_snapshot = task_repository._read_source_snapshot
+            calls = 0
+
+            def replace_after_first_read(*args, **kwargs):
+                nonlocal calls
+                snapshot = read_snapshot(*args, **kwargs)
+                calls += 1
+                if calls == 1:
+                    source.write_text(
+                        json.dumps([task("task_changed")]),
+                        encoding="utf-8",
+                    )
+                    if os.name != "nt":
+                        source.chmod(0o600)
+                return snapshot
+
+            with patch.object(
+                task_repository,
+                "_read_source_snapshot",
+                side_effect=replace_after_first_read,
+            ):
+                with self.assertRaisesRegex(TaskRepositoryConflict, "source_changed"):
+                    ensure_task_sqlite_authority(root)
+            connection = connect(root)
+            try:
+                repository = TaskRepository(connection)
+                self.assertEqual(repository.count(), 0)
+                self.assertIsNone(repository.authority_receipt())
+            finally:
+                connection.close()
+
+    @unittest.skipIf(os.name == "nt", "Windows prevents replacing an open database")
+    def test_cutover_rejects_database_path_replacement_before_commit(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task("task_a")])
+            path = database_path(root)
+            original_verify = task_repository._DatabaseIdentityGuard.verify
+            replaced = False
+
+            def replace_then_verify(guard, expected):
+                nonlocal replaced
+                if not replaced:
+                    replaced = True
+                    raw = path.read_bytes()
+                    displaced = path.with_name("displaced.sqlite3")
+                    os.replace(path, displaced)
+                    path.write_bytes(raw)
+                    path.chmod(0o600)
+                return original_verify(guard, expected)
+
+            with patch.object(
+                task_repository._DatabaseIdentityGuard,
+                "verify",
+                autospec=True,
+                side_effect=replace_then_verify,
+            ):
+                with self.assertRaisesRegex(
+                    TaskRepositoryUnavailable,
+                    "database_changed",
+                ):
+                    ensure_task_sqlite_authority(root)
+            self.assertTrue(replaced)
+            with self.assertRaises(TaskRepositoryError):
+                read_authoritative_tasks(root)
+
+    @unittest.skipIf(os.name == "nt", "Windows prevents replacing an open database")
+    def test_cutover_rejects_database_replacement_during_open_handoff(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task("task_a")])
+            path = database_path(root)
+            real_open = task_repository.connect_database_with_identity
+            displaced = path.with_name("handoff-displaced.sqlite3")
+
+            def replace_after_open(data_root):
+                connection, identities = real_open(data_root)
+                raw = path.read_bytes()
+                os.replace(path, displaced)
+                path.write_bytes(raw)
+                path.chmod(0o600)
+                return connection, identities
+
+            with patch.object(
+                task_repository,
+                "connect_database_with_identity",
+                side_effect=replace_after_open,
+            ):
+                with self.assertRaisesRegex(
+                    TaskRepositoryUnavailable,
+                    "database_changed",
+                ):
+                    ensure_task_sqlite_authority(root)
+            self.assertTrue(displaced.exists())
+            with self.assertRaises(TaskRepositoryError):
+                read_authoritative_tasks(root)
+
+    def test_connection_boundary_translates_unsafe_database_failures(self):
+        for kind in ("newer", "malformed", "redirected"):
+            with self.subTest(kind=kind), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                write_tasks(root, [])
+                path = database_path(root)
+                if kind == "newer":
+                    connection = connect(root)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (999, 1)"
+                    )
+                    connection.commit()
+                    connection.close()
+                elif kind == "malformed":
+                    connection = connect(root)
+                    connection.close()
+                    path.write_bytes(b"not a sqlite database")
+                    if os.name != "nt":
+                        path.chmod(0o600)
+                else:
+                    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                    outside = root / "outside.sqlite3"
+                    outside.write_bytes(b"not a sqlite database")
+                    if os.name != "nt":
+                        outside.chmod(0o600)
+                    try:
+                        path.symlink_to(outside)
+                    except OSError as exc:
+                        self.skipTest(f"database symlink unavailable: {exc}")
+                with self.assertRaisesRegex(
+                    TaskRepositoryUnavailable,
+                    "task_repository.unavailable",
+                ):
+                    ensure_task_sqlite_authority(root)
+
+    def test_concurrent_collection_mutations_do_not_lose_tasks(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [])
+            ensure_task_sqlite_authority(root)
+            barrier = Barrier(8)
+            errors: list[BaseException] = []
+
+            def append_task(index: int) -> None:
+                try:
+                    barrier.wait(timeout=5)
+                    mutate_authoritative_tasks(
+                        root,
+                        lambda tasks: ([*tasks, task(f"task_{index}")], None),
+                    )
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            threads = [Thread(target=append_task, args=(index,)) for index in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            self.assertFalse(errors)
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(
+                {item["id"] for item in read_authoritative_tasks(root)},
+                {f"task_{index}" for index in range(8)},
+            )
+
+    def test_authoritative_repository_remains_deterministically_exportable(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            exported = export_tasks(root)
+            self.assertEqual(exported.task_count, 1)
+            self.assertEqual(exported.payload(), [task("task_a")])
+
+    def test_offline_legacy_export_is_state_bound_and_cli_accessible(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = write_tasks(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            mutate_authoritative_tasks(
+                root,
+                lambda tasks: ([*tasks, task("task_b")], None),
+            )
+            preview = preview_task_legacy_export(root)
+            self.assertEqual(preview.export.task_count, 2)
+            self.assertFalse(preview.public_summary()["writes_performed"])
+            source.write_text("[]\n", encoding="utf-8")
+            if os.name != "nt":
+                source.chmod(0o600)
+            with self.assertRaisesRegex(
+                TaskRepositoryConflict,
+                "confirmation_invalid",
+            ):
+                confirm_task_legacy_export(root, preview.confirmation_token)
+
+            source.write_bytes(b"{malformed stale json\n")
+            if os.name != "nt":
+                source.chmod(0o600)
+            current = preview_task_legacy_export(root)
+            result = confirm_task_legacy_export(root, current.confirmation_token)
+            self.assertEqual(result["status"], "exported")
+            self.assertEqual(
+                [item["id"] for item in json.loads(source.read_text(encoding="utf-8"))],
+                ["task_a", "task_b"],
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = mentat_cli_main(
+                    ["task-export", "--data-dir", str(root)]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["task_count"], 2)
+            self.assertNotIn(os.fspath(root), output.getvalue())
+
+            with patch("private_state.mentat_server_active", return_value=True):
+                with self.assertRaisesRegex(
+                    TaskRepositoryConflict,
+                    "server_active",
+                ):
+                    preview_task_legacy_export(root)
+
+            if os.name != "nt":
+                outside = root / "outside.json"
+                outside.write_text("[]\n", encoding="utf-8")
+                outside.chmod(0o600)
+                source.unlink()
+                source.symlink_to(outside)
+                with self.assertRaisesRegex(
+                    TaskRepositoryUnavailable,
+                    "destination_unavailable",
+                ):
+                    preview_task_legacy_export(root)
+                self.assertEqual(outside.read_text(encoding="utf-8"), "[]\n")
+
+    def test_offline_export_requires_committed_sqlite_authority(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = write_tasks(root, [task("legacy_task")])
+            before = source.read_bytes()
+            connection = connect(root)
+            connection.close()
+            with self.assertRaisesRegex(
+                TaskRepositoryUnavailable,
+                "authority_missing",
+            ):
+                preview_task_legacy_export(root)
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_compatible_export_creates_runnable_schema_five_sibling(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            source = write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            mutate_authoritative_tasks(
+                root,
+                lambda tasks: ([*tasks, task("task_b")], None),
+            )
+            source_before = source.read_bytes()
+            preview = preview_task_compatible_export(root)
+            self.assertEqual(preview.target_name, "data-schema5-downgrade")
+            self.assertFalse(preview.public_summary()["writes_performed"])
+            mutate_authoritative_tasks(
+                root,
+                lambda tasks: ([*tasks, task("task_c")], None),
+            )
+            with self.assertRaisesRegex(
+                TaskRepositoryConflict,
+                "confirmation_invalid",
+            ):
+                confirm_task_compatible_export(root, preview.confirmation_token)
+            self.assertFalse(root.with_name(preview.target_name).exists())
+            preview = preview_task_compatible_export(root)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = mentat_cli_main(
+                    [
+                        "task-export",
+                        "--data-dir",
+                        str(root),
+                        "--compatible-root",
+                        "--confirm",
+                        preview.confirmation_token,
+                    ]
+                )
+            result = json.loads(output.getvalue())
+            target = root.with_name(preview.target_name)
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "exported")
+            self.assertTrue(target.is_dir())
+            self.assertEqual(source.read_bytes(), source_before)
+            self.assertEqual(
+                [
+                    item["id"]
+                    for item in json.loads(
+                        (target / "tasks.json").read_text(encoding="utf-8")
+                    )
+                ],
+                ["task_a", "task_b", "task_c"],
+            )
+            downgraded = sqlite3.connect(database_path(target))
+            try:
+                version = downgraded.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                self.assertEqual(version, SCHEMA_VERSION - 1)
+                self.assertIsNone(
+                    downgraded.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE name = 'mentat_task_store_state'"
+                    ).fetchone()
+                )
+                self.assertEqual(
+                    TaskRepository(
+                        downgraded,
+                        allow_pre_authority_schema=True,
+                    ).count(),
+                    0,
+                )
+            finally:
+                downgraded.close()
+            legacy_tasks = json.loads(
+                (target / "tasks.json").read_text(encoding="utf-8")
+            )
+            legacy_tasks.append(task("task_d"))
+            write_tasks(target, legacy_tasks)
+            ensure_task_sqlite_authority(target)
+            self.assertEqual(
+                [item["id"] for item in read_authoritative_tasks(target)],
+                ["task_a", "task_b", "task_c", "task_d"],
+            )
+            self.assertEqual(
+                read_authoritative_tasks(root)[-1]["id"],
+                "task_c",
+            )
+            with self.assertRaisesRegex(
+                TaskRepositoryConflict,
+                "compatible_target_exists",
+            ):
+                preview_task_compatible_export(root)
+
+    def test_export_modes_preserve_the_exact_maximum_document_size(self):
+        maximum = task_repository.MAX_EXPORT_BYTES
+        maximum_task = task_with_export_size(maximum)
+        almost_maximum = task_with_export_size(maximum - 1)
+        self.assertEqual(
+            len(
+                task_repository._json_bytes(
+                    normalize_task_collection([almost_maximum]),
+                    code="test.task_size_boundary",
+                )
+            ),
+            maximum - 1,
+        )
+        oversized = deepcopy(maximum_task)
+        oversized["description"] += "x"
+        with self.assertRaisesRegex(
+            TaskRepositoryValidationError,
+            "tasks.too_large",
+        ):
+            normalize_task_collection([oversized])
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            source = write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            mutate_authoritative_tasks(root, lambda _tasks: ([maximum_task], None))
+            exported = export_tasks(root, require_authority=True)
+            self.assertEqual(len(exported.raw), maximum)
+
+            plain = preview_task_legacy_export(root)
+            confirm_task_legacy_export(root, plain.confirmation_token)
+            self.assertEqual(source.read_bytes(), exported.raw)
+            self.assertEqual(source.stat().st_size, maximum)
+
+            compatible = preview_task_compatible_export(root)
+            confirm_task_compatible_export(root, compatible.confirmation_token)
+            target = root.with_name(compatible.target_name)
+            task_document = next(
+                item
+                for item in data_backup_restore._load_live_documents(target, None)
+                if item.name == "tasks.json"
+            )
+            self.assertEqual(task_document.raw, exported.raw)
+            self.assertEqual(len(task_document.raw), maximum)
+
+            ensure_task_sqlite_authority(target)
+            upgraded = export_tasks(target, require_authority=True)
+            self.assertEqual(upgraded.raw, exported.raw)
+            self.assertEqual(len(upgraded.raw), maximum)
+
+    def test_plain_export_rejects_post_write_trailing_byte_drift(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            source = write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            preview = preview_task_legacy_export(root)
+            expected = preview.export.raw
+            original_write = task_repository.write_json_bytes_atomic
+
+            def write_then_append_newline(*args, **kwargs):
+                original_write(*args, **kwargs)
+                descriptor = os.open(
+                    args[0],
+                    os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0),
+                )
+                try:
+                    os.write(descriptor, b"\n")
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+
+            output = io.StringIO()
+            with (
+                patch.object(
+                    task_repository,
+                    "write_json_bytes_atomic",
+                    side_effect=write_then_append_newline,
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = mentat_cli_main(
+                    [
+                        "task-export",
+                        "--data-dir",
+                        str(root),
+                        "--confirm",
+                        preview.confirmation_token,
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "partial")
+            self.assertTrue(payload["writes_performed"])
+            self.assertEqual(
+                payload["error_code"],
+                "task_export.verification_failed",
+            )
+            self.assertEqual(source.read_bytes(), expected + b"\n")
+
+    def test_compatible_export_ignores_obsolete_task_json_state(self):
+        cases = ["malformed", "missing"]
+        if os.name == "posix":
+            cases.append("linked")
+        for case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir) / "data"
+                source = write_seed_root(root, [task("task_a")])
+                ensure_task_sqlite_authority(root)
+                outside = root / "outside-task.json"
+                if case == "malformed":
+                    source.write_bytes(b"{obsolete malformed task json\n")
+                elif case == "missing":
+                    source.unlink()
+                else:
+                    outside.write_text("[]\n", encoding="utf-8")
+                    outside.chmod(0o600)
+                    source.unlink()
+                    source.symlink_to(outside)
+                preview = preview_task_compatible_export(root)
+                self.assertEqual(preview.public_summary()["status"], "ready")
+                self.assertEqual(preview.export.task_count, 1)
+                if case == "linked":
+                    self.assertEqual(outside.read_text(encoding="utf-8"), "[]\n")
+
+    def test_compatible_export_capture_failures_are_bounded(self):
+        cases = ["missing", "malformed"]
+        if os.name == "posix":
+            cases.append("linked")
+        for case in cases:
+            with self.subTest(case=case), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir) / "data"
+                write_seed_root(root, [task("task_a")])
+                ensure_task_sqlite_authority(root)
+                source = root / "projects.json"
+                outside = root / "outside-projects.json"
+                if case == "missing":
+                    source.unlink()
+                elif case == "malformed":
+                    source.write_bytes(b"{malformed projects\n")
+                else:
+                    outside.write_text("[]\n", encoding="utf-8")
+                    outside.chmod(0o600)
+                    source.unlink()
+                    source.symlink_to(outside)
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    exit_code = mentat_cli_main(
+                        ["task-export", "--data-dir", str(root), "--compatible-root"]
+                    )
+                payload = json.loads(output.getvalue())
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(payload["status"], "blocked")
+                self.assertFalse(payload["writes_performed"])
+                self.assertEqual(
+                    payload["error_code"],
+                    "task_export.capture_unavailable",
+                )
+                self.assertNotIn(os.fspath(root), output.getvalue())
+                if case == "linked":
+                    self.assertEqual(outside.read_text(encoding="utf-8"), "[]\n")
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            history = root / "private" / "console" / "agent-console-runs.json"
+            history.write_bytes(b"{malformed private history\n")
+            if os.name != "nt":
+                history.chmod(0o600)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = mentat_cli_main(
+                    ["task-export", "--data-dir", str(root), "--compatible-root"]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertFalse(payload["writes_performed"])
+            self.assertEqual(
+                payload["error_code"],
+                "task_export.capture_unavailable",
+            )
+
+    def test_export_cli_bounds_interrupted_private_restore_before_lock_entry(self):
+        cases = [
+            (False, False),
+            (False, True),
+            (True, False),
+            (True, True),
+        ]
+        for compatible, confirmation in cases:
+            with (
+                self.subTest(compatible=compatible, confirmation=confirmation),
+                TemporaryDirectory() as tmpdir,
+            ):
+                root = Path(tmpdir) / "data"
+                source = write_seed_root(root, [task("task_a")])
+                ensure_task_sqlite_authority(root)
+                arguments = ["task-export", "--data-dir", str(root)]
+                if compatible:
+                    arguments.append("--compatible-root")
+                if confirmation:
+                    preview = (
+                        preview_task_compatible_export(root)
+                        if compatible
+                        else preview_task_legacy_export(root)
+                    )
+                    arguments.extend(["--confirm", preview.confirmation_token])
+                source_before = source.read_bytes()
+                control = root / "config" / "private-console-restore-v1.reservation.json"
+                control.parent.mkdir(mode=0o700, exist_ok=True)
+                control.write_text("{}\n", encoding="utf-8")
+                if os.name != "nt":
+                    control.chmod(0o600)
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    exit_code = mentat_cli_main(arguments)
+                payload = json.loads(output.getvalue())
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(payload["status"], "blocked")
+                self.assertFalse(payload["writes_performed"])
+                self.assertEqual(
+                    payload["error_code"],
+                    "task_export.capture_unavailable",
+                )
+                self.assertEqual(source.read_bytes(), source_before)
+                self.assertFalse(root.with_name("data-schema5-downgrade").exists())
+
+    def test_compatible_export_digest_and_target_failures_are_bounded(self):
+        for confirmation in (False, True):
+            with self.subTest(confirmation=confirmation), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir) / "data"
+                write_seed_root(root, [task("task_a")])
+                ensure_task_sqlite_authority(root)
+                arguments = [
+                    "task-export",
+                    "--data-dir",
+                    str(root),
+                    "--compatible-root",
+                ]
+                if confirmation:
+                    preview = preview_task_compatible_export(root)
+                    arguments.extend(["--confirm", preview.confirmation_token])
+                output = io.StringIO()
+                with (
+                    patch(
+                        "private_console_unit.private_console_unit_digest",
+                        side_effect=sqlite3.OperationalError("temporary storage unavailable"),
+                    ),
+                    redirect_stdout(output),
+                ):
+                    exit_code = mentat_cli_main(arguments)
+                payload = json.loads(output.getvalue())
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(payload["status"], "blocked")
+                self.assertFalse(payload["writes_performed"])
+                self.assertEqual(
+                    payload["error_code"],
+                    "task_export.capture_unavailable",
+                )
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            output = io.StringIO()
+            with (
+                patch.object(
+                    task_repository,
+                    "_compatible_downgrade_target",
+                    side_effect=OSError("target unavailable"),
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = mentat_cli_main(
+                    ["task-export", "--data-dir", str(root), "--compatible-root"]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertFalse(payload["writes_performed"])
+            self.assertEqual(
+                payload["error_code"],
+                "task_export.capture_unavailable",
+            )
+
+    def test_compatible_export_refuses_active_remote_connection(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            connection = root / "private" / "remote-hermes-connection-v1.json"
+            connection.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "mode": "remote",
+                        "local": {"label": "Local Hermes"},
+                        "remote": {
+                            "label": "Workshop remote",
+                            "endpoint": "https://hermes.example",
+                            "credential": {
+                                "kind": "environment",
+                                "name": "MENTAT_REMOTE_HERMES_API_KEY",
+                            },
+                        },
+                        "binding_id": "a" * 32,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            if os.name != "nt":
+                connection.chmod(0o600)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = mentat_cli_main(
+                    ["task-export", "--data-dir", str(root), "--compatible-root"]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertFalse(payload["writes_performed"])
+            self.assertEqual(
+                payload["error_code"],
+                "task_export.compatible_remote_reconfigure_required",
+            )
+            self.assertNotIn("hermes.example", output.getvalue())
+            self.assertFalse(root.with_name("data-schema5-downgrade").exists())
+
+    def test_compatible_export_never_replaces_racing_destination(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            preview = preview_task_compatible_export(root)
+            target = root.with_name(preview.target_name)
+            original_publish = task_repository._publish_directory_noreplace
+            raced_identity = {}
+
+            def race_destination(source, destination, parent_descriptor):
+                destination.mkdir()
+                metadata = destination.stat()
+                raced_identity["value"] = (metadata.st_dev, metadata.st_ino)
+                return original_publish(source, destination, parent_descriptor)
+
+            output = io.StringIO()
+            with (
+                patch.object(
+                    task_repository,
+                    "_publish_directory_noreplace",
+                    side_effect=race_destination,
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = mentat_cli_main(
+                    [
+                        "task-export",
+                        "--data-dir",
+                        str(root),
+                        "--compatible-root",
+                        "--confirm",
+                        preview.confirmation_token,
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertFalse(payload["writes_performed"])
+            self.assertEqual(
+                payload["error_code"],
+                "task_export.compatible_write_failed",
+            )
+            metadata = target.stat()
+            self.assertEqual(
+                (metadata.st_dev, metadata.st_ino),
+                raced_identity["value"],
+            )
+            self.assertEqual(list(target.iterdir()), [])
+
+    def test_windows_publication_requests_write_through_without_replace(self):
+        source = Path("C:/mentat/.compatible-stage")
+        target = Path("C:/mentat/data-schema5-downgrade")
+        move_file = Mock(return_value=1)
+        kernel32 = Mock()
+        kernel32.MoveFileExW = move_file
+        with (
+            patch.object(task_repository.os, "name", "nt"),
+            patch.object(
+                task_repository.ctypes,
+                "WinDLL",
+                return_value=kernel32,
+                create=True,
+            ),
+        ):
+            task_repository._publish_directory_noreplace(source, target, None)
+        move_file.assert_called_once_with(
+            os.fspath(source),
+            os.fspath(target),
+            0x00000008,
+        )
+        self.assertEqual(move_file.call_args.args[2] & 0x00000001, 0)
+
+        move_file.reset_mock(return_value=True)
+        move_file.return_value = 0
+        with (
+            patch.object(task_repository.os, "name", "nt"),
+            patch.object(
+                task_repository.ctypes,
+                "WinDLL",
+                return_value=kernel32,
+                create=True,
+            ),
+            patch.object(
+                task_repository.ctypes,
+                "get_last_error",
+                return_value=5,
+                create=True,
+            ),
+            self.assertRaises(OSError),
+        ):
+            task_repository._publish_directory_noreplace(source, target, None)
+
+    @unittest.skipIf(os.name != "posix", "POSIX directory durability contract")
+    def test_compatible_export_fsyncs_tree_and_reports_parent_fsync_failure(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            preview = preview_task_compatible_export(root)
+            private_directories = []
+            original_private_fsync = private_console_unit._fsync_private_directory
+
+            def record_private_fsync(path):
+                private_directories.append(Path(path).name)
+                return original_private_fsync(path)
+
+            with (
+                patch.object(
+                    private_console_unit,
+                    "_fsync_private_directory",
+                    side_effect=record_private_fsync,
+                ),
+                patch.object(
+                    task_repository,
+                    "_fsync_staged_directory",
+                    wraps=task_repository._fsync_staged_directory,
+                ) as stage_fsync,
+                patch.object(
+                    task_repository,
+                    "_fsync_publication_parent",
+                    wraps=task_repository._fsync_publication_parent,
+                ) as parent_fsync,
+            ):
+                confirm_task_compatible_export(root, preview.confirmation_token)
+            self.assertEqual(
+                private_directories[-4:],
+                ["sha256", "blobs", "console", "private"],
+            )
+            stage_fsync.assert_called_once()
+            parent_fsync.assert_called_once()
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            preview = preview_task_compatible_export(root)
+            target = root.with_name(preview.target_name)
+            output = io.StringIO()
+            with (
+                patch.object(
+                    task_repository,
+                    "_fsync_publication_parent",
+                    side_effect=OSError("publication parent fsync failed"),
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = mentat_cli_main(
+                    [
+                        "task-export",
+                        "--data-dir",
+                        str(root),
+                        "--compatible-root",
+                        "--confirm",
+                        preview.confirmation_token,
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "partial")
+            self.assertTrue(payload["writes_performed"])
+            self.assertEqual(
+                payload["error_code"],
+                "task_export.compatible_write_failed",
+            )
+            self.assertTrue(target.is_dir())
+            self.assertTrue((target / "tasks.json").is_file())
+
+    @unittest.skipIf(os.name != "posix", "POSIX packaged-mode compatibility")
+    def test_offline_export_accepts_packaged_mode_then_publishes_private_file(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = write_tasks(root, [task("task_a")])
+            source.chmod(0o644)
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+            preview = preview_task_legacy_export(
+                root,
+                required_destination_mode=None,
+            )
+            self.assertEqual(preview.destination_identity[-1], 0o644)
+            confirm_task_legacy_export(
+                root,
+                preview.confirmation_token,
+                required_destination_mode=None,
+            )
+            self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o600)
+
+    def test_offline_export_cli_reports_uncertain_and_post_write_failures(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            preview = preview_task_legacy_export(root)
+            output = io.StringIO()
+            with (
+                patch.object(
+                    task_repository,
+                    "write_json_bytes_atomic",
+                    side_effect=OSError("disk full"),
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = mentat_cli_main(
+                    [
+                        "task-export",
+                        "--data-dir",
+                        str(root),
+                        "--confirm",
+                        preview.confirmation_token,
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "partial")
+            self.assertIsNone(payload["writes_performed"])
+            self.assertEqual(payload["error_code"], "task_export.write_uncertain")
+
+            current = preview_task_legacy_export(root)
+            output = io.StringIO()
+            with (
+                patch.object(
+                    task_repository,
+                    "_read_source_snapshot",
+                    side_effect=TaskRepositoryUnavailable("verification unavailable"),
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = mentat_cli_main(
+                    [
+                        "task-export",
+                        "--data-dir",
+                        str(root),
+                        "--confirm",
+                        current.confirmation_token,
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "partial")
+            self.assertTrue(payload["writes_performed"])
+            self.assertEqual(
+                payload["error_code"],
+                "task_export.verification_failed",
+            )
+
+    def test_occupied_schema_five_preview_is_blocked_with_exact_count(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_tasks(root, [task("source")])
+            connection = connect(root)
+            try:
+                TaskRepository(connection).insert_collection([task("occupied")])
+                with transaction(connection, immediate=True):
+                    connection.execute("DROP TABLE mentat_task_store_state")
+                    connection.execute(
+                        "DELETE FROM schema_migrations WHERE version = 6"
+                    )
+            finally:
+                connection.close()
+            preview = preview_task_sqlite_migration(root)
+            self.assertEqual(preview.status, "blocked")
+            self.assertEqual(preview.destination.state, "occupied")
+            self.assertEqual(preview.destination.schema_version, 5)
+            self.assertEqual(preview.destination.task_count, 1)
 
     def test_unified_cli_runs_bounded_read_only_preview(self):
         with TemporaryDirectory() as tmpdir:

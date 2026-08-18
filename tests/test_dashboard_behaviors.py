@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from task_repository import ensure_task_sqlite_authority
 from hermes_transport import TransportBinding
 
 
@@ -24,6 +25,8 @@ class DashboardBehaviorTests(unittest.TestCase):
 
     def write_json(self, root: Path, name: str, payload) -> None:
         (root / name).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        if name == "tasks.json":
+            ensure_task_sqlite_authority(root, required_source_mode=None)
 
     def test_agent_console_only_accepts_hermes_and_requires_a_prompt(self):
         with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
@@ -636,7 +639,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.write_json(root, "tasks.json", [])
             with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.create_task(request)
-                stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
+                stored_tasks = server.read_json_file("tasks.json", [])
 
         self.assertEqual(status, 201)
         self.assertTrue(payload["ok"])
@@ -698,7 +701,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.write_json(root, "tasks.json", [existing])
             with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.update_task("task_existing", request)
-                stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
+                stored_tasks = server.read_json_file("tasks.json", [])
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
@@ -735,7 +738,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.write_json(root, "tasks.json", [])
             with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.handle_post_route("/api/tasks", request)
-                stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
+                stored_tasks = server.read_json_file("tasks.json", [])
 
         self.assertEqual(status, 201)
         self.assertTrue(payload["ok"])
@@ -779,7 +782,7 @@ class DashboardBehaviorTests(unittest.TestCase):
             self.write_json(root, "tasks.json", [existing])
             with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
                 payload, status = server.handle_post_route("/api/tasks/task_existing", request)
-                stored_tasks = json.loads((root / "tasks.json").read_text(encoding="utf-8"))
+                stored_tasks = server.read_json_file("tasks.json", [])
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])

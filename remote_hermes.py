@@ -1694,6 +1694,34 @@ def load_connection_state(data_root: Path) -> ConnectionState:
     return _load_connection_state_locked(data_root)
 
 
+def load_connection_state_read_only(data_root: Path) -> ConnectionState:
+    """Read current connection intent without migrating or resolving credentials."""
+
+    root = Path(data_root)
+    path = connection_path(root)
+    try:
+        with private_state_lock(root):
+            if not os.path.lexists(os.fspath(path)):
+                return _default_state()
+            private = private_root(root)
+            if (
+                not _verify_owner_private(private, directory=True)
+                or not _verify_owner_private(path, directory=False)
+            ):
+                raise RemoteHermesError("connection_storage_unavailable")
+            with _pinned_private_directory(private) as parent_fd:
+                payload = _read_record_payload(root, parent_fd=parent_fd)
+                if payload is None:
+                    return _default_state()
+                if payload.get("schema_version") != CONNECTION_SCHEMA_VERSION:
+                    raise RemoteHermesError("connection_record_invalid")
+                return _state_from_record(payload)
+    except RemoteHermesError:
+        raise
+    except OSError as exc:
+        raise RemoteHermesError("connection_storage_unavailable") from exc
+
+
 def _load_state_and_selection(
     data_root: Path,
     *,
@@ -6363,6 +6391,7 @@ __all__ = [
     "credential_source_from_values",
     "load_connection",
     "load_connection_state",
+    "load_connection_state_read_only",
     "normalize_endpoint",
     "offline_confirmation_token",
     "preview_connection",

@@ -143,6 +143,8 @@ class LocalServerLifecycleTests(unittest.TestCase):
                     server,
                     "load_remote_hermes_connection_state",
                 ), patch.object(
+                    server, "ensure_task_authority"
+                ), patch.object(
                     server, "load_agent_console_runs"
                 ), patch.object(
                     server, "maintain_agent_console_attachments"

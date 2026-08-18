@@ -45,8 +45,10 @@ MAX_REGISTRY_DATABASE_BYTES = 4 * 1024 * 1024
 MAX_BLOB_BYTES = 10 * 1024 * 1024
 MAX_BLOBS = 100
 MAX_PRIVATE_UNIT_BYTES = 64 * 1024 * 1024
-PREVIOUS_DATABASE_SCHEMA_VERSION = 4
+LEGACY_DATABASE_SCHEMA_VERSION = 4
+PREVIOUS_DATABASE_SCHEMA_VERSION = 5
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
+    LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
     DATABASE_SCHEMA_VERSION,
 }
@@ -303,9 +305,12 @@ def _database_task_count(raw: bytes) -> int:
                 raise PrivateConsoleUnitError("private_database_unsupported")
             if _schema_signature(connection) != _expected_schema_signature(version):
                 raise PrivateConsoleUnitError("private_database_schema_invalid")
-            if version == PREVIOUS_DATABASE_SCHEMA_VERSION:
+            if version == LEGACY_DATABASE_SCHEMA_VERSION:
                 return 0
-            return validate_repository_connection(connection)
+            return validate_repository_connection(
+                connection,
+                require_authority_consistency=version == DATABASE_SCHEMA_VERSION,
+            )
         except TaskRepositoryError as exc:
             raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
         finally:
@@ -427,9 +432,14 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             raise PrivateConsoleUnitError("private_database_unsupported")
         if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version == DATABASE_SCHEMA_VERSION:
+        if schema_version in {PREVIOUS_DATABASE_SCHEMA_VERSION, DATABASE_SCHEMA_VERSION}:
             try:
-                validate_repository_connection(connection)
+                validate_repository_connection(
+                    connection,
+                    require_authority_consistency=(
+                        schema_version == DATABASE_SCHEMA_VERSION
+                    ),
+                )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
         placeholders = ",".join("?" for _ in retained)
@@ -466,9 +476,14 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         connection.execute("VACUUM")
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise PrivateConsoleUnitError("private_database_invalid")
-        if schema_version == DATABASE_SCHEMA_VERSION:
+        if schema_version in {PREVIOUS_DATABASE_SCHEMA_VERSION, DATABASE_SCHEMA_VERSION}:
             try:
-                validate_repository_connection(connection)
+                validate_repository_connection(
+                    connection,
+                    require_authority_consistency=(
+                        schema_version == DATABASE_SCHEMA_VERSION
+                    ),
+                )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
     except sqlite3.Error as exc:
@@ -490,9 +505,14 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             raise PrivateConsoleUnitError("private_database_unsupported")
         if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version == DATABASE_SCHEMA_VERSION:
+        if schema_version in {PREVIOUS_DATABASE_SCHEMA_VERSION, DATABASE_SCHEMA_VERSION}:
             try:
-                validate_repository_connection(connection)
+                validate_repository_connection(
+                    connection,
+                    require_authority_consistency=(
+                        schema_version == DATABASE_SCHEMA_VERSION
+                    ),
+                )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
         database_runs = {str(row[0]) for row in connection.execute("SELECT DISTINCT run_id FROM run_attachments")}
@@ -803,6 +823,25 @@ def _write_private_file(path: Path, raw: bytes) -> None:
         os.close(descriptor)
 
 
+def _fsync_private_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PrivateConsoleUnitError("private_stage_directory_invalid")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def materialize_private_console_unit(
     data_root: Path,
     unit: PrivateConsoleUnit,
@@ -852,11 +891,22 @@ def materialize_private_console_unit(
         if private_console_unit_digest(staged_unit) != private_console_unit_digest(unit):
             raise PrivateConsoleUnitError("private_stage_verification_failed")
         if os.name == "posix":
-            parent_descriptor = os.open(private, os.O_RDONLY)
-            try:
-                os.fsync(parent_descriptor)
-            finally:
-                os.close(parent_descriptor)
+            blob_directories = {
+                _blob_path(blob_root, blob.storage_key).parent for blob in unit.blobs
+            }
+            for directory in sorted(
+                blob_directories,
+                key=lambda item: len(item.parts),
+                reverse=True,
+            ):
+                _fsync_private_directory(directory)
+            for directory in (
+                blob_root,
+                destination / "blobs",
+                destination,
+                private,
+            ):
+                _fsync_private_directory(directory)
         return destination
     except Exception:
         shutil.rmtree(destination, ignore_errors=True)
