@@ -2,6 +2,12 @@
 
 This file is the quick project guide for contributors and coding agents working in this repository.
 
+Before planning architectural work, read `MENTAT_MULTI_AGENT_PIVOT.md` for the
+target direction and `MENTAT_PIVOT_IMPLEMENTATION_PLAN.md` for the current slice
+sequence and resume point. Continue to use `ARCHITECTURE.md` for implemented
+contracts and safety boundaries. A provisional roadmap entry is not approval to
+implement that slice.
+
 ## Overview
 
 Mentat is a local-first multi-agent operations console in a strangler migration
@@ -70,6 +76,15 @@ and authority. Runtime identities are implementation references beneath an
 Agent. During the migration, legacy browser `agent_id` values remain Hermes
 profile IDs for compatibility; do not treat that alias or `data/agents.json`
 heartbeat observations as the durable Mentat Agent registry.
+
+Canonical Mentat Agents and their runtime bindings are stored separately in an
+independently versioned owner-private `agent-registry.sqlite3`, leaving the
+existing Console database schema downgrade-compatible. Browser-facing Agent projections may expose Mentat IDs,
+names, runtime types, runtime configuration IDs, and declared capabilities, but
+must not expose adapter-owned runtime references. `data/agents.json` remains a
+legacy heartbeat-observation surface and must not be merged into or substituted
+for the canonical registry. The registry is capped at 128 Agents and is part of
+the validated private Console backup/restore consistency unit.
 
 Hermes remains the first capability-scoped runtime adapter. New orchestration
 code must use the runtime-neutral boundary and must not depend directly on

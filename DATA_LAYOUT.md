@@ -125,6 +125,7 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 | --- | --- | --- |
 | Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | Redacted retained Console history; durable according to its retention policy. |
 | Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, and run-reference metadata; live WAL/SHM remain SQLite-owned beside the database. |
+| Canonical Mentat Agent registry | `<data-root>/private/console/agent-registry.sqlite3` | Independently versioned Agent identities and private runtime bindings; capped at 128 records and semantically validated during backup/restore. |
 | Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
 | Remote connection selection | `<data-root>/private/remote-hermes-connection-v1.json` | Schema-v2, server-only, owner-only, and atomically replaced. Stores the active mode, local label, one remembered remote label/endpoint, binding ID, and credential-source reference—but no API-key value. The historical filename is retained for compatible migration. A missing record means local mode. |
 | Migrated legacy remote credential | `<data-root>/private/remote-hermes-credential.env` | Owner-only, server-only env file created only when migrating the former schema-v1 embedded credential or by a trusted internal compatibility operation. New setup should reference an operator-owned environment variable or owner-only env file instead. |
@@ -510,11 +511,14 @@ backup fails closed. Runtime scratch, caches, logs, browser storage, and externa
 Hermes/Obsidian/Google state are not restored as operator data.
 
 Milestone 1E-A implements the schema-governed durable-operator portion of this
-contract. Milestone 1E-B extends the current deterministic owner-only format as
-`mentat-backup-v2-<id>.zip`, with one canonical manifest, the nine fixed
-`data/*.json` entries, canonical retained history, a supported-schema SQLite
+contract. Milestone 1E-B introduced deterministic owner-only format 2. The
+multi-agent registry slice extends it as `mentat-backup-v3-<id>.zip`, with one
+canonical manifest, the nine fixed `data/*.json` entries, canonical retained
+history, a supported-schema SQLite
 snapshot captured through SQLite's backup API and pruned to retained run
-references, and exactly the verified ready blobs referenced by that snapshot.
+references, an independently versioned and semantically validated Agent
+registry SQLite snapshot, and exactly the verified ready blobs referenced by
+that snapshot.
 The manifest records format and data-schema versions, classifications, sizes,
 integrity metadata, and every excluded class. It contains no absolute paths,
 credentials, unreferenced/staged Console bytes, runtime state, caches, logs, browser state,
@@ -526,8 +530,8 @@ exact entry count, and a tight central-directory bound before constructing a ZIP
 reader; JSON trees are decoded one document at a time for shape validation and
 discarded rather than retained with the raw snapshot.
 
-Restore accepts that exact canonical version-2 archive and the prior canonical
-version-1 JSON-only format on an initialized
+Restore accepts canonical version-3 archives, pre-registry version-2 archives,
+and the prior canonical version-1 JSON-only format on an initialized
 current-schema target. Preview is read-only, reports replace/unchanged actions,
 refuses newer or malformed input, and binds an opaque token to the safe archive
 identity and bytes plus exact target identity and live bytes. Confirmation
@@ -542,24 +546,27 @@ blocks while any reservation or restore temporary remains. An exact uncommitted
 temporary has its own previewed, confirmed cleanup path and is never silently
 deleted.
 
-For version 2, private restore exchanges a complete staged Console directory,
-keeps the old directory until new-state verification, and resumes only exact
-recognized old/new/staged states. Version-1 restore preserves the current
-private Console unit. The current schema manifest and its bootstrap evidence stay at the destination:
+For versions 2 and 3, private restore exchanges a complete staged Console
+directory, keeps the old directory until new-state verification, and resumes
+only exact recognized old/new/staged states. Version-1 restore preserves the
+current private Console unit. The current schema manifest and its bootstrap
+evidence stay at the destination:
 they describe the supported document schema and remain valid across legitimate
 document mutations. Migration receipts, schema backups, and all excluded
 directories are not replaced. A clean-install recovery initializes the target
-layout and current schema first, then runs restore. Version 2 completes the
-private Console consistency unit; version 1 remains a supported JSON-only
-legacy format.
+layout and current schema first, then runs restore. Version 2 preserves the
+pre-registry private Console consistency unit; version 3 adds canonical Agent
+state. A version-2 restore materializes the canonical empty Agent registry
+because that format predates the registry. Version 1 remains a supported
+JSON-only legacy format.
 
 Current source-checkout CLI form (the unified installed `mentat backup` and
 `mentat restore` commands remain Milestone 3):
 
 ```bash
 python server.py --data-dir "/path/to/mentat-data" --create-backup
-python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v2-ID.zip"
-python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v2-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v3-ID.zip"
+python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v3-ID.zip"
 ```
 
 Legacy private Console state is never moved silently. Preview and confirmation

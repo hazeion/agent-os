@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ARCHITECTURE = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
 PIVOT = (ROOT / "MENTAT_MULTI_AGENT_PIVOT.md").read_text(encoding="utf-8")
 AGENT_GUIDE = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+PIVOT_PLAN = (ROOT / "MENTAT_PIVOT_IMPLEMENTATION_PLAN.md").read_text(encoding="utf-8")
 SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
 
 
@@ -33,6 +34,13 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
             "status_compatibility",
         ):
             self.assertIn(method, SERVER)
+
+    def test_pivot_plan_marks_only_the_approved_registry_slice_active(self):
+        self.assertIn("| 1B | In progress |", PIVOT_PLAN)
+        self.assertIn("| 1C | Provisional |", PIVOT_PLAN)
+        self.assertIn("Next.js + React + TypeScript", PIVOT_PLAN)
+        self.assertIn("MENTAT_PIVOT_IMPLEMENTATION_PLAN.md", AGENT_GUIDE)
+        self.assertIn("/api/orchestration/agents", ARCHITECTURE)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ version = { attr = "mentat.version.__version__" }
 [tool.setuptools]
 packages = ["mentat"]
 py-modules = [
+  "agent_registry",
   "agent_runtime",
   "agent_console_artifacts",
   "agent_console_attachments",
