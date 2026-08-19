@@ -15,6 +15,8 @@ from agent_runtime import (
     RunStatus,
     RuntimeCapability,
     RuntimeContext,
+    SubmissionDisposition,
+    SubmissionOutcome,
 )
 from agent_run_history import bounded_excerpt, normalize_usage
 
@@ -78,7 +80,11 @@ _TERMINAL_EVENT_TYPES = {
 }
 
 _EVENT_SUMMARIES = {
+    AgentEventType.RUN_CREATED: "Run created",
+    AgentEventType.DISPATCH_RESERVED: "Dispatch reserved",
     AgentEventType.RUN_STARTED: "Run started",
+    AgentEventType.SUBMISSION_UNKNOWN: "Submission outcome unknown",
+    AgentEventType.RUN_INTERRUPTED: "Run interrupted",
     AgentEventType.MESSAGE: "Run updated",
     AgentEventType.TOOL_REQUESTED: "Tool requested",
     AgentEventType.TOOL_COMPLETED: "Tool completed",
@@ -170,7 +176,8 @@ class HermesRuntime:
     # Runtime-neutral methods are deliberately fail-closed until durable Mentat
     # Task/Agent records invoke them.  Compatibility routes below preserve the
     # current Console semantics during this first strangler slice.
-    def start_task(self, task: MentatTask, context: RuntimeContext) -> AgentRun:
+    @staticmethod
+    def _validate_task_context(task: MentatTask, context: RuntimeContext) -> None:
         if context.task_id != task.id:
             raise AgentRuntimeError("runtime.task_binding_invalid")
         if (
@@ -178,6 +185,39 @@ class HermesRuntime:
             and task.assigned_agent_id != context.agent_id
         ):
             raise AgentRuntimeError("runtime.agent_binding_invalid")
+
+    def submit_task(
+        self, task: MentatTask, context: RuntimeContext
+    ) -> SubmissionOutcome:
+        self._validate_task_context(task, context)
+        if context.mentat_run_id is None or context.dispatch_id is None:
+            raise AgentRuntimeError("runtime.identity_context_required")
+        body, status = self._handlers().start_task(task, context)
+        if 400 <= status < 500:
+            return SubmissionOutcome(
+                SubmissionDisposition.REJECTED,
+                failure_code="runtime.start_rejected",
+            )
+        if status != 202 or not isinstance(body.get("run"), Mapping):
+            return SubmissionOutcome(
+                SubmissionDisposition.UNKNOWN,
+                failure_code="runtime.start_unverified",
+            )
+        run = normalize_hermes_run(
+            body["run"],
+            agent_id=context.agent_id,
+            task_id=task.id,
+        )
+        if run.id != context.mentat_run_id:
+            return SubmissionOutcome(
+                SubmissionDisposition.UNKNOWN,
+                failure_code="runtime.identity_mismatch",
+            )
+        return SubmissionOutcome(SubmissionDisposition.ACCEPTED, run=run)
+
+    def start_task(self, task: MentatTask, context: RuntimeContext) -> AgentRun:
+        """Compatibility helper; new orchestration callers use ``submit_task``."""
+        self._validate_task_context(task, context)
         body, status = self._handlers().start_task(task, context)
         if status != 202 or not isinstance(body.get("run"), Mapping):
             raise AgentRuntimeError("runtime.start_failed")
@@ -219,7 +259,14 @@ class HermesRuntime:
         if status not in {200, 202} or body.get("ok") is not True:
             raise AgentRuntimeError("runtime.stop_failed")
 
-    def get_status(self, run_id: str) -> AgentRun:
+    def get_status(
+        self, run_id: str, *, context: RuntimeContext | None = None
+    ) -> AgentRun:
+        if context is not None and run_id not in {
+            context.mentat_run_id,
+            context.runtime_run_ref,
+        }:
+            raise AgentRuntimeError("runtime.identity_context_invalid")
         snapshot = self._bound_snapshot(run_id)
         return normalize_hermes_run(
             snapshot,
@@ -238,7 +285,18 @@ class HermesRuntime:
             raise AgentRuntimeError("runtime.identity_context_required")
         return snapshot
 
-    def stream_events(self, run_id: str, after_sequence: int = 0) -> Iterable[AgentEvent]:
+    def stream_events(
+        self,
+        run_id: str,
+        after_sequence: int = 0,
+        *,
+        context: RuntimeContext | None = None,
+    ) -> Iterable[AgentEvent]:
+        if context is not None and run_id not in {
+            context.mentat_run_id,
+            context.runtime_run_ref,
+        }:
+            raise AgentRuntimeError("runtime.identity_context_invalid")
         if type(after_sequence) is not int or after_sequence < 0:
             raise AgentRuntimeError("runtime.cursor_invalid")
         legacy_cursor = after_sequence // 4

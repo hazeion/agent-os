@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import server
+from mentat_db import connect
 from task_repository import TaskRepositoryError, ensure_task_sqlite_authority
 
 
@@ -85,6 +86,24 @@ class TaskDeletionTests(unittest.TestCase):
         self.assertIn("changed after preview", payload["error"])
         self.assertEqual(stored[0]["title"], "Changed title")
 
+    def test_preview_and_delete_accept_the_exact_maximum_length_task_id(self):
+        task_id = "task@" + ("d" * 155)
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_tasks(root, [{"id": task_id, "title": "Wide task"}])
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "CONFIGURED_DATA_DIR", root
+            ):
+                preview, preview_status = server.preview_task_deletion(task_id)
+                payload, status = server.delete_confirmed_task(
+                    task_id,
+                    {"confirmed": True, "confirmation_id": preview["confirmation_id"]},
+                )
+
+        self.assertEqual(preview_status, 200)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["deleted_task_id"], task_id)
+
     def test_delete_requires_confirmation_and_reports_missing_tasks(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -137,6 +156,48 @@ class TaskDeletionTests(unittest.TestCase):
                 payload, status = server.preview_task_deletion("task-parent")
         self.assertEqual(status, 409)
         self.assertEqual(payload["dependent_task_ids"], ["task-child"])
+
+    def test_active_orchestration_run_blocks_preview_and_atomic_delete(self):
+        task = {"id": "task-running", "title": "Still running"}
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_tasks(root, [task])
+            connection = connect(root)
+            try:
+                connection.execute(
+                    "INSERT INTO mentat_runs "
+                    "(id, source, task_id, runtime_type, status, dispatch_state, "
+                    "details_json, created_at, updated_at) "
+                    "VALUES (?, 'task_dispatch', ?, 'hermes', 'running', 'accepted', '{}', ?, ?)",
+                    (
+                        "run_active_delete_guard",
+                        "task-running",
+                        "2026-08-18T12:00:00+00:00",
+                        "2026-08-18T12:00:00+00:00",
+                    ),
+                )
+            finally:
+                connection.close()
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "CONFIGURED_DATA_DIR", root
+            ):
+                confirmation = server._task_delete_confirmation(
+                    server.read_json_file("tasks.json", [])[0]
+                )
+                preview, preview_status = server.preview_task_deletion("task-running")
+                direct, direct_status = server.delete_confirmed_task(
+                    "task-running",
+                    {
+                        "confirmed": True,
+                        "confirmation_id": confirmation,
+                    },
+                )
+                stored = server.read_json_file("tasks.json", [])
+
+        self.assertEqual((preview_status, direct_status), (409, 409))
+        self.assertIn("Run is active", preview["error"])
+        self.assertIn("Run is active", direct["error"])
+        self.assertEqual([item["id"] for item in stored], ["task-running"])
 
     def test_routes_expose_preview_and_confirmed_delete_only_as_post(self):
         routes = {pattern.pattern: handler.__name__ for pattern, handler, _ in server.POST_ROUTES}

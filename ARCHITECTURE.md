@@ -176,7 +176,7 @@ new validated sibling data root containing current durable documents, exported
 Tasks, retained Console/attachment/blob state, the Agent registry, and an exact
 schema-5 copy of the Console database with empty Task tables. Exported
 `tasks.json` is therefore the sibling's sole Task authority, so changes made by
-the old build import exactly if that sibling is later upgraded. The schema-6
+the old build import exactly if that sibling is later upgraded. The schema-7
 source root stays unchanged.
 
 Remote Hermes selection is separate private state and its credential is not a
@@ -195,14 +195,99 @@ uses missing-only `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`. A durability
 failure after publication is a partial write, never a no-write result or
 success.
 
-Released format-2 and format-3 backups with exact Console schema 4 or 5 remain
-valid and migrate transactionally to schema 6. Current backups retain the Task
-rows and authority receipt as one recovery unit. To downgrade after live Task
+Released format-2 and format-3 backups with exact Console schema 4, 5, or 6
+remain valid and migrate transactionally to schema 7. Current backups retain
+Tasks, Runs, AgentEvents, dispatch state, and both authority receipts as one
+recovery unit. To downgrade after live Task
 mutations, stop Mentat, preview `mentat task-export --compatible-root`, confirm
 its exact token, and point the older build at the reported schema-5 sibling
 data-root name. Restoring a pre-cutover backup remains an alternative that
 discards later Task mutations. Mentat never uses stale `tasks.json`
-automatically and never downgrades the authoritative schema-6 source database.
+automatically and never downgrades the authoritative schema-7 source database.
+
+### SQLite Run and AgentEvent authority
+
+Pivot Slice 1C-C advances the same owner-private database to schema 7. SQLite
+is authoritative for both compatibility Console Runs and runtime-neutral Task
+dispatch Runs. `mentat_runs` stores immutable Task/Agent/runtime-binding
+snapshots plus independently revisioned execution and submission state;
+`mentat_agent_events` is an append-only, per-Run monotonic journal.
+`mentat_dispatch_reservations` commits exact intent before an adapter call,
+while `mentat_task_dispatch_heads` survives Run retention and prevents a Task
+revision from being dispatched twice under a new idempotency key.
+
+Dispatch preallocates the Mentat Run and dispatch IDs, commits the reservation,
+then releases every SQLite/private-state lock before making at most one runtime
+submission attempt. Claiming that attempt atomically revalidates the current
+Task revision and assigned Agent. Accepted outcomes must match the complete
+Mentat Run, Task, Agent, and runtime identity, and compare-and-swap updates may
+not regress a Run already advanced by a worker. Rejected and ambiguous outcomes
+are durable. An ambiguous attempt becomes `unknown` and is never automatically
+resubmitted. A restart rejects a reservation that never reached an adapter and
+marks an in-flight submission unknown without retrying it. Reconciliation uses
+short compare-and-swap leases, revalidates the separate Agent Registry binding,
+performs runtime reads outside database transactions, and commits only
+identity-matching, forward-only status and normalized events. Webhooks may wake
+this readback; their payloads never prove Run state.
+
+The durable Task snapshot is the bounded execution contract actually delivered
+to a runtime—identity, title/objective, status, assignment, required
+capabilities, and acceptance criteria—not a duplicate of unrelated planning
+metadata. Canonical Task identifiers retain the Task repository's 160-character
+`[A-Za-z0-9_.:@-]` contract across runtime contexts and Run persistence; Run,
+Agent, runtime, dispatch, and normalized event identifiers keep their narrower
+128-character domains. Run admission transactionally preserves the active/newest-terminal
+retention contract, rejects capacity before an external attempt, and keeps the
+compact SQLite store below the private-backup database ceiling. Exact
+idempotency retries resolve the durable reservation before consulting mutable
+Task or Agent state; a different revision cannot start while an older Run for
+that Task remains active or unknown.
+
+The transitional Hermes Console bridge reuses the preallocated Mentat Run ID
+but keeps dispatch and runtime correlation private. Mentat will not build a new
+bridge-specific durable restart subsystem: after restart, accepted bridge work
+that cannot be authoritatively reattached becomes `unknown`, remains visible,
+and is not retried; a direct legacy Console Run becomes `interrupted`. Native
+Hermes adapters may persist a private runtime Run reference and remain eligible
+for reconciliation behind the same runtime-neutral contract. If a post-start
+compatibility projection cannot be committed to SQLite, the bridge reloads the
+last authoritative snapshot, disables new work and controls, and requires a
+restart after storage is corrected; it does not maintain a second recovery
+engine for volatile bridge state.
+
+Run retention keeps every active/waiting Run and the newest 250 terminal Runs.
+When a terminal Run ages out before its idempotency window, its accepted/rejected
+reservation remains as a validated tombstone tied to that Task's same-or-newer
+dispatch head; it never authorizes resubmission and expires through normal
+bounded cleanup. Run, reservation, and dispatch-head timestamps and identifiers
+are semantically reconstructed, including monotonic created/updated chronology.
+Attachment binding transactionally limits the retained graph to 100 distinct
+ready blobs and 24 MiB of referenced blob bytes. Existing over-limit roots fail
+closed on further binding. Together with the 48 MiB SQLite budget and bounded
+history/registry members, this keeps every admitted retained state within the
+96 MiB private-backup unit ceiling.
+Event retention keeps contiguous newest suffixes under per-Run and global count
+and content budgets and records explicit replay-gap metadata. A private durable
+runtime-event cursor survives retained-event deletion, so old runtime events
+cannot reappear and a long source timeline is consumed in bounded pages.
+Schema startup verifies the exact Run/Event/dispatch table and index
+fingerprint, and semantic validation rechecks retention and relationship
+invariants. Legacy authority import performs that complete validation inside
+the same transaction as its authority receipt, so invalid event identity or
+semantics cannot leave a committed cutover. Public version-1 Run/Event APIs expose only bounded domain fields
+and numeric usage metrics;
+runtime references, binding digests, raw adapter payloads, tool arguments and
+results, paths, credentials, and private reasoning remain server-side. The
+legacy Console-history JSON file is migration/export compatibility evidence
+only after the Run-authority receipt exists; backup derives that representation
+and attachment reachability from SQLite. That compatibility member is bounded
+independently, contains Console-source Runs only, and may omit old event detail
+or older Runs without pruning canonical SQLite task-dispatch Runs, events, or
+referenced attachments. Once schema-7 authority exists, stale, missing, linked,
+or malformed legacy JSON is not opened during backup. A schema-5 compatible
+export separately filters attachments and blobs to the Runs its legacy
+projection retains. Startup performs one bounded reconciliation pass for native
+Runs that have a durable runtime reference.
 
 Milestone 9 adds a loopback-only signed Hermes native-event receiver as an
 observation wakeup. The receiver authenticates the exact raw body, accepts an
@@ -301,8 +386,9 @@ The runtime-neutral Agent registry is available at
 projection. Creation is serialized with the durable backup/restore boundary,
 stores the Agent and Hermes binding atomically, accepts only a registered
 runtime, and never returns the adapter-owned runtime reference. A configured
-Agent does not itself authorize or start work; generic dispatch is a later
-slice. Backup format 3 includes and semantically validates the registry;
+Agent authorizes work only through an exact Task assignment, capability match,
+binding snapshot, and durable dispatch reservation. Backup format 3 includes
+and semantically validates the registry;
 pre-registry format-2 backups remain restorable and produce an empty registry.
 
 ## Remote Hermes connection boundary

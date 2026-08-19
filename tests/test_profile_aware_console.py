@@ -89,7 +89,9 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         )
         with patch.object(transport, "revalidate"), patch.object(
             server.subprocess, "Popen", return_value=CompletedHermesProcess()
-        ) as popen:
+        ) as popen, patch.object(
+            server, "persist_agent_console_runs", return_value=True
+        ):
             server.run_hermes_agent(run_id, transport)
 
         command = popen.call_args.args[0]
@@ -120,6 +122,8 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             server, "hermes_console_transport", return_value=transport
         ), patch.object(
             transport, "revalidate"
+        ), patch.object(
+            server, "agent_console_history_is_current", return_value=True
         ):
             payload, status = server.start_agent_console_run({
                 "agent_id": "randy",
@@ -147,6 +151,10 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             server, "hermes_console_transport", return_value=transport
         ), patch.object(
             transport, "revalidate"
+        ), patch.object(
+            server, "agent_console_history_is_current", return_value=True
+        ), patch.object(
+            server, "persist_agent_console_runs", return_value=True
         ), patch.object(
             server.threading, "Thread"
         ) as worker:

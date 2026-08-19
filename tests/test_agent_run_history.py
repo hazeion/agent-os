@@ -9,7 +9,11 @@ import unittest
 from unittest.mock import patch
 
 import agent_run_history
+import run_repository
 import server
+from mentat_db import MentatDatabaseError
+from run_repository import RunRepositoryUnavailable, load_authoritative_run_summaries
+from task_repository import ensure_task_sqlite_authority
 
 
 def sample_run(run_id: str, created_at: str, **overrides) -> dict:
@@ -34,6 +38,36 @@ def sample_run(run_id: str, created_at: str, **overrides) -> dict:
 
 
 class AgentRunHistoryTests(unittest.TestCase):
+    def load_runs(self, data_dir: Path) -> None:
+        source = data_dir / "tasks.json"
+        if not source.exists():
+            source.write_text("[]\n", encoding="utf-8")
+            source.chmod(0o600)
+        ensure_task_sqlite_authority(data_dir, required_source_mode=None)
+        server.load_agent_console_runs()
+
+    def tearDown(self):
+        server.AGENT_CONSOLE_RUNS.clear()
+        server.AGENT_CONSOLE_PERSISTENCE_DEGRADED = False
+        server.AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = None
+
+    def test_retained_media_names_reject_posix_and_windows_paths(self):
+        base = {
+            "id": "attachment_" + ("a" * 32),
+            "mime_type": "text/plain",
+            "kind": "text",
+            "byte_size": 1,
+            "state": "attached",
+            "created_at": "2026-08-18T12:00:00+00:00",
+            "expires_at": None,
+        }
+        for name in ("/Users/Alice/secret.txt", r"C:\Users\Alice\secret.txt"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    agent_run_history.normalize_attachments([{**base, "name": name}]),
+                    [],
+                )
+
     def test_save_rejects_explicitly_malformed_transport_binding(self):
         with TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "history.json"
@@ -161,7 +195,7 @@ super-private-material
             path.write_text(json.dumps({"schema_version": 99, "runs": []}), encoding="utf-8")
             self.assertEqual(agent_run_history.load_run_summaries(path), ([], False))
 
-    def test_server_load_rewrites_recovered_status_and_uses_private_directory(self):
+    def test_server_load_cuts_over_recovered_status_without_rewriting_legacy_source(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
             path = data_dir / "private" / "console" / "agent-console-runs.json"
@@ -172,11 +206,13 @@ super-private-material
             with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
-                server.load_agent_console_runs()
-                stored = json.loads(path.read_text(encoding="utf-8"))["runs"]
+                self.load_runs(data_dir)
+                legacy = json.loads(path.read_text(encoding="utf-8"))["runs"]
+                stored = load_authoritative_run_summaries(data_dir)
 
         self.assertEqual(server.AGENT_CONSOLE_RUNS["run_queued"]["status"], "interrupted")
         self.assertEqual(stored[0]["status"], "interrupted")
+        self.assertEqual(legacy[0]["status"], "queued")
         server.AGENT_CONSOLE_RUNS.clear()
 
     def test_server_load_migrates_completed_history_to_current_redaction_and_modes(self):
@@ -217,13 +253,15 @@ super-private-material
             with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
-                server.load_agent_console_runs()
-                raw = path.read_text(encoding="utf-8")
+                self.load_runs(data_dir)
+                legacy_raw = path.read_text(encoding="utf-8")
+                stored = load_authoritative_run_summaries(data_dir)[0]
                 file_mode = stat.S_IMODE(path.stat().st_mode)
                 directory_mode = stat.S_IMODE(path.parent.stat().st_mode)
 
-        self.assertNotIn(legacy_secret, raw)
-        self.assertIn("[REDACTED]", raw)
+        self.assertIn(legacy_secret, legacy_raw)
+        self.assertNotIn(legacy_secret, json.dumps(stored))
+        self.assertIn("[REDACTED]", json.dumps(stored))
         if os.name != "nt":
             self.assertEqual(file_mode, 0o600)
             self.assertEqual(directory_mode, 0o700)
@@ -241,7 +279,9 @@ super-private-material
             with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
-                server.load_agent_console_runs()
+                with self.assertRaises(RunRepositoryUnavailable):
+                    server.load_agent_console_runs()
+                self.assertFalse(server.AGENT_CONSOLE_HISTORY_LOADED)
                 raw = path.read_text(encoding="utf-8")
                 file_mode = stat.S_IMODE(path.stat().st_mode)
                 directory_mode = stat.S_IMODE(path.parent.stat().st_mode)
@@ -281,7 +321,9 @@ super-private-material
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
                 server.AGENT_CONSOLE_RUNS["existing"] = {"id": "existing"}
-                server.load_agent_console_runs()
+                with self.assertRaises(RunRepositoryUnavailable):
+                    self.load_runs(data_dir)
+                self.assertFalse(server.AGENT_CONSOLE_HISTORY_LOADED)
 
             self.assertEqual(server.AGENT_CONSOLE_RUNS, {})
             self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o644)
@@ -304,7 +346,9 @@ super-private-material
             with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", False
             ):
-                server.load_agent_console_runs()
+                with self.assertRaises(RunRepositoryUnavailable):
+                    server.load_agent_console_runs()
+                self.assertFalse(server.AGENT_CONSOLE_HISTORY_LOADED)
 
             self.assertEqual(server.AGENT_CONSOLE_RUNS, {})
             self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o755)
@@ -322,21 +366,164 @@ super-private-material
             ), patch.object(server, "hermes_command_path", return_value="/tmp/hermes"), patch.object(
                 server, "agent_console_model", return_value="test/model"
             ), patch.object(server.threading, "Thread"):
-                server.load_agent_console_runs()
+                self.load_runs(data_dir)
                 payload, status = server.start_agent_console_run({
                     "agent_id": "hermes",
                     "prompt": "x" * (agent_run_history.PROMPT_EXCERPT_LIMIT + 25),
                 })
-                stored = json.loads(
-                    (data_dir / "private" / "console" / "agent-console-runs.json").read_text(encoding="utf-8")
-                )["runs"][0]
+                stored = load_authoritative_run_summaries(data_dir)[0]
+                legacy_path = data_dir / "private" / "console" / "agent-console-runs.json"
 
         self.assertEqual(status, 202)
         self.assertEqual(stored["id"], payload["run"]["id"])
-        self.assertNotIn("prompt", stored)
-        self.assertEqual(len(stored["prompt_excerpt"]), agent_run_history.PROMPT_EXCERPT_LIMIT)
+        self.assertEqual(len(stored["prompt"]), agent_run_history.PROMPT_EXCERPT_LIMIT)
         self.assertTrue(stored["prompt_truncated"])
+        self.assertFalse(legacy_path.exists())
         server.AGENT_CONSOLE_RUNS.clear()
+
+    def test_console_does_not_start_worker_when_initial_sqlite_write_fails(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+                server, "CONFIGURED_DATA_DIR", data_dir
+            ), patch.object(
+                server, "AGENT_CONSOLE_HISTORY_LOADED", False
+            ), patch.object(
+                server,
+                "hermes_profiles_payload",
+                return_value={"status": "available", "profiles": [{"id": "default"}]},
+            ), patch.object(
+                server, "hermes_command_path", return_value="/tmp/hermes"
+            ), patch.object(
+                server, "agent_console_model", return_value="test/model"
+            ), patch.object(
+                server.threading, "Thread"
+            ) as thread_factory:
+                self.load_runs(data_dir)
+                with patch.object(
+                    server,
+                    "save_authoritative_run_summaries",
+                    side_effect=RunRepositoryUnavailable("run_repository.unavailable"),
+                ):
+                    payload, status = server.start_agent_console_run(
+                        {"agent_id": "hermes", "prompt": "Do not start"}
+                    )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error_code"], "run_repository_unavailable")
+        thread_factory.assert_not_called()
+        self.assertEqual(server.AGENT_CONSOLE_RUNS, {})
+
+    def test_post_start_persistence_failure_reloads_sqlite_and_blocks_controls(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+                server, "CONFIGURED_DATA_DIR", data_dir
+            ), patch.object(server, "AGENT_CONSOLE_HISTORY_LOADED", False):
+                self.load_runs(data_dir)
+                authoritative = sample_run(
+                    "run_authoritative",
+                    "2026-08-18T12:00:00+00:00",
+                )
+                server.AGENT_CONSOLE_RUNS[authoritative["id"]] = authoritative
+                self.assertTrue(server.persist_agent_console_runs())
+
+                volatile = server.AGENT_CONSOLE_RUNS[authoritative["id"]]
+                volatile["status"] = "failed"
+                volatile["error"] = "This update must not be presented as durable."
+                with patch.object(
+                    server,
+                    "save_authoritative_run_summaries",
+                    side_effect=RunRepositoryUnavailable("run_repository.unavailable"),
+                ):
+                    self.assertFalse(server.persist_agent_console_runs())
+
+                self.assertTrue(server.AGENT_CONSOLE_PERSISTENCE_DEGRADED)
+                self.assertEqual(
+                    server.AGENT_CONSOLE_RUNS[authoritative["id"]]["status"],
+                    "completed",
+                )
+                self.assertEqual(server.agent_console_snapshot(volatile)["status"], "completed")
+                payload, status = server.start_agent_console_run(
+                    {"agent_id": "default", "prompt": "Do not launch"}
+                )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error_code"], "run_repository_unavailable")
+
+    def test_database_setup_failure_enters_scoped_degraded_state(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+                server, "CONFIGURED_DATA_DIR", data_dir
+            ), patch.object(server, "AGENT_CONSOLE_HISTORY_LOADED", False):
+                self.load_runs(data_dir)
+                server.AGENT_CONSOLE_RUNS["run_setup_failure"] = sample_run(
+                    "run_setup_failure", "2026-08-18T12:00:00+00:00"
+                )
+                with patch.object(
+                    run_repository,
+                    "connect",
+                    side_effect=MentatDatabaseError("database unavailable"),
+                ):
+                    self.assertFalse(server.persist_agent_console_runs())
+
+                self.assertTrue(server.agent_console_storage_degraded())
+                payload, status = server.start_agent_console_run(
+                    {"agent_id": "default", "prompt": "Do not launch"}
+                )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error_code"], "run_repository_unavailable")
+
+    def test_startup_database_open_failure_enters_scoped_degraded_state(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+                server, "CONFIGURED_DATA_DIR", data_dir
+            ), patch.object(server, "AGENT_CONSOLE_HISTORY_LOADED", False):
+                self.load_runs(data_dir)
+                with patch.object(
+                    server,
+                    "connect_mentat_database",
+                    side_effect=MentatDatabaseError("database unavailable"),
+                ):
+                    with self.assertRaisesRegex(
+                        RunRepositoryUnavailable, "run_repository.unavailable"
+                    ):
+                        self.load_runs(data_dir)
+                self.assertTrue(server.agent_console_storage_degraded())
+
+    @unittest.skipIf(os.name != "posix", "Descriptor identity race is POSIX-specific")
+    def test_permission_repair_rejects_hardlink_replacement_before_chmod(self):
+        with TemporaryDirectory() as tmpdir, TemporaryDirectory() as outside_dir:
+            root = Path(tmpdir)
+            path = root / "private" / "console" / "agent-console-runs.json"
+            path.parent.mkdir(parents=True)
+            path.write_text("{}\n", encoding="utf-8")
+            path.chmod(0o600)
+            outside = Path(outside_dir) / "outside.json"
+            outside.write_text("outside\n", encoding="utf-8")
+            outside.chmod(0o644)
+            real_open = agent_run_history.os.open
+            replaced = False
+
+            def racing_open(candidate, flags, *args, **kwargs):
+                nonlocal replaced
+                if Path(candidate) == path and not replaced:
+                    replaced = True
+                    path.unlink()
+                    os.link(outside, path)
+                return real_open(candidate, flags, *args, **kwargs)
+
+            with patch.object(agent_run_history.os, "open", side_effect=racing_open):
+                safe = agent_run_history.secure_history_permissions(
+                    path, data_root=root
+                )
+            outside_mode = stat.S_IMODE(outside.stat().st_mode)
+
+        self.assertFalse(safe)
+        self.assertEqual(outside_mode, 0o644)
 
     def test_schema_three_preserves_orchestration_binding_and_rejects_other_runtime(self):
         summary = agent_run_history.summarize_run(
@@ -355,6 +542,34 @@ super-private-material
         self.assertEqual(hydrated["mentat_agent_id"], "agent_researcher")
         self.assertEqual(hydrated["task_id"], "task_research")
         self.assertIsNone(agent_run_history._hydrate({**summary, "runtime_type": "codex"}))
+
+    def test_schema_three_preserves_maximum_length_task_binding(self):
+        task_id = "task@" + ("h" * 155)
+        summary = agent_run_history.summarize_run(
+            sample_run(
+                "run_wide_task_binding",
+                "2026-08-17T12:00:00+00:00",
+                runtime_type="hermes",
+                mentat_agent_id="agent_researcher",
+                task_id=task_id,
+                events=[{
+                    "id": "event_wide_binding",
+                    "run_id": "run_wide_task_binding",
+                    "sequence": 1,
+                    "type": "runtime.bound",
+                    "timestamp": "2026-08-17T12:00:00+00:00",
+                    "display_text": "Mentat task bound",
+                    "data": {
+                        "mentat_agent_id": "agent_researcher",
+                        "task_id": task_id,
+                    },
+                }],
+            )
+        )
+        hydrated = agent_run_history._hydrate(summary)
+
+        self.assertEqual(summary["task_id"], task_id)
+        self.assertEqual(hydrated["task_id"], task_id)
 
     def test_runtime_binding_survives_a_prior_reader_dropping_top_level_fields(self):
         summary = agent_run_history.summarize_run(

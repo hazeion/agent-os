@@ -1,9 +1,10 @@
 """Validated snapshots of Mentat's durable private Agent Console unit.
 
-The unit is deliberately limited to retained run history, a SQLite snapshot
-containing only rows reachable from that history, and the ready blobs those
-rows reference.  Runtime scratch and future private credentials are outside
-this boundary.
+Schema 7 preserves canonical SQLite Runs, events, Tasks, attachments, and ready
+blobs even when the bounded legacy-history projection omits older detail.
+Schema 4/5/6 compatibility units remain filtered to rows reachable from that
+legacy projection. Runtime scratch and future credentials are outside this
+boundary.
 """
 
 from __future__ import annotations
@@ -34,26 +35,30 @@ from agent_run_history import (
     _hydrate,
     summarize_run,
 )
+from agent_console_attachments import MAX_RETAINED_BLOB_BYTES, MAX_RETAINED_BLOBS
 from mentat_db import MIGRATIONS, SCHEMA_VERSION as DATABASE_SCHEMA_VERSION
 from private_state import blobs_root, console_root, database_path, ensure_console_root, history_path
+from run_repository import MAX_SOURCE_RUNS, RunRepository, RunRepositoryError
 from task_repository import TaskRepositoryError, validate_repository_connection
 
 
 MAX_HISTORY_BYTES = 4 * 1024 * 1024
-MAX_DATABASE_BYTES = 32 * 1024 * 1024
+MAX_DATABASE_BYTES = 64 * 1024 * 1024
 MAX_REGISTRY_DATABASE_BYTES = 4 * 1024 * 1024
 MAX_BLOB_BYTES = 10 * 1024 * 1024
-MAX_BLOBS = 100
-MAX_PRIVATE_UNIT_BYTES = 64 * 1024 * 1024
+MAX_BLOBS = MAX_RETAINED_BLOBS
+MAX_PRIVATE_UNIT_BYTES = 96 * 1024 * 1024
 LEGACY_DATABASE_SCHEMA_VERSION = 4
 PREVIOUS_DATABASE_SCHEMA_VERSION = 5
+TASK_DATABASE_SCHEMA_VERSION = 6
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
+    TASK_DATABASE_SCHEMA_VERSION,
     DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
-RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
+RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
 
 
 class PrivateConsoleUnitError(OSError):
@@ -79,7 +84,8 @@ class PrivateConsoleUnit:
 
     @property
     def run_count(self) -> int:
-        return len(_history_run_ids(self.history_raw))
+        count = _database_run_count(self.database_raw)
+        return count if count is not None else len(_history_run_ids(self.history_raw))
 
     @property
     def agent_count(self) -> int:
@@ -309,12 +315,140 @@ def _database_task_count(raw: bytes) -> int:
                 return 0
             return validate_repository_connection(
                 connection,
-                require_authority_consistency=version == DATABASE_SCHEMA_VERSION,
+                require_authority_consistency=version >= TASK_DATABASE_SCHEMA_VERSION,
             )
         except TaskRepositoryError as exc:
             raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
         finally:
             connection.close()
+
+
+def _database_schema_version(path: Path) -> int:
+    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+    try:
+        versions = [
+            int(row[0])
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+        return max(versions, default=0)
+    except sqlite3.Error as exc:
+        raise PrivateConsoleUnitError("private_database_invalid") from exc
+    finally:
+        connection.close()
+
+
+def _sqlite_run_history(path: Path) -> tuple[bytes, tuple[str, ...]]:
+    """Derive a bounded compatibility projection from authoritative Runs."""
+
+    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        run_count = int(connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0])
+        authority_count = int(
+            connection.execute("SELECT COUNT(*) FROM mentat_run_store_state").fetchone()[0]
+        )
+        if authority_count == 0 and run_count == 0:
+            return _empty_history(), ()
+        if authority_count != 1:
+            raise PrivateConsoleUnitError("private_run_repository_invalid")
+        repository = RunRepository(connection)
+        repository.validate()
+        canonical_identifiers = tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT id FROM mentat_runs ORDER BY created_at DESC, id DESC"
+            )
+        )
+        if (
+            len(canonical_identifiers) != run_count
+            or len(set(canonical_identifiers)) != len(canonical_identifiers)
+        ):
+            raise PrivateConsoleUnitError("private_run_repository_invalid")
+        summaries = repository.list_summaries(limit=MAX_SOURCE_RUNS)
+        projected = [summarize_run(item) for item in summaries]
+        history = _canonical_json(
+            {"schema_version": HISTORY_SCHEMA_VERSION, "runs": projected}
+        )
+        if len(history) > MAX_HISTORY_BYTES:
+            # SQLite is canonical. The JSON member exists only for older-build
+            # compatibility, so first remove replay-heavy event arrays while
+            # preserving every Run and attachment reference that still fits.
+            eventless = []
+            for item in projected:
+                compact = dict(item)
+                compact["events"] = []
+                compact["event_cursor"] = 0
+                eventless.append(compact)
+            history = _canonical_json(
+                {"schema_version": HISTORY_SCHEMA_VERSION, "runs": eventless}
+            )
+            if len(history) > MAX_HISTORY_BYTES:
+                retained: list[dict] = []
+                for item in eventless:
+                    candidate = _canonical_json(
+                        {
+                            "schema_version": HISTORY_SCHEMA_VERSION,
+                            "runs": [*retained, item],
+                        }
+                    )
+                    if len(candidate) > MAX_HISTORY_BYTES:
+                        break
+                    retained.append(item)
+                    history = candidate
+                if not retained:
+                    history = _empty_history()
+        return history, canonical_identifiers
+    except (sqlite3.Error, RunRepositoryError) as exc:
+        raise PrivateConsoleUnitError("private_run_repository_invalid") from exc
+    finally:
+        connection.close()
+
+
+def _sqlite_run_authority_claimed(path: Path) -> bool:
+    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+    try:
+        return int(
+            connection.execute("SELECT COUNT(*) FROM mentat_run_store_state").fetchone()[0]
+        ) == 1
+    except sqlite3.Error as exc:
+        raise PrivateConsoleUnitError("private_database_invalid") from exc
+    finally:
+        connection.close()
+
+
+def _require_empty_unclaimed_run_store(path: Path) -> None:
+    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+    try:
+        total = sum(
+            int(connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
+            for name in (
+                "mentat_runs",
+                "mentat_agent_events",
+                "mentat_dispatch_reservations",
+                "mentat_task_dispatch_heads",
+            )
+        )
+        if total:
+            raise PrivateConsoleUnitError("private_run_repository_invalid")
+    except sqlite3.Error as exc:
+        raise PrivateConsoleUnitError("private_database_invalid") from exc
+    finally:
+        connection.close()
+
+
+def _database_run_count(raw: bytes) -> int | None:
+    if len(raw) > MAX_DATABASE_BYTES:
+        raise PrivateConsoleUnitError("private_database_invalid")
+    with TemporaryDirectory(prefix="mentat-run-count-") as temporary:
+        path = Path(temporary) / "mentat.sqlite3"
+        path.write_bytes(raw)
+        version = _database_schema_version(path)
+        if version == DATABASE_SCHEMA_VERSION and _sqlite_run_authority_claimed(path):
+            _history, run_ids = _sqlite_run_history(path)
+            return len(run_ids)
+        return None
 
 
 def _sqlite_backup(
@@ -432,16 +566,27 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             raise PrivateConsoleUnitError("private_database_unsupported")
         if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version in {PREVIOUS_DATABASE_SCHEMA_VERSION, DATABASE_SCHEMA_VERSION}:
+        if schema_version in {
+            PREVIOUS_DATABASE_SCHEMA_VERSION,
+            TASK_DATABASE_SCHEMA_VERSION,
+            DATABASE_SCHEMA_VERSION,
+        }:
             try:
                 validate_repository_connection(
                     connection,
                     require_authority_consistency=(
-                        schema_version == DATABASE_SCHEMA_VERSION
+                        schema_version >= TASK_DATABASE_SCHEMA_VERSION
                     ),
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        if schema_version == DATABASE_SCHEMA_VERSION:
+            if _sqlite_run_authority_claimed(path):
+                _derived_history, derived_ids = _sqlite_run_history(path)
+                if set(retained) != set(derived_ids):
+                    raise PrivateConsoleUnitError("private_run_repository_invalid")
+            else:
+                _require_empty_unclaimed_run_store(path)
         placeholders = ",".join("?" for _ in retained)
         if retained:
             connection.execute(
@@ -472,20 +617,31 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         )
         if len(rows) > MAX_BLOBS:
             raise PrivateConsoleUnitError("private_blob_count_exceeded")
+        if sum(row[2] for row in rows) > MAX_RETAINED_BLOB_BYTES:
+            raise PrivateConsoleUnitError("private_blob_bytes_exceeded")
         connection.commit()
         connection.execute("VACUUM")
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise PrivateConsoleUnitError("private_database_invalid")
-        if schema_version in {PREVIOUS_DATABASE_SCHEMA_VERSION, DATABASE_SCHEMA_VERSION}:
+        if schema_version in {
+            PREVIOUS_DATABASE_SCHEMA_VERSION,
+            TASK_DATABASE_SCHEMA_VERSION,
+            DATABASE_SCHEMA_VERSION,
+        }:
             try:
                 validate_repository_connection(
                     connection,
                     require_authority_consistency=(
-                        schema_version == DATABASE_SCHEMA_VERSION
+                        schema_version >= TASK_DATABASE_SCHEMA_VERSION
                     ),
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        if schema_version == DATABASE_SCHEMA_VERSION:
+            if _sqlite_run_authority_claimed(path):
+                _sqlite_run_history(path)
+            else:
+                _require_empty_unclaimed_run_store(path)
     except sqlite3.Error as exc:
         raise PrivateConsoleUnitError("private_database_invalid") from exc
     finally:
@@ -505,16 +661,27 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             raise PrivateConsoleUnitError("private_database_unsupported")
         if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version in {PREVIOUS_DATABASE_SCHEMA_VERSION, DATABASE_SCHEMA_VERSION}:
+        if schema_version in {
+            PREVIOUS_DATABASE_SCHEMA_VERSION,
+            TASK_DATABASE_SCHEMA_VERSION,
+            DATABASE_SCHEMA_VERSION,
+        }:
             try:
                 validate_repository_connection(
                     connection,
                     require_authority_consistency=(
-                        schema_version == DATABASE_SCHEMA_VERSION
+                        schema_version >= TASK_DATABASE_SCHEMA_VERSION
                     ),
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        if schema_version == DATABASE_SCHEMA_VERSION:
+            if _sqlite_run_authority_claimed(path):
+                _derived_history, derived_ids = _sqlite_run_history(path)
+                if retained != set(derived_ids):
+                    raise PrivateConsoleUnitError("private_run_repository_invalid")
+            else:
+                _require_empty_unclaimed_run_store(path)
         database_runs = {str(row[0]) for row in connection.execute("SELECT DISTINCT run_id FROM run_attachments")}
         if not database_runs.issubset(retained):
             raise PrivateConsoleUnitError("private_database_not_filtered")
@@ -540,6 +707,8 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
         )
         if len(rows) > MAX_BLOBS:
             raise PrivateConsoleUnitError("private_blob_count_exceeded")
+        if sum(row[2] for row in rows) > MAX_RETAINED_BLOB_BYTES:
+            raise PrivateConsoleUnitError("private_blob_bytes_exceeded")
         return rows
     except sqlite3.Error as exc:
         raise PrivateConsoleUnitError("private_database_invalid") from exc
@@ -572,11 +741,6 @@ def capture_private_console_unit(
     source = Path(source_console) if source_console is not None else canonical
     if source.is_symlink() or (source.exists() and not source.is_dir()):
         raise PrivateConsoleUnitError("private_console_unsafe")
-    history = source / history_path(data_root).name
-    history_raw = _normalized_history(history) if history.exists() else _empty_history()
-    run_ids = _history_run_ids(history_raw)
-    history_payload = json.loads(history_raw.decode("utf-8"))
-    history_raw = _canonical_json(history_payload)
     database = source / database_path(data_root).name
     database_source = database if database.exists() else None
     registry_database = source / REGISTRY_DATABASE_NAME
@@ -584,6 +748,20 @@ def capture_private_console_unit(
     with TemporaryDirectory(prefix="mentat-console-capture-") as temporary:
         snapshot_path = Path(temporary) / "mentat.sqlite3"
         _sqlite_backup(database_source, snapshot_path, copy_source=copy_sqlite_source)
+        schema_seven_authority = (
+            _database_schema_version(snapshot_path) == DATABASE_SCHEMA_VERSION
+            and _sqlite_run_authority_claimed(snapshot_path)
+        )
+        if schema_seven_authority:
+            history_raw, run_ids = _sqlite_run_history(snapshot_path)
+        else:
+            history = source / history_path(data_root).name
+            history_raw = (
+                _normalized_history(history) if history.exists() else _empty_history()
+            )
+            run_ids = _history_run_ids(history_raw)
+            history_payload = json.loads(history_raw.decode("utf-8"))
+            history_raw = _canonical_json(history_payload)
         blob_rows = _validate_and_filter_database(snapshot_path, run_ids)
         connection = sqlite3.connect(_sqlite_readonly_uri(snapshot_path), uri=True)
         try:
@@ -593,7 +771,13 @@ def capture_private_console_unit(
             }
         finally:
             connection.close()
-        if database_references != _history_reference_pairs(history_raw):
+        history_references = _history_reference_pairs(history_raw)
+        if (
+            schema_seven_authority
+        ):
+            if not history_references.issubset(database_references):
+                raise PrivateConsoleUnitError("private_history_database_mismatch")
+        elif database_references != history_references:
             raise PrivateConsoleUnitError("private_history_database_mismatch")
         database_raw = _safe_regular(snapshot_path, maximum=MAX_DATABASE_BYTES)
         registry_snapshot = Path(temporary) / REGISTRY_DATABASE_NAME
@@ -718,6 +902,14 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         database.write_bytes(unit.database_raw)
         if os.name != "nt":
             database.chmod(0o600)
+        if (
+            _database_schema_version(database) == DATABASE_SCHEMA_VERSION
+            and _sqlite_run_authority_claimed(database)
+        ):
+            derived_history, derived_ids = _sqlite_run_history(database)
+            if unit.history_raw != derived_history:
+                raise PrivateConsoleUnitError("private_history_database_mismatch")
+            run_ids = derived_ids
         rows = _inspect_filtered_database(database, run_ids)
         connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
         try:
@@ -727,7 +919,14 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
             }
         finally:
             connection.close()
-        if database_references != _history_reference_pairs(unit.history_raw):
+        history_references = _history_reference_pairs(unit.history_raw)
+        if (
+            _database_schema_version(database) == DATABASE_SCHEMA_VERSION
+            and _sqlite_run_authority_claimed(database)
+        ):
+            if not history_references.issubset(database_references):
+                raise PrivateConsoleUnitError("private_history_database_mismatch")
+        elif database_references != history_references:
             raise PrivateConsoleUnitError("private_history_database_mismatch")
         registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
         registry_database.write_bytes(unit.registry_database_raw)

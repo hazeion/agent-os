@@ -18,6 +18,7 @@ import data_backup_restore
 import private_console_unit
 import remote_hermes
 import task_repository
+from agent_console_attachments import bind_run_attachment, create_attachment
 from mentat.cli import main as mentat_cli_main
 from mentat_db import SCHEMA_VERSION, MentatDatabaseError, connect, database_path, transaction
 from private_console_unit import (
@@ -25,6 +26,9 @@ from private_console_unit import (
     capture_private_console_unit,
     materialize_private_console_unit,
 )
+from private_state import history_path
+from run_repository import save_authoritative_run_summaries
+from tests.sqlite_authority_support import ensure_run_sqlite_authority
 from task_repository import (
     TaskRepository,
     TaskRepositoryConflict,
@@ -210,7 +214,7 @@ class TaskRepositoryTests(unittest.TestCase):
                         "2025-02-03T04:07:08.123456+00:00",
                     )
 
-    def test_schema_six_is_additive_exact_and_forward_refusing(self):
+    def test_schema_seven_preserves_task_tables_and_refuses_forward_schema(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             connection = connect(root)
@@ -230,7 +234,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 6)
+            self.assertEqual(SCHEMA_VERSION, 7)
             self.assertTrue(
                 {
                     "mentat_tasks",
@@ -291,9 +295,14 @@ class TaskRepositoryTests(unittest.TestCase):
                         connection.execute(f"DROP INDEX {name}")
                     connection.execute("DROP TABLE mentat_task_dependencies")
                     connection.execute("DROP TABLE mentat_task_tags")
+                    connection.execute("DROP TABLE mentat_agent_events")
+                    connection.execute("DROP TABLE mentat_dispatch_reservations")
+                    connection.execute("DROP TABLE mentat_task_dispatch_heads")
+                    connection.execute("DROP TABLE mentat_runs")
+                    connection.execute("DROP TABLE mentat_run_store_state")
                     connection.execute("DROP TABLE mentat_tasks")
                     connection.execute("DROP TABLE mentat_task_store_state")
-                    connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6)")
+                    connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6, 7)")
             finally:
                 connection.close()
             path = database_path(root)
@@ -1289,7 +1298,7 @@ class TaskRepositoryTests(unittest.TestCase):
                 version = downgraded.execute(
                     "SELECT MAX(version) FROM schema_migrations"
                 ).fetchone()[0]
-                self.assertEqual(version, SCHEMA_VERSION - 1)
+                self.assertEqual(version, 5)
                 self.assertIsNone(
                     downgraded.execute(
                         "SELECT name FROM sqlite_master "
@@ -1305,6 +1314,7 @@ class TaskRepositoryTests(unittest.TestCase):
                 )
             finally:
                 downgraded.close()
+
             legacy_tasks = json.loads(
                 (target / "tasks.json").read_text(encoding="utf-8")
             )
@@ -1324,6 +1334,54 @@ class TaskRepositoryTests(unittest.TestCase):
                 "compatible_target_exists",
             ):
                 preview_task_compatible_export(root)
+
+    def test_schema_five_downgrade_filters_blobs_for_runs_omitted_from_projection(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            write_seed_root(root, [task("task_a")])
+            ensure_task_sqlite_authority(root)
+            ensure_run_sqlite_authority(root, history_path(root))
+            attachment = create_attachment(
+                root, original_name="older.txt", content=b"older run attachment"
+            )
+            bind_run_attachment(root, attachment["id"], "run_older_projection")
+            save_authoritative_run_summaries(
+                root,
+                [
+                    {
+                        "id": "run_newer_projection",
+                        "runtime_type": "hermes",
+                        "transport_mode": "local",
+                        "connection_binding_id": "local-default",
+                        "status": "completed",
+                        "response": "newer",
+                        "created_at": "2026-08-18T13:00:00+00:00",
+                        "updated_at": "2026-08-18T13:01:00+00:00",
+                        "completed_at": "2026-08-18T13:01:00+00:00",
+                        "events": [],
+                    },
+                    {
+                        "id": "run_older_projection",
+                        "runtime_type": "hermes",
+                        "transport_mode": "local",
+                        "connection_binding_id": "local-default",
+                        "status": "completed",
+                        "response": "older",
+                        "created_at": "2026-08-18T12:00:00+00:00",
+                        "updated_at": "2026-08-18T12:01:00+00:00",
+                        "completed_at": "2026-08-18T12:01:00+00:00",
+                        "attachments": [attachment],
+                        "events": [],
+                    },
+                ],
+            )
+            with patch.object(private_console_unit, "MAX_HISTORY_BYTES", 128):
+                unit = capture_private_console_unit(root)
+            self.assertEqual(json.loads(unit.history_raw)["runs"], [])
+
+            downgraded = task_repository._schema5_private_unit(unit)
+
+        self.assertEqual(downgraded.blobs, ())
 
     def test_export_modes_preserve_the_exact_maximum_document_size(self):
         maximum = task_repository.MAX_EXPORT_BYTES
@@ -1908,9 +1966,14 @@ class TaskRepositoryTests(unittest.TestCase):
             try:
                 TaskRepository(connection).insert_collection([task("occupied")])
                 with transaction(connection, immediate=True):
+                    connection.execute("DROP TABLE mentat_agent_events")
+                    connection.execute("DROP TABLE mentat_dispatch_reservations")
+                    connection.execute("DROP TABLE mentat_task_dispatch_heads")
+                    connection.execute("DROP TABLE mentat_runs")
+                    connection.execute("DROP TABLE mentat_run_store_state")
                     connection.execute("DROP TABLE mentat_task_store_state")
                     connection.execute(
-                        "DELETE FROM schema_migrations WHERE version = 6"
+                        "DELETE FROM schema_migrations WHERE version IN (6, 7)"
                     )
             finally:
                 connection.close()

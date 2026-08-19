@@ -36,13 +36,22 @@ from health_checks import HEALTH_STATUS_RANK, HealthContext, health as build_hea
 from agent_run_history import (
     EVENT_RETENTION,
     EVENT_SCHEMA_VERSION,
-    load_run_summaries,
     normalize_transport_binding,
     retained_event_window,
-    save_run_summaries,
-    secure_history_permissions,
 )
-from agent_runtime import AgentRuntimeError, AgentRuntimeRegistry
+from agent_runtime import AgentEvent, AgentRuntimeError, AgentRuntimeRegistry
+from orchestration_service import OrchestrationService, OrchestrationServiceError
+from run_repository import (
+    RunRecord,
+    RunRepository,
+    RunRepositoryConflict,
+    RunRepositoryError,
+    RunRepositoryUnavailable,
+    RunRepositoryValidationError,
+    ensure_run_sqlite_authority,
+    load_authoritative_run_summaries,
+    save_authoritative_run_summaries,
+)
 from agent_registry import (
     AgentRegistry,
     AgentRegistryConflict,
@@ -132,7 +141,11 @@ from hermes_webhook_store import WebhookDeliveryStore
 from hermes_event_refresh import HermesRefreshCoordinator
 from hermes_browser_events import HermesBrowserEventBroker
 from hermes_webhook_health import build_probe_request, public_health_payload
-from mentat_db import DATABASE_OPEN_BARRIER
+from mentat_db import (
+    DATABASE_OPEN_BARRIER,
+    MentatDatabaseError,
+    connect as connect_mentat_database,
+)
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
 from hermes_transport import (
@@ -376,6 +389,7 @@ REMOTE_SESSION_ALIASES: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {}
 REMOTE_SESSION_ALIAS_INDEX: dict[tuple[str, str], str] = {}
 TASK_STATUS_VALUES = {"todo", "in progress", "waiting", "needs attention", "completed"}
 TASK_PRIORITY_VALUES = {"high", "medium", "low"}
+TASK_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 PROJECT_STATUS_VALUES = {"active", "paused", "archived"}
 MESSAGE_STATUS_VALUES = {"queued", "acknowledged", "delivered", "failed", "cancelled", "needs user input"}
 MESSAGE_PRIORITY_VALUES = {"normal", "high", "urgent"}
@@ -429,6 +443,9 @@ HERMES_PROFILE_CREATION_LOCK = threading.Lock()
 # Profile creation and deletion share one mutation lock. The existing name is
 # retained for compatibility with the initial creator contract and tests.
 AGENT_CONSOLE_HISTORY_LOADED = False
+AGENT_CONSOLE_HISTORY_DATA_DIR: Path | None = None
+AGENT_CONSOLE_PERSISTENCE_DEGRADED = False
+AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR: Path | None = None
 MENTAT_PROJECT_NAME = "Mentat"
 MENTAT_PROJECT_ID = "project_mentat"
 PREVIOUS_PROJECT_NAME = "Agent " "OS"
@@ -451,52 +468,95 @@ def agent_console_history_path() -> Path:
     return private_history_path(DATA_DIR)
 
 
+def agent_console_history_is_current() -> bool:
+    return (
+        AGENT_CONSOLE_HISTORY_LOADED
+        and AGENT_CONSOLE_HISTORY_DATA_DIR
+        == Path(os.path.abspath(os.fspath(DATA_DIR)))
+    )
+
+
+def agent_console_storage_degraded() -> bool:
+    return (
+        AGENT_CONSOLE_PERSISTENCE_DEGRADED
+        and AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR
+        == Path(os.path.abspath(os.fspath(DATA_DIR)))
+    )
+
+
 def persist_agent_console_runs() -> bool:
-    """Persist bounded run summaries; callers may already hold the re-entrant lock."""
-    if not AGENT_CONSOLE_HISTORY_LOADED:
-        return True
+    """Persist Console projections into the authoritative SQLite Run store."""
+    global AGENT_CONSOLE_PERSISTENCE_DEGRADED
+    global AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR
+    if not agent_console_history_is_current():
+        return False
+    if agent_console_storage_degraded():
+        return False
     try:
         with AGENT_CONSOLE_LOCK:
-            save_run_summaries(
-                agent_console_history_path(),
+            save_authoritative_run_summaries(
+                DATA_DIR,
                 list(AGENT_CONSOLE_RUNS.values()),
-                retention=AGENT_CONSOLE_RUN_LIMIT,
-                data_root=DATA_DIR,
             )
         return True
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RunRepositoryError) as exc:
+        AGENT_CONSOLE_PERSISTENCE_DEGRADED = True
+        AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = Path(
+            os.path.abspath(os.fspath(DATA_DIR))
+        )
+        try:
+            authoritative = load_authoritative_run_summaries(
+                DATA_DIR,
+                limit=AGENT_CONSOLE_RUN_LIMIT,
+            )
+        except (OSError, RunRepositoryError):
+            authoritative = []
+        with AGENT_CONSOLE_LOCK:
+            AGENT_CONSOLE_RUNS.clear()
+            AGENT_CONSOLE_RUNS.update(
+                (run["id"], run) for run in authoritative
+            )
         print(f"Agent Console history could not be persisted: {compact_text(exc, max_length=500)}")
         return False
 
 
 def load_agent_console_runs() -> None:
-    """Restore prior summaries and fail closed to an empty history on corruption."""
-    global AGENT_CONSOLE_HISTORY_LOADED
-    history_path = agent_console_history_path()
+    """Cut over legacy history once, then restore only authoritative SQLite Runs."""
+    global AGENT_CONSOLE_HISTORY_DATA_DIR, AGENT_CONSOLE_HISTORY_LOADED
+    global AGENT_CONSOLE_PERSISTENCE_DEGRADED
+    global AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR
     with AGENT_CONSOLE_LOCK:
         try:
+            ensure_run_sqlite_authority(DATA_DIR, agent_console_history_path())
             with private_state_lock(DATA_DIR):
-                if not secure_history_permissions(history_path, data_root=DATA_DIR):
-                    raise OSError("unsafe private history")
-                runs, recovered = load_run_summaries(
-                    history_path,
-                    now=now_iso,
-                    retention=AGENT_CONSOLE_RUN_LIMIT,
-                    data_root=DATA_DIR,
-                )
-        except OSError:
-            print("Agent Console history permissions could not be restricted on this platform.")
+                connection = connect_mentat_database(DATA_DIR)
+                try:
+                    repository = RunRepository(connection)
+                    repository.recover_reserved_as_interrupted(now=now_iso())
+                    repository.recover_submitting_as_unknown(now=now_iso())
+                    repository.recover_unattached_dispatches_as_unknown(now=now_iso())
+                    repository.recover_console_runs_as_interrupted(now=now_iso())
+                finally:
+                    connection.close()
+            runs = load_authoritative_run_summaries(
+                DATA_DIR,
+                limit=AGENT_CONSOLE_RUN_LIMIT,
+            )
+        except (OSError, MentatDatabaseError, sqlite3.Error, RunRepositoryError) as exc:
             AGENT_CONSOLE_RUNS.clear()
-            AGENT_CONSOLE_HISTORY_LOADED = True
-            return
+            AGENT_CONSOLE_HISTORY_LOADED = False
+            AGENT_CONSOLE_HISTORY_DATA_DIR = None
+            AGENT_CONSOLE_PERSISTENCE_DEGRADED = True
+            AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = Path(
+                os.path.abspath(os.fspath(DATA_DIR))
+            )
+            raise RunRepositoryUnavailable("run_repository.unavailable") from exc
         AGENT_CONSOLE_RUNS.clear()
         AGENT_CONSOLE_RUNS.update((run["id"], run) for run in runs)
         AGENT_CONSOLE_HISTORY_LOADED = True
-        # Rewrite every retained valid history through the current redactor and
-        # private atomic writer. Corrupt/unsupported files remain untouched but
-        # are still permission-restricted above for safe manual recovery.
-        if runs or recovered:
-            persist_agent_console_runs()
+        AGENT_CONSOLE_HISTORY_DATA_DIR = Path(os.path.abspath(os.fspath(DATA_DIR)))
+        AGENT_CONSOLE_PERSISTENCE_DEGRADED = False
+        AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = None
 
 
 def public_console_attachment(metadata: dict | None) -> dict | None:
@@ -533,7 +593,7 @@ def active_agent_console_run_ids() -> tuple[str, ...]:
 def agent_console_input_staging_blocked() -> bool:
     """Fail closed when Console input context would overlap an active run."""
 
-    return bool(active_agent_console_run_ids())
+    return agent_console_storage_degraded() or bool(active_agent_console_run_ids())
 
 
 def trim_agent_console_runs_locked() -> None:
@@ -894,9 +954,14 @@ def validate_task_payload(payload, *, existing: dict | None = None):
     completed_at = existing.get("completed_at") if isinstance(existing, dict) else None
     timestamp = now_iso()
 
+    existing_id = existing.get("id") if isinstance(existing, dict) else None
+    if existing is not None and (
+        not isinstance(existing_id, str) or not TASK_ID_PATTERN.fullmatch(existing_id)
+    ):
+        return None, "Invalid task id"
     normalized = dict(existing) if isinstance(existing, dict) else {}
     normalized.update({
-        "id": compact_text((existing or {}).get("id"), max_length=80) or task_id_value(),
+        "id": existing_id or task_id_value(),
         "title": title,
         "description": description,
         "project": project,
@@ -933,12 +998,17 @@ def validate_task_payload(payload, *, existing: dict | None = None):
 
 def validate_task_dependencies(candidate: dict, tasks: list[dict]) -> str | None:
     """Validate the candidate's dependency references and reachable graph."""
-    task_id = compact_text(candidate.get("id"), max_length=80)
-    by_id = {
-        compact_text(item.get("id"), max_length=80): item
-        for item in tasks
-        if isinstance(item, dict) and compact_text(item.get("id"), max_length=80)
-    }
+    task_id = candidate.get("id")
+    if not isinstance(task_id, str) or not TASK_ID_PATTERN.fullmatch(task_id):
+        return "Invalid task id"
+    by_id: dict[str, dict] = {}
+    for item in tasks:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id")
+        if not isinstance(item_id, str) or not TASK_ID_PATTERN.fullmatch(item_id):
+            return "Invalid task id"
+        by_id[item_id] = item
     by_id[task_id] = candidate
     dependencies = candidate.get("depends_on") or []
     missing = [dependency for dependency in dependencies if dependency not in by_id]
@@ -1542,6 +1612,230 @@ def create_mentat_agent(payload):
     return {"ok": True, "agent": public_agent_record(agent)}, 201
 
 
+def _public_orchestration_run(run: RunRecord) -> dict:
+    return {
+        "id": run.id,
+        "source": run.source,
+        "task_id": run.task_id,
+        "task_revision": run.task_revision,
+        "agent_id": run.agent_id,
+        "runtime_type": run.runtime_type,
+        "status": run.status,
+        "dispatch_state": run.dispatch_state,
+        "state_revision": run.state_revision,
+        "partial": run.partial,
+        "timeline": {
+            "truncated": run.timeline_truncated,
+            "first_retained_sequence": run.first_retained_sequence,
+            "last_removed_sequence": run.last_removed_sequence,
+            "last_sequence": run.last_event_sequence,
+        },
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
+        "started_at": run.started_at,
+        "completed_at": run.completed_at,
+    }
+
+
+def _public_orchestration_event(event: AgentEvent) -> dict:
+    # Content is intentionally omitted from this first stable projection. The
+    # normalized summary and numeric metrics cannot expose raw adapter payloads,
+    # tool arguments/results, or private reasoning.
+    return {
+        "id": event.id,
+        "run_id": event.run_id,
+        "sequence": event.sequence,
+        "type": event.type.value,
+        "occurred_at": event.occurred_at,
+        "summary": event.summary,
+        "metrics": dict(event.metrics),
+    }
+
+
+def _encode_run_cursor(run: RunRecord) -> str:
+    raw = json.dumps([run.updated_at, run.id], separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_run_cursor(value: str | None) -> tuple[str, str] | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or len(value) > 512 or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise RunRepositoryValidationError("run.cursor_invalid")
+    try:
+        raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        decoded = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RunRepositoryValidationError("run.cursor_invalid") from exc
+    if not isinstance(decoded, list) or len(decoded) != 2:
+        raise RunRepositoryValidationError("run.cursor_invalid")
+    return str(decoded[0]), str(decoded[1])
+
+
+def dispatch_orchestration_task(task_id: str, payload):
+    if not isinstance(payload, dict):
+        return {"error": "Dispatch payload must be a JSON object."}, 400
+    if set(payload) != {"expected_revision", "idempotency_key"}:
+        return {"error": "Dispatch requires an exact revision and idempotency key."}, 400
+    revision = payload.get("expected_revision")
+    key = payload.get("idempotency_key")
+    try:
+        key_size = len(key.encode("utf-8")) if isinstance(key, str) else 0
+    except UnicodeEncodeError:
+        key_size = 0
+    if (
+        type(revision) is not int
+        or revision < 1
+        or not isinstance(key, str)
+        or not 16 <= key_size <= 256
+        or "\x00" in key
+    ):
+        return {"error": "Dispatch revision or idempotency key is invalid."}, 400
+    try:
+        result = OrchestrationService(
+            DATA_DIR,
+            runtime_registry=AGENT_RUNTIME_REGISTRY,
+            agent_registry=_mentat_agent_registry(),
+        ).dispatch_task(
+            task_id=task_id,
+            expected_revision=revision,
+            idempotency_key=key,
+        )
+    except (MentatDatabaseError, sqlite3.Error) as exc:
+        return {
+            "error": "Task dispatch is temporarily unavailable.",
+            "error_code": "dispatch.unavailable",
+        }, 503
+    except OrchestrationServiceError as exc:
+        status = 404 if exc.code in {"dispatch.task_not_found", "dispatch.agent_not_found"} else 409
+        if exc.code == "dispatch.task_id_invalid":
+            status = 400
+        if exc.code in {"dispatch.unavailable", "run_repository.unavailable"}:
+            status = 503
+        return {"error": "Task dispatch was not accepted.", "error_code": exc.code}, status
+    return {
+        "schema_version": 1,
+        "ok": True,
+        "duplicate": result.duplicate,
+        "disposition": result.disposition,
+        "run": _public_orchestration_run(result.run),
+    }, 200 if result.duplicate else 202
+
+
+def reconcile_orchestration_runs(payload=None):
+    if payload not in (None, {}):
+        return {"error": "Reconciliation does not accept request fields."}, 400
+    try:
+        report = OrchestrationService(
+            DATA_DIR,
+            runtime_registry=AGENT_RUNTIME_REGISTRY,
+            agent_registry=_mentat_agent_registry(),
+        ).reconcile_runs(owner=f"reconciler_{uuid4().hex}", limit=20)
+    except (
+        MentatDatabaseError,
+        OrchestrationServiceError,
+        RunRepositoryError,
+        OSError,
+        sqlite3.Error,
+    ):
+        return {"error": "Run reconciliation is temporarily unavailable."}, 503
+    return {
+        "schema_version": 1,
+        "ok": True,
+        "leased": report.leased,
+        "reconciled": len(report.reconciled),
+        "unavailable": len(report.unavailable),
+    }, 200
+
+
+def reconcile_orchestration_runs_at_startup() -> None:
+    """Run one bounded best-effort readback without delaying the listener."""
+
+    try:
+        OrchestrationService(
+            DATA_DIR,
+            runtime_registry=AGENT_RUNTIME_REGISTRY,
+            agent_registry=_mentat_agent_registry(),
+        ).reconcile_runs(owner=f"startup_reconciler_{uuid4().hex}", limit=20)
+    except (OrchestrationServiceError, RunRepositoryError, OSError, sqlite3.Error):
+        # Durable leases expire and a later webhook/manual pass can retry.
+        # Missing evidence never changes Run state or resubmits work.
+        return
+
+
+def orchestration_runs_payload(query: str = ""):
+    parameters = parse_qs(query, keep_blank_values=True)
+    if set(parameters) - {"cursor", "limit"}:
+        return {"error": "Unsupported Runs query parameter."}, 400
+    try:
+        raw_limit = parameters.get("limit", ["50"])[0]
+        if not re.fullmatch(r"[1-9][0-9]{0,2}", raw_limit):
+            raise RunRepositoryValidationError("run.limit_invalid")
+        limit = int(raw_limit)
+        before = _decode_run_cursor(parameters.get("cursor", [None])[0])
+        with private_state_lock(DATA_DIR):
+            connection = connect_mentat_database(DATA_DIR)
+            try:
+                rows = RunRepository(connection).list_runs(limit=limit + 1, before=before)
+            finally:
+                connection.close()
+    except RunRepositoryValidationError:
+        return {"error": "Runs cursor or limit is invalid."}, 400
+    except (MentatDatabaseError, RunRepositoryError, sqlite3.Error, OSError):
+        return {"error": "Runs are temporarily unavailable."}, 503
+    page = rows[:limit]
+    return {
+        "schema_version": 1,
+        "runs": [_public_orchestration_run(run) for run in page],
+        "next_cursor": _encode_run_cursor(page[-1]) if len(rows) > limit and page else None,
+    }, 200
+
+
+def orchestration_run_payload(run_id: str, _query: str | None = None):
+    try:
+        with private_state_lock(DATA_DIR):
+            connection = connect_mentat_database(DATA_DIR)
+            try:
+                run = RunRepository(connection).get_run(run_id)
+            finally:
+                connection.close()
+    except RunRepositoryConflict:
+        return {"error": "Run not found."}, 404
+    except (MentatDatabaseError, RunRepositoryError, sqlite3.Error, OSError):
+        return {"error": "Run is temporarily unavailable."}, 503
+    return {"schema_version": 1, "run": _public_orchestration_run(run)}, 200
+
+
+def orchestration_run_events_payload(run_id: str, query: str = ""):
+    parameters = parse_qs(query, keep_blank_values=True)
+    if set(parameters) - {"after"}:
+        return {"error": "Unsupported event query parameter."}, 400
+    raw_after = parameters.get("after", ["0"])[0]
+    if not re.fullmatch(r"[0-9]{1,10}", raw_after):
+        return {"error": "Event cursor is invalid."}, 400
+    try:
+        with private_state_lock(DATA_DIR):
+            connection = connect_mentat_database(DATA_DIR)
+            try:
+                events, reset, cursor = RunRepository(connection).list_events(
+                    run_id, after_sequence=int(raw_after)
+                )
+            finally:
+                connection.close()
+    except RunRepositoryConflict:
+        return {"error": "Run not found."}, 404
+    except (MentatDatabaseError, RunRepositoryError, sqlite3.Error, OSError):
+        return {"error": "Run events are temporarily unavailable."}, 503
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "after": int(raw_after),
+        "next_cursor": cursor,
+        "cursor_reset_required": reset,
+        "events": [_public_orchestration_event(event) for event in events],
+    }, 200
+
+
 def file_mtime_iso(path: Path) -> str | None:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
@@ -1619,6 +1913,8 @@ def update_json_file(name: str, default, mutator):
             with HERMES_KANBAN_LOCK:
                 return mutate_authoritative_tasks(DATA_DIR, mutator)
         except TaskRepositoryError as exc:
+            if exc.code == "task_repository.active_run":
+                return {"error": "Task deletion is blocked while an orchestration Run is active."}, 409
             return {"error": f"Task storage is unavailable ({exc.code})."}, 503
     path = dashboard_data_path(name, write=True)
     durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
@@ -3724,7 +4020,7 @@ def create_task(payload):
 
 
 def update_task(task_id: str, payload):
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
+    if not TASK_ID_PATTERN.fullmatch(task_id or ""):
         return {"error": "Invalid task id"}, 400
 
     def mutator(tasks):
@@ -3753,6 +4049,8 @@ def update_task(task_id: str, payload):
 
 
 def reorder_today_task(task_id: str, payload):
+    if not TASK_ID_PATTERN.fullmatch(task_id or ""):
+        return {"error": "Invalid task id"}, 400
     direction = compact_text((payload or {}).get("direction"), max_length=8).lower() if isinstance(payload, dict) else ""
     if direction not in {"up", "down"}:
         return {"error": "Direction must be up or down."}, 400
@@ -3800,8 +4098,23 @@ def task_dependent_ids(task_id: str, tasks: list[dict]) -> list[str]:
     ]
 
 
+def _task_has_active_orchestration_run(task_id: str) -> bool:
+    with private_state_lock(DATA_DIR):
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            row = connection.execute(
+                "SELECT 1 FROM mentat_runs WHERE task_id = ? "
+                "AND status NOT IN ('completed', 'failed', 'cancelled', 'stopped', 'interrupted') "
+                "LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            return row is not None
+        finally:
+            connection.close()
+
+
 def preview_task_deletion(task_id: str, payload=None):
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
+    if not TASK_ID_PATTERN.fullmatch(task_id or ""):
         return {"error": "Invalid task id"}, 400
     tasks = read_json_file("tasks.json", [])
     if not isinstance(tasks, list):
@@ -3817,6 +4130,11 @@ def preview_task_deletion(task_id: str, payload=None):
         return {
             "error": "Task deletion is blocked because the task id is duplicated. Repair tasks.json before retrying."
         }, 409
+    try:
+        if _task_has_active_orchestration_run(task_id):
+            return {"error": "Task deletion is blocked while an orchestration Run is active."}, 409
+    except (MentatDatabaseError, sqlite3.Error, OSError, RunRepositoryError):
+        return {"error": "Task deletion safety could not be verified."}, 503
     task = matches[0]
     pending = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
     if pending.get("reservation_id") and not pending.get("kanban_task_id"):
@@ -3843,7 +4161,7 @@ def delete_confirmed_task(task_id: str, payload):
     confirmation_id = compact_text(payload.get("confirmation_id"), max_length=80)
     if not confirmation_id:
         return {"error": "Task deletion requires a confirmation_id from preview."}, 400
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
+    if not TASK_ID_PATTERN.fullmatch(task_id or ""):
         return {"error": "Invalid task id"}, 400
 
     def mutator(tasks):
@@ -4150,7 +4468,7 @@ def delegation_confirmation(prefix: str, task: dict, intent: dict) -> str:
 
 
 def preview_task_delegation(task_id: str, payload):
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", task_id or ""):
+    if not TASK_ID_PATTERN.fullmatch(task_id or ""):
         return {"error": "Invalid task id"}, 400
     if not isinstance(payload, dict):
         return {"error": "Delegation payload must be a JSON object"}, 400
@@ -6591,6 +6909,35 @@ def agent_console_event(run: dict, message: str, kind: str = "status", data: dic
     run["updated_at"] = now_iso()
 
 
+def _console_orchestration_identity(
+    identity: dict[str, str] | None,
+) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Split internal dispatch correlation from the Console's public binding."""
+
+    if identity is None:
+        return f"run_{uuid4().hex[:14]}", {}, {}
+    opaque_names = ("mentat_run_id", "dispatch_id", "mentat_agent_id")
+    if (
+        any(
+            not isinstance(identity.get(name), str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z", identity[name])
+            for name in opaque_names
+        )
+        or not isinstance(identity.get("task_id"), str)
+        or not TASK_ID_PATTERN.fullmatch(identity["task_id"])
+    ):
+        raise ValueError("orchestration identity is invalid")
+    public_binding = {
+        "mentat_agent_id": identity["mentat_agent_id"],
+        "task_id": identity["task_id"],
+    }
+    private_binding = {
+        **public_binding,
+        "_dispatch_id": identity["dispatch_id"],
+    }
+    return identity["mentat_run_id"], private_binding, public_binding
+
+
 def finalize_agent_console_runtime_event(run_id: str) -> None:
     """Persist one stable post-artifact terminal boundary for orchestration."""
 
@@ -6603,10 +6950,14 @@ def finalize_agent_console_runtime_event(run_id: str) -> None:
             "interrupted",
         }:
             return
-        if not all(
-            isinstance(run.get(name), str)
-            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", run[name])
-            for name in ("mentat_agent_id", "task_id")
+        if (
+            not isinstance(run.get("mentat_agent_id"), str)
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z",
+                run["mentat_agent_id"],
+            )
+            or not isinstance(run.get("task_id"), str)
+            or not TASK_ID_PATTERN.fullmatch(run["task_id"])
         ):
             return
         if any(
@@ -6624,6 +6975,26 @@ def finalize_agent_console_runtime_event(run_id: str) -> None:
 
 
 def agent_console_snapshot(run: dict) -> dict:
+    if agent_console_storage_degraded():
+        authoritative = AGENT_CONSOLE_RUNS.get(str(run.get("id") or ""))
+        if authoritative is not None:
+            run = authoritative
+        else:
+            return {
+                "id": str(run.get("id") or "unknown"),
+                "status": "unknown",
+                "partial": True,
+                "error": "Mentat Run storage is unavailable.",
+                "storage_degraded": True,
+                "controls": {
+                    "steer": {
+                        "available": False,
+                        "revision": 0,
+                        "text_only": True,
+                        "max_characters": AGENT_CONSOLE_PROMPT_LIMIT,
+                    }
+                },
+            }
     snapshot = {
         key: value
         for key, value in run.items()
@@ -6641,6 +7012,7 @@ def agent_console_snapshot(run: dict) -> dict:
         and isinstance(remote_run_id, str)
         and remote_transport.steer_available
         and run.get("_steer_inflight") is not True
+        and not agent_console_storage_degraded()
     )
     snapshot["controls"] = {
         "steer": {
@@ -6650,12 +7022,19 @@ def agent_console_snapshot(run: dict) -> dict:
             "max_characters": AGENT_CONSOLE_PROMPT_LIMIT,
         }
     }
+    if agent_console_storage_degraded():
+        snapshot["storage_degraded"] = True
     return snapshot
 
 
 def agent_console_payload():
     with HERMES_CONNECTION_OPERATION_LOCK:
-        return _agent_console_payload_locked()
+        payload = _agent_console_payload_locked()
+        payload["storage"] = {
+            "available": not agent_console_storage_degraded(),
+            "degraded": agent_console_storage_degraded(),
+        }
+        return payload
 
 
 def _agent_console_payload_locked():
@@ -6990,7 +7369,16 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
         run["status"] = "running"
         run["started_at"] = now_iso()
         agent_console_event(run, "Starting Hermes CLI", "status", {"phase": "launch"})
-        persist_agent_console_runs()
+        if not persist_agent_console_runs():
+            try:
+                cleanup_run_export_directory(DATA_DIR, run_id)
+            except (ConsoleArtifactValidationError, OSError):
+                pass
+            try:
+                cleanup_run_input_directory(DATA_DIR, run_id)
+            except (ConsoleArtifactValidationError, OSError):
+                pass
+            return
         prompt = run.get("_execution_prompt") or run["prompt"]
         session_id = run.get("session_id")
         profile_id = run.get("agent_id") or "default"
@@ -7018,13 +7406,18 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
             current = AGENT_CONSOLE_RUNS.get(run_id)
             if current:
                 agent_console_event(current, "Model is working", "status", {"phase": "inference"})
-                persist_agent_console_runs()
+                if not persist_agent_console_runs():
+                    process.terminate()
+                    return
 
         while True:
             try:
                 stdout, stderr = process.communicate(timeout=1)
                 break
             except subprocess.TimeoutExpired:
+                if agent_console_storage_degraded():
+                    process.terminate()
+                    return
                 if telemetry_tail is not None:
                     try:
                         progress_events = telemetry_tail.poll()
@@ -7407,7 +7800,8 @@ def _remote_console_stream_should_stop(run_id: str) -> bool:
     with AGENT_CONSOLE_LOCK:
         current = AGENT_CONSOLE_RUNS.get(run_id)
         return (
-            not current
+            agent_console_storage_degraded()
+            or not current
             or current.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES
             or current.get("status") == "cancelling"
         )
@@ -7511,7 +7905,8 @@ def run_remote_hermes_agent(
             run["started_at"] = now_iso()
             prompt = run.get("_execution_prompt") or run.get("prompt") or ""
             agent_console_event(run, "Submitting to remote Hermes", "status", {"phase": "submission"})
-            persist_agent_console_runs()
+            if not persist_agent_console_runs():
+                return
 
         transport.revalidate(DATA_DIR)
         if not resuming:
@@ -7873,12 +8268,19 @@ def _start_remote_agent_console_run(
         return {"error": "Prompt is required"}, 400
     if len(prompt) > AGENT_CONSOLE_PROMPT_LIMIT or "\x00" in prompt:
         return {"error": f"Prompt must be {AGENT_CONSOLE_PROMPT_LIMIT:,} characters or fewer"}, 400
+    try:
+        orchestration_run_id, run_binding, event_binding = (
+            _console_orchestration_identity(orchestration_identity)
+        )
+    except ValueError:
+        return {"error": "The orchestration identity is invalid."}, 409
     with AGENT_CONSOLE_LOCK:
         active = next(
             (
                 item
                 for item in AGENT_CONSOLE_RUNS.values()
                 if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES
+                and item.get("id") != orchestration_run_id
             ),
             None,
         )
@@ -7963,6 +8365,7 @@ def _start_remote_agent_console_run(
                 item
                 for item in AGENT_CONSOLE_RUNS.values()
                 if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES
+                and item.get("id") != orchestration_run_id
             ),
             None,
         )
@@ -7971,7 +8374,10 @@ def _start_remote_agent_console_run(
                 "error": "Hermes is already working on another prompt",
                 "active_run_id": active["id"],
             }, 409
-        run_id = f"run_{uuid4().hex[:14]}"
+        run_id = orchestration_run_id
+        existing = AGENT_CONSOLE_RUNS.get(run_id)
+        if existing and existing.get("status") not in {"reserved", "submitting"}:
+            return {"error": "The orchestration run identity is already in use."}, 409
         bound_context: list[dict] = []
         try:
             for ordinal, item in enumerate([*prepared_context, *direct_images]):
@@ -8011,6 +8417,7 @@ def _start_remote_agent_console_run(
             "response": "",
             "error": "",
             "events": [],
+            "event_cursor": 1 if orchestration_identity is not None else 0,
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "started_at": None,
@@ -8020,17 +8427,27 @@ def _start_remote_agent_console_run(
             "_remote_image_data_urls": remote_image_data_urls,
         }
         if orchestration_identity is not None:
-            run.update(orchestration_identity)
+            run.update(run_binding)
             agent_console_event(
                 run,
                 "Mentat task bound",
                 "runtime.bound",
-                orchestration_identity,
+                event_binding,
             )
         agent_console_event(run, "Prompt queued for remote Hermes", "queued", {"agent_id": requested_agent_id})
+        prior_runs = dict(AGENT_CONSOLE_RUNS)
         AGENT_CONSOLE_RUNS[run_id] = run
         trim_agent_console_runs_locked()
-        persist_agent_console_runs()
+        if not persist_agent_console_runs():
+            AGENT_CONSOLE_RUNS.clear()
+            AGENT_CONSOLE_RUNS.update(prior_runs)
+            cleanup_run_input_directory(DATA_DIR, run_id)
+            cleanup_run_export_directory(DATA_DIR, run_id)
+            unbind_run_attachments(DATA_DIR, run_id, active_run_ids=())
+            return {
+                "error": "Mentat could not durably record this run.",
+                "error_code": "run_repository_unavailable",
+            }, 503
         snapshot = agent_console_snapshot(run)
     worker = threading.Thread(
         target=run_remote_hermes_agent,
@@ -8047,6 +8464,19 @@ def _start_remote_agent_console_run(
 def start_agent_console_run(payload):
     if not isinstance(payload, dict):
         return {"error": "Agent prompt payload must be a JSON object"}, 400
+    if not agent_console_history_is_current():
+        try:
+            load_agent_console_runs()
+        except (OSError, RunRepositoryError):
+            return {
+                "error": "Mentat Run storage is unavailable.",
+                "error_code": "run_repository_unavailable",
+            }, 503
+    if agent_console_storage_degraded():
+        return {
+            "error": "Mentat Run storage is unavailable. Restart Mentat after correcting storage.",
+            "error_code": "run_repository_unavailable",
+        }, 503
     with HERMES_CONNECTION_OPERATION_LOCK:
         return _start_agent_console_run_locked(payload)
 
@@ -8402,6 +8832,12 @@ def _start_agent_console_run_locked(
             transport,
             orchestration_identity=orchestration_identity,
         )
+    try:
+        orchestration_run_id, run_binding, event_binding = (
+            _console_orchestration_identity(orchestration_identity)
+        )
+    except ValueError:
+        return {"error": "The orchestration identity is invalid."}, 409
     requested_agent_id = compact_text(payload.get("agent_id"), max_length=64).lower() or "default"
     if requested_agent_id == "hermes":
         requested_agent_id = "default"
@@ -8443,7 +8879,15 @@ def _start_agent_console_run_locked(
             }, 409
         if HERMES_PROFILE_CREATION_LOCK.locked():
             return {"error": "A Hermes profile is currently being changed."}, 409
-        active = next((item for item in AGENT_CONSOLE_RUNS.values() if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES), None)
+        active = next(
+            (
+                item
+                for item in AGENT_CONSOLE_RUNS.values()
+                if item.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES
+                and item.get("id") != orchestration_run_id
+            ),
+            None,
+        )
         if active:
             return {"error": "Hermes is already working on another prompt", "active_run_id": active["id"]}, 409
         if session_id:
@@ -8483,7 +8927,10 @@ def _start_agent_console_run_locked(
                 return {
                     "error": "This Hermes session is not present in retained Mentat history, so its profile ownership cannot be verified. Start a new session instead."
                 }, 409
-        run_id = f"run_{uuid4().hex[:14]}"
+        run_id = orchestration_run_id
+        existing = AGENT_CONSOLE_RUNS.get(run_id)
+        if existing and existing.get("status") not in {"reserved", "submitting"}:
+            return {"error": "The orchestration run identity is already in use."}, 409
         bound_attachments: list[dict] = []
         try:
             for ordinal, item in enumerate(prepared_attachments):
@@ -8542,6 +8989,7 @@ def _start_agent_console_run_locked(
             "response": "",
             "error": "",
             "events": [],
+            "event_cursor": 1 if orchestration_identity is not None else 0,
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "started_at": None,
@@ -8550,12 +8998,12 @@ def _start_agent_console_run_locked(
             "_image_path": image_path,
         }
         if orchestration_identity is not None:
-            run.update(orchestration_identity)
+            run.update(run_binding)
             agent_console_event(
                 run,
                 "Mentat task bound",
                 "runtime.bound",
-                orchestration_identity,
+                event_binding,
             )
         agent_console_event(
             run,
@@ -8563,9 +9011,19 @@ def _start_agent_console_run_locked(
             "queued",
             {"agent_id": agent_id},
         )
+        prior_runs = dict(AGENT_CONSOLE_RUNS)
         AGENT_CONSOLE_RUNS[run_id] = run
         trim_agent_console_runs_locked()
-        persist_agent_console_runs()
+        if not persist_agent_console_runs():
+            AGENT_CONSOLE_RUNS.clear()
+            AGENT_CONSOLE_RUNS.update(prior_runs)
+            cleanup_run_input_directory(DATA_DIR, run_id)
+            cleanup_run_export_directory(DATA_DIR, run_id)
+            unbind_run_attachments(DATA_DIR, run_id, active_run_ids=())
+            return {
+                "error": "Mentat could not durably record this run.",
+                "error_code": "run_repository_unavailable",
+            }, 503
 
     with AGENT_CONSOLE_LOCK:
         snapshot = agent_console_snapshot(run)
@@ -9382,12 +9840,27 @@ _hermes_console_run_payload = agent_console_run_payload
 
 
 def _start_hermes_runtime_task(task, context):
+    if not agent_console_history_is_current():
+        try:
+            load_agent_console_runs()
+        except (OSError, RunRepositoryError):
+            return {
+                "error": "Mentat Run storage is unavailable.",
+                "error_code": "run_repository_unavailable",
+            }, 503
+    if agent_console_storage_degraded():
+        return {
+            "error": "Mentat Run storage is unavailable. Restart Mentat after correcting storage.",
+            "error_code": "run_repository_unavailable",
+        }, 503
     payload = {
         "agent_id": context.runtime_agent_ref,
         "prompt": task.objective,
         "start_new_session": True,
     }
     identity = {
+        "mentat_run_id": context.mentat_run_id,
+        "dispatch_id": context.dispatch_id,
         "mentat_agent_id": context.agent_id,
         "task_id": task.id,
     }
@@ -9417,18 +9890,29 @@ def _registered_hermes_runtime() -> HermesRuntime:
 
 
 def start_agent_console_run(payload):
+    if agent_console_storage_degraded():
+        return {
+            "error": "Mentat Run storage is unavailable. Restart Mentat after correcting storage.",
+            "error_code": "run_repository_unavailable",
+        }, 503
     return _registered_hermes_runtime().start_compatibility(payload)
 
 
 def respond_to_remote_console_action(run_id: str, payload):
+    if agent_console_storage_degraded():
+        return {"error": "Mentat Run storage is unavailable."}, 503
     return _registered_hermes_runtime().response_compatibility(run_id, payload)
 
 
 def steer_remote_console_run(run_id: str, payload):
+    if agent_console_storage_degraded():
+        return {"error": "Mentat Run storage is unavailable."}, 503
     return _registered_hermes_runtime().message_compatibility(run_id, payload)
 
 
 def cancel_agent_console_run(run_id: str):
+    if agent_console_storage_degraded():
+        return {"error": "Mentat Run storage is unavailable."}, 503
     return _registered_hermes_runtime().stop_compatibility(run_id)
 
 
@@ -9441,6 +9925,8 @@ POST_ROUTES = [
     (re.compile(r"^/api/attention/([^/]+)/resolve$"), resolve_attention_item, False),
     (re.compile(r"^/api/agents/heartbeat$"), upsert_agent_heartbeat, True),
     (re.compile(r"^/api/orchestration/agents$"), create_mentat_agent, True),
+    (re.compile(r"^/api/orchestration/reconcile$"), reconcile_orchestration_runs, True),
+    (re.compile(r"^/api/orchestration/tasks/([^/]+)/dispatch$"), dispatch_orchestration_task, True),
     (re.compile(r"^/api/tasks$"), create_task, True),
     (re.compile(r"^/api/tasks/delegations/refresh-home$"), refresh_home_delegations, False),
     (re.compile(r"^/api/tasks/([^/]+)/delete/preview$"), preview_task_deletion, True),
@@ -9516,6 +10002,8 @@ API_ROUTES = {
 
 
 GET_ROUTES = {
+    re.compile(r"^/api/orchestration/runs/([^/]+)/events$"): orchestration_run_events_payload,
+    re.compile(r"^/api/orchestration/runs/([^/]+)$"): orchestration_run_payload,
     re.compile(r"^/api/agent-console/runs/([^/]+)$"): agent_console_run_payload,
     re.compile(r"^/api/hermes/profiles/([^/]+)/identity$"): hermes_profile_identity_payload,
     re.compile(r"^/api/hermes/sessions/([^/]+)/replay$"): selected_session_replay,
@@ -10110,6 +10598,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.log_internal_error("Mentat Agent registry", exc)
                 self.send_json({"error": "Mentat Agents are temporarily unavailable."}, status=500)
             return
+        if parsed.path == "/api/orchestration/runs":
+            try:
+                payload, status = orchestration_runs_payload(parsed.query)
+                self.send_json(payload, status=status)
+            except Exception as exc:
+                self.log_internal_error("orchestration Runs", exc)
+                self.send_json({"error": "Runs are temporarily unavailable."}, status=500)
+            return
         if parsed.path in API_ROUTES:
             try:
                 self.send_json(API_ROUTES[parsed.path]())
@@ -10124,7 +10620,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 query = parse_qs(parsed.query)
                 route_query_value = (
-                    query.get("after", [None])[0]
+                    parsed.query
+                    if parsed.path.startswith("/api/orchestration/runs/")
+                    else query.get("after", [None])[0]
                     if parsed.path.startswith("/api/agent-console/runs/")
                     else query.get("message_id", [None])[0]
                 )
@@ -10354,6 +10852,11 @@ def serve_dashboard() -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
         load_agent_console_runs()
+        threading.Thread(
+            target=reconcile_orchestration_runs_at_startup,
+            daemon=True,
+            name="mentat-startup-reconciler",
+        ).start()
         try:
             maintain_agent_console_attachments(startup=True)
         except Exception:
@@ -10439,7 +10942,11 @@ if __name__ == "__main__":
 
     try:
         serve_dashboard()
-    except (OSError, TaskRepositoryError) as exc:
-        detail = exc.code if isinstance(exc, TaskRepositoryError) else compact_text(exc, max_length=240)
+    except (OSError, TaskRepositoryError, RunRepositoryError) as exc:
+        detail = (
+            exc.code
+            if isinstance(exc, (TaskRepositoryError, RunRepositoryError))
+            else compact_text(exc, max_length=240)
+        )
         print(f"Mentat could not prepare its local Task storage: {detail}")
         raise SystemExit(2)

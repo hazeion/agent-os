@@ -159,6 +159,8 @@ class CiQualityGateTests(unittest.TestCase):
     def test_artifact_allowlists_exclude_private_and_test_content(self):
         self.assertEqual(PUBLIC_PACKAGES, {"mentat"})
         self.assertIn("server", PUBLIC_MODULES)
+        self.assertIn("orchestration_service", PUBLIC_MODULES)
+        self.assertIn("run_repository", PUBLIC_MODULES)
         self.assertEqual(set(PUBLIC_DATA_FILES), {"share/mentat/public", "share/mentat/data"})
         for names in (_source_files(), _wheel_files()):
             self.assertFalse(any(name.startswith("tests/") for name in names))

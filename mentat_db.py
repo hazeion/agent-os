@@ -19,7 +19,7 @@ from private_state import (
 
 
 DATABASE_NAME = "mentat.sqlite3"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 # Connection validation, WAL configuration, migration, and identity checks
 # must not overlap a webhook delivery transaction on Windows. Ordinary queries
 # release this process-wide boundary as soon as their connection is ready.
@@ -282,6 +282,188 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ),
             cutover_at REAL NOT NULL CHECK (cutover_at > 0)
         );
+        """,
+    ),
+    (
+        7,
+        """
+        CREATE TABLE mentat_run_store_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            authority TEXT NOT NULL CHECK (authority = 'sqlite'),
+            migration_contract TEXT NOT NULL CHECK (
+                migration_contract = 'mentat-run-sqlite-cutover-v1'
+            ),
+            source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+            source_run_count INTEGER NOT NULL CHECK (
+                source_run_count BETWEEN 0 AND 10000
+            ),
+            cutover_at REAL NOT NULL CHECK (cutover_at > 0)
+        );
+
+        CREATE TABLE mentat_runs (
+            id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
+            source TEXT NOT NULL CHECK (source IN ('console', 'task_dispatch')),
+            task_id TEXT CHECK (task_id IS NULL OR length(task_id) BETWEEN 1 AND 160),
+            task_revision INTEGER CHECK (task_revision IS NULL OR task_revision >= 1),
+            task_snapshot_json TEXT CHECK (
+                task_snapshot_json IS NULL OR length(task_snapshot_json) <= 1048576
+            ),
+            agent_id TEXT CHECK (agent_id IS NULL OR length(agent_id) BETWEEN 1 AND 128),
+            runtime_type TEXT NOT NULL CHECK (length(runtime_type) BETWEEN 1 AND 32),
+            runtime_config_id TEXT CHECK (
+                runtime_config_id IS NULL OR length(runtime_config_id) BETWEEN 1 AND 128
+            ),
+            runtime_binding_digest TEXT CHECK (
+                runtime_binding_digest IS NULL OR length(runtime_binding_digest) = 64
+            ),
+            capabilities_json TEXT NOT NULL DEFAULT '[]' CHECK (
+                length(capabilities_json) <= 8192
+            ),
+            runtime_run_ref TEXT CHECK (
+                runtime_run_ref IS NULL OR length(runtime_run_ref) BETWEEN 1 AND 128
+            ),
+            runtime_event_cursor INTEGER NOT NULL DEFAULT 0 CHECK (
+                runtime_event_cursor >= 0
+            ),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'reserved', 'queued', 'submitting', 'starting', 'running',
+                    'cancelling', 'waiting', 'waiting_for_approval',
+                    'waiting_for_clarification', 'completed', 'failed',
+                    'cancelled', 'stopped', 'interrupted', 'unknown'
+                )
+            ),
+            dispatch_state TEXT NOT NULL CHECK (
+                dispatch_state IN (
+                    'legacy', 'reserved', 'submitting', 'accepted',
+                    'rejected', 'unknown'
+                )
+            ),
+            state_revision INTEGER NOT NULL DEFAULT 1 CHECK (state_revision >= 1),
+            partial INTEGER NOT NULL DEFAULT 0 CHECK (partial IN (0, 1)),
+            timeline_truncated INTEGER NOT NULL DEFAULT 0 CHECK (
+                timeline_truncated IN (0, 1)
+            ),
+            first_retained_sequence INTEGER NOT NULL DEFAULT 1 CHECK (
+                first_retained_sequence >= 1
+            ),
+            last_removed_sequence INTEGER NOT NULL DEFAULT 0 CHECK (
+                last_removed_sequence >= 0
+            ),
+            discarded_event_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                discarded_event_count >= 0
+            ),
+            discarded_content_bytes INTEGER NOT NULL DEFAULT 0 CHECK (
+                discarded_content_bytes >= 0
+            ),
+            truncation_reason TEXT CHECK (
+                truncation_reason IS NULL OR truncation_reason IN (
+                    'legacy_unverified', 'per_run_count', 'per_run_bytes',
+                    'global_count', 'global_bytes'
+                )
+            ),
+            last_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK (
+                last_event_sequence >= 0
+            ),
+            reconcile_lease_owner TEXT CHECK (
+                reconcile_lease_owner IS NULL OR length(reconcile_lease_owner) BETWEEN 1 AND 128
+            ),
+            reconcile_lease_until REAL CHECK (
+                reconcile_lease_until IS NULL OR reconcile_lease_until > 0
+            ),
+            details_json TEXT NOT NULL DEFAULT '{}' CHECK (
+                length(details_json) <= 1048576
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            started_at TEXT CHECK (
+                started_at IS NULL OR length(started_at) BETWEEN 1 AND 64
+            ),
+            completed_at TEXT CHECK (
+                completed_at IS NULL OR length(completed_at) BETWEEN 1 AND 64
+            )
+        );
+
+        CREATE TABLE mentat_agent_events (
+            run_id TEXT NOT NULL REFERENCES mentat_runs(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK (sequence >= 1),
+            id TEXT NOT NULL CHECK (length(id) BETWEEN 1 AND 128),
+            event_type TEXT NOT NULL CHECK (
+                event_type IN (
+                    'run.created', 'dispatch.reserved', 'run.started',
+                    'submission.unknown', 'run.interrupted', 'message',
+                    'tool.requested',
+                    'tool.completed', 'approval.required',
+                    'artifact.created', 'cost', 'run.completed',
+                    'run.failed', 'run.stopped'
+                )
+            ),
+            source_type TEXT NOT NULL CHECK (length(source_type) BETWEEN 1 AND 64),
+            source_key TEXT NOT NULL CHECK (length(source_key) BETWEEN 1 AND 160),
+            occurred_at TEXT NOT NULL CHECK (length(occurred_at) BETWEEN 1 AND 64),
+            summary TEXT NOT NULL CHECK (length(summary) BETWEEN 1 AND 500),
+            content TEXT CHECK (content IS NULL OR length(content) <= 20000),
+            metrics_json TEXT NOT NULL DEFAULT '{}' CHECK (
+                length(metrics_json) <= 1024
+            ),
+            data_json TEXT NOT NULL DEFAULT '{}' CHECK (length(data_json) <= 16384),
+            content_bytes INTEGER NOT NULL DEFAULT 0 CHECK (
+                content_bytes BETWEEN 0 AND 4194304
+            ),
+            payload_digest TEXT NOT NULL CHECK (length(payload_digest) = 64),
+            PRIMARY KEY (run_id, sequence),
+            UNIQUE (run_id, id),
+            UNIQUE (run_id, source_key)
+        );
+
+        CREATE TABLE mentat_dispatch_reservations (
+            key_digest TEXT PRIMARY KEY CHECK (length(key_digest) = 64),
+            dispatch_id TEXT NOT NULL UNIQUE CHECK (
+                length(dispatch_id) BETWEEN 1 AND 128
+            ),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            run_id TEXT NOT NULL UNIQUE CHECK (length(run_id) BETWEEN 1 AND 128),
+            task_id TEXT NOT NULL CHECK (length(task_id) BETWEEN 1 AND 160),
+            task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
+            runtime_binding_digest TEXT NOT NULL CHECK (
+                length(runtime_binding_digest) = 64
+            ),
+            state TEXT NOT NULL CHECK (
+                state IN ('reserved', 'submitting', 'accepted', 'rejected', 'unknown')
+            ),
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                attempt_count IN (0, 1)
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            expires_at REAL NOT NULL CHECK (expires_at > 0)
+        );
+
+        CREATE TABLE mentat_task_dispatch_heads (
+            task_id TEXT PRIMARY KEY CHECK (length(task_id) BETWEEN 1 AND 160),
+            task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            run_id TEXT NOT NULL CHECK (length(run_id) BETWEEN 1 AND 128),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64)
+        );
+
+        CREATE INDEX idx_mentat_runs_status_updated
+            ON mentat_runs(status, updated_at DESC, id);
+        CREATE INDEX idx_mentat_runs_task_created
+            ON mentat_runs(task_id, created_at DESC, id);
+        CREATE INDEX idx_mentat_runs_agent_created
+            ON mentat_runs(agent_id, created_at DESC, id);
+        CREATE UNIQUE INDEX idx_mentat_runs_one_active_task
+            ON mentat_runs(task_id)
+            WHERE source = 'task_dispatch' AND status IN (
+                'reserved', 'queued', 'submitting', 'starting', 'running',
+                'cancelling', 'waiting', 'waiting_for_approval',
+                'waiting_for_clarification', 'unknown'
+            );
+        CREATE INDEX idx_mentat_agent_events_run_sequence
+            ON mentat_agent_events(run_id, sequence);
+        CREATE INDEX idx_mentat_dispatch_task
+            ON mentat_dispatch_reservations(task_id, task_revision, created_at);
         """,
     ),
 )

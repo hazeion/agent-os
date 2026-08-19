@@ -5,6 +5,12 @@ All notable changes to Mentat.
 ## 2026-08-18
 
 ### Added
+- Added schema-7 authoritative Runs, append-only normalized AgentEvents,
+  idempotent dispatch reservations, durable per-Task revision heads, CAS
+  reconciliation leases, and fixed per-Run/global retention metadata.
+- Added runtime-neutral Task dispatch plus versioned Run detail, paginated Run
+  list, and cursor-based AgentEvent APIs. Runtime references, binding digests,
+  raw adapter payloads, and private event content stay server-side.
 - Added an owner-private durable registry for canonical Mentat Agents and
   separate one-to-one runtime configurations, with Hermes as the only accepted
   runtime in this slice. The registry uses its own versioned SQLite file so the
@@ -36,6 +42,18 @@ All notable changes to Mentat.
   `MOVEFILE_WRITE_THROUGH` semantics.
 
 ### Changed
+- Agent Console persistence now cuts over once from validated legacy history
+  and thereafter reads and writes SQLite only. The Hermes compatibility bridge
+  reuses preallocated Mentat Run IDs; restart ambiguity becomes durable
+  `unknown` state and is never automatically resubmitted. Direct active legacy
+  Console Runs become `interrupted`, while adapters with durable private runtime
+  references remain reconcilable.
+- Dispatch claim and outcome commits now atomically revalidate Task, Agent, Run,
+  runtime, and state revisions. Reconciliation is forward-only and uses a
+  durable runtime-event cursor that survives event retention and bounded paging.
+- Private backup/restore now accepts schemas 4, 5, 6, and 7, derives schema-7
+  Run history and attachment reachability from SQLite, semantically validates
+  Run/Event/dispatch state, and still emits an exact schema-5 compatible root.
 - Routed all existing Task creation, editing, deletion, planning, recurrence,
   calendar, search, delegation, artifact, and webhook refresh workflows through
   the canonical SQLite repository without changing their public payloads.

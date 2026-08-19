@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 1C-B SQLite Task cutover active
+Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 1C-C SQLite Run/Event cutover active
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -146,8 +146,8 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 
 | Current surface | Target class | Notes |
 | --- | --- | --- |
-| Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | Redacted retained Console history; durable according to its retention policy. |
-| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment, blob, run-reference, authoritative Task repository, and Task authority receipt; live WAL/SHM remain SQLite-owned beside the database. |
+| Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | One-time Run migration source and derived backup/downgrade compatibility evidence. After the SQLite Run-authority receipt exists, no live path reads or writes it as authority. |
+| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment/blob references plus authoritative Tasks, Runs, AgentEvents, dispatch reservations/heads, retention metadata, and authority receipts; live WAL/SHM remain SQLite-owned beside the database. |
 | Canonical Mentat Agent registry | `<data-root>/private/console/agent-registry.sqlite3` | Independently versioned Agent identities and private runtime bindings; capped at 128 records and semantically validated during backup/restore. |
 | Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
 | Remote connection selection | `<data-root>/private/remote-hermes-connection-v1.json` | Schema-v2, server-only, owner-only, and atomically replaced. Stores the active mode, local label, one remembered remote label/endpoint, binding ID, and credential-source reference—but no API-key value. The historical filename is retained for compatible migration. A missing record means local mode. |
@@ -522,7 +522,11 @@ Every target class has this explicit ordinary-backup policy:
 
 The Console consistency unit must not capture a live SQLite file with unmatched
 WAL/SHM state or copy the database, history, and blobs at unrelated points in
-time. Staged/unreferenced scratch is excluded. The remote Hermes endpoint
+time. Staged/unreferenced scratch is excluded.
+Retained attachment admission is capped at 100 distinct ready blobs and 24 MiB
+of referenced bytes so valid live state remains closed under the private-unit
+backup limits; roots already beyond either boundary reject new bindings.
+The remote Hermes endpoint
 and API credential, tokens, and other credentials are excluded from ordinary
 backups even though their private storage is durable. A future secret-aware
 export would require a separately approved encrypted design.
@@ -573,9 +577,10 @@ temporary has its own previewed, confirmed cleanup path and is never silently
 deleted.
 
 Format-2 and format-3 private snapshots containing exact released Console
-schemas 4 and 5 remain supported. They are restored without rewriting the
-source archive and migrate transactionally to schema 6 on the next normal
-database open. Schema 6 adds the Task authority receipt; normal startup imports
+schemas 4, 5, and 6 remain supported. They are restored without rewriting the
+source archive and migrate transactionally to schema 7 on the next normal
+database open. Schema 6 adds the Task authority receipt; schema 7 adds canonical
+Runs, AgentEvents, and dispatch reservations. Normal startup imports
 the exact retained `tasks.json` only when that receipt is absent and the Task
 repository is empty.
 
@@ -589,7 +594,7 @@ current durable JSON documents, exact exported Tasks, retained private Console
 history/attachments/blobs, Agent registry, and a validated schema-5 Console
 database whose Task tables are empty. The exported `tasks.json` is the old
 build's sole Task authority, and any old-build changes import exactly if the
-sibling is upgraded again. The authoritative schema-6 source root remains
+sibling is upgraded again. The authoritative schema-7 source root remains
 unchanged.
 
 Connection credentials remain excluded. If the source actively selects remote

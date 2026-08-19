@@ -381,6 +381,10 @@ class HermesTransportTests(unittest.TestCase):
                 "status": "available",
                 "profiles": [{"id": "default", "name": "default"}],
             },
+        ), patch.object(
+            server,
+            "agent_console_history_is_current",
+            return_value=True,
         ), patch.object(server.threading, "Thread") as worker:
             payload, status = server.start_agent_console_run(
                 {"agent_id": "default", "prompt": "Do not queue"}
@@ -730,6 +734,10 @@ class HermesTransportTests(unittest.TestCase):
                     server,
                     "hermes_profiles_payload",
                     return_value=profiles,
+                ), patch.object(
+                    server,
+                    "agent_console_history_is_current",
+                    return_value=True,
                 ), patch.object(server.threading, "Thread") as worker:
                     payload, status = server.start_agent_console_run(
                         {

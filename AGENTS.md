@@ -101,7 +101,7 @@ ignore that file while the SQLite authority receipt exists. Use its
 `--compatible-root` mode for an actual pre-cutover build: it publishes a new
 schema-5 sibling data root whose Task tables are empty and whose exported
 `tasks.json` is the old build's sole Task authority. It must leave the
-authoritative schema-6 root unchanged. Compatible-root export must fail closed
+authoritative schema-7 root unchanged. Compatible-root export must fail closed
 while the source actively selects remote Hermes because connection credentials
 are deliberately excluded; the operator must explicitly return the source to
 local mode and reconfigure the sibling before any remote operation.

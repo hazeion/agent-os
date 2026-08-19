@@ -43,6 +43,8 @@ DEFAULT_ORPHAN_GRACE = 60 * 60
 UPLOAD_MAX_AGE = 15 * 60
 FILESYSTEM_ORPHAN_MIN_AGE = 24 * 60 * 60
 DEFAULT_GC_BATCH = 100
+MAX_RETAINED_BLOBS = 100
+MAX_RETAINED_BLOB_BYTES = 24 * 1024 * 1024
 DELETE_RETRY_BASE = 30
 DELETE_RETRY_MAX = 60 * 60
 
@@ -1152,6 +1154,23 @@ def bind_run_attachment(
                 _safe_blob_path(_blobs_root(data_dir), str(row["storage_key"]), require_exists=True)
             except (FileNotFoundError, AttachmentError, OSError) as exc:
                 raise AttachmentUnavailable("Attachment content is not available") from exc
+            retained = connection.execute(
+                "SELECT COUNT(*), COALESCE(SUM(byte_size), 0) FROM blobs WHERE id IN ("
+                "SELECT DISTINCT a.blob_id FROM run_attachments r "
+                "JOIN attachments a ON a.id = r.attachment_id)"
+            ).fetchone()
+            already_referenced = connection.execute(
+                "SELECT 1 FROM run_attachments r JOIN attachments a ON a.id = r.attachment_id "
+                "WHERE a.blob_id = ? LIMIT 1",
+                (row["blob_id"],),
+            ).fetchone()
+            retained_count = int(retained[0]) + (0 if already_referenced else 1)
+            retained_bytes = int(retained[1]) + (0 if already_referenced else int(row["byte_size"]))
+            if (
+                retained_count > MAX_RETAINED_BLOBS
+                or retained_bytes > MAX_RETAINED_BLOB_BYTES
+            ):
+                raise AttachmentUnavailable("Retained attachment capacity is exhausted")
             connection.execute(
                 "INSERT INTO run_attachments(run_id, attachment_id, direction, ordinal, created_at) "
                 "VALUES (?, ?, ?, ?, ?) "

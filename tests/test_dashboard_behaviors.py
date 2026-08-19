@@ -28,6 +28,35 @@ class DashboardBehaviorTests(unittest.TestCase):
         if name == "tasks.json":
             ensure_task_sqlite_authority(root, required_source_mode=None)
 
+    def test_orchestration_dispatch_maps_task_identity_errors_to_http_semantics(self):
+        class FailingService:
+            code = ""
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def dispatch_task(self, **_kwargs):
+                raise server.OrchestrationServiceError(self.code)
+
+        payload = {
+            "expected_revision": 1,
+            "idempotency_key": "dashboard-dispatch-key",
+        }
+        with patch.object(server, "OrchestrationService", FailingService):
+            FailingService.code = "dispatch.task_not_found"
+            missing, missing_status = server.dispatch_orchestration_task(
+                "task-missing", payload
+            )
+            FailingService.code = "dispatch.task_id_invalid"
+            malformed, malformed_status = server.dispatch_orchestration_task(
+                "bad task id", payload
+            )
+
+        self.assertEqual(missing_status, 404)
+        self.assertEqual(missing["error_code"], "dispatch.task_not_found")
+        self.assertEqual(malformed_status, 400)
+        self.assertEqual(malformed["error_code"], "dispatch.task_id_invalid")
+
     def test_agent_console_only_accepts_hermes_and_requires_a_prompt(self):
         with patch.object(server, "hermes_profiles_payload", return_value=profile_discovery()), patch.object(
             server, "hermes_console_transport", return_value=self.local_console()
@@ -89,7 +118,9 @@ class DashboardBehaviorTests(unittest.TestCase):
         try:
             with patch.object(transport, "revalidate"), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()
-            ) as popen:
+            ) as popen, patch.object(
+                server, "persist_agent_console_runs", return_value=True
+            ):
                 server.run_hermes_agent(run_id, transport)
 
             command = popen.call_args.args[0]
@@ -129,7 +160,9 @@ class DashboardBehaviorTests(unittest.TestCase):
             scanner.chmod(0o700)
             with patch.object(server, "HERMES_HOME", hermes_home), patch.object(
                 server.subprocess, "Popen", return_value=CompletedHermesProcess()
-            ) as popen:
+            ) as popen, patch.object(
+                server, "persist_agent_console_runs", return_value=True
+            ):
                 transport = server.local_hermes_console_transport(
                     TransportBinding("local", "Local Hermes", "local-default"),
                     command_path="/tmp/hermes",
@@ -827,6 +860,62 @@ class DashboardBehaviorTests(unittest.TestCase):
         empty_transition_guard = app_js.index("if (state.taskEditorMode === 'create' && !state.projects.length) {", render_start)
         editor_render = app_js.index("const editorActive =", render_start)
         self.assertLess(empty_transition_guard, editor_render)
+
+    def test_task_update_preserves_the_exact_maximum_length_identifier(self):
+        task_id = "task@" + ("x" * 155)
+        existing = {
+            "id": task_id,
+            "title": "Wide identity",
+            "project": "Mentat",
+            "status": "todo",
+            "priority": "medium",
+            "created_at": "2026-08-18T12:00:00+00:00",
+            "updated_at": "2026-08-18T12:00:00+00:00",
+        }
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_json(root, "projects.json", [{"id": "project-1", "name": "Mentat"}])
+            self.write_json(root, "tasks.json", [existing])
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "CONFIGURED_DATA_DIR", root
+            ):
+                payload, status = server.handle_post_route(
+                    f"/api/tasks/{task_id}",
+                    {"title": "Edited wide identity", "project": "Mentat"},
+                )
+                stored = server.read_json_file("tasks.json", [])
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task"]["id"], task_id)
+        self.assertEqual(stored[0]["id"], task_id)
+
+    def test_task_dependency_validation_keeps_ids_that_share_eighty_characters_distinct(self):
+        shared = "task" + ("x" * 76)
+        dependency_id = shared + "a"
+        task_id = shared + "b"
+        tasks = [
+            {"id": dependency_id, "title": "Dependency", "project": "Mentat"},
+            {"id": task_id, "title": "Dependent", "project": "Mentat"},
+        ]
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_json(root, "projects.json", [{"id": "project-1", "name": "Mentat"}])
+            self.write_json(root, "tasks.json", tasks)
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "CONFIGURED_DATA_DIR", root
+            ):
+                payload, status = server.handle_post_route(
+                    f"/api/tasks/{task_id}",
+                    {
+                        "title": "Dependent",
+                        "project": "Mentat",
+                        "depends_on": [dependency_id],
+                    },
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task"]["id"], task_id)
+        self.assertEqual(payload["task"]["depends_on"], [dependency_id])
 
 
 if __name__ == "__main__":
