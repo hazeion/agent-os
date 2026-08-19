@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "gate": "mentat-local-desktop",
+  "lighthouse_version": "13.4.1",
+  "audited_at": "2026-08-19T04:59:28.356Z",
+  "url": "http://127.0.0.1:8891/",
+  "environment": {
+    "fixture": "fresh owner-private Mentat data with empty Hermes and Obsidian roots",
+    "hermes_command": "/usr/bin/false",
+    "mode": "desktop",
+    "throttling_method": "provided"
+  },
+  "category_scores": {
+    "performance": 100,
+    "accessibility": 100,
+    "best_practices": 100,
+    "seo": 100
+  },
+  "metrics": {
+    "first_contentful_paint_ms": 247.626,
+    "largest_contentful_paint_ms": 343.267,
+    "total_blocking_time_ms": 0,
+    "cumulative_layout_shift": 0.02783394395922715
+  },
+  "full_report_sha256": "1ba21c53a2fd74f45430acdc17972124648e6e8f81d8b0794b961da1508b7485"
+}

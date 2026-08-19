@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 import json
 import io
 import os
@@ -14,24 +15,36 @@ from unittest.mock import patch
 import zipfile
 
 import data_backup_restore
+import agent_console_attachments
 import data_layout
 import data_schema
 import json_store
 import private_console_migration
 import private_console_unit
+import run_repository
 from agent_registry import AgentRegistry
 from agent_console_attachments import (
     AttachmentError,
+    AttachmentUnavailable,
+    MAX_RETAINED_BLOBS,
     bind_run_attachment,
     create_attachment,
     resolve_blob_path,
 )
+from agent_runtime import AgentEvent, AgentEventType
 from agent_run_history import save_run_summaries
 from private_console_migration import migrate_private_console, preview_private_console_migration
 from private_console_unit import capture_private_console_unit
 from private_state import history_path, private_state_lock
 from mentat_db import SCHEMA_VERSION as DATABASE_SCHEMA_VERSION, MentatDatabaseError, connect
+from run_repository import (
+    RunRepository,
+    runtime_binding_digest,
+    save_authoritative_run_summaries,
+)
+from tests.sqlite_authority_support import ensure_run_sqlite_authority
 from runtime_config import AppConfig, prepare_data_root_for_startup
+from task_repository import TaskRepository, TaskSourceSnapshot
 
 
 THREAD_TIMEOUT_SECONDS = 15
@@ -83,9 +96,39 @@ class PrivateConsoleStateTests(unittest.TestCase):
                     connection.execute(f"DROP INDEX {name}")
                 connection.execute("DROP TABLE mentat_task_dependencies")
                 connection.execute("DROP TABLE mentat_task_tags")
+                connection.execute("DROP TABLE mentat_agent_events")
+                connection.execute("DROP TABLE mentat_dispatch_reservations")
+                connection.execute("DROP TABLE mentat_task_dispatch_heads")
+                connection.execute("DROP TABLE mentat_runs")
+                connection.execute("DROP TABLE mentat_run_store_state")
                 connection.execute("DROP TABLE mentat_tasks")
                 connection.execute("DROP TABLE mentat_task_store_state")
-                connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6)")
+                connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6, 7)")
+                connection.commit()
+            finally:
+                connection.close()
+            return private_console_unit.PrivateConsoleUnit(
+                history_raw=unit.history_raw,
+                database_raw=path.read_bytes(),
+                registry_database_raw=unit.registry_database_raw,
+                blobs=unit.blobs,
+            )
+
+    def schema_six_unit(
+        self,
+        unit: private_console_unit.PrivateConsoleUnit,
+    ) -> private_console_unit.PrivateConsoleUnit:
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mentat.sqlite3"
+            path.write_bytes(unit.database_raw)
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("DROP TABLE mentat_agent_events")
+                connection.execute("DROP TABLE mentat_dispatch_reservations")
+                connection.execute("DROP TABLE mentat_task_dispatch_heads")
+                connection.execute("DROP TABLE mentat_runs")
+                connection.execute("DROP TABLE mentat_run_store_state")
+                connection.execute("DELETE FROM schema_migrations WHERE version = 7")
                 connection.commit()
             finally:
                 connection.close()
@@ -511,6 +554,403 @@ class PrivateConsoleStateTests(unittest.TestCase):
             self.assertEqual(run["started_at"], "2026-07-18T01:00:10+00:00")
             self.assertIsNone(run["completed_at"])
 
+    def test_schema_seven_backup_derives_runs_from_sqlite_and_rejects_event_corruption(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            connection = connect(root)
+            connection.close()
+            save_run_summaries(
+                history_path(root),
+                [{
+                    "id": "run_sqlite_backup",
+                    "status": "completed",
+                    "created_at": "2026-08-18T01:00:00+00:00",
+                    "updated_at": "2026-08-18T01:01:00+00:00",
+                    "completed_at": "2026-08-18T01:01:00+00:00",
+                }],
+                data_root=root,
+            )
+            ensure_run_sqlite_authority(root, history_path(root))
+            connection = connect(root)
+            try:
+                RunRepository(connection).append_event(
+                    AgentEvent(
+                        id="event-backup-corrupt",
+                        run_id="run_sqlite_backup",
+                        sequence=1,
+                        type=AgentEventType.MESSAGE,
+                        occurred_at="2026-08-18T01:00:30+00:00",
+                        summary="Valid event",
+                    )
+                )
+            finally:
+                connection.close()
+            history_path(root).write_text(
+                json.dumps({"schema_version": 3, "runs": []}), encoding="utf-8"
+            )
+
+            unit = capture_private_console_unit(root)
+            history = json.loads(unit.history_raw)
+            self.assertEqual(unit.run_count, 1)
+            self.assertEqual([item["id"] for item in history["runs"]], ["run_sqlite_backup"])
+
+            database = Path(temporary) / "corrupt.sqlite3"
+            database.write_bytes(unit.database_raw)
+            connection = sqlite3.connect(database)
+            connection.row_factory = sqlite3.Row
+            try:
+                row = connection.execute(
+                    "SELECT * FROM mentat_agent_events WHERE id = 'event-backup-corrupt'"
+                ).fetchone()
+                record = {
+                    key: row[key]
+                    for key in (
+                        "id", "run_id", "sequence", "event_type", "source_type",
+                        "source_key", "occurred_at", "summary", "content", "metrics_json",
+                        "data_json",
+                    )
+                }
+                record["source_type"] = "cost"
+                payload_digest = hashlib.sha256(
+                    run_repository._canonical_json(
+                        record, maximum=32_768, code="event.invalid"
+                    ).encode("ascii")
+                ).hexdigest()
+                connection.execute(
+                    "UPDATE mentat_agent_events SET source_type = 'cost', payload_digest = ? "
+                    "WHERE id = 'event-backup-corrupt'",
+                    (payload_digest,),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            corrupted = private_console_unit.PrivateConsoleUnit(
+                history_raw=unit.history_raw,
+                database_raw=database.read_bytes(),
+                registry_database_raw=unit.registry_database_raw,
+                blobs=unit.blobs,
+            )
+            with self.assertRaisesRegex(
+                private_console_unit.PrivateConsoleUnitError,
+                "private_run_repository_invalid",
+            ):
+                private_console_unit.validate_private_console_unit(corrupted)
+
+    def test_schema_seven_backup_bounds_legacy_projection_without_dropping_canonical_runs(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            ensure_run_sqlite_authority(root, history_path(root))
+            runs = []
+            for run_number in range(120):
+                run_id = f"run_backup_bound_{run_number:03d}"
+                runs.append(
+                    {
+                        "id": run_id,
+                        "runtime_type": "hermes",
+                        "agent_id": "default",
+                        "agent_name": "Hermes",
+                        "status": "completed",
+                        "response": "R" * 1_000,
+                        "created_at": f"2026-08-18T01:{run_number // 60:02d}:{run_number % 60:02d}+00:00",
+                        "updated_at": f"2026-08-18T02:{run_number // 60:02d}:{run_number % 60:02d}+00:00",
+                        "completed_at": f"2026-08-18T02:{run_number // 60:02d}:{run_number % 60:02d}+00:00",
+                        "events": [
+                            {
+                                "id": f"event_backup_{run_number}_{sequence}",
+                                "run_id": run_id,
+                                "sequence": sequence,
+                                "cursor": sequence,
+                                "type": "status",
+                                "kind": "status",
+                                "timestamp": f"2026-08-18T03:{sequence // 60:02d}:{sequence % 60:02d}+00:00",
+                                "display_text": "Progress " + ("x" * 480),
+                                "message": "Progress " + ("x" * 480),
+                                "data": {},
+                            }
+                            for sequence in range(1, 41)
+                        ],
+                    }
+                )
+            save_authoritative_run_summaries(root, runs)
+
+            unit = capture_private_console_unit(root)
+            validated = private_console_unit.validate_private_console_unit(unit)
+            projected = json.loads(unit.history_raw)
+
+        self.assertEqual(validated.run_count, 120)
+        self.assertLessEqual(len(unit.history_raw), private_console_unit.MAX_HISTORY_BYTES)
+        self.assertEqual(len(projected["runs"]), 120)
+        self.assertTrue(all(item["events"] == [] for item in projected["runs"]))
+
+    def test_schema_seven_capture_ignores_malformed_stale_legacy_history(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = self.make_current(base, "source", "source")
+            connection = connect(root)
+            try:
+                raw = b"[]\n"
+                connection.execute("BEGIN IMMEDIATE")
+                TaskRepository(
+                    connection, allow_pre_authority_schema=True
+                ).claim_authority(
+                    TaskSourceSnapshot(
+                        raw=raw,
+                        tasks=(),
+                        sha256=hashlib.sha256(raw).hexdigest(),
+                        identity=(1, 1, len(raw), 1),
+                    )
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            ensure_run_sqlite_authority(root, history_path(root))
+            stale = history_path(root)
+            stale.write_text("{malformed stale history", encoding="utf-8")
+            if os.name != "nt":
+                stale.chmod(0o600)
+
+            unit = capture_private_console_unit(root)
+            payload = json.loads(unit.history_raw)
+
+        self.assertEqual(payload, {"runs": [], "schema_version": 3})
+
+    def test_maximum_terminal_dispatch_retention_remains_backup_capable(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = self.make_current(base, "source", "source")
+            (root / "tasks.json").write_text("[]\n", encoding="utf-8")
+            if os.name == "posix":
+                (root / "tasks.json").chmod(0o600)
+            ensure_run_sqlite_authority(root, history_path(root))
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                tasks = [
+                    {
+                        "id": f"task-backup-boundary-{index:03d}",
+                        "title": f"Boundary task {index}",
+                        "description": "x" * 20_000,
+                        "project": "Mentat",
+                        "status": "todo",
+                        "priority": "medium",
+                        "assignee": None,
+                        "assigned_agent_id": "agent-main",
+                        "due_date": None,
+                        "source": "test",
+                        "tags": [],
+                        "review_required": False,
+                        "needs_attention": False,
+                        "created_at": "2026-08-18T12:00:00+00:00",
+                        "updated_at": "2026-08-18T12:00:00+00:00",
+                        "completed_at": None,
+                        "required_capabilities": ["run.start"],
+                        "acceptance_criteria": ["Retain exact execution input"],
+                    }
+                    for index in range(251)
+                ]
+                connection.execute("DELETE FROM mentat_task_dependencies")
+                connection.execute("DELETE FROM mentat_task_tags")
+                connection.execute("DELETE FROM mentat_tasks")
+                connection.commit()
+                task_repository = TaskRepository(
+                    connection, allow_pre_authority_schema=True
+                )
+                task_repository.insert_collection(tasks)
+                normalized_tasks = tuple(task_repository.list_tasks())
+                stored_tasks = {task["id"]: task for task in normalized_tasks}
+                digest = runtime_binding_digest(
+                    agent_id="agent-main",
+                    runtime_type="hermes",
+                    runtime_config_id="config-main",
+                    runtime_agent_ref="profile-main",
+                    capabilities=("run.start",),
+                )
+                for index in range(251):
+                    task_id = f"task-backup-boundary-{index:03d}"
+                    task = stored_tasks[task_id]
+                    reservation = repository.reserve_dispatch(
+                        idempotency_key=f"boundary-idempotency-key-{index:03d}",
+                        dispatch_id=f"dispatch-boundary-{index:03d}",
+                        run_id=f"run_boundary_{index:03d}",
+                        task=task,
+                        task_revision=1,
+                        agent_id="agent-main",
+                        runtime_type="hermes",
+                        runtime_config_id="config-main",
+                        binding_digest=digest,
+                        capabilities=("run.start",),
+                    )
+                    repository.reject_reserved_dispatch(
+                        dispatch_id=reservation.dispatch_id,
+                        failure_code="dispatch.test_rejection",
+                    )
+                repository.validate()
+            finally:
+                connection.close()
+
+            unit = capture_private_console_unit(root)
+            retained_path = Path(temporary) / "retained-boundary.sqlite3"
+            retained_path.write_bytes(unit.database_raw)
+            retained_connection = sqlite3.connect(retained_path)
+            try:
+                retained_counts = (
+                    retained_connection.execute(
+                        "SELECT COUNT(*) FROM mentat_runs"
+                    ).fetchone()[0],
+                    retained_connection.execute(
+                        "SELECT COUNT(*) FROM mentat_dispatch_reservations"
+                    ).fetchone()[0],
+                    retained_connection.execute(
+                        "SELECT COUNT(*) FROM mentat_dispatch_reservations d "
+                        "WHERE NOT EXISTS (SELECT 1 FROM mentat_runs r WHERE r.id = d.run_id)"
+                    ).fetchone()[0],
+                )
+            finally:
+                retained_connection.close()
+            corrupted_path = Path(temporary) / "corrupt-run.sqlite3"
+            corrupted_path.write_bytes(unit.database_raw)
+            corrupted_connection = sqlite3.connect(corrupted_path)
+            try:
+                corrupted_connection.execute(
+                    "UPDATE mentat_runs SET runtime_type = '../invalid' "
+                    "WHERE id = 'run_boundary_250'"
+                )
+                corrupted_connection.commit()
+            finally:
+                corrupted_connection.close()
+            corrupted_unit = private_console_unit.PrivateConsoleUnit(
+                history_raw=unit.history_raw,
+                database_raw=corrupted_path.read_bytes(),
+                registry_database_raw=unit.registry_database_raw,
+                blobs=unit.blobs,
+            )
+            with self.assertRaisesRegex(
+                private_console_unit.PrivateConsoleUnitError,
+                "private_run_repository_invalid",
+            ):
+                private_console_unit.validate_private_console_unit(corrupted_unit)
+
+            capability_path = Path(temporary) / "corrupt-capability.sqlite3"
+            capability_path.write_bytes(unit.database_raw)
+            capability_connection = sqlite3.connect(capability_path)
+            capability_connection.row_factory = sqlite3.Row
+            try:
+                run_row = capability_connection.execute(
+                    "SELECT * FROM mentat_runs WHERE id = 'run_boundary_250'"
+                ).fetchone()
+                snapshot = json.loads(run_row["task_snapshot_json"])
+                snapshot["required_capabilities"] = ["capability.not_bound"]
+                snapshot_json = run_repository._canonical_json(
+                    snapshot,
+                    maximum=run_repository.TASK_SNAPSHOT_LIMIT,
+                    code="dispatch.task_invalid",
+                )
+                request_digest = run_repository.dispatch_request_digest(
+                    task=snapshot,
+                    task_revision=int(run_row["task_revision"]),
+                    agent_id=str(run_row["agent_id"]),
+                    runtime_type=str(run_row["runtime_type"]),
+                    runtime_config_id=str(run_row["runtime_config_id"]),
+                    capabilities=("run.start",),
+                )
+                capability_connection.execute(
+                    "UPDATE mentat_runs SET task_snapshot_json = ? WHERE id = ?",
+                    (snapshot_json, run_row["id"]),
+                )
+                capability_connection.execute(
+                    "UPDATE mentat_dispatch_reservations SET request_digest = ? WHERE run_id = ?",
+                    (request_digest, run_row["id"]),
+                )
+                capability_connection.execute(
+                    "UPDATE mentat_task_dispatch_heads SET request_digest = ? WHERE run_id = ?",
+                    (request_digest, run_row["id"]),
+                )
+                capability_connection.commit()
+            finally:
+                capability_connection.close()
+            capability_unit = private_console_unit.PrivateConsoleUnit(
+                history_raw=unit.history_raw,
+                database_raw=capability_path.read_bytes(),
+                registry_database_raw=unit.registry_database_raw,
+                blobs=unit.blobs,
+            )
+            with self.assertRaisesRegex(
+                private_console_unit.PrivateConsoleUnitError,
+                "private_run_repository_invalid",
+            ):
+                private_console_unit.validate_private_console_unit(capability_unit)
+
+        self.assertEqual(unit.run_count, 250)
+        self.assertEqual(retained_counts, (250, 251, 1))
+        self.assertLessEqual(
+            len(unit.database_raw), private_console_unit.MAX_DATABASE_BYTES
+        )
+
+    def test_referenced_blob_count_boundary_remains_backup_capable(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            ensure_run_sqlite_authority(root, history_path(root))
+            runs = [
+                {
+                    "id": f"run_blob_count_{index:03d}",
+                    "status": "completed",
+                    "created_at": f"2026-08-18T12:{index // 60:02d}:{index % 60:02d}+00:00",
+                    "completed_at": f"2026-08-18T12:{index // 60:02d}:{index % 60:02d}+00:00",
+                }
+                for index in range(MAX_RETAINED_BLOBS + 1)
+            ]
+            save_authoritative_run_summaries(root, runs)
+            for index in range(MAX_RETAINED_BLOBS):
+                attachment = create_attachment(
+                    root,
+                    original_name=f"count-{index}.txt",
+                    content=f"blob-{index}".encode(),
+                )
+                bind_run_attachment(root, attachment["id"], runs[index]["id"])
+            unit = capture_private_console_unit(root)
+            overflow = create_attachment(
+                root, original_name="count-overflow.txt", content=b"overflow"
+            )
+            with self.assertRaisesRegex(AttachmentUnavailable, "capacity"):
+                bind_run_attachment(
+                    root, overflow["id"], runs[MAX_RETAINED_BLOBS]["id"]
+                )
+
+        self.assertEqual(len(unit.blobs), MAX_RETAINED_BLOBS)
+
+    def test_referenced_blob_byte_boundary_remains_backup_capable(self):
+        with TemporaryDirectory() as temporary, patch.object(
+            agent_console_attachments, "MAX_RETAINED_BLOB_BYTES", 10
+        ), patch.object(private_console_unit, "MAX_RETAINED_BLOB_BYTES", 10):
+            root = Path(temporary) / "data"
+            ensure_run_sqlite_authority(root, history_path(root))
+            blob_count = 2
+            runs = [
+                {
+                    "id": f"run_blob_bytes_{index:02d}",
+                    "status": "completed",
+                    "created_at": f"2026-08-18T13:00:{index:02d}+00:00",
+                    "completed_at": f"2026-08-18T13:00:{index:02d}+00:00",
+                }
+                for index in range(blob_count + 1)
+            ]
+            save_authoritative_run_summaries(root, runs)
+            for index in range(blob_count):
+                attachment = create_attachment(
+                    root,
+                    original_name=f"bytes-{index}.txt",
+                    content=bytes((65 + index,)) * 5,
+                )
+                bind_run_attachment(root, attachment["id"], runs[index]["id"])
+            unit = capture_private_console_unit(root)
+            overflow = create_attachment(
+                root, original_name="bytes-overflow.txt", content=b"x"
+            )
+            with self.assertRaisesRegex(AttachmentUnavailable, "capacity"):
+                bind_run_attachment(root, overflow["id"], runs[-1]["id"])
+
+        self.assertEqual(sum(len(blob.raw) for blob in unit.blobs), 10)
+
     def test_v2_restore_replaces_private_unit_and_v1_preserves_it(self):
         with TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -650,6 +1090,39 @@ class PrivateConsoleStateTests(unittest.TestCase):
                         )
                     finally:
                         migrated.close()
+
+    def test_schema_six_backup_restores_and_migrates_to_schema_seven(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source-six", "source")
+            documents = data_backup_restore._load_live_documents(source, None)
+            schema_six = self.schema_six_unit(capture_private_console_unit(source))
+            private_console_unit.validate_private_console_unit(schema_six)
+            raw = data_backup_restore._build_backup(documents, schema_six, format_version=3)
+            path = base / data_backup_restore._backup_name(
+                documents, schema_six, format_version=3
+            )
+            path.write_bytes(raw)
+            if os.name == "posix":
+                path.chmod(0o600)
+            target = self.make_current(base, "target-six", "target")
+            preview = data_backup_restore.preview_durable_restore(target, path)
+            result = data_backup_restore.restore_durable_backup(
+                target,
+                path,
+                confirmation_token=preview.confirmation_token or "",
+            )
+            self.assertEqual(result.status, "restored")
+            migrated = connect(target)
+            try:
+                self.assertEqual(
+                    migrated.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0],
+                    7,
+                )
+            finally:
+                migrated.close()
 
     def test_upgrade_resumes_genuine_protocol_2_restore_receipts(self):
         with TemporaryDirectory() as temporary:

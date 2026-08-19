@@ -313,14 +313,26 @@ class FakeRunClient:
 
 class RemoteConsoleRunTests(unittest.TestCase):
     def setUp(self):
+        self.data_directory = tempfile.TemporaryDirectory()
+        self.data_root = Path(self.data_directory.name) / "data"
+        self.data_dir_patch = patch.object(server, "DATA_DIR", self.data_root)
+        self.configured_data_dir_patch = patch.object(
+            server, "CONFIGURED_DATA_DIR", self.data_root
+        )
+        self.data_dir_patch.start()
+        self.configured_data_dir_patch.start()
         server.AGENT_CONSOLE_RUNS.clear()
         server.AGENT_CONSOLE_PROCESSES.clear()
         server.AGENT_CONSOLE_REMOTE_WORKERS.clear()
+        server.load_agent_console_runs()
 
     def tearDown(self):
         server.AGENT_CONSOLE_RUNS.clear()
         server.AGENT_CONSOLE_PROCESSES.clear()
         server.AGENT_CONSOLE_REMOTE_WORKERS.clear()
+        self.configured_data_dir_patch.stop()
+        self.data_dir_patch.stop()
+        self.data_directory.cleanup()
 
     def adapter(self, client=None, *, binding_id="b" * 32):
         return RemoteHermesConsoleTransport(

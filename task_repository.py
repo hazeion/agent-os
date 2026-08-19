@@ -644,9 +644,9 @@ class TaskRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise TaskRepositoryError("task_repository.schema_unsupported") from exc
         allowed_versions = (
-            {DATABASE_SCHEMA_VERSION - 1, DATABASE_SCHEMA_VERSION}
+            {5, 6, DATABASE_SCHEMA_VERSION}
             if self.allow_pre_authority_schema
-            else {DATABASE_SCHEMA_VERSION}
+            else {6, DATABASE_SCHEMA_VERSION}
         )
         if version not in allowed_versions:
             raise TaskRepositoryError("task_repository.schema_unsupported")
@@ -1002,6 +1002,17 @@ class TaskRepository:
                 return result
 
             current_by_id = {task["id"]: task for task in current}
+            removed_ids = tuple(sorted(set(current_by_id) - {task["id"] for task in normalized}))
+            if removed_ids:
+                placeholders = ",".join("?" for _ in removed_ids)
+                active = self.connection.execute(
+                    f"SELECT task_id FROM mentat_runs WHERE task_id IN ({placeholders}) "
+                    "AND status NOT IN ('completed', 'failed', 'cancelled', 'stopped', 'interrupted') "
+                    "LIMIT 1",
+                    removed_ids,
+                ).fetchone()
+                if active is not None:
+                    raise TaskRepositoryConflict("task_repository.active_run")
             current_order = {
                 task["id"]: sort_order for sort_order, task in enumerate(current)
             }
@@ -1326,7 +1337,7 @@ def _inspect_destination(data_dir: Path) -> TaskDestinationSnapshot:
             schema_version = max(versions, default=0)
             if schema_version > DATABASE_SCHEMA_VERSION:
                 raise TaskRepositoryError("task_repository.schema_newer")
-            if schema_version == DATABASE_SCHEMA_VERSION - 1:
+            if schema_version in {5, 6}:
                 task_count = validate_repository_connection(connection)
                 return TaskDestinationSnapshot(
                     "occupied" if task_count else "requires_schema_migration",
@@ -1957,7 +1968,11 @@ def _fsync_publication_parent(parent_descriptor: int | None) -> None:
 
 
 def _schema5_private_unit(unit):
-    from private_console_unit import PrivateConsoleUnit, validate_private_console_unit
+    from private_console_unit import (
+        PrivateConsoleUnit,
+        _history_run_ids,
+        validate_private_console_unit,
+    )
 
     with TemporaryDirectory(prefix="mentat-schema5-export-") as temporary:
         path = Path(temporary) / "mentat.sqlite3"
@@ -1975,13 +1990,41 @@ def _schema5_private_unit(unit):
                 )
                 if version != DATABASE_SCHEMA_VERSION:
                     raise TaskRepositoryError("task_export.schema_unsupported")
+                retained_run_ids = _history_run_ids(unit.history_raw)
+                if retained_run_ids:
+                    placeholders = ",".join("?" for _ in retained_run_ids)
+                    connection.execute(
+                        f"DELETE FROM run_attachments WHERE run_id NOT IN ({placeholders})",
+                        retained_run_ids,
+                    )
+                else:
+                    connection.execute("DELETE FROM run_attachments")
+                connection.execute(
+                    "DELETE FROM attachments WHERE id NOT IN "
+                    "(SELECT attachment_id FROM run_attachments)"
+                )
+                connection.execute(
+                    "DELETE FROM blobs WHERE id NOT IN "
+                    "(SELECT blob_id FROM attachments WHERE blob_id IS NOT NULL)"
+                )
+                retained_storage_keys = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT storage_key FROM blobs"
+                    )
+                }
+                connection.execute("DROP TABLE mentat_agent_events")
+                connection.execute("DROP TABLE mentat_dispatch_reservations")
+                connection.execute("DROP TABLE mentat_task_dispatch_heads")
+                connection.execute("DROP TABLE mentat_runs")
+                connection.execute("DROP TABLE mentat_run_store_state")
                 connection.execute("DELETE FROM mentat_task_dependencies")
                 connection.execute("DELETE FROM mentat_task_tags")
                 connection.execute("DELETE FROM mentat_tasks")
                 connection.execute("DROP TABLE mentat_task_store_state")
                 connection.execute(
-                    "DELETE FROM schema_migrations WHERE version = ?",
-                    (DATABASE_SCHEMA_VERSION,),
+                    "DELETE FROM schema_migrations WHERE version IN (?, ?)",
+                    (DATABASE_SCHEMA_VERSION - 1, DATABASE_SCHEMA_VERSION),
                 )
             connection.execute("VACUUM")
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -1997,7 +2040,11 @@ def _schema5_private_unit(unit):
             history_raw=unit.history_raw,
             database_raw=database_raw,
             registry_database_raw=unit.registry_database_raw,
-            blobs=unit.blobs,
+            blobs=tuple(
+                blob
+                for blob in unit.blobs
+                if blob.storage_key in retained_storage_keys
+            ),
         )
     )
 
@@ -2253,14 +2300,14 @@ def validate_repository_connection(
     schema_version = int(row[0] or 0)
     repository = TaskRepository(
         connection,
-        allow_pre_authority_schema=schema_version == DATABASE_SCHEMA_VERSION - 1,
+        allow_pre_authority_schema=schema_version == 5,
     )
     violations = connection.execute("PRAGMA foreign_key_check").fetchall()
     if violations:
         raise TaskRepositoryError("task_repository.references_invalid")
     tasks = repository.list_tasks()
     normalize_task_collection(tasks)
-    if require_authority_consistency and schema_version == DATABASE_SCHEMA_VERSION:
+    if require_authority_consistency and schema_version >= 6:
         receipt = repository.authority_receipt()
         if tasks and receipt is None:
             raise TaskRepositoryError("task_repository.authority_missing")

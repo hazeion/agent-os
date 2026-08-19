@@ -46,6 +46,24 @@ class DailyWorkflowTests(unittest.TestCase):
         self.assertEqual(by_id["task-b"]["manual_rank"], 0)
         self.assertEqual(by_id["task-a"]["manual_rank"], 1)
 
+    def test_today_reorder_accepts_the_exact_maximum_length_task_id(self):
+        task_id = "task@" + ("r" * 155)
+        tasks = [
+            {"id": "task-a", "title": "A", "planned_for_today": True, "manual_rank": 1},
+            {"id": task_id, "title": "Wide", "planned_for_today": True, "manual_rank": 2},
+        ]
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_json(root, "tasks.json", tasks)
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "CONFIGURED_DATA_DIR", root
+            ):
+                payload, status = server.reorder_today_task(task_id, {"direction": "up"})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task"]["id"], task_id)
+        self.assertEqual(payload["task"]["manual_rank"], 1)
+
     def test_calendar_event_creates_only_project_owned_task_link(self):
         event = {
             "id": "event-1",

@@ -10,6 +10,9 @@ import server
 from hermes_transport import TransportBinding
 from agent_console_artifacts import prepare_export_directory
 from agent_console_attachments import resolve_blob_path
+from private_state import history_path
+from run_repository import load_authoritative_run_summaries
+from tests.sqlite_authority_support import ensure_run_sqlite_authority
 
 
 class CompletedHermesProcess:
@@ -53,6 +56,7 @@ class AgentConsoleArtifactIntegrationTests(unittest.TestCase):
     def test_completed_run_discovers_binds_and_persists_owned_artifact(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
+            ensure_run_sqlite_authority(data_dir, history_path(data_dir))
             profile = {"id": "default", "name": "Hermes", "model": "test/model", "available": True}
             with patch.object(server, "DATA_DIR", data_dir), patch.object(server, "CONFIGURED_DATA_DIR", data_dir), patch.object(
                 server, "AGENT_CONSOLE_HISTORY_LOADED", True
@@ -86,9 +90,7 @@ class AgentConsoleArtifactIntegrationTests(unittest.TestCase):
 
             run = server.agent_console_snapshot(server.AGENT_CONSOLE_RUNS[run_id])
             artifact = run["artifacts"][0]
-            stored_history = json.loads(
-                (data_dir / "private" / "console" / "agent-console-runs.json").read_text(encoding="utf-8")
-            )["runs"][0]
+            stored_history = load_authoritative_run_summaries(data_dir)[0]
 
             self.assertEqual(status, 202)
             self.assertEqual(run["status"], "completed")
@@ -98,6 +100,7 @@ class AgentConsoleArtifactIntegrationTests(unittest.TestCase):
             self.assertEqual(resolve_blob_path(data_dir, artifact["id"]).read_text(), "print('artifact')\n")
             self.assertFalse(export_dir.exists())
             self.assertEqual(stored_history["artifacts"][0]["id"], artifact["id"])
+            self.assertFalse(history_path(data_dir).exists())
             self.assertNotIn(str(data_dir), json.dumps(run))
             self.assertIn("export_directory", popen.call_args.args[0][5])
 

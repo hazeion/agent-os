@@ -25,6 +25,9 @@ ERROR_EXCERPT_LIMIT = 1_000
 EVENT_TEXT_LIMIT = 500
 ACTIVE_STATUSES = {"queued", "running", "cancelling"}
 ATTACHMENT_LIMIT = 25
+ATTACHMENT_STATES = {
+    "staged", "attached", "orphaned", "pending_delete", "deleting", "missing"
+}
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+"),
@@ -41,6 +44,12 @@ _SECRET_PATTERNS = (
 )
 _SECRET_KEY_PATTERN = re.compile(r"(?i)(api[_-]?key|token|password|secret|credential|authorization|auth)")
 _ORCHESTRATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_TASK_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}")
+
+
+def _valid_binding_identifier(name: str, value: Any) -> bool:
+    pattern = _TASK_ID_PATTERN if name == "task_id" else _ORCHESTRATION_ID_PATTERN
+    return isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
 def _valid_runtime_binding_event(item: Any) -> bool:
@@ -48,8 +57,7 @@ def _valid_runtime_binding_event(item: Any) -> bool:
         return False
     data = item.get("data")
     return isinstance(data, dict) and all(
-        isinstance(data.get(name), str)
-        and _ORCHESTRATION_ID_PATTERN.fullmatch(data[name])
+        _valid_binding_identifier(name, data.get(name))
         for name in ("mentat_agent_id", "task_id")
     )
 
@@ -170,23 +178,51 @@ def normalize_attachments(raw_attachments: Any) -> list[dict]:
         kind = str(item.get("kind") or "")
         if kind not in {"image", "text"}:
             continue
-        mime_type = str(item.get("mime_type") or "")[:160]
+        mime_type = bounded_excerpt(item.get("mime_type") or "", 160)[0]
         if not mime_type or any(character in mime_type for character in "\r\n"):
             continue
         try:
             byte_size = max(0, int(item.get("byte_size") or 0))
         except (TypeError, ValueError):
             continue
-        name = Path(str(item.get("name") or "attachment")).name[:255] or "attachment"
+        name = bounded_excerpt(item.get("name") or "attachment", 255)[0]
+        if "/" in name or "\\" in name:
+            continue
+        name = Path(name).name
+        if not name:
+            name = "attachment"
+        state = item.get("state") or "attached"
+        if not isinstance(state, str) or state not in ATTACHMENT_STATES:
+            continue
+        timestamps: dict[str, str | None] = {}
+        for field in ("created_at", "expires_at"):
+            value = item.get(field)
+            if value is None:
+                timestamps[field] = None
+                continue
+            if not isinstance(value, str) or len(value) > 64:
+                timestamps = {}
+                break
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                timestamps = {}
+                break
+            if parsed.tzinfo is None:
+                timestamps = {}
+                break
+            timestamps[field] = value
+        if len(timestamps) != 2:
+            continue
         normalized.append({
             "id": attachment_id,
             "name": name,
             "mime_type": mime_type,
             "kind": kind,
             "byte_size": byte_size,
-            "state": str(item.get("state") or "attached")[:32],
-            "created_at": item.get("created_at"),
-            "expires_at": item.get("expires_at"),
+            "state": state,
+            "created_at": timestamps["created_at"],
+            "expires_at": timestamps["expires_at"],
             "content_url": f"/api/agent-console/attachments/{attachment_id}/content",
         })
         seen.add(attachment_id)
@@ -306,7 +342,7 @@ def summarize_run(run: dict) -> dict:
     }
     for name in ("mentat_agent_id", "task_id"):
         value = run.get(name)
-        if isinstance(value, str) and _ORCHESTRATION_ID_PATTERN.fullmatch(value):
+        if _valid_binding_identifier(name, value):
             summary[name] = value
     return summary
 
@@ -334,7 +370,13 @@ def save_run_summaries(
             write_json_atomic(path, payload, mode=0o600)
 
 
-def _chmod_verified_path(path: Path, mode: int, *, directory: bool) -> None:
+def _chmod_verified_path(
+    path: Path,
+    mode: int,
+    *,
+    directory: bool,
+    expected: os.stat_result | None = None,
+) -> None:
     """Apply a POSIX mode to an already validated path without following it."""
     if os.name == "nt":
         path.chmod(mode)
@@ -348,9 +390,17 @@ def _chmod_verified_path(path: Path, mode: int, *, directory: bool) -> None:
     descriptor = os.open(path, flags)
     try:
         details = os.fstat(descriptor)
-        expected = stat.S_ISDIR(details.st_mode) if directory else stat.S_ISREG(details.st_mode)
-        if not expected:
+        type_valid = stat.S_ISDIR(details.st_mode) if directory else stat.S_ISREG(details.st_mode)
+        if not type_valid:
             raise OSError("History path has an unsupported file type")
+        if not directory and details.st_nlink != 1:
+            raise OSError("History path has an unsafe link count")
+        if expected is not None and (
+            details.st_dev != expected.st_dev
+            or details.st_ino != expected.st_ino
+            or stat.S_IFMT(details.st_mode) != stat.S_IFMT(expected.st_mode)
+        ):
+            raise OSError("History path changed during permission repair")
         os.fchmod(descriptor, mode)
     finally:
         os.close(descriptor)
@@ -394,7 +444,13 @@ def secure_history_permissions(path: Path, *, data_root: Path | None = None) -> 
         resolved_parent = path.parent.resolve(strict=True)
         if resolved_parent != root and root not in resolved_parent.parents:
             return False
-        _chmod_verified_path(path.parent, 0o700, directory=True)
+        parent_details = path.parent.lstat()
+        _chmod_verified_path(
+            path.parent,
+            0o700,
+            directory=True,
+            expected=parent_details,
+        )
 
         if path.is_symlink():
             return False
@@ -404,10 +460,12 @@ def secure_history_permissions(path: Path, *, data_root: Path | None = None) -> 
             return True
         if not stat.S_ISREG(details.st_mode):
             return False
+        if details.st_nlink != 1:
+            return False
         resolved_path = path.resolve(strict=True)
         if resolved_path.parent != resolved_parent:
             return False
-        _chmod_verified_path(path, 0o600, directory=False)
+        _chmod_verified_path(path, 0o600, directory=False, expected=details)
         return True
     except (OSError, NotImplementedError, RuntimeError):
         return False
@@ -465,7 +523,7 @@ def _hydrate(summary: dict) -> dict | None:
     binding: dict[str, str] = {}
     for name in ("mentat_agent_id", "task_id"):
         value = summary.get(name)
-        if isinstance(value, str) and _ORCHESTRATION_ID_PATTERN.fullmatch(value):
+        if _valid_binding_identifier(name, value):
             binding[name] = value
     if len(binding) != 2:
         for event in reversed(events):
@@ -478,9 +536,8 @@ def _hydrate(summary: dict) -> dict | None:
                 name: data.get(name) for name in ("mentat_agent_id", "task_id")
             }
             if all(
-                isinstance(value, str)
-                and _ORCHESTRATION_ID_PATTERN.fullmatch(value)
-                for value in candidate.values()
+                _valid_binding_identifier(name, value)
+                for name, value in candidate.items()
             ):
                 binding = candidate
                 break

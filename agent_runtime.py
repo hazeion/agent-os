@@ -16,7 +16,8 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 
 
-_OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
 
@@ -39,16 +40,32 @@ class TaskStatus(StrEnum):
 
 
 class RunStatus(StrEnum):
+    RESERVED = "reserved"
+    QUEUED = "queued"
+    SUBMITTING = "submitting"
     STARTING = "starting"
     RUNNING = "running"
+    CANCELLING = "cancelling"
     WAITING = "waiting"
     COMPLETED = "completed"
     FAILED = "failed"
     STOPPED = "stopped"
+    INTERRUPTED = "interrupted"
+    UNKNOWN = "unknown"
+
+
+class SubmissionDisposition(StrEnum):
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
 
 
 class AgentEventType(StrEnum):
+    RUN_CREATED = "run.created"
+    DISPATCH_RESERVED = "dispatch.reserved"
     RUN_STARTED = "run.started"
+    SUBMISSION_UNKNOWN = "submission.unknown"
+    RUN_INTERRUPTED = "run.interrupted"
     MESSAGE = "message"
     TOOL_REQUESTED = "tool.requested"
     TOOL_COMPLETED = "tool.completed"
@@ -83,6 +100,12 @@ class AgentRuntimeError(RuntimeError):
 def _require_id(value: str, label: str) -> str:
     if not isinstance(value, str) or not _OPAQUE_ID.fullmatch(value):
         raise ValueError(f"{label} must be an opaque identifier")
+    return value
+
+
+def _require_task_id(value: str, label: str = "task id") -> str:
+    if not isinstance(value, str) or not _TASK_ID.fullmatch(value):
+        raise ValueError(f"{label} must be a task identifier")
     return value
 
 
@@ -142,7 +165,7 @@ class MentatTask:
     acceptance_criteria: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "id", _require_id(self.id, "task id"))
+        object.__setattr__(self, "id", _require_task_id(self.id))
         object.__setattr__(self, "title", _bounded_text(self.title, "task title", maximum=240))
         object.__setattr__(self, "objective", _bounded_text(self.objective, "task objective", maximum=20_000))
         object.__setattr__(self, "status", TaskStatus(self.status))
@@ -175,10 +198,38 @@ class AgentRun:
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _require_id(self.id, "run id"))
         if self.task_id is not None:
-            object.__setattr__(self, "task_id", _require_id(self.task_id, "task id"))
+            object.__setattr__(self, "task_id", _require_task_id(self.task_id))
         object.__setattr__(self, "agent_id", _require_id(self.agent_id, "agent id"))
         object.__setattr__(self, "runtime_type", _require_runtime_type(self.runtime_type))
         object.__setattr__(self, "status", RunStatus(self.status))
+
+
+@dataclass(frozen=True)
+class SubmissionOutcome:
+    """Typed result of one and only one runtime submission attempt."""
+
+    disposition: SubmissionDisposition
+    run: AgentRun | None = None
+    runtime_run_ref: str | None = None
+    failure_code: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "disposition", SubmissionDisposition(self.disposition))
+        if self.disposition == SubmissionDisposition.ACCEPTED and self.run is None:
+            raise ValueError("accepted submission requires a run")
+        if self.runtime_run_ref is not None:
+            object.__setattr__(
+                self,
+                "runtime_run_ref",
+                _require_id(self.runtime_run_ref, "runtime run reference"),
+            )
+        if self.failure_code is not None:
+            if not isinstance(self.failure_code, str) or not _CAPABILITY.fullmatch(
+                self.failure_code
+            ):
+                raise ValueError("submission failure code is invalid")
+        if self.disposition == SubmissionDisposition.ACCEPTED and self.failure_code is not None:
+            raise ValueError("accepted submission cannot include a failure code")
 
 
 @dataclass(frozen=True)
@@ -236,6 +287,8 @@ class RuntimeContext:
     agent_id: str
     runtime_agent_ref: str
     task_id: str | None = None
+    mentat_run_id: str | None = None
+    dispatch_id: str | None = None
     runtime_run_ref: str | None = None
 
     def __post_init__(self) -> None:
@@ -246,7 +299,19 @@ class RuntimeContext:
             _require_id(self.runtime_agent_ref, "runtime agent reference"),
         )
         if self.task_id is not None:
-            object.__setattr__(self, "task_id", _require_id(self.task_id, "task id"))
+            object.__setattr__(self, "task_id", _require_task_id(self.task_id))
+        if self.mentat_run_id is not None:
+            object.__setattr__(
+                self,
+                "mentat_run_id",
+                _require_id(self.mentat_run_id, "Mentat run id"),
+            )
+        if self.dispatch_id is not None:
+            object.__setattr__(
+                self,
+                "dispatch_id",
+                _require_id(self.dispatch_id, "dispatch id"),
+            )
         if self.runtime_run_ref is not None:
             object.__setattr__(
                 self,
@@ -260,15 +325,25 @@ class AgentRuntime(Protocol):
     runtime_type: str
     capabilities: frozenset[str]
 
-    def start_task(self, task: MentatTask, context: RuntimeContext) -> AgentRun: ...
+    def submit_task(
+        self, task: MentatTask, context: RuntimeContext
+    ) -> SubmissionOutcome: ...
 
     def send_message(self, run_id: str, message: str) -> None: ...
 
     def stop(self, run_id: str) -> None: ...
 
-    def get_status(self, run_id: str) -> AgentRun: ...
+    def get_status(
+        self, run_id: str, *, context: RuntimeContext | None = None
+    ) -> AgentRun: ...
 
-    def stream_events(self, run_id: str, after_sequence: int = 0) -> Iterable[AgentEvent]: ...
+    def stream_events(
+        self,
+        run_id: str,
+        after_sequence: int = 0,
+        *,
+        context: RuntimeContext | None = None,
+    ) -> Iterable[AgentEvent]: ...
 
     def capabilities_for_run(self, run_id: str) -> frozenset[str]: ...
 
@@ -318,6 +393,8 @@ __all__ = [
     "MentatAgent",
     "MentatTask",
     "RunStatus",
+    "SubmissionDisposition",
+    "SubmissionOutcome",
     "RuntimeCapability",
     "RuntimeContext",
     "TaskStatus",
