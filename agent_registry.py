@@ -127,6 +127,18 @@ def _validate_database_set(
     return identities
 
 
+def _same_primary_database(
+    before: Mapping[Path, tuple[int, int]],
+    after: Mapping[Path, tuple[int, int]],
+    *,
+    path: Path,
+) -> bool:
+    """Require continuity for the durable file, not SQLite's transient sidecars."""
+
+    identity = before.get(path)
+    return identity is not None and after.get(path) == identity
+
+
 def _translate_sqlite_error(exc: sqlite3.Error) -> AgentRegistryError:
     if isinstance(exc, sqlite3.OperationalError):
         return AgentRegistryUnavailableError("agent_registry.unavailable")
@@ -200,13 +212,17 @@ def connect_registry(data_dir: Path) -> sqlite3.Connection:
         connection.execute("PRAGMA journal_mode = WAL")
         _initialize(connection)
         observed = _validate_database_set(path, parent=parent, require_mode=False)
-        if any(observed.get(candidate) != value for candidate, value in opened.items()):
+        # WAL and shared-memory sidecars may legitimately disappear or be
+        # recreated while another connection closes. Each snapshot above is
+        # still fully safety-validated; only the durable database must retain
+        # the same filesystem identity across snapshots.
+        if not _same_primary_database(opened, observed, path=path):
             raise AgentRegistryError("agent_registry.unsafe")
         if os.name != "nt":
             for candidate in observed:
                 candidate.chmod(0o600)
         secured = _validate_database_set(path, parent=parent)
-        if any(secured.get(candidate) != value for candidate, value in observed.items()):
+        if not _same_primary_database(observed, secured, path=path):
             raise AgentRegistryError("agent_registry.unsafe")
         return connection
     except sqlite3.Error as exc:

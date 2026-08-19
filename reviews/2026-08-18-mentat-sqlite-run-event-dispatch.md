@@ -571,8 +571,10 @@ post-retention mutation returns. No new legacy Console capability was added.
 | Final full suite | macOS host/loopback, Python 3.13 | Pass | 1,278 tests passed in 212.585s; 4 skipped. |
 | Final Lighthouse gate | Fresh deterministic desktop fixture; Lighthouse 13.4.1; provided throttling | Pass | Performance 100, Accessibility 100, Best Practices 100, SEO 100. FCP 247.626 ms, LCP 343.267 ms, TBT 0 ms, CLS 0.027834. Summary: `reviews/2026-08-18-mentat-sqlite-run-event-dispatch-lighthouse.json`. |
 | `python scripts/verify_release_checks.py` | Local feature branch | Not applicable locally | The script requires hosted release environment variables, an exact release SHA, and repository token; no product failure was reported. Hosted checks remain required on the ready PR. |
+| Post-merge Agent Registry race correction | macOS, Python 3.13 | Pass | The merged macOS/Python 3.11 matrix exposed a transient WAL/SHM identity race in the separately versioned Agent Registry. Primary-database identity continuity remains mandatory, while each transient sidecar snapshot is independently safety-validated. The original concurrent-capacity test passed 100 consecutive runs; all 21 Agent Registry tests passed. |
+| Post-merge corrected full suite | macOS host/loopback, Python 3.13 | Pass | 1,279 tests passed in 213.754s; 4 skipped. The sandbox-only attempt had seven expected loopback socket denials; the identical host-enabled run passed every test. |
 
 ## Resume point
 
-Present the publication packet for explicit approval; hosted CI remains a
-ready-PR gate.
+Publish the focused Agent Registry race correction as a ready PR, require its
+hosted checks, merge it, and confirm final `main` before closing the SQLite goal.

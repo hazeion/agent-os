@@ -148,6 +148,25 @@ class AgentRegistryTests(unittest.TestCase):
                 with self.assertRaisesRegex(AgentRegistryError, "agent_registry.unsafe"):
                     connect_registry(root)
 
+    def test_registry_identity_continuity_ignores_transient_sidecar_identity(self):
+        path = Path("agent-registry.sqlite3")
+        wal_path = Path(f"{path}-wal")
+
+        self.assertTrue(
+            agent_registry._same_primary_database(
+                {path: (1, 10), wal_path: (1, 11)},
+                {path: (1, 10), wal_path: (1, 12)},
+                path=path,
+            )
+        )
+        self.assertFalse(
+            agent_registry._same_primary_database(
+                {path: (1, 10)},
+                {path: (1, 12)},
+                path=path,
+            )
+        )
+
     def test_first_registry_creation_rejects_identity_change_after_open_snapshot(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
