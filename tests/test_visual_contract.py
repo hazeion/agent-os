@@ -567,7 +567,7 @@ class VisualContractTests(unittest.TestCase):
 
     def test_projects_tasks_layout_gives_selected_task_more_room(self):
         layout_block = CSS[CSS.index(".project-command-grid {") : CSS.index("#projects-panel {")]
-        self.assertIn("minmax(360px, .72fr)", layout_block)
+        self.assertIn("minmax(432px, .88fr)", layout_block)
         self.assertIn("gap: 14px;", layout_block)
 
     def test_project_portfolio_cards_stay_compact_without_progress_bars(self):
@@ -708,6 +708,7 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('data-focus-task-id', APP_JS)
         self.assertIn('data-focus-task-area', APP_JS)
         self.assertIn('.today-project-select', CSS)
+        self.assertIn("$('#focus-scope').addEventListener('change'", APP_JS)
         self.assertIn('.home-focus-state', CSS)
         self.assertIn('.home-focus-state.attention', CSS)
         self.assertIn('.home-focus-time.attention', CSS)
@@ -767,9 +768,9 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("document.documentElement.dataset.uiShell = 'emerald'", head_block)
         self.assertIn("document.documentElement.dataset.contrast", head_block)
         self.assertIn("prefers-contrast: more", head_block)
-        self.assertIn('/styles.css?v=emerald-shell-2', INDEX)
-        self.assertIn('/core.js?v=emerald-shell-2', INDEX)
-        self.assertIn('/app.js?v=emerald-shell-2', INDEX)
+        self.assertIn('/styles.css?v=emerald-shell-3', INDEX)
+        self.assertIn('/core.js?v=emerald-shell-3', INDEX)
+        self.assertIn('/app.js?v=emerald-shell-4', INDEX)
         self.assertNotIn('compact-dark-board-1', INDEX)
         self.assertIn("applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id)", APP_JS)
 

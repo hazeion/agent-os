@@ -895,6 +895,11 @@ function hasAttentionTag(task = {}) {
 function taskArea(task = {}) {
   const status = normalizeFilterValue(task.status).replaceAll('_', ' ');
   if (status === 'completed') return 'completed';
+  if (
+    task.delegation?.state === 'ready_for_review'
+    && Array.isArray(task.delegation?.artifacts)
+    && task.delegation.artifacts.length
+  ) return 'needs attention';
   if (status === 'needs attention' || task.needs_attention || task.review_required || hasAttentionTag(task)) return 'needs attention';
   if (status === 'in progress') return 'in progress';
   if (status === 'waiting') return 'waiting';
@@ -987,6 +992,67 @@ function taskDueDate(task = {}) {
 
 function isDueTask(task = {}) {
   return taskArea(task) !== 'completed' && Boolean(taskDueDate(task));
+}
+
+function taskFocusDateValue(task = {}) {
+  const scheduledEnd = task.scheduled_block?.end ? new Date(task.scheduled_block.end).getTime() : NaN;
+  if (Number.isFinite(scheduledEnd)) return scheduledEnd;
+  const due = taskDueDate(task);
+  if (due) return due.getTime();
+  const scheduled = task.scheduled_block?.start ? new Date(task.scheduled_block.start).getTime() : NaN;
+  return Number.isFinite(scheduled) ? scheduled : Number.POSITIVE_INFINITY;
+}
+
+function compareFocusTasks(left = {}, right = {}) {
+  const leftDate = taskFocusDateValue(left);
+  const rightDate = taskFocusDateValue(right);
+  if (leftDate !== rightDate) return leftDate - rightDate;
+  return taskSortScore(left) - taskSortScore(right);
+}
+
+function taskDueDateLabel(task = {}) {
+  const due = taskDueDate(task);
+  if (!due) return '';
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(due);
+}
+
+function taskScheduledRangeLabel(task = {}) {
+  const start = task.scheduled_block?.start ? new Date(task.scheduled_block.start) : null;
+  const end = task.scheduled_block?.end ? new Date(task.scheduled_block.end) : null;
+  if (!start || Number.isNaN(start.getTime()) || !end || Number.isNaN(end.getTime())) return '';
+  const format = new Intl.DateTimeFormat(undefined, {
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  return `${format.format(start)} → ${format.format(end)}`;
+}
+
+function isTaskOverdue(task = {}) {
+  if (taskArea(task) === 'completed') return false;
+  const due = taskDueDate(task);
+  if (due) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return due < today;
+  }
+  const end = task.scheduled_block?.end ? new Date(task.scheduled_block.end).getTime() : NaN;
+  return Number.isFinite(end) && end < Date.now();
+}
+
+function taskStatusDisplayLabel(task = {}, area = taskArea(task)) {
+  const scheduled = taskScheduledRangeLabel(task);
+  const indicator = focusTaskIndicator(task);
+  if (scheduled) return `${indicator.label} · ${scheduled}`;
+  const due = taskDueDateLabel(task);
+  if (!due) return indicator.label;
+  return indicator.label === 'Due' ? `Due ${due}` : `${indicator.label} · due ${due}`;
 }
 
 function focusTaskIndicator(task = {}) {
@@ -1713,35 +1779,9 @@ function updateProjectRailButtons() {
 function renderFocusTasks(tasks = []) {
   const scoped = projectFilteredTasks(tasks);
   const planned = scoped.filter((task) => task.planned_for_today);
-  const artifactAttention = scoped.filter((task) => (
-    task.delegation?.state === 'ready_for_review'
-    && Array.isArray(task.delegation?.artifacts)
-    && task.delegation.artifacts.length
-  ));
-  const open = scoped.filter(isOpenTask).sort((a, b) => {
-    const aPlanned = Boolean(a.planned_for_today);
-    const bPlanned = Boolean(b.planned_for_today);
-    if (aPlanned !== bPlanned) return aPlanned ? -1 : 1;
-    if (aPlanned && bPlanned && Number(a.manual_rank || 0) !== Number(b.manual_rank || 0)) {
-      return Number(a.manual_rank || 0) - Number(b.manual_rank || 0);
-    }
-    return taskSortScore(a) - taskSortScore(b);
-  });
+  const open = scoped.filter(isOpenTask).sort(compareFocusTasks);
   const completedPlanned = planned.filter((task) => taskArea(task) === 'completed');
-  const focusSource = planned.length
-    ? [...planned].sort((a, b) => {
-      const aComplete = taskArea(a) === 'completed';
-      const bComplete = taskArea(b) === 'completed';
-      if (aComplete !== bComplete) return aComplete ? -1 : 1;
-      if (Number(a.manual_rank || 0) !== Number(b.manual_rank || 0)) {
-        return Number(a.manual_rank || 0) - Number(b.manual_rank || 0);
-      }
-      return taskSortScore(a) - taskSortScore(b);
-    })
-    : open;
-  const focus = [...artifactAttention, ...focusSource]
-    .filter((task, index, all) => all.findIndex((item) => item.id === task.id) === index)
-    .slice(0, 3);
+  const focus = open;
 
   const projectOptions = projectOptionsFromTasks(tasks);
   const quickProject = $('#quick-capture-project');
@@ -1779,11 +1819,8 @@ function renderFocusTasks(tasks = []) {
   const taskCards = focus.length ? focus.map((task) => {
     const area = taskArea(task);
     const indicator = focusTaskIndicator(task);
-    const scheduled = task.scheduled_block?.start
-      ? calendarTimeLabel({ start: task.scheduled_block.start, end: task.scheduled_block.end })
-      : area === 'completed'
-        ? 'Completed'
-        : indicator.label;
+    const scheduled = taskStatusDisplayLabel(task, area);
+    const overdue = isTaskOverdue(task);
     const artifacts = Array.isArray(task.delegation?.artifacts) ? task.delegation.artifacts : [];
     const showArtifacts = area === 'needs attention' && artifacts.length;
     const artifactNotice = area === 'needs attention' && ['partial', 'error'].includes(task.delegation?.artifact_sync_state)
@@ -1791,7 +1828,7 @@ function renderFocusTasks(tasks = []) {
       : '';
     return `
       <article class="home-focus-item">
-        <button class="home-focus-row focus-task-button ${escapeHtml(indicator.key)}" type="button" data-focus-task-id="${escapeHtml(String(task.id || ''))}" data-focus-task-title="${escapeHtml(task.title || '')}" data-focus-project-name="${escapeHtml(task.project || '')}" data-focus-task-area="${escapeHtml(area)}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')} in Projects and Tasks. Status: ${escapeHtml(indicator.label)}. ${escapeHtml(scheduled)}.">
+        <button class="home-focus-row focus-task-button ${escapeHtml(indicator.key)} ${overdue ? 'overdue' : ''}" type="button" data-focus-task-id="${escapeHtml(String(task.id || ''))}" data-focus-task-title="${escapeHtml(task.title || '')}" data-focus-project-name="${escapeHtml(task.project || '')}" data-focus-task-area="${escapeHtml(area)}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')} in Projects and Tasks. Status: ${escapeHtml(indicator.label)}. ${escapeHtml(scheduled)}.">
           <span class="home-focus-state ${escapeHtml(indicator.key)}" aria-label="${escapeHtml(indicator.label)}"></span>
           <span class="home-focus-copy">
             <strong>${escapeHtml(task.title || 'Untitled task')}</strong>
@@ -1806,17 +1843,78 @@ function renderFocusTasks(tasks = []) {
     `;
   }).join('') : '<div class="empty clear-skies">No planned or open work in this project scope.</div>';
   const scope = `
-    <details class="home-focus-scope">
-      <summary>${escapeHtml(state.projectFilter || 'All projects')}</summary>
-      <label for="today-project-select" class="sr-only">Filter operational focus by project</label>
+    <div class="home-focus-scope">
+      <label for="today-project-select">Project</label>
       <select id="today-project-select" class="today-project-select" aria-label="Filter operational focus by project">
         <option value="" ${state.projectFilter ? '' : 'selected'}>All projects</option>
         ${projectOptions.map((name) => `<option value="${escapeHtml(name)}" ${state.projectFilter === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
       </select>
-    </details>
+    </div>
   `;
-  $('#focus-task-list').innerHTML = `${taskCards}${scope}`;
+  $('#focus-task-list').innerHTML = taskCards;
+  $('#focus-scope').innerHTML = scope;
+  window.requestAnimationFrame(syncFocusTaskScrollbar);
 }
+
+function syncFocusTaskScrollbar() {
+  const list = $('#focus-task-list');
+  const shell = $('#focus-task-scroll-shell');
+  const thumb = $('#focus-task-scroll-thumb');
+  if (!list || !shell || !thumb) return;
+
+  const scrollRange = list.scrollHeight - list.clientHeight;
+  const isScrollable = scrollRange > 1;
+  shell.dataset.scrollable = String(isScrollable);
+  shell.querySelector('.home-focus-scrollbar')?.setAttribute('aria-valuenow', isScrollable ? String(Math.round((list.scrollTop / scrollRange) * 100)) : '0');
+  if (!isScrollable) return;
+
+  const thumbHeight = Math.max(28, Math.round((list.clientHeight / list.scrollHeight) * list.clientHeight));
+  const travel = Math.max(0, list.clientHeight - thumbHeight);
+  thumb.style.height = `${thumbHeight}px`;
+  thumb.style.transform = `translateY(${Math.round((list.scrollTop / scrollRange) * travel)}px)`;
+}
+
+function setFocusScrollFromPointer(clientY, offset = 0) {
+  const list = $('#focus-task-list');
+  const track = $('#focus-task-scrollbar');
+  const thumb = $('#focus-task-scroll-thumb');
+  if (!list || !track || !thumb || list.scrollHeight <= list.clientHeight) return;
+  const trackRect = track.getBoundingClientRect();
+  const thumbHeight = thumb.getBoundingClientRect().height;
+  const travel = Math.max(1, trackRect.height - thumbHeight);
+  const position = Math.max(0, Math.min(travel, clientY - trackRect.top - offset));
+  list.scrollTop = (position / travel) * (list.scrollHeight - list.clientHeight);
+}
+
+let focusScrollbarDrag = null;
+
+$('#focus-task-scrollbar').addEventListener('pointerdown', (event) => {
+  const thumb = event.target.closest('.home-focus-scroll-thumb');
+  const offset = thumb ? event.clientY - thumb.getBoundingClientRect().top : 0;
+  focusScrollbarDrag = { offset };
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  setFocusScrollFromPointer(event.clientY, offset);
+  event.preventDefault();
+});
+
+document.addEventListener('pointermove', (event) => {
+  if (focusScrollbarDrag) setFocusScrollFromPointer(event.clientY, focusScrollbarDrag.offset);
+});
+
+document.addEventListener('pointerup', () => {
+  focusScrollbarDrag = null;
+});
+
+$('#focus-task-scrollbar').addEventListener('keydown', (event) => {
+  const list = $('#focus-task-list');
+  if (!list) return;
+  if (event.key === 'ArrowDown') list.scrollTop += 48;
+  else if (event.key === 'ArrowUp') list.scrollTop -= 48;
+  else if (event.key === 'PageDown') list.scrollTop += list.clientHeight;
+  else if (event.key === 'PageUp') list.scrollTop -= list.clientHeight;
+  else return;
+  event.preventDefault();
+});
 
 function dueTaskReminders(tasks = state.tasks) {
   const now = Date.now();
@@ -1848,7 +1946,7 @@ function renderTaskList(tasks = []) {
   if (filterSelect && filterSelect.value !== state.taskStatusFilter) filterSelect.value = state.taskStatusFilter;
   syncTaskStatusControl();
 
-  const filtered = visibleTasks(tasks);
+  const filtered = visibleTasks(tasks).sort(compareFocusTasks);
   selectedTaskFrom(filtered);
   const count = $('#task-count');
   if (count) count.textContent = `${filtered.length} tasks`;
@@ -1864,17 +1962,22 @@ function renderTaskList(tasks = []) {
     const area = taskArea(task);
     const id = taskId(task, index);
     const selected = id === state.selectedTaskId;
+    const statusDisplay = taskStatusDisplayLabel(task, area);
+    const overdue = isTaskOverdue(task);
     const meta = area === 'completed'
       ? escapeHtml(completedTimeLabel(task))
-      : `${escapeHtml(task.project || 'General')} · due ${escapeHtml(task.due_date || 'none')} · ${escapeHtml(task.priority || 'priority n/a')}`;
+      : `${escapeHtml(task.project || 'General')} · ${escapeHtml(taskDueDateLabel(task) ? `due ${taskDueDateLabel(task)}` : 'no due date')} · ${escapeHtml(task.priority || 'priority n/a')}`;
     return `
-      <button class="task-list-item task-list-item-button ${selected ? 'active' : ''}" type="button" data-task-id="${escapeHtml(id)}" aria-pressed="${selected ? 'true' : 'false'}">
+      <article class="task-list-item ${selected ? 'active' : ''} ${overdue ? 'overdue' : ''}">
+        <button class="task-list-item-button ${selected ? 'active' : ''}" type="button" data-task-id="${escapeHtml(id)}" aria-pressed="${selected ? 'true' : 'false'}">
         <div class="task-list-main">
-          <div class="task-list-title-row"><span>${escapeHtml(task.title)}</span><span class="task-state-text ${taskTone(area)}">${escapeHtml(area)}</span></div>
+          <div class="task-list-title-row"><span>${escapeHtml(task.title)}</span><span class="task-state-text ${taskTone(area)}">${escapeHtml(statusDisplay)}</span></div>
           <div class="item-desc">${escapeHtml(task.description || '')}</div>
           <div class="item-meta mono">${meta}</div>
         </div>
-      </button>
+        </button>
+        ${area !== 'completed' ? `<button class="mini-button task-complete-button" type="button" data-task-complete="${escapeHtml(String(task.id || ''))}" aria-label="Mark task complete: ${escapeHtml(task.title || 'Untitled task')}">Mark task complete</button>` : ''}
+      </article>
     `;
   }).join('') : state.projects.length
     ? `<div class="empty">No tasks match ${escapeHtml(filterSummary())}.</div>`
@@ -6787,7 +6890,7 @@ $('#download-diagnostics')?.addEventListener('click', () => void downloadDiagnos
 $('#copy-webhook-setup')?.addEventListener('click', () => void copyWebhookSetup());
 $('#verify-webhook-probe')?.addEventListener('click', () => void verifyWebhookProbe());
 
-$('#focus-task-list').addEventListener('change', (event) => {
+$('#focus-scope').addEventListener('change', (event) => {
   const projectSelect = event.target.closest('#today-project-select');
   if (!projectSelect) return;
   state.projectFilter = projectSelect.value || '';
@@ -6796,6 +6899,9 @@ $('#focus-task-list').addEventListener('change', (event) => {
   state.taskEditorDraft = null;
   renderProjectScopedViews();
 });
+
+$('#focus-task-list').addEventListener('scroll', syncFocusTaskScrollbar);
+window.addEventListener('resize', () => window.requestAnimationFrame(syncFocusTaskScrollbar));
 
 $('#focus-task-list').addEventListener('click', async (event) => {
   const taskButton = event.target.closest('.focus-task-button');
@@ -7821,7 +7927,43 @@ $('#project-list').addEventListener('click', async (event) => {
   renderProjectScopedViews();
 });
 
+async function markTaskComplete(taskId) {
+  const task = state.tasks.find((item) => String(item.id || '') === String(taskId || ''));
+  if (!task) return;
+  const button = document.querySelector(`[data-task-complete="${CSS.escape(String(taskId))}"]`);
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Completing…';
+  }
+  try {
+    const result = await saveTaskEdits(taskId, {
+      status: 'completed',
+      planning_state: 'done',
+      needs_attention: false,
+      review_required: false,
+    });
+    state.selectedTaskId = '';
+    state.tasks = Array.isArray(result.tasks) ? result.tasks : state.tasks;
+    await refresh();
+    renderProjectScopedViews();
+  } catch (err) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Mark task complete';
+    }
+    $('#health-dot').className = 'dot degraded';
+    $('#health-label').textContent = `Task completion failed: ${err.message}`;
+  }
+}
+
 $('#task-list')?.addEventListener('click', (event) => {
+  const completeButton = event.target.closest('[data-task-complete]');
+  if (completeButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    void markTaskComplete(completeButton.dataset.taskComplete || '');
+    return;
+  }
   const taskButton = event.target.closest('.task-list-item-button');
   if (!taskButton) return;
   state.taskEditorMode = 'view';

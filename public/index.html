@@ -38,7 +38,7 @@
         : 'standard';
     })();
   </script>
-  <link rel="stylesheet" href="/styles.css?v=emerald-shell-2" />
+  <link rel="stylesheet" href="/styles.css?v=emerald-shell-3" />
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -171,7 +171,11 @@
                 ></span>
               </div>
             </div>
-            <div id="focus-task-list" class="home-focus-list"></div>
+            <div id="focus-scope" class="home-focus-scope-slot"></div>
+            <div class="home-focus-scroll-shell" id="focus-task-scroll-shell">
+              <div id="focus-task-list" class="home-focus-list" tabindex="0" aria-label="Scrollable open tasks"></div>
+              <span class="home-focus-scrollbar" id="focus-task-scrollbar" role="scrollbar" tabindex="0" aria-controls="focus-task-list" aria-label="Scroll open tasks" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="focus-task-scroll-thumb" class="home-focus-scroll-thumb"></span></span>
+            </div>
             <div id="reminder-list" class="reminder-list"></div>
             <div class="home-panel-footer">
               <div class="home-panel-utility-row">
@@ -1004,7 +1008,7 @@
     </div>
   </dialog>
 
-  <script src="/core.js?v=emerald-shell-2"></script>
-  <script src="/app.js?v=emerald-shell-2"></script>
+  <script src="/core.js?v=emerald-shell-3"></script>
+  <script src="/app.js?v=emerald-shell-4"></script>
 </body>
 </html>

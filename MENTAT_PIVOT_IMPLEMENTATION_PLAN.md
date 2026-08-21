@@ -39,8 +39,8 @@ The first additive Phase 1 seam is also complete: Mentat now has runtime-neutral
 Agent, Task, Run, AgentEvent, RuntimeContext, capability, registry, and
 AgentRuntime contracts, with Hermes wrapped as the first runtime adapter.
 
-Slices 1B, 1C-A, and 1C-B are complete. The active slice is **1C-C — SQLite
-Run, AgentEvent, and Dispatch Authority**. The new Next.js frontend begins only after the minimum durable
+Slices 1B, 1C-A, 1C-B, and 1C-C are complete. The active slice is **1C-D —
+SQLite Task Runtime Cleanup and Release Hardening**. The new Next.js frontend begins only after the minimum durable
 orchestration state and dispatch boundaries exist, so it can consume real
 Mentat-owned APIs instead of embedding Hermes profiles or temporary mock data.
 
@@ -53,8 +53,8 @@ Mentat-owned APIs instead of embedding Hermes profiles or temporary mock data.
 | 1B | Complete | Durable Mentat Agent identities and separate runtime-configuration bindings. | Slice 1A |
 | 1C-A | Complete | Extend the existing private `mentat.sqlite3` with a canonical Task repository, exact migration preview, deterministic export, and backup-safe schema migration; do not cut over live APIs yet. | Slice 1B |
 | 1C-B | Complete | Atomically migrate `tasks.json` and cut every live Task workflow over to SQLite with no dual reads or writes. | Slice 1C-A |
-| 1C-C | Ready for publication | Schema/API/dispatch/reconciliation/retention and schema-7 backup implementation, full local verification, adversarial review, and Lighthouse gates are complete; ready-PR publication and hosted CI remain. | Slice 1C-B |
-| 1C-D | Provisional | Remove obsolete Task JSON runtime paths, finish operational evidence and compatibility cleanup, and enforce browser/Lighthouse quality gates. | Slice 1C-C |
+| 1C-C | Complete | Schema/API/dispatch/reconciliation/retention and schema-7 backup implementation, full local verification, adversarial review, Lighthouse gates, and post-merge Agent Registry correction are complete. | Slice 1C-B |
+| 1C-D | In progress | Remove obsolete live Task JSON runtime paths, finish operational evidence and compatibility cleanup, and enforce browser/Lighthouse quality gates. | Slice 1C-C |
 | 2A | Provisional | Next.js/React/TypeScript/Tailwind application foundation and shared Mentat design system. | Slice 1C-D |
 | 2B | Provisional | Agents, Tasks, and Runs views backed by real orchestration APIs. | Slice 2A |
 | 2C | Provisional | Normalized SSE run timeline, per-run messaging, stop controls, and supported approvals. | Slice 2B |
@@ -118,7 +118,7 @@ evidence, and resume point are recorded in
 
 ### Slices 1C-A through 1C-D — SQLite orchestration foundation and cutover
 
-Status: **1C-A and 1C-B complete; 1C-C ready for publication; 1C-D provisional**
+Status: **1C-A through 1C-C complete; 1C-D in progress**
 
 Approved architectural boundary:
 
@@ -163,6 +163,9 @@ System design reference:
 
 Completed Task cutover evidence:
 `reviews/2026-08-18-mentat-sqlite-task-cutover.md`
+
+Active Task cleanup evidence:
+`reviews/2026-08-21-mentat-sqlite-task-cleanup.md`
 
 Active Run/Event/dispatch contract and evidence:
 `reviews/2026-08-18-mentat-sqlite-run-event-dispatch.md`

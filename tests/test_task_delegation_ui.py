@@ -43,14 +43,17 @@ class TaskDelegationUiTests(unittest.TestCase):
             "agentConsoleArtifactCards(artifacts, { compact: true, embedImages: false })",
             focus,
         )
-        self.assertIn("artifactAttention", focus)
         task_area = APP[APP.index("function taskArea") : APP.index("function taskTone")]
+        self.assertIn("task.delegation?.state === 'ready_for_review'", task_area)
+        self.assertIn("task.delegation.artifacts.length", task_area)
         self.assertLess(
             task_area.index("task.needs_attention"),
             task_area.index("status === 'in progress'"),
         )
         self.assertIn('aria-label="Download ${escapeHtml(name)}"', APP)
         self.assertIn("home-focus-item", focus)
+        self.assertIn("task.delegation?.state === 'ready_for_review'", APP)
+        self.assertIn("task.delegation.artifacts.length", APP)
         self.assertIn(".agent-console-artifacts.compact", CSS)
         self.assertIn(".task-artifact-notice", CSS)
 

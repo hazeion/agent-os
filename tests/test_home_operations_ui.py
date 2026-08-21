@@ -170,18 +170,30 @@ class HomeOperationsUiTests(unittest.TestCase):
         self.assertIn("flex-direction: column", footer_css)
         self.assertIn(".home-panel-utility-row", footer_css)
 
-    def test_operational_focus_prioritizes_today_and_reports_real_completion(self):
+    def test_operational_focus_lists_open_work_and_reports_real_completion(self):
         focus = self.app_block("function renderFocusTasks", "function dueTaskReminders")
         self.assertIn("task.planned_for_today", focus)
-        self.assertIn("manual_rank", focus)
+        self.assertIn("compareFocusTasks", focus)
         self.assertIn("const completedPlanned", focus)
         self.assertIn("completedPlanned.length / plannedTotal", focus)
-        self.assertIn("artifactAttention", focus)
-        self.assertIn("[...artifactAttention, ...focusSource]", focus)
-        self.assertIn(".slice(0, 3)", focus)
+        self.assertIn("task.delegation?.state === 'ready_for_review'", APP)
+        self.assertIn("task.delegation.artifacts.length", APP)
+        self.assertIn(".sort(compareFocusTasks)", focus)
+        self.assertNotIn(".slice(0, 3)", focus)
         self.assertIn("data-focus-task-id", focus)
         self.assertIn("aria-valuenow", focus)
         self.assertIn("aria-label", focus)
+
+    def test_task_completion_uses_editable_fields_only(self):
+        completion = self.app_block("async function markTaskComplete", "$('#task-list')")
+        self.assertNotIn("...task", completion)
+        self.assertIn("status: 'completed'", completion)
+        self.assertIn("planning_state: 'done'", completion)
+
+    def test_task_status_labels_keep_state_with_schedules_and_accessible_completion_names(self):
+        self.assertIn("if (taskArea(task) === 'completed') return false;", APP)
+        self.assertIn("return `${indicator.label} · ${scheduled}`;", APP)
+        self.assertIn('aria-label="Mark task complete: ${escapeHtml(task.title || \'Untitled task\')}"', APP)
 
     def test_live_agents_are_canonical_profiles_annotated_by_observations_and_runs(self):
         presentation = self.app_block(

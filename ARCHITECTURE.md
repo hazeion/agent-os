@@ -162,6 +162,13 @@ mutator adapter preserves public payloads and order while maintaining internal
 monotonic revisions. A zero-Task receipt is authoritative. Runtime code never
 reads, writes, shadows, or falls back to stale `tasks.json` after cutover.
 
+Slice 1C-D makes that boundary explicit in the server call graph: live
+workflows use dedicated SQLite Task snapshot and mutation helpers, while the
+generic JSON helpers retain only a compatibility shim for older callers and
+tests. `tasks.json` is not in the generic project-owned write allowlist. Its
+remaining references are limited to packaged seed, migration, explicit offline
+export/downgrade, backup compatibility, or documented recovery behavior.
+
 The operator command `mentat task-migration` remains read-only. Before cutover
 it validates and binds the exact source bytes/file identity and destination
 schema/occupancy without creating a database or sidecar. After cutover it

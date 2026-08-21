@@ -712,7 +712,7 @@ class OrchestrationServiceTests(unittest.TestCase):
 
     def test_task_deletion_preview_translates_database_setup_failure(self):
         task = task_fixture()
-        with patch.object(server, "read_json_file", return_value=[task]), patch.object(
+        with patch.object(server, "read_task_snapshot", return_value=[task]), patch.object(
             server,
             "connect_mentat_database",
             side_effect=MentatDatabaseError("database unavailable"),

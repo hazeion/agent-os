@@ -368,7 +368,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
         delivery_thread = Thread(target=pause_newer_delivery)
         delivery_thread.start()
         self.assertTrue(transaction_open.wait(1))
-        with patch.object(server, "read_json_file", return_value=[]):
+        with patch.object(server, "read_task_snapshot", return_value=[]):
             server.HERMES_EVENT_REFRESH.start()
             try:
                 self.assertFalse(snapshot_started.wait(0.1))
@@ -415,7 +415,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
         delivery_thread = Thread(target=pause_delivery)
         delivery_thread.start()
         self.assertTrue(transaction_open.wait(1))
-        with patch.object(server, "read_json_file", return_value=[]):
+        with patch.object(server, "read_task_snapshot", return_value=[]):
             server.HERMES_EVENT_REFRESH.start()
             try:
                 self.assertFalse(snapshot_started.wait(0.1))
@@ -453,7 +453,7 @@ class HermesWebhookRouteTests(unittest.TestCase):
 
         coordinator = server.HERMES_EVENT_REFRESH
         try:
-            with patch.object(server, "read_json_file", return_value=[]):
+            with patch.object(server, "read_task_snapshot", return_value=[]):
                 server.HERMES_EVENT_REFRESH.start()
                 self.assertTrue(local_snapshot_complete.wait(2))
                 self.assertTrue(external_started.is_set())

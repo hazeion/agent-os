@@ -753,6 +753,58 @@ class DashboardBehaviorTests(unittest.TestCase):
         self.assertIsNotNone(payload["task"]["completed_at"])
         self.assertEqual(stored_tasks, [payload["task"]])
 
+    def test_minimal_completion_preserves_delegation_metadata(self):
+        projects = [{"id": "project_mentat", "name": "Mentat", "status": "active"}]
+        existing = {
+            "id": "task_delegated",
+            "title": "Review generated result",
+            "description": "A delegated task with private artifact metadata.",
+            "project": "Mentat",
+            "status": "todo",
+            "priority": "medium",
+            "assignee": "Operator",
+            "due_date": None,
+            "source": "dashboard",
+            "tags": [],
+            "review_required": True,
+            "needs_attention": True,
+            "delegation": {
+                "profile_id": "agent_review",
+                "board_id": "default",
+                "state": "ready_for_review",
+                "summary": "Generated result is ready.",
+            },
+            "created_at": "2026-06-20T10:00:00-07:00",
+            "updated_at": "2026-06-20T10:00:00-07:00",
+            "completed_at": None,
+        }
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.write_json(root, "projects.json", projects)
+            self.write_json(root, "tasks.json", [existing])
+            with patch.object(server, "DATA_DIR", root), patch.object(server, "CONFIGURED_DATA_DIR", root):
+                payload, status = server.update_task(
+                    "task_delegated",
+                    {
+                        "status": "completed",
+                        "planning_state": "done",
+                        "needs_attention": False,
+                        "review_required": False,
+                    },
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task"]["status"], "completed")
+        self.assertEqual(payload["task"]["planning_state"], "done")
+        self.assertEqual(payload["task"]["delegation"]["state"], "ready_for_review")
+        self.assertEqual(payload["task"]["delegation"]["summary"], "Generated result is ready.")
+        browser_projection = dict(payload["task"])
+        browser_projection["delegation"] = {
+            **payload["task"]["delegation"],
+            "artifacts": [{"name": "result.md", "content_type": "text/markdown"}],
+        }
+        self.assertEqual(browser_projection["delegation"]["artifacts"][0]["name"], "result.md")
+
     def test_post_route_dispatches_task_create_with_json_payload(self):
         projects = [{"id": "project_mentat", "name": "Mentat", "status": "active"}]
         request = {

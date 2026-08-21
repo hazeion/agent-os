@@ -1060,7 +1060,7 @@ h1, h2, h3, p { margin: 0; }
 
 .project-command-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, .72fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(432px, .88fr);
   grid-template-areas:
     "portfolio portfolio"
     "queue status"
@@ -2884,6 +2884,22 @@ h2 {
   padding: 9px 10px;
   transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
 }
+.task-list-item-button {
+  appearance: none;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.task-complete-button {
+  justify-self: start;
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: .68rem;
+}
 .task-list-item-button:hover,
 .task-list-item-button:focus-visible {
   border-color: rgba(110,231,255,.38);
@@ -2906,10 +2922,14 @@ h2 {
 .task-list-title-row span:first-child { min-width: 0; }
 .task-state-text {
   flex: 0 0 auto;
+  max-width: 52%;
+  overflow: hidden;
   color: var(--muted);
   font: 850 .62rem/1.1 var(--mono);
   letter-spacing: .08em;
   text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .task-state-text.success { color: var(--success); }
 .task-state-text.warn { color: var(--warn); }
@@ -3858,6 +3878,52 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .home-focus-list {
   display: grid;
   gap: 7px;
+  max-height: 239px;
+  overflow-y: auto;
+  padding-right: 10px;
+  scrollbar-width: none;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-list::-webkit-scrollbar {
+  display: none;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scroll-shell {
+  position: relative;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  display: none;
+  cursor: pointer;
+  background: var(--scrollbar-track);
+  border-radius: 999px;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scroll-shell[data-scrollable='true'] .home-focus-scrollbar {
+  display: block;
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scroll-thumb {
+  width: 100%;
+  min-height: 28px;
+  display: block;
+  cursor: grab;
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  transition: background var(--operations-duration-fast) var(--operations-ease);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scroll-shell:hover .home-focus-scroll-thumb {
+  background: var(--scrollbar-thumb-hover);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scroll-thumb:active {
+  cursor: grabbing;
 }
 
 :root[data-ui-shell='emerald'] .home-focus-item {
@@ -3973,12 +4039,13 @@ code { font-family: var(--mono); color: var(--accent); }
 }
 
 :root[data-ui-shell='emerald'] .home-focus-scope {
-  justify-self: start;
-  position: relative;
-  margin-top: 1px;
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  margin: 1px 0 9px;
 }
 
-:root[data-ui-shell='emerald'] .home-focus-scope summary,
+:root[data-ui-shell='emerald'] .home-focus-scope label,
 :root[data-ui-shell='emerald'] .home-utility-disclosure summary,
 :root[data-ui-shell='emerald'] .home-review-disclosure summary {
   color: var(--operations-content-secondary);
@@ -3996,7 +4063,7 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .home-panel-footer {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   margin-top: 12px;
 }
@@ -4004,10 +4071,10 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .home-panel-utility-row {
   width: 100%;
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 8px 14px;
+  justify-content: flex-start;
+  gap: 8px;
 }
 
 :root[data-ui-shell='emerald'] .home-panel-footer > .mini-button {
@@ -4025,6 +4092,7 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .home-utility-disclosure[open] {
   min-width: 0;
   flex: 1 0 100%;
+  width: 100%;
 }
 
 :root[data-ui-shell='emerald'] .home-utility-popover,
@@ -5951,7 +6019,7 @@ h2,
 .completed-title { font-size: .76rem; }
 
 .project-command-grid {
-  grid-template-columns: minmax(0, 1.38fr) minmax(360px, .62fr);
+  grid-template-columns: minmax(0, 1.12fr) minmax(432px, .88fr);
   gap: 10px;
 }
 .project-rail-shell { gap: 6px; }
@@ -8179,6 +8247,31 @@ h2,
   .session-controls-card {
     --session-control-height: 44px;
   }
+}
+
+/* Selection treatment: selected controls use a complete theme-colored outline. */
+:root[data-ui-shell] .nav-item.active,
+:root[data-ui-shell] .nav-item[aria-current='page'],
+:root[data-ui-shell] .panel .project-card-button.active,
+:root[data-ui-shell] .panel .task-list-item.active {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent) !important;
+}
+
+:root[data-ui-shell] .panel .task-list-item-button.active {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-ui-shell] .home-focus-row.overdue,
+:root[data-ui-shell] .panel .task-list-item.overdue {
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--line));
+  background: color-mix(in srgb, var(--danger) 10%, var(--panel-bg));
+}
+
+:root[data-ui-shell] .home-focus-row.overdue .home-focus-time,
+:root[data-ui-shell] .panel .task-list-item.overdue .task-state-text {
+  color: var(--danger);
 }
 
 /* Mobile control ergonomics: interactive controls share the same reachable

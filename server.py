@@ -373,7 +373,7 @@ CONFIG_DISPLAY_NAME = None
 CONFIG_GREETING_PREFIX = None
 CONFIG_APP_NAME = DEFAULT_APP_NAME
 APP_CONFIG = AppConfig(tuple(), HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT)
-ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "tasks.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json", "context_packs.json"}
+ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json", "context_packs.json"}
 ALLOWED_DATA_READS = frozenset(SEED_FILE_NAMES) | ALLOWED_DATA_WRITES
 CALENDAR_CACHE_TTL_SECONDS = 300
 CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
@@ -624,9 +624,9 @@ def maintain_agent_console_attachments(*, startup: bool = False) -> dict:
     """Run bounded private attachment reconciliation without exposing local paths."""
     active_run_ids = active_agent_console_run_ids()
     if startup:
-        tasks = read_json_file("tasks.json", [])
+        tasks = read_task_snapshot()
         if not isinstance(tasks, list):
-            raise ValueError("tasks.json must contain a list")
+            raise ValueError("Task storage must contain a list")
         delegation_bindings = reconcile_task_artifact_bindings(
             DATA_DIR,
             tasks,
@@ -1877,13 +1877,31 @@ def ensure_task_authority():
     )
 
 
+def read_task_snapshot():
+    """Read Tasks from SQLite without consulting the legacy JSON document."""
+    try:
+        return read_authoritative_tasks(DATA_DIR)
+    except TaskRepositoryError as exc:
+        return {"error": f"Task storage is unavailable ({exc.code})."}
+
+
+def update_task_snapshot(mutator):
+    """Mutate the SQLite Task authority while preserving API error shapes."""
+    try:
+        with HERMES_KANBAN_LOCK:
+            return mutate_authoritative_tasks(DATA_DIR, mutator)
+    except TaskRepositoryError as exc:
+        if exc.code == "task_repository.active_run":
+            return {"error": "Task deletion is blocked while an orchestration Run is active."}, 409
+        return {"error": f"Task storage is unavailable ({exc.code})."}, 503
+
+
 def read_json_file(name: str, default):
     if name == "tasks.json":
-        dashboard_data_path(name)
-        try:
-            return read_authoritative_tasks(DATA_DIR)
-        except TaskRepositoryError as exc:
-            return {"error": f"Task storage is unavailable ({exc.code})."}
+        # Compatibility shim for older internal callers and tests. Runtime
+        # workflows use read_task_snapshot() directly so the obsolete JSON
+        # authority seam is not part of their call graph.
+        return read_task_snapshot()
     path = dashboard_data_path(name)
     durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
         DATA_DIR
@@ -1908,14 +1926,9 @@ def read_json_file(name: str, default):
 def update_json_file(name: str, default, mutator):
     """Run a locked project-owned JSON read/modify/write cycle."""
     if name == "tasks.json":
-        dashboard_data_path(name, write=True)
-        try:
-            with HERMES_KANBAN_LOCK:
-                return mutate_authoritative_tasks(DATA_DIR, mutator)
-        except TaskRepositoryError as exc:
-            if exc.code == "task_repository.active_run":
-                return {"error": "Task deletion is blocked while an orchestration Run is active."}, 409
-            return {"error": f"Task storage is unavailable ({exc.code})."}, 503
+        # Compatibility shim for older internal callers and tests. The JSON
+        # document is never opened or written here.
+        return update_task_snapshot(mutator)
     path = dashboard_data_path(name, write=True)
     durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
         DATA_DIR
@@ -2883,7 +2896,7 @@ def infer_run_status(session: sqlite3.Row, final_text: str, blockers: list[dict]
 
 
 def infer_related_tasks(text: str, limit: int = 5) -> list[dict]:
-    tasks = read_json_file("tasks.json", [])
+    tasks = read_task_snapshot()
     if not isinstance(tasks, list) or not text:
         return []
     haystack = text.lower()
@@ -3906,7 +3919,7 @@ def open_attention_items(attention=None, tasks=None) -> list[dict]:
     if attention is None:
         attention = read_json_file("attention.json", [])
     if tasks is None:
-        tasks = read_json_file("tasks.json", [])
+        tasks = read_task_snapshot()
     manual = [a for a in attention if isinstance(a, dict) and a.get("status", "open") == "open"] if isinstance(attention, list) else []
     return manual + task_attention_items(tasks)
 
@@ -3917,7 +3930,7 @@ def attention_payload():
 
 def overview():
     projects = read_json_file("projects.json", [])
-    tasks = read_json_file("tasks.json", [])
+    tasks = read_task_snapshot()
     attention = read_json_file("attention.json", [])
     crons = selected_cron_jobs()
     sessions = sessions_payload(local_limit=5)
@@ -3996,7 +4009,7 @@ def resolve_attention_item(attention_id: str):
         if resolved_item is None:
             return attention, ({"error": f"Attention item not found: {attention_id}"}, 404)
 
-        tasks = read_json_file("tasks.json", [])
+        tasks = read_task_snapshot()
         return next_attention, ({"ok": True, "resolved": resolved_item, "attention": next_attention, "open_count": len(open_attention_items(next_attention, tasks))}, 200)
 
     return update_json_file("attention.json", [], mutator)
@@ -4005,7 +4018,7 @@ def resolve_attention_item(attention_id: str):
 def create_task(payload):
     def mutator(tasks):
         if not isinstance(tasks, list):
-            return tasks, ({"error": "tasks.json must contain a list"}, 500)
+            return tasks, ({"error": "Task storage must contain a list"}, 500)
         normalized, error = validate_task_payload(payload)
         if error:
             return tasks, ({"error": error}, 400)
@@ -4016,7 +4029,7 @@ def create_task(payload):
         next_tasks.append(normalized)
         return next_tasks, ({"ok": True, "task": normalized, "tasks": next_tasks}, 201)
 
-    return update_json_file("tasks.json", [], mutator)
+    return update_task_snapshot(mutator)
 
 
 def update_task(task_id: str, payload):
@@ -4025,7 +4038,7 @@ def update_task(task_id: str, payload):
 
     def mutator(tasks):
         if not isinstance(tasks, list):
-            return tasks, ({"error": "tasks.json must contain a list"}, 500)
+            return tasks, ({"error": "Task storage must contain a list"}, 500)
         next_tasks = [task for task in tasks if isinstance(task, dict)]
         for index, task in enumerate(next_tasks):
             if str(task.get("id") or "") != task_id:
@@ -4045,7 +4058,7 @@ def update_task(task_id: str, payload):
             return next_tasks, ({"ok": True, "task": normalized, "tasks": next_tasks}, 200)
         return tasks, ({"error": f"Task not found: {task_id}"}, 404)
 
-    return update_json_file("tasks.json", [], mutator)
+    return update_task_snapshot(mutator)
 
 
 def reorder_today_task(task_id: str, payload):
@@ -4057,7 +4070,7 @@ def reorder_today_task(task_id: str, payload):
 
     def mutator(tasks):
         if not isinstance(tasks, list):
-            return tasks, ({"error": "tasks.json must contain a list"}, 500)
+            return tasks, ({"error": "Task storage must contain a list"}, 500)
         next_tasks = [dict(task) for task in tasks if isinstance(task, dict)]
         planned = sorted(
             [task for task in next_tasks if task.get("planned_for_today") and task.get("status") != "completed"],
@@ -4082,7 +4095,7 @@ def reorder_today_task(task_id: str, payload):
         moved = next(task for task in planned if str(task.get("id") or "") == task_id)
         return next_tasks, ({"ok": True, "task": moved, "tasks": next_tasks}, 200)
 
-    return update_json_file("tasks.json", [], mutator)
+    return update_task_snapshot(mutator)
 
 
 def _task_delete_confirmation(task: dict) -> str:
@@ -4116,9 +4129,9 @@ def _task_has_active_orchestration_run(task_id: str) -> bool:
 def preview_task_deletion(task_id: str, payload=None):
     if not TASK_ID_PATTERN.fullmatch(task_id or ""):
         return {"error": "Invalid task id"}, 400
-    tasks = read_json_file("tasks.json", [])
+    tasks = read_task_snapshot()
     if not isinstance(tasks, list):
-        return {"error": "tasks.json must contain a list"}, 500
+        return {"error": "Task storage must contain a list"}, 500
     matches = [
         item
         for item in tasks
@@ -4128,7 +4141,7 @@ def preview_task_deletion(task_id: str, payload=None):
         return {"error": f"Task not found: {task_id}"}, 404
     if len(matches) != 1:
         return {
-            "error": "Task deletion is blocked because the task id is duplicated. Repair tasks.json before retrying."
+            "error": "Task deletion is blocked because the task id is duplicated. Repair Task storage before retrying."
         }, 409
     try:
         if _task_has_active_orchestration_run(task_id):
@@ -4166,7 +4179,7 @@ def delete_confirmed_task(task_id: str, payload):
 
     def mutator(tasks):
         if not isinstance(tasks, list):
-            return tasks, ({"error": "tasks.json must contain a list"}, 500)
+            return tasks, ({"error": "Task storage must contain a list"}, 500)
         matches = [
             item
             for item in tasks
@@ -4176,7 +4189,7 @@ def delete_confirmed_task(task_id: str, payload):
             return tasks, ({"error": f"Task not found: {task_id}"}, 404)
         if len(matches) != 1:
             return tasks, ({
-                "error": "Task deletion is blocked because the task id is duplicated. Repair tasks.json before retrying."
+                "error": "Task deletion is blocked because the task id is duplicated. Repair Task storage before retrying."
             }, 409)
         task = matches[0]
         pending = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
@@ -4197,7 +4210,7 @@ def delete_confirmed_task(task_id: str, payload):
         return remaining, ({"ok": True, "deleted_task_id": task_id, "task": task, "tasks": remaining}, 200)
 
     with artifact_operation_lock():
-        result = update_json_file("tasks.json", [], mutator)
+        result = update_task_snapshot(mutator)
         if result[1] == 200:
             try:
                 remove_task_artifacts(DATA_DIR, task_id)
@@ -4240,7 +4253,7 @@ def kanban_adapter_binding(
 
 
 def task_record(task_id: str) -> dict | None:
-    tasks = read_json_file("tasks.json", [])
+    tasks = read_task_snapshot()
     if not isinstance(tasks, list):
         return None
     matches = [
@@ -4381,7 +4394,7 @@ def persist_task_delegation(
 ):
     def mutator(tasks):
         if not isinstance(tasks, list):
-            return tasks, (None, "tasks.json must contain a list")
+            return tasks, (None, "Task storage must contain a list")
         next_tasks = [dict(task) for task in tasks if isinstance(task, dict)]
         for index, task in enumerate(next_tasks):
             if str(task.get("id") or "") != task_id:
@@ -4405,13 +4418,13 @@ def persist_task_delegation(
             return next_tasks, (normalized, None)
         return tasks, (None, f"Task not found: {task_id}")
 
-    return update_json_file("tasks.json", [], mutator)
+    return update_task_snapshot(mutator)
 
 
 def reserve_task_delegation(task_id: str, expected_task: dict, reservation: dict):
     def mutator(tasks):
         if not isinstance(tasks, list):
-            return tasks, (None, "tasks.json must contain a list")
+            return tasks, (None, "Task storage must contain a list")
         next_tasks = [dict(task) for task in tasks if isinstance(task, dict)]
         for index, task in enumerate(next_tasks):
             if str(task.get("id") or "") != task_id:
@@ -4442,7 +4455,7 @@ def reserve_task_delegation(task_id: str, expected_task: dict, reservation: dict
             return next_tasks, (normalized, None)
         return tasks, (None, f"Task not found: {task_id}")
 
-    return update_json_file("tasks.json", [], mutator)
+    return update_task_snapshot(mutator)
 
 
 def clear_task_delegation_reservation(task_id: str, reservation_id: str):
@@ -4459,7 +4472,7 @@ def clear_task_delegation_reservation(task_id: str, reservation_id: str):
                 return next_tasks, True
         return tasks, False
 
-    return update_json_file("tasks.json", [], mutator)
+    return update_task_snapshot(mutator)
 
 
 def delegation_confirmation(prefix: str, task: dict, intent: dict) -> str:
@@ -4477,7 +4490,7 @@ def preview_task_delegation(task_id: str, payload):
         return {"error": f"Task not found: {task_id}"}, 404
     if task.get("delegation"):
         return {"error": "Task already has linked or pending Hermes work."}, 409
-    all_tasks = read_json_file("tasks.json", [])
+    all_tasks = read_task_snapshot()
     by_id = {
         str(item.get("id")): item
         for item in all_tasks
@@ -4949,7 +4962,7 @@ def refresh_home_delegations(payload=None):
     selection = load_remote_hermes_connection(DATA_DIR)
     if selection.mode not in {"local", "remote"} or not selection.binding_id:
         return {"ok": True, "refreshed": 0, "skipped": 0}, 200
-    tasks = read_json_file("tasks.json", [])
+    tasks = read_task_snapshot()
     if not isinstance(tasks, list):
         return {"error": "Task data is unavailable."}, 500
     candidates = []
@@ -5040,7 +5053,7 @@ def public_task_payload(task: dict | None) -> dict | None:
 
 def tasks_payload() -> dict:
     """Return tasks decorated with private, browser-safe artifact metadata."""
-    tasks = read_json_file("tasks.json", [])
+    tasks = read_task_snapshot()
     if not isinstance(tasks, list):
         return {"tasks": []}
     public_tasks = [
@@ -5277,7 +5290,7 @@ def execute_confirmed_delegation_action(task_id: str, payload):
     if action == "request_revision" and remote_id != prior_remote_id:
         try:
             with artifact_operation_lock():
-                current_tasks = read_json_file("tasks.json", [])
+                current_tasks = read_task_snapshot()
                 if isinstance(current_tasks, list):
                     reconcile_task_artifact_bindings(DATA_DIR, current_tasks)
         except (AttachmentError, OSError, sqlite3.Error):
@@ -5301,7 +5314,7 @@ def execute_confirmed_delegation_action(task_id: str, payload):
 
 
 def agent_activity_payload() -> dict:
-    tasks = read_json_file("tasks.json", [])
+    tasks = read_task_snapshot()
     if not isinstance(tasks, list):
         tasks = []
     groups = {key: [] for key in ("needs_input", "ready_for_review", "running", "failed", "recently_completed")}
@@ -5455,7 +5468,7 @@ def unified_search(query: str) -> dict:
     def contains(*values) -> bool:
         return any(needle in str(value or "").casefold() for value in values)
 
-    tasks = read_json_file("tasks.json", [])
+    tasks = read_task_snapshot()
     projects = read_json_file("projects.json", [])
     session_payload = sessions_payload(local_limit=50)
     notes_payload = obsidian_notes()
@@ -10063,7 +10076,7 @@ def _read_webhook_tasks_snapshot() -> list:
     # holds the database barrier and waits for that same private-state lock.
     with private_state_lock(DATA_DIR):
         with DATABASE_OPEN_BARRIER:
-            tasks = read_json_file("tasks.json", [])
+            tasks = read_task_snapshot()
     if not isinstance(tasks, list):
         raise RuntimeError("webhook_refresh_failed")
     return tasks

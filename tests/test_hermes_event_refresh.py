@@ -313,7 +313,7 @@ class HermesEventRefreshServerAdapterTests(unittest.TestCase):
         )
         with (
             patch("server.HermesKanbanAdapter", return_value=adapter),
-            patch("server.read_json_file", return_value=tasks),
+            patch("server.read_task_snapshot", return_value=tasks),
             patch("server.persist_task_delegation") as persist,
         ):
             result = server._refresh_webhook_kanban("local-default")
@@ -329,7 +329,7 @@ class HermesEventRefreshServerAdapterTests(unittest.TestCase):
         with (
             patch("server.HERMES_HOME", configured_home),
             patch("server.HermesKanbanAdapter", return_value=adapter) as adapter_type,
-            patch("server.read_json_file", return_value=[]),
+            patch("server.read_task_snapshot", return_value=[]),
             patch.dict("server.os.environ", {"HERMES_HOME": "/ambient/hermes-home"}),
         ):
             server._refresh_webhook_kanban("local-default")
@@ -351,7 +351,7 @@ class HermesEventRefreshServerAdapterTests(unittest.TestCase):
         adapter.get_task.return_value = {"ok": False, "error": {"code": "timeout"}}
         with (
             patch("server.HermesKanbanAdapter", return_value=adapter),
-            patch("server.read_json_file", return_value=tasks),
+            patch("server.read_task_snapshot", return_value=tasks),
             patch("server.persist_task_delegation") as persist,
         ):
             with self.assertRaisesRegex(RuntimeError, "webhook_refresh_failed"):
@@ -380,7 +380,7 @@ class HermesEventRefreshServerAdapterTests(unittest.TestCase):
         adapter = MagicMock()
         with (
             patch("server.HermesKanbanAdapter", return_value=adapter),
-            patch("server.read_json_file", return_value=tasks),
+            patch("server.read_task_snapshot", return_value=tasks),
         ):
             result = server._refresh_webhook_kanban("local-default")
         self.assertEqual(result, {"tasks": [], "refreshed": 0, "skipped": 0})
@@ -434,8 +434,8 @@ class HermesEventRefreshServerAdapterTests(unittest.TestCase):
         ]
         for attention, tasks in malformed_pairs:
             with self.subTest(attention=attention, tasks=tasks), patch(
-                "server.read_json_file", side_effect=[attention, tasks]
-            ):
+                "server.read_json_file", return_value=attention
+            ), patch("server.read_task_snapshot", return_value=tasks):
                 with self.assertRaisesRegex(RuntimeError, "webhook_refresh_failed"):
                     server._refresh_webhook_attention("local-default")
 
@@ -461,7 +461,7 @@ class HermesEventRefreshServerAdapterTests(unittest.TestCase):
             with (
                 self.subTest(remote=remote),
                 patch("server.HermesKanbanAdapter", return_value=adapter),
-                patch("server.read_json_file", return_value=tasks),
+                patch("server.read_task_snapshot", return_value=tasks),
             ):
                 with self.assertRaisesRegex(RuntimeError, "webhook_refresh_failed"):
                     server._refresh_webhook_kanban("local-default")

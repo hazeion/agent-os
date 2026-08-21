@@ -2,6 +2,21 @@
 
 All notable changes to Mentat.
 
+## 2026-08-21
+
+### Changed
+- Began Pivot Slice 1C-D by removing live server Task workflows from the
+  generic JSON read/write call graph. Runtime Task snapshots and mutations now
+  use explicit SQLite-authority helpers; the legacy `tasks.json` document
+  remains only for packaged seed, migration, offline export/downgrade, and
+  compatibility/recovery workflows.
+- Removed `tasks.json` from the generic project-owned write allowlist without
+  changing the explicit stopped-server export path or public Task responses.
+
+### Documentation
+- Recorded Slice 1C-C as complete and Slice 1C-D as the active pivot slice in
+  the implementation roadmap and data-layout contract.
+
 ## 2026-08-18
 
 ### Added
