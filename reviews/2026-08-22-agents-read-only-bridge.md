@@ -93,6 +93,8 @@ Show the canonical Mentat Agent list in the new `/agents` workspace without expo
 - Added Agent bridge, static-shell, and production browser-smoke coverage.
 - Documented the fixed public Agent projection in `ARCHITECTURE.md` and marked
   this slice complete in the implementation plan.
+- Updated the Node foundation CI job to install the pinned Python runtime
+  dependencies before its Python bridge tests import `server.py`.
 
 ### Deviations and decisions
 
@@ -102,6 +104,9 @@ Show the canonical Mentat Agent list in the new `/agents` workspace without expo
 - The normal Turbopack build cannot create its required OS socket in this local
   environment, even with host execution. The equivalent webpack build passed.
   Hosted CI remains the required normal-build confirmation.
+- Hosted CI initially exposed the missing Python dependency setup in the Node
+  foundation job. The workflow now installs `requirements.txt`; its workflow
+  contract tests pass locally and CI will rerun on the update.
 
 ## Verification
 
@@ -111,6 +116,7 @@ Show the canonical Mentat Agent list in the new `/agents` workspace without expo
 | --- | --- | --- | --- | --- |
 | `npm --prefix web run check` | macOS source checkout | 0 | 17 pass | Lint, typecheck, and Node contracts, rerun after the review fix. |
 | `python3 -m unittest tests.test_mentat_local_bridge tests.test_agent_runtime_architecture -v` | macOS source checkout | 0 | 14 pass | Fixed bridge, redaction/failure mapping, and roadmap contract. |
+| `python3 -m unittest tests.test_ci_quality_gate tests.test_ci_workflow -v` | macOS source checkout | 0 | 16 pass | Verifies the focused Node-foundation dependency setup. |
 | `node web/scripts/run-next.mjs build --webpack && node web/scripts/prepare-standalone.mjs` | macOS source checkout | 0 | 4 static routes + `/api/agents` | Fallback build because this environment blocks Turbopack's required socket. |
 | `node scripts/web_foundation_smoke.mjs` | Production preview on `127.0.0.1:8890` | 0 | Pass | Verified full browser → Node → bridge → Python flow; live canonical registry was honestly empty. Injected ready, unsupported, unavailable, and error states passed. |
 | `npm --prefix web run lighthouse:gate` | Production preview on `127.0.0.1:8890` | 0 | 6/6 pass | Three desktop and three mobile audits each scored Performance, Accessibility, Best Practices, and SEO at 100. |
@@ -167,7 +173,8 @@ Show the canonical Mentat Agent list in the new `/agents` workspace without expo
 - Full suite: The dirty source suite has one unrelated user-fixture failure;
   isolated notarization test passes after the clean-archive subprocess anomaly.
 - Next review round or gate result: Both reviewers found the final fix clean;
-  no blocking dissent remains.
+  no blocking dissent remains. Both also re-reviewed the narrow CI dependency
+  fix after PR #116 and found no new issue.
 
 ## Documentation updates
 
@@ -203,8 +210,9 @@ Show the canonical Mentat Agent list in the new `/agents` workspace without expo
 - Acceptance criteria summary: AC-1 through AC-6 pass locally, including six
   exact Lighthouse audits.
 - Potential bugs or untested paths: Hosted CI must run the normal Turbopack
-  build. The user-modified fixture prevents a clean full-suite result in this
-  checkout but is unrelated to this slice.
+  build and rerun the Node foundation job after its dependency fix. The
+  user-modified fixture prevents a clean full-suite result in this checkout but
+  is unrelated to this slice.
 - Remaining reviewer dissent: None.
 - Compatibility/migration/rollback concerns: No data migration or mutation.
   Revert removes the new fixed route and static enhancement; the Python
