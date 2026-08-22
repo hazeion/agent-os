@@ -584,22 +584,27 @@ button {
 }
 
 .tasks-workspace,
-.tasks-list {
+.tasks-list,
+.runs-workspace,
+.runs-list {
   display: grid;
   gap: 10px;
 }
 
-.tasks-toolbar {
+.tasks-toolbar,
+.runs-toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
   justify-content: space-between;
 }
 
-.tasks-summary { margin: 0; color: var(--text-secondary); }
+.tasks-summary,
+.runs-summary { margin: 0; color: var(--text-secondary); }
 
 .task-refresh,
-.agent-refresh {
+.agent-refresh,
+.run-refresh {
   min-height: 36px;
   padding: 7px 11px;
   border: 1px solid var(--border-strong);
@@ -608,9 +613,11 @@ button {
   background: var(--panel-raised);
 }
 
-.task-refresh:disabled { opacity: 0.65; }
+.task-refresh:disabled,
+.run-refresh:disabled { opacity: 0.65; }
 
-.task-card {
+.task-card,
+.run-card {
   display: grid;
   gap: 10px;
   min-width: 0;
@@ -625,12 +632,18 @@ button {
 .task-card h3 { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); font-size: 0.95rem; }
 .task-card-meta { margin: 4px 0 0; overflow-wrap: anywhere; color: var(--text-tertiary); font-size: 0.8rem; }
 .task-status { margin: 0; color: var(--accent); font-size: 0.78rem; font-weight: 650; text-transform: capitalize; }
+.run-card-header { display: flex; align-items: start; gap: 10px; justify-content: space-between; }
+.run-card h3 { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); font-size: 0.9rem; }
+.run-card-meta { margin: 0; overflow-wrap: anywhere; color: var(--text-tertiary); font-size: 0.8rem; }
+.run-status { margin: 0; color: var(--accent); font-size: 0.78rem; font-weight: 650; text-transform: capitalize; }
 .task-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .task-tags li { overflow-wrap: anywhere; padding: 3px 7px; border-radius: 999px; background: var(--panel-raised); color: var(--text-secondary); font-size: 0.72rem; }
 
 @media (max-width: 520px) {
-  .tasks-toolbar { align-items: stretch; flex-direction: column; }
-  .task-refresh { min-height: 44px; }
+  .tasks-toolbar,
+  .runs-toolbar { align-items: stretch; flex-direction: column; }
+  .task-refresh,
+  .run-refresh { min-height: 44px; }
 }
 
 .agent-fields {

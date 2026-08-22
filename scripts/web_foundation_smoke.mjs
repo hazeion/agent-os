@@ -477,7 +477,7 @@ async function inspectKeyboardDrawerAndContrast(client) {
   })()`);
   await client.call("Page.reload", { ignoreCache: true });
   await waitFor(
-    () => client.eval("document.readyState === 'complete' && document.documentElement.dataset.contrast === 'high'"),
+    () => client.eval("document.readyState === 'complete' && document.documentElement.dataset.shellRuntime === 'ready' && document.documentElement.dataset.contrast === 'high'"),
     "persisted high contrast",
   );
   const contrast = await client.eval(`(() => ({
@@ -764,11 +764,11 @@ async function inspectTasksWorkspace(client) {
     rendered: document.querySelector('[data-tasks-list]')?.textContent,
     overflow: document.documentElement.scrollWidth - innerWidth,
   }))()`);
-  if (!new Set(["ready", "empty"]).has(result.state) || result.overflow > 1 || (result.state === "empty" && (result.summary !== "No current Tasks yet." || result.cards !== 0)) || (result.state === "ready" && result.cards === 0) || result.rendered.includes("description") || result.rendered.includes("delegation")) throw new Error(`Tasks workspace contract failed: ${JSON.stringify(result)}`);
+  if (!new Set(["ready", "empty"]).has(result.state) || result.overflow > 1 || (result.state === "empty" && (result.summary !== "No current Tasks yet." || result.cards !== 0)) || (result.state === "ready" && result.cards === 0) || result.rendered.includes("description") || result.rendered.includes("delegation")) throw new Error(`Tasks workspace contract failed: ${JSON.stringify({ state: result.state, summary: result.summary, cards: result.cards, overflow: result.overflow })}`);
   const before = await client.eval("performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/tasks').length");
   await client.eval("document.querySelector('[data-tasks-refresh]').click()");
   await waitFor(() => client.eval(`performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/tasks').length > ${before}`), "Tasks refresh request");
-  return result;
+  return { state: result.state, summary: result.summary, cards: result.cards, overflow: result.overflow };
 }
 
 async function inspectTaskFailureStates(client) {
@@ -781,6 +781,70 @@ async function inspectTaskFailureStates(client) {
     const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); return url.pathname === '/api/tasks' ? Promise.resolve(new Response(JSON.stringify({ schema_version: 1, status: '${state.name}' }), { status: ${state.status}, headers: { 'Content-Type': 'application/json' } })) : nativeFetch(input, init); }; })();` });
     try { await navigate(client, "/tasks", `Tasks ${state.name}`); await waitFor(() => client.eval(`document.querySelector('[data-tasks-root]')?.dataset.tasksState === '${state.name}'`), `Tasks ${state.name} state`); const result = await client.eval(`({ summary: document.querySelector('[data-tasks-summary]')?.textContent, cards: document.querySelectorAll('.task-card').length })`); if (result.summary !== state.detail || result.cards !== 0) throw new Error(`Tasks ${state.name} contract failed: ${JSON.stringify(result)}`); results.push({ name: state.name, result }); } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
   } return results;
+}
+
+async function inspectRunsWorkspace(client) {
+  await setViewport(client, viewports[1]);
+  await navigate(client, "/runs", "Runs workspace");
+  await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState !== 'loading'"), "Runs ready state");
+  const result = await client.eval(`(() => ({
+    state: document.querySelector('[data-runs-root]')?.dataset.runsState,
+    summary: document.querySelector('[data-runs-summary]')?.textContent,
+    cards: document.querySelectorAll('.run-card').length,
+    rendered: document.querySelector('[data-runs-list]')?.textContent,
+    overflow: document.documentElement.scrollWidth - innerWidth,
+  }))()`);
+  if (!new Set(["ready", "empty"]).has(result.state) || result.overflow > 1 || (result.state === "empty" && (result.summary !== "No current Runs yet." || result.cards !== 0)) || (result.state === "ready" && result.cards === 0) || result.rendered.includes("runtime_run_ref") || result.rendered.includes("state_revision") || result.rendered.includes("events")) throw new Error(`Runs workspace contract failed: ${JSON.stringify({ state: result.state, summary: result.summary, cards: result.cards, overflow: result.overflow })}`);
+  const before = await client.eval("performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/runs').length");
+  await client.eval("document.querySelector('[data-runs-refresh]').click()");
+  await waitFor(() => client.eval(`performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/runs').length > ${before}`), "Runs refresh request");
+  return { state: result.state, summary: result.summary, cards: result.cards, overflow: result.overflow };
+}
+
+async function inspectRunFailureStates(client) {
+  const states = [
+    { name: "unsupported", status: 501, detail: "This Python bridge does not support Run data yet." },
+    { name: "unavailable", status: 503, detail: "Run data is temporarily unavailable. Check the Python connection and retry." },
+    { name: "error", status: 502, detail: "Mentat could not safely read Run data. Try again." },
+  ]; const results = [];
+  for (const state of states) {
+    const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); return url.pathname === '/api/runs' ? Promise.resolve(new Response(JSON.stringify({ schema_version: 1, status: '${state.name}' }), { status: ${state.status}, headers: { 'Content-Type': 'application/json' } })) : nativeFetch(input, init); }; })();` });
+    try { await navigate(client, "/runs", `Runs ${state.name}`); await waitFor(() => client.eval(`document.querySelector('[data-runs-root]')?.dataset.runsState === '${state.name}'`), `Runs ${state.name} state`); const result = await client.eval(`({ summary: document.querySelector('[data-runs-summary]')?.textContent, cards: document.querySelectorAll('.run-card').length })`); if (result.summary !== state.detail || result.cards !== 0) throw new Error(`Runs ${state.name} contract failed: ${JSON.stringify(result)}`); results.push({ name: state.name, result }); } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
+  } return results;
+}
+
+async function inspectRunProjection(client) {
+  await setViewport(client, viewports.at(-1));
+  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); if (url.pathname !== '/api/runs') return nativeFetch(input, init); return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', count: 1, runs: [{ id: 'run_' + 'x'.repeat(124), source: 'task_dispatch', task_id: 'task_1', agent_id: 'agent_researcher', runtime_type: 'hermes', status: 'waiting_for_approval', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T00:00:00Z', updated_at: '2026-08-22T00:01:00Z', started_at: '2026-08-22T00:00:01Z', completed_at: null }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })); }; })();` });
+  try {
+    await navigate(client, "/runs", "Runs projection");
+    await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState === 'ready'"), "Runs projection state");
+    const result = await client.eval(`(() => ({ summary: document.querySelector('[data-runs-summary]')?.textContent, cards: document.querySelectorAll('.run-card').length, rendered: document.querySelector('[data-runs-list]')?.textContent, overflow: document.documentElement.scrollWidth - innerWidth }))()`);
+    if (result.summary !== "1 current Run." || result.cards !== 1 || result.overflow > 1 || !["task_dispatch", "task_1", "agent_researcher", "hermes", "Waiting For Approval", "accepted", "2026-08-22T00:00:00Z", "2026-08-22T00:01:00Z", "2026-08-22T00:00:01Z", "Not completed"].every((value) => result.rendered.includes(value)) || result.rendered.includes("runtime_run_ref") || result.rendered.includes("state_revision")) throw new Error(`Runs projection contract failed: ${JSON.stringify({ summary: result.summary, cards: result.cards, overflow: result.overflow })}`);
+    return { summary: result.summary, cards: result.cards, overflow: result.overflow };
+  } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
+}
+
+async function inspectRunMalformedPayload(client) {
+  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); return url.pathname === '/api/runs' ? Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', runs: [], count: 0, unexpected: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })) : nativeFetch(input, init); }; })();` });
+  try {
+    await navigate(client, "/runs", "Runs malformed payload");
+    await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState === 'error'"), "Runs malformed payload state");
+    const result = await client.eval(`({ summary: document.querySelector('[data-runs-summary]')?.textContent, cards: document.querySelectorAll('.run-card').length })`);
+    if (result.summary !== "Mentat could not safely read Run data. Try again." || result.cards !== 0) throw new Error(`Runs malformed payload contract failed: ${JSON.stringify(result)}`);
+    return result;
+  } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
+}
+
+async function inspectRunRejectedFetch(client) {
+  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); return url.pathname === '/api/runs' ? Promise.reject(new TypeError('runs_unavailable')) : nativeFetch(input, init); }; })();` });
+  try {
+    await navigate(client, "/runs", "Runs rejected fetch");
+    await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState === 'error'"), "Runs rejected fetch state");
+    const result = await client.eval(`({ summary: document.querySelector('[data-runs-summary]')?.textContent, cards: document.querySelectorAll('.run-card').length })`);
+    if (result.summary !== "Mentat could not safely read Run data. Try again." || result.cards !== 0) throw new Error(`Runs rejected fetch contract failed: ${JSON.stringify(result)}`);
+    return result;
+  } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
 }
 
 async function inspectCompactPointerAndTooltip(client) {
@@ -1288,6 +1352,11 @@ async function main() {
     const agentFailureResult = await inspectAgentFailureStates(client);
     const tasksResult = await inspectTasksWorkspace(client);
     const taskFailureResult = await inspectTaskFailureStates(client);
+    const runsResult = await inspectRunsWorkspace(client);
+    const runProjectionResult = await inspectRunProjection(client);
+    const runMalformedResult = await inspectRunMalformedPayload(client);
+    const runRejectedResult = await inspectRunRejectedFetch(client);
+    const runFailureResult = await inspectRunFailureStates(client);
     const unavailableResult = await inspectUnavailableBridge(client);
     const compactResult = await inspectCompactPointerAndTooltip(client);
     const compactHeightResult = await inspectCompactShortHeight(client);
@@ -1308,6 +1377,11 @@ async function main() {
       agentFailures: agentFailureResult,
       tasks: tasksResult,
       taskFailures: taskFailureResult,
+      runs: runsResult,
+      runProjection: runProjectionResult,
+      runMalformed: runMalformedResult,
+      runRejected: runRejectedResult,
+      runFailures: runFailureResult,
       unavailable: unavailableResult,
       compact: compactResult,
       compactHeight: compactHeightResult,

@@ -49,7 +49,9 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
   assert.match(routeSources.get("/agents") ?? "", /Loading canonical Agents/);
   assert.match(routeSources.get("/tasks") ?? "", /data-tasks-root/);
   assert.match(routeSources.get("/tasks") ?? "", /Loading current Tasks/);
-  assert.match(routeSources.get("/runs") ?? "", /Waiting for the Runs data slice/);
+  assert.match(routeSources.get("/runs") ?? "", /data-runs-root/);
+  assert.match(routeSources.get("/runs") ?? "", /Loading current Runs/);
+  assert.match(routeSources.get("/runs") ?? "", /aria-live="polite" className="runs-summary"/);
 });
 
 test("contrast preference is applied before paint with safe system fallback", () => {
@@ -121,8 +123,12 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.match(runtime, /fetch\("\/api\/bridge\/health"/);
   assert.match(runtime, /fetch\("\/api\/agents"/);
   assert.match(runtime, /fetch\("\/api\/tasks"/);
+  assert.match(runtime, /fetch\("\/api\/runs"/);
   assert.match(runtime, /data-agents-refresh/);
   assert.match(runtime, /data-tasks-refresh/);
+  assert.match(runtime, /data-runs-refresh/);
+  assert.match(runtime, /textContent = run\.id/);
+  assert.match(runtime, /readableRunStatus/);
   assert.match(runtime, /textContent = agent\.name/);
   assert.doesNotMatch(runtime, /MENTAT_BRIDGE_TOKEN|X-Mentat-Bridge-Token|local path/);
   assert.match(runtime, /AbortSignal\.timeout\(3500\)/);
