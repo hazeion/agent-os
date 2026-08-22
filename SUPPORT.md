@@ -1,39 +1,49 @@
-# Beta Support
+# Beta support
 
-Mentat is a single-developer beta. Support is best effort, with no guaranteed
+Mentat is a single-developer beta. Support is best effort and has no guaranteed
 response time.
 
 ## Current setup
 
-- **Development build:** Python 3.11–3.13 and Git on macOS, Windows, or Linux
-- **Agent features:** a supported Hermes runtime; planning features still work
-  when Hermes is unavailable
-- **Access:** one local operator; the Mentat dashboard stays on your computer
+The default Python app needs:
 
-macOS and Windows are the tier-one beta targets. Linux is a preview platform.
-There is no public-beta release yet, so use the
+- Python 3.11-3.13
+- Git
+- macOS, Windows, or Linux
+
+Agent features need a supported Hermes runtime. Planning still works when
+Hermes is unavailable.
+
+The optional Next.js preview also needs Node 24.19 or newer within Node 24. It
+is a source preview and is not included in native packages yet.
+
+macOS and Windows are the main beta platforms. Linux is a preview platform.
+There is no public beta release yet, so use the
 [README source setup](README.md#quick-start) unless you received a private
-release-candidate invitation.
+release candidate invitation.
 
-Invited testers should use the exact build and short
-[limited beta checklist](BETA_TESTING.md) provided by the maintainer. Active,
-public-safe problems and workarounds appear in [known beta issues](KNOWN_ISSUES.md).
+Invited testers should use the exact build in their invitation and follow the
+[limited beta checklist](BETA_TESTING.md).
 
 ## Known limitations
 
-- Mentat is not a hosted service and does not support remote browser access or
-  multiple operators.
-- Remote Hermes features appear only when that runtime advertises Mentat's
-  exact supported contracts. The maintained fork is currently the verified
-  beta runtime; other Hermes releases need fresh compatibility evidence.
+- Mentat is for one local operator. It is not a hosted service and does not
+  support remote browser access.
+- Remote Hermes features appear only when the runtime advertises the exact
+  contract Mentat needs.
 - Google Calendar, Obsidian notes, Hermes sessions, and Hermes cron inventory
-  are read-only. Mentat does not queue or edit cron jobs.
+  are read-only.
+- Mentat does not queue or edit cron jobs.
 - Updates are manual. Back up your data before upgrading.
-- macOS releases use separate native packages. Apple Silicon (`arm64`) is the
-  recommended default; Intel Macs use the `x86_64` package.
-- Native signing/notarization and public release-channel settings remain release
-  gates; they are not bypassed by source builds.
+- macOS packages are separate for Apple Silicon and Intel. Apple Silicon is the
+  recommended package.
+- Signing, notarization, and public release settings are still release gates.
 
-For ordinary bugs, use the [bug report form](https://github.com/hazeion/agent-os/issues/new?template=bug_report.yml).
-For feature ideas, use the [feature request form](https://github.com/hazeion/agent-os/issues/new?template=feature_request.yml).
-For possible security problems, use the [private security advisory form](https://github.com/hazeion/agent-os/security/advisories/new).
+Check [known beta issues](KNOWN_ISSUES.md) for current problems and
+workarounds.
+
+Use the [bug report form](https://github.com/hazeion/agent-os/issues/new?template=bug_report.yml)
+for ordinary bugs. Use the
+[feature request form](https://github.com/hazeion/agent-os/issues/new?template=feature_request.yml)
+for ideas. Report security problems through the
+[private security advisory form](https://github.com/hazeion/agent-os/security/advisories/new).

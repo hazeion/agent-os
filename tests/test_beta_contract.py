@@ -127,7 +127,7 @@ class BetaContractTests(unittest.TestCase):
         normalized_readme = " ".join(README.replace(">", "").split())
         self.assertIn("There is no public installer yet", normalized_readme)
         self.assertIn("## Quick start", README)
-        self.assertIn("[Python 3.11–3.13]", README)
+        self.assertIn("[Python 3.11-3.13]", README)
         for first_run_step in (
             "git clone https://github.com/hazeion/agent-os.git",
             "python -m pip install -r requirements.txt",

@@ -1,19 +1,77 @@
-# Mentat Architecture and Capability Contract
+# Mentat architecture and capability contract
 
-## Product role
+## What Mentat is
 
-Mentat is migrating from a local-first, capability-scoped Hermes control plane
-into a runtime-neutral multi-agent operations console and orchestrator. The
-strangler migration is governed by [MENTAT_MULTI_AGENT_PIVOT.md](MENTAT_MULTI_AGENT_PIVOT.md):
-Mentat owns workflow and authority, while Hermes remains the first supported
-execution runtime behind an adapter. The current server and browser remain on
-the operator's device, and all existing Hermes safety contracts continue to
-apply during the migration.
+Mentat is a local operations console for planning work and running agents. It
+owns Agent, Task, Run, and event records. Agent runtimes execute the work.
+Hermes is the first supported runtime.
 
-Mentat is not a general-purpose editor for runtime files. It may observe Hermes
-state broadly, but it may mutate Hermes only through explicit, supported
-capabilities implemented by the Hermes adapter. Future runtimes must provide
-their own capability-scoped adapters without weakening this boundary.
+The migration keeps the current Python app working while new parts are added.
+Python owns local data, Hermes access, and the existing safety checks. New
+runtimes must use small, named capabilities instead of direct access to runtime
+files.
+
+Mentat may read supported Hermes state. It may change Hermes only through an
+approved adapter operation. It must never edit Hermes core files directly.
+
+## Current local layout
+
+The Python app and `public/` interface remain the default product on port 8888.
+The optional Next.js preview runs on port 8890. Both listen only on loopback.
+
+```text
+Browser
+  -> Node gateway on 127.0.0.1:8890
+  -> fixed same-origin API route
+  -> private Python Local Bridge
+  -> Mentat data and Hermes adapters
+```
+
+Node is the only browser-facing process in the preview. Python remains the
+authority for SQLite, files, credentials, Hermes, Tasks, Runs, and Agents.
+
+## Node preview boundary
+
+The preview requires Node `>=24.19.0 <25`. Build `web/` and start it with:
+
+```bash
+npm --prefix web run build
+python scripts/mentat_web_preview.py
+```
+
+The supervisor creates a private token, starts the Python bridge on an
+ephemeral loopback port, waits for `/bridge/v1/health`, and then starts Node.
+The token stays in child process environments. It does not appear in command
+arguments, logs, browser responses, or saved data.
+
+The bridge accepts only its exact Host and port, a loopback client, and one
+constant-time token match. Browser Origin, Cookie, and `Sec-Fetch-Site` headers
+are rejected. The bridge has no catch-all route, generic proxy, state mutation,
+SQLite access, or direct Hermes access.
+
+The Node request boundary covers every public path, including framework
+assets. It accepts only the configured loopback Host and port. Cross-site,
+mismatched-origin, and malformed fetch metadata requests fail closed.
+
+The browser can call one fixed route: `/api/bridge/health`. Node builds the
+private request on the server, checks the bounded response, and returns only
+safe health fields. Browser input cannot choose the bridge path, target,
+headers, or token.
+
+The first shell is prerendered and has no React hydration runtime. One fixed
+local script reads the health route after first paint. Later routes may add
+client code when they need real interaction, but each route must keep its own
+performance budget.
+
+The performance gate uses Lighthouse 13.4.1 and Chrome for Testing
+152.0.7923.0. It runs three desktop audits and three mobile audits. Every
+category must score 100. Each audit gets a fresh browser and profile. Timeouts
+and signals clean up Lighthouse, Chrome, and temporary files.
+
+The supervisor watches Node and Python. If either process exits, it stops the
+other one within a bounded timeout. The browser gateway stops first during a
+normal shutdown. The web package has no production `npm start` shortcut because
+the supervisor must own both processes.
 
 ## Identity model
 
@@ -155,9 +213,9 @@ historical Tasks receive deterministic canonical defaults; duplicate IDs,
 invalid dependency graphs, unsafe metadata, source drift, occupied destinations,
 and partial writes fail closed.
 
-Once the receipt exists, every live Task workflow—including delegation
+Once the receipt exists, every live Task workflow, including delegation
 reservations, calendar links, search, recurrence, attachment reconciliation,
-and webhook-triggered refresh—reads and mutates SQLite. The centralized list
+and webhook-triggered refresh, reads and mutates SQLite. The centralized list
 mutator adapter preserves public payloads and order while maintaining internal
 monotonic revisions. A zero-Task receipt is authoritative. Runtime code never
 reads, writes, shadows, or falls back to stale `tasks.json` after cutover.
@@ -238,8 +296,8 @@ identity-matching, forward-only status and normalized events. Webhooks may wake
 this readback; their payloads never prove Run state.
 
 The durable Task snapshot is the bounded execution contract actually delivered
-to a runtime—identity, title/objective, status, assignment, required
-capabilities, and acceptance criteria—not a duplicate of unrelated planning
+to a runtime: identity, title/objective, status, assignment, required
+capabilities, and acceptance criteria. It is not a duplicate of unrelated planning
 metadata. Canonical Task identifiers retain the Task repository's 160-character
 `[A-Za-z0-9_.:@-]` contract across runtime contexts and Run persistence; Run,
 Agent, runtime, dispatch, and normalized event identifiers keep their narrower
@@ -613,8 +671,8 @@ Creating a delegation requires:
 A changed task or intent invalidates confirmation. Missing capabilities and
 unknown boards/profiles fail closed. If Hermes accepts a mutation but its state
 cannot be read back, Mentat returns a partial failure and does not claim that
-the operation was verified. Follow-up remote actions—reply, retry, reclaim/stop,
-request revision, and mark blocked—also require an exact preview and confirmation
+the operation was verified. Follow-up remote actions such as reply, retry,
+reclaim/stop, request revision, and mark blocked also require an exact preview and confirmation
 and are refreshed from Hermes after mutation. Result acceptance is a local review
 decision that completes the Mentat task without an additional Hermes mutation.
 Action previews refresh and bind the live Hermes task status and latest run

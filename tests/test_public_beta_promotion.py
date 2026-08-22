@@ -331,6 +331,7 @@ Aggregate results
         exit_form = (ROOT / ".github/ISSUE_TEMPLATE/beta_exit_summary.yml").read_text()
         road = (ROOT / "ROAD_TO_BETA.md").read_text()
         readme = (ROOT / "README.md").read_text()
+        normalized_readme = " ".join(readme.split())
         for required in (
             "Milestone 6 is complete",
             "Milestone 7 is complete",
@@ -349,10 +350,10 @@ Aggregate results
         self.assertIn("No unresolved P0 or P1", exit_form)
         self.assertIn("Repository preparation status", road)
         self.assertIn("Dispatch remains blocked", road)
-        self.assertLess(readme.index("## Quick start"), readme.index("## Want the technical details?"))
+        self.assertLess(readme.index("## Quick start"), readme.index("## More documentation"))
         for required in ("There is no public installer yet", "git clone", "python scripts/mentat_setup.py", "./run.sh"):
             self.assertIn(required, readme)
-        self.assertIn("invited to test a signed release candidate", readme)
+        self.assertIn("invited to test a signed release candidate", normalized_readme)
 
 
 if __name__ == "__main__":

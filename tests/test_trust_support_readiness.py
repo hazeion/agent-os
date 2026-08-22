@@ -140,7 +140,7 @@ class TrustSupportDocumentTests(unittest.TestCase):
 
     def test_readme_is_beginner_first_and_surfaces_preinstall_support(self):
         readme = self.read("README.md")
-        self.assertLess(readme.index("## Quick start"), readme.index("## Want the technical details?"))
+        self.assertLess(readme.index("## Quick start"), readme.index("## More documentation"))
         self.assertIn("supported platforms and known", readme)
         self.assertIn("SUPPORT.md", readme)
         self.assertIn("PRIVACY.md", readme)

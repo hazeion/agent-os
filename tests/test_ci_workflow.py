@@ -68,7 +68,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn(setup_python, workflow)
         self.assertIn(setup_node, workflow)
-        self.assertIn("node-version: 24.18.0", workflow)
+        self.assertIn("node-version: 24.19.0", workflow)
         self.assertIn("python -m pip install -r requirements.txt", workflow)
         action_uses = [
             line.strip()
@@ -99,6 +99,8 @@ class CiWorkflowContractTests(unittest.TestCase):
             "node --check public/core.js",
             "node --check public/app.js",
             "node --check scripts/browser_smoke.mjs",
+            "node --check scripts/web_foundation_smoke.mjs",
+            "node --check web/scripts/lighthouse-gate.mjs",
         ):
             self.assertEqual(workflow.count(f"run: {command}"), 2)
         self.assertEqual(

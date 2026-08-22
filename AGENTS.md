@@ -25,9 +25,18 @@ The user-facing product name and repository naming convention is **Mentat**.
 
 ## Architecture
 
-Mentat is a small Python server with a static frontend.
+Mentat has two local interfaces during the migration:
 
-Core pieces:
+- The Python app on port 8888 is the current compatibility product.
+- The optional Next.js preview on port 8890 is the new interface under
+  development.
+
+Python still owns local data, Hermes access, and safety checks. The Node gateway
+reaches Python through small, named bridge capabilities. Do not add a generic
+proxy or move SQLite, credentials, filesystem access, or Hermes authority into
+the browser layer.
+
+Main files:
 
 ```text
 server.py
@@ -37,6 +46,7 @@ task_planning.py
 task_repository.py
 runtime_config.py
 mentat_lifecycle.py
+mentat/local_bridge.py
 mentat.toml
 run.sh / stop.sh / status.sh
 run.bat / stop.bat / status.bat
@@ -44,8 +54,10 @@ public/index.html
 public/styles.css
 public/core.js
 public/app.js
+web/
+scripts/mentat_web_preview.py
 data/projects.json
-data/tasks.json
+data/tasks.json (seed and recovery only after SQLite cutover)
 data/agents.json
 data/attention.json
 data/calendar.json
@@ -57,7 +69,8 @@ README.md
 Current priorities:
 
 - local-only dashboard experience
-- clean dark UI
+- the Emerald Operations interface in `web/`
+- a small, secure boundary between Node and Python
 - project/task visibility and actionability
 - day planning, review, and personal task-management depth
 - durable task delegation through Hermes' supported Kanban adapter
@@ -262,7 +275,7 @@ See `ARCHITECTURE.md` for the complete capability and mutation contract.
 
 ## Setup and run
 
-Install dependencies:
+Install Python dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
@@ -299,6 +312,18 @@ Default local URL:
 http://localhost:8888
 ```
 
+To build and run the optional Next.js preview:
+
+```bash
+npm --prefix web ci --ignore-scripts
+npm --prefix web run check
+npm --prefix web run build
+python scripts/mentat_web_preview.py
+```
+
+Open `http://localhost:8890`. Node must satisfy the version in `.node-version`
+and `web/package.json`.
+
 Useful commands:
 
 ```bash
@@ -319,7 +344,9 @@ python -m unittest discover -s tests -v
 ## UI and implementation guidance
 
 - Prefer simple, readable code over clever abstractions.
-- Preserve the clean dark styling direction.
+- Use the Emerald Operations design system for new work in `web/`.
+- Treat `public/` as a compatibility interface. Fix regressions there, but do
+  not build the new orchestration UI in it.
 - Keep sibling action buttons in compact groups aligned to one edge of their
   panel or section. Do not use `space-between` to distribute individual buttons
   across the available width. A panel heading may separate its title/content

@@ -1,0 +1,130 @@
+{
+  "artifact_schema": 1,
+  "slice": "2a-a-node-runtime-foundation",
+  "captured_at": "2026-08-22T07:36:52Z",
+  "environment": {
+    "platform": "macOS 15.7.7 x86_64",
+    "node": "24.19.0",
+    "npm": "11.17.0",
+    "chrome_for_testing": "152.0.7923.0",
+    "lighthouse": "13.4.1",
+    "url": "http://127.0.0.1:8896/",
+    "build": "Next.js 16.3.2 production standalone"
+  },
+  "configurations": {
+    "desktop": {
+      "preset": "desktop",
+      "throttling_method": "provided",
+      "runs": 3
+    },
+    "mobile": {
+      "form_factor": "mobile",
+      "throttling_method": "simulate",
+      "screen_emulation": {
+        "width": 390,
+        "height": 844,
+        "device_scale_factor": 1,
+        "mobile": true
+      },
+      "runs": 3
+    },
+    "categories": [
+      "performance",
+      "accessibility",
+      "best-practices",
+      "seo"
+    ],
+    "chrome_flags": [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--disable-dev-shm-usage"
+    ],
+    "max_wait_for_load_ms": 45000
+  },
+  "final_runs": {
+    "desktop": [
+      {
+        "run": 1,
+        "scores": [100, 100, 100, 100],
+        "fcp_ms": 237.782,
+        "lcp_ms": 237.782,
+        "tbt_ms": 0,
+        "cls": 0,
+        "transfer_bytes": 8905
+      },
+      {
+        "run": 2,
+        "scores": [100, 100, 100, 100],
+        "fcp_ms": 236.042,
+        "lcp_ms": 236.042,
+        "tbt_ms": 0,
+        "cls": 0,
+        "transfer_bytes": 8905
+      },
+      {
+        "run": 3,
+        "scores": [100, 100, 100, 100],
+        "fcp_ms": 238.507,
+        "lcp_ms": 238.507,
+        "tbt_ms": 0,
+        "cls": 0,
+        "transfer_bytes": 8905
+      }
+    ],
+    "mobile": [
+      {
+        "run": 1,
+        "scores": [100, 100, 100, 100],
+        "fcp_ms": 758.085,
+        "lcp_ms": 1298.1275,
+        "tbt_ms": 0,
+        "cls": 0,
+        "transfer_bytes": 8905
+      },
+      {
+        "run": 2,
+        "scores": [100, 100, 100, 100],
+        "fcp_ms": 760.1617,
+        "lcp_ms": 1261.24255,
+        "tbt_ms": 0,
+        "cls": 0,
+        "transfer_bytes": 8905
+      },
+      {
+        "run": 3,
+        "scores": [100, 100, 100, 100],
+        "fcp_ms": 983.8512,
+        "lcp_ms": 1269.7768,
+        "tbt_ms": 0,
+        "cls": 0,
+        "transfer_bytes": 8905
+      }
+    ]
+  },
+  "trace_driven_change": {
+    "rejected_hydrated_mobile": {
+      "scores": [97, 100, 100, 100],
+      "fcp_ms": 772.9175,
+      "lcp_ms": 2207.9175,
+      "tbt_ms": 128,
+      "cls": 0,
+      "transfer_bytes": 149030,
+      "estimated_unused_javascript_bytes": 54025
+    },
+    "finding": "The App Router hydration runtime dominated mobile script evaluation even though the foundation shell had no interactive React state.",
+    "resolution": "Keep the shell authored and prerendered by the App Router and Tailwind build, publish a validated no-hydration production shell, and retain one fixed progressive-enhancement script for the same-origin bridge health projection.",
+    "final_diagnostics": {
+      "browser_console_errors": 0,
+      "estimated_unused_javascript_bytes": 0,
+      "framework_hydration_scripts": 0
+    }
+  },
+  "notes": [
+    "Every final run used the locked Lighthouse 13.4.1 CLI in its own process and a fresh profile owned by pinned Chrome for Testing 152.0.7923.0 against the same production standalone build.",
+    "The exact reproducible gate is CHROME_PATH=<pinned Chrome for Testing executable> MENTAT_WEB_BASE_URL=http://127.0.0.1:<preview-port> npm --prefix web run lighthouse:gate; required CI runs the same script.",
+    "The gate verifies the exact browser version, parses six temporary raw reports, requires every category score to equal 100, emits compact metrics, and removes raw files and browser profiles afterward.",
+    "Required CI uploads a bounded owner-private failure summary with the active run and completed metrics when an audit fails.",
+    "Score arrays are ordered Performance, Accessibility, Best Practices, and SEO."
+  ]
+}

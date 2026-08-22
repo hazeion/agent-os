@@ -100,7 +100,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 24.18.0
+          node-version: 24.19.0
           package-manager-cache: false
 
       - name: Install pinned runtime dependencies
@@ -131,6 +131,100 @@ jobs:
           curl --fail --silent http://127.0.0.1:8895/api/health >/dev/null
           node scripts/browser_smoke.mjs
           git diff --exit-code -- data/agents.json
+
+  web-foundation:
+    name: Node runtime foundation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install the frozen web dependency tree
+        run: npm --prefix web ci --ignore-scripts
+
+      - name: Install pinned Chrome for Testing
+        shell: bash
+        env:
+          CHROME_FOR_TESTING_VERSION: 152.0.7923.0
+        run: |
+          test "$(tr -d '\r\n' < .chrome-for-testing-version)" = "$CHROME_FOR_TESTING_VERSION"
+          chrome_path="$(web/node_modules/.bin/browsers install "chrome@$CHROME_FOR_TESTING_VERSION" --path "$RUNNER_TEMP/chrome-for-testing" --format '{{path}}')"
+          test -x "$chrome_path"
+          echo "MENTAT_LIGHTHOUSE_CHROME_PATH=$chrome_path" >> "$GITHUB_ENV"
+
+      - name: Verify and build the production web foundation
+        run: |
+          npm --prefix web run check
+          npm --prefix web run build
+          npm --prefix web audit --audit-level=high
+          python -m unittest tests.test_mentat_local_bridge tests.test_mentat_web_preview -v
+
+      - name: Run the production Node and Python browser smoke
+        shell: bash
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          MENTAT_WEB_BASE_URL: http://127.0.0.1:8896
+          MENTAT_WEB_BROWSER_DEBUG_PORT: "9336"
+          MENTAT_WEB_BROWSER_RUNTIME_DIR: ${{ runner.temp }}/web-foundation-smoke-runtime
+          MENTAT_LIGHTHOUSE_FAILURE_PATH: ${{ runner.temp }}/mentat-lighthouse-failure.json
+        run: |
+          python scripts/mentat_web_preview.py --port 8896 >"$RUNNER_TEMP/mentat-web-preview.log" 2>&1 &
+          preview_pid=$!
+          cleanup() {
+            kill -TERM "$preview_pid" 2>/dev/null || true
+            wait "$preview_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8896/ >/dev/null
+          curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Host: attacker.example' http://127.0.0.1:8896/)" = 403
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Origin: https://attacker.example' --header 'Sec-Fetch-Site: cross-site' http://127.0.0.1:8896/)" = 403
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Sec-Fetch-Site: bogus' http://127.0.0.1:8896/)" = 403
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Sec-Fetch-Site: cross-site, same-origin' http://127.0.0.1:8896/)" = 403
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Host: attacker.example' http://127.0.0.1:8896/_next/static/forged-host-probe.js)" = 403
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Host: attacker.example' http://127.0.0.1:8896/_next/image)" = 403
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Host: attacker.example' http://127.0.0.1:8896/favicon.ico)" = 403
+          node scripts/web_foundation_smoke.mjs
+          CHROME_PATH="$MENTAT_LIGHTHOUSE_CHROME_PATH" npm --prefix web run lighthouse:gate
+          kill -TERM "$preview_pid"
+          wait "$preview_pid"
+          if curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then
+            echo 'Node foundation remained healthy after supervisor stop' >&2
+            exit 1
+          fi
+          trap - EXIT
+          python scripts/verify_web_preview_lifecycle.py
+
+      - name: Upload bounded Lighthouse failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-foundation-lighthouse-failure
+          path: ${{ runner.temp }}/mentat-lighthouse-failure.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   security-scan:
     name: Dependency and secret scan
@@ -167,6 +261,7 @@ jobs:
     needs:
       - python-package
       - browser-smoke
+      - web-foundation
       - security-scan
     runs-on: ubuntu-24.04
     steps:
@@ -174,8 +269,10 @@ jobs:
         env:
           PACKAGE_RESULT: ${{ needs.python-package.result }}
           BROWSER_RESULT: ${{ needs.browser-smoke.result }}
+          WEB_RESULT: ${{ needs.web-foundation.result }}
           SECURITY_RESULT: ${{ needs.security-scan.result }}
         run: |
           test "$PACKAGE_RESULT" = success
           test "$BROWSER_RESULT" = success
+          test "$WEB_RESULT" = success
           test "$SECURITY_RESULT" = success

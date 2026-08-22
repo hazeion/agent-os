@@ -1,275 +1,236 @@
-# Mentat Pivot Implementation Plan
+# Mentat pivot implementation plan
 
-**Status:** Active implementation roadmap
-**Last updated:** 2026-08-21
+Status: Active roadmap
 
-This document translates the architectural phases in
-`MENTAT_MULTI_AGENT_PIVOT.md` into small, reviewable delivery slices. It is the
-canonical place to determine what has shipped, what is next, and which work is
-only provisional.
+Last updated: 2026-08-22
 
-Read this plan with:
+This file shows what is complete, what is active, and what comes next. It does
+not approve a proposed slice. Each nontrivial slice needs its own approved scope
+and test plan.
 
-- `MENTAT_MULTI_AGENT_PIVOT.md` for the target architecture and product direction;
-- `design/system-design/MENTAT_SQLITE_ORCHESTRATION_SYSTEM_DESIGN.docx` for the
-  approved middle-ground SQLite boundary and database-convergence reference;
-- `ARCHITECTURE.md` for currently enforced behavior and safety boundaries;
-- `AGENTS.md` for repository-wide implementation rules;
-- the linked review log for the exact approved contract and evidence of a
-  completed or active slice.
+Read it with:
 
-Do not treat a provisional slice summary here as implementation authorization.
-Every non-trivial slice still requires an approved contract and test strategy in
-its own review log before implementation.
+- [MENTAT_MULTI_AGENT_PIVOT.md](MENTAT_MULTI_AGENT_PIVOT.md) for the target
+  architecture
+- [ARCHITECTURE.md](ARCHITECTURE.md) for current safety rules
+- the active slice review log for exact scope and evidence
 
-## Status legend
+## Status labels
 
-- **Complete:** merged into `main`; the linked review log contains the evidence.
-  A closure branch may stage its intended post-merge `Complete` state as part
-  of the closure PR under review; that transition is not canonical and does not
-  authorize the next slice until the closure PR merges into `main`.
-- **In progress:** contract and tests are approved on an active feature branch.
-- **Proposed:** recommended next boundary; contract and tests still require
-  explicit approval.
-- **Provisional:** sequenced for planning, but its boundary may change based on
-  evidence from earlier slices.
-- **Deferred:** intentionally outside the current implementation horizon.
+- `Complete`: merged into `main`
+- `In progress`: approved work on an active branch
+- `Proposed`: recommended next slice, not yet approved
+- `Provisional`: later work that may change
+- `Deferred`: outside the current work window
+
+A feature branch may show its intended post-merge status. The version on
+`main` remains canonical.
 
 ## Current position
 
-Phase 0, the Hermes native-webhook migration and fallback audit, is complete.
-The first additive Phase 1 seam is also complete: Mentat now has runtime-neutral
-Agent, Task, Run, AgentEvent, RuntimeContext, capability, registry, and
-AgentRuntime contracts, with Hermes wrapped as the first runtime adapter.
+The runtime-neutral Python foundation and SQLite orchestration work are
+complete through Slice 1C-D.
 
-Slices 1B and 1C-A through 1C-D are complete. The next proposed slice is **2A —
-New Frontend Foundation**. The minimum durable orchestration state, dispatch
-boundaries, SQLite Task cleanup, compatibility evidence, and legacy browser
-quality budgets are now in place, so the new frontend can consume real
-Mentat-owned APIs instead of embedding Hermes profiles or temporary mock data.
+Slice 2A-A is in progress in PR #114. It adds the supervised Node 24 gateway,
+the private Python health bridge, a small Next.js shell, and the repeatable
+Lighthouse gate. It does not replace the Python app.
 
-## Slice roadmap
+After 2A-A passes CI and merges, the next proposed slice is 2A-B: the Emerald
+Operations application shell.
 
-| Slice | Status | Outcome | Dependency |
+## Roadmap
+
+| Slice | Status | Result | Depends on |
 | --- | --- | --- | --- |
-| 0 | Complete | Hermes webhooks wake authoritative Mentat readbacks; compatibility fallbacks are classified and retained or retired deliberately. | Existing Hermes integration |
-| 1A | Complete | Runtime-neutral contracts and `HermesRuntime` adapter surround existing Console execution. | Slice 0 |
-| 1B | Complete | Durable Mentat Agent identities and separate runtime-configuration bindings. | Slice 1A |
-| 1C-A | Complete | Extend the existing private `mentat.sqlite3` with a canonical Task repository, exact migration preview, deterministic export, and backup-safe schema migration; do not cut over live APIs yet. | Slice 1B |
-| 1C-B | Complete | Atomically migrate `tasks.json` and cut every live Task workflow over to SQLite with no dual reads or writes. | Slice 1C-A |
-| 1C-C | Complete | Schema/API/dispatch/reconciliation/retention and schema-7 backup implementation, full local verification, adversarial review, Lighthouse gates, and post-merge Agent Registry correction are complete. | Slice 1C-B |
-| 1C-D | Complete | Removed obsolete live Task JSON runtime paths, completed compatibility and browser evidence, fixed deterministic Home layout shift, and established explicit legacy performance budgets. | Slice 1C-C |
-| 2A | Proposed | Next.js/React/TypeScript/Tailwind application foundation and shared Mentat design system; repeatable Lighthouse 100/100/100/100 is required before replacing the legacy frontend. | Slice 1C-D |
-| 2B | Provisional | Agents, Tasks, and Runs views backed by real orchestration APIs. | Slice 2A |
-| 2C | Provisional | Normalized SSE run timeline, per-run messaging, stop controls, and supported approvals. | Slice 2B |
-| 3A | Provisional | Codex runtime adapter with explicit capability and credential boundaries. | Slice 2C |
-| 3B | Provisional | Hermes and Codex run concurrently in the same Mentat interface. | Slice 3A |
-| 3C | Provisional | Migrate the separate Agent Registry into `mentat.sqlite3` so all Mentat-owned durable relational state uses one unified database and backup unit. | Slice 3B |
-| 4+ | Deferred | Shared tools, policy and credentials, dynamic routing, then evaluated A2A/MCP delegation. | Slice 3C |
+| 0 | Complete | Hermes webhooks trigger safe Mentat readbacks and normalized events. | Existing Hermes integration |
+| 1A | Complete | Runtime-neutral Agent, Task, Run, event, and runtime contracts wrap Hermes. | Slice 0 |
+| 1B | Complete | Mentat Agents and runtime bindings are durable and separate. | Slice 1A |
+| 1C-A to 1C-D | Complete | SQLite owns Tasks, Runs, and events. Live Task paths no longer use JSON. | Slice 1B |
+| 2A-A | In progress | Node 24 gateway, private Python bridge, minimal Next.js shell, and six-run Lighthouse gate. | Slice 1C-D |
+| 2A-B | Proposed | Emerald Operations shell, tokens, navigation, route frames, and shared UI basics. | Slice 2A-A |
+| 2B-A | Provisional | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
+| 2B-B | Provisional | Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
+| 2B-C | Provisional | Runs route backed by normalized Run and event APIs. | Slice 2B-B |
+| 2C-A | Provisional | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
+| 2C-B | Provisional | Messaging, stop controls, and supported approvals. | Slice 2C-A |
+| 2D | Provisional | Production packaging, launch, rollback, and legacy interface cutover. | Slice 2C-B |
+| 3A | Provisional | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
+| 3B | Provisional | Hermes and Codex run together in one interface. | Slice 3A |
+| 3C | Provisional | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
+| 4+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 3C |
 
-## Slice details
+## Completed foundation
 
-### Slice 0 — Hermes webhook boundary
+### Slice 0: Hermes webhook boundary
 
-Status: **Complete**
+Hermes webhooks are authenticated freshness hints. Mentat performs its own
+readback before changing state.
 
-Hermes native webhooks are bounded, authenticated freshness hints. Mentat
-discards untrusted event-specific payload fields, performs authoritative
-read-back, and retains reconciliation where required. Completed Milestone 9
-review records under `reviews/2026-08-10-*`, `reviews/2026-08-14-*`, and
-`reviews/2026-08-17-hermes-fallback-retirement-audit.md` contain the exact
-contracts and evidence.
+Evidence is stored in the `reviews/2026-08-10-*`, `reviews/2026-08-14-*`, and
+`reviews/2026-08-17-hermes-fallback-retirement-audit.md` records.
 
-### Slice 1A — AgentRuntime boundary
+### Slice 1A: runtime contract
 
-Status: **Complete**
-
-Outcome:
-
-- runtime-neutral Agent, Task, Run, AgentEvent, RuntimeContext, capability, and
-  AgentRuntime contracts;
-- one deterministic runtime registry;
-- Hermes run/event normalization;
-- compatibility delegation to the existing Hermes Console handlers;
-- no second runtime, concurrency, durable Agent registry, or new UI.
+Mentat has runtime-neutral Agent, Task, Run, event, context, capability, and
+runtime contracts. `HermesRuntime` is the first adapter.
 
 Review log: `reviews/2026-08-17-mentat-agent-runtime-boundary.md`
 
-### Slice 1B — Durable Agent Registry and Runtime Bindings
+### Slice 1B: durable Agent Registry
 
-Status: **Complete**
+Mentat Agents have their own IDs and private SQLite records. Hermes profile
+bindings are adapter-owned references and are never returned to the browser.
 
-Smallest useful outcome:
+Review log: `reviews/2026-08-18-mentat-durable-agent-registry.md`
 
-> Mentat can create and retrieve persistent Mentat-owned agents whose identity
-> remains separate from their Hermes runtime/profile binding.
+### Slices 1C-A to 1C-D: SQLite orchestration
 
-Recommended boundary:
+These slices moved Tasks, Runs, and normalized events into private SQLite
+storage.
 
-- add owner-private SQLite storage for Mentat Agents and runtime configurations;
-- store Agent identity, name, declared capabilities, runtime type, and a
-  separate adapter-owned runtime binding;
-- expose bounded runtime-neutral create/list operations;
-- preserve Agents across restart and the existing private backup/restore path;
-- keep `data/agents.json` as heartbeat observations, not the canonical registry;
-- support Hermes bindings only in this slice without storing credentials;
-- leave edits, deletion, execution dispatch, UI, and profile auto-import for
-  separately approved work.
+Important rules:
 
-The approved acceptance criteria, tests, branch, rollback behavior, current
-evidence, and resume point are recorded in
-`reviews/2026-08-18-mentat-durable-agent-registry.md`.
+- `mentat.sqlite3` owns Tasks, Runs, and events.
+- `agent-registry.sqlite3` owns Agent identity and runtime bindings until 3C.
+- `tasks.json` is a seed or recovery file, not live Task state.
+- There is no live dual read or dual write path.
+- Runtime-specific limits stay inside their adapters.
 
-### Slices 1C-A through 1C-D — SQLite orchestration foundation and cutover
-
-Status: **1C-A through 1C-D complete**
-
-Approved architectural boundary:
-
-- extend the existing owner-private `mentat.sqlite3`; do not create a third
-  orchestration database;
-- make SQLite authoritative for Mentat-owned Tasks, Runs, and normalized
-  AgentEvents after exact migration and cutover;
-- keep `agent-registry.sqlite3` authoritative for Agent identities and private
-  runtime bindings until Slice 3C;
-- retire `tasks.json` as live state without a dual-read or dual-write period;
-- preserve current task API shapes and all validated planning/delegation
-  metadata through the migration;
-- keep Hermes capacity, submission, and safety limits inside `HermesRuntime`;
-- do not add dynamic routing, a second runtime, or the new frontend in 1C.
-
-Delivery is split so schema safety and reconstruction proof land before the
-destructive source-of-truth cutover:
-
-1. **1C-A:** schema, repository, exact read-only migration preview,
-   transaction-tested import primitive, deterministic export, and private
-   backup/restore evidence. Live task APIs continue to use `tasks.json`.
-2. **1C-B:** exact state-bound import and atomic API/storage cutover. After
-   success, no runtime Task path reads or writes `tasks.json`. A singleton
-   SQLite authority receipt commits with the exact imported collection, so an
-   empty store is still durably cut over and stale JSON can never be re-imported
-   or used as fallback. An explicit server-stopped, token-bound `mentat
-   task-export` workflow can refresh the legacy document, while its
-   `--compatible-root` mode publishes a validated schema-5 sibling data root
-   with empty Task tables and exported JSON as the old build's sole Task
-   authority, without changing live authority. Because credentials are
-   excluded, compatible-root export fails closed for an actively selected
-   remote Hermes connection and requires explicit remote reconfiguration in
-   the old-build sibling.
-3. **1C-C:** durable Runs, append-only AgentEvents, dispatch reservations,
-   reconciliation, and fixed bounded retention that never removes active or
-   waiting Runs and marks truncated timelines explicitly.
-4. **1C-D:** obsolete-path cleanup, operator documentation, full compatibility
-   evidence, browser smoke, repeatable 100 scores for Accessibility, Best
-   Practices, and SEO, plus explicit legacy performance budgets. The exact
-   repeatable Lighthouse 100/100/100/100 replacement gate moves intact to 2A,
-   where it applies to the frontend architecture that will remain.
-
-System design reference:
+Design reference:
 `design/system-design/MENTAT_SQLITE_ORCHESTRATION_SYSTEM_DESIGN.docx`
 
-Completed Task cutover evidence:
-`reviews/2026-08-18-mentat-sqlite-task-cutover.md`
+Review logs:
 
-Completed Task cleanup evidence:
-`reviews/2026-08-21-mentat-sqlite-task-cleanup.md`
+- `reviews/2026-08-18-mentat-sqlite-task-cutover.md`
+- `reviews/2026-08-18-mentat-sqlite-run-event-dispatch.md`
+- `reviews/2026-08-21-mentat-sqlite-task-cleanup.md`
+- `reviews/2026-08-21-pivot-1c-d-closure.md`
 
-Completed Run/Event/dispatch contract and evidence:
-`reviews/2026-08-18-mentat-sqlite-run-event-dispatch.md`
+## Active frontend work
 
-Completed legacy Home performance evidence:
-`reviews/2026-08-21-home-core-render-priority.md`,
-`reviews/2026-08-21-home-boot-critical-path.md`, and
-`reviews/2026-08-21-pivot-1c-d-closure.md`
+### Slice 2A-A: Node web foundation
 
-### Slice 2A — New frontend foundation
+Status: In progress
 
-Status: **Proposed**
+This slice provides:
 
-Expected stack:
+- Node `>=24.19.0 <25`, pinned to 24.19.0 in source and CI
+- a supervised Next.js production preview on port 8890
+- one private Python health capability
+- one safe same-origin Node health route
+- a prerendered shell with no general React hydration runtime
+- three desktop and three mobile Lighthouse runs at 100 in every category
 
-```text
-Next.js + React + TypeScript
-Tailwind CSS
-shadcn/ui + Radix UI primitives
-Lucide icons
-TanStack Query
-SSE first; WebSocket only when bidirectional realtime requires it
-```
+The Python app on port 8888 remains the default product. Node receives no
+SQLite, filesystem, credential, Hermes, Task, Run, or Agent authority.
 
-Expected boundary:
+Review log: `reviews/2026-08-21-node-runtime-foundation.md`
 
-- introduce the new application shell without replacing the Python Local Bridge;
-- establish semantic design tokens and source-owned reusable components;
-- preserve Mentat's clean dark visual direction;
-- keep the existing `public/` frontend operational as a compatibility surface;
-- do not mechanically translate the legacy stylesheet into Tailwind utilities;
-- achieve repeatable Lighthouse 100/100/100/100 on the replacement shell
-  before it may displace the legacy frontend, with explicit metric budgets
-  retained alongside the rounded category scores.
+### Slice 2A-B: Emerald Operations shell
 
-### Slices 2B and 2C — Operational web console
+Status: Proposed
 
-Status: **Provisional**
+Build on the existing `web/` app. Do not create another frontend project or
+another local server.
 
-Build `/agents`, `/tasks`, and `/runs` against real Mentat-owned APIs, then add
-normalized event streaming and only the run controls advertised by each
-runtime. Durable server state remains authoritative; browser state and SSE are
-projections.
+Scope:
 
-### Slices 3A and 3B — Runtime number two
+- Emerald semantic tokens and local assets
+- responsive navigation and utility bar
+- route frames for `/`, `/agents`, `/tasks`, and `/runs`
+- accessible shared components needed by those frames
+- small client boundaries only where interaction requires them
+- the same six-run Lighthouse gate
 
-Status: **Provisional**
+Keep route content honest. A route with no live data yet must show a clear
+foundation state instead of sample operational data.
 
-Add Codex behind the same runtime-neutral contract, with provider authentication
-kept separate from Agent identity. The proof milestone is two independent runs:
+Do not add real orchestration APIs, TanStack Query, SSE, runtime controls, or
+legacy interface removal in this slice.
 
-```text
-Hermes Researcher  ● Running
-Codex Engineer     ● Running
-```
+Design sources:
 
-Both must be visible and independently controllable through the same
-Agent/Task/Run/Event model. Do not begin dynamic routing until this proof is
-stable.
+- the current Emerald compatibility interface
+- `public/styles.css`, especially its final Emerald foundation layer
+- `public/index.html` for shell composition
+- `design/emerald-operations/DESIGN_SYSTEM.md`
+- `design/emerald-operations/IMPLEMENTATION_PLAN.md`
 
-### Slice 3C — Unified Mentat database convergence
+## Operational routes
 
-Status: **Provisional**
+### Slices 2B-A to 2B-C
 
-After the two-runtime proof, migrate Agent identities and runtime bindings from
-`agent-registry.sqlite3` into `mentat.sqlite3` through the same preview,
-backup, exact-confirmation, and no-dual-authority discipline used for Tasks.
-This is the intended long-term local architecture: one owner-private SQLite
-database for Mentat-owned relational state. Credential values and Hermes-owned
-state remain outside it. Complete this convergence before shared-tool policy or
-dynamic-routing work unless operational evidence supports an explicitly
-reviewed resequencing.
+Add one real vertical route at a time: Agents, Tasks, then Runs.
 
-## Sequencing rules
+Each slice must add only the bridge and Node API capabilities that route needs.
+Do not add a generic Python proxy. Python and SQLite remain authoritative.
 
-1. Work on one approved slice at a time.
-2. Start each slice from current `origin/main` on a dedicated feature branch.
-3. Preserve the Python Local Bridge and legacy frontend until replacement
-   behavior is verified.
-4. Keep Mentat IDs distinct from runtime/provider references.
-5. Keep runtime-specific schemas inside their adapters.
-6. Never store credentials in Agent records, tracked JSON, browser state, or
-   review evidence.
-7. Update this roadmap only when a slice is accepted, resequenced, split, or
-   removed; keep exact verification evidence in the slice review log.
-8. Do not start a later slice merely because it appears in this roadmap.
-9. Treat status changes on a feature branch as proposed post-merge state; only
-   the version on `main` is canonical for sequencing.
+TanStack Query may be added with the first route that needs client-side server
+state, caching, or invalidation.
+
+Before the new Home shows Scheduled Automations, the Python API must hide local
+Hermes cron data when a remote runtime is selected. That safety fix needs its
+own approved backend slice.
+
+### Slices 2C-A and 2C-B
+
+Add event streaming before controls.
+
+2C-A adds normalized SSE with reconnect, bounded history, and explicit
+truncation. 2C-B adds only the message, stop, and approval actions supported by
+the selected runtime.
+
+All browser traffic stays same-origin through Node. Python performs authority,
+capability, confirmation, and state checks.
+
+### Slice 2D: production cutover
+
+The source preview is not an installed product. This slice must decide how Node
+ships, starts, updates, and rolls back on supported platforms.
+
+The legacy interface may be retired only after:
+
+- required workflows have parity
+- packaging works without network access at launch
+- lifecycle and recovery checks pass on supported platforms
+- performance and accessibility gates pass
+- a tested rollback remains available
+
+## Runtime number two
+
+### Slices 3A and 3B
+
+Node is the web runtime. It is not the second Agent runtime.
+
+3A adds Codex behind the same Mentat runtime contract. 3B proves that Hermes
+and Codex can run at the same time and remain independently visible and
+controllable.
+
+Do not add dynamic routing until that proof is stable.
+
+### Slice 3C: database convergence
+
+Move Agent identity and runtime bindings from `agent-registry.sqlite3` into
+`mentat.sqlite3` through an exact preview, backup, confirmation, and cutover.
+Do not create a dual-authority period.
+
+## Working rules
+
+1. Start from current `origin/main` on a focused branch.
+2. Work on one approved slice at a time.
+3. Keep the Python app and compatibility interface working.
+4. Keep Mentat IDs separate from runtime and provider references.
+5. Keep runtime-specific schemas inside adapters.
+6. Keep credentials out of tracked files, browser state, and review evidence.
+7. Update this roadmap when a slice is accepted, split, moved, or removed.
+8. Store detailed test evidence in the slice review log.
 
 ## Resume checklist
 
-When work resumes after an interruption:
-
-1. Confirm `main` matches `origin/main` and preserve unrelated local changes.
-2. Read this plan, the pivot, architecture, repository guide, and latest slice
-   review log.
-3. Resume an **In progress** slice first; otherwise identify the first
-   **Proposed** slice. Do not skip unresolved work.
-4. Verify its contract and test strategy have explicit user approval.
-5. Continue from the review log's recorded resume point.
+1. Confirm `main` matches `origin/main` and preserve unrelated local work.
+2. Read this plan, the pivot, architecture, repository guide, and active review
+   log.
+3. Resume the first `In progress` slice. If none exists, choose the first
+   `Proposed` slice.
+4. Confirm the scope and test plan have explicit approval.
+5. Continue from the review log's last recorded state.

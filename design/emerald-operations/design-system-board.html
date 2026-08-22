@@ -1,0 +1,1142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mentat Operations — Emerald Design System</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #070d11;
+      --chrome: #05090b;
+      --panel: #0f151a;
+      --raised: #121a20;
+      --row: #10171b;
+      --hover: #182127;
+      --border-subtle: #202b30;
+      --border: #2a373b;
+      --border-strong: #344348;
+      --primary: #eae7dd;
+      --secondary: #aab1af;
+      --tertiary: #7e898b;
+      --emerald: #9dce9b;
+      --emerald-mid: #61a66f;
+      --emerald-deep: #183225;
+      --orange: #e69148;
+      --orange-deep: #39241d;
+      --red: #db716b;
+      --blue: #70a9bd;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --shadow: 0 24px 64px rgb(0 0 0 / 42%);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 88% 8%, rgb(97 166 111 / 6%), transparent 27rem),
+        var(--canvas);
+      color: var(--primary);
+      min-width: 320px;
+    }
+
+    .board {
+      width: min(1560px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 48px 0 72px;
+    }
+
+    .eyebrow,
+    .token-name,
+    .label {
+      color: var(--tertiary);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(400px, .75fr);
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .hero-copy,
+    .principles,
+    .section,
+    .specimen {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      background: linear-gradient(145deg, #121a20, #0d1418);
+    }
+
+    .hero-copy {
+      min-height: 292px;
+      padding: 40px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-copy::after {
+      content: "";
+      position: absolute;
+      width: 320px;
+      height: 320px;
+      right: -120px;
+      top: -160px;
+      border: 1px solid rgb(157 206 155 / 20%);
+      border-radius: 50%;
+      box-shadow:
+        0 0 0 28px rgb(157 206 155 / 3%),
+        0 0 0 64px rgb(157 206 155 / 2%);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 36px;
+    }
+
+    .brand img {
+      width: 44px;
+      height: 44px;
+      object-fit: contain;
+    }
+
+    .brand-name {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -.01em;
+    }
+
+    h1 {
+      margin: 10px 0 12px;
+      max-width: 760px;
+      font-size: clamp(34px, 4vw, 58px);
+      line-height: 1.05;
+      letter-spacing: -.04em;
+      font-weight: 600;
+    }
+
+    .hero-copy p {
+      max-width: 720px;
+      margin: 0;
+      color: var(--secondary);
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    .principles {
+      padding: 24px;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+
+    .principle {
+      display: grid;
+      grid-template-columns: 30px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 15px;
+      border: 1px solid var(--border-subtle);
+      background: var(--row);
+      border-radius: 8px;
+    }
+
+    .principle-index {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--emerald-deep);
+      color: var(--emerald);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .principle strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .principle span {
+      color: var(--secondary);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .section {
+      margin-top: 12px;
+      padding: 28px;
+    }
+
+    .section-heading {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 22px;
+    }
+
+    h2 {
+      margin: 4px 0 0;
+      font-size: 22px;
+      line-height: 1.25;
+      font-weight: 600;
+      letter-spacing: -.02em;
+    }
+
+    .section-note {
+      max-width: 530px;
+      margin: 0;
+      color: var(--tertiary);
+      font-size: 12px;
+      line-height: 1.5;
+      text-align: right;
+    }
+
+    .palette {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .swatch {
+      min-height: 126px;
+      padding: 12px;
+      border: 1px solid rgb(255 255 255 / 7%);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      justify-content: end;
+      color: var(--swatch-text, var(--primary));
+    }
+
+    .swatch strong {
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .swatch code {
+      margin-top: 3px;
+      color: currentColor;
+      opacity: .72;
+      font-size: 10px;
+    }
+
+    .semantic-strip {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .semantic {
+      height: 52px;
+      padding: 0 14px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      background: var(--row);
+      color: var(--secondary);
+      font-size: 12px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+    }
+
+    .foundations-grid,
+    .components-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .specimen {
+      padding: 22px;
+      background: var(--row);
+    }
+
+    .specimen-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .specimen-head h3 {
+      margin: 4px 0 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .specimen-head span:last-child {
+      color: var(--tertiary);
+      font-size: 11px;
+    }
+
+    .type-line {
+      display: grid;
+      grid-template-columns: 128px 1fr 82px;
+      align-items: baseline;
+      gap: 16px;
+      padding: 12px 0;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .type-line:first-of-type {
+      border-top: 0;
+    }
+
+    .type-line code,
+    .measure {
+      color: var(--tertiary);
+      font-size: 10px;
+    }
+
+    .type-page {
+      font-size: 24px;
+      line-height: 32px;
+      font-weight: 600;
+    }
+
+    .type-section {
+      font-size: 18px;
+      line-height: 24px;
+      font-weight: 600;
+    }
+
+    .type-body {
+      font-size: 14px;
+      line-height: 20px;
+    }
+
+    .type-meta {
+      font-size: 11px;
+      line-height: 16px;
+      color: var(--secondary);
+      font-weight: 500;
+    }
+
+    .spacing {
+      display: flex;
+      align-items: end;
+      gap: 16px;
+      min-height: 174px;
+      padding-top: 12px;
+    }
+
+    .space-token {
+      display: grid;
+      justify-items: center;
+      gap: 8px;
+      color: var(--tertiary);
+      font-size: 10px;
+    }
+
+    .space-block {
+      width: 24px;
+      height: var(--size);
+      min-height: 4px;
+      border-radius: 3px;
+      background: linear-gradient(180deg, var(--emerald), var(--emerald-mid));
+    }
+
+    .radius-row {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .radius-sample {
+      height: 54px;
+      border: 1px solid var(--border);
+      background: var(--raised);
+      display: grid;
+      place-items: center;
+      color: var(--tertiary);
+      font-size: 10px;
+    }
+
+    .button-row,
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+    }
+
+    button {
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0 14px;
+      background: var(--raised);
+      color: var(--primary);
+      font: 500 13px/20px inherit;
+    }
+
+    button.primary {
+      border-color: #478758;
+      background: var(--emerald-deep);
+      color: var(--emerald);
+    }
+
+    button.ghost {
+      background: transparent;
+    }
+
+    button.attention {
+      border-color: #7a4027;
+      background: var(--orange-deep);
+      color: #f0ac69;
+    }
+
+    button.destructive {
+      border-color: #5a2a2c;
+      background: rgb(90 42 44 / 44%);
+      color: #ff9791;
+    }
+
+    button:disabled {
+      opacity: .42;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      color: var(--secondary);
+      background: #0b1115;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .status.ready { color: var(--emerald); }
+    .status.attention { color: var(--orange); }
+    .status.failed { color: var(--red); }
+    .status.info { color: var(--blue); }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    .field {
+      display: grid;
+      gap: 7px;
+    }
+
+    .field label {
+      color: var(--secondary);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .input {
+      height: 40px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: #0b1115;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+
+    .input.focus {
+      border-color: var(--emerald);
+      outline: 2px solid rgb(157 206 155 / 16%);
+      outline-offset: 2px;
+    }
+
+    .helper {
+      color: var(--tertiary);
+      font-size: 11px;
+    }
+
+    .task-list,
+    .automation-list {
+      display: grid;
+      gap: 7px;
+    }
+
+    .task-row {
+      min-height: 66px;
+      display: grid;
+      grid-template-columns: 30px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: #0b1115;
+    }
+
+    .task-icon {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border: 1px solid currentColor;
+      border-radius: 50%;
+      color: var(--emerald);
+      font-size: 12px;
+    }
+
+    .task-icon.attention {
+      color: var(--orange);
+    }
+
+    .task-main strong,
+    .agent-name {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .task-main span,
+    .agent-role {
+      color: var(--secondary);
+      font-size: 11px;
+    }
+
+    .task-time {
+      color: var(--emerald);
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .task-time.attention {
+      color: var(--orange);
+    }
+
+    .agent-card {
+      padding: 14px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: #0b1115;
+    }
+
+    .agent-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 12px;
+    }
+
+    .agent-status {
+      color: var(--emerald);
+      font-size: 11px;
+    }
+
+    .agent-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      padding-top: 11px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .metric small {
+      display: block;
+      color: var(--tertiary);
+      font-size: 9px;
+      margin-bottom: 4px;
+    }
+
+    .metric strong {
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .automation {
+      min-height: 46px;
+      display: grid;
+      grid-template-columns: 1.3fr 1fr .6fr;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      background: #0b1115;
+      color: var(--secondary);
+      font-size: 11px;
+    }
+
+    .automation strong {
+      color: var(--primary);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .home-anatomy {
+      display: grid;
+      grid-template-columns: 144px minmax(0, 1fr);
+      min-height: 520px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--chrome);
+      box-shadow: var(--shadow);
+    }
+
+    .mini-rail {
+      padding: 18px 12px;
+      border-right: 1px solid var(--border-subtle);
+      background: #070b0f;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 28px;
+    }
+
+    .mini-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .mini-brand img {
+      width: 24px;
+      height: 24px;
+    }
+
+    .mini-nav {
+      display: grid;
+      align-content: start;
+      gap: 5px;
+    }
+
+    .mini-nav span {
+      padding: 8px 9px;
+      border-radius: 5px;
+      color: var(--tertiary);
+      font-size: 10px;
+    }
+
+    .mini-nav span.active {
+      border-left: 2px solid var(--emerald);
+      background: linear-gradient(90deg, rgb(97 166 111 / 12%), rgb(97 166 111 / 4%));
+      color: var(--primary);
+    }
+
+    .mini-app {
+      min-width: 0;
+    }
+
+    .mini-bar {
+      height: 46px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: end;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .runtime {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 26px;
+      padding: 0 9px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--secondary);
+      font-size: 9px;
+    }
+
+    .mini-content {
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 7fr 5fr;
+      grid-template-rows: 1.2fr 1fr .55fr;
+      gap: 8px;
+    }
+
+    .zone {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: linear-gradient(145deg, #121a20, #0d1418);
+    }
+
+    .zone strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .zone span {
+      color: var(--tertiary);
+      font-size: 9px;
+    }
+
+    .zone .bars {
+      display: grid;
+      gap: 5px;
+      margin-top: 12px;
+    }
+
+    .zone .bar {
+      height: 18px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      background: #0b1115;
+    }
+
+    .zone.stack {
+      display: grid;
+      grid-template-rows: 1.15fr .7fr;
+      gap: 8px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .zone.stack > div {
+      padding: 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: linear-gradient(145deg, #121a20, #0d1418);
+    }
+
+    .zone.console {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .console-input {
+      height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0b1115;
+    }
+
+    .state-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .state-card {
+      min-height: 126px;
+      padding: 14px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: #0b1115;
+    }
+
+    .state-card .state-icon {
+      width: 28px;
+      height: 28px;
+      margin-bottom: 18px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--hover);
+      color: var(--secondary);
+      font-size: 12px;
+    }
+
+    .state-card strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .state-card p {
+      margin: 0;
+      color: var(--tertiary);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 28px 4px 0;
+      color: var(--tertiary);
+      font-size: 11px;
+    }
+
+    .footer strong {
+      color: var(--secondary);
+      font-weight: 500;
+    }
+
+    @media (max-width: 980px) {
+      .board {
+        width: min(100% - 24px, 900px);
+        padding-top: 24px;
+      }
+
+      .hero,
+      .foundations-grid,
+      .components-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .palette {
+        grid-template-columns: repeat(4, 1fr);
+      }
+
+      .semantic-strip,
+      .state-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .home-anatomy {
+        grid-template-columns: 72px 1fr;
+      }
+
+      .mini-brand span,
+      .mini-nav span {
+        font-size: 0;
+      }
+
+      .mini-nav span::after {
+        content: "•";
+        font-size: 15px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="board">
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="brand">
+          <img src="./assets/mentat-operations-mark.png" alt="">
+          <span class="brand-name">Mentat Operations</span>
+        </div>
+        <span class="eyebrow">Emerald design system · v1.0</span>
+        <h1>A calm operations center for human and agent work.</h1>
+        <p>
+          Planning-first information architecture, quiet near-black surfaces,
+          warm ivory type, and restrained emerald state cues. Function remains
+          explicit; decorative noise stays out of the way.
+        </p>
+      </div>
+      <aside class="principles" aria-label="Design principles">
+        <div class="principle">
+          <span class="principle-index">01</span>
+          <span><strong>Operational clarity</strong>Priorities, time, agents, and exceptions are visible at a glance.</span>
+        </div>
+        <div class="principle">
+          <span class="principle-index">02</span>
+          <span><strong>Planning first</strong>Tasks and schedule lead. Metrics support rather than dominate.</span>
+        </div>
+        <div class="principle">
+          <span class="principle-index">03</span>
+          <span><strong>Explicit trust</strong>Read-only, degraded, unsupported, and failed states always use words.</span>
+        </div>
+        <div class="principle">
+          <span class="principle-index">04</span>
+          <span><strong>Local-first craft</strong>Project-owned icons, artwork, and fonts—no network dependency.</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Foundations / Color</span>
+          <h2>Quiet depth, purposeful signal</h2>
+        </div>
+        <p class="section-note">Components consume semantic aliases. Emerald indicates healthy action and selection; orange is reserved for attention.</p>
+      </div>
+      <div class="palette">
+        <div class="swatch" style="background:#05090b"><strong>Neutral 1000</strong><code>#05090B</code></div>
+        <div class="swatch" style="background:#070d11"><strong>Neutral 950</strong><code>#070D11</code></div>
+        <div class="swatch" style="background:#0f151a"><strong>Neutral 850</strong><code>#0F151A</code></div>
+        <div class="swatch" style="background:#121a20"><strong>Neutral 800</strong><code>#121A20</code></div>
+        <div class="swatch" style="background:#202b30"><strong>Neutral 700</strong><code>#202B30</code></div>
+        <div class="swatch" style="background:#2a373b"><strong>Neutral 650</strong><code>#2A373B</code></div>
+        <div class="swatch" style="background:#aab1af;--swatch-text:#09100f"><strong>Neutral 300</strong><code>#AAB1AF</code></div>
+        <div class="swatch" style="background:#eae7dd;--swatch-text:#09100f"><strong>Neutral 100</strong><code>#EAE7DD</code></div>
+        <div class="swatch" style="background:#183225"><strong>Emerald 900</strong><code>#183225</code></div>
+        <div class="swatch" style="background:#326741"><strong>Emerald 700</strong><code>#326741</code></div>
+        <div class="swatch" style="background:#61a66f;--swatch-text:#07100b"><strong>Emerald 500</strong><code>#61A66F</code></div>
+        <div class="swatch" style="background:#9dce9b;--swatch-text:#07100b"><strong>Emerald 300</strong><code>#9DCE9B</code></div>
+        <div class="swatch" style="background:#39241d"><strong>Orange 900</strong><code>#39241D</code></div>
+        <div class="swatch" style="background:#e69148;--swatch-text:#1a0b04"><strong>Orange 400</strong><code>#E69148</code></div>
+        <div class="swatch" style="background:#db716b;--swatch-text:#190708"><strong>Red 500</strong><code>#DB716B</code></div>
+        <div class="swatch" style="background:#70a9bd;--swatch-text:#071013"><strong>Blue 400</strong><code>#70A9BD</code></div>
+      </div>
+      <div class="semantic-strip">
+        <span class="semantic" style="color:var(--emerald)"><i class="dot"></i>Ready / completed</span>
+        <span class="semantic" style="color:var(--orange)"><i class="dot"></i>Needs attention</span>
+        <span class="semantic" style="color:var(--red)"><i class="dot"></i>Failed / destructive</span>
+        <span class="semantic" style="color:var(--blue)"><i class="dot"></i>Informational</span>
+        <span class="semantic" style="color:var(--secondary)"><i class="dot"></i>Offline / neutral</span>
+        <span class="semantic" style="color:var(--primary)"><i class="dot"></i>Primary content</span>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Foundations / Type &amp; Geometry</span>
+          <h2>Proportional, compact, readable</h2>
+        </div>
+        <p class="section-note">Inter Variable or a packaged equivalent. Monospace is limited to commands, IDs, and diagnostics.</p>
+      </div>
+      <div class="foundations-grid">
+        <div class="specimen">
+          <div class="specimen-head"><div><span class="label">Typography</span><h3>Core text styles</h3></div><span>14 px body minimum</span></div>
+          <div class="type-line"><code>Page title</code><span class="type-page">Projects &amp; Tasks</span><span class="measure">24 / 32 · 600</span></div>
+          <div class="type-line"><code>Section</code><span class="type-section">Operational focus</span><span class="measure">18 / 24 · 600</span></div>
+          <div class="type-line"><code>Body</code><span class="type-body">Plan the work, enlist the right agent, and keep decisions visible.</span><span class="measure">14 / 20 · 400</span></div>
+          <div class="type-line"><code>Metadata</code><span class="type-meta">Last active 2 minutes ago · PDT</span><span class="measure">11 / 16 · 500</span></div>
+        </div>
+        <div class="specimen">
+          <div class="specimen-head"><div><span class="label">Geometry</span><h3>4 px spacing and restrained radii</h3></div><span>Minimal shadow</span></div>
+          <div class="spacing">
+            <div class="space-token"><div class="space-block" style="--size:4px"></div><span>4</span></div>
+            <div class="space-token"><div class="space-block" style="--size:8px"></div><span>8</span></div>
+            <div class="space-token"><div class="space-block" style="--size:12px"></div><span>12</span></div>
+            <div class="space-token"><div class="space-block" style="--size:16px"></div><span>16</span></div>
+            <div class="space-token"><div class="space-block" style="--size:20px"></div><span>20</span></div>
+            <div class="space-token"><div class="space-block" style="--size:24px"></div><span>24</span></div>
+            <div class="space-token"><div class="space-block" style="--size:32px"></div><span>32</span></div>
+            <div class="space-token"><div class="space-block" style="--size:40px"></div><span>40</span></div>
+            <div class="space-token"><div class="space-block" style="--size:48px"></div><span>48</span></div>
+            <div class="space-token"><div class="space-block" style="--size:64px"></div><span>64</span></div>
+          </div>
+          <div class="radius-row">
+            <div class="radius-sample" style="border-radius:4px">4</div>
+            <div class="radius-sample" style="border-radius:6px">6</div>
+            <div class="radius-sample" style="border-radius:8px">8</div>
+            <div class="radius-sample" style="border-radius:10px">10</div>
+            <div class="radius-sample" style="border-radius:12px">12</div>
+            <div class="radius-sample" style="border-radius:16px">16</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Components / Controls</span>
+          <h2>Compact actions, explicit state</h2>
+        </div>
+        <p class="section-note">One primary action per panel. Every status pairs color with a readable label.</p>
+      </div>
+      <div class="components-grid">
+        <div class="specimen">
+          <div class="specimen-head"><div><span class="label">Buttons</span><h3>Hierarchy</h3></div><span>36–40 px desktop</span></div>
+          <div class="button-row">
+            <button class="primary">Open calendar</button>
+            <button>View all agents</button>
+            <button class="ghost">Cancel</button>
+            <button class="attention">Review change</button>
+            <button class="destructive">Delete task</button>
+            <button disabled>Unavailable</button>
+          </div>
+        </div>
+        <div class="specimen">
+          <div class="specimen-head"><div><span class="label">Status</span><h3>Dot + label</h3></div><span>Never color-only</span></div>
+          <div class="status-row">
+            <span class="status ready"><i class="dot"></i>Ready</span>
+            <span class="status ready"><i class="dot"></i>Ready for review</span>
+            <span class="status attention"><i class="dot"></i>Needs attention</span>
+            <span class="status failed"><i class="dot"></i>Failed</span>
+            <span class="status info"><i class="dot"></i>Read-only</span>
+            <span class="status"><i class="dot"></i>Disconnected</span>
+          </div>
+        </div>
+        <div class="specimen">
+          <div class="specimen-head"><div><span class="label">Fields</span><h3>Persistent labels and focus</h3></div><span>40 px default</span></div>
+          <div class="field-grid">
+            <div class="field">
+              <label>Project</label>
+              <div class="input"><span>Mentat</span><span>⌄</span></div>
+              <span class="helper">Scope this planning view.</span>
+            </div>
+            <div class="field">
+              <label>Search</label>
+              <div class="input focus"><span>Agent sessions</span><span>⌕</span></div>
+              <span class="helper">Navigate after selecting a result.</span>
+            </div>
+          </div>
+        </div>
+        <div class="specimen">
+          <div class="specimen-head"><div><span class="label">Feedback</span><h3>Named system states</h3></div><span>One safe action</span></div>
+          <div class="state-grid" style="grid-template-columns:repeat(2,1fr)">
+            <div class="state-card"><span class="state-icon">—</span><strong>No scheduled jobs</strong><p>No scheduled Hermes jobs were found.</p></div>
+            <div class="state-card"><span class="state-icon">!</span><strong>Inventory unavailable</strong><p>Hermes schedule inventory is unavailable.</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Components / Operations</span>
+          <h2>Planning and agent work</h2>
+        </div>
+        <p class="section-note">Rows are spacious enough to scan, while metadata remains subordinate to the next action.</p>
+      </div>
+      <div class="components-grid">
+        <div class="specimen">
+          <div class="specimen-head"><div><span class="label">Operational focus</span><h3>Task rows</h3></div><span>60 px minimum</span></div>
+          <div class="task-list">
+            <div class="task-row">
+              <span class="task-icon">✓</span>
+              <div class="task-main"><strong>Review Milestone 2 handoff</strong><span>Mentat · Ready for review</span></div>
+              <span class="task-time">Completed</span>
+            </div>
+            <div class="task-row">
+              <span class="task-icon">○</span>
+              <div class="task-main"><strong>Weekly planning</strong><span>Prepare the operator plan and agent assignments.</span></div>
+              <span class="task-time">9:00–10:00</span>
+            </div>
+            <div class="task-row">
+              <span class="task-icon attention">!</span>
+              <div class="task-main"><strong>Focus block</strong><span>Deep work and review.</span></div>
+              <span class="task-time attention">10:00–12:00</span>
+            </div>
+          </div>
+        </div>
+        <div class="specimen">
+          <div class="specimen-head"><div><span class="label">Agent operations</span><h3>Agent card</h3></div><span>State before activity</span></div>
+          <div class="agent-card">
+            <div class="agent-top">
+              <div><span class="agent-name">researcher</span><span class="agent-role">Research and synthesis</span></div>
+              <span class="agent-status">● Ready</span>
+            </div>
+            <div class="agent-metrics">
+              <span class="metric"><small>Sessions</small><strong>1</strong></span>
+              <span class="metric"><small>Tasks</small><strong>2</strong></span>
+              <span class="metric"><small>Last active</small><strong>18m</strong></span>
+              <span class="metric"><small>Health</small><strong style="color:var(--emerald)">Good</strong></span>
+            </div>
+          </div>
+          <div class="agent-card" style="margin-top:8px;border-color:#7a4027;background:rgb(57 36 29 / 45%)">
+            <div class="agent-top">
+              <div><span class="agent-name">analyst</span><span class="agent-role">Data analysis and reporting</span></div>
+              <span class="agent-status" style="color:var(--orange)">● Needs attention</span>
+            </div>
+            <span style="color:var(--orange);font-size:11px">No models available for this provider.</span>
+          </div>
+        </div>
+        <div class="specimen" style="grid-column:1/-1">
+          <div class="specimen-head"><div><span class="label">Scheduled automations</span><h3>Read-only Home summary</h3></div><span>Maximum 3 rows</span></div>
+          <div class="automation-list">
+            <div class="automation"><strong>Daily planning digest</strong><span>Weekdays · 8:00 AM</span><span>Tomorrow</span></div>
+            <div class="automation"><strong>Project health review</strong><span>Mondays · 9:30 AM</span><span>Mon</span></div>
+            <div class="automation"><strong>Weekly archive sweep</strong><span>Fridays · 4:00 PM</span><span>Fri</span></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;color:var(--tertiary);font-size:10px">
+            <span>3 enabled · PDT · Hermes schedule inventory</span>
+            <span class="status info"><i class="dot"></i>Read-only</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Pattern / Home anatomy</span>
+          <h2>12-column Operations composition</h2>
+        </div>
+        <p class="section-note">DOM order follows reading order. Agent Console remains full width and retains all current workflow depth.</p>
+      </div>
+      <div class="home-anatomy" aria-label="Home layout diagram">
+        <aside class="mini-rail">
+          <div class="mini-brand"><img src="./assets/mentat-operations-mark.png" alt=""><span>Mentat</span></div>
+          <nav class="mini-nav">
+            <span class="active">Home</span>
+            <span>Agents &amp; Sessions</span>
+            <span>Calendar</span>
+            <span>Projects &amp; Tasks</span>
+            <span>Notes &amp; Context</span>
+          </nav>
+          <div class="mini-nav"><span>Settings</span></div>
+        </aside>
+        <div class="mini-app">
+          <div class="mini-bar"><span class="runtime"><i class="dot" style="color:var(--emerald)"></i>Local Hermes</span></div>
+          <div class="mini-content">
+            <div class="zone"><strong>Operational Focus · 7 columns</strong><span>Priorities, next moves, completion, quick capture</span><div class="bars"><i class="bar"></i><i class="bar"></i><i class="bar"></i></div></div>
+            <div class="zone"><strong>Agent Operations · 5 columns</strong><span>Ready, running, review, and attention</span><div class="bars"><i class="bar"></i><i class="bar"></i><i class="bar"></i></div></div>
+            <div class="zone"><strong>Today · 7 columns</strong><span>Task blocks and read-only calendar context</span><div class="bars"><i class="bar" style="width:44%;margin-left:20%"></i><i class="bar" style="width:58%;margin-left:35%;background:rgb(24 50 37 / 65%)"></i></div></div>
+            <div class="zone stack">
+              <div><strong>Scheduled Automations</strong><span>Read-only · next three</span></div>
+              <div><strong>Projects</strong><span>Compact portfolio</span></div>
+            </div>
+            <div class="zone console"><div><strong>Agent Console · 12 columns</strong><span>Full current workflow</span></div><i class="console-input"></i></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">System states</span>
+          <h2>Design for reality, not only the happy path</h2>
+        </div>
+        <p class="section-note">Every data surface specifies loading, empty, disconnected, unsupported, stale, and failed behavior.</p>
+      </div>
+      <div class="state-grid">
+        <div class="state-card"><span class="state-icon">···</span><strong>Loading</strong><p>Use stable skeleton rows. Do not collapse the panel.</p></div>
+        <div class="state-card"><span class="state-icon">—</span><strong>Empty</strong><p>Name what is absent and offer one useful next step.</p></div>
+        <div class="state-card"><span class="state-icon" style="color:var(--secondary)">×</span><strong>Disconnected</strong><p>State the affected subsystem and when data was last valid.</p></div>
+        <div class="state-card"><span class="state-icon" style="color:var(--blue)">i</span><strong>Unsupported</strong><p>Do not render a fake or permanently disabled operation.</p></div>
+        <div class="state-card"><span class="state-icon" style="color:var(--orange)">!</span><strong>Needs attention</strong><p>Localize orange to the affected row or message.</p></div>
+        <div class="state-card"><span class="state-icon" style="color:var(--red)">!</span><strong>Failed</strong><p>Use clear failure text and a safe recovery path.</p></div>
+        <div class="state-card"><span class="state-icon" style="color:var(--emerald)">✓</span><strong>Verified</strong><p>Claim completion only after the underlying operation is verified.</p></div>
+        <div class="state-card"><span class="state-icon" style="color:var(--blue)">↗</span><strong>Remote hidden</strong><p>Never surface local CRON data while remote Hermes is selected.</p></div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span><strong>Mentat Operations</strong> · Emerald design system · 2026</span>
+      <span>WCAG 2.2 AA · local-first assets · Figma-variable ready</span>
+    </footer>
+  </main>
+</body>
+</html>

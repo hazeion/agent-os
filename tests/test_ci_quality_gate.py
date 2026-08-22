@@ -44,7 +44,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertEqual(workflow.count("actions/checkout@8e8c483"), 2)
         self.assertEqual(workflow.count("actions/setup-python@a309ff8"), 2)
         self.assertEqual(workflow.count("actions/setup-node@53b8394"), 2)
-        self.assertEqual(workflow.count("node-version: 24.18.0"), 2)
+        self.assertEqual(workflow.count("node-version: 24.19.0"), 2)
         self.assertNotIn("pip install --upgrade pip", workflow)
 
     def test_main_matrix_keeps_read_only_permissions_and_safe_triggers(self):
@@ -64,9 +64,9 @@ class CiQualityGateTests(unittest.TestCase):
         browser_smoke = (ROOT / "scripts" / "browser_smoke.mjs").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(workflow.count("runs-on: ubuntu-24.04"), 4)
-        self.assertEqual(workflow.count("python-version: \"3.13.14\""), 3)
-        self.assertIn("node-version: 24.18.0", workflow)
+        self.assertEqual(workflow.count("runs-on: ubuntu-24.04"), 5)
+        self.assertEqual(workflow.count("python-version: \"3.13.14\""), 4)
+        self.assertEqual(workflow.count("node-version: 24.19.0"), 2)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("--require-hashes -r requirements-quality.lock", workflow)
         self.assertIn("python scripts/verify_python_artifacts.py dist", workflow)
@@ -76,6 +76,21 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn('PIPX_BIN_DIR="$smoke_root/bin"', workflow)
         self.assertIn("Installed Mentat remained healthy after stop", workflow)
         self.assertIn("node scripts/browser_smoke.mjs", workflow)
+        self.assertIn("npm --prefix web ci --ignore-scripts", workflow)
+        self.assertIn("npm --prefix web run check", workflow)
+        self.assertIn("npm --prefix web run build", workflow)
+        self.assertIn("npm --prefix web audit --audit-level=high", workflow)
+        self.assertIn("npm --prefix web run lighthouse:gate", workflow)
+        self.assertIn("Install pinned Chrome for Testing", workflow)
+        self.assertIn("CHROME_FOR_TESTING_VERSION: 152.0.7923.0", workflow)
+        self.assertIn(
+            'CHROME_PATH="$MENTAT_LIGHTHOUSE_CHROME_PATH" npm --prefix web run lighthouse:gate',
+            workflow,
+        )
+        self.assertIn("node-foundation-lighthouse-failure", workflow)
+        self.assertIn("python scripts/mentat_web_preview.py --port 8896", workflow)
+        self.assertIn("node scripts/web_foundation_smoke.mjs", workflow)
+        self.assertIn("/_next/static/forged-host-probe.js", workflow)
         self.assertIn("MENTAT_DATA_DIR=\"$RUNNER_TEMP/mentat-browser-data\"", workflow)
         self.assertIn("CHROME_PATH: /usr/bin/google-chrome", workflow)
         self.assertIn(
@@ -84,6 +99,7 @@ class CiQualityGateTests(unittest.TestCase):
         )
         self.assertIn("'--disable-dev-shm-usage'", browser_smoke)
         self.assertIn("'Chrome debug page', 30000", browser_smoke)
+        self.assertIn("'Emulation.setFocusEmulationEnabled'", browser_smoke)
         self.assertIn("await stopChild(chrome)", browser_smoke)
         self.assertIn("maxRetries: 5", browser_smoke)
         self.assertIn("--require-hashes -r requirements-quality.lock", workflow)
@@ -92,6 +108,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("python scripts/check_tracked_secrets.py", workflow)
         self.assertIn("name: Quality gates required", workflow)
         self.assertIn("PACKAGE_RESULT: ${{ needs.python-package.result }}", workflow)
+        self.assertIn("WEB_RESULT: ${{ needs.web-foundation.result }}", workflow)
         self.assertNotIn("${{ secrets.", workflow)
         self.assertNotIn("pull_request_target", workflow)
         self.assertNotIn("@v", workflow)

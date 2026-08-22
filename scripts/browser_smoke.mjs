@@ -696,6 +696,7 @@ async function main() {
     client = new CdpClient(ws);
     await client.call('Runtime.enable');
     await client.call('Page.enable');
+    await client.call('Emulation.setFocusEmulationEnabled', { enabled: true });
     await client.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await client.call('Page.navigate', { url: baseUrl });
     await waitFor(() => client.eval('document.readyState === "complete"'), 'page load');
