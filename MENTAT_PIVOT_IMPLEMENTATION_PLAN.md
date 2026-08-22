@@ -60,7 +60,7 @@ capability. It does not add Task controls or expose Task details.
 | 2B-A | Complete | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
 | 2B-B | Complete | Read-only Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
 | 2B-C | Complete | Read-only Runs route backed by normalized Run APIs. | Slice 2B-B |
-| 2C-A | Provisional | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
+| 2C-A | Complete in this branch | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
 | 2C-B | Provisional | Messaging, stop controls, and supported approvals. | Slice 2C-A |
 | 2D | Provisional | Production packaging, launch, rollback, and legacy interface cutover. | Slice 2C-B |
 | 3A | Provisional | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
@@ -237,6 +237,24 @@ It does not control Runs, stream events, expose runtime references or
 revisions, add a details page, or add a generic bridge proxy.
 
 Review log: `reviews/2026-08-22-runs-read-only-bridge.md`
+
+### Slice 2C-A: selected Run timeline SSE
+
+Status: Complete in this branch
+
+This slice adds one selected Run's bounded normalized event timeline. The
+browser connects only to a same-origin SSE route. Node validates the Run ID and
+reconnect cursor, reads one fixed loopback bridge projection, emits keepalives,
+and reconnects through bounded stream windows.
+
+The timeline shows only safe event IDs, sequence, type, timestamp, summary,
+and approved numeric usage metrics. It reports unavailable, missing, malformed,
+and retention-reset states clearly.
+
+It does not add Run controls, details pages, raw event content, browser-chosen
+limits, generic bridge forwarding, or multi-Run streams.
+
+Review log: `reviews/2026-08-22-runs-timeline-sse.md`
 
 ### Slice 2D: production cutover
 

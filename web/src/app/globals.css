@@ -636,6 +636,32 @@ button {
 .run-card h3 { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); font-size: 0.9rem; }
 .run-card-meta { margin: 0; overflow-wrap: anywhere; color: var(--text-tertiary); font-size: 0.8rem; }
 .run-status { margin: 0; color: var(--accent); font-size: 0.78rem; font-weight: 650; text-transform: capitalize; }
+.run-timeline-open,
+.run-timeline-close {
+  justify-self: start;
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text-primary);
+  background: var(--panel-raised);
+}
+.run-timeline {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+.run-timeline-header { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.run-timeline-header h4 { margin: 0; color: var(--text-primary); font-size: 0.86rem; }
+.run-timeline-notice { margin: 0; color: var(--text-secondary); font-size: 0.8rem; }
+.run-timeline-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.run-timeline-list li { display: grid; gap: 4px; min-width: 0; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--panel-raised); }
+.run-timeline-list strong { color: var(--accent); font-size: 0.78rem; }
+.run-timeline-list p,
+.run-timeline-list time { margin: 0; overflow-wrap: anywhere; color: var(--text-secondary); font-size: 0.78rem; }
+.run-event-metrics { color: var(--text-tertiary) !important; }
 .task-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .task-tags li { overflow-wrap: anywhere; padding: 3px 7px; border-radius: 999px; background: var(--panel-raised); color: var(--text-secondary); font-size: 0.72rem; }
 
@@ -643,7 +669,9 @@ button {
   .tasks-toolbar,
   .runs-toolbar { align-items: stretch; flex-direction: column; }
   .task-refresh,
-  .run-refresh { min-height: 44px; }
+  .run-refresh,
+  .run-timeline-open,
+  .run-timeline-close { min-height: 44px; }
 }
 
 .agent-fields {

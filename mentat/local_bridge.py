@@ -17,7 +17,7 @@ import re
 import signal
 import socket
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from .version import DISPLAY_VERSION
 
@@ -34,6 +34,7 @@ SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
 MAXIMUM_BRIDGE_AGENTS = 128
 MAXIMUM_BRIDGE_TASKS = 2048
 MAXIMUM_BRIDGE_RUNS = 50
+MAXIMUM_BRIDGE_RUN_EVENTS = 100
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
@@ -56,6 +57,10 @@ class BridgeTaskProjectionError(ValueError):
 
 class BridgeRunProjectionError(ValueError):
     """Raised when canonical Run data cannot cross this fixed capability."""
+
+
+class BridgeRunEventProjectionError(ValueError):
+    """Raised when canonical Run events cannot cross this fixed capability."""
 
 
 class IPv6BridgeHTTPServer(ThreadingHTTPServer):
@@ -376,6 +381,68 @@ def bridge_runs_payload() -> tuple[dict[str, object], int]:
     return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": state}, code
 
 
+def _public_run_event_record(value: object, *, expected_run_id: str) -> dict[str, object]:
+    required = {"id", "run_id", "sequence", "type", "occurred_at", "summary", "metrics"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeRunEventProjectionError("event_projection_invalid")
+    event_id, run_id, sequence = value.get("id"), value.get("run_id"), value.get("sequence")
+    event_type, occurred_at, summary, metrics = value.get("type"), value.get("occurred_at"), value.get("summary"), value.get("metrics")
+    allowed_metrics = {"input_tokens", "output_tokens", "total_tokens", "context_tokens", "context_length"}
+    if (
+        not isinstance(event_id, str) or not _OPAQUE_ID.fullmatch(event_id)
+        or run_id != expected_run_id
+        or type(sequence) is not int or not 1 <= sequence <= 10**9
+        or event_type not in {"run.created", "dispatch.reserved", "run.started", "submission.unknown", "run.interrupted", "tool.requested", "tool.completed", "approval.required", "artifact.created", "cost", "run.stopped", "run.completed", "run.failed", "message"}
+        or not _valid_timestamp(occurred_at)
+        or not isinstance(summary, str) or not summary or summary.strip() != summary or len(summary) > 500 or "\0" in summary
+        or not isinstance(metrics, dict) or set(metrics) - allowed_metrics
+        or any(type(metric) is not int or not 0 <= metric <= 10**9 for metric in metrics.values())
+    ):
+        raise BridgeRunEventProjectionError("event_projection_invalid")
+    return {"id": event_id, "run_id": run_id, "sequence": sequence, "type": event_type, "occurred_at": occurred_at, "summary": summary, "metrics": dict(metrics)}
+
+
+def bridge_run_events_payload(run_id: str, after_sequence: int) -> tuple[dict[str, object], int]:
+    """Read one fixed bounded safe event projection through the local bridge."""
+    try:
+        from run_repository import RunRepositoryConflict, RunRepositoryError, RunRepositoryUnavailable
+        from server import mentat_run_events_payload
+        try:
+            source = mentat_run_events_payload(run_id, after_sequence)
+            events = source.get("events") if isinstance(source, dict) else None
+            cursor = source.get("next_cursor") if isinstance(source, dict) else None
+            reset = source.get("cursor_reset_required") if isinstance(source, dict) else None
+            if (
+                not isinstance(source, dict)
+                or source.get("schema_version") != 1 or source.get("run_id") != run_id
+                or source.get("after") != after_sequence or not isinstance(events, list)
+                or len(events) > MAXIMUM_BRIDGE_RUN_EVENTS
+                or type(cursor) is not int or not 0 <= cursor <= 10**9
+                or type(reset) is not bool
+            ):
+                raise BridgeRunEventProjectionError("event_projection_invalid")
+            public_events = [_public_run_event_record(event, expected_run_id=run_id) for event in events]
+            sequences = [event["sequence"] for event in public_events]
+            if len(set(sequences)) != len(sequences) or sequences != sorted(sequences):
+                raise BridgeRunEventProjectionError("event_projection_invalid")
+            if sequences and sequences[-1] != cursor:
+                raise BridgeRunEventProjectionError("event_projection_invalid")
+            if not reset and (cursor != after_sequence + len(sequences) or any(current != previous + 1 for previous, current in zip(sequences, sequences[1:]))):
+                raise BridgeRunEventProjectionError("event_projection_invalid")
+            return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "run_id": run_id, "after": after_sequence, "next_cursor": cursor, "cursor_reset_required": reset, "events": public_events}, 200
+        except RunRepositoryConflict:
+            return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "not_found"}, 404
+        except RunRepositoryUnavailable:
+            state, code = "unavailable", 503
+        except RunRepositoryError as exc:
+            state, code = ("unsupported", 501) if exc.code == "run_repository.schema_unsupported" else ("error", 500)
+        except (BridgeRunEventProjectionError, OSError, ValueError):
+            state, code = "error", 500
+    except Exception:
+        state, code = "error", 500
+    return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": state}, code
+
+
 class BridgeRequestHandler(BaseHTTPRequestHandler):
     server_version = "MentatLocalBridge"
     sys_version = ""
@@ -437,7 +504,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if not self._request_is_private():
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
-        if self.path == BRIDGE_HEALTH_PATH:
+        parsed = urlsplit(self.path)
+        if parsed.path == BRIDGE_HEALTH_PATH and not parsed.query:
             self._send_json(
                 {
                     "mentat_version": DISPLAY_VERSION,
@@ -449,16 +517,32 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 200,
             )
             return
-        if self.path == BRIDGE_AGENTS_PATH:
+        if parsed.path == BRIDGE_AGENTS_PATH and not parsed.query:
             payload, status = bridge_agents_payload()
             self._send_json(payload, status)
             return
-        if self.path == BRIDGE_TASKS_PATH:
+        if parsed.path == BRIDGE_TASKS_PATH and not parsed.query:
             payload, status = bridge_tasks_payload()
             self._send_json(payload, status)
             return
-        if self.path == BRIDGE_RUNS_PATH:
+        if parsed.path == BRIDGE_RUNS_PATH and not parsed.query:
             payload, status = bridge_runs_payload()
+            self._send_json(payload, status)
+            return
+        event_match = re.fullmatch(r"/bridge/v1/runs/([^/]+)/events", parsed.path)
+        if event_match is not None:
+            run_id = unquote(event_match.group(1))
+            if _RUN_ID.fullmatch(run_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) != 1 or pairs[0][0] != "after" or not re.fullmatch(r"[0-9]{1,10}", pairs[0][1]):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_run_events_payload(run_id, int(pairs[0][1]))
             self._send_json(payload, status)
             return
         else:

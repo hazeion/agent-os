@@ -13,6 +13,8 @@ let tasksRequest = 0;
 let tasksAbortController = null;
 let runsRequest = 0;
 let runsAbortController = null;
+let activeRunTimeline = null;
+let renderedRuns = new Map();
 let navigationOwnsFocus = false;
 let observedPath = "";
 let runtimeStarted = false;
@@ -391,11 +393,11 @@ function readRunsPayload(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join(",") !== "count,runs,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || !Array.isArray(payload.runs) || !Number.isInteger(payload.count) || payload.count !== payload.runs.length || payload.count > 50 || !payload.runs.every(runIsSafe)) return null;
   return new Set(payload.runs.map((run) => run.id)).size === payload.runs.length ? payload.runs : null;
 }
-function readableRunStatus(value) { return value.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "); }
+function readableRunStatus(value) { return value.split(/[._]/).map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "); }
 function renderRuns(runs) {
-  const elements = runsElements(); if (!elements) return; elements.list.replaceChildren();
+  const elements = runsElements(); if (!elements) return; closeActiveRunTimeline({ restoreFocus: false }); renderedRuns = new Map(runs.map((run) => [run.id, run])); elements.list.replaceChildren();
   for (const run of runs) {
-    const card = document.createElement("article"); card.className = "run-card";
+    const card = document.createElement("article"); card.className = "run-card"; card.dataset.runId = run.id;
     const header = document.createElement("div"); header.className = "run-card-header";
     const heading = document.createElement("h3"); heading.textContent = run.id;
     const status = document.createElement("p"); status.className = "run-status"; status.textContent = readableRunStatus(run.status);
@@ -403,11 +405,12 @@ function renderRuns(runs) {
     const primary = document.createElement("p"); primary.className = "run-card-meta"; primary.textContent = `${run.runtime_type} · ${run.source} · ${run.dispatch_state}`;
     const detail = document.createElement("p"); detail.className = "run-card-meta"; detail.textContent = `Task ${run.task_id || "Not linked"} · Agent ${run.agent_id || "Not assigned"} · Created ${run.created_at} · Updated ${run.updated_at}`;
     const lifecycle = document.createElement("p"); lifecycle.className = "run-card-meta"; lifecycle.textContent = `Started ${run.started_at || "Not started"} · Completed ${run.completed_at || "Not completed"}${run.partial ? " · Partial" : ""}${run.timeline_truncated ? " · Timeline truncated" : ""}`;
-    card.append(primary, detail, lifecycle); elements.list.append(card);
+    const timeline = document.createElement("button"); timeline.className = "run-timeline-open"; timeline.dataset.runTimelineOpen = ""; timeline.dataset.runId = run.id; timeline.setAttribute("aria-expanded", "false"); timeline.type = "button"; timeline.textContent = "Open timeline";
+    card.append(primary, detail, lifecycle, timeline); elements.list.append(card);
   }
 }
-function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else elements.list.replaceChildren(); }
-function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; }
+function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else { closeActiveRunTimeline({ restoreFocus: false }); renderedRuns = new Map(); elements.list.replaceChildren(); } }
+function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); }
 async function refreshRuns() {
   if (!runsElements()) return; clearRunRequest(); const request = runsRequest; runsAbortController = new AbortController(); applyRunsState("loading", "Loading current Runs…");
   try { const response = await fetch("/api/runs", { cache: "no-store", headers: { Accept: "application/json" }, signal: runsAbortController.signal }); const payload = await response.json(); if (request !== runsRequest) return;
@@ -416,6 +419,76 @@ async function refreshRuns() {
     if (response.status === 503 && payload?.schema_version === 1 && payload?.status === "unavailable") { applyRunsState("unavailable", "Run data is temporarily unavailable. Check the Python connection and retry."); return; }
     throw new Error("runs_response_invalid");
   } catch { if (request === runsRequest) applyRunsState("error", "Mentat could not safely read Run data. Try again."); } finally { if (request === runsRequest) runsAbortController = null; }
+}
+
+function runEventIsSafe(event, runId) {
+  const metrics = new Set(["input_tokens", "output_tokens", "total_tokens", "context_tokens", "context_length"]);
+  const timestamp = (value) => typeof value === "string" && value.length > 0 && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && !Number.isNaN(Date.parse(value));
+  return event && typeof event === "object" && !Array.isArray(event) && Object.keys(event).sort().join(",") === "id,metrics,occurred_at,run_id,sequence,summary,type"
+    && typeof event.id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(event.id) && event.run_id === runId
+    && Number.isSafeInteger(event.sequence) && event.sequence >= 1 && event.sequence <= 1_000_000_000
+    && ["run.created", "dispatch.reserved", "run.started", "submission.unknown", "run.interrupted", "tool.requested", "tool.completed", "approval.required", "artifact.created", "cost", "run.stopped", "run.completed", "run.failed", "message"].includes(event.type)
+    && timestamp(event.occurred_at) && typeof event.summary === "string" && event.summary.length > 0 && event.summary.length <= 500 && event.summary.trim() === event.summary && !event.summary.includes("\0")
+    && event.metrics && typeof event.metrics === "object" && !Array.isArray(event.metrics) && Object.entries(event.metrics).every(([name, value]) => metrics.has(name) && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000);
+}
+
+function readTimelineEnvelope(value, runId) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "cursor,events,reset" || !Number.isSafeInteger(value.cursor) || value.cursor < 0 || value.cursor > 1_000_000_000 || typeof value.reset !== "boolean" || !Array.isArray(value.events) || value.events.length > 100 || !value.events.every((event) => runEventIsSafe(event, runId))) return null;
+  return value;
+}
+
+function closeActiveRunTimeline({ restoreFocus = true } = {}) {
+  if (!activeRunTimeline) return;
+  activeRunTimeline.source?.close();
+  activeRunTimeline.panel.remove();
+  activeRunTimeline.trigger.setAttribute("aria-expanded", "false");
+  if (restoreFocus && activeRunTimeline.trigger.isConnected) activeRunTimeline.trigger.focus();
+  activeRunTimeline = null;
+}
+
+function appendTimelineEvents(list, events) {
+  const known = new Set([...list.querySelectorAll("[data-run-event-sequence]")].map((item) => item.getAttribute("data-run-event-sequence")));
+  for (const event of events) {
+    if (known.has(String(event.sequence))) continue;
+    const item = document.createElement("li"); item.dataset.runEventSequence = String(event.sequence);
+    const title = document.createElement("strong"); title.textContent = readableRunStatus(event.type);
+    const summary = document.createElement("p"); summary.textContent = event.summary;
+    const occurred = document.createElement("time"); occurred.dateTime = event.occurred_at; occurred.textContent = event.occurred_at;
+    item.append(title, summary, occurred);
+    const metrics = Object.entries(event.metrics);
+    if (metrics.length) { const detail = document.createElement("p"); detail.className = "run-event-metrics"; detail.textContent = metrics.map(([name, value]) => `${readableRunStatus(name)}: ${value}`).join(" · "); item.append(detail); }
+    list.append(item); known.add(String(event.sequence));
+  }
+  while (list.children.length > 100) list.firstElementChild?.remove();
+}
+
+function openRunTimeline(run, card, trigger) {
+  closeActiveRunTimeline({ restoreFocus: false });
+  const panel = document.createElement("section"); panel.className = "run-timeline"; panel.dataset.runTimeline = run.id;
+  const header = document.createElement("div"); header.className = "run-timeline-header";
+  const heading = document.createElement("h4"); heading.textContent = "Live timeline";
+  const close = document.createElement("button"); close.className = "run-timeline-close"; close.dataset.runTimelineClose = ""; close.type = "button"; close.textContent = "Close";
+  header.append(heading, close);
+  const notice = document.createElement("p"); notice.className = "run-timeline-notice"; notice.dataset.runTimelineNotice = ""; notice.setAttribute("aria-live", "polite"); notice.textContent = "Connecting to the live timeline…";
+  const list = document.createElement("ol"); list.className = "run-timeline-list"; list.dataset.runTimelineList = "";
+  panel.append(header, notice, list); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunTimeline = { source: null, trigger, panel };
+  if (!("EventSource" in window)) { notice.textContent = "Live timelines are not supported in this browser."; return; }
+  const source = new EventSource(`/api/runs/${encodeURIComponent(run.id)}/events`);
+  activeRunTimeline.source = source;
+  const applyEnvelope = (message, resetText) => {
+    let value; try { value = JSON.parse(message.data); } catch { value = null; }
+    const envelope = readTimelineEnvelope(value, run.id);
+    if (!envelope) { notice.textContent = "Mentat could not safely read this timeline."; source.close(); if (activeRunTimeline?.source === source) activeRunTimeline.source = null; return; }
+    if (envelope.reset) { list.replaceChildren(); notice.textContent = resetText; }
+    appendTimelineEvents(list, envelope.events);
+    if (!envelope.reset && !envelope.events.length && !list.children.length) notice.textContent = "No events yet. Watching this Run.";
+    else if (!envelope.reset) notice.textContent = "Watching live events.";
+  };
+  source.addEventListener("snapshot", (message) => applyEnvelope(message, "Earlier timeline events are no longer available. Showing retained events."));
+  source.addEventListener("reset", (message) => applyEnvelope(message, "Earlier timeline events are no longer available. Showing retained events."));
+  source.addEventListener("timeline", (message) => { let value; try { value = JSON.parse(message.data); } catch { value = null; } if (!value || typeof value !== "object" || Object.keys(value).join(",") !== "event" || !runEventIsSafe(value.event, run.id)) { notice.textContent = "Mentat could not safely read this timeline."; source.close(); if (activeRunTimeline?.source === source) activeRunTimeline.source = null; return; } appendTimelineEvents(list, [value.event]); notice.textContent = "Watching live events."; });
+  source.addEventListener("error", (message) => { if (!(message instanceof MessageEvent)) return; let code = "bridge_error"; try { const value = JSON.parse(message.data); if (value && typeof value === "object" && Object.keys(value).join(",") === "code" && ["bridge_unavailable", "bridge_unsupported", "run_not_found", "bridge_error"].includes(value.code)) code = value.code; } catch {} const messages = { bridge_unavailable: "Timeline data is temporarily unavailable.", bridge_unsupported: "This Python bridge does not support Run timelines yet.", run_not_found: "This Run is no longer available.", bridge_error: "Mentat could not safely read this timeline." }; notice.textContent = messages[code]; source.close(); if (activeRunTimeline?.source === source) activeRunTimeline.source = null; });
+  source.onerror = () => { if (activeRunTimeline?.source === source && source.readyState === EventSource.CONNECTING) notice.textContent = "Reconnecting to the live timeline…"; };
 }
 
 function synchronizeShell() {
@@ -460,7 +533,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
   if (target.matches("[data-agents-refresh]")) {
@@ -469,6 +542,12 @@ document.addEventListener("click", (event) => {
   }
   if (target.matches("[data-tasks-refresh]")) { refreshTasks(); return; }
   if (target.matches("[data-runs-refresh]")) { refreshRuns(); return; }
+  if (target.matches("[data-run-timeline-close]")) { closeActiveRunTimeline(); return; }
+  if (target.matches("[data-run-timeline-open]")) {
+    const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
+    if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunTimeline(run, card, target);
+    return;
+  }
   hideNavigationTooltip();
   if (target.matches("[data-nav-open]")) {
     openNavigation();

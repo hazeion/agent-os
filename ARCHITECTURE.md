@@ -54,9 +54,9 @@ assets. It accepts only the configured loopback Host and port. Cross-site,
 mismatched-origin, and malformed fetch metadata requests fail closed.
 
 The browser can call fixed same-origin routes only: `/api/bridge/health`, the
-read-only `/api/agents`, `/api/tasks`, and `/api/runs` routes. Node builds each
-private request on the server, checks its bounded response, and returns only
-the route's safe public fields. The Agent route exposes canonical Mentat IDs,
+read-only `/api/agents`, `/api/tasks`, `/api/runs`, and selected-Run timeline
+route. Node builds each private request on the server, checks its bounded
+response, and returns only the route's safe public fields. The Agent route exposes canonical Mentat IDs,
 names, runtime types, runtime configuration IDs, and declared capabilities. It
 never exposes adapter-owned runtime references, credentials, paths, raw Hermes
 data, or legacy heartbeat observations. Browser input cannot choose a bridge
@@ -72,6 +72,15 @@ Task and Agent IDs, runtime type, status, dispatch state, partial and timeline
 truncation flags, and lifecycle timestamps. Runtime references, revisions,
 event counters, event contents, attachments, task snapshots, and adapter data
 stay behind Python.
+
+The selected-Run timeline is one bounded same-origin SSE stream. Node validates
+the Run ID and browser reconnect cursor, polls one fixed authenticated bridge
+capability, emits a keepalive, and regularly closes so the browser reconnects.
+It returns at most 100 retained normalized events: ID, Run ID, sequence, type,
+timestamp, summary, and approved numeric usage metrics. It sends an explicit
+reset when history is missing or shortened. Event content, data payloads,
+runtime references, and browser-selected limits or bridge paths never cross
+this boundary. Only one timeline is active in the Runs workspace at a time.
 
 The first shell is prerendered and has no React hydration runtime. One fixed
 local script reads the health route after first paint. Later routes may add

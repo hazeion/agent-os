@@ -11,7 +11,7 @@ from unittest.mock import patch
 from agent_registry import AgentRegistryError, AgentRegistryUnavailableError
 from mentat_db import connect as connect_mentat_database, database_path as mentat_database_path
 import mentat_db
-from run_repository import RunRepository, RunRepositoryError, RunRepositoryUnavailable
+from run_repository import RunRepository, RunRepositoryConflict, RunRepositoryError, RunRepositoryUnavailable
 from task_repository import TaskRepositoryError
 from mentat import local_bridge
 import server
@@ -303,6 +303,94 @@ class LocalBridgeTests(unittest.TestCase):
         with patch.object(local_bridge, "bridge_runs_payload", return_value=(response, 200)):
             status, payload, _headers = self.request(path=local_bridge.BRIDGE_RUNS_PATH)
         self.assertEqual((status, payload), (200, response))
+
+    def test_run_events_are_a_fixed_bounded_projection_without_content(self):
+        canonical = {
+            "schema_version": 1,
+            "run_id": "run_current",
+            "after": 3,
+            "next_cursor": 4,
+            "cursor_reset_required": False,
+            "events": [{
+                "id": "event_current",
+                "run_id": "run_current",
+                "sequence": 4,
+                "type": "run.started",
+                "occurred_at": "2026-08-22T00:01:00Z",
+                "summary": "Runtime accepted dispatch",
+                "metrics": {"total_tokens": 12},
+            }],
+        }
+        with patch.object(server, "mentat_run_events_payload", return_value=canonical):
+            payload, status = local_bridge.bridge_run_events_payload("run_current", 3)
+        self.assertEqual((status, payload["next_cursor"]), (200, 4))
+        self.assertEqual(payload["events"][0]["summary"], "Runtime accepted dispatch")
+        for private_name in ("content", "runtime_run_ref", "payload", "data"):
+            self.assertNotIn(private_name, json.dumps(payload))
+
+    def test_run_events_reject_invalid_data_and_map_fixed_failures(self):
+        malformed = {
+            "schema_version": 1,
+            "run_id": "run_current",
+            "after": 0,
+            "next_cursor": 1,
+            "cursor_reset_required": False,
+            "events": [{
+                "id": "event_current", "run_id": "run_current", "sequence": 1,
+                "type": "message", "occurred_at": "2026-08-22T00:01:00Z",
+                "summary": "Event", "metrics": {}, "content": "private",
+            }],
+        }
+        with patch.object(server, "mentat_run_events_payload", return_value=malformed):
+            payload, status = local_bridge.bridge_run_events_payload("run_current", 0)
+        self.assertEqual((status, payload["status"]), (500, "error"))
+        cases = (
+            (RunRepositoryConflict("run.not_found"), "not_found", 404),
+            (RunRepositoryUnavailable("run_repository.unavailable"), "unavailable", 503),
+            (RunRepositoryError("run_repository.schema_unsupported"), "unsupported", 501),
+            (ValueError("private detail"), "error", 500),
+        )
+        for outcome, expected_state, expected_status in cases:
+            with self.subTest(expected_state=expected_state):
+                with patch.object(server, "mentat_run_events_payload", side_effect=outcome):
+                    payload, status = local_bridge.bridge_run_events_payload("run_current", 0)
+                self.assertEqual((status, payload["status"]), (expected_status, expected_state))
+                self.assertNotIn("private", json.dumps(payload))
+
+    def test_run_events_private_route_has_one_validated_cursor(self):
+        response = {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "run_id": "run_current", "after": 0,
+            "next_cursor": 0, "cursor_reset_required": False, "events": [],
+        }
+        with patch.object(local_bridge, "bridge_run_events_payload", return_value=(response, 200)):
+            status, payload, _headers = self.request(path="/bridge/v1/runs/run_current/events?after=0")
+        self.assertEqual((status, payload), (200, response))
+        colon_run_id = "run_current:child"
+        colon_response = {**response, "run_id": colon_run_id}
+        with patch.object(local_bridge, "bridge_run_events_payload", return_value=(colon_response, 200)) as capability:
+            status, payload, _headers = self.request(path="/bridge/v1/runs/run_current%3Achild/events?after=0")
+        self.assertEqual((status, payload), (200, colon_response))
+        capability.assert_called_once_with(colon_run_id, 0)
+        status, payload, _headers = self.request(path="/bridge/v1/runs/run_current/events?after=0&after=1")
+        self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
+        for invalid_path in (
+            "/bridge/v1/runs/run_current%2Fchild/events?after=0",
+            "/bridge/v1/runs/run_current%252Fchild/events?after=0",
+            "/bridge/v1/runs/%2E%2E/events?after=0",
+            "/bridge/v1/runs/run_current/extra/events?after=0",
+        ):
+            with self.subTest(path=invalid_path):
+                status, payload, _headers = self.request(path=invalid_path)
+                self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
+
+    def test_run_events_authority_reader_never_initializes_sqlite(self):
+        source = Path(server.__file__).read_text(encoding="utf-8")
+        start = source.index("def mentat_run_events_payload")
+        end = source.index("\ndef orchestration_run_payload", start)
+        implementation = source[start:end]
+        self.assertIn("connect_existing_mentat_database", implementation)
+        self.assertNotIn("connect_mentat_database(", implementation)
 
     def test_runs_payload_requires_existing_authority_without_initializing_it(self):
         with tempfile.TemporaryDirectory() as temporary:

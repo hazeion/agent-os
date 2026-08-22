@@ -1813,6 +1813,43 @@ def mentat_runs_payload() -> dict:
     }
 
 
+def mentat_run_events_payload(run_id: str, after_sequence: int) -> dict:
+    """Read one bounded safe event window without opening SQLite authority."""
+
+    if not re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}", run_id):
+        raise RunRepositoryValidationError("event.run_id_invalid")
+    if type(after_sequence) is not int or not 0 <= after_sequence <= 10**9:
+        raise RunRepositoryValidationError("event.cursor_invalid")
+    try:
+        with private_state_lock(DATA_DIR):
+            with connect_existing_mentat_database(DATA_DIR) as connection:
+                repository = RunRepository(connection)
+                repository.authority_receipt(required=True)
+                events, reset, cursor = repository.list_events(
+                    run_id, after_sequence=after_sequence
+                )
+    except (RunRepositoryConflict, RunRepositoryValidationError):
+        raise
+    except RunRepositoryError:
+        raise
+    except (MentatDatabaseError, OSError, sqlite3.Error) as exc:
+        raise RunRepositoryUnavailable("run_repository.unavailable") from exc
+    if after_sequence > cursor:
+        raise RunRepositoryValidationError("event.cursor_ahead")
+    maximum_events = 100
+    if len(events) > maximum_events:
+        events = events[-maximum_events:]
+        reset = True
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "after": after_sequence,
+        "next_cursor": cursor,
+        "cursor_reset_required": reset,
+        "events": [_public_orchestration_event(event) for event in events],
+    }
+
+
 def orchestration_run_payload(run_id: str, _query: str | None = None):
     try:
         with private_state_lock(DATA_DIR):

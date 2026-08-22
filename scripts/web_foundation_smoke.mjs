@@ -164,8 +164,8 @@ async function navigate(client, path, label) {
 }
 
 async function dispatchKey(client, key, { shift = false } = {}) {
-  const keyCode = key === "Tab" ? 9 : key === "Escape" ? 27 : 0;
-  const code = key === "Tab" ? "Tab" : key === "Escape" ? "Escape" : key;
+  const keyCode = key === "Tab" ? 9 : key === "Escape" ? 27 : key === "Enter" ? 13 : 0;
+  const code = key === "Tab" ? "Tab" : key === "Escape" ? "Escape" : key === "Enter" ? "Enter" : key;
   const modifiers = shift ? 8 : 0;
   await client.call("Input.dispatchKeyEvent", {
     type: "keyDown",
@@ -815,12 +815,19 @@ async function inspectRunFailureStates(client) {
 
 async function inspectRunProjection(client) {
   await setViewport(client, viewports.at(-1));
-  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); if (url.pathname !== '/api/runs') return nativeFetch(input, init); return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', count: 1, runs: [{ id: 'run_' + 'x'.repeat(124), source: 'task_dispatch', task_id: 'task_1', agent_id: 'agent_researcher', runtime_type: 'hermes', status: 'waiting_for_approval', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T00:00:00Z', updated_at: '2026-08-22T00:01:00Z', started_at: '2026-08-22T00:00:01Z', completed_at: null }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })); }; })();` });
+  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { class MockEventSource extends EventTarget { constructor(url) { super(); this.url = url; this.readyState = 1; queueMicrotask(() => this.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({ cursor: 1, reset: false, events: [{ id: 'event_current', run_id: 'run_' + 'x'.repeat(124), sequence: 1, type: 'run.started', occurred_at: '2026-08-22T00:01:01Z', summary: 'Runtime accepted dispatch', metrics: { total_tokens: 12 } }] }) }))); } close() { this.readyState = 2; } } window.EventSource = MockEventSource; const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); if (url.pathname !== '/api/runs') return nativeFetch(input, init); return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', count: 1, runs: [{ id: 'run_' + 'x'.repeat(124), source: 'task_dispatch', task_id: 'task_1', agent_id: 'agent_researcher', runtime_type: 'hermes', status: 'waiting_for_approval', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T00:00:00Z', updated_at: '2026-08-22T00:01:00Z', started_at: '2026-08-22T00:00:01Z', completed_at: null }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })); }; })();` });
   try {
     await navigate(client, "/runs", "Runs projection");
     await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState === 'ready'"), "Runs projection state");
-    const result = await client.eval(`(() => ({ summary: document.querySelector('[data-runs-summary]')?.textContent, cards: document.querySelectorAll('.run-card').length, rendered: document.querySelector('[data-runs-list]')?.textContent, overflow: document.documentElement.scrollWidth - innerWidth }))()`);
-    if (result.summary !== "1 current Run." || result.cards !== 1 || result.overflow > 1 || !["task_dispatch", "task_1", "agent_researcher", "hermes", "Waiting For Approval", "accepted", "2026-08-22T00:00:00Z", "2026-08-22T00:01:00Z", "2026-08-22T00:00:01Z", "Not completed"].every((value) => result.rendered.includes(value)) || result.rendered.includes("runtime_run_ref") || result.rendered.includes("state_revision")) throw new Error(`Runs projection contract failed: ${JSON.stringify({ summary: result.summary, cards: result.cards, overflow: result.overflow })}`);
+    await client.eval("document.querySelector('[data-run-timeline-open]').focus(); document.querySelector('[data-run-timeline-open]').click()");
+    await waitFor(() => client.eval("document.querySelectorAll('[data-run-timeline-list] [data-run-event-sequence]').length === 1"), "Runs timeline event");
+    const timelineText = await client.eval("document.querySelector('[data-run-timeline]')?.textContent || ''");
+    await client.eval("document.querySelector('[data-run-timeline-open]').click()");
+    await waitFor(() => client.eval("document.querySelectorAll('[data-run-timeline]').length === 1"), "single selected Runs timeline");
+    await client.eval("document.querySelector('[data-run-timeline-close]').click()");
+    await waitFor(() => client.eval("document.querySelectorAll('[data-run-timeline]').length === 0"), "Runs timeline close");
+    const result = await client.eval(`(() => ({ summary: document.querySelector('[data-runs-summary]')?.textContent, cards: document.querySelectorAll('.run-card').length, rendered: document.querySelector('[data-runs-list]')?.textContent, overflow: document.documentElement.scrollWidth - innerWidth, focus: document.activeElement?.getAttribute('data-run-timeline-open') }))()`);
+    if (result.summary !== "1 current Run." || result.cards !== 1 || result.focus !== "" || result.overflow > 1 || !["task_dispatch", "task_1", "agent_researcher", "hermes", "Waiting For Approval", "accepted", "2026-08-22T00:00:00Z", "2026-08-22T00:01:00Z", "Not completed"].every((value) => result.rendered.includes(value)) || !["2026-08-22T00:01:01Z", "Runtime accepted dispatch", "Total Tokens: 12"].every((value) => timelineText.includes(value)) || result.rendered.includes("runtime_run_ref") || result.rendered.includes("state_revision")) throw new Error(`Runs projection contract failed: ${JSON.stringify({ summary: result.summary, cards: result.cards, overflow: result.overflow, focus: result.focus })}`);
     return { summary: result.summary, cards: result.cards, overflow: result.overflow };
   } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
 }
