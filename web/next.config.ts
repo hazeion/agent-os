@@ -1,6 +1,12 @@
 import type { NextConfig } from "next";
 
-const staticFoundation = process.env.MENTAT_STATIC_FOUNDATION === "1";
+const staticShell = process.env.MENTAT_STATIC_FOUNDATION === "1";
+const developmentRuntime = process.env.NODE_ENV === "development";
+const scriptPolicy = staticShell
+  ? "script-src 'self'"
+  : developmentRuntime
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+    : "script-src 'self' 'unsafe-inline'";
 const securityHeaders = [
   {
     key: "Content-Security-Policy",
@@ -13,7 +19,7 @@ const securityHeaders = [
       "frame-ancestors 'none'",
       "img-src 'self' data:",
       "object-src 'none'",
-      staticFoundation ? "script-src 'self'" : "script-src 'self' 'unsafe-inline'",
+      scriptPolicy,
       "style-src 'self' 'unsafe-inline'",
     ].join("; "),
   },
@@ -26,13 +32,19 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  agentRules: false,
   output: "standalone",
   poweredByHeader: false,
   reactStrictMode: true,
   async rewrites() {
     return {
-      beforeFiles: staticFoundation
-        ? [{ source: "/", destination: "/foundation.html" }]
+      beforeFiles: staticShell
+        ? [
+            { source: "/", destination: "/shell/home.html" },
+            { source: "/agents", destination: "/shell/agents.html" },
+            { source: "/tasks", destination: "/shell/tasks.html" },
+            { source: "/runs", destination: "/shell/runs.html" },
+          ]
         : [],
       afterFiles: [],
       fallback: [],

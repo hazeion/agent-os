@@ -1,6 +1,6 @@
 # Emerald Operations implementation plan
 
-Status: Proposed
+Status: Slice 2A-B complete
 
 Design guide: [DESIGN_SYSTEM.md](./DESIGN_SYSTEM.md)
 
@@ -34,9 +34,9 @@ at a time.
 - Use real state or a named empty state. Do not ship sample operational data.
 - Keep each slice small enough to review on its own.
 
-## Before starting
+## Foundation check
 
-Slice 2A-A must pass CI and merge first.
+Slice 2A-A passed CI and merged in PR #114.
 
 From the repository root, confirm the foundation:
 
