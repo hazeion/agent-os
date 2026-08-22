@@ -3887,6 +3887,7 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .home-focus-list {
   display: grid;
   gap: 7px;
+  min-height: 239px;
   max-height: 239px;
   overflow-y: auto;
   padding-right: 10px;
@@ -4045,6 +4046,10 @@ code { font-family: var(--mono); color: var(--accent); }
 :root[data-ui-shell='emerald'] .home-row-arrow {
   color: var(--operations-content-tertiary);
   font: 300 24px/1 var(--operations-font-sans);
+}
+
+:root[data-ui-shell='emerald'] .home-focus-scope-slot {
+  min-height: 72px;
 }
 
 :root[data-ui-shell='emerald'] .home-focus-scope {
@@ -4806,6 +4811,10 @@ code { font-family: var(--mono); color: var(--accent); }
     width: 100%;
     justify-content: space-between;
     margin-left: 37px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-focus-scope-slot {
+    min-height: 80px;
   }
 
   :root[data-ui-shell='emerald'] .home-focus-row {

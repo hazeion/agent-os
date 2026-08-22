@@ -48,6 +48,29 @@ class HomeOperationsUiTests(unittest.TestCase):
         ]
         self.assertIn("min-height: 430px", focus_css)
         self.assertIn("min-height: 430px", agents_css)
+        focus_list_css = CSS[
+            CSS.index(":root[data-ui-shell='emerald'] .home-focus-list {")
+            : CSS.index(":root[data-ui-shell='emerald'] .home-focus-list::-webkit-scrollbar")
+        ]
+        self.assertIn("min-height: 239px", focus_list_css)
+        self.assertIn("max-height: 239px", focus_list_css)
+        focus_scope_slot_css = CSS[
+            CSS.index(":root[data-ui-shell='emerald'] .home-focus-scope-slot {")
+            : CSS.index(":root[data-ui-shell='emerald'] .home-focus-scope {")
+        ]
+        self.assertIn("min-height: 72px", focus_scope_slot_css)
+        phone_start = CSS.index("@media (max-width: 640px)")
+        phone_focus_scope_slot_css = CSS[
+            CSS.index(
+                ":root[data-ui-shell='emerald'] .home-focus-scope-slot {",
+                phone_start,
+            )
+            : CSS.index(
+                ":root[data-ui-shell='emerald'] .home-focus-row {",
+                phone_start,
+            )
+        ]
+        self.assertIn("min-height: 80px", phone_focus_scope_slot_css)
         mobile_start = CSS.index("@media (max-width: 900px)")
         mobile_rule_start = CSS.index(
             ":root[data-ui-shell='emerald'] .home-focus-panel {",

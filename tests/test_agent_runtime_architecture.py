@@ -35,12 +35,15 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
         ):
             self.assertIn(method, SERVER)
 
-    def test_pivot_plan_marks_task_cutover_complete_and_run_cutover_publishable(self):
+    def test_pivot_plan_closes_sqlite_cutover_and_proposes_frontend_foundation(self):
         self.assertIn("| 1B | Complete |", PIVOT_PLAN)
         self.assertIn("| 1C-A | Complete |", PIVOT_PLAN)
         self.assertIn("| 1C-B | Complete |", PIVOT_PLAN)
         self.assertIn("| 1C-C | Complete |", PIVOT_PLAN)
-        self.assertIn("| 1C-D | In progress |", PIVOT_PLAN)
+        self.assertIn("| 1C-D | Complete |", PIVOT_PLAN)
+        self.assertIn("| 2A | Proposed |", PIVOT_PLAN)
+        self.assertIn("repeatable Lighthouse 100/100/100/100 replacement gate moves intact to 2A", PIVOT_PLAN)
+        self.assertIn("before it may displace the legacy frontend", PIVOT_PLAN)
         self.assertIn("reviews/2026-08-18-mentat-sqlite-task-cutover.md", PIVOT_PLAN)
         self.assertIn("Next.js + React + TypeScript", PIVOT_PLAN)
         self.assertIn("MENTAT_PIVOT_IMPLEMENTATION_PLAN.md", AGENT_GUIDE)

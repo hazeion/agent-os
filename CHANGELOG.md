@@ -5,6 +5,11 @@ All notable changes to Mentat.
 ## 2026-08-21
 
 ### Changed
+- Closed Pivot Slice 1C-D after stabilizing the Home focus-list viewport during
+  Task hydration. The exact repeatable Lighthouse 100/100/100/100 replacement
+  gate now applies to the proposed 2A frontend foundation, while the legacy
+  surface retains explicit performance budgets and 100-point accessibility,
+  best-practices, and SEO gates.
 - Replaced Home's delayed sequential script loader with parser-discovered,
   ordered `defer` scripts. Core and application assets now download during HTML
   parsing, preserve execution order and boot failure recovery, and improve the
@@ -26,8 +31,8 @@ All notable changes to Mentat.
   geometry, and deferred ordered loading for the core and application bundles.
 
 ### Documentation
-- Recorded Slice 1C-C as complete and Slice 1C-D as the active pivot slice in
-  the implementation roadmap and data-layout contract.
+- Recorded Slices 1C-C and 1C-D as complete and 2A as the proposed next pivot
+  slice in the implementation roadmap and data-layout contract.
 - Added request-boundary, Home UI, and browser-bootstrap regression coverage for
   the performance hardening contract.
 
