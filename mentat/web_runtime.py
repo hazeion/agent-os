@@ -19,6 +19,7 @@ import webbrowser
 
 from json_store import write_json_atomic
 from private_state import PrivateStateError, release_mentat_server, reserve_mentat_server
+from task_repository import TaskRepositoryError, ensure_task_sqlite_authority
 from .local_bridge import BRIDGE_TOKEN_ENV, BRIDGE_TOKEN_HEADER
 
 
@@ -179,8 +180,10 @@ def node_environment(*, token: str, bridge_port: int, gateway_port: int, gateway
 
 
 def wait_for_health(*, port: int, path: str, process: subprocess.Popen, host: str = GATEWAY_HOST,
-                    token: str | None = None, timeout: float = STARTUP_TIMEOUT_SECONDS) -> dict:
+                    token: str | None = None, timeout: float = STARTUP_TIMEOUT_SECONDS,
+                    unavailable_error: str | None = None) -> dict:
     deadline = time.monotonic() + timeout
+    last_response_status: int | None = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise WebRuntimeError("gateway_process_exited_during_startup")
@@ -193,15 +196,18 @@ def wait_for_health(*, port: int, path: str, process: subprocess.Popen, host: st
             connection.request("GET", path, headers=headers)
             response = connection.getresponse()
             body = response.read(8193)
+            last_response_status = response.status
             if response.status == 200 and len(body) <= 8192:
                 payload = json.loads(body)
                 if isinstance(payload, dict) and payload.get("status") == "ready":
                     return payload
         except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
-            pass
+            last_response_status = None
         finally:
             connection.close()
         time.sleep(0.1)
+    if last_response_status == 503 and unavailable_error is not None:
+        raise WebRuntimeError(unavailable_error)
     raise WebRuntimeError("gateway_readiness_timeout")
 
 
@@ -254,6 +260,15 @@ def clear_runtime_state(data_dir: Path, node_process: subprocess.Popen | None) -
         return
 
 
+def establish_task_authority(data_dir: Path) -> None:
+    """Complete the one-time Task cutover before the bridge can read it."""
+
+    try:
+        ensure_task_sqlite_authority(Path(data_dir), required_source_mode=0o600)
+    except (OSError, TaskRepositoryError) as exc:
+        raise WebRuntimeError("task_authority_unavailable") from exc
+
+
 def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path | None = None,
                 runtime_environment: dict[str, str] | None = None, open_browser: bool = False) -> int:
     """Run one Node gateway with its authenticated, loopback-only bridge."""
@@ -295,6 +310,7 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             reserved = True
         except PrivateStateError as exc:
             raise WebRuntimeError("mentat_server_already_active") from exc
+        establish_task_authority(data_dir)
         bridge_process = subprocess.Popen(
             bridge_command(bridge_port, safe_host), cwd=application_root(),
             env=child_environment(token=token, runtime_environment=runtime_environment),
@@ -306,7 +322,14 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             env=node_environment(token=token, bridge_port=bridge_port, gateway_port=port,
                                  gateway_host=safe_host),
         )
-        wait_for_health(port=port, path="/api/bridge/health", process=node_process, host=safe_host)
+        wait_for_health(port=port, path="/api/gateway/health", process=node_process, host=safe_host)
+        wait_for_health(
+            port=port,
+            path="/api/bridge/health",
+            process=node_process,
+            host=safe_host,
+            unavailable_error="gateway_bridge_unavailable",
+        )
         write_runtime_state(data_dir=data_dir, node_process=node_process, host=safe_host, port=port,
                             standalone_root=standalone)
         display_host = f"[{safe_host}]" if ":" in safe_host else safe_host

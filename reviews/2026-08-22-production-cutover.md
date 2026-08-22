@@ -187,3 +187,57 @@ installed-package smoke stopped before Chromium launched because its private
 runtime directory did not have the exact name the smoke script requires. The
 workflow now uses `web-foundation-smoke-runtime`, and the CI contract test
 asserts that exact value.
+
+### CI correction round 2
+
+The next CI run exposed two remaining startup paths:
+
+- the installed wheel started the bridge before completing the one-time SQLite
+  Task cutover, so its first Tasks request was unavailable;
+- the Apple Silicon native smoke received only a generic gateway timeout even
+  when Node remained alive and the bridge-proxy health route returned `503`.
+
+The supervisor now establishes Task authority before it starts the bridge.
+It also waits for a fixed Node-only readiness route before it waits for the
+Node-to-bridge route. A persistent proxy `503` returns the bounded
+`gateway_bridge_unavailable` code rather than a generic timeout. No token,
+route response body, or child environment is logged.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_web_runtime tests.test_packaging_cli tests.test_ci_quality_gate -v` | Pass | 47 checks passed. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 38 Node tests passed. |
+| `git diff --check` | Pass | No whitespace errors. |
+| Native local build | Environment-limited | Turbopack cannot bind its internal worker port in this execution environment; CI remains the native-bundle evidence. |
+
+Two independent read-only investigations reproduced an installed-style,
+read-only standalone payload with a live bridge and found no packaging-layout
+failure. Both recommended separating Node-listener and Node-to-bridge
+readiness instead of extending timeouts blindly. Their accepted correction is
+within this slice's launch and lifecycle contract. Re-review is pending after
+the complete correction diff is ready.
+
+### CI correction round 2 review
+
+Both reviewers found two non-blocking gaps: a prior transient `503` could be
+misclassified after a later transport failure, and the tests did not prove the
+supervisor ordering. The accepted in-scope follow-up now reports a bridge
+failure only when the final observed response is `503`, proves authority before
+bridge spawn and all three readiness stages in order, and tests the fixed Node
+health payload and headers.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_web_runtime tests.test_packaging_cli tests.test_ci_quality_gate -v` | Pass | 49 checks passed. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
+| `python3 -m unittest discover -s tests` | Environment/user-data limited | 1,355 tests ran: one pre-existing fixture expectation conflicts with the user-owned `data/projects.json` additions; 32 loopback-server tests cannot bind sockets in this sandbox; five tests skipped. No Slice 2D failure was reported. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+The final adversarial re-review is pending this amended correction diff.
+
+### Final correction review
+
+Both independent reviewers reported no findings after the transient-response,
+startup-order, and Node-route tests were added. The correction is ready for
+the existing PR. GitHub CI remains the required authority for the isolated
+wheel lifecycle, native installer smoke, browser smoke, and Lighthouse gates.
