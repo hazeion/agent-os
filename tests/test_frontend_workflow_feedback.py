@@ -73,7 +73,8 @@ class FrontendWorkflowFeedbackTests(unittest.TestCase):
         refresh_block = APP_JS[refresh_start:refresh_end]
 
         self.assertIn("requests.config = api(endpoints.config)", refresh_block)
-        self.assertIn("renderIfChanged('config', data.config, renderConfig)", refresh_block)
+        self.assertIn("renderRefreshDeferred(data, { activeView, calendarRequestWeekKey });", refresh_block)
+        self.assertIn("renderIfChanged('config', data.config, renderConfig)", APP_JS)
         self.assertIn("public-safe Hermes configuration summary", INDEX_HTML)
         self.assertNotIn("load the masked Hermes config", INDEX_HTML)
 

@@ -183,7 +183,7 @@ function setView(view, { refreshOnChange = true } = {}) {
   });
   $$('[data-view-panel]').forEach((panel) => panel.classList.toggle('active', panel.dataset.viewPanel === view));
   if (view !== 'today') scheduleAgentConsolePoll(false);
-  if (state.hasBootstrapped && viewChanged && refreshOnChange) return refresh();
+  if (viewChanged && refreshOnChange) return refresh();
   return Promise.resolve();
 }
 
@@ -6370,6 +6370,142 @@ async function ensureProjectsLoaded() {
   renderProjects(state.projects);
 }
 
+function renderRefreshOverview(overview = {}) {
+  renderGreeting(overview.identity || {});
+  state.overviewCards = overview.cards || {};
+}
+
+function renderRefreshCore(data = {}, { activeView = state.activeView || 'today' } = {}) {
+  if (data.overview) renderRefreshOverview(data.overview);
+  if (data.projects) {
+    state.projects = data.projects.projects || [];
+    state.projectsLoaded = true;
+  }
+  const tasks = data.tasks?.tasks || state.tasks;
+  if (data.tasks) {
+    state.tasks = tasks;
+    renderAndNotifyReminders(tasks);
+    const taskRenderPayload = {
+      tasks,
+      projects_available: state.projects.length > 0,
+      status_filter: state.taskStatusFilter,
+      search_filter: state.taskFilter,
+      project_filter: state.projectFilter,
+      selected_task_id: state.selectedTaskId,
+      editor_mode: state.taskEditorMode,
+    };
+    renderIfChanged('tasks', taskRenderPayload, ({ tasks: renderTasks }) => renderTaskList(renderTasks));
+  }
+  if (data.projects) renderIfChanged(`projects-${state.projectFilter}-${state.projectEditorMode}`, state.projects, renderProjects);
+  if (data.tasks) {
+    renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
+    renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
+  }
+  if (activeView === 'today' && (data.tasks || data.projects)) renderHomeProjects(state.projects, tasks);
+  if (data.health) renderIfChanged('health', data.health, renderHealth);
+  if (activeView === 'today') {
+    window.__MENTAT_HOME_CORE_READY__ = true;
+    try {
+      performance.mark('mentat-home-core-rendered');
+    } catch {
+      // User timing is diagnostic only; Home remains usable when unavailable.
+    }
+    window.dispatchEvent(new CustomEvent('mentat:home-core-rendered'));
+  }
+  return tasks;
+}
+
+function renderRefreshDeferred(data = {}, { activeView = state.activeView || 'today', calendarRequestWeekKey = '' } = {}) {
+  if (data.overview) renderRefreshOverview(data.overview);
+  if (data.agents) {
+    state.agents = data.agents.agents || [];
+    state.latestAgentsPayload = data.agents;
+  }
+  if (data.calendar && (activeView !== 'calendar' || state.calendarWeekStart === calendarRequestWeekKey)) {
+    const cacheKey = activeView === 'calendar' ? `calendar-week-${calendarRequestWeekKey}` : 'calendar-agenda';
+    renderIfChanged(cacheKey, data.calendar, (payload) => renderCalendar(payload, { view: activeView }));
+  }
+  if (data.agentConsoleCommandManifest) setAgentConsoleCommandManifest(data.agentConsoleCommandManifest);
+  if (data.agentConsole) renderAgentConsole(data.agentConsole);
+  if (data.agentActivity) renderIfChanged('agent-activity', data.agentActivity, renderAgentActivity);
+  if (data.crons) {
+    renderIfChanged('crons', data.crons, renderCrons);
+    if (activeView === 'today') renderHomeCrons(data.crons);
+  }
+  if (data.hermesProfiles) {
+    const profileRenderPayload = {
+      profiles: data.hermesProfiles,
+      projects_available: state.projects.length > 0,
+    };
+    renderIfChanged('hermes-profiles', profileRenderPayload, ({ profiles }) => renderHermesProfiles(profiles));
+  }
+  if (data.sessions) state.latestSessionsPayload = data.sessions;
+  if (data.sessions || data.agents) {
+    if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
+    if (data.sessions) renderIfChanged('model-usage', data.sessions, renderModelUsageChart);
+    if (activeView === 'agents') {
+      const agentPulsePayload = {
+        ...(state.latestAgentsPayload || {}),
+        sessions: state.latestSessionsPayload?.sessions || state.latestSessionsPayload || [],
+      };
+      state.lastAgentPulsePayload = agentPulsePayload;
+      renderIfChanged('agent-pulse', agentPulsePayload, renderAgentPulse);
+    }
+  }
+  if (data.notes) renderIfChanged('notes', data.notes, renderNotes);
+  if (data.contextPacks) renderContextPacks(data.contextPacks);
+  if (data.config) renderIfChanged('config', data.config, renderConfig);
+  if (data.hermesCapabilities) renderIfChanged('hermes-capabilities', data.hermesCapabilities, renderHermesCapabilityInventory);
+  if (data.hermesWebhookHealth) renderIfChanged('hermes-webhook-health', data.hermesWebhookHealth, renderWebhookHealth);
+}
+
+function renderRefreshFailure(key, error, { activeView = state.activeView || 'today', calendarRequestWeekKey = '' } = {}) {
+  const message = error instanceof Error ? error.message : String(error || 'Request unavailable.');
+  console.warn(`Mentat refresh ${key} unavailable: ${message}`);
+  if (key === 'tasks') {
+    state.tasks = [];
+    renderTaskList([]);
+    renderFocusTasks([]);
+    renderCompletedWork([]);
+  } else if (key === 'projects') {
+    state.projects = [];
+    state.projectsLoaded = true;
+    renderProjects(state.projects);
+    if (activeView === 'today') renderHomeProjects(state.projects, state.tasks);
+  } else if (key === 'health') {
+    renderHealth({ status: 'error', status_label: 'Unavailable', summary: message, subsystems: [] });
+  } else if (key === 'overview') {
+    renderRefreshOverview({ identity: {} });
+  } else if (key === 'calendar') {
+    renderRefreshDeferred({ calendar: { events: [], error: message } }, { activeView, calendarRequestWeekKey });
+  } else if (key === 'agentConsole') {
+    renderAgentConsole({ error: `Hermes Console is temporarily unavailable: ${message}` });
+  } else if (key === 'agentActivity') {
+    renderAgentActivity({ groups: {}, counts: {}, error: message });
+  } else if (key === 'sessions') {
+    state.latestSessionsPayload = null;
+    renderRefreshDeferred({ sessions: { sessions: [], error: `Hermes sessions are temporarily unavailable: ${message}` } }, { activeView, calendarRequestWeekKey });
+  } else if (key === 'agents') {
+    state.agents = [];
+    state.latestAgentsPayload = null;
+    if (activeView === 'agents') renderAgentPulse({ agents: [], sessions: state.latestSessionsPayload?.sessions || [] });
+  } else if (key === 'crons') {
+    renderRefreshDeferred({ crons: { jobs: [], error: `Hermes CRON inventory is temporarily unavailable: ${message}` } }, { activeView, calendarRequestWeekKey });
+  } else if (key === 'hermesProfiles') {
+    renderHermesProfiles({ status: 'unavailable', error: { message } });
+  } else if (key === 'notes') {
+    renderNotes({ notes: [], exists: false, error: message });
+  } else if (key === 'contextPacks') {
+    renderContextPacks({ context_packs: [] });
+  } else if (key === 'config') {
+    renderIfChanged('config', { error: message }, renderConfig);
+  } else if (key === 'hermesCapabilities') {
+    renderIfChanged('hermes-capabilities', { error: message }, renderHermesCapabilityInventory);
+  } else if (key === 'hermesWebhookHealth') {
+    renderIfChanged('hermes-webhook-health', { error: message }, renderWebhookHealth);
+  }
+}
+
 async function refresh() {
   if (state.isRefreshing) {
     state.needsRefresh = true;
@@ -6423,72 +6559,51 @@ async function refresh() {
   }
 
   try {
-    const entries = await Promise.all(Object.entries(requests).map(async ([key, promise]) => [key, await promise]));
-    const data = Object.fromEntries(entries);
-
-    renderGreeting(data.overview.identity || {});
-    state.overviewCards = data.overview.cards || {};
-    if (data.projects) {
-      state.projects = data.projects.projects || [];
-      state.projectsLoaded = true;
-    }
-    if (data.agents) {
-      state.agents = data.agents.agents || [];
-    }
-    const tasks = data.tasks.tasks || [];
-    state.tasks = tasks;
-    renderAndNotifyReminders(tasks);
-    const taskRenderPayload = {
-      tasks,
-      projects_available: state.projects.length > 0,
-      status_filter: state.taskStatusFilter,
-      search_filter: state.taskFilter,
-      project_filter: state.projectFilter,
-      selected_task_id: state.selectedTaskId,
-      editor_mode: state.taskEditorMode,
-    };
-    renderIfChanged('tasks', taskRenderPayload, ({ tasks: renderTasks }) => renderTaskList(renderTasks));
-    if (data.projects) renderIfChanged(`projects-${state.projectFilter}-${state.projectEditorMode}`, state.projects, renderProjects);
-    renderIfChanged(`focus-${state.projectFilter}`, tasks, renderFocusTasks);
-    renderIfChanged(`completed-${state.projectFilter}`, tasks, renderCompletedWork);
-    if (activeView === 'today') renderHomeProjects(state.projects, tasks);
-    if (data.calendar && (activeView !== 'calendar' || state.calendarWeekStart === calendarRequestWeekKey)) {
-      const cacheKey = activeView === 'calendar' ? `calendar-week-${calendarRequestWeekKey}` : 'calendar-agenda';
-      renderIfChanged(cacheKey, data.calendar, (payload) => renderCalendar(payload, { view: activeView }));
-    }
-    if (data.agentConsoleCommandManifest) setAgentConsoleCommandManifest(data.agentConsoleCommandManifest);
-    if (data.agentConsole) renderAgentConsole(data.agentConsole);
-    if (data.agentActivity) renderIfChanged('agent-activity', data.agentActivity, renderAgentActivity);
-    if (data.crons) {
-      renderIfChanged('crons', data.crons, renderCrons);
-      if (activeView === 'today') renderHomeCrons(data.crons);
-    }
-    if (data.hermesProfiles) {
-      const profileRenderPayload = {
-        profiles: data.hermesProfiles,
-        projects_available: state.projects.length > 0,
+    if (activeView === 'today') {
+      const coreRequests = {
+        tasks: requests.tasks,
+        health: requests.health,
+        projects: requests.projects,
       };
-      renderIfChanged('hermes-profiles', profileRenderPayload, ({ profiles }) => renderHermesProfiles(profiles));
-    }
-    if (data.sessions || data.agents) {
-      if (data.sessions) renderIfChanged(`sessions-${state.sessionFilter}-${state.selectedSessionId}`, data.sessions, renderSessions);
-      if (data.sessions) renderIfChanged('model-usage', data.sessions, renderModelUsageChart);
-      if (activeView === 'agents') {
-        const agentPulsePayload = {
-          ...(data.agents || {}),
-          sessions: data.sessions?.sessions || data.sessions || [],
-        };
-        state.lastAgentPulsePayload = agentPulsePayload;
-        renderIfChanged('agent-pulse', agentPulsePayload, renderAgentPulse);
-      }
-    }
-    if (data.notes) renderIfChanged('notes', data.notes, renderNotes);
-    if (data.contextPacks) renderContextPacks(data.contextPacks);
-    if (data.config) renderIfChanged('config', data.config, renderConfig);
-    if (data.hermesCapabilities) renderIfChanged('hermes-capabilities', data.hermesCapabilities, renderHermesCapabilityInventory);
-    if (data.hermesWebhookHealth) renderIfChanged('hermes-webhook-health', data.hermesWebhookHealth, renderWebhookHealth);
+      const coreResults = await Promise.allSettled(Object.entries(coreRequests).map(async ([key, promise]) => [key, await promise]));
+      const coreData = {};
+      coreResults.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          const [key, payload] = result.value;
+          coreData[key] = payload;
+        } else {
+          const key = Object.keys(coreRequests)[index];
+          renderRefreshFailure(key, result.reason, { activeView, calendarRequestWeekKey });
+        }
+      });
+      renderRefreshCore(coreData, { activeView });
 
-    renderIfChanged('health', data.health, renderHealth);
+      const coreKeys = new Set(Object.keys(coreRequests));
+      await Promise.all(Object.entries(requests)
+        .filter(([key]) => !coreKeys.has(key))
+        .map(async ([key, promise]) => {
+          try {
+            renderRefreshDeferred({ [key]: await promise }, { activeView, calendarRequestWeekKey });
+          } catch (error) {
+            renderRefreshFailure(key, error, { activeView, calendarRequestWeekKey });
+          }
+        }));
+    } else {
+      const entries = await Promise.allSettled(Object.entries(requests).map(async ([key, promise]) => [key, await promise]));
+      const data = {};
+      entries.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          const [key, payload] = result.value;
+          data[key] = payload;
+        } else {
+          const key = Object.keys(requests)[index];
+          renderRefreshFailure(key, result.reason, { activeView, calendarRequestWeekKey });
+        }
+      });
+      renderRefreshCore(data, { activeView });
+      renderRefreshDeferred(data, { activeView, calendarRequestWeekKey });
+    }
+
     state.hasBootstrapped = true;
     $('#last-updated').textContent = fmt.format(new Date());
     if (activeView === 'today' && !state.homeDelegationRefreshInFlight) {

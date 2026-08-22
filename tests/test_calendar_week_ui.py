@@ -224,7 +224,8 @@ process.stdout.write(JSON.stringify(result));
 
         refresh_block = self.block("async function refresh()", "function queueMessageSearch")
         self.assertIn("calendarWeekRequestUrl(weekStart)", refresh_block)
-        self.assertIn("state.calendarWeekStart === calendarRequestWeekKey", refresh_block)
+        deferred_render_block = self.block("function renderRefreshDeferred", "function renderRefreshFailure")
+        self.assertIn("state.calendarWeekStart === calendarRequestWeekKey", deferred_render_block)
         self.assertIn("requests.calendar = api(endpoints.calendar)", refresh_block)
 
     def test_today_compact_agenda_stays_separate_and_no_calendar_timer_is_added(self):
