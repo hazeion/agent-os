@@ -321,6 +321,8 @@ class CdpClient {
     this.ws = ws;
     this.nextId = 1;
     this.pending = new Map();
+    this.handlers = new Map();
+    this.eventErrors = [];
     ws.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.id && this.pending.has(message.id)) {
@@ -328,8 +330,26 @@ class CdpClient {
         this.pending.delete(message.id);
         if (message.error) reject(new Error(message.error.message || JSON.stringify(message.error)));
         else ok(message.result || {});
+        return;
+      }
+      if (message.method) {
+        for (const handler of this.handlers.get(message.method) || []) {
+          Promise.resolve(handler(message.params || {})).catch((error) => this.eventErrors.push(error));
+        }
       }
     };
+  }
+
+  on(method, handler) {
+    const handlers = this.handlers.get(method) || new Set();
+    handlers.add(handler);
+    this.handlers.set(method, handlers);
+    return () => handlers.delete(handler);
+  }
+
+  throwEventErrors() {
+    if (!this.eventErrors.length) return;
+    throw this.eventErrors.shift();
   }
 
   call(method, params = {}) {
@@ -348,6 +368,140 @@ class CdpClient {
       throw new Error(result.exceptionDetails.text || 'Runtime evaluation failed');
     }
     return result.result?.value;
+  }
+}
+
+async function verifyHomeCoreRenderPriority(client) {
+  const delayedPaths = new Set([
+    '/api/overview',
+    '/api/agent-console',
+    '/api/agent-console/commands',
+    '/api/agent-activity',
+    '/api/hermes/sessions',
+    '/api/agents',
+    '/api/hermes/crons',
+    '/api/context-packs',
+  ]);
+  const pausedRequests = new Map();
+  const releasedRequestIds = new Set();
+  let holdDeferredRequests = true;
+  const removeHandler = client.on('Fetch.requestPaused', async ({ requestId, request }) => {
+    const path = new URL(request.url).pathname;
+    if (holdDeferredRequests && delayedPaths.has(path)) {
+      pausedRequests.set(path, requestId);
+      return;
+    }
+    await client.call('Fetch.continueRequest', { requestId });
+  });
+  await client.call('Fetch.enable', {
+    patterns: [{ urlPattern: `${baseUrl}/api/*`, requestStage: 'Request' }],
+  });
+  try {
+    await reloadPage(client);
+    await waitFor(
+      () => client.eval('window.__MENTAT_HOME_CORE_READY__ === true'),
+      'Home core render before deferred requests',
+      30000,
+    );
+    await waitFor(
+      () => pausedRequests.size === delayedPaths.size,
+      'every deferred Home request to pause',
+      30000,
+    );
+    const beforeRelease = await client.eval(`(() => ({
+      focusLoading: Boolean(document.querySelector('#focus-task-list .home-focus-loading')),
+      coreReady: window.__MENTAT_HOME_CORE_READY__ === true,
+      fullRefreshComplete: state.hasBootstrapped === true,
+      focusRows: document.querySelectorAll('#focus-task-list .home-focus-row, #focus-task-list .home-focus-empty').length,
+      projectContext: Boolean(document.querySelector('#home-project-stats')),
+    }))()`);
+    if (
+      beforeRelease.focusLoading
+      || !beforeRelease.coreReady
+      || beforeRelease.fullRefreshComplete
+      || !beforeRelease.focusRows
+      || !beforeRelease.projectContext
+    ) {
+      throw new Error(`Home core render remained gated by deferred requests: ${JSON.stringify(beforeRelease)}`);
+    }
+    const agentConsoleRequestId = pausedRequests.get('/api/agent-console');
+    const contextPacksRequestId = pausedRequests.get('/api/context-packs');
+    await client.call('Fetch.continueRequest', { requestId: agentConsoleRequestId });
+    releasedRequestIds.add(agentConsoleRequestId);
+    await client.call('Fetch.failRequest', { requestId: contextPacksRequestId, errorReason: 'Failed' });
+    releasedRequestIds.add(contextPacksRequestId);
+    await waitFor(
+      () => client.eval("Boolean(document.querySelector('#context-pack-list .empty'))"),
+      'bounded Context Packs failure state',
+      30000,
+    );
+    await waitFor(
+      () => client.eval("!document.querySelector('#agent-console-chat')?.textContent.includes('Waiting for Hermes status')"),
+      'an independently released deferred panel',
+      30000,
+    );
+    await client.eval("setView('agents')");
+    holdDeferredRequests = false;
+    await Promise.all([...pausedRequests.values()]
+      .filter((requestId) => !releasedRequestIds.has(requestId))
+      .map(async (requestId) => {
+      releasedRequestIds.add(requestId);
+      await client.call('Fetch.continueRequest', { requestId });
+      }));
+    await waitFor(
+      () => client.eval("state.hasBootstrapped === true && state.activeView === 'agents' && state.isRefreshing === false"),
+      'deferred failure recovery and navigation refresh',
+      30000,
+    );
+    client.throwEventErrors();
+    return {
+      pausedRequests: pausedRequests.size,
+      independentlyReleasedPanel: 'agent-console',
+      rejectedPanel: 'context-packs',
+      beforeRelease,
+    };
+  } finally {
+    holdDeferredRequests = false;
+    await Promise.allSettled([...pausedRequests.values()]
+      .filter((requestId) => !releasedRequestIds.has(requestId))
+      .map((requestId) => client.call('Fetch.continueRequest', { requestId })));
+    removeHandler();
+    await client.call('Fetch.disable');
+    client.throwEventErrors();
+  }
+}
+
+async function verifyHomeCoreFailureFallback(client) {
+  let taskFailureInjected = false;
+  const removeHandler = client.on('Fetch.requestPaused', async ({ requestId, request }) => {
+    if (!taskFailureInjected && new URL(request.url).pathname === '/api/tasks') {
+      taskFailureInjected = true;
+      await client.call('Fetch.failRequest', { requestId, errorReason: 'Failed' });
+      return;
+    }
+    await client.call('Fetch.continueRequest', { requestId });
+  });
+  await client.call('Fetch.enable', {
+    patterns: [{ urlPattern: `${baseUrl}/api/*`, requestStage: 'Request' }],
+  });
+  try {
+    await reloadPage(client);
+    await waitFor(
+      () => client.eval(`(() => window.__MENTAT_HOME_CORE_READY__ === true
+        && !document.querySelector('#focus-task-list .home-focus-loading')
+        && Boolean(document.querySelector('#focus-task-list .home-focus-empty'))
+        && Boolean(document.querySelector('#home-project-stats .home-project-stat'))
+      )()`),
+      'bounded task failure with project context',
+      30000,
+    );
+    if (!taskFailureInjected) throw new Error('Home core task failure was not intercepted');
+    client.throwEventErrors();
+    return { rejectedCoreRequest: 'tasks' };
+  } finally {
+    removeHandler();
+    await client.call('Fetch.disable');
+    client.throwEventErrors();
   }
 }
 
@@ -481,6 +635,14 @@ async function main() {
     await setViewport(client, 1440, 1000);
     await reloadPage(client);
     await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'Emerald Today restore');
+    const homeCorePriority = await verifyHomeCoreRenderPriority(client);
+    const homeCoreFailureFallback = await verifyHomeCoreFailureFallback(client);
+    await reloadPage(client);
+    await waitFor(
+      () => client.eval("document.querySelector('#view-today.active') !== null && state.hasBootstrapped === true"),
+      'clean Home restore after priority regression',
+      30000,
+    );
 
     await waitFor(() => client.eval(`(() => {
       const stop = document.querySelector('#agent-console-stop');
@@ -1946,7 +2108,7 @@ async function main() {
 
     await client.eval(`document.querySelector('[data-view="agents"]').click()`);
     await waitFor(() => client.eval('document.querySelector("#view-agents.active") !== null'), 'Agents view');
-    await waitFor(() => client.eval(`Boolean(document.querySelector('#managed-agent-list .managed-agent-card, #managed-agent-list .empty'))`), 'managed agents inventory');
+    await waitFor(() => client.eval(`Boolean(document.querySelector('#managed-agent-list .managed-agent-row, #managed-agent-list .empty'))`), 'managed agents inventory');
     const agentsWorkspaceVisible = await client.eval(`Boolean(document.querySelector('#managed-agents-panel') && document.querySelector('#conversation-library-panel') && !document.querySelector('#agent-message-panel'))`);
     if (!agentsWorkspaceVisible) throw new Error('Agents workspace smoke failed');
     const agentDeletionContract = await client.eval(`(() => { const dialog = document.querySelector('#agent-delete-dialog'); const defaultCard = document.querySelector('[data-hermes-profile-id="default"]'); return Boolean(dialog && (!defaultCard || !defaultCard.querySelector('[data-delete-hermes-profile]'))); })()`);
@@ -2300,7 +2462,7 @@ async function main() {
     );
     await setViewport(client, 1440, 1000);
 
-    console.log(JSON.stringify({ ok: true, baseUrl, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'compact navigation label tooltip', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, homeCorePriority, homeCoreFailureFallback, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'Home core render priority', 'Home core failure fallback', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'compact navigation label tooltip', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
     await stopChild(chrome);

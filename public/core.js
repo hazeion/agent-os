@@ -48,6 +48,8 @@ const state = {
   taskDeletionRequestToken: 0,
   projects: [],
   agents: [],
+  latestAgentsPayload: null,
+  latestSessionsPayload: null,
   contextPacks: [],
   contextPackDraft: null,
   editingContextPackId: '',

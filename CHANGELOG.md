@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-08-21
 
 ### Changed
+- Prioritized Home task focus, project context, and health rendering ahead of
+  deferred Hermes/Console requests. Deferred requests now settle independently,
+  preserve bounded error states, and cannot block a subsequent navigation refresh.
 - Began Pivot Slice 1C-D by removing live server Task workflows from the
   generic JSON read/write call graph. Runtime Task snapshots and mutations now
   use explicit SQLite-authority helpers; the legacy `tasks.json` document
