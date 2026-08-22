@@ -19,9 +19,13 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn("activeView === 'today' || activeView === 'agents'", refresh_block)
         self.assertIn("activeView === 'projects'", refresh_block)
 
-    def test_readme_documents_no_premature_frontend_build_step(self):
-        self.assertIn("There is no npm install step", README)
-        self.assertIn("plain HTML, CSS, and JavaScript", README)
+    def test_readme_keeps_node_preview_optional(self):
+        self.assertIn("The normal dashboard still has no npm step", README)
+        self.assertIn("Node.js\n24.19 or newer within the Node 24 release line", README)
+        self.assertIn("npm --prefix web ci --ignore-scripts", README)
+        self.assertIn("npm --prefix web run build", README)
+        self.assertIn("python3 scripts/mentat_web_preview.py", README)
+        self.assertIn("does not replace the normal dashboard on port 8888", README)
 
     def test_dashboard_identity_is_project_owned_not_hardcoded(self):
         self.assertIn('read_json_file("dashboard.json", {})', SERVER)

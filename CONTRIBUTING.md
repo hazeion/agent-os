@@ -18,11 +18,36 @@ review and ship.
    python -m unittest discover -s tests -v
    ```
 
+   If your change touches `web/`, use Node 24.19 or newer within Node 24 and
+   also run:
+
+   ```bash
+   npm --prefix web ci --ignore-scripts
+   npm --prefix web run check
+   npm --prefix web run build
+   python scripts/mentat_web_preview.py
+   ```
+
+   Open `http://localhost:8890`, inspect the production preview, and stop it
+   with Ctrl+C. While it is running, use another terminal for the repeatable
+   performance gate. Install the repository-pinned Chrome for Testing release,
+   then use the executable path printed by the install command:
+
+   ```bash
+   web/node_modules/.bin/browsers install chrome@152.0.7923.0 --path web/.browser-cache/chrome-for-testing
+   CHROME_PATH="<printed executable path>" npm --prefix web run lighthouse:gate
+   ```
+
+   The gate rejects a different browser version. Required CI uses the same
+   non-auto-updating Chrome for Testing build and uploads a bounded diagnostic
+   summary if an audit fails.
+
 6. Open a focused pull request. Explain what changed for the user, how you
    checked it, and any limitations that remain.
 
-Node.js is only needed for the JavaScript syntax checks. There is no npm build
-or frontend dependency install.
+Node.js 24 is used for JavaScript syntax checks and the optional Next.js source
+preview. The installed compatibility dashboard remains Python-hosted and does
+not bundle Node yet.
 
 Never commit credentials, personal data, real message history, machine-specific
 paths, or generated runtime files. By participating, you agree to follow the

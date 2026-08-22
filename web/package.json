@@ -1,0 +1,37 @@
+{
+  "name": "mentat-web-foundation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
+  "packageManager": "npm@11.17.0",
+  "scripts": {
+    "dev": "node scripts/run-next.mjs dev --hostname 127.0.0.1",
+    "build": "node scripts/run-next.mjs build && node scripts/prepare-standalone.mjs",
+    "lighthouse:gate": "node scripts/lighthouse-gate.mjs",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts",
+    "check": "npm run lint && npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "next": "16.3.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tailwindcss": "4.3.3"
+  },
+  "devDependencies": {
+    "@puppeteer/browsers": "3.2.1",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "chrome-launcher": "1.2.1",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.2",
+    "lighthouse": "13.4.1",
+    "typescript": "6.0.3"
+  }
+}

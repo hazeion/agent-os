@@ -42,11 +42,12 @@ The first additive Phase 1 seam is also complete: Mentat now has runtime-neutral
 Agent, Task, Run, AgentEvent, RuntimeContext, capability, registry, and
 AgentRuntime contracts, with Hermes wrapped as the first runtime adapter.
 
-Slices 1B and 1C-A through 1C-D are complete. The next proposed slice is **2A —
-New Frontend Foundation**. The minimum durable orchestration state, dispatch
-boundaries, SQLite Task cleanup, compatibility evidence, and legacy browser
-quality budgets are now in place, so the new frontend can consume real
-Mentat-owned APIs instead of embedding Hermes profiles or temporary mock data.
+Slices 1B and 1C-A through 1C-D are complete. **2A-A — Node Runtime
+Foundation** is in progress on its approved feature branch. It establishes the
+source-preview gateway, private Python bridge boundary, Node 24 contract, and
+the repeatable replacement-shell Lighthouse baseline without displacing the
+legacy frontend. After 2A-A is accepted and merged, 2A-B is the proposed next
+slice for the actual Emerald Operations application shell.
 
 ## Slice roadmap
 
@@ -59,8 +60,9 @@ Mentat-owned APIs instead of embedding Hermes profiles or temporary mock data.
 | 1C-B | Complete | Atomically migrate `tasks.json` and cut every live Task workflow over to SQLite with no dual reads or writes. | Slice 1C-A |
 | 1C-C | Complete | Schema/API/dispatch/reconciliation/retention and schema-7 backup implementation, full local verification, adversarial review, Lighthouse gates, and post-merge Agent Registry correction are complete. | Slice 1C-B |
 | 1C-D | Complete | Removed obsolete live Task JSON runtime paths, completed compatibility and browser evidence, fixed deterministic Home layout shift, and established explicit legacy performance budgets. | Slice 1C-C |
-| 2A | Proposed | Next.js/React/TypeScript/Tailwind application foundation and shared Mentat design system; repeatable Lighthouse 100/100/100/100 is required before replacing the legacy frontend. | Slice 1C-D |
-| 2B | Provisional | Agents, Tasks, and Runs views backed by real orchestration APIs. | Slice 2A |
+| 2A-A | In progress | Node 24 production gateway, private token-bound Python bridge, minimal App Router/Tailwind shell, supervised source preview, and repeatable desktop/mobile Lighthouse 100/100/100/100. | Slice 1C-D |
+| 2A-B | Proposed | Emerald Operations application shell, semantic tokens, route structure, and only the reusable client primitives required by the first real views. | Slice 2A-A |
+| 2B | Provisional | Agents, Tasks, and Runs views backed by real orchestration APIs. | Slice 2A-B |
 | 2C | Provisional | Normalized SSE run timeline, per-run messaging, stop controls, and supported approvals. | Slice 2B |
 | 3A | Provisional | Codex runtime adapter with explicit capability and credential boundaries. | Slice 2C |
 | 3B | Provisional | Hermes and Codex run concurrently in the same Mentat interface. | Slice 3A |
@@ -182,7 +184,29 @@ Completed legacy Home performance evidence:
 `reviews/2026-08-21-home-boot-critical-path.md`, and
 `reviews/2026-08-21-pivot-1c-d-closure.md`
 
-### Slice 2A — New frontend foundation
+### Slice 2A-A — Node Runtime Foundation
+
+Status: **In progress**
+
+Approved boundary:
+
+- require Node `>=24.19.0 <25` and pin source plus CI to `24.19.0`;
+- add a production standalone Next.js/React/TypeScript/Tailwind source preview
+  without changing the installed Python product or port 8888;
+- expose one fixed private, token-bound Python bridge health capability and one
+  redacted same-origin Node health projection, with no generic proxy;
+- supervise both loopback processes and remove the surviving sibling when
+  either exits;
+- preserve a no-hydration static foundation shell until a route has concrete
+  client behavior, while keeping the live bridge status as a fixed progressive
+  enhancement;
+- require three desktop and three standard simulated-mobile Lighthouse runs at
+  100/100/100/100 before publication.
+
+Exact contract and evidence:
+`reviews/2026-08-21-node-runtime-foundation.md`
+
+### Slice 2A-B — Emerald Operations application shell
 
 Status: **Proposed**
 
@@ -193,7 +217,7 @@ Next.js + React + TypeScript
 Tailwind CSS
 shadcn/ui + Radix UI primitives
 Lucide icons
-TanStack Query
+TanStack Query when a real server-state consumer lands
 SSE first; WebSocket only when bidirectional realtime requires it
 ```
 

@@ -15,6 +15,61 @@ state broadly, but it may mutate Hermes only through explicit, supported
 capabilities implemented by the Hermes adapter. Future runtimes must provide
 their own capability-scoped adapters without weakening this boundary.
 
+## Source-preview Node gateway
+
+Pivot Slice 2A-A adds an opt-in source-checkout gateway without changing the
+installed product. The normal Python server and legacy `public/` frontend
+remain the default compatibility surface on port 8888. The preview requires
+Node `>=24.19.0 <25`, builds `web/` as a Next.js production standalone server,
+and is launched on `127.0.0.1:8890` by
+`python scripts/mentat_web_preview.py`.
+
+The preview supervisor creates a process-ephemeral high-entropy token, starts a
+private Python Local Bridge on an ephemeral numeric loopback address, waits for
+its fixed `/bridge/v1/health` capability, and starts Node only after that
+readiness succeeds. The token exists only in child-process environments and is
+never placed in command arguments, logs, browser responses, or durable state.
+The bridge requires the exact bound Host and port, one constant-time token
+match, a loopback client, and no browser Origin, Cookie, or Sec-Fetch-Site
+headers. It exposes no catch-all route, arbitrary upstream target, state
+mutation, SQLite access, Hermes access, or durable authority.
+
+Node is the only browser-facing process in this preview. Its request boundary
+covers every public path, including framework assets; accepts only the
+configured loopback Host and port; rejects cross-site and mismatched-origin
+requests as well as every unknown or malformed `Sec-Fetch-Site` value; and
+exposes one fixed same-origin health projection at
+`/api/bridge/health`. That backend-for-frontend operation constructs the
+private URL and headers server-side, validates a bounded versioned response,
+and returns only redacted health fields. Browser input cannot select a private
+path, upstream origin, token, or forwarded header.
+
+The foundation shell is authored in React through the App Router and styled by
+the Tailwind build. Because this first page has no interactive React state, the
+production build validates and publishes its prerendered HTML without the
+general App Router hydration runtime. One fixed, local progressive-enhancement
+script performs the health projection after first paint. The transform fails
+the build unless exactly that script remains and no framework chunk or Flight
+payload survives. Interactive routes in later slices must make their own
+route-scoped hydration and performance decisions; this is not permission to
+strip required client behavior.
+
+The replacement-shell performance gate locks Lighthouse 13.4.1 and Chrome for
+Testing 152.0.7923.0. It verifies the explicit browser executable before any
+audit, launches a fresh owned browser/profile for each run, and requires all
+four category scores to equal 100 across three desktop and three simulated-
+mobile runs. Timeouts and process signals withdraw both the Lighthouse process
+tree and owned Chrome. Successful runs remove raw reports; CI retains only a
+bounded owner-private summary when a run fails.
+
+The supervisor monitors both children and withdraws the browser gateway first
+during ordinary shutdown. If either child exits unexpectedly, it terminates
+the survivor within a bounded timeout and reports failure. No Task, Run, Agent,
+SQLite, filesystem, credential, Hermes, or runtime authority moves into Node in
+this slice. The supervisor is the only supported production-preview entry
+point; the web package deliberately exposes no direct production `npm start`
+shortcut that could omit the loopback binding.
+
 ## Identity model
 
 - A Mentat **Agent** is the target canonical worker identity.

@@ -4,7 +4,22 @@ All notable changes to Mentat.
 
 ## 2026-08-21
 
+### Added
+- Added an opt-in Node 24.19 source preview with a production standalone
+  Next.js/React/TypeScript/Tailwind foundation shell and one command that
+  supervises the public Node gateway plus a private Python Local Bridge.
+- Added fixed token-bound bridge health and redacted same-origin BFF routes,
+  exact Node/npm dependency locking, focused boundary and lifecycle tests, and
+  a dedicated CI quality gate for frozen install, build, audit, six locked
+  Lighthouse audits on Chrome for Testing 152.0.7923.0, browser smoke,
+  bounded failure evidence, and sibling-process cleanup.
+
 ### Changed
+- Kept the noninteractive foundation shell authored by the App Router while
+  publishing a validated no-hydration production prerender. The fixed live
+  bridge-status script reduced the simulated-mobile transfer from about 149 KB
+  to 8.9 KB and produced three desktop plus three mobile Lighthouse runs at
+  100/100/100/100 with zero TBT and zero CLS.
 - Closed Pivot Slice 1C-D after stabilizing the Home focus-list viewport during
   Task hydration. The exact repeatable Lighthouse 100/100/100/100 replacement
   gate now applies to the proposed 2A frontend foundation, while the legacy
@@ -31,10 +46,19 @@ All notable changes to Mentat.
   geometry, and deferred ordered loading for the core and application bundles.
 
 ### Documentation
+- Split the active frontend pivot into 2A-A Node Runtime Foundation and the
+  proposed 2A-B Emerald Operations shell, with the installed Python dashboard
+  retained as the compatibility surface.
 - Recorded Slices 1C-C and 1C-D as complete and 2A as the proposed next pivot
   slice in the implementation roadmap and data-layout contract.
 - Added request-boundary, Home UI, and browser-bootstrap regression coverage for
   the performance hardening contract.
+
+### Safety
+- Kept SQLite, orchestration, Hermes, filesystem, credentials, and runtime
+  authority in Python. The preview is loopback-only, exposes no generic proxy,
+  keeps its bridge token process-ephemeral, and stops the surviving child when
+  either supervised process exits.
 
 ## 2026-08-18
 

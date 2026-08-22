@@ -44,7 +44,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 24.18.0
+          node-version: 24.19.0
           package-manager-cache: false
 
       - name: Install Python dependencies
@@ -61,6 +61,12 @@ jobs:
 
       - name: Check scripts/browser_smoke.mjs syntax
         run: node --check scripts/browser_smoke.mjs
+
+      - name: Check scripts/web_foundation_smoke.mjs syntax
+        run: node --check scripts/web_foundation_smoke.mjs
+
+      - name: Check web/scripts/lighthouse-gate.mjs syntax
+        run: node --check web/scripts/lighthouse-gate.mjs
 
       - name: Run test suite
         run: python -m unittest discover -s tests -v
@@ -105,7 +111,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 24.18.0
+          node-version: 24.19.0
           package-manager-cache: false
 
       - name: Install Python dependencies
@@ -122,6 +128,12 @@ jobs:
 
       - name: Check scripts/browser_smoke.mjs syntax
         run: node --check scripts/browser_smoke.mjs
+
+      - name: Check scripts/web_foundation_smoke.mjs syntax
+        run: node --check scripts/web_foundation_smoke.mjs
+
+      - name: Check web/scripts/lighthouse-gate.mjs syntax
+        run: node --check web/scripts/lighthouse-gate.mjs
 
       - name: Run bounded Windows test group
         run: python scripts/run_unittest_shards.py --run-group ${{ matrix.group }}

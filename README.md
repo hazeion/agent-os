@@ -151,13 +151,34 @@ Useful commands:
 ```
 
 Windows users can run `run.bat`, `status.bat`, and `stop.bat` instead. If port
-8888 is busy, start Mentat with `./run.sh --port 8890` and open
-`http://localhost:8890`.
+8888 is busy, start the normal dashboard with `./run.sh --port 8889` and open
+`http://localhost:8889`.
+
+### Try the next frontend preview
+
+The new frontend is currently an optional source preview. It requires Node.js
+24.19 or newer within the Node 24 release line. From the repository root, prepare
+it once:
+
+```bash
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
+```
+
+Then launch both the Node gateway and its private Python bridge with one command:
+
+```bash
+python3 scripts/mentat_web_preview.py
+```
+
+Open [http://localhost:8890](http://localhost:8890) and press Ctrl+C when you
+are done. This preview does not replace the normal dashboard on port 8888.
 
 ## A few good things to know
 
 - Mentat stays on your computer and listens only on local addresses.
-- There is no npm install step—the frontend is plain HTML, CSS, and JavaScript.
+- The normal dashboard still has no npm step. npm is needed only for the
+  optional next-frontend preview and frontend development.
 - Mentat does not directly edit Hermes' core files.
 - Mentat can use local Hermes or a supported remote Hermes server. It checks
   available capabilities and hides actions that cannot be completed safely.
