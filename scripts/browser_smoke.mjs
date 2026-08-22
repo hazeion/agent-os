@@ -371,6 +371,73 @@ class CdpClient {
   }
 }
 
+async function verifyHomeBootCriticalPath(client) {
+  const resourceTiming = await client.eval(`(() => {
+    const navigation = performance.getEntriesByType('navigation')[0];
+    const scripts = performance.getEntriesByType('resource').filter((entry) => {
+      try {
+        return ['/core.js', '/app.js'].includes(new URL(entry.name).pathname);
+      } catch {
+        return false;
+      }
+    }).map((entry) => ({
+      path: new URL(entry.name).pathname,
+      initiatorType: entry.initiatorType,
+      startTime: entry.startTime,
+      responseEnd: entry.responseEnd,
+    }));
+    return { domContentLoaded: navigation?.domContentLoadedEventStart || 0, scripts };
+  })()`);
+  const core = resourceTiming.scripts.find((entry) => entry.path === '/core.js');
+  const app = resourceTiming.scripts.find((entry) => entry.path === '/app.js');
+  if (
+    !core
+    || !app
+    || core.initiatorType !== 'script'
+    || app.initiatorType !== 'script'
+    || core.startTime > resourceTiming.domContentLoaded
+    || app.startTime > resourceTiming.domContentLoaded
+  ) {
+    throw new Error(`Home boot assets were not parser-discovered before DOMContentLoaded: ${JSON.stringify(resourceTiming)}`);
+  }
+
+  const rejectedBootAssets = [];
+  for (const failedPath of ['/core.js', '/app.js']) {
+    let failureInjected = false;
+    const removeHandler = client.on('Fetch.requestPaused', async ({ requestId, request }) => {
+      if (!failureInjected && new URL(request.url).pathname === failedPath) {
+        failureInjected = true;
+        await client.call('Fetch.failRequest', { requestId, errorReason: 'Failed' });
+        return;
+      }
+      await client.call('Fetch.continueRequest', { requestId });
+    });
+    await client.call('Fetch.enable', {
+      patterns: [{ urlPattern: `${baseUrl}${failedPath}*`, requestStage: 'Request' }],
+    });
+    try {
+      await reloadPage(client);
+      await waitFor(
+        () => client.eval(`(() => {
+          const status = document.querySelector('.home-focus-loading');
+          return window.__MENTAT_READY__ !== true
+            && status?.getAttribute('role') === 'alert'
+            && status?.textContent.includes('could not finish loading');
+        })()`),
+        `bounded ${failedPath} boot asset failure state`,
+        30000,
+      );
+      if (!failureInjected) throw new Error(`Home ${failedPath} boot asset failure was not intercepted`);
+      rejectedBootAssets.push(failedPath.slice(1));
+    } finally {
+      removeHandler();
+      await client.call('Fetch.disable');
+      client.throwEventErrors();
+    }
+  }
+  return { resourceTiming, rejectedBootAssets };
+}
+
 async function verifyHomeCoreRenderPriority(client) {
   const delayedPaths = new Set([
     '/api/overview',
@@ -635,6 +702,13 @@ async function main() {
     await setViewport(client, 1440, 1000);
     await reloadPage(client);
     await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'Emerald Today restore');
+    const homeBootCriticalPath = await verifyHomeBootCriticalPath(client);
+    await reloadPage(client);
+    await waitFor(
+      () => client.eval("document.querySelector('#view-today.active') !== null && window.__MENTAT_READY__ === true"),
+      'clean Home restore after boot asset failure',
+      30000,
+    );
     const homeCorePriority = await verifyHomeCoreRenderPriority(client);
     const homeCoreFailureFallback = await verifyHomeCoreFailureFallback(client);
     await reloadPage(client);
@@ -2462,7 +2536,7 @@ async function main() {
     );
     await setViewport(client, 1440, 1000);
 
-    console.log(JSON.stringify({ ok: true, baseUrl, homeCorePriority, homeCoreFailureFallback, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'Home core render priority', 'Home core failure fallback', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'compact navigation label tooltip', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, homeBootCriticalPath, homeCorePriority, homeCoreFailureFallback, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'Home boot critical path', 'Home core render priority', 'Home core failure fallback', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'compact navigation label tooltip', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
     await stopChild(chrome);

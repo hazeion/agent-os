@@ -770,8 +770,9 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("document.documentElement.dataset.contrast", head_block)
         self.assertIn("prefers-contrast: more", head_block)
         self.assertIn('/styles.css?v=emerald-shell-4', INDEX)
-        self.assertIn("loadScript('/core.js?v=emerald-shell-4')", INDEX)
-        self.assertIn("loadScript('/app.js?v=emerald-shell-5')", INDEX)
+        self.assertIn('<script defer id="mentat-core-script" src="/core.js?v=emerald-shell-4"></script>', head_block)
+        self.assertIn('<script defer id="mentat-app-script" src="/app.js?v=emerald-shell-5"></script>', head_block)
+        self.assertLess(head_block.index('id="mentat-core-script"'), head_block.index('id="mentat-app-script"'))
         self.assertNotIn('compact-dark-board-1', INDEX)
         self.assertIn("applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id)", APP_JS)
 

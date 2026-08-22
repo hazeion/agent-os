@@ -5,6 +5,10 @@ All notable changes to Mentat.
 ## 2026-08-21
 
 ### Changed
+- Replaced Home's delayed sequential script loader with parser-discovered,
+  ordered `defer` scripts. Core and application assets now download during HTML
+  parsing, preserve execution order and boot failure recovery, and improve the
+  measured local mobile LCP.
 - Prioritized Home task focus, project context, and health rendering ahead of
   deferred Hermes/Console requests. Deferred requests now settle independently,
   preserve bounded error states, and cannot block a subsequent navigation refresh.

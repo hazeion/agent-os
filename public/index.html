@@ -39,6 +39,39 @@
     })();
   </script>
   <link rel="stylesheet" href="/styles.css?v=emerald-shell-4" />
+  <script>
+    window.__MENTAT_READY__ = false;
+    window.__MENTAT_HOME_CORE_READY__ = false;
+    (() => {
+      let bootFailed = false;
+      const showBootError = () => {
+        if (bootFailed || window.__MENTAT_READY__ === true) return;
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', showBootError, { once: true });
+          return;
+        }
+        bootFailed = true;
+        const status = document.querySelector('.home-focus-loading');
+        if (status) {
+          status.removeAttribute('aria-hidden');
+          status.setAttribute('role', 'alert');
+          status.textContent = 'Mentat could not finish loading. Refresh to retry.';
+        }
+      };
+      window.addEventListener('error', (event) => {
+        if (
+          event.target === window
+          || event.target?.id === 'mentat-core-script'
+          || event.target?.id === 'mentat-app-script'
+        ) {
+          showBootError();
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', showBootError);
+    })();
+  </script>
+  <script defer id="mentat-core-script" src="/core.js?v=emerald-shell-4"></script>
+  <script defer id="mentat-app-script" src="/app.js?v=emerald-shell-5"></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -1008,40 +1041,5 @@
     </div>
   </dialog>
 
-  <script>
-    window.__MENTAT_READY__ = false;
-    window.__MENTAT_HOME_CORE_READY__ = false;
-    (() => {
-      const loadScript = (src) => new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = src;
-        script.onload = resolve;
-        script.onerror = reject;
-        document.body.append(script);
-      });
-      let booting = false;
-      const showBootError = () => {
-        if (!booting || window.__MENTAT_READY__ === true) return;
-        booting = false;
-        const status = document.querySelector('.home-focus-loading');
-        if (status) {
-          status.removeAttribute('aria-hidden');
-          status.setAttribute('role', 'alert');
-          status.textContent = 'Mentat could not finish loading. Refresh to retry.';
-        }
-      };
-      window.addEventListener('error', showBootError);
-      window.addEventListener('unhandledrejection', showBootError);
-      const boot = () => {
-        booting = true;
-        return loadScript('/core.js?v=emerald-shell-4')
-          .then(() => loadScript('/app.js?v=emerald-shell-5'))
-          .catch(showBootError);
-      };
-      const schedule = () => window.setTimeout(boot, 250);
-      if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(schedule);
-      else schedule();
-    })();
-  </script>
 </body>
 </html>
