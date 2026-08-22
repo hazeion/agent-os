@@ -654,6 +654,13 @@ button {
 .run-stop-actions button:last-child { border-color: color-mix(in srgb, #f59e0b 45%, var(--border-subtle)); color: var(--text-primary); }
 .run-stop { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
 .run-message { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.run-response { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.run-response h4 { margin: 0; color: var(--text-primary); font-size: 0.86rem; }
+.run-response-detail { margin: 0; overflow-wrap: anywhere; color: var(--text-secondary); font-size: 0.82rem; }
+.run-response-form { display: grid; gap: 8px; }
+.run-response-form label { display: flex; gap: 8px; align-items: start; color: var(--text-secondary); font-size: 0.82rem; }
+.run-response-form .run-response-text-label { display: block; }
+.run-response-form textarea { box-sizing: border-box; width: 100%; min-height: 5rem; resize: vertical; }
 .run-message h4 { margin: 0; color: var(--text-primary); font-size: 0.86rem; }
 .run-message textarea { box-sizing: border-box; width: 100%; min-height: 5rem; resize: vertical; }
 .run-stop h4 { margin: 0; color: var(--text-primary); font-size: 0.86rem; }

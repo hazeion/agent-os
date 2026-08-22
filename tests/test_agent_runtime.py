@@ -30,6 +30,12 @@ class FakeRuntime:
     def send_message(self, run_id, message):  # pragma: no cover
         raise NotImplementedError
 
+    def pending_action(self, run_id):  # pragma: no cover
+        raise NotImplementedError
+
+    def respond_to_action(self, run_id, action, response):  # pragma: no cover
+        raise NotImplementedError
+
     def stop(self, run_id):  # pragma: no cover
         raise NotImplementedError
 

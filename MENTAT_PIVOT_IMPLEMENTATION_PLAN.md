@@ -291,6 +291,22 @@ responses, generic bridge forwarding, or browser-selected runtime references.
 
 Review log: `reviews/2026-08-22-run-message-control.md`
 
+### Slice 2C-D: selected Run response control
+
+Status: In progress
+
+This slice adds separate fixed review-confirm controls for the current pending
+approval or clarification on a selected task-bound Run. Python reads the
+current request through the runtime-neutral adapter, validates the active Run,
+identity, binding, capability, request kind/ID, allowed choice or bounded text,
+and state-bound confirmation, then verifies the resulting runtime state.
+
+It does not add a generic response form, arbitrary commands, message/steer
+controls, attachments, local-run responses, browser-selected runtime
+references, or legacy Console changes.
+
+Review log: `reviews/2026-08-22-run-response-control.md`
+
 ### Slice 2D: production cutover
 
 The source preview is not an installed product. This slice must decide how Node
