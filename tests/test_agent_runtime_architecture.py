@@ -38,8 +38,9 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
     def test_pivot_plan_closes_sqlite_cutover_and_tracks_frontend_slices(self):
         self.assertIn("| 1B | Complete |", PIVOT_PLAN)
         self.assertIn("| 1C-A to 1C-D | Complete |", PIVOT_PLAN)
-        self.assertIn("| 2A-A | In progress |", PIVOT_PLAN)
-        self.assertIn("| 2A-B | Proposed |", PIVOT_PLAN)
+        self.assertIn("| 2A-A | Complete |", PIVOT_PLAN)
+        self.assertIn("| 2A-B | Complete |", PIVOT_PLAN)
+        self.assertIn("| 2B-A | Proposed |", PIVOT_PLAN)
         self.assertIn("three desktop and three mobile Lighthouse runs", PIVOT_PLAN)
         self.assertIn("The legacy interface may be retired only after", PIVOT_PLAN)
         self.assertIn("reviews/2026-08-18-mentat-sqlite-task-cutover.md", PIVOT_PLAN)

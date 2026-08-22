@@ -54,8 +54,11 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         standalone = (
             ROOT / "web" / "scripts" / "prepare-standalone.mjs"
         ).read_text(encoding="utf-8")
-        status_script = (
-            ROOT / "web" / "public" / "foundation-status.js"
+        shell_runtime = (ROOT / "web" / "public" / "shell-runtime.js").read_text(
+            encoding="utf-8"
+        )
+        preference_preload = (
+            ROOT / "web" / "public" / "preference-preload.js"
         ).read_text(encoding="utf-8")
         lighthouse_gate = (
             ROOT / "web" / "scripts" / "lighthouse-gate.mjs"
@@ -79,11 +82,26 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn('MENTAT_STATIC_FOUNDATION: "1"', next_runner)
         self.assertIn("shell: false", next_runner)
         self.assertIn('output: "standalone"', next_config)
-        self.assertIn('destination: "/foundation.html"', next_config)
-        self.assertIn("data-mentat-foundation-status", standalone)
+        for destination in (
+            "/shell/home.html",
+            "/shell/agents.html",
+            "/shell/tasks.html",
+            "/shell/runs.html",
+        ):
+            self.assertIn(f'destination: "{destination}"', next_config)
+        self.assertIn(
+            "data-mentat-(?:preference-preload|shell-runtime)", standalone
+        )
+        self.assertIn(
+            '["/preference-preload.js", "/shell-runtime.js"]', standalone
+        )
+        self.assertIn("static Emerald shell", standalone)
         self.assertIn("no-hydration contract", standalone)
-        self.assertIn('fetch("/api/bridge/health"', status_script)
-        self.assertNotIn("MENTAT_BRIDGE_TOKEN", status_script)
+        self.assertIn('fetch("/api/bridge/health"', shell_runtime)
+        self.assertIn("AbortSignal.timeout(3500)", shell_runtime)
+        self.assertNotIn("MENTAT_BRIDGE_TOKEN", shell_runtime)
+        self.assertIn('storageKey = "mentat-contrast-v1"', preference_preload)
+        self.assertFalse((ROOT / "web" / "public" / "foundation-status.js").exists())
         self.assertIn('matcher: ["/:path*"]', proxy)
         self.assertNotIn("?!_next/static", proxy)
         self.assertIn("const RUNS_PER_MODE = 3", lighthouse_gate)

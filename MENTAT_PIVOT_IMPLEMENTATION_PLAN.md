@@ -31,12 +31,16 @@ A feature branch may show its intended post-merge status. The version on
 The runtime-neutral Python foundation and SQLite orchestration work are
 complete through Slice 1C-D.
 
-Slice 2A-A is in progress in PR #114. It adds the supervised Node 24 gateway,
-the private Python health bridge, a small Next.js shell, and the repeatable
-Lighthouse gate. It does not replace the Python app.
+Slice 2A-A is complete. PR #114 merged the supervised Node 24 gateway, private
+Python health bridge, and repeatable Lighthouse gate without replacing the
+Python app.
 
-After 2A-A passes CI and merges, the next proposed slice is 2A-B: the Emerald
-Operations application shell.
+Slice 2A-B is complete in this branch. It ports the completed Emerald shell
+into React and Tailwind before any operational route receives new data
+authority.
+
+The next proposed slice is 2B-A: connect the read-only Agents route through one
+fixed bridge and Node API capability.
 
 ## Roadmap
 
@@ -46,9 +50,9 @@ Operations application shell.
 | 1A | Complete | Runtime-neutral Agent, Task, Run, event, and runtime contracts wrap Hermes. | Slice 0 |
 | 1B | Complete | Mentat Agents and runtime bindings are durable and separate. | Slice 1A |
 | 1C-A to 1C-D | Complete | SQLite owns Tasks, Runs, and events. Live Task paths no longer use JSON. | Slice 1B |
-| 2A-A | In progress | Node 24 gateway, private Python bridge, minimal Next.js shell, and six-run Lighthouse gate. | Slice 1C-D |
-| 2A-B | Proposed | Emerald Operations shell, tokens, navigation, route frames, and shared UI basics. | Slice 2A-A |
-| 2B-A | Provisional | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
+| 2A-A | Complete | Node 24 gateway, private Python bridge, minimal Next.js shell, and six-run Lighthouse gate. | Slice 1C-D |
+| 2A-B | Complete | Emerald Operations shell, tokens, navigation, route frames, and shared UI basics. | Slice 2A-A |
+| 2B-A | Proposed | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
 | 2B-B | Provisional | Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
 | 2B-C | Provisional | Runs route backed by normalized Run and event APIs. | Slice 2B-B |
 | 2C-A | Provisional | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
@@ -110,7 +114,7 @@ Review logs:
 
 ### Slice 2A-A: Node web foundation
 
-Status: In progress
+Status: Complete
 
 This slice provides:
 
@@ -126,9 +130,11 @@ SQLite, filesystem, credential, Hermes, Task, Run, or Agent authority.
 
 Review log: `reviews/2026-08-21-node-runtime-foundation.md`
 
+Merged in PR #114.
+
 ### Slice 2A-B: Emerald Operations shell
 
-Status: Proposed
+Status: Complete
 
 Build on the existing `web/` app. Do not create another frontend project or
 another local server.

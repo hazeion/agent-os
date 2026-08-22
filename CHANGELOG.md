@@ -2,6 +2,30 @@
 
 All notable changes to Mentat.
 
+## 2026-08-22
+
+### Added
+- Added the responsive Emerald Operations shell to the Next.js preview, with
+  honest Home, Agents, Tasks, and Runs route frames built from shared React
+  components and Tailwind-backed styles.
+- Added the 216 px desktop sidebar, 76 px compact rail, accessible mobile
+  drawer, saved Standard and High Contrast modes, source-owned icons, and the
+  existing Emerald mark.
+
+### Changed
+- Kept layout responsive through CSS while using a small browser runtime for
+  drawer focus, contrast preferences, and the existing bounded bridge-health
+  check. Initial content never waits for bridge health.
+- Published four validated static route shells without the general Next.js
+  hydration runtime. The optimized web mark reduced total transfer to about
+  33 KB; three desktop and three mobile Lighthouse runs each scored
+  100/100/100/100 with zero TBT and zero practical layout shift.
+
+### Safety
+- Kept Agent, Task, Run, SQLite, Hermes, filesystem, and credential authority
+  in Python. Unconnected routes show named foundation states instead of sample
+  operational data.
+
 ## 2026-08-21
 
 ### Added

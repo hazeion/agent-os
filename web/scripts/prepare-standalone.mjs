@@ -21,31 +21,52 @@ function replaceDirectory(source, destination) {
 replaceDirectory(resolve(nextRoot, "static"), resolve(standaloneRoot, ".next", "static"));
 replaceDirectory(resolve(projectRoot, "public"), resolve(standaloneRoot, "public"));
 
-const renderedAppShell = resolve(nextRoot, "server", "app", "index.html");
-if (!existsSync(renderedAppShell)) {
-  throw new Error("Next.js did not prerender the App Router foundation shell");
-}
+const routes = [
+  { source: "index.html", output: "home.html", currentLabel: "Home" },
+  { source: "agents.html", output: "agents.html", currentLabel: "Agents" },
+  { source: "tasks.html", output: "tasks.html", currentLabel: "Tasks" },
+  { source: "runs.html", output: "runs.html", currentLabel: "Runs" },
+];
+const renderedAppRoot = resolve(nextRoot, "server", "app");
+const shellOutputRoot = resolve(standaloneRoot, "public", "shell");
 const frameworkScriptPattern = /<script\b[^>]*>[\s\S]*?<\/script>/giu;
-const scriptPreloadPattern = /<link\b(?=[^>]*\brel="preload")(?=[^>]*\bas="script")[^>]*>/giu;
-const foundationShell = readFileSync(renderedAppShell, "utf8")
-  .replace(scriptPreloadPattern, "")
-  .replace(frameworkScriptPattern, (script) => (
-    script.slice(0, script.indexOf(">") + 1).includes("data-mentat-foundation-status")
-      ? script
-      : ""
-  ));
-const remainingScripts = foundationShell.match(/<script\b/giu) ?? [];
-if (
-  remainingScripts.length !== 1
-  || !foundationShell.includes('src="/foundation-status.js"')
-  || !foundationShell.includes('href="/_next/static/chunks/')
-  || foundationShell.includes("self.__next_f")
-  || /_next\/static\/chunks\/[^"']+\.js/iu.test(foundationShell)
-) {
-  throw new Error("The static foundation shell did not satisfy the no-hydration contract");
+const scriptPreloadPattern = /<link\b(?=[^>]*\brel="(?:modulepreload|preload)")(?=[^>]*\bas="script")[^>]*>/giu;
+
+mkdirSync(shellOutputRoot, { recursive: true });
+
+for (const route of routes) {
+  const renderedRoute = resolve(renderedAppRoot, route.source);
+  if (!existsSync(renderedRoute)) {
+    throw new Error(`Next.js did not prerender the App Router route ${route.source}`);
+  }
+
+  const shell = readFileSync(renderedRoute, "utf8")
+    .replace(scriptPreloadPattern, "")
+    .replace(frameworkScriptPattern, (script) => (
+      /data-mentat-(?:preference-preload|shell-runtime)/u.test(
+        script.slice(0, script.indexOf(">") + 1),
+      )
+        ? script
+        : ""
+    ));
+
+  const scripts = shell.match(/<script\b[^>]*\bsrc="[^"]+"[^>]*>/giu) ?? [];
+  const scriptPaths = scripts.map((script) => script.match(/\bsrc="([^"]+)"/iu)?.[1]);
+  if (
+    scripts.length !== 2
+    || JSON.stringify(scriptPaths) !== JSON.stringify(["/preference-preload.js", "/shell-runtime.js"])
+    || !shell.includes('data-ui-shell="emerald"')
+    || !shell.includes(`aria-current="page"`)
+    || !shell.includes(`>${route.currentLabel}</strong>`)
+    || !/href="\/_next\/static\/(?:chunks|css)\/[^"']+\.css/iu.test(shell)
+    || shell.includes("self.__next_f")
+    || /_next\/static\/(?:chunks|webpack)\/[^"']+\.js/iu.test(shell)
+  ) {
+    throw new Error(`The static Emerald shell route ${route.output} failed its no-hydration contract`);
+  }
+
+  writeFileSync(resolve(shellOutputRoot, route.output), shell, {
+    encoding: "utf8",
+    mode: 0o644,
+  });
 }
-writeFileSync(
-  resolve(standaloneRoot, "public", "foundation.html"),
-  foundationShell,
-  { encoding: "utf8", mode: 0o644 },
-);
