@@ -1,6 +1,6 @@
 # Feature Slice Review: Pivot 1C-D Closure and Lighthouse Gate Resequencing
 
-Status: Ready for publication
+Status: Ready PR open
 Slice: `pivot-1c-d-closure`
 Date: 2026-08-21
 Review log: `reviews/2026-08-21-pivot-1c-d-closure.md`
@@ -252,10 +252,11 @@ most 0.00012 while all non-performance categories remained 100.
 - Unresolved risks: local Lighthouse scores remain host-variable; no field or
   non-Chromium telemetry; explicit zero/one-row browser variants are not
   replayed. None blocks this CSS geometry and roadmap-only slice.
-- User authorization and scope: implementation approved; publication remains
-  subject to the user's standing approval exception and an exact final packet.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- User authorization and scope: implementation and exact publication packet
+  authorized under the user's recorded standing approval exception.
+- Primary slice commit: `72dce47`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/113 (filed through
+  the GitHub connector).
 
 ## Outcome review
 
