@@ -192,7 +192,10 @@ pivot.
 
 ## Optional infrastructure
 
-Vercel services may remove infrastructure work when they fit the product:
+Vercel is a supported option for future provider and agent infrastructure. A
+dedicated later slice should evaluate the services below behind Mentat's own
+connection and runtime contracts. Using a Vercel service must not require
+hosting the local-first Mentat console on Vercel.
 
 - AI Gateway for model access and usage data
 - harness or AI SDK adapters for compatible runtimes

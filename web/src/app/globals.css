@@ -520,6 +520,125 @@ button {
   font-size: 0.76rem;
 }
 
+.agents-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.agents-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.agents-summary {
+  flex: 1 1 220px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.agent-refresh {
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid var(--border-default);
+  border-radius: 7px;
+  background: var(--panel-raised);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 620;
+}
+
+.agent-refresh:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.agent-refresh:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.agents-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 10px;
+}
+
+.agent-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--row);
+}
+
+.agent-card h3 {
+  margin: 0 0 12px;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 620;
+}
+
+.agent-fields {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.agent-field {
+  display: grid;
+  gap: 2px;
+}
+
+.agent-field dt,
+.agent-capability-label {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 0.67rem;
+  font-weight: 620;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-field dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.agent-capability-label {
+  margin-top: 14px;
+}
+
+.agent-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-capabilities li {
+  max-width: 100%;
+  padding: 4px 6px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
 .nav-backdrop[hidden] {
   display: none;
 }
@@ -709,6 +828,10 @@ button {
 
   .foundation-state {
     padding: 14px;
+  }
+
+  .agent-refresh {
+    min-height: 44px;
   }
 
   .migration-list li {

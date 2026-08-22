@@ -4,8 +4,11 @@ from http.client import HTTPConnection
 import json
 import threading
 import unittest
+from unittest.mock import patch
 
+from agent_registry import AgentRegistryError, AgentRegistryUnavailableError
 from mentat import local_bridge
+import server
 
 
 TOKEN = "bridge-token-that-is-long-enough-for-256-bits-of-entropy"
@@ -86,6 +89,97 @@ class LocalBridgeTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "ready")
+
+    def test_agents_is_a_fixed_private_projection(self):
+        canonical = {
+            "schema_version": 1,
+            "count": 1,
+            "agents": [{
+                "id": "agent_researcher",
+                "name": "Researcher",
+                "runtime_type": "hermes",
+                "runtime_config_id": "runtime_config_researcher",
+                "capabilities": ["browser-use", "research.web"],
+            }],
+        }
+        with patch.object(local_bridge, "bridge_agents_payload", return_value=(
+            local_bridge._ready_agents_payload(canonical), 200,
+        )):
+            status, payload, _headers = self.request(path=local_bridge.BRIDGE_AGENTS_PATH)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["agents"], canonical["agents"])
+        self.assertNotIn("runtime_agent_ref", json.dumps(payload))
+        self.assertNotIn("agents.json", json.dumps(payload))
+
+    def test_agents_rejects_private_or_malformed_canonical_data(self):
+        malformed = (
+            {"schema_version": 1, "count": 1, "agents": [{"id": "agent_a"}]},
+            {"schema_version": 1, "count": 1, "agents": [{
+                "id": "agent_a",
+                "name": "Agent",
+                "runtime_type": "hermes",
+                "runtime_config_id": "runtime_a",
+                "capabilities": [],
+                "runtime_agent_ref": "private-canary",
+            }]},
+            {"schema_version": 1, "count": 1, "agents": [{
+                "id": "agent_a",
+                "name": "Agent",
+                "runtime_type": "hermes",
+                "runtime_config_id": "runtime_a",
+                "capabilities": ["z", "a"],
+            }]},
+        )
+        for candidate in malformed:
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(local_bridge.BridgeAgentProjectionError):
+                    local_bridge._ready_agents_payload(candidate)
+
+    def test_agents_capability_reads_only_the_canonical_projection_and_maps_failures(self):
+        canonical = {
+            "schema_version": 1,
+            "count": 1,
+            "agents": [{
+                "id": "agent_researcher",
+                "name": "Researcher",
+                "runtime_type": "hermes",
+                "runtime_config_id": "runtime_config_researcher",
+                "capabilities": ["research.web"],
+            }],
+        }
+        cases = (
+            (canonical, "ready", 200),
+            (AgentRegistryUnavailableError("agent_registry.unavailable"), "unavailable", 503),
+            (AgentRegistryError("agent_registry.unsupported"), "unsupported", 501),
+            (ValueError("private database detail"), "error", 500),
+        )
+        for outcome, expected_status, expected_code in cases:
+            with self.subTest(expected_status=expected_status):
+                with patch.object(server, "mentat_agents_payload", side_effect=(
+                    outcome if isinstance(outcome, Exception) else None
+                ), return_value=(None if isinstance(outcome, Exception) else outcome)):
+                    payload, status = local_bridge.bridge_agents_payload()
+                self.assertEqual(status, expected_code)
+                self.assertEqual(payload["status"], expected_status)
+                self.assertNotIn("private", json.dumps(payload))
+
+    def test_agents_projects_unavailable_unsupported_and_internal_failures_without_details(self):
+        expected = (("unavailable", 503), ("unsupported", 501), ("error", 500))
+        for state, response_status in expected:
+            with self.subTest(state=state):
+                with patch.object(local_bridge, "bridge_agents_payload", return_value=({
+                    "schema_version": 1,
+                    "service": "mentat-local-bridge",
+                    "runtime": "python",
+                    "status": state,
+                }, response_status)):
+                    status, payload, _headers = self.request(path=local_bridge.BRIDGE_AGENTS_PATH)
+                self.assertEqual(status, response_status)
+                self.assertEqual(payload["status"], state)
+                self.assertNotIn("private", json.dumps(payload))
 
     def test_duplicate_or_body_headers_fail_closed(self):
         header_sets = (

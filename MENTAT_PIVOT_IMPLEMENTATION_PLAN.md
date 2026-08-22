@@ -39,8 +39,9 @@ Slice 2A-B is complete in this branch. It ports the completed Emerald shell
 into React and Tailwind before any operational route receives new data
 authority.
 
-The next proposed slice is 2B-A: connect the read-only Agents route through one
-fixed bridge and Node API capability.
+Slice 2B-A is complete in this branch: the read-only Agents route uses one
+fixed bridge and Node API capability. It does not add Agent controls, provider
+credentials, or provider switching.
 
 ## Roadmap
 
@@ -52,7 +53,7 @@ fixed bridge and Node API capability.
 | 1C-A to 1C-D | Complete | SQLite owns Tasks, Runs, and events. Live Task paths no longer use JSON. | Slice 1B |
 | 2A-A | Complete | Node 24 gateway, private Python bridge, minimal Next.js shell, and six-run Lighthouse gate. | Slice 1C-D |
 | 2A-B | Complete | Emerald Operations shell, tokens, navigation, route frames, and shared UI basics. | Slice 2A-A |
-| 2B-A | Proposed | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
+| 2B-A | Complete | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
 | 2B-B | Provisional | Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
 | 2B-C | Provisional | Runs route backed by normalized Run and event APIs. | Slice 2B-B |
 | 2C-A | Provisional | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
@@ -188,6 +189,20 @@ the selected runtime.
 
 All browser traffic stays same-origin through Node. Python performs authority,
 capability, confirmation, and state checks.
+
+### Slice 2B-A: read-only Agents route
+
+Status: Complete in this branch
+
+This slice makes the canonical Agent list available through one fixed,
+read-only Python bridge capability and one safe Node route. The new `/agents`
+screen shows only the public Agent projection and gives clear loading, empty,
+unavailable, unsupported, and error feedback.
+
+It does not create or switch Agents, configure a provider, accept credentials,
+or add a generic bridge proxy.
+
+Review log: `reviews/2026-08-22-agents-read-only-bridge.md`
 
 ### Slice 2D: production cutover
 

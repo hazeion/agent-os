@@ -575,6 +575,184 @@ async function inspectUnavailableBridge(client) {
   }
 }
 
+async function inspectAgentsWorkspace(client) {
+  await setViewport(client, viewports[1]);
+  let agentsRequestId = "";
+  const removePausedHandler = client.on("Fetch.requestPaused", ({ requestId }) => {
+    agentsRequestId = requestId;
+  });
+  await client.call("Fetch.enable", {
+    patterns: [{ urlPattern: `${baseUrl.origin}/api/agents*`, requestStage: "Request" }],
+  });
+  try {
+    await navigate(client, "/agents", "Agents workspace");
+    await waitFor(
+      () => client.eval("document.querySelector('[data-agents-root]')?.dataset.agentsState === 'loading'"),
+      "Agents loading state",
+    );
+    await waitFor(() => agentsRequestId, "held Agents request");
+    const loading = await client.eval(`(() => ({
+      summary: document.querySelector('[data-agents-summary]')?.textContent,
+      busy: document.querySelector('[data-agents-root]')?.getAttribute('aria-busy'),
+      refreshDisabled: document.querySelector('[data-agents-refresh]')?.disabled,
+      cards: document.querySelectorAll('.agent-card').length,
+    }))()`);
+    await client.call("Fetch.continueRequest", { requestId: agentsRequestId });
+    agentsRequestId = "";
+    await client.call("Fetch.disable");
+    await waitFor(
+      () => client.eval("document.querySelector('[data-agents-root]')?.dataset.agentsState !== 'loading'"),
+      "Agents ready state",
+    );
+    const loaded = await client.eval(`(() => ({
+      state: document.querySelector('[data-agents-root]')?.dataset.agentsState,
+      summary: document.querySelector('[data-agents-summary]')?.textContent,
+      busy: document.querySelector('[data-agents-root]')?.getAttribute('aria-busy'),
+      refreshDisabled: document.querySelector('[data-agents-refresh]')?.disabled,
+      cards: [...document.querySelectorAll('.agent-card')].map((card) => ({
+        name: card.querySelector('h3')?.textContent,
+        fields: [...card.querySelectorAll('.agent-field dd')].map((value) => value.textContent),
+        capabilities: [...card.querySelectorAll('.agent-capabilities li')].map((value) => value.textContent),
+      })),
+      overflow: document.documentElement.scrollWidth - innerWidth,
+    }))()`);
+    if (
+      loading.summary !== "Loading canonical Agents…"
+      || loading.busy !== "true"
+      || !loading.refreshDisabled
+      || loading.cards !== 0
+      || !new Set(["ready", "empty"]).has(loaded.state)
+      || loaded.busy !== "false"
+      || loaded.refreshDisabled
+      || loaded.overflow > 1
+      || (loaded.state === "empty" && (loaded.summary !== "No canonical Agents yet." || loaded.cards.length !== 0))
+      || (loaded.state === "ready" && loaded.cards.some((card) => (
+        !card.name || card.fields.length !== 3 || card.capabilities.length === 0
+      )))
+    ) {
+      throw new Error(`Agents workspace contract failed: ${JSON.stringify({ loading, loaded })}`);
+    }
+
+    const requestsBeforeRefresh = await client.eval(
+      "performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/agents').length",
+    );
+    await client.eval("document.querySelector('[data-agents-refresh]').click()");
+    await waitFor(
+      () => client.eval(`performance.getEntriesByType('resource')
+        .filter((entry) => new URL(entry.name).pathname === '/api/agents').length > ${requestsBeforeRefresh}`),
+      "Agents refresh request",
+    );
+    await waitFor(
+      () => client.eval("document.querySelector('[data-agents-root]')?.dataset.agentsState !== 'loading'"),
+      "Agents refresh completion",
+    );
+    return { loading, loaded };
+  } finally {
+    if (agentsRequestId) {
+      await Promise.allSettled([client.call("Fetch.continueRequest", { requestId: agentsRequestId })]);
+    }
+    removePausedHandler();
+    await Promise.allSettled([client.call("Fetch.disable")]);
+  }
+}
+
+async function inspectAgentFailureStates(client) {
+  const states = [
+    { name: "unsupported", status: 501, detail: "This Python bridge does not support Agent data yet." },
+    { name: "unavailable", status: 503, detail: "Agent data is temporarily unavailable. Check the Python connection and retry." },
+    { name: "error", status: 502, detail: "Mentat could not safely read Agent data. Try again." },
+  ];
+  const results = [];
+  for (const state of states) {
+    const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(() => {
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+          if (url.pathname !== '/api/agents') return nativeFetch(input, init);
+          return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, status: '${state.name}' }), {
+            status: ${state.status},
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        };
+      })();`,
+    });
+    try {
+      await navigate(client, "/agents", `Agents ${state.name}`);
+      await waitFor(
+        () => client.eval(`document.querySelector('[data-agents-root]')?.dataset.agentsState === '${state.name}'`),
+        `Agents ${state.name} state`,
+      );
+      const result = await client.eval(`(() => ({
+        summary: document.querySelector('[data-agents-summary]')?.textContent,
+        busy: document.querySelector('[data-agents-root]')?.getAttribute('aria-busy'),
+        cards: document.querySelectorAll('.agent-card').length,
+        refreshDisabled: document.querySelector('[data-agents-refresh]')?.disabled,
+      }))()`);
+      if (result.summary !== state.detail || result.busy !== "false" || result.cards !== 0 || result.refreshDisabled) {
+        throw new Error(`Agents ${state.name} contract failed: ${JSON.stringify(result)}`);
+      }
+      results.push({ name: state.name, result });
+    } finally {
+      await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier });
+    }
+  }
+  return results;
+}
+
+async function inspectAgentProjection(client) {
+  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        if (url.pathname !== '/api/agents') return nativeFetch(input, init);
+        return Promise.resolve(new Response(JSON.stringify({
+          schema_version: 1,
+          status: 'ready',
+          count: 1,
+          agents: [{
+            id: 'agent_researcher',
+            name: 'Researcher',
+            runtime_type: 'hermes',
+            runtime_config_id: 'runtime_config_researcher',
+            capabilities: ['browser-use', 'research.web'],
+          }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      };
+    })();`,
+  });
+  try {
+    await navigate(client, "/agents", "Agents projection");
+    await waitFor(
+      () => client.eval("document.querySelector('[data-agents-root]')?.dataset.agentsState === 'ready'"),
+      "Agents projection state",
+    );
+    const result = await client.eval(`(() => ({
+      summary: document.querySelector('[data-agents-summary]')?.textContent,
+      cardCount: document.querySelectorAll('.agent-card').length,
+      name: document.querySelector('.agent-card h3')?.textContent,
+      fields: [...document.querySelectorAll('.agent-field dd')].map((value) => value.textContent),
+      capabilities: [...document.querySelectorAll('.agent-capabilities li')].map((value) => value.textContent),
+      rendered: document.querySelector('[data-agents-list]')?.textContent,
+    }))()`);
+    if (
+      result.summary !== "1 canonical Agent."
+      || result.cardCount !== 1
+      || result.name !== "Researcher"
+      || JSON.stringify(result.fields) !== JSON.stringify(["agent_researcher", "hermes", "runtime_config_researcher"])
+      || JSON.stringify(result.capabilities) !== JSON.stringify(["browser-use", "research.web"])
+      || result.rendered.includes("runtime_agent_ref")
+      || result.rendered.includes("private")
+    ) {
+      throw new Error(`Agents projection contract failed: ${JSON.stringify(result)}`);
+    }
+    return result;
+  } finally {
+    await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier });
+  }
+}
+
 async function inspectCompactPointerAndTooltip(client) {
   await setViewport(client, viewports[2]);
   await navigate(client, "/", "compact navigation");
@@ -1071,6 +1249,9 @@ async function main() {
       viewportResults.push(await inspectViewport(client, viewport));
     }
     const interactionResult = await inspectKeyboardDrawerAndContrast(client);
+    const agentsResult = await inspectAgentsWorkspace(client);
+    const agentProjectionResult = await inspectAgentProjection(client);
+    const agentFailureResult = await inspectAgentFailureStates(client);
     const unavailableResult = await inspectUnavailableBridge(client);
     const compactResult = await inspectCompactPointerAndTooltip(client);
     const compactHeightResult = await inspectCompactShortHeight(client);
@@ -1086,6 +1267,9 @@ async function main() {
       routes: routeResults,
       viewports: viewportResults,
       interactions: interactionResult,
+      agents: agentsResult,
+      agentProjection: agentProjectionResult,
+      agentFailures: agentFailureResult,
       unavailable: unavailableResult,
       compact: compactResult,
       compactHeight: compactHeightResult,

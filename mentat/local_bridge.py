@@ -1,7 +1,7 @@
 """Private loopback bridge used by the source-checkout Node preview.
 
-The bridge intentionally exposes one fixed, read-only health capability. It is
-not a generic proxy for ``server.py`` and it owns no durable state.
+The bridge exposes small fixed read-only capabilities. It is not a generic
+proxy for ``server.py`` and it owns no durable state.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
 import os
+import re
 import signal
 import socket
 import threading
@@ -23,13 +24,22 @@ from .version import DISPLAY_VERSION
 BRIDGE_TOKEN_ENV = "MENTAT_BRIDGE_TOKEN"
 BRIDGE_TOKEN_HEADER = "X-Mentat-Bridge-Token"
 BRIDGE_HEALTH_PATH = "/bridge/v1/health"
+BRIDGE_AGENTS_PATH = "/bridge/v1/agents"
 MINIMUM_TOKEN_LENGTH = 43
 MAXIMUM_TOKEN_LENGTH = 256
 SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
+MAXIMUM_BRIDGE_AGENTS = 128
+_OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
+_CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 
 
 class BridgeConfigurationError(ValueError):
     """Raised when the private bridge cannot start safely."""
+
+
+class BridgeAgentProjectionError(ValueError):
+    """Raised when canonical Agent data cannot cross this fixed capability."""
 
 
 class IPv6BridgeHTTPServer(ThreadingHTTPServer):
@@ -134,6 +144,108 @@ def client_is_loopback(value: object) -> bool:
         return False
 
 
+def _public_agent_record(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "id",
+        "name",
+        "runtime_type",
+        "runtime_config_id",
+        "capabilities",
+    }:
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    agent_id = value.get("id")
+    name = value.get("name")
+    runtime_type = value.get("runtime_type")
+    runtime_config_id = value.get("runtime_config_id")
+    capabilities = value.get("capabilities")
+    if (
+        not isinstance(agent_id, str)
+        or not _OPAQUE_ID.fullmatch(agent_id)
+        or not isinstance(name, str)
+        or not name.strip()
+        or name.strip() != name
+        or "\x00" in name
+        or len(name) > 120
+        or not isinstance(runtime_type, str)
+        or not _RUNTIME_TYPE.fullmatch(runtime_type)
+        or not isinstance(runtime_config_id, str)
+        or not _OPAQUE_ID.fullmatch(runtime_config_id)
+        or not isinstance(capabilities, list)
+        or len(capabilities) > 64
+        or any(not isinstance(capability, str) or not _CAPABILITY.fullmatch(capability) for capability in capabilities)
+        or capabilities != sorted(set(capabilities))
+    ):
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    return {
+        "id": agent_id,
+        "name": name,
+        "runtime_type": runtime_type,
+        "runtime_config_id": runtime_config_id,
+        "capabilities": capabilities,
+    }
+
+
+def _ready_agents_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"schema_version", "agents", "count"}:
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    agents = value.get("agents")
+    count = value.get("count")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(agents, list)
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or count != len(agents)
+        or count < 0
+        or count > MAXIMUM_BRIDGE_AGENTS
+    ):
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    public_agents = [_public_agent_record(agent) for agent in agents]
+    if len({agent["id"] for agent in public_agents}) != len(public_agents):
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": "ready",
+        "agents": public_agents,
+        "count": count,
+    }
+
+
+def bridge_agents_payload() -> tuple[dict[str, object], int]:
+    """Read the canonical Agent projection through one fixed local capability."""
+
+    # The import stays server-side and lazy so the bridge owns no application
+    # state and never gives Node generic access to server.py.
+    try:
+        from agent_registry import AgentRegistryError, AgentRegistryUnavailableError
+        from server import mentat_agents_payload
+
+        try:
+            return _ready_agents_payload(mentat_agents_payload()), 200
+        except AgentRegistryUnavailableError:
+            status = "unavailable"
+            code = 503
+        except AgentRegistryError as exc:
+            status = "unsupported" if exc.code == "agent_registry.unsupported" else "unavailable"
+            code = 501 if status == "unsupported" else 503
+        except OSError:
+            status = "unavailable"
+            code = 503
+    except Exception:
+        # Do not disclose registry, SQLite, or adapter details through this
+        # private capability. Node will also reject malformed bridge output.
+        status = "error"
+        code = 500
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": status,
+    }, code
+
+
 class BridgeRequestHandler(BaseHTTPRequestHandler):
     server_version = "MentatLocalBridge"
     sys_version = ""
@@ -195,19 +307,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if not self._request_is_private():
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
-        if self.path != BRIDGE_HEALTH_PATH:
-            self._send_json({"error": "bridge_route_not_found"}, 404)
+        if self.path == BRIDGE_HEALTH_PATH:
+            self._send_json(
+                {
+                    "mentat_version": DISPLAY_VERSION,
+                    "runtime": "python",
+                    "schema_version": 1,
+                    "service": "mentat-local-bridge",
+                    "status": "ready",
+                },
+                200,
+            )
             return
-        self._send_json(
-            {
-                "mentat_version": DISPLAY_VERSION,
-                "runtime": "python",
-                "schema_version": 1,
-                "service": "mentat-local-bridge",
-                "status": "ready",
-            },
-            200,
-        )
+        if self.path == BRIDGE_AGENTS_PATH:
+            payload, status = bridge_agents_payload()
+            self._send_json(payload, status)
+            return
+        else:
+            self._send_json({"error": "bridge_route_not_found"}, 404)
 
     do_DELETE = _reject_method
     do_HEAD = _reject_method
