@@ -501,6 +501,42 @@ class AgentRuntimeContractTests(unittest.TestCase):
                 operation()
             self.assertEqual(raised.exception.code, "runtime.identity_context_required")
 
+    def test_stop_rejects_a_context_with_a_different_run_identity(self):
+        calls = []
+        runtime = HermesRuntime(
+            transport_factory=lambda: object(),
+            compatibility_handlers=HermesCompatibilityHandlers(
+                start=lambda payload: ({"error": "unused"}, 409),
+                start_task=lambda task, context: ({"error": "unused"}, 409),
+                message=lambda run_id, payload: ({"error": "unused"}, 409),
+                response=lambda run_id, payload: ({"error": "unused"}, 409),
+                stop=lambda run_id: (calls.append(run_id) or {"ok": True}, 202),
+                status=lambda run_id, cursor=None: ({
+                    "run": {
+                        "id": "run_other",
+                        "status": "running",
+                        "mentat_agent_id": "agent_current",
+                        "task_id": "task_current",
+                    },
+                    "events": [],
+                }, 200),
+            ),
+        )
+        context = RuntimeContext(
+            agent_id="agent_current",
+            runtime_agent_ref="profile_current",
+            task_id="task_current",
+            mentat_run_id="run_current",
+        )
+        with self.assertRaises(AgentRuntimeError) as raised:
+            runtime.stop("run_current", context=context)
+        self.assertEqual(raised.exception.code, "runtime.identity_context_invalid")
+        self.assertEqual(calls, [])
+        with self.assertRaises(AgentRuntimeError) as raised:
+            runtime.stop("run_other", context=context)
+        self.assertEqual(raised.exception.code, "runtime.identity_context_invalid")
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

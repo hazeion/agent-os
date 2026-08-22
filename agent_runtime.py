@@ -331,7 +331,7 @@ class AgentRuntime(Protocol):
 
     def send_message(self, run_id: str, message: str) -> None: ...
 
-    def stop(self, run_id: str) -> None: ...
+    def stop(self, run_id: str, *, context: RuntimeContext | None = None) -> None: ...
 
     def get_status(
         self, run_id: str, *, context: RuntimeContext | None = None
@@ -345,7 +345,9 @@ class AgentRuntime(Protocol):
         context: RuntimeContext | None = None,
     ) -> Iterable[AgentEvent]: ...
 
-    def capabilities_for_run(self, run_id: str) -> frozenset[str]: ...
+    def capabilities_for_run(
+        self, run_id: str, *, context: RuntimeContext | None = None
+    ) -> frozenset[str]: ...
 
 
 class AgentRuntimeRegistry:

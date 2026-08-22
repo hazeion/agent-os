@@ -61,7 +61,7 @@ capability. It does not add Task controls or expose Task details.
 | 2B-B | Complete | Read-only Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
 | 2B-C | Complete | Read-only Runs route backed by normalized Run APIs. | Slice 2B-B |
 | 2C-A | Complete in this branch | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
-| 2C-B | Provisional | Messaging, stop controls, and supported approvals. | Slice 2C-A |
+| 2C-B | Complete in this branch | Safe preview-confirm stop control for a selected Run. Messaging and approvals need separate contracts. | Slice 2C-A |
 | 2D | Provisional | Production packaging, launch, rollback, and legacy interface cutover. | Slice 2C-B |
 | 3A | Provisional | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
 | 3B | Provisional | Hermes and Codex run together in one interface. | Slice 3A |
@@ -189,8 +189,10 @@ own approved backend slice.
 Add event streaming before controls.
 
 2C-A adds normalized SSE with reconnect, bounded history, and explicit
-truncation. 2C-B adds only the message, stop, and approval actions supported by
-the selected runtime.
+truncation. 2C-B begins with one state-bound Stop action for the selected
+runtime. Messaging and approval responses each need their own text and
+request-response contracts, so they remain later slices rather than widening
+the first mutation boundary.
 
 All browser traffic stays same-origin through Node. Python performs authority,
 capability, confirmation, and state checks.
@@ -255,6 +257,21 @@ It does not add Run controls, details pages, raw event content, browser-chosen
 limits, generic bridge forwarding, or multi-Run streams.
 
 Review log: `reviews/2026-08-22-runs-timeline-sse.md`
+
+### Slice 2C-B: selected Run stop control
+
+Status: Complete in this branch
+
+This slice adds one fixed Stop action for a selected, active, task-bound Run.
+The person first receives an exact preview, then confirms it. Python checks the
+current Agent and runtime binding, current capability, current Run state, and a
+state-bound confirmation while holding the operation lock. It reads the Run
+again before reporting that the Stop request was accepted.
+
+It does not add browser-selected actions, direct Hermes access, messages,
+steering, approval responses, or generic bridge forwarding.
+
+Review log: `reviews/2026-08-22-run-stop-control.md`
 
 ### Slice 2D: production cutover
 

@@ -82,6 +82,14 @@ reset when history is missing or shortened. Event content, data payloads,
 runtime references, and browser-selected limits or bridge paths never cross
 this boundary. Only one timeline is active in the Runs workspace at a time.
 
+The selected-Run Stop flow is one separate fixed preview-confirm action. Node
+accepts only the selected Run ID and a state-bound confirmation token, while
+Python checks the active task-bound Run, Agent and runtime binding, declared
+`run.stop` capability, and current state under the Hermes operation lock. It
+reads the canonical Run again before returning a requested result. The browser
+never selects an adapter reference, action name, or bridge target; messages and
+approval responses require their own bounded contracts.
+
 The first shell is prerendered and has no React hydration runtime. One fixed
 local script reads the health route after first paint. Later routes may add
 client code when they need real interaction, but each route must keep its own

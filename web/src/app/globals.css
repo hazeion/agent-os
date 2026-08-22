@@ -637,7 +637,9 @@ button {
 .run-card-meta { margin: 0; overflow-wrap: anywhere; color: var(--text-tertiary); font-size: 0.8rem; }
 .run-status { margin: 0; color: var(--accent); font-size: 0.78rem; font-weight: 650; text-transform: capitalize; }
 .run-timeline-open,
-.run-timeline-close {
+.run-timeline-close,
+.run-stop-open,
+.run-stop-actions button {
   justify-self: start;
   min-height: 36px;
   padding: 7px 11px;
@@ -646,6 +648,13 @@ button {
   color: var(--text-primary);
   background: var(--panel-raised);
 }
+.run-card-actions,
+.run-stop-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.run-stop-open,
+.run-stop-actions button:last-child { border-color: color-mix(in srgb, #f59e0b 45%, var(--border-subtle)); color: var(--text-primary); }
+.run-stop { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.run-stop h4 { margin: 0; color: var(--text-primary); font-size: 0.86rem; }
+.run-stop-notice { margin: 0; color: var(--text-secondary); font-size: 0.8rem; }
 .run-timeline {
   display: grid;
   gap: 10px;
@@ -671,7 +680,9 @@ button {
   .task-refresh,
   .run-refresh,
   .run-timeline-open,
-  .run-timeline-close { min-height: 44px; }
+  .run-timeline-close,
+  .run-stop-open,
+  .run-stop-actions button { min-height: 44px; }
 }
 
 .agent-fields {

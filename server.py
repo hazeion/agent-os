@@ -13,6 +13,7 @@ import ctypes
 from copy import deepcopy
 import gzip
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -40,7 +41,7 @@ from agent_run_history import (
     normalize_transport_binding,
     retained_event_window,
 )
-from agent_runtime import AgentEvent, AgentRuntimeError, AgentRuntimeRegistry
+from agent_runtime import AgentEvent, AgentRuntimeError, AgentRuntimeRegistry, RuntimeCapability, RuntimeContext
 from orchestration_service import OrchestrationService, OrchestrationServiceError
 from run_repository import (
     RunRecord,
@@ -51,6 +52,7 @@ from run_repository import (
     RunRepositoryValidationError,
     ensure_run_sqlite_authority,
     load_authoritative_run_summaries,
+    runtime_binding_digest,
     save_authoritative_run_summaries,
 )
 from agent_registry import (
@@ -1847,6 +1849,155 @@ def mentat_run_events_payload(run_id: str, after_sequence: int) -> dict:
         "next_cursor": cursor,
         "cursor_reset_required": reset,
         "events": [_public_orchestration_event(event) for event in events],
+    }
+
+
+class OrchestrationRunActionError(RuntimeError):
+    """One fixed, public-safe failure category for a Run action."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def _run_stop_confirmation(run: RunRecord) -> str:
+    """Bind Stop to the exact durable Run state without exposing internals."""
+
+    parts = (
+        "mentat.run.stop.v1",
+        run.id,
+        str(run.state_revision),
+        run.status,
+        run.dispatch_state,
+        run.runtime_type,
+        run.runtime_config_id or "",
+        run.runtime_binding_digest or "",
+        run.runtime_run_ref or "",
+    )
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def _run_stop_context(run: RunRecord):
+    if (
+        run.agent_id is None
+        or run.task_id is None
+        or run.runtime_config_id is None
+        or run.runtime_binding_digest is None
+    ):
+        raise OrchestrationRunActionError("run.stop_unavailable")
+    try:
+        registry = _mentat_agent_registry()
+        agent = next((item for item in registry.list_agents() if item.id == run.agent_id), None)
+        binding = registry.get_runtime_binding(run.agent_id)
+        runtime = AGENT_RUNTIME_REGISTRY.require(run.runtime_type)
+    except (AgentRegistryError, AgentRuntimeError, OSError):
+        raise OrchestrationRunActionError("run.unavailable") from None
+    if (
+        agent is None
+        or agent.runtime_type != run.runtime_type
+        or agent.runtime_config_id != run.runtime_config_id
+        or binding.id != run.runtime_config_id
+        or binding.runtime_type != run.runtime_type
+    ):
+        raise OrchestrationRunActionError("run.binding_changed")
+    digest = runtime_binding_digest(
+        agent_id=agent.id,
+        runtime_type=binding.runtime_type,
+        runtime_config_id=binding.id,
+        runtime_agent_ref=binding.runtime_agent_ref,
+        capabilities=agent.capabilities,
+    )
+    if digest != run.runtime_binding_digest:
+        raise OrchestrationRunActionError("run.binding_changed")
+    return runtime, RuntimeContext(
+        agent_id=agent.id,
+        runtime_agent_ref=binding.runtime_agent_ref,
+        task_id=run.task_id,
+        mentat_run_id=run.id,
+        runtime_run_ref=run.runtime_run_ref,
+    )
+
+
+def _load_run_for_action(run_id: str) -> RunRecord:
+    if not re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}", run_id):
+        raise OrchestrationRunActionError("run.invalid")
+    try:
+        with private_state_lock(DATA_DIR):
+            with connect_existing_mentat_database(DATA_DIR) as connection:
+                repository = RunRepository(connection)
+                repository.authority_receipt(required=True)
+                run = repository.get_run(run_id)
+    except RunRepositoryConflict:
+        raise OrchestrationRunActionError("run.not_found") from None
+    except (MentatDatabaseError, RunRepositoryError, OSError, sqlite3.Error):
+        raise OrchestrationRunActionError("run.unavailable") from None
+    return run
+
+
+def _current_run_for_stop(run_id: str) -> RunRecord:
+    run = _load_run_for_action(run_id)
+    if run.status not in {
+        "queued",
+        "submitting",
+        "starting",
+        "running",
+        "waiting",
+        "waiting_for_approval",
+        "waiting_for_clarification",
+    }:
+        raise OrchestrationRunActionError("run.stop_unavailable")
+    return run
+
+
+def mentat_run_stop_preview_payload(run_id: str) -> dict:
+    """Return one exact confirmation for an available current Run Stop."""
+
+    run = _current_run_for_stop(run_id)
+    runtime, context = _run_stop_context(run)
+    try:
+        capabilities = runtime.capabilities_for_run(
+            run.runtime_run_ref or run.id, context=context
+        )
+    except AgentRuntimeError:
+        raise OrchestrationRunActionError("run.stop_unavailable") from None
+    if RuntimeCapability.STOP.value not in capabilities:
+        raise OrchestrationRunActionError("run.stop_unavailable")
+    return {
+        "schema_version": 1,
+        "action": "stop",
+        "run_id": run.id,
+        "requires_confirmation": True,
+        "confirmation_id": _run_stop_confirmation(run),
+    }
+
+
+def mentat_confirm_run_stop(run_id: str, confirmation_id: object) -> dict:
+    """Stop an exact previewed Run and verify durable post-action state."""
+
+    if not isinstance(confirmation_id, str) or not re.fullmatch(r"[0-9a-f]{64}", confirmation_id):
+        raise OrchestrationRunActionError("run.confirmation_invalid")
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        preview = mentat_run_stop_preview_payload(run_id)
+        if not hmac.compare_digest(confirmation_id, preview["confirmation_id"]):
+            raise OrchestrationRunActionError("run.confirmation_stale")
+        run = _current_run_for_stop(run_id)
+        if not hmac.compare_digest(confirmation_id, _run_stop_confirmation(run)):
+            raise OrchestrationRunActionError("run.confirmation_stale")
+        runtime, context = _run_stop_context(run)
+        try:
+            runtime.stop(run.runtime_run_ref or run.id, context=context)
+        except AgentRuntimeError:
+            raise OrchestrationRunActionError("run.stop_failed") from None
+        updated = _load_run_for_action(run_id)
+    if updated.state_revision <= run.state_revision:
+        raise OrchestrationRunActionError("run.stop_partial")
+    if updated.status not in {"cancelling", "cancelled", "stopped"}:
+        raise OrchestrationRunActionError("run.stop_partial")
+    return {
+        "schema_version": 1,
+        "action": "stop",
+        "run_id": run.id,
+        "disposition": "requested",
     }
 
 
