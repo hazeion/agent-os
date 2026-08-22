@@ -5,17 +5,19 @@ response time.
 
 ## Current setup
 
-The default Python app needs:
+Mentat needs:
 
 - Python 3.11-3.13
+- Node 24.19 or newer within Node 24
 - Git
 - macOS, Windows, or Linux
 
 Agent features need a supported Hermes runtime. Planning still works when
 Hermes is unavailable.
 
-The optional Next.js preview also needs Node 24.19 or newer within Node 24. It
-is a source preview and is not included in native packages yet.
+The default dashboard is a local Node gateway with a private Python bridge.
+Native packages include the prebuilt dashboard; Node remains a host
+prerequisite. Use `mentat start --legacy-ui` only for temporary rollback.
 
 macOS and Windows are the main beta platforms. Linux is a preview platform.
 There is no public beta release yet, so use the

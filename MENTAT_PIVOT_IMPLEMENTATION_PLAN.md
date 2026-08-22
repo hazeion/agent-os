@@ -63,8 +63,8 @@ capability. It does not add Task controls or expose Task details.
 | 2C-A | Complete in this branch | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
 | 2C-B | Complete in this branch | Safe preview-confirm stop control for a selected Run. Messaging and approvals need separate contracts. | Slice 2C-A |
 | 2C-C | Complete in this branch | Safe preview-confirm text message for a selected active Run. | Slice 2C-B |
-| 2C-D | Provisional | Supported approval and clarification responses. | Slice 2C-C |
-| 2D | Provisional | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
+| 2C-D | Complete | Supported approval and clarification responses. | Slice 2C-C |
+| 2D | In progress | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
 | 3A | Provisional | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
 | 3B | Provisional | Hermes and Codex run together in one interface. | Slice 3A |
 | 3C | Provisional | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
@@ -293,7 +293,7 @@ Review log: `reviews/2026-08-22-run-message-control.md`
 
 ### Slice 2C-D: selected Run response control
 
-Status: In progress
+Status: Complete
 
 This slice adds separate fixed review-confirm controls for the current pending
 approval or clarification on a selected task-bound Run. Python reads the
@@ -308,6 +308,8 @@ references, or legacy Console changes.
 Review log: `reviews/2026-08-22-run-response-control.md`
 
 ### Slice 2D: production cutover
+
+Status: In progress
 
 The source preview is not an installed product. This slice must decide how Node
 ships, starts, updates, and rolls back on supported platforms after the

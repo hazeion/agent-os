@@ -20,6 +20,15 @@ if str(ROOT) not in sys.path:
 from mentat.version import DISPLAY_VERSION, __version__
 
 
+def build_web_runtime() -> None:
+    """Create the standalone web payload before native packaging collects it."""
+
+    npm = shutil.which("npm")
+    if npm is None:
+        raise RuntimeError("Node 24.19 and the frozen web dependencies are required for native packaging")
+    run([npm, "--prefix", "web", "run", "build"])
+
+
 def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
     subprocess.run(command, cwd=ROOT, env=env, check=True)
 
@@ -115,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     work_dir = args.work_dir.resolve()
     dist_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
+    build_web_runtime()
     build_bundle(dist_dir, work_dir)
     if args.bundle_only:
         return 0

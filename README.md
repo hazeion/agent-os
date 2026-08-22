@@ -8,8 +8,8 @@ Mentat is a local operations console for planning work and running agents. It
 keeps your projects, tasks, runs, and activity on your computer. Hermes is the
 first supported agent runtime.
 
-Mentat is moving to a new Next.js interface. The current Python app remains the
-default while the new interface is built and tested beside it.
+Mentat uses a Next.js dashboard with a small private Python bridge. The older
+Python interface is available only as a temporary troubleshooting fallback.
 
 > Mentat is in beta. You can run it from source today. Signed installers are
 > planned for the public beta.
@@ -25,12 +25,11 @@ default while the new interface is built and tested beside it.
 
 ## How Mentat works
 
-The Python app owns local data and talks to Hermes. Tasks, runs, and events are
-stored in Mentat's private SQLite database.
+The Python bridge owns local data and talks to Hermes. Tasks, runs, and events
+are stored in Mentat's private SQLite database.
 
-The optional Next.js preview runs through a local Node gateway. It reaches the
-Python app through a private bridge that is not exposed to the browser. Both
-apps listen only on your computer.
+The dashboard reaches the bridge through a private local connection that is not
+exposed to the browser. Both parts listen only on your computer.
 
 ## Quick start
 
@@ -41,6 +40,7 @@ instead of these source steps.
 You need:
 
 - [Python 3.11-3.13](https://www.python.org/downloads/)
+- [Node 24.19 or newer within Node 24](https://nodejs.org/)
 - [Git](https://git-scm.com/downloads)
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) for agent features
 
@@ -56,6 +56,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 python scripts/mentat_setup.py
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
 ./run.sh
 ```
 
@@ -68,6 +70,8 @@ py -m venv .venv
 .venv\Scripts\activate
 python -m pip install -r requirements.txt
 python scripts\mentat_setup.py
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
 run.bat
 ```
 
@@ -101,35 +105,27 @@ If port 8888 is busy, run:
 
 Then open [http://localhost:8889](http://localhost:8889).
 
-## Try the Next.js preview
+Mentat starts the Node dashboard and its private Python bridge. It needs Node
+24.19 or newer within the Node 24 release line. The launcher does not download
+or build anything when it starts.
 
-The preview needs Node 24.19 or newer in the Node 24 release line.
-
-Check your version:
+If you need the previous interface while troubleshooting, use:
 
 ```bash
-node --version
-npm --version
+./run.sh --legacy-ui
 ```
 
-Install and build the web app from the repository root:
+On Windows, add `--legacy-ui` to `run.bat` instead.
+
+## Build from source
+
+Install Node 24.19 or newer within Node 24, then build the dashboard once after changing web
+files or dependencies:
 
 ```bash
 npm --prefix web ci --ignore-scripts
 npm --prefix web run build
 ```
-
-Start the Node gateway and private Python bridge:
-
-```bash
-python3 scripts/mentat_web_preview.py
-```
-
-Open [http://localhost:8890](http://localhost:8890). Press Ctrl+C in the
-terminal when you are done.
-
-The preview does not replace the Python app on port 8888. The normal app does
-not need npm.
 
 ## Keep in mind
 

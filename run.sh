@@ -10,15 +10,4 @@ elif [ -x "$PWD/.venv/bin/python" ]; then
   PYTHON="$PWD/.venv/bin/python"
 fi
 
-"$PYTHON" "$SCRIPT_DIR/mentat_lifecycle.py" preflight "$@"
-export MENTAT_LAUNCHER_PID=$$
-"$PYTHON" "$SCRIPT_DIR/server.py" "$@" &
-child_pid=$!
-cleanup() {
-  if kill -0 "$child_pid" 2>/dev/null; then
-    kill "$child_pid" 2>/dev/null || true
-    wait "$child_pid" 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT INT TERM
-wait "$child_pid"
+exec "$PYTHON" -m mentat.cli start "$@"

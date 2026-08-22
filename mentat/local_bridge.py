@@ -119,6 +119,33 @@ def validate_bridge_token(value: object) -> str:
     return token
 
 
+def configured_launcher_pid() -> int | None:
+    raw = str(os.environ.get("MENTAT_LAUNCHER_PID", "") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 and value != os.getpid() else None
+
+
+def launcher_is_running(pid: int | None) -> bool:
+    if pid is None:
+        return True
+    if os.name == "nt":
+        from private_state import _pid_is_running
+
+        return _pid_is_running(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def bridge_server_class(host: str) -> type[BridgeHTTPServer] | type[IPv6ConfiguredBridgeHTTPServer]:
     return IPv6ConfiguredBridgeHTTPServer if validate_bridge_host(host) == "::1" else BridgeHTTPServer
 
@@ -955,6 +982,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     stopped = threading.Event()
+    launcher_pid = configured_launcher_pid()
 
     def request_stop(_signum: int, _frame: object) -> None:
         stopped.set()
@@ -971,7 +999,7 @@ def main(argv: list[str] | None = None) -> int:
     display_host = f"[{bound_host}]" if ":" in str(bound_host) else str(bound_host)
     print(f"Mentat Python Local Bridge ready on http://{display_host}:{bound_port}", flush=True)
     try:
-        while not stopped.is_set():
+        while not stopped.is_set() and launcher_is_running(launcher_pid):
             bridge.handle_request()
     except KeyboardInterrupt:
         pass

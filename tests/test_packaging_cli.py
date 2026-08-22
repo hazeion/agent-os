@@ -19,6 +19,7 @@ import server
 from data_layout import SEED_FILE_NAMES
 from mentat import __version__
 from mentat import cli
+from mentat import web_runtime
 from mentat.version import DISPLAY_VERSION
 
 
@@ -123,6 +124,8 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("MyAppVersion must be supplied", windows)
         self.assertNotIn("0.1.0-beta.1", windows)
         self.assertIn("from mentat.version import DISPLAY_VERSION, __version__", builder)
+        self.assertIn("def build_web_runtime()", builder)
+        self.assertIn('"web", "run", "build"', builder)
         self.assertIn('component["BundleIsRelocatable"] = False', builder)
         self.assertIn('"--component-plist"', builder)
         self.assertIn("-r requirements.txt", requirements)
@@ -137,6 +140,7 @@ class PackagingContractTests(unittest.TestCase):
         entry = (ROOT / "packaging" / "mentat_native.py").read_text(encoding="utf-8")
         self.assertIn("arguments = sys.argv[1:]", entry)
         self.assertIn('main(arguments if arguments else ["start", "--open-browser"])', entry)
+        self.assertIn('"--mentat-private-bridge"', entry)
 
     def test_native_ci_builds_unsigned_artifacts_without_signing_secrets(self):
         workflow = (
@@ -175,7 +179,10 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("mentat-macos-x86_64-unsigned", workflow)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("unsigned", workflow)
-        self.assertIn("api/health", workflow)
+        self.assertIn("api/bridge/health", workflow)
+        self.assertIn("Install the frozen web dependency tree", workflow)
+        self.assertIn("Resources/web/server.js", workflow)
+        self.assertIn("_internal/web/server.js", workflow)
         self.assertIn("unins000.exe", workflow)
         self.assertIn("upgrade-sentinel.txt", workflow)
         self.assertIn("mentat-baseline.pkg", workflow)
@@ -984,24 +991,25 @@ class CliTests(unittest.TestCase):
         self.assertNotIn(private_root, output.getvalue())
         self.assertNotIn("8894", output.getvalue())
 
-    def test_start_runs_preflight_before_the_server_module(self):
+    def test_start_runs_preflight_before_the_node_gateway(self):
         args = cli.build_parser().parse_args(["start", "--port", "8891"])
         with patch.object(cli, "run_lifecycle", return_value=0) as preflight:
-            with patch.object(cli.subprocess, "call", return_value=0) as call:
-                self.assertEqual(cli.run_start(args), 0)
+            with patch.object(
+                cli,
+                "_load_config",
+                return_value=(None, SimpleNamespace(host="127.0.0.1", port=8891, data_dir=Path("/private/mentat"))),
+            ):
+                with patch.object(web_runtime, "run_gateway", return_value=0) as gateway:
+                    self.assertEqual(cli.run_start(args), 0)
         preflight.assert_called_once_with("preflight", args)
-        self.assertEqual(
-            call.call_args.args[0],
-            [sys.executable, "-m", "server", "--port", "8891"],
-        )
-        self.assertEqual(
-            call.call_args.kwargs["env"]["MENTAT_LAUNCHER_PID"],
-            str(os.getpid()),
-        )
+        self.assertEqual(gateway.call_args.kwargs["host"], "127.0.0.1")
+        self.assertEqual(gateway.call_args.kwargs["port"], 8891)
+        self.assertEqual(gateway.call_args.kwargs["data_dir"], Path("/private/mentat"))
+        self.assertEqual(gateway.call_args.kwargs["runtime_environment"]["MENTAT_LAUNCHER_PID"], str(os.getpid()))
 
     def test_native_start_opens_browser_only_after_health_is_ready(self):
         args = cli.build_parser().parse_args(
-            ["start", "--open-browser", "--port", "8895"]
+            ["start", "--legacy-ui", "--open-browser", "--port", "8895"]
         )
         process = MagicMock()
         process.poll.return_value = None
@@ -1021,14 +1029,18 @@ class CliTests(unittest.TestCase):
         open_browser.assert_called_once_with("http://127.0.0.1:8895")
         process.wait.assert_called_once_with()
 
-    def test_frozen_start_uses_internal_native_server_mode(self):
+    def test_frozen_start_uses_the_node_gateway_not_the_legacy_server(self):
         args = cli.build_parser().parse_args(["start", "--port", "8895"])
         with patch.object(cli.sys, "frozen", True, create=True):
             with patch.object(cli, "run_lifecycle", return_value=0):
-                with patch.object(cli.subprocess, "call", return_value=0) as call:
-                    self.assertEqual(cli.run_start(args), 0)
-        self.assertEqual(call.call_args.args[0], [sys.executable, "--port", "8895"])
-        self.assertEqual(call.call_args.kwargs["env"]["MENTAT_NATIVE_SERVER"], "1")
+                with patch.object(
+                    cli,
+                    "_load_config",
+                    return_value=(None, SimpleNamespace(host="127.0.0.1", port=8895, data_dir=Path("/private/mentat"))),
+                ):
+                    with patch.object(web_runtime, "run_gateway", return_value=0) as gateway:
+                        self.assertEqual(cli.run_start(args), 0)
+        self.assertEqual(gateway.call_args.kwargs["port"], 8895)
 
 
 if __name__ == "__main__":

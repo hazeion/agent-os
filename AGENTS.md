@@ -25,11 +25,9 @@ The user-facing product name and repository naming convention is **Mentat**.
 
 ## Architecture
 
-Mentat has two local interfaces during the migration:
-
-- The Python app on port 8888 is the current compatibility product.
-- The optional Next.js preview on port 8890 is the new interface under
-  development.
+Mentat's default local interface is the Next.js dashboard on the configured
+port (8888 by default). The Python `public/` interface is an explicit
+`--legacy-ui` rollback path during cutover.
 
 Python still owns local data, Hermes access, and safety checks. The Node gateway
 reaches Python through small, named bridge capabilities. Do not add a generic
@@ -299,11 +297,10 @@ Launch on Windows (cmd / Explorer):
 run.bat
 ```
 
-Launch directly on POSIX from the repository root using an absolute script
-argument so lifecycle cleanup can identify a hung process:
+Launch directly on POSIX from the repository root:
 
 ```bash
-python "$(pwd)/server.py"
+python -m mentat.cli start
 ```
 
 Default local URL:
@@ -312,16 +309,16 @@ Default local URL:
 http://localhost:8888
 ```
 
-To build and run the optional Next.js preview:
+To build and run the default Next.js dashboard from source:
 
 ```bash
 npm --prefix web ci --ignore-scripts
 npm --prefix web run check
 npm --prefix web run build
-python scripts/mentat_web_preview.py
+./run.sh
 ```
 
-Open `http://localhost:8890`. Node must satisfy the version in `.node-version`
+Open `http://localhost:8888`. Node must satisfy the version in `.node-version`
 and `web/package.json`.
 
 Useful commands:
