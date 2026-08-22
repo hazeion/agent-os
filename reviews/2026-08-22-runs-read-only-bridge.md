@@ -1,6 +1,6 @@
 # Feature Slice Review: Read-only Runs bridge
 
-Status: In progress
+Status: Complete
 
 Slice: `2b-c-runs-read-only-bridge`
 
@@ -38,12 +38,12 @@ exposing runtime references, event content, or a general Python proxy.
 
 | ID | Observable criterion | Evidence | Status |
 | --- | --- | --- | --- |
-| AC-1 | Python exposes one fixed, read-only Run-list capability backed by canonical SQLite authority. | Focused bridge tests | Pending |
-| AC-2 | Node calls one fixed path, bounds and validates the response, and excludes private Run fields. | TypeScript contract tests | Pending |
-| AC-3 | `/runs` renders only the safe summary projection with no event or runtime-reference content. | Browser smoke and DOM checks | Pending |
-| AC-4 | Loading, empty, unavailable, unsupported, and error states are explicit; refresh has no parameters. | Browser/DOM tests | Pending |
-| AC-5 | Compatibility UI remains unchanged and the production route stays script-light. | Regression/static checks | Pending |
-| AC-6 | Six Lighthouse runs stay 100/100/100/100. | Lighthouse gate | Pending |
+| AC-1 | Python exposes one fixed, read-only Run-list capability backed by canonical SQLite authority. | Focused bridge tests | Passed |
+| AC-2 | Node calls one fixed path, bounds and validates the response, and excludes private Run fields. | TypeScript contract tests | Passed |
+| AC-3 | `/runs` renders only the safe summary projection with no event or runtime-reference content. | Browser smoke and DOM checks | Passed |
+| AC-4 | Loading, empty, unavailable, unsupported, and error states are explicit; refresh has no parameters. | Browser/DOM tests | Passed |
+| AC-5 | Compatibility UI remains unchanged and the production route stays script-light. | Regression/static checks | Passed |
+| AC-6 | Six Lighthouse runs stay 100/100/100/100. | Lighthouse gate | Passed |
 
 ### Constraints and recovery
 
@@ -118,9 +118,9 @@ exposing runtime references, event content, or a general Python proxy.
 
 - Updated `ARCHITECTURE.md`, `MENTAT_MULTI_AGENT_PIVOT.md`, and
   `MENTAT_PIVOT_IMPLEMENTATION_PLAN.md`.
-- Ready for commit, push, pull request, CI, and merge under the user's
-  standing authorization.
+- Published in PR #118 under the user's standing authorization.
 
 ## Outcome review
 
-- Pending publication and merge.
+- Merged to `main` in commit `9f88f056d88ab2c85429100d6e685afa7968018b`
+  after CI, quality gates, and native artifact smoke all passed.

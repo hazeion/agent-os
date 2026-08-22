@@ -59,7 +59,7 @@ capability. It does not add Task controls or expose Task details.
 | 2A-B | Complete | Emerald Operations shell, tokens, navigation, route frames, and shared UI basics. | Slice 2A-A |
 | 2B-A | Complete | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
 | 2B-B | Complete | Read-only Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
-| 2B-C | In progress | Read-only Runs route backed by normalized Run APIs. | Slice 2B-B |
+| 2B-C | Complete | Read-only Runs route backed by normalized Run APIs. | Slice 2B-B |
 | 2C-A | Provisional | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
 | 2C-B | Provisional | Messaging, stop controls, and supported approvals. | Slice 2C-A |
 | 2D | Provisional | Production packaging, launch, rollback, and legacy interface cutover. | Slice 2C-B |
@@ -226,7 +226,7 @@ Review log: `reviews/2026-08-22-tasks-read-only-bridge.md`
 
 ### Slice 2B-C: read-only Runs route
 
-Status: In progress
+Status: Complete
 
 This slice makes a bounded canonical Run list available through one fixed,
 read-only Python bridge capability and one safe Node route. The `/runs` screen
