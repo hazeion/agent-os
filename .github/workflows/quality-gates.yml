@@ -37,6 +37,19 @@ jobs:
           python -m pip install --require-hashes -r requirements-native.lock
           python -m pip install --require-hashes -r requirements-quality.lock
 
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the packaged Node dashboard
+        run: |
+          npm --prefix web ci --ignore-scripts
+          npm --prefix web run build
+          python scripts/stage_web_runtime.py
+
       - name: Build and verify exact artifacts
         run: |
           python -m build --no-isolation --sdist --wheel --outdir dist
@@ -55,15 +68,22 @@ jobs:
           "$PIPX_BIN_DIR/mentat" start --data-dir "$smoke_root/data" --port 8894 >"$RUNNER_TEMP/mentat-package.log" 2>&1 &
           launcher_pid=$!
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8894/api/health >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null; then
               break
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8894/api/health >/dev/null
+          curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null
+          curl --fail --silent http://127.0.0.1:8894/ >/dev/null
+          curl --fail --silent http://127.0.0.1:8894/shell/home.html >/dev/null
+          CHROME_PATH=/usr/bin/google-chrome \
+            MENTAT_WEB_BASE_URL=http://127.0.0.1:8894 \
+            MENTAT_WEB_BROWSER_DEBUG_PORT=9337 \
+            MENTAT_WEB_BROWSER_RUNTIME_DIR="$RUNNER_TEMP/pipx-web-foundation-smoke-runtime" \
+            node scripts/web_foundation_smoke.mjs
           "$PIPX_BIN_DIR/mentat" stop --data-dir "$smoke_root/data" --port 8894
           wait "$launcher_pid" || true
-          if curl --fail --silent http://127.0.0.1:8894/api/health >/dev/null; then
+          if curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null; then
             echo 'Installed Mentat remained healthy after stop' >&2
             exit 1
           fi

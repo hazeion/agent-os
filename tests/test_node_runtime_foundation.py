@@ -82,6 +82,9 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn('MENTAT_STATIC_FOUNDATION: "1"', next_runner)
         self.assertIn("shell: false", next_runner)
         self.assertIn('output: "standalone"', next_config)
+        self.assertIn("unoptimized: true", next_config)
+        eslint_config = (ROOT / "web" / "eslint.config.mjs").read_text(encoding="utf-8")
+        self.assertIn('"package-runtime/**"', eslint_config)
         for destination in (
             "/shell/home.html",
             "/shell/agents.html",
@@ -97,6 +100,8 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         )
         self.assertIn("static Emerald shell", standalone)
         self.assertIn("no-hydration contract", standalone)
+        self.assertIn('"node_modules", "@img"', standalone)
+        self.assertIn('"node_modules", "sharp"', standalone)
         self.assertIn('fetch("/api/bridge/health"', shell_runtime)
         self.assertIn("AbortSignal.timeout(3500)", shell_runtime)
         self.assertNotIn("MENTAT_BRIDGE_TOKEN", shell_runtime)

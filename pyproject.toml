@@ -38,6 +38,7 @@ version = { attr = "mentat.version.__version__" }
 
 [tool.setuptools]
 packages = ["mentat"]
+include-package-data = false
 py-modules = [
   "agent_registry",
   "agent_runtime",
@@ -81,25 +82,4 @@ py-modules = [
   "server",
   "task_planning",
   "task_repository",
-]
-
-[tool.setuptools.data-files]
-"share/mentat/public" = [
-  "public/app.js",
-  "public/core.js",
-  "public/index.html",
-  "public/mentat-logo.png",
-  "public/mentat-mark-emerald.png",
-  "public/styles.css",
-]
-"share/mentat/data" = [
-  "data/agent_messages.json",
-  "data/agents.json",
-  "data/attention.json",
-  "data/calendar.json",
-  "data/context_packs.json",
-  "data/dashboard.json",
-  "data/email.json",
-  "data/projects.json",
-  "data/tasks.json",
 ]

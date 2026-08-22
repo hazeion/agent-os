@@ -24,6 +24,7 @@ the `public/` rollback interface, and public seed data. Node 24.19 or newer
 must be installed on the computer. The installed launcher never downloads or
 builds web dependencies. Use `mentat start --legacy-ui` only to temporarily
 return to the compatibility interface.
+The verified `pipx` package includes the same prebuilt dashboard.
 Operator data remains in Mentat's platform data directory and survives app
 removal.
 

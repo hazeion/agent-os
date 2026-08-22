@@ -58,7 +58,7 @@ class WebRuntimeTests(unittest.TestCase):
     def test_node_environment_excludes_bridge_runtime_settings_and_parent_secrets(self):
         with patch.dict(
             web_runtime.os.environ,
-            {"PATH": "/fixed", "MENTAT_DATA_DIR": "/private/data", "HERMES_HOME": "/private/hermes", "OPENAI_API_KEY": "secret"},
+            {"PATH": "/fixed", "MENTAT_DATA_DIR": "/private/data", "HERMES_HOME": "/private/hermes", "PROVIDER_SECRET": "secret"},
             clear=True,
         ):
             environment = web_runtime.node_environment(
@@ -68,7 +68,16 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertEqual(environment["MENTAT_BRIDGE_TOKEN"], "x" * 43)
         self.assertNotIn("MENTAT_DATA_DIR", environment)
         self.assertNotIn("HERMES_HOME", environment)
-        self.assertNotIn("OPENAI_API_KEY", environment)
+        self.assertNotIn("PROVIDER_SECRET", environment)
+
+    def test_installed_runtime_uses_the_wheel_payload_when_source_build_is_absent(self):
+        with patch.object(web_runtime, "SOURCE_ROOT", Path("/missing/source")), patch.object(
+            web_runtime.sys, "prefix", "/installed"
+        ):
+            self.assertEqual(
+                web_runtime.default_standalone_root(),
+                Path("/installed/share/mentat/web"),
+            )
 
     def test_node_lookup_uses_validated_gui_launch_fallbacks(self):
         with patch.object(web_runtime.shutil, "which", return_value=None), patch.object(

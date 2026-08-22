@@ -21,6 +21,15 @@ function replaceDirectory(source, destination) {
 replaceDirectory(resolve(nextRoot, "static"), resolve(standaloneRoot, ".next", "static"));
 replaceDirectory(resolve(projectRoot, "public"), resolve(standaloneRoot, "public"));
 
+// Mentat uses unoptimized local images. Remove Next's optional native image
+// optimizer so the standalone payload stays safe to ship in a universal wheel.
+for (const packagePath of [
+  resolve(standaloneRoot, "node_modules", "@img"),
+  resolve(standaloneRoot, "node_modules", "sharp"),
+]) {
+  rmSync(packagePath, { force: true, recursive: true });
+}
+
 const routes = [
   { source: "index.html", output: "home.html", currentLabel: "Home" },
   { source: "agents.html", output: "agents.html", currentLabel: "Agents" },

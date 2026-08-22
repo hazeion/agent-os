@@ -128,3 +128,50 @@ checks after the Windows correction. The full local suite remains unsuitable as
 final evidence because user-owned `data/projects.json` changes make unrelated
 legacy dashboard expectations fail; clean CI is required for the full suite,
 native installer smoke, browser smoke, and six-run Lighthouse gate.
+
+## CI correction round
+
+The initial PR found three cutover gaps:
+
+- the Node environment regression test used a provider-secret identifier that
+  the secret scanner correctly required to be reviewed;
+- a legacy documentation assertion still described the old Python dashboard;
+- `pipx` installed only Python assets, so it could not start the default Node
+  dashboard.
+
+The correction stages the built standalone runtime as regular files, packages
+it into the wheel under `share/mentat/web`, and makes the launcher select that
+installed payload when a source build is absent. The package and signed-release
+workflows build and stage the runtime before producing Python artifacts. The
+release instructions now list Node 24.19+ for `pipx` as well.
+
+Native smoke failures currently lack the child launcher output. The native
+workflow now emits the captured startup log before failing, so a remaining
+platform issue will be diagnosable on the next run.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| Webpack production build + staging | Pass | Local environment blocks Turbopack's internal worker port; the supported Webpack build produced the standalone payload. |
+| Isolated sdist and wheel build | Pass | The exact verifier accepted both artifacts, including the prebuilt Node runtime. |
+| `python3 -m unittest tests.test_limited_beta_readiness tests.test_release_rehearsal tests.test_web_runtime tests.test_next_phase_readiness tests.test_ci_quality_gate tests.test_packaging_cli -v` | Pass | 66 checks passed. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+The local secret-scanner executable is not installed. The CI secret scan remains
+required and is expected to cover the corrected test value.
+
+### Correction review
+
+The first correction review found that a platform-native file inserted after
+staging could still enter the universal wheel. The accepted fix centralizes
+native filename and binary-signature validation, applies it before and after
+runtime staging, checks it again at package construction, and independently
+inspects every runtime member in the finished wheel. A second review noted that
+copying could dereference an unsafe source symlink. Staging now validates the
+source standalone tree before copying it.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| Focused Python contract suite | Pass | 71 checks passed after the portable-runtime corrections. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 38 Node tests passed. |
+| Isolated sdist and wheel build | Pass | The verifier accepted the complete staged runtime and rejects native wheel members. |
+| Two independent final reviews | Pass | No blockers or non-blockers after source validation was moved before the copy. |

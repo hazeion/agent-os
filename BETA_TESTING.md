@@ -70,10 +70,9 @@ temporary rollback interface.
 
 ### pipx
 
-This channel requires Python 3.11–3.13 and `pipx`. Confirm both are installed
-before starting the timer. If `pipx` is missing, use its
-[official installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html)
-and the Python setup assigned in your invitation.
+This channel requires Python 3.11–3.13, Node 24.19 or newer within Node 24,
+and `pipx`. Confirm they are installed before starting the timer. If `pipx` is
+missing, use its [official installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html).
 
 1. Download `mentat_local-0.1.0b1-py3-none-any.whl` and `SHA256SUMS` into
    Downloads.

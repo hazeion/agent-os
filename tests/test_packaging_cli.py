@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import health_checks
+from mentat import package_data
 import remote_hermes
 import runtime_config
 import server
@@ -80,11 +81,20 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("prune data/private", manifest)
         self.assertIn("prune data/runtime", manifest)
         self.assertIn("include scripts/build_native.py", manifest)
+        self.assertIn("include scripts/stage_web_runtime.py", manifest)
+        self.assertIn("recursive-include web/package-runtime *", manifest)
+        stage_runtime = (ROOT / "scripts" / "stage_web_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("validate_web_runtime", stage_runtime)
+        self.assertLess(
+            stage_runtime.index("validate_web_runtime(SOURCE)"),
+            stage_runtime.index("shutil.copytree"),
+        )
         self.assertIn("include scripts/verify_macos_architecture.py", manifest)
         artifact_verifier = (
             ROOT / "scripts" / "verify_python_artifacts.py"
         ).read_text(encoding="utf-8")
         self.assertIn('"scripts/verify_macos_architecture.py"', artifact_verifier)
+        self.assertIn("native_runtime_reason", artifact_verifier)
         self.assertIn("include requirements-native.lock", manifest)
         for name in SEED_FILE_NAMES:
             self.assertIn(f"include data/{name}", manifest)
@@ -98,16 +108,45 @@ class PackagingContractTests(unittest.TestCase):
         ):
             self.assertIn(f"include public/{name}", manifest)
 
+    def test_universal_runtime_rejects_native_file_names_and_binaries(self):
+        self.assertEqual(
+            package_data.native_runtime_reason("node_modules/addon.so.1", b"plain text"),
+            "platform-native filename",
+        )
+        self.assertEqual(
+            package_data.native_runtime_reason("node_modules/addon", b"\x7fELFtest"),
+            "platform-native binary signature",
+        )
+        self.assertEqual(
+            package_data.native_runtime_reason("public/app.js", b"console."),
+            None,
+        )
+
+    def test_package_construction_rechecks_the_staged_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / package_data.WEB_RUNTIME_STAGE
+            runtime.mkdir(parents=True)
+            (runtime / "server.js").write_text("console.log('safe')", encoding="utf-8")
+            (runtime / "late-addon.so.1").write_bytes(b"not an executable")
+            with self.assertRaisesRegex(RuntimeError, "platform-native filename"):
+                package_data.package_data_files(root)
+
+            (runtime / "late-addon.so.1").unlink()
+            (runtime / "late-binary").write_bytes(b"\x7fELFtest")
+            with self.assertRaisesRegex(RuntimeError, "platform-native binary signature"):
+                package_data.package_data_files(root)
+
     def test_emerald_mark_is_in_every_static_asset_inventory(self):
         asset = "mentat-mark-emerald.png"
-        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        package_data = (ROOT / "mentat" / "package_data.py").read_text(encoding="utf-8")
         spec = (ROOT / "packaging" / "mentat.spec").read_text(encoding="utf-8")
         verifier = (
             ROOT / "scripts" / "verify_python_artifacts.py"
         ).read_text(encoding="utf-8")
-        self.assertIn(f"public/{asset}", pyproject)
+        self.assertIn(f"public/{asset}", package_data)
         self.assertIn(f'"{asset}"', spec)
-        self.assertIn(f"public/{asset}", verifier)
+        self.assertIn("package_data_files", verifier)
 
     def test_native_definitions_read_or_receive_the_single_version_source(self):
         spec = (ROOT / "packaging" / "mentat.spec").read_text(encoding="utf-8")

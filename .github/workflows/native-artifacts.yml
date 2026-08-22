@@ -128,7 +128,10 @@ jobs:
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null
+          if ! curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then
+            cat "$RUNNER_TEMP/mentat-native-upgrade.log" >&2 || true
+            exit 1
+          fi
           /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8896
           wait "$upgraded_launcher_pid" || true
           if curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then

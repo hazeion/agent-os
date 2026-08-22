@@ -519,6 +519,19 @@ jobs:
           python -m pip install --require-hashes -r requirements-native.lock
           python -m pip install --require-hashes -r requirements-quality.lock
 
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the packaged Node dashboard
+        run: |
+          npm --prefix web ci --ignore-scripts
+          npm --prefix web run build
+          python scripts/stage_web_runtime.py
+
       - name: Build and verify exact Python artifacts
         run: |
           python -m build --no-isolation

@@ -19,6 +19,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from mentat.version import __version__
+from mentat.package_data import (
+    PUBLIC_DATA_FILES as PACKAGE_PUBLIC_DATA_FILES,
+    WEB_RUNTIME_DESTINATION,
+    WEB_RUNTIME_STAGE,
+    native_runtime_reason,
+    package_data_files,
+)
 
 
 DIST_NAME = f"mentat_local-{__version__}"
@@ -39,18 +46,7 @@ PUBLIC_MODULES = {
     "run_repository", "server", "task_planning", "task_repository",
 }
 PUBLIC_PACKAGES = {"mentat"}
-PUBLIC_DATA_FILES = {
-    "share/mentat/public": {
-        "public/app.js", "public/core.js", "public/index.html",
-        "public/mentat-logo.png", "public/mentat-mark-emerald.png",
-        "public/styles.css",
-    },
-    "share/mentat/data": {
-        "data/agent_messages.json", "data/agents.json", "data/attention.json",
-        "data/calendar.json", "data/context_packs.json", "data/dashboard.json",
-        "data/email.json", "data/projects.json", "data/tasks.json",
-    },
-}
+PUBLIC_DATA_FILES = {destination: set(sources) for destination, sources in PACKAGE_PUBLIC_DATA_FILES.items()}
 
 
 def _parent_directories(files: set[str]) -> set[str]:
@@ -70,20 +66,14 @@ def _special_tar_members(members: list[tarfile.TarInfo]) -> list[str]:
 def _project() -> dict:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     setuptools = project["tool"]["setuptools"]
-    configured_data = {
-        destination: set(sources)
-        for destination, sources in setuptools["data-files"].items()
-    }
     if set(setuptools["py-modules"]) != PUBLIC_MODULES:
         raise ValueError("pyproject public module inventory changed")
     if set(setuptools["packages"]) != PUBLIC_PACKAGES:
         raise ValueError("pyproject public package inventory changed")
-    if configured_data != PUBLIC_DATA_FILES:
-        raise ValueError("pyproject public data inventory changed")
     return project
 
 
-def _source_files() -> set[str]:
+def _source_files(*, require_runtime: bool = False) -> set[str]:
     project = _project()
     files = {
         "LICENSE",
@@ -95,7 +85,7 @@ def _source_files() -> set[str]:
         "requirements-native.in",
         "requirements-native.lock",
         "requirements-native.txt",
-        "scripts/build_native.py",
+        "scripts/build_native.py", "scripts/stage_web_runtime.py", "setup.py",
         "scripts/verify_macos_architecture.py",
     }
     files.update(f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"])
@@ -104,8 +94,8 @@ def _source_files() -> set[str]:
             path.relative_to(ROOT).as_posix()
             for path in (ROOT / package).rglob("*.py")
         )
-    for sources in project["tool"]["setuptools"]["data-files"].values():
-        files.update(sources)
+    for _destination, sources in package_data_files(ROOT, require_runtime=require_runtime):
+        files.update(Path(source).as_posix() for source in sources)
     files.update(
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "packaging").rglob("*")
@@ -114,7 +104,7 @@ def _source_files() -> set[str]:
     return files
 
 
-def _wheel_files() -> set[str]:
+def _wheel_files(*, require_runtime: bool = False) -> set[str]:
     project = _project()
     files = {f"{name}.py" for name in project["tool"]["setuptools"]["py-modules"]}
     for package in project["tool"]["setuptools"]["packages"]:
@@ -122,7 +112,7 @@ def _wheel_files() -> set[str]:
             path.relative_to(ROOT).as_posix()
             for path in (ROOT / package).rglob("*.py")
         )
-    for destination, sources in project["tool"]["setuptools"]["data-files"].items():
+    for destination, sources in package_data_files(ROOT, require_runtime=require_runtime):
         files.update(
             f"{DIST_NAME}.data/data/{destination}/{Path(source).name}"
             for source in sources
@@ -154,7 +144,7 @@ def verify_wheel(path: Path) -> None:
         names = archive.namelist()
         _safe_names(names, label="wheel")
         actual = {name for name in names if not name.endswith("/")}
-        expected = _wheel_files()
+        expected = _wheel_files(require_runtime=True)
         directories = {name.rstrip("/") for name in names if name.endswith("/")}
         unexpected_directories = directories - _parent_directories(expected)
         if unexpected_directories:
@@ -166,6 +156,13 @@ def verify_wheel(path: Path) -> None:
                 f"wheel content mismatch; missing={sorted(expected - actual)}, "
                 f"unexpected={sorted(actual - expected)}"
             )
+        runtime_prefix = f"{DIST_NAME}.data/data/{WEB_RUNTIME_DESTINATION}/"
+        for name in actual:
+            if not name.startswith(runtime_prefix):
+                continue
+            reason = native_runtime_reason(name, archive.read(name)[:8])
+            if reason:
+                raise ValueError(f"wheel contains a {reason}: {name}")
         rows = list(
             csv.reader(io.StringIO(archive.read(f"{DIST_INFO}/RECORD").decode("utf-8")))
         )
@@ -193,7 +190,7 @@ def verify_sdist(path: Path) -> None:
         f"{EGG_INFO}/requires.txt",
         f"{EGG_INFO}/top_level.txt",
     }
-    expected = _source_files() | generated
+    expected = _source_files(require_runtime=True) | generated
     with tarfile.open(path, "r:gz") as archive:
         members = archive.getmembers()
         names = [member.name for member in members]

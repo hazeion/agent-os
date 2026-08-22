@@ -46,7 +46,10 @@ def default_standalone_root() -> Path:
     root = application_root()
     if getattr(sys, "frozen", False):
         return root / "web"
-    return root / "web" / ".next" / "standalone"
+    source_build = root / "web" / ".next" / "standalone"
+    if (source_build / "server.js").is_file():
+        return source_build
+    return Path(sys.prefix) / "share" / "mentat" / "web"
 
 
 def parse_port(value: object) -> int:

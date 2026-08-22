@@ -17,6 +17,7 @@ venv/
 # Node / Next.js source-preview output
 node_modules/
 .next/
+web/package-runtime/
 .turbo/
 *.tsbuildinfo
 web/lighthouse-reports/
