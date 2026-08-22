@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_runtime import RuntimeCapability
+from agent_runtime import AgentRun, RunStatus
 from run_repository import RunRecord
 import server
 
@@ -26,6 +27,7 @@ class FakeRuntime:
     def __init__(self, capabilities=frozenset({RuntimeCapability.STOP.value})):
         self.capabilities = capabilities
         self.stop_calls = []
+        self.message_calls = []
 
     def capabilities_for_run(self, run_id, *, context=None):
         self.last_capability_call = (run_id, context)
@@ -34,8 +36,69 @@ class FakeRuntime:
     def stop(self, run_id, *, context=None):
         self.stop_calls.append((run_id, context))
 
+    def send_message(self, run_id, message, *, context=None):
+        self.message_calls.append((run_id, message, context))
+
+    def get_status(self, run_id, *, context=None):
+        return AgentRun(id=run_id, task_id="task_current", agent_id="agent_current", runtime_type="hermes", status=RunStatus.RUNNING)
+
 
 class RunStopControlTests(unittest.TestCase):
+    def test_message_requires_capability_bound_text_and_current_run(self):
+        run = run_fixture()
+        runtime = FakeRuntime(frozenset({RuntimeCapability.SEND_MESSAGE.value}))
+        context = object()
+        with (
+            patch.object(server, "_current_run_for_message", return_value=run),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+        ):
+            preview = server.mentat_run_message_preview_payload(run.id, "Stay focused")
+        self.assertEqual(preview["action"], "message")
+        with (
+            patch.object(server, "_current_run_for_message", return_value=run),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+        ):
+            result = server.mentat_confirm_run_message(run.id, "Stay focused", preview["confirmation_id"])
+        self.assertEqual(result["disposition"], "accepted")
+        self.assertEqual(runtime.message_calls, [(run.id, "Stay focused", context)])
+
+    def test_message_confirmation_rejects_changed_text_or_run(self):
+        run = run_fixture()
+        changed = replace(run, state_revision=5)
+        runtime = FakeRuntime(frozenset({RuntimeCapability.SEND_MESSAGE.value}))
+        context = object()
+        with (
+            patch.object(server, "_current_run_for_message", return_value=run),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+        ):
+            preview = server.mentat_run_message_preview_payload(run.id, "Stay focused")
+        with (
+            patch.object(server, "_current_run_for_message", side_effect=(run, changed)),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+            self.assertRaisesRegex(server.OrchestrationRunActionError, "run.confirmation_stale"),
+        ):
+            server.mentat_confirm_run_message(run.id, "Stay focused", preview["confirmation_id"])
+        with self.assertRaisesRegex(server.OrchestrationRunActionError, "run.message_invalid"):
+            server.mentat_run_message_preview_payload(run.id, "\x00")
+        self.assertEqual(runtime.message_calls, [])
+
+    def test_message_reports_partial_when_post_send_recheck_fails(self):
+        run = run_fixture()
+        runtime = FakeRuntime(frozenset({RuntimeCapability.SEND_MESSAGE.value}))
+        context = object()
+        with (
+            patch.object(server, "_current_run_for_message", return_value=run),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+        ):
+            preview = server.mentat_run_message_preview_payload(run.id, "Stay focused")
+        with (
+            patch.object(server, "_current_run_for_message", return_value=run),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+            patch.object(runtime, "get_status", side_effect=server.AgentRuntimeError("runtime.status_failed")),
+            self.assertRaisesRegex(server.OrchestrationRunActionError, "run.message_partial"),
+        ):
+            server.mentat_confirm_run_message(run.id, "Stay focused", preview["confirmation_id"])
+        self.assertEqual(runtime.message_calls, [(run.id, "Stay focused", context)])
     def test_stop_accepts_active_waiting_states(self):
         for status in ("waiting", "waiting_for_approval", "waiting_for_clarification"):
             with self.subTest(status=status), patch.object(

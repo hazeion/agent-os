@@ -404,6 +404,7 @@ AGENT_DERIVED_SESSIONS_LIMIT = 12
 AGENT_DERIVED_SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 AGENT_CONSOLE_RUN_LIMIT = 24
 AGENT_CONSOLE_PROMPT_LIMIT = 20_000
+RUN_MESSAGE_TEXT_LIMIT = 6_000
 REMOTE_CONTEXT_STAGE_TTL_SECONDS = 15 * 60
 REMOTE_CONTEXT_STAGE_LIMIT = 128
 REMOTE_CONTEXT_ITEM_LIMIT = 4_000
@@ -1998,6 +1999,108 @@ def mentat_confirm_run_stop(run_id: str, confirmation_id: object) -> dict:
         "action": "stop",
         "run_id": run.id,
         "disposition": "requested",
+    }
+
+
+def _normalized_run_message_text(value: object) -> str:
+    if not isinstance(value, str) or "\x00" in value:
+        raise OrchestrationRunActionError("run.message_invalid")
+    text = value.strip()
+    if not text or len(text) > RUN_MESSAGE_TEXT_LIMIT:
+        raise OrchestrationRunActionError("run.message_invalid")
+    return text
+
+
+def _run_message_confirmation(run: RunRecord, text: str) -> str:
+    """Bind one message digest to the exact durable Run state."""
+
+    parts = (
+        "mentat.run.message.v1",
+        run.id,
+        str(run.state_revision),
+        run.status,
+        run.dispatch_state,
+        run.runtime_type,
+        run.runtime_config_id or "",
+        run.runtime_binding_digest or "",
+        run.runtime_run_ref or "",
+        hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    )
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def _current_run_for_message(run_id: str) -> RunRecord:
+    run = _load_run_for_action(run_id)
+    if run.status != "running":
+        raise OrchestrationRunActionError("run.message_unavailable")
+    return run
+
+
+def mentat_run_message_preview_payload(run_id: str, text: object) -> dict:
+    """Return one exact confirmation for a bounded active-Run message."""
+
+    normalized_text = _normalized_run_message_text(text)
+    run = _current_run_for_message(run_id)
+    runtime, context = _run_stop_context(run)
+    try:
+        capabilities = runtime.capabilities_for_run(
+            run.runtime_run_ref or run.id, context=context
+        )
+    except AgentRuntimeError:
+        raise OrchestrationRunActionError("run.message_unavailable") from None
+    if RuntimeCapability.SEND_MESSAGE.value not in capabilities:
+        raise OrchestrationRunActionError("run.message_unavailable")
+    return {
+        "schema_version": 1,
+        "action": "message",
+        "run_id": run.id,
+        "requires_confirmation": True,
+        "confirmation_id": _run_message_confirmation(run, normalized_text),
+    }
+
+
+def mentat_confirm_run_message(
+    run_id: str, text: object, confirmation_id: object
+) -> dict:
+    """Send one exact previewed message and recheck its bound Run."""
+
+    normalized_text = _normalized_run_message_text(text)
+    if not isinstance(confirmation_id, str) or not re.fullmatch(r"[0-9a-f]{64}", confirmation_id):
+        raise OrchestrationRunActionError("run.confirmation_invalid")
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        preview = mentat_run_message_preview_payload(run_id, normalized_text)
+        if not hmac.compare_digest(confirmation_id, preview["confirmation_id"]):
+            raise OrchestrationRunActionError("run.confirmation_stale")
+        run = _current_run_for_message(run_id)
+        if not hmac.compare_digest(
+            confirmation_id, _run_message_confirmation(run, normalized_text)
+        ):
+            raise OrchestrationRunActionError("run.confirmation_stale")
+        runtime, context = _run_stop_context(run)
+        try:
+            runtime.send_message(
+                run.runtime_run_ref or run.id, normalized_text, context=context
+            )
+        except AgentRuntimeError:
+            raise OrchestrationRunActionError("run.message_failed") from None
+        try:
+            verified = runtime.get_status(run.runtime_run_ref or run.id, context=context)
+        except AgentRuntimeError:
+            raise OrchestrationRunActionError("run.message_partial") from None
+    if verified.status.value not in {
+        "running",
+        "waiting",
+        "completed",
+        "failed",
+        "stopped",
+        "interrupted",
+    }:
+        raise OrchestrationRunActionError("run.message_partial")
+    return {
+        "schema_version": 1,
+        "action": "message",
+        "run_id": run.id,
+        "disposition": "accepted",
     }
 
 
