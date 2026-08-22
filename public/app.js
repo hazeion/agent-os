@@ -1841,7 +1841,7 @@ function renderFocusTasks(tasks = []) {
         ${artifactNotice}
       </article>
     `;
-  }).join('') : '<div class="empty clear-skies">No planned or open work in this project scope.</div>';
+  }).join('') : '<div class="empty clear-skies home-focus-empty">No planned or open work in this project scope.</div>';
   const scope = `
     <div class="home-focus-scope">
       <label for="today-project-select">Project</label>
@@ -8014,3 +8014,4 @@ setView('today');
 refresh();
 startHermesProjectionStream();
 setInterval(refresh, REFRESH_MS);
+window.__MENTAT_READY__ = true;

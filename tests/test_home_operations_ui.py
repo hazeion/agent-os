@@ -50,7 +50,7 @@ class HomeOperationsUiTests(unittest.TestCase):
         self.assertIn("min-height: 430px", agents_css)
         mobile_start = CSS.index("@media (max-width: 900px)")
         mobile_rule_start = CSS.index(
-            ":root[data-ui-shell='emerald'] .home-focus-panel,",
+            ":root[data-ui-shell='emerald'] .home-focus-panel {",
             mobile_start,
         )
         mobile_rule = CSS[
@@ -60,10 +60,40 @@ class HomeOperationsUiTests(unittest.TestCase):
                 mobile_rule_start,
             )
         ]
-        self.assertIn(".home-focus-panel,", mobile_rule)
-        self.assertIn(".home-live-agents-panel,", mobile_rule)
+        self.assertIn(".home-focus-panel", mobile_rule)
         self.assertIn(".home-today-panel", mobile_rule)
-        self.assertIn("min-height: 0", mobile_rule)
+        self.assertIn("min-height: 570px", mobile_rule)
+        live_agents_mobile_start = CSS.index(
+            ":root[data-ui-shell='emerald'] .home-live-agents-panel {",
+            mobile_rule_start,
+        )
+        live_agents_mobile_rule = CSS[
+            live_agents_mobile_start
+            : CSS.index("}", live_agents_mobile_start) + 1
+        ]
+        self.assertIn("min-height: 315px", live_agents_mobile_rule)
+
+    def test_home_has_first_paint_skeleton_and_deferred_bootstrap_contract(self):
+        self.assertIn(
+            '<div class="empty home-focus-loading" aria-hidden="true">Preparing today\'s focus…</div>',
+            INDEX,
+        )
+        self.assertIn(
+            '<div class="empty home-schedule-empty" aria-hidden="true">Preparing today\'s schedule…</div>',
+            INDEX,
+        )
+        self.assertIn("window.__MENTAT_READY__ = false", INDEX)
+        self.assertIn("requestAnimationFrame", INDEX)
+        self.assertIn("setTimeout(boot, 250)", INDEX)
+        self.assertIn("window.addEventListener('unhandledrejection', showBootError)", INDEX)
+        self.assertIn("loadScript('/core.js?v=emerald-shell-4')", INDEX)
+        self.assertIn("loadScript('/app.js?v=emerald-shell-5')", INDEX)
+        self.assertIn("window.__MENTAT_READY__ = true", APP)
+        self.assertIn(
+            '<div class="empty clear-skies home-focus-empty">No planned or open work in this project scope.</div>',
+            APP,
+        )
+        self.assertNotIn('class="empty clear-skies home-focus-loading" role="status"', APP)
 
     def test_home_refresh_loads_real_operational_sources_and_degrades_optional_inventory(self):
         refresh = self.app_block("async function refresh()", "async function runMessageSearchRequest")

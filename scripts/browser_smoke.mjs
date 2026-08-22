@@ -385,6 +385,19 @@ async function main() {
     await client.call('Page.navigate', { url: baseUrl });
     await waitFor(() => client.eval('document.readyState === "complete"'), 'page load');
     await waitFor(() => client.eval('document.querySelector("#view-today.active") !== null'), 'Today View default');
+    await waitFor(() => client.eval('window.__MENTAT_READY__ === true'), 'Mentat app bootstrap');
+    const logoTransfer = await client.eval(`(() => {
+      const entries = performance.getEntriesByType('resource').filter((entry) => {
+        try { return new URL(entry.name).pathname === '/mentat-mark-emerald.png'; } catch { return false; }
+      });
+      return {
+        entries: entries.length,
+        transferred: entries.filter((entry) => Number(entry.transferSize || 0) > 0).length,
+      };
+    })()`);
+    if (logoTransfer.transferred > 1) {
+      throw new Error(`Shared logo transferred more than once: ${JSON.stringify(logoTransfer)}`);
+    }
 
     const shellDefaults = await client.eval(`(() => {
       const ids = [...document.querySelectorAll('[id]')].map((item) => item.id);

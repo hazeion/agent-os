@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from email.message import Message
 from io import BytesIO
+import gzip
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -350,6 +351,112 @@ class RequestBoundaryTests(unittest.TestCase):
         instance.send_error.assert_not_called()
         instance.log_internal_error.assert_called_once_with("static asset transmission", failure)
         self.assertTrue(instance.close_connection)
+
+    def test_static_html_is_gzip_encoded_and_keeps_root_private(self):
+        with TemporaryDirectory() as tmpdir:
+            public = Path(tmpdir)
+            original = ("<!doctype html><title>Mentat</title>" + (" content" * 200)).encode("utf-8")
+            (public / "index.html").write_bytes(original)
+            instance = self.handler(
+                headers=self.local_headers(**{"Accept-Encoding": "br, gzip"})
+            )
+            instance.path = "/"
+            instance.wfile = BytesIO()
+            instance.send_response = Mock()
+            captured = {}
+            instance.send_header = lambda name, value: captured.__setitem__(name, value)
+            instance.end_headers = Mock()
+
+            with patch.object(server, "PUBLIC_DIR", public):
+                instance.do_GET()
+
+        self.assertEqual(instance.send_response.call_args.args, (200,))
+        self.assertEqual(captured["Content-Encoding"], "gzip")
+        self.assertEqual(captured["Vary"], "Accept-Encoding")
+        self.assertEqual(captured["Cache-Control"], "no-store")
+        self.assertEqual(gzip.decompress(instance.wfile.getvalue()), original)
+
+    def test_versioned_static_assets_are_gzip_encoded_and_immutable(self):
+        with TemporaryDirectory() as tmpdir:
+            public = Path(tmpdir)
+            original = ("body { color: #0f0; }" * 100).encode("utf-8")
+            (public / "styles.css").write_bytes(original)
+            instance = self.handler(
+                headers=self.local_headers(**{"Accept-Encoding": "gzip"})
+            )
+            instance.path = "/styles.css?v=performance-1"
+            instance.wfile = BytesIO()
+            instance.send_response = Mock()
+            captured = {}
+            instance.send_header = lambda name, value: captured.__setitem__(name, value)
+            instance.end_headers = Mock()
+
+            with patch.object(server, "PUBLIC_DIR", public):
+                instance.do_GET()
+
+        self.assertEqual(captured["Content-Type"], "text/css")
+        self.assertEqual(captured["Content-Encoding"], "gzip")
+        self.assertEqual(captured["Cache-Control"], "public, max-age=31536000, immutable")
+        self.assertEqual(gzip.decompress(instance.wfile.getvalue()), original)
+
+    def test_static_identity_is_sent_when_gzip_is_explicitly_disabled(self):
+        with TemporaryDirectory() as tmpdir:
+            public = Path(tmpdir)
+            original = ("<!doctype html><title>Mentat</title>" + (" content" * 200)).encode("utf-8")
+            (public / "index.html").write_bytes(original)
+            instance = self.handler(
+                headers=self.local_headers(**{"Accept-Encoding": "gzip;q=0, br;q=1"})
+            )
+            instance.path = "/"
+            instance.wfile = BytesIO()
+            instance.send_response = Mock()
+            captured = {}
+            instance.send_header = lambda name, value: captured.__setitem__(name, value)
+            instance.end_headers = Mock()
+
+            with patch.object(server, "PUBLIC_DIR", public):
+                instance.do_GET()
+
+        self.assertNotIn("Content-Encoding", captured)
+        self.assertEqual(instance.wfile.getvalue(), original)
+
+    def test_static_compression_failure_fails_closed(self):
+        with TemporaryDirectory() as tmpdir:
+            public = Path(tmpdir)
+            (public / "index.html").write_bytes(b"<!doctype html>" + (b" content" * 200))
+            instance = self.handler(headers=self.local_headers(**{"Accept-Encoding": "gzip"}))
+            instance.path = "/"
+            instance.send_response = Mock()
+            instance.send_error = Mock()
+            instance.log_internal_error = Mock()
+
+            with patch.object(server, "PUBLIC_DIR", public), patch.object(
+                server.gzip, "compress", side_effect=OSError("compression failed")
+            ):
+                instance.do_GET()
+
+        instance.send_error.assert_called_once_with(500, "Static asset could not be loaded")
+        instance.log_internal_error.assert_called_once_with(
+            "static asset compression", instance.log_internal_error.call_args.args[1]
+        )
+
+    def test_static_rejects_when_identity_and_gzip_are_both_unacceptable(self):
+        with TemporaryDirectory() as tmpdir:
+            public = Path(tmpdir)
+            (public / "index.html").write_bytes(b"<!doctype html>")
+            instance = self.handler(
+                headers=self.local_headers(
+                    **{"Accept-Encoding": "gzip;q=0, identity;q=0"}
+                )
+            )
+            instance.path = "/"
+            instance.send_response = Mock()
+            instance.send_error = Mock()
+
+            with patch.object(server, "PUBLIC_DIR", public):
+                instance.do_GET()
+
+        instance.send_error.assert_called_once_with(406, "No acceptable content encoding")
 
     def test_unexpected_api_failure_is_logged_but_client_response_stays_generic(self):
         instance = self.handler(headers=self.local_headers())

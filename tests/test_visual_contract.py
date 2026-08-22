@@ -343,9 +343,10 @@ class VisualContractTests(unittest.TestCase):
         self.assertGreaterEqual(height, 256)
         self.assertEqual(color_type, 6)
         self.assertTrue(has_transparency)
-        self.assertIn('src="/mentat-mark-emerald.png"', INDEX)
+        self.assertIn('src="/mentat-mark-emerald.png?v=emerald-shell-1"', INDEX)
+        self.assertEqual(INDEX.count('/mentat-mark-emerald.png?v=emerald-shell-1'), 2)
         self.assertIn(
-            'rel="icon" type="image/png" href="/mentat-mark-emerald.png"',
+            'rel="icon" type="image/png" href="/mentat-mark-emerald.png?v=emerald-shell-1"',
             INDEX,
         )
         self.assertNotIn('class="brain-orb"', header_block)
@@ -768,9 +769,9 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("document.documentElement.dataset.uiShell = 'emerald'", head_block)
         self.assertIn("document.documentElement.dataset.contrast", head_block)
         self.assertIn("prefers-contrast: more", head_block)
-        self.assertIn('/styles.css?v=emerald-shell-3', INDEX)
-        self.assertIn('/core.js?v=emerald-shell-3', INDEX)
-        self.assertIn('/app.js?v=emerald-shell-4', INDEX)
+        self.assertIn('/styles.css?v=emerald-shell-4', INDEX)
+        self.assertIn("loadScript('/core.js?v=emerald-shell-4')", INDEX)
+        self.assertIn("loadScript('/app.js?v=emerald-shell-5')", INDEX)
         self.assertNotIn('compact-dark-board-1', INDEX)
         self.assertIn("applyTheme(saved || document.documentElement.dataset.theme || THEMES[0].id)", APP_JS)
 

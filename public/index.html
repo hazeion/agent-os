@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="Mentat is a local-first planning and operations dashboard for Hermes-powered workflows." />
   <title>Mentat</title>
-  <link rel="icon" type="image/png" href="/mentat-mark-emerald.png" />
+  <link rel="icon" type="image/png" href="/mentat-mark-emerald.png?v=emerald-shell-1" />
   <script>
     (() => {
       const themeKey = 'mentat-theme';
@@ -38,7 +38,7 @@
         : 'standard';
     })();
   </script>
-  <link rel="stylesheet" href="/styles.css?v=emerald-shell-3" />
+  <link rel="stylesheet" href="/styles.css?v=emerald-shell-4" />
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -48,7 +48,7 @@
     <aside class="sidebar" id="mentat-sidebar" aria-label="Mentat navigation">
       <div class="brand-block">
         <div class="brand-mark mentat-brand" role="img" aria-label="Mentat portrait logo">
-          <img class="mentat-brand-image" src="/mentat-mark-emerald.png" alt="" aria-hidden="true" />
+          <img class="mentat-brand-image" src="/mentat-mark-emerald.png?v=emerald-shell-1" alt="" aria-hidden="true" />
         </div>
         <div>
           <div class="brand-name" id="brand-name">Mentat</div>
@@ -173,7 +173,7 @@
             </div>
             <div id="focus-scope" class="home-focus-scope-slot"></div>
             <div class="home-focus-scroll-shell" id="focus-task-scroll-shell">
-              <div id="focus-task-list" class="home-focus-list" tabindex="0" aria-label="Scrollable open tasks"></div>
+              <div id="focus-task-list" class="home-focus-list" tabindex="0" aria-label="Scrollable open tasks"><div class="empty home-focus-loading" aria-hidden="true">Preparing today's focus…</div></div>
               <span class="home-focus-scrollbar" id="focus-task-scrollbar" role="scrollbar" tabindex="0" aria-controls="focus-task-list" aria-label="Scroll open tasks" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="focus-task-scroll-thumb" class="home-focus-scroll-thumb"></span></span>
             </div>
             <div id="reminder-list" class="reminder-list"></div>
@@ -240,7 +240,7 @@
                 <button class="mini-button" type="button" data-home-open-view="calendar">Open calendar</button>
               </div>
             </div>
-            <div id="calendar-list" class="home-schedule" aria-live="polite"></div>
+            <div id="calendar-list" class="home-schedule" aria-live="polite"><div class="empty home-schedule-empty" aria-hidden="true">Preparing today's schedule…</div></div>
           </section>
 
           <div class="home-context-stack">
@@ -1008,7 +1008,39 @@
     </div>
   </dialog>
 
-  <script src="/core.js?v=emerald-shell-3"></script>
-  <script src="/app.js?v=emerald-shell-4"></script>
+  <script>
+    window.__MENTAT_READY__ = false;
+    (() => {
+      const loadScript = (src) => new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.body.append(script);
+      });
+      let booting = false;
+      const showBootError = () => {
+        if (!booting || window.__MENTAT_READY__ === true) return;
+        booting = false;
+        const status = document.querySelector('.home-focus-loading');
+        if (status) {
+          status.removeAttribute('aria-hidden');
+          status.setAttribute('role', 'alert');
+          status.textContent = 'Mentat could not finish loading. Refresh to retry.';
+        }
+      };
+      window.addEventListener('error', showBootError);
+      window.addEventListener('unhandledrejection', showBootError);
+      const boot = () => {
+        booting = true;
+        return loadScript('/core.js?v=emerald-shell-4')
+          .then(() => loadScript('/app.js?v=emerald-shell-5'))
+          .catch(showBootError);
+      };
+      const schedule = () => window.setTimeout(boot, 250);
+      if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(schedule);
+      else schedule();
+    })();
+  </script>
 </body>
 </html>

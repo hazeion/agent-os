@@ -12,10 +12,17 @@ All notable changes to Mentat.
   compatibility/recovery workflows.
 - Removed `tasks.json` from the generic project-owned write allowlist without
   changing the explicit stopped-server export path or public Task responses.
+- Hardened static browser delivery with deterministic gzip responses, versioned
+  immutable cache headers for fingerprinted assets, and a single shared
+  versioned logo URL.
+- Added a first-paint Home focus and schedule state, stable mobile panel
+  geometry, and deferred ordered loading for the core and application bundles.
 
 ### Documentation
 - Recorded Slice 1C-C as complete and Slice 1C-D as the active pivot slice in
   the implementation roadmap and data-layout contract.
+- Added request-boundary, Home UI, and browser-bootstrap regression coverage for
+  the performance hardening contract.
 
 ## 2026-08-18
 

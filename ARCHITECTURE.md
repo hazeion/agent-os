@@ -892,6 +892,18 @@ runtime. Mentat never deletes profile directories or their contents directly.
 The Agent Creator uses a compact step-progress indicator instead of status-pill
 controls; skill choices and review details remain explicit form controls.
 
+## Static browser delivery
+
+Mentat's loopback static server may gzip sufficiently large HTML, CSS,
+JavaScript, JSON, and SVG responses when the browser advertises gzip. It keeps
+the root document private and non-cacheable, while versioned asset URLs receive
+long-lived immutable caching; unversioned assets receive bounded public
+caching. Compressed responses advertise `Vary: Accept-Encoding`, and clients
+without gzip support receive the original bytes. The Home document includes
+stable first-paint placeholders for asynchronously populated panels and loads
+the ordered core/application bundles after the initial frame. This delivery
+optimization does not change API, Hermes, or local-only boundaries.
+
 After creation, the operator may explicitly test the selected profile in a new
 Agent Console identity-check session or begin creating and assigning its first
 task. The same actions appear in Managed Agents. Provider/model mutation remains

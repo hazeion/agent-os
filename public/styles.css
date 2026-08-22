@@ -3713,6 +3713,15 @@ code { font-family: var(--mono); color: var(--accent); }
   min-height: 430px;
 }
 
+:root[data-ui-shell='emerald'] .home-focus-loading,
+:root[data-ui-shell='emerald'] .home-focus-empty {
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font: 650 .72rem/1.4 var(--mono);
+}
+
 :root[data-ui-shell='emerald'] #today-active-work-panel.home-focus-panel {
   grid-area: focus;
 }
@@ -4753,10 +4762,16 @@ code { font-family: var(--mono); color: var(--accent); }
     gap: 10px;
   }
 
-  :root[data-ui-shell='emerald'] .home-focus-panel,
-  :root[data-ui-shell='emerald'] .home-live-agents-panel,
+  :root[data-ui-shell='emerald'] .home-focus-panel {
+    min-height: 570px;
+  }
+
   :root[data-ui-shell='emerald'] .home-today-panel {
-    min-height: 0;
+    min-height: 430px;
+  }
+
+  :root[data-ui-shell='emerald'] .home-live-agents-panel {
+    min-height: 315px;
   }
 
   :root[data-ui-shell='emerald'] .home-context-stack {

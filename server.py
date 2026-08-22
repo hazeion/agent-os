@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import ctypes
 from copy import deepcopy
+import gzip
 import hashlib
 import json
 import mimetypes
@@ -10484,6 +10485,54 @@ class Handler(BaseHTTPRequestHandler):
     def local_api_request_is_allowed(self) -> bool:
         return self.control_request_is_local() and self.request_host_is_local() and self.request_origin_is_local()
 
+    def request_accepts_gzip(self) -> bool:
+        header = str(self.headers.get("Accept-Encoding") or "")
+        wildcard_quality = None
+        for raw_encoding in header.split(","):
+            parts = [part.strip() for part in raw_encoding.split(";") if part.strip()]
+            if not parts:
+                continue
+            coding = parts[0].lower()
+            quality = 1.0
+            for parameter in parts[1:]:
+                name, separator, value = parameter.partition("=")
+                if name.strip().lower() != "q" or not separator:
+                    continue
+                try:
+                    quality = max(0.0, min(1.0, float(value.strip())))
+                except ValueError:
+                    quality = 0.0
+            if coding == "gzip":
+                return quality > 0
+            if coding == "*":
+                wildcard_quality = quality
+        return bool(wildcard_quality and wildcard_quality > 0)
+
+    def request_accepts_identity(self) -> bool:
+        header = str(self.headers.get("Accept-Encoding") or "")
+        if not header.strip():
+            return True
+        wildcard_quality = None
+        for raw_encoding in header.split(","):
+            parts = [part.strip() for part in raw_encoding.split(";") if part.strip()]
+            if not parts:
+                continue
+            coding = parts[0].lower()
+            quality = 1.0
+            for parameter in parts[1:]:
+                name, separator, value = parameter.partition("=")
+                if name.strip().lower() != "q" or not separator:
+                    continue
+                try:
+                    quality = max(0.0, min(1.0, float(value.strip())))
+                except ValueError:
+                    quality = 0.0
+            if coding == "identity":
+                return quality > 0
+            if coding == "*":
+                wildcard_quality = quality
+        return wildcard_quality is None or wildcard_quality > 0
+
     def send_static(self, path: str):
         parsed = urlparse(path)
         route_path = parsed.path
@@ -10506,10 +10555,43 @@ class Handler(BaseHTTPRequestHandler):
             self.log_internal_error("static asset preparation", exc)
             self.send_error_once(500, "Static asset could not be loaded")
             return
+        compressible = content_type in {
+            "text/html",
+            "text/css",
+            "application/javascript",
+            "text/javascript",
+            "application/json",
+            "image/svg+xml",
+        }
+        accepts_gzip = self.request_accepts_gzip()
+        if not accepts_gzip and not self.request_accepts_identity():
+            self.send_error_once(406, "No acceptable content encoding")
+            return
+        encoded = False
+        if compressible and accepts_gzip and len(body) >= 512:
+            try:
+                body = gzip.compress(body, compresslevel=6, mtime=0)
+                encoded = True
+            except Exception as exc:
+                self.log_internal_error("static asset compression", exc)
+                self.send_error_once(500, "Static asset could not be loaded")
+                return
+        has_version = bool(parse_qs(parsed.query).get("v"))
+        cache_control = (
+            "no-store"
+            if route_path == "/"
+            else "public, max-age=31536000, immutable"
+            if has_version
+            else "public, max-age=3600"
+        )
         try:
             self.send_response(200)
             self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache_control)
+            if compressible:
+                self.send_header("Vary", "Accept-Encoding")
+            if encoded:
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("X-Content-Type-Options", "nosniff")
