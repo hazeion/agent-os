@@ -76,7 +76,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn('PIPX_BIN_DIR="$smoke_root/bin"', workflow)
         self.assertIn("Installed Mentat remained healthy after stop", workflow)
         self.assertIn("MENTAT_WEB_BASE_URL=http://127.0.0.1:8894", workflow)
-        self.assertIn("pipx-web-foundation-smoke-runtime", workflow)
+        self.assertIn('MENTAT_WEB_BROWSER_RUNTIME_DIR="$RUNNER_TEMP/web-foundation-smoke-runtime"', workflow)
         self.assertIn("node scripts/browser_smoke.mjs", workflow)
         self.assertIn("npm --prefix web ci --ignore-scripts", workflow)
         self.assertIn("npm --prefix web run check", workflow)

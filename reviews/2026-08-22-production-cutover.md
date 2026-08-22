@@ -181,3 +181,9 @@ test-only key `PROVIDER_SECRET`; no credential or runtime behavior was
 involved. The test now uses the neutral `UNRELATED_PARENT_VALUE` marker. The
 targeted test suite passes locally; GitHub remains the authoritative scanner
 because the local `detect-secrets` module is unavailable.
+
+The replacement CI run passed the browser and secret-scan gates, then the
+installed-package smoke stopped before Chromium launched because its private
+runtime directory did not have the exact name the smoke script requires. The
+workflow now uses `web-foundation-smoke-runtime`, and the CI contract test
+asserts that exact value.

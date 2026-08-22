@@ -79,7 +79,7 @@ jobs:
           CHROME_PATH=/usr/bin/google-chrome \
             MENTAT_WEB_BASE_URL=http://127.0.0.1:8894 \
             MENTAT_WEB_BROWSER_DEBUG_PORT=9337 \
-            MENTAT_WEB_BROWSER_RUNTIME_DIR="$RUNNER_TEMP/pipx-web-foundation-smoke-runtime" \
+            MENTAT_WEB_BROWSER_RUNTIME_DIR="$RUNNER_TEMP/web-foundation-smoke-runtime" \
             node scripts/web_foundation_smoke.mjs
           "$PIPX_BIN_DIR/mentat" stop --data-dir "$smoke_root/data" --port 8894
           wait "$launcher_pid" || true
