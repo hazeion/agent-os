@@ -98,6 +98,12 @@ Python proxy.
 - The strengthened smoke check also found that a focused compact navigation
   link lost its tooltip when the sidebar scrolled it into view. The runtime now
   repositions that focused tooltip after sidebar scrolling.
+- CI found that a clean preview had no prepared Task authority. The bridge
+  remains read-only; CI now prepares its isolated data root through the normal
+  Python server lifecycle before starting the bridge. A bounded foreground
+  process receives `SIGINT`, releases its lifecycle reservation cleanly, and
+  proves the authority database exists before the bridge starts; a short
+  forced-stop window prevents a hung cleanup from consuming the job timeout.
 
 ## Verification
 
@@ -106,7 +112,7 @@ Python proxy.
 | Command or action | Environment | Exit/result | Pass/fail/skip counts | Notes |
 | --- | --- | --- | --- | --- |
 | `npm --prefix web run check` | macOS source checkout | 0 | 19 pass | Lint, typecheck, and Node contracts. |
-| `python3 -m unittest tests.test_mentat_local_bridge tests.test_agent_runtime_architecture -v` | macOS host checkout | 0 | 16 pass | Fixed Task bridge, safe projection, corrupt-store mapping, and completed-route plan contract. |
+| `python3 -m unittest tests.test_mentat_local_bridge tests.test_node_runtime_foundation tests.test_ci_quality_gate -v` | macOS host checkout | 0 | 25 pass | Fixed Task bridge, read-only authority guard, and safe CI preview lifecycle. |
 | Webpack production build | macOS source checkout | 0 | Pass | Static `/tasks` and dynamic `/api/tasks` emitted. |
 | Production browser smoke | `127.0.0.1:8890` | 0 | Pass | Real Task list, refresh, responsive layout, and three failure states. |
 | Six-run Lighthouse gate | `127.0.0.1:8890` | 0 | 6/6 pass | All desktop/mobile categories 100; desktop LCP 215–236ms and mobile LCP 1.038–1.041s. |
@@ -132,6 +138,8 @@ Python proxy.
   smoke coverage, documentation, and final compact-navigation correction.
 - Both reviews were read-only and independent. The final pass followed the
   corrupt-store regression assertion and compact-navigation correction.
+- The clean-checkout CI correction received a separate two-reviewer pass. Both
+  reviewers accepted the final foreground bounded-bootstrap design.
 
 ### Reviewer A — correctness and safety
 
@@ -161,6 +169,9 @@ Python proxy.
 | Node bridge response boundaries were incomplete. | B unique | Accepted; final pass clean. | Node contracts cover exact legacy 404 and oversized streamed body. | Added exact 404 mapping and bounded stream reader. |
 | Safe UI details and long values needed treatment. | A/B unique | Accepted; final pass clean. | Production smoke passed without overflow. | Rendered all approved safe fields and added wrapping. |
 | Compact keyboard tooltip hid while sidebar scrolled. | Browser-smoke finding | Both final reviewers found no regression. | Full production smoke confirms Runs tooltip stays visible. | Reposition focused tooltip on sidebar scroll; wait for runtime-ready before the check. |
+| Clean CI preview had no Task authority. | CI failure | Accepted after two reviews. | Manual isolated lifecycle check and workflow contracts pass. | Bootstrap a temporary data root through the normal Python server before preview. |
+| Bridge bootstrap attempted authority mutation. | A/B corroborated | Accepted; final pass clean. | Bridge test proves the Task projection never invokes authority setup. | Removed the unsafe bridge startup call; kept the bridge read-only. |
+| Background bootstrap shutdown could hang or skip cleanup. | A/B unique | Accepted; final pass clean. | Workflow contracts cover bounded foreground bootstrap. | Use foreground `timeout` with `SIGINT` and a short forced-stop fallback. |
 
 ## Documentation and publication
 
@@ -168,6 +179,8 @@ Python proxy.
   redaction boundary.
 - Updated the implementation plan to mark Slice 2B-B complete and record its
   explicit scope.
+- Updated the required Node quality gate to prepare its isolated Task authority
+  through the normal Python lifecycle before browser and Lighthouse checks.
 - Publication scope excludes user-modified `data/projects.json` and
   `data/tasks.json`, plus unrelated untracked local files.
 

@@ -122,6 +122,12 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn("node-foundation-lighthouse-failure", quality)
         self.assertIn("npm --prefix web ci --ignore-scripts", quality)
         self.assertIn("npm --prefix web run lighthouse:gate", quality)
+        self.assertIn('preview_data_dir="$RUNNER_TEMP/mentat-web-preview-data"', quality)
+        self.assertIn(
+            'timeout --preserve-status --signal=INT --kill-after=10s 10s env MENTAT_DATA_DIR="$preview_data_dir" python server.py --port "$bootstrap_port"',
+            quality,
+        )
+        self.assertIn('test -f "$preview_data_dir/private/console/mentat.sqlite3"', quality)
         self.assertIn("python scripts/mentat_web_preview.py --port 8896", quality)
         self.assertIn("python scripts/verify_web_preview_lifecycle.py", quality)
         self.assertIn("WEB_RESULT: ${{ needs.web-foundation.result }}", quality)
