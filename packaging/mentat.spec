@@ -28,6 +28,10 @@ PUBLIC_ASSETS = (
 )
 datas = [(str(ROOT / "public" / name), "public") for name in PUBLIC_ASSETS]
 datas.extend((str(ROOT / "data" / name), "data") for name in PUBLIC_SEEDS)
+WEB_STANDALONE = ROOT / "web" / ".next" / "standalone"
+if not (WEB_STANDALONE / "server.js").is_file():
+    raise SystemExit("Missing web/.next/standalone/server.js; run npm --prefix web run build before native packaging.")
+datas.append((str(WEB_STANDALONE), "web"))
 
 analysis = Analysis(
     [str(ROOT / "packaging" / "mentat_native.py")],

@@ -19,8 +19,11 @@ python -m pip install --require-hashes -r requirements-native.lock
 python scripts/build_native.py
 ```
 
-The bundle contains the Python app, the `public/` compatibility interface, and
-public seed data. It does not include the optional Next.js preview or Node yet.
+The bundle contains the prebuilt Node dashboard, its private Python bridge,
+the `public/` rollback interface, and public seed data. Node 24.19 or newer
+must be installed on the computer. The installed launcher never downloads or
+builds web dependencies. Use `mentat start --legacy-ui` only to temporarily
+return to the compatibility interface.
 Operator data remains in Mentat's platform data directory and survives app
 removal.
 

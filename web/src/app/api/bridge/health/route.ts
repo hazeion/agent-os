@@ -13,13 +13,14 @@ const RESPONSE_HEADERS = {
 
 export async function GET() {
   try {
-    return Response.json(await fetchBridgeHealth(), {
+    return Response.json({ gateway: "mentat-node-gateway", ...await fetchBridgeHealth() }, {
       headers: RESPONSE_HEADERS,
       status: 200,
     });
   } catch {
     return Response.json(
       {
+        gateway: "mentat-node-gateway",
         runtime: "python",
         schema_version: 1,
         service: "mentat-local-bridge",

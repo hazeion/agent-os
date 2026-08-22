@@ -79,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Open the dashboard after the loopback server is ready.",
     )
+    start.add_argument(
+        "--legacy-ui",
+        action="store_true",
+        help="Start the compatibility interface instead of the Node dashboard.",
+    )
 
     restore = commands.add_parser("restore", help="Preview or confirm a validated restore.")
     _runtime_arguments(restore)
@@ -202,7 +207,27 @@ def run_lifecycle(command: str, args: argparse.Namespace) -> int:
     return mentat_lifecycle.main([command, "--", *_forward_runtime_arguments(args)])
 
 
-def run_start(args: argparse.Namespace) -> int:
+def _web_runtime_environment(args: argparse.Namespace) -> dict[str, str]:
+    """Pass selected runtime settings to the private bridge, never to Node APIs."""
+
+    environment: dict[str, str] = {}
+    values = {
+        "MENTAT_CONFIG": getattr(args, "config_path", None),
+        "MENTAT_DATA_DIR": getattr(args, "data_dir", None),
+        "MENTAT_PUBLIC_DIR": getattr(args, "public_dir", None),
+        "HERMES_HOME": getattr(args, "hermes_home", None),
+        "OBSIDIAN_VAULT_PATH": getattr(args, "obsidian_vault", None),
+    }
+    for name, value in values.items():
+        if value is not None:
+            environment[name] = str(value)
+    environment["MENTAT_LAUNCHER_PID"] = str(os.getpid())
+    return environment
+
+
+def _legacy_start(args: argparse.Namespace) -> int:
+    """Keep the prior server path available for an explicit rollback."""
+
     preflight = run_lifecycle("preflight", args)
     if preflight != 0:
         return preflight
@@ -246,6 +271,29 @@ def run_start(args: argparse.Namespace) -> int:
         except subprocess.TimeoutExpired:
             process.kill()
         return 130
+
+
+def run_start(args: argparse.Namespace) -> int:
+    if getattr(args, "legacy_ui", False):
+        return _legacy_start(args)
+
+    preflight = run_lifecycle("preflight", args)
+    if preflight != 0:
+        return preflight
+    from .web_runtime import WebRuntimeError, run_gateway
+
+    _runtime_config, config = _load_config(args)
+    try:
+        return run_gateway(
+            host=config.host,
+            port=config.port,
+            data_dir=config.data_dir,
+            runtime_environment=_web_runtime_environment(args),
+            open_browser=args.open_browser,
+        )
+    except WebRuntimeError as exc:
+        print(f"Mentat could not start the Node dashboard: {exc}", file=sys.stderr)
+        return 2
 
 
 def run_doctor(args: argparse.Namespace) -> int:

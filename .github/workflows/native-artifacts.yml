@@ -54,6 +54,16 @@ jobs:
       - name: Install pinned native build dependencies
         run: python -m pip install --require-hashes -r requirements-native.lock
 
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install the frozen web dependency tree
+        run: npm --prefix web ci --ignore-scripts
+
       - name: Verify pinned Windows installer compiler
         if: runner.os == 'Windows'
         shell: pwsh
@@ -78,6 +88,7 @@ jobs:
           test -d dist/Mentat.app
           test "$(find dist -maxdepth 1 -name "Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-unsigned.pkg" -type f | wc -l | tr -d ' ')" = 1
           test -f dist/Mentat.app/Contents/Resources/public/index.html
+          test -f dist/Mentat.app/Contents/Resources/web/server.js
           test -f dist/Mentat.app/Contents/Resources/data/tasks.json
           test ! -e dist/Mentat.app/Contents/Resources/data/private
           test ! -e dist/Mentat.app/Contents/Resources/data/runtime
@@ -112,15 +123,15 @@ jobs:
           /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8896 >"$RUNNER_TEMP/mentat-native-upgrade.log" 2>&1 &
           upgraded_launcher_pid=$!
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8896/api/health >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then
               break
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8896/api/health >/dev/null
+          curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null
           /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8896
           wait "$upgraded_launcher_pid" || true
-          if curl --fail --silent http://127.0.0.1:8896/api/health >/dev/null; then
+          if curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then
             echo 'Mentat remained healthy after stop' >&2
             exit 1
           fi
@@ -139,6 +150,7 @@ jobs:
           if (-not (Test-Path 'dist/Mentat/mentat.exe')) { throw 'Mentat console CLI missing' }
           if (-not (Test-Path 'dist/installer/Mentat-*-windows-x64.exe')) { throw 'Windows installer missing' }
           if (-not (Test-Path 'dist/Mentat/_internal/public/index.html')) { throw 'Static UI missing' }
+          if (-not (Test-Path 'dist/Mentat/_internal/web/server.js')) { throw 'Node web runtime missing' }
           if (-not (Test-Path 'dist/Mentat/_internal/data/tasks.json')) { throw 'Public seed data missing' }
           if (Test-Path 'dist/Mentat/_internal/data/private') { throw 'Private data entered artifact' }
           if (Test-Path 'dist/Mentat/_internal/data/runtime') { throw 'Runtime data entered artifact' }
@@ -171,7 +183,7 @@ jobs:
           $upgradedHealthy = $false
           for ($attempt = 0; $attempt -lt 30; $attempt++) {
             try {
-              Invoke-RestMethod -Uri 'http://127.0.0.1:8896/api/health' | Out-Null
+              Invoke-RestMethod -Uri 'http://127.0.0.1:8896/api/bridge/health' | Out-Null
               $upgradedHealthy = $true
               break
             } catch {

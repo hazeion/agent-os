@@ -11,6 +11,10 @@ def native_main() -> int:
     if os.environ.pop("MENTAT_NATIVE_SERVER", "") == "1":
         runpy.run_module("server", run_name="__main__")
         return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "--mentat-private-bridge":
+        sys.argv = [sys.argv[0], *sys.argv[2:]]
+        runpy.run_module("mentat.local_bridge", run_name="__main__")
+        return 0
     arguments = sys.argv[1:]
     return main(arguments if arguments else ["start", "--open-browser"])
 

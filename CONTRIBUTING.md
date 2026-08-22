@@ -21,8 +21,7 @@ node --check public/app.js
 python -m unittest discover -s tests -v
 ```
 
-The files in `public/` are the current compatibility interface. Keep its tests
-green while the Next.js app is being built.
+The files in `public/` are the rollback interface. Keep their tests green.
 
 ## Check web changes
 
@@ -32,15 +31,15 @@ Changes under `web/` need Node 24.19 or newer within Node 24.
 npm --prefix web ci --ignore-scripts
 npm --prefix web run check
 npm --prefix web run build
-python scripts/mentat_web_preview.py
+./run.sh
 ```
 
-Open [http://localhost:8890](http://localhost:8890). Check the page at desktop
+Open [http://localhost:8888](http://localhost:8888). Check the page at desktop
 and mobile widths, then stop the preview with Ctrl+C.
 
-The production preview must run through `scripts/mentat_web_preview.py`. The web
-package does not provide `npm start` because the supervisor owns the Node and
-Python processes.
+The production dashboard must run through `./run.sh` (or `run.bat`). The web
+package does not provide `npm start` because the supervisor owns Node and
+Python processes. Use `--legacy-ui` only when checking rollback.
 
 ## Run the Lighthouse gate
 

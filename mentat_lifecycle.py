@@ -21,6 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent
 MENTAT_COMMAND_PATHS = {
     str((BASE_DIR / "server.py").resolve()).lower().replace("\\", "/"),
     str((BASE_DIR / "mentat_lifecycle.py").resolve()).lower().replace("\\", "/"),
+    str((BASE_DIR / "mentat" / "web_runtime.py").resolve()).lower().replace("\\", "/"),
 }
 
 
@@ -171,6 +172,15 @@ def looks_like_mentat_overview(payload) -> bool:
     )
 
 
+def looks_like_mentat_gateway_health(payload) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get("status") == "ready"
+        and payload.get("gateway") == "mentat-node-gateway"
+        and payload.get("service") == "mentat-local-bridge"
+    )
+
+
 def normalized_listener_host(local_address: str, port: int | None = None) -> str:
     """Return the address portion of an OS listener endpoint.
 
@@ -201,14 +211,17 @@ def normalized_listener_host(local_address: str, port: int | None = None) -> str
 def probe_mentat(local_address: str, port: int, timeout: float = 0.6) -> bool:
     host = normalized_listener_host(local_address, port)
     display_host = f"[{host.replace('%', '%25')}]" if ":" in host else host
-    try:
-        with urlopen(f"http://{display_host}:{port}/api/overview", timeout=timeout) as response:
-            if response.status != 200:
-                return False
-            payload = json.load(response)
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
-        return False
-    return looks_like_mentat_overview(payload)
+    for path, predicate in (
+        ("/api/overview", looks_like_mentat_overview),
+        ("/api/bridge/health", looks_like_mentat_gateway_health),
+    ):
+        try:
+            with urlopen(f"http://{display_host}:{port}{path}", timeout=timeout) as response:
+                if response.status == 200 and predicate(json.load(response)):
+                    return True
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+            continue
+    return False
 
 
 def process_commandline(pid: int) -> str:
@@ -252,11 +265,20 @@ def looks_like_mentat_commandline(commandline: str) -> bool:
     )
 
 
+def commandline_contains_exact_path(commandline: str, expected_path: str) -> bool:
+    text = (commandline or "").strip().lower().replace("\\", "/")
+    expected = str(expected_path or "").strip().lower().replace("\\", "/")
+    if not text or not expected or re.fullmatch(r"(?:/|[a-z]:/).+", expected) is None:
+        return False
+    return re.search(rf"(?:^|\s)[\"']?{re.escape(expected)}[\"']?(?:$|\s)", text) is not None
+
+
 def identify_listener(
     listener: Listener,
     state_pid: int | None,
     probe_cache: dict[tuple[str, int], bool],
     command_cache: dict[int, str],
+    state_gateway_path: str | None = None,
 ) -> tuple[bool, list[str], str]:
     reasons: list[str] = []
     state_matches = state_pid is not None and listener.pid == state_pid
@@ -267,6 +289,13 @@ def identify_listener(
     command_matches = looks_like_mentat_commandline(commandline)
     if command_matches:
         reasons.append("command_line")
+    gateway_matches = (
+        state_matches
+        and state_gateway_path is not None
+        and commandline_contains_exact_path(commandline, state_gateway_path)
+    )
+    if gateway_matches:
+        reasons.append("recorded_node_gateway")
 
     probe_host = normalized_listener_host(listener.local_address, listener.port)
     probe_key = (probe_host, listener.port)
@@ -279,7 +308,7 @@ def identify_listener(
     # A matching command path is strong ownership evidence. Runtime state alone
     # is not: PIDs can be reused. A probe is therefore authoritative only when
     # it corroborates the PID recorded by this exact Mentat data root.
-    return command_matches or (state_matches and probe_matches), reasons, commandline
+    return command_matches or gateway_matches or (state_matches and probe_matches), reasons, commandline
 
 
 def kill_pid(pid: int) -> tuple[bool, str]:
@@ -324,6 +353,11 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
     state_path = lifecycle_state_path(config)
     state = read_runtime_state(state_path) or {}
     state_pid = state.get("pid") if isinstance(state.get("pid"), int) else None
+    state_gateway_path = (
+        state.get("command_path")
+        if state.get("runtime") == "node-gateway" and isinstance(state.get("command_path"), str)
+        else None
+    )
     ports = managed_ports(config.port)
     listeners = [listener for listener in netstat_listeners() if listener.port in ports]
     actions: list[dict] = []
@@ -333,7 +367,9 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
     command_cache: dict[int, str] = {}
 
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
-        is_mentat, reasons, _commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
+        is_mentat, reasons, _commandline = identify_listener(
+            listener, state_pid, probe_cache, command_cache, state_gateway_path
+        )
         if is_mentat:
             if listener.pid in killed_pids:
                 actions.append(
@@ -400,9 +436,16 @@ def status_report(config: server.AppConfig) -> dict:
     command_cache: dict[int, str] = {}
     state = read_runtime_state(state_path) or {}
     state_pid = state.get("pid") if isinstance(state.get("pid"), int) else None
+    state_gateway_path = (
+        state.get("command_path")
+        if state.get("runtime") == "node-gateway" and isinstance(state.get("command_path"), str)
+        else None
+    )
     items = []
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
-        is_mentat, reasons, _commandline = identify_listener(listener, state_pid, probe_cache, command_cache)
+        is_mentat, reasons, _commandline = identify_listener(
+            listener, state_pid, probe_cache, command_cache, state_gateway_path
+        )
         items.append(
             {
                 "port": listener.port,

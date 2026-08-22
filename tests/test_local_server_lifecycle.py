@@ -241,6 +241,29 @@ class LocalServerLifecycleTests(unittest.TestCase):
             self.assertEqual(report["actions"][0]["reasons"], ["matches_runtime_state", "overview_probe"])
             kill_pid.assert_called_once_with(4321)
 
+    def test_cleanup_kills_recorded_node_gateway_after_bridge_failure(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            gateway = "/tmp/mentat-web/server.js"
+            state_path.write_text(
+                json.dumps({"pid": 4321, "runtime": "node-gateway", "command_path": gateway}) + "\n",
+                encoding="utf-8",
+            )
+            listener = lifecycle.Listener(pid=4321, port=8888, local_address="127.0.0.1:8888", raw="")
+            with patch.object(lifecycle, "netstat_listeners", return_value=[listener]), patch.object(
+                lifecycle, "process_commandline", return_value=f"node {gateway}"
+            ), patch.object(lifecycle, "probe_mentat", return_value=False), patch.object(
+                lifecycle, "kill_pid", return_value=(True, "terminated")
+            ) as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["actions"][0]["reasons"], ["matches_runtime_state", "recorded_node_gateway"])
+        kill_pid.assert_called_once_with(4321)
+
     def test_commandline_detection_requires_exact_project_script_path(self):
         server_path = lifecycle.BASE_DIR / "server.py"
         windows_server_path = str(server_path).replace("/", "\\")
@@ -250,14 +273,20 @@ class LocalServerLifecycleTests(unittest.TestCase):
         self.assertFalse(lifecycle.looks_like_mentat_commandline(f"python {server_path}.backup --port 8888"))
         self.assertFalse(lifecycle.looks_like_mentat_commandline(f"python {lifecycle.BASE_DIR / 'other.py'} --port 8888"))
 
+    def test_recorded_node_gateway_path_accepts_windows_absolute_paths(self):
+        self.assertTrue(
+            lifecycle.commandline_contains_exact_path(
+                r'node "C:\Mentat\_internal\web\server.js"',
+                r"C:\Mentat\_internal\web\server.js",
+            )
+        )
+
     def test_launchers_pass_absolute_script_paths(self):
         run_sh = (lifecycle.BASE_DIR / "run.sh").read_text(encoding="utf-8")
         run_bat = (lifecycle.BASE_DIR / "run.bat").read_text(encoding="utf-8")
 
-        self.assertIn('"$SCRIPT_DIR/mentat_lifecycle.py" preflight', run_sh)
-        self.assertIn('"$SCRIPT_DIR/server.py" "$@"', run_sh)
-        self.assertIn('"%CD%\\mentat_lifecycle.py" preflight', run_bat)
-        self.assertIn('"%CD%\\server.py" %*', run_bat)
+        self.assertIn('exec "$PYTHON" -m mentat.cli start "$@"', run_sh)
+        self.assertIn('"%PYTHON%" -m mentat.cli start %*', run_bat)
 
     def test_cleanup_blocks_unknown_process_on_configured_port(self):
         with TemporaryDirectory() as tmpdir:
