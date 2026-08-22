@@ -49,6 +49,7 @@ async function readBoundedJson(request: Request, maximumBytes: number): Promise<
 
 const RUN_MESSAGE_TEXT_LIMIT = 6_000;
 const withinRunMessageTextLimit = (text: string) => Array.from(text).length <= RUN_MESSAGE_TEXT_LIMIT;
+const RUN_RESPONSE_TEXT_LIMIT = 2_000;
 
 export async function readMessagePreview(request: Request): Promise<string | null> {
   const body = await readBoundedJson(request, 24_576);
@@ -63,4 +64,55 @@ export async function readMessageConfirmation(request: Request): Promise<{ text:
   const text = (body as Record<string, unknown>).text;
   const confirmationId = (body as Record<string, unknown>).confirmation_id;
   return typeof text === "string" && text.trim() && withinRunMessageTextLimit(text) && !text.includes("\0") && typeof confirmationId === "string" && /^[0-9a-f]{64}$/u.test(confirmationId) ? { text, confirmationId } : null;
+}
+
+type RunResponse =
+  | { kind: "approval"; choice: "once" | "deny" }
+  | { kind: "clarification"; choice: string }
+  | { kind: "clarification"; text: string };
+
+function readRunResponse(value: unknown): RunResponse | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  if (Object.keys(item).sort().join(",") === "choice,kind") {
+    if (item.kind === "approval" && (item.choice === "once" || item.choice === "deny")) return { kind: "approval", choice: item.choice };
+    if (item.kind === "clarification" && typeof item.choice === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(item.choice)) return { kind: "clarification", choice: item.choice };
+    return null;
+  }
+  return Object.keys(item).sort().join(",") === "kind,text" && item.kind === "clarification"
+    && typeof item.text === "string" && !!item.text.trim() && !item.text.includes("\0")
+    && Array.from(item.text).length <= RUN_RESPONSE_TEXT_LIMIT
+    ? { kind: "clarification", text: item.text }
+    : null;
+}
+
+export async function readRunResponseRequest(request: Request): Promise<boolean> {
+  return hasExactEmptyJsonBody(request);
+}
+
+export async function readRunResponsePreview(request: Request): Promise<RunResponse | null> {
+  const body = await readBoundedJson(request, 24_576);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join(",") !== "response") return null;
+  return readRunResponse((body as Record<string, unknown>).response);
+}
+
+export async function readRunResponseConfirmation(request: Request): Promise<{ response: RunResponse; confirmationId: string } | null> {
+  const body = await readBoundedJson(request, 24_576);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "confirmation_id,response") return null;
+  const confirmationId = (body as Record<string, unknown>).confirmation_id;
+  const response = readRunResponse((body as Record<string, unknown>).response);
+  return response && typeof confirmationId === "string" && /^[0-9a-f]{64}$/u.test(confirmationId) ? { response, confirmationId } : null;
+}
+
+/** Read the two fixed response-route bodies without consuming a Request twice. */
+export async function readRunResponseRouteBody(request: Request): Promise<"request" | { response: RunResponse; confirmationId: string } | null> {
+  const body = await readBoundedJson(request, 24_576);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  if (Object.keys(body).length === 0) return "request";
+  if (Object.keys(body).sort().join(",") !== "confirmation_id,response") return null;
+  const confirmationId = (body as Record<string, unknown>).confirmation_id;
+  const response = readRunResponse((body as Record<string, unknown>).response);
+  return response && typeof confirmationId === "string" && /^[0-9a-f]{64}$/u.test(confirmationId)
+    ? { response, confirmationId }
+    : null;
 }

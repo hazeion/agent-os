@@ -1,0 +1,35 @@
+import { BridgeRunResponseError, previewBridgeRunResponse } from "@/lib/bridge-run-response";
+import { readRunResponsePreview } from "@/lib/exact-json-body";
+import { evaluateRequestBoundary, parseGatewayPort } from "@/lib/request-boundary";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+const headers = {
+  "Cache-Control": "private, no-store",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+};
+
+function result(status: number, state: string) {
+  return Response.json({ schema_version: 1, status: state }, { headers, status });
+}
+
+export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
+  const boundary = evaluateRequestBoundary({ expectedPort: parseGatewayPort(process.env.PORT), host: request.headers.get("host"), method: request.method, origin: request.headers.get("origin"), secFetchSite: request.headers.get("sec-fetch-site") });
+  if (!boundary.allowed) return result(403, "error");
+  const response = await readRunResponsePreview(request);
+  if (!response) return result(400, "error");
+  const { runId } = await context.params;
+  try { return Response.json(await previewBridgeRunResponse(runId, response), { headers }); }
+  catch (error) {
+    if (error instanceof BridgeRunResponseError && error.code === "run_not_found") return result(404, "not_found");
+    if (error instanceof BridgeRunResponseError && error.code === "action_conflict") return result(409, "conflict");
+    if (error instanceof BridgeRunResponseError && error.code === "action_unsupported") return result(501, "unsupported");
+    if (error instanceof BridgeRunResponseError && error.code === "bridge_unavailable") return result(503, "unavailable");
+    if (error instanceof BridgeRunResponseError && error.code === "request_invalid") return result(400, "invalid");
+    return result(502, "error");
+  }
+}

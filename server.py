@@ -41,7 +41,15 @@ from agent_run_history import (
     normalize_transport_binding,
     retained_event_window,
 )
-from agent_runtime import AgentEvent, AgentRuntimeError, AgentRuntimeRegistry, RuntimeCapability, RuntimeContext
+from agent_runtime import (
+    AgentEvent,
+    AgentRuntimeError,
+    AgentRuntimeRegistry,
+    PendingRunAction,
+    RunActionResponse,
+    RuntimeCapability,
+    RuntimeContext,
+)
 from orchestration_service import OrchestrationService, OrchestrationServiceError
 from run_repository import (
     RunRecord,
@@ -405,6 +413,7 @@ AGENT_DERIVED_SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 AGENT_CONSOLE_RUN_LIMIT = 24
 AGENT_CONSOLE_PROMPT_LIMIT = 20_000
 RUN_MESSAGE_TEXT_LIMIT = 6_000
+RUN_RESPONSE_TEXT_LIMIT = 2_000
 REMOTE_CONTEXT_STAGE_TTL_SECONDS = 15 * 60
 REMOTE_CONTEXT_STAGE_LIMIT = 128
 REMOTE_CONTEXT_ITEM_LIMIT = 4_000
@@ -2102,6 +2111,159 @@ def mentat_confirm_run_message(
         "run_id": run.id,
         "disposition": "accepted",
     }
+
+
+def _current_run_for_response(run_id: str) -> RunRecord:
+    run = _load_run_for_action(run_id)
+    if run.status not in {"waiting_for_approval", "waiting_for_clarification"}:
+        raise OrchestrationRunActionError("run.response_unavailable")
+    return run
+
+
+def _public_pending_run_action(action: PendingRunAction) -> dict:
+    result = {"kind": action.kind}
+    if action.kind == "approval":
+        result["title"] = action.title or "Remote action needs approval"
+        result["summary"] = action.summary or ""
+        result["choices"] = [{"id": item_id, "label": label} for item_id, label in action.choices]
+    else:
+        result["prompt_type"] = action.prompt_type
+        result["question"] = action.question
+        result["choices"] = [{"id": item_id, "label": label} for item_id, label in action.choices]
+    return result
+
+
+def _normalized_run_action_response(value: object) -> RunActionResponse:
+    if not isinstance(value, dict) or set(value) not in ({"kind", "choice"}, {"kind", "text"}):
+        raise OrchestrationRunActionError("run.response_invalid")
+    kind = value.get("kind")
+    if not isinstance(kind, str):
+        raise OrchestrationRunActionError("run.response_invalid")
+    try:
+        if "choice" in value:
+            return RunActionResponse(kind=kind, choice_id=value["choice"])
+        text = value.get("text")
+        if not isinstance(text, str) or len(text.strip()) > RUN_RESPONSE_TEXT_LIMIT:
+            raise ValueError("response text is invalid")
+        return RunActionResponse(kind=kind, text=text)
+    except ValueError:
+        raise OrchestrationRunActionError("run.response_invalid") from None
+
+
+def _run_response_confirmation(
+    run: RunRecord, action: PendingRunAction, response: RunActionResponse
+) -> str:
+    parts = (
+        "mentat.run.response.v1", run.id, str(run.state_revision), run.status,
+        run.dispatch_state, run.runtime_type, run.runtime_config_id or "",
+        run.runtime_binding_digest or "", run.runtime_run_ref or "", action.kind,
+        action.request_id, action.title or "", action.summary or "", action.prompt_type or "",
+        action.question or "", *(
+            value for choice in action.choices for value in choice
+        ), response.kind, response.choice_id or "", response.text or "",
+    )
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def _run_action_response_payload(response: RunActionResponse) -> dict:
+    if response.choice_id is not None:
+        return {"kind": response.kind, "choice": response.choice_id}
+    return {"kind": response.kind, "text": response.text}
+
+
+def _current_pending_run_action(run: RunRecord) -> tuple[object, RuntimeContext, PendingRunAction]:
+    runtime, context = _run_stop_context(run)
+    try:
+        capabilities = runtime.capabilities_for_run(run.runtime_run_ref or run.id, context=context)
+        action = runtime.pending_action(run.runtime_run_ref or run.id, context=context)
+    except AgentRuntimeError:
+        raise OrchestrationRunActionError("run.response_unavailable") from None
+    if RuntimeCapability.APPROVAL_RESPONSE.value not in capabilities:
+        raise OrchestrationRunActionError("run.response_unavailable")
+    return runtime, context, action
+
+
+def _response_matches_pending_action(
+    action: PendingRunAction, response: RunActionResponse
+) -> bool:
+    if action.kind != response.kind:
+        return False
+    if action.kind == "approval":
+        return response.choice_id in {choice_id for choice_id, _label in action.choices}
+    if action.prompt_type == "choice":
+        return response.choice_id in {choice_id for choice_id, _label in action.choices}
+    return action.prompt_type == "text" and response.text is not None
+
+
+def mentat_run_response_request_payload(run_id: str) -> dict:
+    run = _current_run_for_response(run_id)
+    _runtime, _context, action = _current_pending_run_action(run)
+    return {
+        "schema_version": 1,
+        "action": "respond",
+        "run_id": run.id,
+        "request": _public_pending_run_action(action),
+        "requires_confirmation": False,
+    }
+
+
+def mentat_run_response_preview_payload(run_id: str, response: object) -> dict:
+    normalized = _normalized_run_action_response(response)
+    run = _current_run_for_response(run_id)
+    _runtime, _context, action = _current_pending_run_action(run)
+    if not _response_matches_pending_action(action, normalized):
+        raise OrchestrationRunActionError("run.response_invalid")
+    return {
+        "schema_version": 1,
+        "action": "respond",
+        "run_id": run.id,
+        "request": _public_pending_run_action(action),
+        "requires_confirmation": True,
+        "confirmation_id": _run_response_confirmation(run, action, normalized),
+    }
+
+
+def mentat_confirm_run_response(run_id: str, response: object, confirmation_id: object) -> dict:
+    normalized = _normalized_run_action_response(response)
+    if not isinstance(confirmation_id, str) or not re.fullmatch(r"[0-9a-f]{64}", confirmation_id):
+        raise OrchestrationRunActionError("run.confirmation_invalid")
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        preview = mentat_run_response_preview_payload(
+            run_id, _run_action_response_payload(normalized)
+        )
+        if not hmac.compare_digest(confirmation_id, preview["confirmation_id"]):
+            raise OrchestrationRunActionError("run.confirmation_stale")
+        run = _current_run_for_response(run_id)
+        runtime, context, action = _current_pending_run_action(run)
+        if not _response_matches_pending_action(action, normalized):
+            raise OrchestrationRunActionError("run.confirmation_stale")
+        expected = _run_response_confirmation(run, action, normalized)
+        if not hmac.compare_digest(confirmation_id, expected):
+            raise OrchestrationRunActionError("run.confirmation_stale")
+        try:
+            runtime.respond_to_action(run.runtime_run_ref or run.id, action, normalized, context=context)
+        except AgentRuntimeError:
+            raise OrchestrationRunActionError("run.response_failed") from None
+        try:
+            verified = runtime.get_status(run.runtime_run_ref or run.id, context=context)
+        except AgentRuntimeError:
+            raise OrchestrationRunActionError("run.response_partial") from None
+        try:
+            pending_after_response = runtime.pending_action(
+                run.runtime_run_ref or run.id, context=context
+            )
+        except AgentRuntimeError as exc:
+            if exc.code != "runtime.action_unavailable":
+                raise OrchestrationRunActionError("run.response_partial") from None
+            pending_after_response = None
+    if (
+        pending_after_response is not None
+        and pending_after_response.request_id == action.request_id
+    ):
+        raise OrchestrationRunActionError("run.response_partial")
+    if verified.status.value not in {"running", "waiting", "completed", "failed", "stopped", "interrupted"}:
+        raise OrchestrationRunActionError("run.response_partial")
+    return {"schema_version": 1, "action": "respond", "run_id": run.id, "disposition": "accepted"}
 
 
 def orchestration_run_payload(run_id: str, _query: str | None = None):

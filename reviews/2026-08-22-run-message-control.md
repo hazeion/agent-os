@@ -176,9 +176,10 @@ The clean-checkout CI result remains required before merge.
 - Proposed commit: `Add safe Run message control`.
 - Proposed ready PR title: `Add safe Run message control`.
 - The local full-suite seed-data failure is excluded from the staged diff;
-  clean-checkout CI remains the merge gate.
+  clean-checkout CI was the merge gate.
+- PR #121 merged after CI, Quality gates, and Native artifact smoke passed.
 
 ## Outcome review
 
-- Classification: Successful locally; clean CI pending.
+- Classification: Successful.
 - User continuation: authorized by standing approval.

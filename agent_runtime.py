@@ -205,6 +205,70 @@ class AgentRun:
 
 
 @dataclass(frozen=True)
+class PendingRunAction:
+    """One runtime-neutral approval or clarification awaiting an operator."""
+
+    kind: str
+    request_id: str
+    title: str | None = None
+    summary: str | None = None
+    prompt_type: str | None = None
+    question: str | None = None
+    choices: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"approval", "clarification"}:
+            raise ValueError("pending action kind is invalid")
+        object.__setattr__(self, "request_id", _require_id(self.request_id, "request id"))
+        for name, maximum in (("title", 240), ("summary", 2_000), ("question", 2_000)):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _bounded_text(value, name, maximum=maximum))
+        if self.kind == "approval":
+            if self.prompt_type is not None or self.question is not None:
+                raise ValueError("approval action prompt is invalid")
+        elif self.prompt_type not in {"choice", "text"} or self.question is None:
+            raise ValueError("clarification action prompt is invalid")
+        choices: list[tuple[str, str]] = []
+        for item in self.choices:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise ValueError("pending action choices are invalid")
+            choice_id, label = item
+            choices.append((_require_id(choice_id, "choice id"), _bounded_text(label, "choice label", maximum=240)))
+        if len(choices) > 16 or len({choice_id for choice_id, _label in choices}) != len(choices):
+            raise ValueError("pending action choices are invalid")
+        if self.kind == "approval":
+            if not choices or {choice_id for choice_id, _label in choices} - {"once", "deny"}:
+                raise ValueError("approval choices are invalid")
+        if self.kind == "clarification" and self.prompt_type == "choice" and not choices:
+            raise ValueError("clarification choices are required")
+        if self.kind == "clarification" and self.prompt_type == "text" and choices:
+            raise ValueError("text clarification choices are invalid")
+        object.__setattr__(self, "choices", tuple(choices))
+
+
+@dataclass(frozen=True)
+class RunActionResponse:
+    """A normalized answer to one pending runtime action."""
+
+    kind: str
+    choice_id: str | None = None
+    text: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"approval", "clarification"}:
+            raise ValueError("response kind is invalid")
+        if self.choice_id is not None:
+            object.__setattr__(self, "choice_id", _require_id(self.choice_id, "choice id"))
+        if self.text is not None:
+            object.__setattr__(self, "text", _bounded_text(self.text, "response text", maximum=2_000))
+        if (self.choice_id is None) == (self.text is None):
+            raise ValueError("response must contain exactly one value")
+        if self.kind == "approval" and self.choice_id not in {"once", "deny"}:
+            raise ValueError("approval response is invalid")
+
+
+@dataclass(frozen=True)
 class SubmissionOutcome:
     """Typed result of one and only one runtime submission attempt."""
 
@@ -331,6 +395,19 @@ class AgentRuntime(Protocol):
 
     def send_message(
         self, run_id: str, message: str, *, context: RuntimeContext | None = None
+    ) -> None: ...
+
+    def pending_action(
+        self, run_id: str, *, context: RuntimeContext | None = None
+    ) -> PendingRunAction: ...
+
+    def respond_to_action(
+        self,
+        run_id: str,
+        action: PendingRunAction,
+        response: RunActionResponse,
+        *,
+        context: RuntimeContext | None = None,
     ) -> None: ...
 
     def stop(self, run_id: str, *, context: RuntimeContext | None = None) -> None: ...

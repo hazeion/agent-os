@@ -12,6 +12,8 @@ from agent_runtime import (
     AgentRun,
     AgentRuntimeError,
     MentatTask,
+    PendingRunAction,
+    RunActionResponse,
     RunStatus,
     RuntimeCapability,
     RuntimeContext,
@@ -255,6 +257,119 @@ class HermesRuntime:
         if response_status != 200 or response.get("ok") is not True:
             raise AgentRuntimeError("runtime.message_failed")
 
+    @staticmethod
+    def _pending_action_from_snapshot(snapshot: Mapping[str, Any]) -> PendingRunAction:
+        status = str(snapshot.get("status") or "")
+        action = snapshot.get("action_required")
+        if status not in {"waiting_for_approval", "waiting_for_clarification"} or not isinstance(action, Mapping):
+            raise AgentRuntimeError("runtime.action_unavailable")
+        kind = action.get("kind")
+        request_id = action.get("request_id")
+        if not isinstance(kind, str) or not isinstance(request_id, str):
+            raise AgentRuntimeError("runtime.action_invalid")
+        if (status == "waiting_for_approval") != (kind == "approval"):
+            raise AgentRuntimeError("runtime.action_invalid")
+        if (status == "waiting_for_clarification") != (kind == "clarification"):
+            raise AgentRuntimeError("runtime.action_invalid")
+        try:
+            if kind == "approval":
+                raw_choices = action.get("choices")
+                if not isinstance(raw_choices, list):
+                    raise ValueError("approval choices are invalid")
+                labels = {"once": "Allow once", "deny": "Deny"}
+                choices = tuple(
+                    (choice, labels[choice])
+                    for choice in raw_choices
+                    if isinstance(choice, str) and choice in labels
+                )
+                if len(choices) != len(raw_choices):
+                    raise ValueError("approval choices are invalid")
+                preview = action.get("preview") if isinstance(action.get("preview"), Mapping) else {}
+                return PendingRunAction(
+                    kind="approval",
+                    request_id=request_id,
+                    title=preview.get("title") if isinstance(preview.get("title"), str) else None,
+                    summary=preview.get("summary") if isinstance(preview.get("summary"), str) else None,
+                    choices=choices,
+                )
+            if kind == "clarification":
+                prompt = action.get("prompt")
+                if not isinstance(prompt, Mapping):
+                    raise ValueError("clarification prompt is invalid")
+                prompt_type = prompt.get("type")
+                question = prompt.get("question")
+                if not isinstance(prompt_type, str) or not isinstance(question, str):
+                    raise ValueError("clarification prompt is invalid")
+                raw_choices = prompt.get("choices", [])
+                if not isinstance(raw_choices, list):
+                    raise ValueError("clarification choices are invalid")
+                choices = tuple(
+                    (item.get("id"), item.get("label"))
+                    for item in raw_choices
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("id"), str)
+                    and isinstance(item.get("label"), str)
+                )
+                if len(choices) != len(raw_choices):
+                    raise ValueError("clarification choices are invalid")
+                return PendingRunAction(
+                    kind="clarification",
+                    request_id=request_id,
+                    prompt_type=prompt_type,
+                    question=question,
+                    choices=choices,
+                )
+            raise ValueError("pending action kind is invalid")
+        except ValueError as exc:
+            raise AgentRuntimeError("runtime.action_invalid") from exc
+
+    def pending_action(
+        self, run_id: str, *, context: RuntimeContext | None = None
+    ) -> PendingRunAction:
+        return self._pending_action_from_snapshot(self._bound_snapshot(run_id, context=context))
+
+    def respond_to_action(
+        self,
+        run_id: str,
+        action: PendingRunAction,
+        response: RunActionResponse,
+        *,
+        context: RuntimeContext | None = None,
+    ) -> None:
+        current = self.pending_action(run_id, context=context)
+        if current != action or response.kind != current.kind:
+            raise AgentRuntimeError("runtime.action_stale")
+        if current.kind == "approval":
+            if response.choice_id not in {choice_id for choice_id, _label in current.choices}:
+                raise AgentRuntimeError("runtime.action_invalid")
+            payload = {
+                "confirmed": True,
+                "kind": "approval",
+                "request_id": current.request_id,
+                "choice": response.choice_id,
+            }
+        elif current.prompt_type == "choice":
+            if response.choice_id not in {choice_id for choice_id, _label in current.choices}:
+                raise AgentRuntimeError("runtime.action_invalid")
+            payload = {
+                "confirmed": True,
+                "kind": "clarification",
+                "request_id": current.request_id,
+                "response": {"type": "choice", "choice_id": response.choice_id},
+            }
+        elif current.prompt_type == "text" and response.text is not None:
+            payload = {
+                "confirmed": True,
+                "kind": "clarification",
+                "request_id": current.request_id,
+                "response": {"type": "text", "text": response.text},
+            }
+        else:
+            raise AgentRuntimeError("runtime.action_invalid")
+        body, status = self._handlers().response(run_id, payload)
+        if status != 200 or body.get("ok") is not True:
+            raise AgentRuntimeError("runtime.action_failed")
+
     def stop(self, run_id: str, *, context: RuntimeContext | None = None) -> None:
         self._bound_snapshot(run_id, context=context)
         body, status = self._handlers().stop(run_id)
@@ -416,6 +531,12 @@ class HermesRuntime:
         steer = controls.get("steer") if isinstance(controls, Mapping) else None
         if isinstance(steer, Mapping) and steer.get("available") is True:
             capabilities.add(RuntimeCapability.SEND_MESSAGE.value)
+        try:
+            self._pending_action_from_snapshot(snapshot)
+        except AgentRuntimeError:
+            pass
+        else:
+            capabilities.add(RuntimeCapability.APPROVAL_RESPONSE.value)
         return frozenset(capabilities)
 
     # Compatibility methods return the exact legacy response.  New callers use

@@ -16,7 +16,9 @@ let runsAbortController = null;
 let activeRunTimeline = null;
 let activeRunStop = null;
 let activeRunMessage = null;
+let activeRunResponse = null;
 let renderedRuns = new Map();
+let pendingRunsSummaryNotice = "";
 let navigationOwnsFocus = false;
 let observedPath = "";
 let runtimeStarted = false;
@@ -397,7 +399,7 @@ function readRunsPayload(payload) {
 }
 function readableRunStatus(value) { return value.split(/[._]/).map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "); }
 function renderRuns(runs) {
-  const elements = runsElements(); if (!elements) return; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); renderedRuns = new Map(runs.map((run) => [run.id, run])); elements.list.replaceChildren();
+  const elements = runsElements(); if (!elements) return; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false }); renderedRuns = new Map(runs.map((run) => [run.id, run])); elements.list.replaceChildren();
   for (const run of runs) {
     const card = document.createElement("article"); card.className = "run-card"; card.dataset.runId = run.id;
     const header = document.createElement("div"); header.className = "run-card-header";
@@ -411,16 +413,17 @@ function renderRuns(runs) {
     const timeline = document.createElement("button"); timeline.className = "run-timeline-open"; timeline.dataset.runTimelineOpen = ""; timeline.dataset.runId = run.id; timeline.setAttribute("aria-expanded", "false"); timeline.type = "button"; timeline.textContent = "Open timeline";
     actions.append(timeline);
     if (run.status === "running") { const message = document.createElement("button"); message.className = "run-message-open"; message.dataset.runMessageOpen = ""; message.dataset.runId = run.id; message.setAttribute("aria-expanded", "false"); message.type = "button"; message.textContent = "Send message"; actions.append(message); }
+    if (["waiting_for_approval", "waiting_for_clarification"].includes(run.status)) { const response = document.createElement("button"); response.className = "run-response-open"; response.dataset.runResponseOpen = ""; response.dataset.runId = run.id; response.setAttribute("aria-expanded", "false"); response.type = "button"; response.textContent = "Respond"; actions.append(response); }
     if (["queued", "submitting", "starting", "running", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(run.status)) { const stop = document.createElement("button"); stop.className = "run-stop-open"; stop.dataset.runStopOpen = ""; stop.dataset.runId = run.id; stop.setAttribute("aria-expanded", "false"); stop.type = "button"; stop.textContent = "Stop run"; actions.append(stop); }
     card.append(primary, detail, lifecycle, actions); elements.list.append(card);
   }
 }
-function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else { closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); renderedRuns = new Map(); elements.list.replaceChildren(); } }
-function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); }
+function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else { closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false }); renderedRuns = new Map(); elements.list.replaceChildren(); } }
+function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false }); }
 async function refreshRuns() {
   if (!runsElements()) return; clearRunRequest(); const request = runsRequest; runsAbortController = new AbortController(); applyRunsState("loading", "Loading current Runs…");
   try { const response = await fetch("/api/runs", { cache: "no-store", headers: { Accept: "application/json" }, signal: runsAbortController.signal }); const payload = await response.json(); if (request !== runsRequest) return;
-    if (response.status === 200) { const runs = readRunsPayload(payload); if (!runs) throw new Error("runs_response_invalid"); applyRunsState(runs.length ? "ready" : "empty", runs.length ? `${runs.length} current Run${runs.length === 1 ? "" : "s"}.` : "No current Runs yet.", runs); return; }
+    if (response.status === 200) { const runs = readRunsPayload(payload); if (!runs) throw new Error("runs_response_invalid"); const detail = pendingRunsSummaryNotice || (runs.length ? `${runs.length} current Run${runs.length === 1 ? "" : "s"}.` : "No current Runs yet."); pendingRunsSummaryNotice = ""; applyRunsState(runs.length ? "ready" : "empty", detail, runs); return; }
     if (response.status === 501 && payload?.schema_version === 1 && payload?.status === "unsupported") { applyRunsState("unsupported", "This Python bridge does not support Run data yet."); return; }
     if (response.status === 503 && payload?.schema_version === 1 && payload?.status === "unavailable") { applyRunsState("unavailable", "Run data is temporarily unavailable. Check the Python connection and retry."); return; }
     throw new Error("runs_response_invalid");
@@ -463,6 +466,12 @@ function closeActiveRunMessage({ restoreFocus = true } = {}) {
   if (!activeRunMessage) return;
   activeRunMessage.panel.remove(); activeRunMessage.trigger.setAttribute("aria-expanded", "false");
   if (restoreFocus && activeRunMessage.trigger.isConnected) activeRunMessage.trigger.focus(); activeRunMessage = null;
+}
+
+function closeActiveRunResponse({ restoreFocus = true } = {}) {
+  if (!activeRunResponse) return;
+  activeRunResponse.panel.remove(); activeRunResponse.trigger.setAttribute("aria-expanded", "false");
+  if (restoreFocus && activeRunResponse.trigger.isConnected) activeRunResponse.trigger.focus(); activeRunResponse = null;
 }
 
 function stopStateMessage(response) {
@@ -519,6 +528,56 @@ async function confirmRunMessage() {
 function openRunMessage(run, card, trigger) {
   closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false });
   const panel = document.createElement("section"); panel.className = "run-message"; const heading = document.createElement("h4"); heading.textContent = "Send a message"; const input = document.createElement("textarea"); input.id = `run-message-${run.id}`; input.rows = 3; input.placeholder = "Text-only guidance for this active Run"; input.addEventListener("input", () => { const characters = Array.from(input.value); if (characters.length > 6000) input.value = characters.slice(0, 6000).join(""); }); const label = document.createElement("label"); label.htmlFor = input.id; label.textContent = "Message"; const notice = document.createElement("p"); notice.className = "run-stop-notice"; notice.setAttribute("aria-live", "polite"); const actions = document.createElement("div"); actions.className = "run-stop-actions"; const cancel = document.createElement("button"); cancel.type = "button"; cancel.dataset.runMessageCancel = ""; cancel.textContent = "Cancel"; const review = document.createElement("button"); review.type = "button"; review.dataset.runMessageReview = ""; review.textContent = "Review message"; const confirm = document.createElement("button"); confirm.type = "button"; confirm.dataset.runMessageConfirm = ""; confirm.textContent = "Confirm message"; confirm.hidden = true; actions.append(cancel, review, confirm); panel.append(heading, label, input, notice, actions); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunMessage = { trigger, panel, run, input, notice, review, confirm, confirmationId: null }; input.focus();
+}
+
+function responseStateMessage(response) {
+  if (response.status === 404) return "This Run is no longer available.";
+  if (response.status === 409) return "This request changed. Review your response again.";
+  if (response.status === 501) return "A response is not available for this Run.";
+  if (response.status === 503) return "Run control is temporarily unavailable.";
+  return "Mentat could not safely process this response.";
+}
+
+function pendingResponseRequestIsSafe(value, runId, requiresConfirmation) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = requiresConfirmation ? "action,confirmation_id,request,requires_confirmation,run_id,runtime,schema_version,service,status" : "action,request,requires_confirmation,run_id,runtime,schema_version,service,status";
+  if (Object.keys(value).sort().join(",") !== keys || value.schema_version !== 1 || value.service !== "mentat-local-bridge" || value.runtime !== "python" || value.status !== "ready" || value.action !== "respond" || value.run_id !== runId || value.requires_confirmation !== requiresConfirmation) return false;
+  if (requiresConfirmation && (typeof value.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(value.confirmation_id))) return false;
+  const request = value.request;
+  if (!request || typeof request !== "object" || Array.isArray(request) || !Array.isArray(request.choices) || request.choices.length > 16 || !request.choices.every((choice) => choice && typeof choice === "object" && !Array.isArray(choice) && Object.keys(choice).sort().join(",") === "id,label" && typeof choice.id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(choice.id) && typeof choice.label === "string" && choice.label.length > 0 && choice.label.length <= 240) || new Set(request.choices.map((choice) => choice.id)).size !== request.choices.length) return false;
+  if (request.kind === "approval") return Object.keys(request).sort().join(",") === "choices,kind,summary,title" && typeof request.title === "string" && request.title.length <= 240 && typeof request.summary === "string" && request.summary.length <= 2000 && request.choices.length > 0 && request.choices.every((choice) => ["once", "deny"].includes(choice.id));
+  return request.kind === "clarification" && Object.keys(request).sort().join(",") === "choices,kind,prompt_type,question" && ["choice", "text"].includes(request.prompt_type) && typeof request.question === "string" && request.question.length > 0 && request.question.length <= 2000 && ((request.prompt_type === "choice" && request.choices.length > 0) || (request.prompt_type === "text" && request.choices.length === 0));
+}
+
+function selectedRunResponse(current) {
+  const request = current.request;
+  if (request.kind === "approval" || request.prompt_type === "choice") {
+    const selected = current.panel.querySelector("input[name=run-response-choice]:checked");
+    return selected instanceof HTMLInputElement ? { kind: request.kind, choice: selected.value } : null;
+  }
+  const text = current.input?.value.trim();
+  return text ? { kind: "clarification", text } : null;
+}
+
+async function reviewRunResponse() {
+  const current = activeRunResponse; const responseValue = current && selectedRunResponse(current); if (!current || !responseValue) { if (current) current.notice.textContent = "Choose or enter a response to review."; return; }
+  current.review.disabled = true; current.notice.textContent = "Reviewing the current Run state…";
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/response/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: responseValue }) }); const payload = await response.json(); if (activeRunResponse?.panel !== current.panel) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, current.run.id, true) || payload.request.kind !== current.request.kind || JSON.stringify(payload.request) !== JSON.stringify(current.request)) { current.notice.textContent = responseStateMessage(response); current.review.disabled = false; return; } current.responseValue = responseValue; current.confirmationId = payload.confirmation_id; current.confirm.hidden = false; current.notice.textContent = "Confirm this response for the current Run."; current.confirm.focus(); } catch { if (activeRunResponse?.panel === current.panel) { current.notice.textContent = "Mentat could not safely review this response."; current.review.disabled = false; } }
+}
+
+async function confirmRunResponse() {
+  const current = activeRunResponse; if (!current?.confirmationId || !current.responseValue) return;
+  current.confirm.disabled = true; current.notice.textContent = "Sending response…";
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ response: current.responseValue, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "respond" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { if (response.status === 502 && payload?.schema_version === 1 && payload?.status === "partial") { pendingRunsSummaryNotice = "Mentat could not verify the response. Check the refreshed Run before trying again."; current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = true; refreshRuns(); return; } current.notice.textContent = responseStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.responseValue = null; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Response accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunResponse?.panel === current.panel) { current.notice.textContent = "Mentat could not safely send this response."; current.confirm.disabled = false; } }
+}
+
+async function openRunResponse(run, card, trigger) {
+  closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); closeActiveRunResponse({ restoreFocus: false });
+  const panel = document.createElement("section"); panel.className = "run-response"; const heading = document.createElement("h4"); heading.textContent = "Respond to this Run"; const detail = document.createElement("p"); detail.className = "run-response-detail"; const form = document.createElement("div"); form.className = "run-response-form"; const notice = document.createElement("p"); notice.className = "run-stop-notice"; notice.setAttribute("aria-live", "polite"); notice.textContent = "Loading the current request…"; const actions = document.createElement("div"); actions.className = "run-stop-actions"; const cancel = document.createElement("button"); cancel.type = "button"; cancel.dataset.runResponseCancel = ""; cancel.textContent = "Cancel"; const review = document.createElement("button"); review.type = "button"; review.dataset.runResponseReview = ""; review.textContent = "Review response"; review.disabled = true; const confirm = document.createElement("button"); confirm.type = "button"; confirm.dataset.runResponseConfirm = ""; confirm.textContent = "Confirm response"; confirm.hidden = true; actions.append(cancel, review, confirm); panel.append(heading, detail, form, notice, actions); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunResponse = { trigger, panel, run, request: null, input: null, notice, review, confirm, confirmationId: null, responseValue: null };
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/response`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunResponse?.panel !== panel) return; if (response.status !== 200 || !pendingResponseRequestIsSafe(payload, run.id, false)) { notice.textContent = responseStateMessage(response); return; } const request = payload.request; activeRunResponse.request = request; if (request.kind === "approval") { detail.textContent = `${request.title}${request.summary ? `: ${request.summary}` : ""}`; } else { detail.textContent = request.question; }
+    if (request.kind === "approval" || request.prompt_type === "choice") { for (const choice of request.choices) { const label = document.createElement("label"); const input = document.createElement("input"); input.type = "radio"; input.name = "run-response-choice"; input.value = choice.id; input.addEventListener("change", () => { review.disabled = false; confirm.hidden = true; activeRunResponse.confirmationId = null; }); label.append(input, document.createTextNode(choice.label)); form.append(label); } } else { const label = document.createElement("label"); label.className = "run-response-text-label"; const input = document.createElement("textarea"); input.id = `run-response-${run.id}`; input.rows = 3; label.htmlFor = input.id; label.textContent = "Response"; input.addEventListener("input", () => { const characters = Array.from(input.value); if (characters.length > 2000) input.value = characters.slice(0, 2000).join(""); review.disabled = !input.value.trim(); confirm.hidden = true; activeRunResponse.confirmationId = null; }); form.append(label, input); activeRunResponse.input = input; }
+    notice.textContent = "Review your response before sending it."; if (activeRunResponse.input) activeRunResponse.input.focus();
+  } catch { if (activeRunResponse?.panel === panel) notice.textContent = "Mentat could not safely load this request."; }
 }
 
 function appendTimelineEvents(list, events) {
@@ -608,7 +667,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-run-message-open], [data-run-message-cancel], [data-run-message-review], [data-run-message-confirm], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-run-message-open], [data-run-message-cancel], [data-run-message-review], [data-run-message-confirm], [data-run-response-open], [data-run-response-cancel], [data-run-response-review], [data-run-response-confirm], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
   if (target.matches("[data-agents-refresh]")) {
@@ -624,6 +683,9 @@ document.addEventListener("click", (event) => {
   if (target.matches("[data-run-message-cancel]")) { closeActiveRunMessage(); return; }
   if (target.matches("[data-run-message-review]")) { reviewRunMessage(); return; }
   if (target.matches("[data-run-message-confirm]")) { confirmRunMessage(); return; }
+  if (target.matches("[data-run-response-cancel]")) { closeActiveRunResponse(); return; }
+  if (target.matches("[data-run-response-review]")) { reviewRunResponse(); return; }
+  if (target.matches("[data-run-response-confirm]")) { confirmRunResponse(); return; }
   if (target.matches("[data-run-timeline-open]")) {
     const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
     if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunTimeline(run, card, target);
@@ -637,6 +699,11 @@ document.addEventListener("click", (event) => {
   if (target.matches("[data-run-message-open]")) {
     const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
     if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunMessage(run, card, target);
+    return;
+  }
+  if (target.matches("[data-run-response-open]")) {
+    const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
+    if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunResponse(run, card, target);
     return;
   }
   hideNavigationTooltip();

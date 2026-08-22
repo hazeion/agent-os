@@ -557,6 +557,50 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual(response.status, 403)
                 self.assertEqual(payload, {"error": "bridge_request_forbidden"})
 
+    def test_run_response_actions_are_fixed_authenticated_and_body_bounded(self):
+        request = {
+            "kind": "approval", "title": "Use a tool", "summary": "Read project data",
+            "choices": [{"id": "once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}],
+        }
+        pending = {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "action": "respond", "run_id": "run_current",
+            "request": request, "requires_confirmation": False,
+        }
+        with patch.object(local_bridge, "bridge_run_response_request_payload", return_value=(pending, 200)) as capability:
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/response",
+                headers={"Content-Type": "application/json"}, body=b"{}",
+            )
+        self.assertEqual((status, payload), (200, pending))
+        capability.assert_called_once_with("run_current")
+        preview = {**pending, "requires_confirmation": True, "confirmation_id": "a" * 64}
+        body = b'{"response":{"kind":"approval","choice":"once"}}'
+        with patch.object(local_bridge, "bridge_run_response_preview_payload", return_value=(preview, 200)) as capability:
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/response/preview",
+                headers={"Content-Type": "application/json"}, body=body,
+            )
+        self.assertEqual((status, payload), (200, preview))
+        capability.assert_called_once_with("run_current", {"kind": "approval", "choice": "once"})
+        result = {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "action": "respond", "run_id": "run_current", "disposition": "accepted",
+        }
+        with patch.object(local_bridge, "bridge_confirm_run_response", return_value=(result, 202)) as confirmed:
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/response",
+                headers={"Content-Type": "application/json"},
+                body=(b'{"response":{"kind":"approval","choice":"once"},"confirmation_id":"' + b"a" * 64 + b'"}'),
+            )
+        self.assertEqual((status, payload), (202, result))
+        confirmed.assert_called_once_with("run_current", {"kind": "approval", "choice": "once"}, "a" * 64)
+        status, payload, _headers = self.request(
+            method="POST", path="/bridge/v1/runs/run_current/response",
+            headers={"Content-Type": "application/json"}, body=b'{"response":{"kind":"approval","choice":"once"}}',
+        )
+        self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
+
     def test_unknown_routes_and_unsupported_methods_are_fixed(self):
         status, payload, _headers = self.request(path="/bridge/v1/other")
         self.assertEqual(status, 404)

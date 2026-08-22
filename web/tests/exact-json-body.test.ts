@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { hasExactEmptyJsonBody, readConfirmationId, readMessageConfirmation, readMessagePreview } from "../src/lib/exact-json-body.ts";
+import { hasExactEmptyJsonBody, readConfirmationId, readMessageConfirmation, readMessagePreview, readRunResponsePreview, readRunResponseRouteBody } from "../src/lib/exact-json-body.ts";
 
 test("Run Stop preview accepts only its exact bounded JSON body", async () => {
   const request = (body: string, contentType = "application/json") => new Request("http://127.0.0.1:8890/api/runs/run_current/stop/preview", { method: "POST", headers: { "Content-Type": contentType }, body });
@@ -34,4 +34,17 @@ test("Run message preview and confirmation accept only exact bounded text bodies
   assert.deepEqual(await readMessageConfirmation(confirm(`{"text":"Focus","confirmation_id":"${confirmationId}"}`)), { text: "Focus", confirmationId });
   assert.deepEqual(await readMessageConfirmation(confirm(JSON.stringify({ text: emojiMessage, confirmation_id: confirmationId }))), { text: emojiMessage, confirmationId });
   assert.equal(await readMessageConfirmation(confirm(`{"text":"Focus","confirmation_id":"${confirmationId}","extra":true}`)), null);
+});
+
+test("Run responses accept only request, preview, and confirmation shapes", async () => {
+  const request = (body: string) => new Request("http://127.0.0.1:8890/api/runs/run_current/response", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  const preview = (body: string) => new Request("http://127.0.0.1:8890/api/runs/run_current/response/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  const confirmationId = "a".repeat(64);
+  assert.equal(await readRunResponseRouteBody(request("{}")), "request");
+  assert.deepEqual(await readRunResponsePreview(preview('{"response":{"kind":"approval","choice":"once"}}')), { kind: "approval", choice: "once" });
+  assert.deepEqual(await readRunResponseRouteBody(request(`{"response":{"kind":"clarification","text":"Current project"},"confirmation_id":"${confirmationId}"}`)), { response: { kind: "clarification", text: "Current project" }, confirmationId });
+  assert.equal(await readRunResponsePreview(preview('{"response":{"kind":"approval","choice":"once","extra":true}}')), null);
+  assert.equal(await readRunResponseRouteBody(request('{"response":{"kind":"clarification","text":"x"}}')), null);
+  const emojiText = "😀".repeat(2_000);
+  assert.deepEqual(await readRunResponsePreview(preview(JSON.stringify({ response: { kind: "clarification", text: emojiText } }))), { kind: "clarification", text: emojiText });
 });
