@@ -7,6 +7,8 @@ const supportedContrast = new Set(["system", "standard", "high"]);
 
 let bridgeRequest = 0;
 let bridgeState = "checking";
+let agentsRequest = 0;
+let agentsAbortController = null;
 let navigationOwnsFocus = false;
 let observedPath = "";
 let runtimeStarted = false;
@@ -149,6 +151,168 @@ async function refreshBridgeStatus() {
   applyBridgeState();
 }
 
+function agentsElements() {
+  const rootElement = document.querySelector("[data-agents-root]");
+  if (!(rootElement instanceof HTMLElement)) return null;
+  const summary = rootElement.querySelector("[data-agents-summary]");
+  const list = rootElement.querySelector("[data-agents-list]");
+  const refresh = rootElement.querySelector("[data-agents-refresh]");
+  if (!(summary instanceof HTMLElement) || !(list instanceof HTMLElement) || !(refresh instanceof HTMLButtonElement)) {
+    return null;
+  }
+  return { list, refresh, rootElement, summary };
+}
+
+function agentIsSafe(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort().join(",");
+  if (keys !== "capabilities,id,name,runtime_config_id,runtime_type") return false;
+  return (
+    typeof value.id === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value.id)
+    && typeof value.name === "string"
+    && value.name.trim() === value.name
+    && value.name.length > 0
+    && value.name.length <= 120
+    && !value.name.includes("\0")
+    && typeof value.runtime_type === "string"
+    && /^[a-z][a-z0-9_-]{0,31}$/.test(value.runtime_type)
+    && typeof value.runtime_config_id === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value.runtime_config_id)
+    && Array.isArray(value.capabilities)
+    && value.capabilities.length <= 64
+    && value.capabilities.every((capability) => (
+      typeof capability === "string" && /^[a-z][a-z0-9_.-]{0,63}$/.test(capability)
+    ))
+    && value.capabilities.every((capability, index, capabilities) => (
+      index === 0 || capabilities[index - 1] < capability
+    ))
+  );
+}
+
+function readAgentsPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  if (payload.schema_version !== 1 || payload.status !== "ready" || !Array.isArray(payload.agents)) {
+    return null;
+  }
+  if (!Number.isInteger(payload.count) || payload.count !== payload.agents.length || payload.count > 128) {
+    return null;
+  }
+  if (!payload.agents.every(agentIsSafe)) return null;
+  if (new Set(payload.agents.map((agent) => agent.id)).size !== payload.agents.length) return null;
+  return payload.agents;
+}
+
+function writeAgentField(card, label, value) {
+  const field = document.createElement("div");
+  field.className = "agent-field";
+  const name = document.createElement("dt");
+  name.textContent = label;
+  const detail = document.createElement("dd");
+  detail.textContent = value;
+  field.append(name, detail);
+  card.append(field);
+}
+
+function renderAgents(agents) {
+  const elements = agentsElements();
+  if (!elements) return;
+  elements.list.replaceChildren();
+  for (const agent of agents) {
+    const card = document.createElement("article");
+    card.className = "agent-card";
+    const heading = document.createElement("h3");
+    heading.textContent = agent.name;
+    const fields = document.createElement("dl");
+    fields.className = "agent-fields";
+    writeAgentField(fields, "Mentat ID", agent.id);
+    writeAgentField(fields, "Runtime", agent.runtime_type);
+    writeAgentField(fields, "Runtime config", agent.runtime_config_id);
+    card.append(heading, fields);
+
+    const capabilityLabel = document.createElement("p");
+    capabilityLabel.className = "agent-capability-label";
+    capabilityLabel.textContent = "Declared capabilities";
+    const capabilities = document.createElement("ul");
+    capabilities.className = "agent-capabilities";
+    if (agent.capabilities.length === 0) {
+      const capability = document.createElement("li");
+      capability.textContent = "None declared";
+      capabilities.append(capability);
+    } else {
+      for (const capabilityName of agent.capabilities) {
+        const capability = document.createElement("li");
+        capability.textContent = capabilityName;
+        capabilities.append(capability);
+      }
+    }
+    card.append(capabilityLabel, capabilities);
+    elements.list.append(card);
+  }
+}
+
+function applyAgentsState(state, detail, agents = null) {
+  const elements = agentsElements();
+  if (!elements) return;
+  elements.rootElement.dataset.agentsState = state;
+  elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false");
+  elements.summary.textContent = detail;
+  elements.refresh.disabled = state === "loading";
+  if (Array.isArray(agents)) {
+    renderAgents(agents);
+  } else {
+    elements.list.replaceChildren();
+  }
+}
+
+function clearAgentRequest() {
+  agentsRequest += 1;
+  agentsAbortController?.abort();
+  agentsAbortController = null;
+}
+
+async function refreshAgents() {
+  const elements = agentsElements();
+  if (!elements) return;
+  clearAgentRequest();
+  const request = agentsRequest;
+  agentsAbortController = new AbortController();
+  applyAgentsState("loading", "Loading canonical Agents…");
+  try {
+    const response = await fetch("/api/agents", {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal: agentsAbortController.signal,
+    });
+    const payload = await response.json();
+    if (request !== agentsRequest) return;
+    if (response.status === 200) {
+      const agents = readAgentsPayload(payload);
+      if (!agents) throw new Error("agents_response_invalid");
+      applyAgentsState(
+        agents.length === 0 ? "empty" : "ready",
+        agents.length === 0 ? "No canonical Agents yet." : `${agents.length} canonical Agent${agents.length === 1 ? "" : "s"}.`,
+        agents,
+      );
+      return;
+    }
+    if (response.status === 501 && payload?.schema_version === 1 && payload?.status === "unsupported") {
+      applyAgentsState("unsupported", "This Python bridge does not support Agent data yet.");
+      return;
+    }
+    if (response.status === 503 && payload?.schema_version === 1 && payload?.status === "unavailable") {
+      applyAgentsState("unavailable", "Agent data is temporarily unavailable. Check the Python connection and retry.");
+      return;
+    }
+    throw new Error("agents_response_invalid");
+  } catch {
+    if (request !== agentsRequest) return;
+    applyAgentsState("error", "Mentat could not safely read Agent data. Try again.");
+  } finally {
+    if (request === agentsRequest) agentsAbortController = null;
+  }
+}
+
 function synchronizeShell() {
   if (!document.querySelector(".app-shell")) return;
   applyContrast(root.dataset.contrastPreference || storedContrast());
@@ -159,6 +323,11 @@ function synchronizeShell() {
     hideNavigationTooltip();
     observedPath = window.location.pathname;
     requestAnimationFrame(() => requestAnimationFrame(refreshBridgeStatus));
+    if (agentsElements()) {
+      requestAnimationFrame(() => requestAnimationFrame(refreshAgents));
+    } else {
+      clearAgentRequest();
+    }
   }
 }
 
@@ -184,9 +353,13 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
+  if (target.matches("[data-agents-refresh]")) {
+    refreshAgents();
+    return;
+  }
   hideNavigationTooltip();
   if (target.matches("[data-nav-open]")) {
     openNavigation();

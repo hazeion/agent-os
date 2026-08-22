@@ -53,10 +53,14 @@ The Node request boundary covers every public path, including framework
 assets. It accepts only the configured loopback Host and port. Cross-site,
 mismatched-origin, and malformed fetch metadata requests fail closed.
 
-The browser can call one fixed route: `/api/bridge/health`. Node builds the
-private request on the server, checks the bounded response, and returns only
-safe health fields. Browser input cannot choose the bridge path, target,
-headers, or token.
+The browser can call fixed same-origin routes only: `/api/bridge/health` and
+the read-only `/api/agents` route. Node builds each private request on the
+server, checks its bounded response, and returns only the route's safe public
+fields. The Agent route exposes canonical Mentat IDs, names, runtime types,
+runtime configuration IDs, and declared capabilities. It never exposes
+adapter-owned runtime references, credentials, paths, raw Hermes data, or
+legacy heartbeat observations. Browser input cannot choose a bridge path,
+target, headers, or token.
 
 The first shell is prerendered and has no React hydration runtime. One fixed
 local script reads the health route after first paint. Later routes may add
