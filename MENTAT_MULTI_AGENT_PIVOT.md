@@ -192,8 +192,8 @@ pivot.
 
 ## Optional infrastructure
 
-Vercel is a supported option for future provider and agent infrastructure. A
-dedicated later slice should evaluate the services below behind Mentat's own
+Vercel is a first-class, optional infrastructure target for Mentat. A
+dedicated later slice will make the services below viable behind Mentat's own
 connection and runtime contracts. Using a Vercel service must not require
 hosting the local-first Mentat console on Vercel.
 
@@ -203,7 +203,18 @@ hosting the local-first Mentat console on Vercel.
 - Connect for OAuth and scoped service access
 
 Keep Mentat types above those services. Vercel types must not become Mentat's
-domain model.
+domain model. The Vercel integration must prove all of the following before it
+is offered in the product:
+
+- local-only Mentat continues to work without a Vercel account;
+- each Vercel service is an explicitly configured, capability-scoped optional
+  connection;
+- credentials stay server-side and out of Agent records, browser responses,
+  tracked files, and logs;
+- provider selection, Runs, events, and policy remain Mentat-owned normalized
+  records; and
+- a disabled or unavailable Vercel service fails closed without blocking other
+  runtimes.
 
 ## Delivery phases
 

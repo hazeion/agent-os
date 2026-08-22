@@ -27,15 +27,19 @@ BRIDGE_TOKEN_HEADER = "X-Mentat-Bridge-Token"
 BRIDGE_HEALTH_PATH = "/bridge/v1/health"
 BRIDGE_AGENTS_PATH = "/bridge/v1/agents"
 BRIDGE_TASKS_PATH = "/bridge/v1/tasks"
+BRIDGE_RUNS_PATH = "/bridge/v1/runs"
 MINIMUM_TOKEN_LENGTH = 43
 MAXIMUM_TOKEN_LENGTH = 256
 SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
 MAXIMUM_BRIDGE_AGENTS = 128
 MAXIMUM_BRIDGE_TASKS = 2048
+MAXIMUM_BRIDGE_RUNS = 50
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
+_RUN_ID = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
+_RUN_SOURCE = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 
 
 class BridgeConfigurationError(ValueError):
@@ -48,6 +52,10 @@ class BridgeAgentProjectionError(ValueError):
 
 class BridgeTaskProjectionError(ValueError):
     """Raised when canonical Task data cannot cross this fixed capability."""
+
+
+class BridgeRunProjectionError(ValueError):
+    """Raised when canonical Run data cannot cross this fixed capability."""
 
 
 class IPv6BridgeHTTPServer(ThreadingHTTPServer):
@@ -319,6 +327,55 @@ def bridge_tasks_payload() -> tuple[dict[str, object], int]:
     return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": state}, code
 
 
+def _public_run_record(value: object) -> dict[str, object]:
+    required = {"id", "source", "task_id", "agent_id", "runtime_type", "status", "dispatch_state", "partial", "timeline", "created_at", "updated_at", "started_at", "completed_at"}
+    if not isinstance(value, dict) or not required.issubset(value):
+        raise BridgeRunProjectionError("run_projection_invalid")
+    run_id, source, task_id, agent_id = value.get("id"), value.get("source"), value.get("task_id"), value.get("agent_id")
+    runtime_type, status, dispatch_state = value.get("runtime_type"), value.get("status"), value.get("dispatch_state")
+    timeline = value.get("timeline")
+    if (
+        not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id)
+        or not isinstance(source, str) or not _RUN_SOURCE.fullmatch(source)
+        or task_id is not None and (not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id))
+        or agent_id is not None and (not isinstance(agent_id, str) or not _OPAQUE_ID.fullmatch(agent_id))
+        or not isinstance(runtime_type, str) or not _RUNTIME_TYPE.fullmatch(runtime_type)
+        or status not in {"reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"}
+        or dispatch_state not in {"legacy", "reserved", "submitting", "accepted", "rejected", "unknown"}
+        or not isinstance(value.get("partial"), bool) or not isinstance(timeline, dict) or not isinstance(timeline.get("truncated"), bool)
+        or not _valid_timestamp(value.get("created_at")) or not _valid_timestamp(value.get("updated_at"))
+        or value.get("started_at") is not None and not _valid_timestamp(value.get("started_at"))
+        or value.get("completed_at") is not None and not _valid_timestamp(value.get("completed_at"))
+    ):
+        raise BridgeRunProjectionError("run_projection_invalid")
+    return {"id": run_id, "source": source, "task_id": task_id, "agent_id": agent_id, "runtime_type": runtime_type, "status": status, "dispatch_state": dispatch_state, "partial": value["partial"], "timeline_truncated": timeline["truncated"], "created_at": value["created_at"], "updated_at": value["updated_at"], "started_at": value["started_at"], "completed_at": value["completed_at"]}
+
+
+def bridge_runs_payload() -> tuple[dict[str, object], int]:
+    """Read one fixed bounded public Run projection through a local capability."""
+    try:
+        from run_repository import RunRepositoryError, RunRepositoryUnavailable
+        from server import mentat_runs_payload
+        try:
+            source = mentat_runs_payload()
+            runs = source.get("runs") if isinstance(source, dict) else None
+            if not isinstance(runs, list) or len(runs) > MAXIMUM_BRIDGE_RUNS:
+                raise BridgeRunProjectionError("run_projection_invalid")
+            public_runs = [_public_run_record(run) for run in runs]
+            if len({run["id"] for run in public_runs}) != len(public_runs):
+                raise BridgeRunProjectionError("run_projection_invalid")
+            return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "runs": public_runs, "count": len(public_runs)}, 200
+        except RunRepositoryUnavailable:
+            state, code = "unavailable", 503
+        except RunRepositoryError as exc:
+            state, code = ("unsupported", 501) if exc.code == "run_repository.schema_unsupported" else ("error", 500)
+        except (BridgeRunProjectionError, OSError, ValueError):
+            state, code = "error", 500
+    except Exception:
+        state, code = "error", 500
+    return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": state}, code
+
+
 class BridgeRequestHandler(BaseHTTPRequestHandler):
     server_version = "MentatLocalBridge"
     sys_version = ""
@@ -398,6 +455,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         if self.path == BRIDGE_TASKS_PATH:
             payload, status = bridge_tasks_payload()
+            self._send_json(payload, status)
+            return
+        if self.path == BRIDGE_RUNS_PATH:
+            payload, status = bridge_runs_payload()
             self._send_json(payload, status)
             return
         else:

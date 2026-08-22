@@ -9,6 +9,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Iterator
 
 from private_state import (
@@ -20,6 +21,10 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 SCHEMA_VERSION = 7
+MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
+MAX_READONLY_WAL_BYTES = 32 * 1024 * 1024
+MAX_READONLY_SHM_BYTES = 4 * 1024 * 1024
+MAX_READONLY_SNAPSHOT_BYTES = 96 * 1024 * 1024
 # Connection validation, WAL configuration, migration, and identity checks
 # must not overlap a webhook delivery transaction on Windows. Ordinary queries
 # release this process-wide boundary as soon as their connection is ready.
@@ -637,6 +642,155 @@ def connect(data_dir: Path) -> sqlite3.Connection:
 
     connection, _identities = connect_with_identity(data_dir)
     return connection
+
+
+def _existing_console_dir(data_dir: Path) -> Path:
+    """Validate the private Console hierarchy without creating any directory."""
+
+    root_path = Path(data_dir)
+    try:
+        if root_path.is_symlink():
+            raise MentatDatabaseError("Mentat data root must not be a symlink")
+        root = root_path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise MentatDatabaseError("Mentat private Console directory is unavailable") from exc
+    if not root.is_dir():
+        raise MentatDatabaseError("Mentat data root is not a directory")
+
+    private = root / "private"
+    console = private / "console"
+    for directory, parent in ((private, root), (console, private)):
+        try:
+            details = directory.lstat()
+            resolved = directory.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise MentatDatabaseError("Mentat private Console directory is unavailable") from exc
+        if (
+            stat.S_ISLNK(details.st_mode)
+            or _is_reparse_point(details)
+            or not stat.S_ISDIR(details.st_mode)
+            or resolved.parent != parent
+            or (
+                os.name == "posix"
+                and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) != 0o700)
+            )
+        ):
+            raise MentatDatabaseError("Mentat private Console directory is unsafe")
+    return console
+
+
+def _read_existing_database_file(
+    path: Path,
+    identity: tuple[int, int],
+    maximum: int,
+    remaining_total: int | None = None,
+) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise MentatDatabaseError("Mentat database is unavailable") from exc
+    try:
+        before = os.fstat(descriptor)
+        ceiling = min(maximum, remaining_total) if remaining_total is not None else maximum
+        if (
+            (int(before.st_dev), int(before.st_ino)) != identity
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > ceiling
+        ):
+            raise MentatDatabaseError("Mentat database is unavailable")
+        chunks: list[bytes] = []
+        remaining = ceiling + 1
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+            if remaining <= 0:
+                raise MentatDatabaseError("Mentat database is unavailable")
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(raw) != before.st_size
+        ):
+            raise MentatDatabaseError("Mentat database file changed while reading")
+        return raw
+    except OSError as exc:
+        raise MentatDatabaseError("Mentat database is unavailable") from exc
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def connect_existing_readonly(data_dir: Path) -> Iterator[sqlite3.Connection]:
+    """Read an existing database without migrations or source writes."""
+
+    with DATABASE_OPEN_BARRIER:
+        private = _existing_console_dir(data_dir)
+        path = private / DATABASE_NAME
+        identities = _validate_database_set(path, private)
+        if identities[path] is None:
+            raise MentatDatabaseError("Mentat database is unavailable")
+        wal = Path(f"{path}-wal")
+        shm = Path(f"{path}-shm")
+        if (identities[wal] is None) != (identities[shm] is None):
+            raise MentatDatabaseError("Mentat database sidecars are unavailable")
+        snapshot = None
+        captured: dict[Path, bytes] = {}
+        connection = None
+        try:
+            if identities[wal] is None:
+                uri = f"{path.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
+                connection = sqlite3.connect(uri, uri=True, timeout=5.0, isolation_level=None)
+            else:
+                snapshot = TemporaryDirectory(prefix="mentat-readonly-snapshot-")
+                snapshot_path = Path(snapshot.name) / path.name
+                files = (
+                    (path, snapshot_path, MAX_READONLY_DATABASE_BYTES),
+                    (wal, Path(f"{snapshot_path}-wal"), MAX_READONLY_WAL_BYTES),
+                    (shm, Path(f"{snapshot_path}-shm"), MAX_READONLY_SHM_BYTES),
+                )
+                if sum(source.stat().st_size for source, _destination, _maximum in files) > MAX_READONLY_SNAPSHOT_BYTES:
+                    raise MentatDatabaseError("Mentat database is unavailable")
+                remaining_total = MAX_READONLY_SNAPSHOT_BYTES
+                for source, destination, maximum in files:
+                    captured[source] = _read_existing_database_file(
+                        source,
+                        identities[source],
+                        maximum,
+                        remaining_total,
+                    )
+                    remaining_total -= len(captured[source])
+                    destination.write_bytes(captured[source])
+                    if os.name != "nt":
+                        destination.chmod(0o600)
+                connection = sqlite3.connect(snapshot_path, timeout=5.0, isolation_level=None)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 5000")
+            connection.execute("PRAGMA query_only = ON")
+            if _validate_database_set(path, private) != identities:
+                raise MentatDatabaseError("Mentat database file identity changed while opening")
+            yield connection
+        finally:
+            if connection is not None:
+                connection.close()
+            if snapshot is not None:
+                snapshot.cleanup()
+            if captured:
+                for source, raw in captured.items():
+                    maximum = (
+                        MAX_READONLY_DATABASE_BYTES if source == path
+                        else MAX_READONLY_WAL_BYTES if source == wal
+                        else MAX_READONLY_SHM_BYTES
+                    )
+                    if _read_existing_database_file(source, identities[source], maximum) != raw:
+                        raise MentatDatabaseError("Mentat database file changed while reading")
 
 
 @contextmanager

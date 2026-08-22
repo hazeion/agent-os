@@ -146,6 +146,7 @@ from mentat_db import (
     DATABASE_OPEN_BARRIER,
     MentatDatabaseError,
     connect as connect_mentat_database,
+    connect_existing_readonly as connect_existing_mentat_database,
 )
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
@@ -1790,6 +1791,26 @@ def orchestration_runs_payload(query: str = ""):
         "runs": [_public_orchestration_run(run) for run in page],
         "next_cursor": _encode_run_cursor(page[-1]) if len(rows) > limit and page else None,
     }, 200
+
+
+def mentat_runs_payload() -> dict:
+    """Return canonical Run summaries for one fixed local bridge capability."""
+
+    try:
+        with private_state_lock(DATA_DIR):
+            with connect_existing_mentat_database(DATA_DIR) as connection:
+                repository = RunRepository(connection)
+                repository.authority_receipt(required=True)
+                runs = repository.list_runs(limit=50)
+    except RunRepositoryError:
+        raise
+    except (MentatDatabaseError, OSError, sqlite3.Error) as exc:
+        raise RunRepositoryUnavailable("run_repository.unavailable") from exc
+    return {
+        "schema_version": 1,
+        "runs": [_public_orchestration_run(run) for run in runs],
+        "count": len(runs),
+    }
 
 
 def orchestration_run_payload(run_id: str, _query: str | None = None):

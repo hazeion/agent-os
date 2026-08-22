@@ -59,14 +59,15 @@ capability. It does not add Task controls or expose Task details.
 | 2A-B | Complete | Emerald Operations shell, tokens, navigation, route frames, and shared UI basics. | Slice 2A-A |
 | 2B-A | Complete | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
 | 2B-B | Complete | Read-only Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
-| 2B-C | Provisional | Runs route backed by normalized Run and event APIs. | Slice 2B-B |
+| 2B-C | In progress | Read-only Runs route backed by normalized Run APIs. | Slice 2B-B |
 | 2C-A | Provisional | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
 | 2C-B | Provisional | Messaging, stop controls, and supported approvals. | Slice 2C-A |
 | 2D | Provisional | Production packaging, launch, rollback, and legacy interface cutover. | Slice 2C-B |
 | 3A | Provisional | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
 | 3B | Provisional | Hermes and Codex run together in one interface. | Slice 3A |
 | 3C | Provisional | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
-| 4+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 3C |
+| 4A | Deferred | Vercel infrastructure adapter: optional AI Gateway, Sandbox, and Connect behind Mentat contracts. | Slice 3C |
+| 4B+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 4A |
 
 ## Completed foundation
 
@@ -223,6 +224,20 @@ details, add provider controls, or add a generic bridge proxy.
 
 Review log: `reviews/2026-08-22-tasks-read-only-bridge.md`
 
+### Slice 2B-C: read-only Runs route
+
+Status: In progress
+
+This slice makes a bounded canonical Run list available through one fixed,
+read-only Python bridge capability and one safe Node route. The `/runs` screen
+shows only lifecycle summary fields and gives clear loading, empty,
+unavailable, unsupported, and error feedback.
+
+It does not control Runs, stream events, expose runtime references or
+revisions, add a details page, or add a generic bridge proxy.
+
+Review log: `reviews/2026-08-22-runs-read-only-bridge.md`
+
 ### Slice 2D: production cutover
 
 The source preview is not an installed product. This slice must decide how Node
@@ -253,6 +268,26 @@ Do not add dynamic routing until that proof is stable.
 Move Agent identity and runtime bindings from `agent-registry.sqlite3` into
 `mentat.sqlite3` through an exact preview, backup, confirmation, and cutover.
 Do not create a dual-authority period.
+
+## Optional Vercel infrastructure
+
+### Slice 4A: Vercel infrastructure adapter
+
+Vercel becomes a real, optional infrastructure choice for compatible agent
+workloads. This is not a requirement to host the Mentat console on Vercel.
+
+The slice evaluates and, where appropriate, adds capability-scoped adapters
+for:
+
+- AI Gateway for model access and usage reporting
+- Sandbox for isolated workload execution
+- Connect for OAuth-backed, scoped service access
+
+Mentat remains the owner of Agent, provider-connection, Run, event, and policy
+records. The integration must be optional, preserve local operation without
+Vercel, keep credentials private, and fail closed if a configured service is
+unavailable. Exact implementation begins only after the runtime and data model
+are stable through Slice 3C.
 
 ## Working rules
 

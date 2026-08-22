@@ -3,11 +3,15 @@ from __future__ import annotations
 from http.client import HTTPConnection
 import json
 from pathlib import Path
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 
 from agent_registry import AgentRegistryError, AgentRegistryUnavailableError
+from mentat_db import connect as connect_mentat_database, database_path as mentat_database_path
+import mentat_db
+from run_repository import RunRepository, RunRepositoryError, RunRepositoryUnavailable
 from task_repository import TaskRepositoryError
 from mentat import local_bridge
 import server
@@ -215,6 +219,129 @@ class LocalBridgeTests(unittest.TestCase):
         with patch.object(server, "mentat_tasks_payload", side_effect=TaskRepositoryError("task_repository.corrupt")):
             payload, status = local_bridge.bridge_tasks_payload()
         self.assertEqual((status, payload["status"]), (500, "error"))
+
+    def test_runs_is_a_fixed_sqlite_projection_without_runtime_references(self):
+        canonical = {
+            "schema_version": 1,
+            "count": 1,
+            "runs": [{
+                "id": "run_current",
+                "source": "task_dispatch",
+                "task_id": "task_1",
+                "agent_id": "agent_researcher",
+                "runtime_type": "hermes",
+                "status": "running",
+                "dispatch_state": "accepted",
+                "partial": False,
+                "timeline": {"truncated": False, "last_sequence": 4},
+                "created_at": "2026-08-22T00:00:00Z",
+                "updated_at": "2026-08-22T00:01:00Z",
+                "started_at": "2026-08-22T00:00:01Z",
+                "completed_at": None,
+                "runtime_run_ref": "private-canary",
+                "state_revision": 4,
+                "events": [{"summary": "private-canary"}],
+            }],
+        }
+        with (
+            patch.object(
+                server,
+                "ensure_run_sqlite_authority",
+                side_effect=AssertionError("bridge_must_not_start_run_authority"),
+            ) as ensure_authority,
+            patch.object(server, "mentat_runs_payload", return_value=canonical),
+        ):
+            payload, status = local_bridge.bridge_runs_payload()
+        self.assertEqual(status, 200)
+        ensure_authority.assert_not_called()
+        self.assertEqual(payload["runs"][0]["id"], "run_current")
+        self.assertEqual(payload["runs"][0]["timeline_truncated"], False)
+        for private_name in ("runtime_run_ref", "state_revision", "events", "last_sequence"):
+            self.assertNotIn(private_name, json.dumps(payload))
+
+    def test_runs_reject_malformed_data_and_map_fixed_failures(self):
+        malformed = {
+            "id": "run_current",
+            "source": "task_dispatch",
+            "task_id": "task_1",
+            "agent_id": "agent_researcher",
+            "runtime_type": "hermes",
+            "status": "running",
+            "dispatch_state": "accepted",
+            "partial": False,
+            "timeline": {"truncated": "false"},
+            "created_at": "2026-08-22T00:00:00Z",
+            "updated_at": "2026-08-22T00:01:00Z",
+            "started_at": None,
+            "completed_at": None,
+        }
+        with self.assertRaises(local_bridge.BridgeRunProjectionError):
+            local_bridge._public_run_record(malformed)
+
+        cases = (
+            (RunRepositoryUnavailable("run_repository.unavailable"), "unavailable", 503),
+            (RunRepositoryError("run_repository.schema_unsupported"), "unsupported", 501),
+            (RunRepositoryError("run_repository.corrupt"), "error", 500),
+            (ValueError("private database detail"), "error", 500),
+        )
+        for outcome, expected_state, expected_status in cases:
+            with self.subTest(expected_state=expected_state):
+                with patch.object(server, "mentat_runs_payload", side_effect=outcome):
+                    payload, status = local_bridge.bridge_runs_payload()
+                self.assertEqual((status, payload["status"]), (expected_status, expected_state))
+                self.assertNotIn("private", json.dumps(payload))
+
+    def test_runs_private_route_returns_only_the_fixed_projection(self):
+        response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "runs": [],
+            "count": 0,
+        }
+        with patch.object(local_bridge, "bridge_runs_payload", return_value=(response, 200)):
+            status, payload, _headers = self.request(path=local_bridge.BRIDGE_RUNS_PATH)
+        self.assertEqual((status, payload), (200, response))
+
+    def test_runs_payload_requires_existing_authority_without_initializing_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(server, "DATA_DIR", Path(temporary)),
+                patch.object(
+                    server,
+                    "ensure_run_sqlite_authority",
+                    side_effect=AssertionError("bridge_must_not_start_run_authority"),
+                ) as ensure_authority,
+            ):
+                with self.assertRaises(RunRepositoryUnavailable):
+                    server.mentat_runs_payload()
+            ensure_authority.assert_not_called()
+            self.assertFalse((Path(temporary) / "private" / "console" / "mentat.sqlite3").exists())
+
+    def test_runs_payload_reads_existing_authority_without_changing_database_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            connection = connect_mentat_database(root)
+            try:
+                repository = RunRepository(connection)
+                with repository.mutation():
+                    repository.claim_authority(source_sha256="a" * 64, source_run_count=0)
+                database = mentat_database_path(root)
+                paths = (database, Path(f"{database}-wal"), Path(f"{database}-shm"))
+                self.assertTrue(all(path.exists() for path in paths))
+                before = tuple(path.read_bytes() for path in paths)
+                with patch.object(server, "DATA_DIR", root):
+                    self.assertEqual(server.mentat_runs_payload()["runs"], [])
+                self.assertEqual(tuple(path.read_bytes() for path in paths), before)
+                with (
+                    patch.object(mentat_db, "MAX_READONLY_DATABASE_BYTES", 1),
+                    patch.object(server, "DATA_DIR", root),
+                ):
+                    with self.assertRaises(RunRepositoryUnavailable):
+                        server.mentat_runs_payload()
+            finally:
+                connection.close()
 
     def test_duplicate_or_body_headers_fail_closed(self):
         header_sets = (

@@ -54,18 +54,24 @@ assets. It accepts only the configured loopback Host and port. Cross-site,
 mismatched-origin, and malformed fetch metadata requests fail closed.
 
 The browser can call fixed same-origin routes only: `/api/bridge/health`, the
-read-only `/api/agents` route, and the read-only `/api/tasks` route. Node builds each private request on the
-server, checks its bounded response, and returns only the route's safe public
-fields. The Agent route exposes canonical Mentat IDs, names, runtime types,
-runtime configuration IDs, and declared capabilities. It never exposes
-adapter-owned runtime references, credentials, paths, raw Hermes data, or
-legacy heartbeat observations. Browser input cannot choose a bridge path,
-target, headers, or token.
+read-only `/api/agents`, `/api/tasks`, and `/api/runs` routes. Node builds each
+private request on the server, checks its bounded response, and returns only
+the route's safe public fields. The Agent route exposes canonical Mentat IDs,
+names, runtime types, runtime configuration IDs, and declared capabilities. It
+never exposes adapter-owned runtime references, credentials, paths, raw Hermes
+data, or legacy heartbeat observations. Browser input cannot choose a bridge
+path, target, headers, or token.
 
 The Task route reads canonical SQLite Tasks only. It exposes IDs, titles,
 projects, statuses, priorities, due dates, tags, attention/review flags, and
 timestamps. Descriptions, notes, attachments, delegation, planning fields,
 and other private Task details stay behind Python.
+
+The Run route reads canonical SQLite Runs only. It exposes IDs, source, linked
+Task and Agent IDs, runtime type, status, dispatch state, partial and timeline
+truncation flags, and lifecycle timestamps. Runtime references, revisions,
+event counters, event contents, attachments, task snapshots, and adapter data
+stay behind Python.
 
 The first shell is prerendered and has no React hydration runtime. One fixed
 local script reads the health route after first paint. Later routes may add

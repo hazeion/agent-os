@@ -11,6 +11,8 @@ let agentsRequest = 0;
 let agentsAbortController = null;
 let tasksRequest = 0;
 let tasksAbortController = null;
+let runsRequest = 0;
+let runsAbortController = null;
 let navigationOwnsFocus = false;
 let observedPath = "";
 let runtimeStarted = false;
@@ -366,6 +368,56 @@ async function refreshTasks() {
   } catch { if (request === tasksRequest) applyTasksState("error", "Mentat could not safely read Task data. Try again."); } finally { if (request === tasksRequest) tasksAbortController = null; }
 }
 
+function runsElements() {
+  const rootElement = document.querySelector("[data-runs-root]"); if (!(rootElement instanceof HTMLElement)) return null;
+  const summary = rootElement.querySelector("[data-runs-summary]"), list = rootElement.querySelector("[data-runs-list]"), refresh = rootElement.querySelector("[data-runs-refresh]");
+  return summary instanceof HTMLElement && list instanceof HTMLElement && refresh instanceof HTMLButtonElement ? { rootElement, summary, list, refresh } : null;
+}
+function runIsSafe(run) {
+  const timestamp = (value) => typeof value === "string" && value.length > 0 && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && !Number.isNaN(Date.parse(value));
+  return run && typeof run === "object" && !Array.isArray(run)
+    && Object.keys(run).sort().join(",") === "agent_id,completed_at,created_at,dispatch_state,id,partial,runtime_type,source,started_at,status,task_id,timeline_truncated,updated_at"
+    && typeof run.id === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/.test(run.id)
+    && typeof run.source === "string" && /^[a-z][a-z0-9_.-]{0,63}$/.test(run.source)
+    && (run.task_id === null || typeof run.task_id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/.test(run.task_id))
+    && (run.agent_id === null || typeof run.agent_id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(run.agent_id))
+    && typeof run.runtime_type === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(run.runtime_type)
+    && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(run.status)
+    && ["legacy", "reserved", "submitting", "accepted", "rejected", "unknown"].includes(run.dispatch_state)
+    && typeof run.partial === "boolean" && typeof run.timeline_truncated === "boolean" && timestamp(run.created_at) && timestamp(run.updated_at)
+    && (run.started_at === null || timestamp(run.started_at)) && (run.completed_at === null || timestamp(run.completed_at));
+}
+function readRunsPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join(",") !== "count,runs,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || !Array.isArray(payload.runs) || !Number.isInteger(payload.count) || payload.count !== payload.runs.length || payload.count > 50 || !payload.runs.every(runIsSafe)) return null;
+  return new Set(payload.runs.map((run) => run.id)).size === payload.runs.length ? payload.runs : null;
+}
+function readableRunStatus(value) { return value.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "); }
+function renderRuns(runs) {
+  const elements = runsElements(); if (!elements) return; elements.list.replaceChildren();
+  for (const run of runs) {
+    const card = document.createElement("article"); card.className = "run-card";
+    const header = document.createElement("div"); header.className = "run-card-header";
+    const heading = document.createElement("h3"); heading.textContent = run.id;
+    const status = document.createElement("p"); status.className = "run-status"; status.textContent = readableRunStatus(run.status);
+    header.append(heading, status); card.append(header);
+    const primary = document.createElement("p"); primary.className = "run-card-meta"; primary.textContent = `${run.runtime_type} · ${run.source} · ${run.dispatch_state}`;
+    const detail = document.createElement("p"); detail.className = "run-card-meta"; detail.textContent = `Task ${run.task_id || "Not linked"} · Agent ${run.agent_id || "Not assigned"} · Created ${run.created_at} · Updated ${run.updated_at}`;
+    const lifecycle = document.createElement("p"); lifecycle.className = "run-card-meta"; lifecycle.textContent = `Started ${run.started_at || "Not started"} · Completed ${run.completed_at || "Not completed"}${run.partial ? " · Partial" : ""}${run.timeline_truncated ? " · Timeline truncated" : ""}`;
+    card.append(primary, detail, lifecycle); elements.list.append(card);
+  }
+}
+function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else elements.list.replaceChildren(); }
+function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; }
+async function refreshRuns() {
+  if (!runsElements()) return; clearRunRequest(); const request = runsRequest; runsAbortController = new AbortController(); applyRunsState("loading", "Loading current Runs…");
+  try { const response = await fetch("/api/runs", { cache: "no-store", headers: { Accept: "application/json" }, signal: runsAbortController.signal }); const payload = await response.json(); if (request !== runsRequest) return;
+    if (response.status === 200) { const runs = readRunsPayload(payload); if (!runs) throw new Error("runs_response_invalid"); applyRunsState(runs.length ? "ready" : "empty", runs.length ? `${runs.length} current Run${runs.length === 1 ? "" : "s"}.` : "No current Runs yet.", runs); return; }
+    if (response.status === 501 && payload?.schema_version === 1 && payload?.status === "unsupported") { applyRunsState("unsupported", "This Python bridge does not support Run data yet."); return; }
+    if (response.status === 503 && payload?.schema_version === 1 && payload?.status === "unavailable") { applyRunsState("unavailable", "Run data is temporarily unavailable. Check the Python connection and retry."); return; }
+    throw new Error("runs_response_invalid");
+  } catch { if (request === runsRequest) applyRunsState("error", "Mentat could not safely read Run data. Try again."); } finally { if (request === runsRequest) runsAbortController = null; }
+}
+
 function synchronizeShell() {
   if (!document.querySelector(".app-shell")) return;
   applyContrast(root.dataset.contrastPreference || storedContrast());
@@ -382,6 +434,7 @@ function synchronizeShell() {
       clearAgentRequest();
     }
     if (tasksElements()) requestAnimationFrame(() => requestAnimationFrame(refreshTasks)); else clearTaskRequest();
+    if (runsElements()) requestAnimationFrame(() => requestAnimationFrame(refreshRuns)); else clearRunRequest();
   }
 }
 
@@ -407,7 +460,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
   if (target.matches("[data-agents-refresh]")) {
@@ -415,6 +468,7 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (target.matches("[data-tasks-refresh]")) { refreshTasks(); return; }
+  if (target.matches("[data-runs-refresh]")) { refreshRuns(); return; }
   hideNavigationTooltip();
   if (target.matches("[data-nav-open]")) {
     openNavigation();
