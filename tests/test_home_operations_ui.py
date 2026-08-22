@@ -83,11 +83,15 @@ class HomeOperationsUiTests(unittest.TestCase):
             INDEX,
         )
         self.assertIn("window.__MENTAT_READY__ = false", INDEX)
-        self.assertIn("requestAnimationFrame", INDEX)
-        self.assertIn("setTimeout(boot, 250)", INDEX)
+        self.assertIn('<script defer id="mentat-core-script" src="/core.js?v=emerald-shell-4"></script>', INDEX)
+        self.assertIn('<script defer id="mentat-app-script" src="/app.js?v=emerald-shell-5"></script>', INDEX)
+        self.assertLess(INDEX.index('id="mentat-core-script"'), INDEX.index('id="mentat-app-script"'))
+        self.assertNotIn("requestAnimationFrame", INDEX)
+        self.assertNotIn("setTimeout(boot, 250)", INDEX)
         self.assertIn("window.addEventListener('unhandledrejection', showBootError)", INDEX)
-        self.assertIn("loadScript('/core.js?v=emerald-shell-4')", INDEX)
-        self.assertIn("loadScript('/app.js?v=emerald-shell-5')", INDEX)
+        self.assertIn("event.target === window", INDEX)
+        self.assertIn("event.target?.id === 'mentat-core-script'", INDEX)
+        self.assertIn("event.target?.id === 'mentat-app-script'", INDEX)
         self.assertIn("window.__MENTAT_READY__ = true", APP)
         self.assertIn(
             '<div class="empty clear-skies home-focus-empty">No planned or open work in this project scope.</div>',
