@@ -87,8 +87,16 @@ accepts only the selected Run ID and a state-bound confirmation token, while
 Python checks the active task-bound Run, Agent and runtime binding, declared
 `run.stop` capability, and current state under the Hermes operation lock. It
 reads the canonical Run again before returning a requested result. The browser
-never selects an adapter reference, action name, or bridge target; messages and
-approval responses require their own bounded contracts.
+never selects an adapter reference, action name, or bridge target.
+
+The selected-Run message flow is a separate fixed preview-confirm action. Node
+accepts only the selected Run ID, one text-only message of at most 6,000
+Unicode code points, and its state-bound confirmation. Python validates the active
+task-bound Run, Agent and runtime binding, declared `run.message` capability,
+normalized message digest, and current state under the operation lock. It
+checks the runtime state after the supported message operation before returning
+an accepted result. A changed message or Run requires a new preview. Approval
+and clarification responses require their own bounded contracts.
 
 The first shell is prerendered and has no React hydration runtime. One fixed
 local script reads the health route after first paint. Later routes may add

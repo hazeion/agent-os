@@ -36,6 +36,7 @@ MAXIMUM_BRIDGE_TASKS = 2048
 MAXIMUM_BRIDGE_RUNS = 50
 MAXIMUM_BRIDGE_RUN_EVENTS = 100
 MAXIMUM_BRIDGE_ACTION_BODY_BYTES = 512
+MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES = 24_576
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
@@ -540,6 +541,68 @@ def bridge_confirm_run_stop(run_id: str, confirmation_id: object) -> tuple[dict[
         return _run_action_failure("error")
 
 
+def bridge_run_message_preview_payload(
+    run_id: str, text: object
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import OrchestrationRunActionError, mentat_run_message_preview_payload
+
+        source = mentat_run_message_preview_payload(run_id, text)
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"schema_version", "action", "run_id", "requires_confirmation", "confirmation_id"}
+            or source.get("schema_version") != 1
+            or source.get("action") != "message"
+            or source.get("run_id") != run_id
+            or source.get("requires_confirmation") is not True
+            or not isinstance(source.get("confirmation_id"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", source["confirmation_id"])
+        ):
+            raise BridgeRunProjectionError("run_action_projection_invalid")
+        return {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "action": "message", "run_id": run_id,
+            "requires_confirmation": True, "confirmation_id": source["confirmation_id"],
+        }, 200
+    except OrchestrationRunActionError as exc:
+        if exc.code == "run.not_found": return _run_action_failure("not_found")
+        if exc.code == "run.unavailable": return _run_action_failure("unavailable")
+        if exc.code in {"run.stop_unavailable", "run.message_unavailable", "run.binding_changed"}: return _run_action_failure("unsupported")
+        if exc.code == "run.message_invalid": return _run_action_failure("invalid")
+        return _run_action_failure("error")
+    except Exception:
+        return _run_action_failure("error")
+
+
+def bridge_confirm_run_message(
+    run_id: str, text: object, confirmation_id: object
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import OrchestrationRunActionError, mentat_confirm_run_message
+
+        source = mentat_confirm_run_message(run_id, text, confirmation_id)
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"schema_version", "action", "run_id", "disposition"}
+            or source.get("schema_version") != 1 or source.get("action") != "message"
+            or source.get("run_id") != run_id or source.get("disposition") != "accepted"
+        ):
+            raise BridgeRunProjectionError("run_action_projection_invalid")
+        return {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "action": "message", "run_id": run_id, "disposition": "accepted",
+        }, 202
+    except OrchestrationRunActionError as exc:
+        if exc.code == "run.not_found": return _run_action_failure("not_found")
+        if exc.code == "run.unavailable": return _run_action_failure("unavailable")
+        if exc.code in {"run.stop_unavailable", "run.message_unavailable", "run.binding_changed"}: return _run_action_failure("unsupported")
+        if exc.code in {"run.confirmation_invalid", "run.confirmation_stale"}: return _run_action_failure("conflict")
+        if exc.code == "run.message_invalid": return _run_action_failure("invalid")
+        return _run_action_failure("error")
+    except Exception:
+        return _run_action_failure("error")
+
+
 class BridgeRequestHandler(BaseHTTPRequestHandler):
     server_version = "MentatLocalBridge"
     sys_version = ""
@@ -597,15 +660,16 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "method_not_allowed"}, 405)
 
-    def _action_json_body(self) -> dict[str, object] | None:
+    def _action_json_body(self, maximum_bytes: int = MAXIMUM_BRIDGE_ACTION_BODY_BYTES) -> dict[str, object] | None:
         content_type = self.headers.get("Content-Type", "")
         lengths = self.headers.get_all("Content-Length", failobj=[]) or []
         if len(lengths) != 1 or content_type.lower() != "application/json":
             return None
-        if not re.fullmatch(r"[1-9][0-9]{0,3}", lengths[0]):
+        maximum_digits = len(str(maximum_bytes))
+        if not re.fullmatch(rf"[1-9][0-9]{{0,{maximum_digits - 1}}}", lengths[0]):
             return None
         size = int(lengths[0])
-        if size > MAXIMUM_BRIDGE_ACTION_BODY_BYTES:
+        if size > maximum_bytes:
             return None
         try:
             value = json.loads(self.rfile.read(size).decode("utf-8"))
@@ -666,7 +730,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
-        match = re.fullmatch(r"/bridge/v1/runs/([^/]+)/stop(?:/(preview))?", parsed.path)
+        match = re.fullmatch(r"/bridge/v1/runs/([^/]+)/(stop|message)(?:/(preview))?", parsed.path)
         if match is None or parsed.query:
             self._reject_method()
             return
@@ -674,21 +738,31 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if _RUN_ID.fullmatch(run_id) is None:
             self._send_json({"error": "bridge_route_not_found"}, 404)
             return
-        body = self._action_json_body()
+        action = match.group(2)
+        body = self._action_json_body(
+            MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES if action == "message" else MAXIMUM_BRIDGE_ACTION_BODY_BYTES
+        )
         if body is None:
             self._send_json({"error": "bridge_route_not_found"}, 404)
             return
-        if match.group(2) == "preview":
-            if body:
+        if match.group(3) == "preview":
+            if set(body) != ({"text"} if action == "message" else set()):
                 self._send_json({"error": "bridge_route_not_found"}, 404)
                 return
-            payload, status = bridge_run_stop_preview_payload(run_id)
+            payload, status = (
+                bridge_run_message_preview_payload(run_id, body["text"])
+                if action == "message" else bridge_run_stop_preview_payload(run_id)
+            )
             self._send_json(payload, status)
             return
-        if set(body) != {"confirmation_id"}:
+        expected = {"confirmation_id", "text"} if action == "message" else {"confirmation_id"}
+        if set(body) != expected:
             self._send_json({"error": "bridge_route_not_found"}, 404)
             return
-        payload, status = bridge_confirm_run_stop(run_id, body["confirmation_id"])
+        payload, status = (
+            bridge_confirm_run_message(run_id, body["text"], body["confirmation_id"])
+            if action == "message" else bridge_confirm_run_stop(run_id, body["confirmation_id"])
+        )
         self._send_json(payload, status)
 
     do_DELETE = _reject_method

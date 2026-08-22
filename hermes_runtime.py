@@ -227,10 +227,12 @@ class HermesRuntime:
             task_id=task.id,
         )
 
-    def send_message(self, run_id: str, message: str) -> None:
+    def send_message(
+        self, run_id: str, message: str, *, context: RuntimeContext | None = None
+    ) -> None:
         if not isinstance(message, str) or not message.strip() or "\x00" in message:
             raise AgentRuntimeError("runtime.message_invalid")
-        snapshot = self._bound_snapshot(run_id)
+        snapshot = self._bound_snapshot(run_id, context=context)
         controls = snapshot.get("controls") if isinstance(snapshot, Mapping) else None
         steer = controls.get("steer") if isinstance(controls, Mapping) else None
         runtime_agent_ref = snapshot.get("agent_id") if isinstance(snapshot, Mapping) else None
@@ -267,7 +269,7 @@ class HermesRuntime:
             context.runtime_run_ref,
         }:
             raise AgentRuntimeError("runtime.identity_context_invalid")
-        snapshot = self._bound_snapshot(run_id)
+        snapshot = self._bound_snapshot(run_id, context=context)
         return normalize_hermes_run(
             snapshot,
             agent_id=str(snapshot["mentat_agent_id"]),

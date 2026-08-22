@@ -62,11 +62,13 @@ capability. It does not add Task controls or expose Task details.
 | 2B-C | Complete | Read-only Runs route backed by normalized Run APIs. | Slice 2B-B |
 | 2C-A | Complete in this branch | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
 | 2C-B | Complete in this branch | Safe preview-confirm stop control for a selected Run. Messaging and approvals need separate contracts. | Slice 2C-A |
-| 2D | Provisional | Production packaging, launch, rollback, and legacy interface cutover. | Slice 2C-B |
+| 2C-C | Complete in this branch | Safe preview-confirm text message for a selected active Run. | Slice 2C-B |
+| 2C-D | Provisional | Supported approval and clarification responses. | Slice 2C-C |
+| 2D | Provisional | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
 | 3A | Provisional | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
 | 3B | Provisional | Hermes and Codex run together in one interface. | Slice 3A |
 | 3C | Provisional | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
-| 4A | Deferred | Vercel infrastructure adapter: optional AI Gateway, Sandbox, and Connect behind Mentat contracts. | Slice 3C |
+| 4A | Planned | Vercel infrastructure adapter: optional AI Gateway, Sandbox, and Connect behind Mentat contracts. | Slice 3C |
 | 4B+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 4A |
 
 ## Completed foundation
@@ -189,10 +191,10 @@ own approved backend slice.
 Add event streaming before controls.
 
 2C-A adds normalized SSE with reconnect, bounded history, and explicit
-truncation. 2C-B begins with one state-bound Stop action for the selected
-runtime. Messaging and approval responses each need their own text and
-request-response contracts, so they remain later slices rather than widening
-the first mutation boundary.
+truncation. 2C-B adds one state-bound Stop action. 2C-C adds a separate,
+bounded preview-confirm text-message action. 2C-D adds supported approval and
+clarification responses. Keeping each mutation contract separate prevents a
+generic action route and makes the cutover's control-parity requirement honest.
 
 All browser traffic stays same-origin through Node. Python performs authority,
 capability, confirmation, and state checks.
@@ -273,10 +275,27 @@ steering, approval responses, or generic bridge forwarding.
 
 Review log: `reviews/2026-08-22-run-stop-control.md`
 
+### Slice 2C-C: selected Run message control
+
+Status: Complete in this branch
+
+This slice adds one fixed, text-only message action for a selected active Run.
+The person types a bounded message, reviews the exact current state, then
+confirms the same message. Python validates current identity, capability,
+binding, state, and confirmation before calling the runtime-neutral message
+operation. It rechecks the supported run state before returning an accepted
+result.
+
+It does not add arbitrary commands, attachments, local-run messaging, approval
+responses, generic bridge forwarding, or browser-selected runtime references.
+
+Review log: `reviews/2026-08-22-run-message-control.md`
+
 ### Slice 2D: production cutover
 
 The source preview is not an installed product. This slice must decide how Node
-ships, starts, updates, and rolls back on supported platforms.
+ships, starts, updates, and rolls back on supported platforms after the
+separate Run-message and supported-approval contracts reach parity.
 
 The legacy interface may be retired only after:
 
@@ -323,6 +342,15 @@ records. The integration must be optional, preserve local operation without
 Vercel, keep credentials private, and fail closed if a configured service is
 unavailable. Exact implementation begins only after the runtime and data model
 are stable through Slice 3C.
+
+The Slice 4A completion bar is a working optional connection, not a research
+note: an operator can explicitly configure a Vercel connection, see its safe
+capabilities, assign a compatible Agent to it, start and observe a bounded
+Run, and disconnect it without affecting local or Hermes Agents. AI Gateway,
+Sandbox, and Connect remain separate capability-scoped adapters. Sandbox is
+for isolated workloads, not Mentat's durable database or permanently running
+server. Connect is for OAuth-backed service access; it does not expose tokens
+to the browser or replace every provider's authentication flow.
 
 ## Working rules
 

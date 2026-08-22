@@ -15,6 +15,7 @@ let runsRequest = 0;
 let runsAbortController = null;
 let activeRunTimeline = null;
 let activeRunStop = null;
+let activeRunMessage = null;
 let renderedRuns = new Map();
 let navigationOwnsFocus = false;
 let observedPath = "";
@@ -396,7 +397,7 @@ function readRunsPayload(payload) {
 }
 function readableRunStatus(value) { return value.split(/[._]/).map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "); }
 function renderRuns(runs) {
-  const elements = runsElements(); if (!elements) return; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); renderedRuns = new Map(runs.map((run) => [run.id, run])); elements.list.replaceChildren();
+  const elements = runsElements(); if (!elements) return; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); renderedRuns = new Map(runs.map((run) => [run.id, run])); elements.list.replaceChildren();
   for (const run of runs) {
     const card = document.createElement("article"); card.className = "run-card"; card.dataset.runId = run.id;
     const header = document.createElement("div"); header.className = "run-card-header";
@@ -409,12 +410,13 @@ function renderRuns(runs) {
     const actions = document.createElement("div"); actions.className = "run-card-actions";
     const timeline = document.createElement("button"); timeline.className = "run-timeline-open"; timeline.dataset.runTimelineOpen = ""; timeline.dataset.runId = run.id; timeline.setAttribute("aria-expanded", "false"); timeline.type = "button"; timeline.textContent = "Open timeline";
     actions.append(timeline);
+    if (run.status === "running") { const message = document.createElement("button"); message.className = "run-message-open"; message.dataset.runMessageOpen = ""; message.dataset.runId = run.id; message.setAttribute("aria-expanded", "false"); message.type = "button"; message.textContent = "Send message"; actions.append(message); }
     if (["queued", "submitting", "starting", "running", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(run.status)) { const stop = document.createElement("button"); stop.className = "run-stop-open"; stop.dataset.runStopOpen = ""; stop.dataset.runId = run.id; stop.setAttribute("aria-expanded", "false"); stop.type = "button"; stop.textContent = "Stop run"; actions.append(stop); }
     card.append(primary, detail, lifecycle, actions); elements.list.append(card);
   }
 }
-function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else { closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); renderedRuns = new Map(); elements.list.replaceChildren(); } }
-function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); }
+function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else { closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); renderedRuns = new Map(); elements.list.replaceChildren(); } }
+function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false }); }
 async function refreshRuns() {
   if (!runsElements()) return; clearRunRequest(); const request = runsRequest; runsAbortController = new AbortController(); applyRunsState("loading", "Loading current Runs…");
   try { const response = await fetch("/api/runs", { cache: "no-store", headers: { Accept: "application/json" }, signal: runsAbortController.signal }); const payload = await response.json(); if (request !== runsRequest) return;
@@ -457,12 +459,26 @@ function closeActiveRunStop({ restoreFocus = true } = {}) {
   activeRunStop = null;
 }
 
+function closeActiveRunMessage({ restoreFocus = true } = {}) {
+  if (!activeRunMessage) return;
+  activeRunMessage.panel.remove(); activeRunMessage.trigger.setAttribute("aria-expanded", "false");
+  if (restoreFocus && activeRunMessage.trigger.isConnected) activeRunMessage.trigger.focus(); activeRunMessage = null;
+}
+
 function stopStateMessage(response) {
   if (response.status === 404) return "This Run is no longer available.";
   if (response.status === 409) return "This Run changed. Review Stop again.";
   if (response.status === 501) return "Stop is not available for this Run.";
   if (response.status === 503) return "Run control is temporarily unavailable.";
   return "Mentat could not safely process Stop.";
+}
+
+function messageStateMessage(response) {
+  if (response.status === 404) return "This Run is no longer available.";
+  if (response.status === 409) return "This Run or message changed. Review this message again.";
+  if (response.status === 501) return "Messages are not available for this Run.";
+  if (response.status === 503) return "Run control is temporarily unavailable.";
+  return "Mentat could not safely process this message.";
 }
 
 async function reviewRunStop(current) {
@@ -486,6 +502,23 @@ async function confirmRunStop() {
   const current = activeRunStop; if (!current?.confirmationId) return;
   current.confirm.disabled = true; current.notice.textContent = "Requesting Stop…";
   try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.disposition !== "requested") { current.notice.textContent = stopStateMessage(response); if (response.status === 409) { current.confirmationId = null; delete current.confirm.dataset.runStopConfirm; current.confirm.dataset.runStopReview = ""; current.confirm.textContent = "Review Stop again"; } current.confirm.disabled = false; return; } current.notice.textContent = "Stop requested. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunStop?.panel === current.panel) { current.notice.textContent = "Mentat could not safely process Stop."; current.confirm.disabled = false; } }
+}
+
+async function reviewRunMessage() {
+  const current = activeRunMessage; if (!current) return;
+  const text = current.input.value.trim(); if (!text) { current.notice.textContent = "Enter a message to review."; return; } current.input.value = text; current.review.disabled = true; current.notice.textContent = "Reviewing the current Run state…";
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/message/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text }) }); const payload = await response.json(); if (activeRunMessage?.panel !== current.panel) return; if (response.status !== 200 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) { current.notice.textContent = messageStateMessage(response); current.review.disabled = false; return; } current.confirmationId = payload.confirmation_id; current.input.disabled = true; current.confirm.hidden = false; current.notice.textContent = "Confirm this message for the current Run."; } catch { if (activeRunMessage?.panel === current.panel) { current.notice.textContent = "Mentat could not safely review this message."; current.review.disabled = false; } }
+}
+
+async function confirmRunMessage() {
+  const current = activeRunMessage; if (!current?.confirmationId) return;
+  current.confirm.disabled = true; current.notice.textContent = "Sending message…";
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/message`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ text: current.input.value, confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "message" || payload.run_id !== current.run.id || payload.disposition !== "accepted") { current.notice.textContent = messageStateMessage(response); if (response.status === 409) { current.confirmationId = null; current.input.disabled = false; current.confirm.hidden = true; current.review.disabled = false; } current.confirm.disabled = false; return; } current.notice.textContent = "Message accepted. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunMessage?.panel === current.panel) { current.notice.textContent = "Mentat could not safely send this message."; current.confirm.disabled = false; } }
+}
+
+function openRunMessage(run, card, trigger) {
+  closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); closeActiveRunMessage({ restoreFocus: false });
+  const panel = document.createElement("section"); panel.className = "run-message"; const heading = document.createElement("h4"); heading.textContent = "Send a message"; const input = document.createElement("textarea"); input.id = `run-message-${run.id}`; input.rows = 3; input.placeholder = "Text-only guidance for this active Run"; input.addEventListener("input", () => { const characters = Array.from(input.value); if (characters.length > 6000) input.value = characters.slice(0, 6000).join(""); }); const label = document.createElement("label"); label.htmlFor = input.id; label.textContent = "Message"; const notice = document.createElement("p"); notice.className = "run-stop-notice"; notice.setAttribute("aria-live", "polite"); const actions = document.createElement("div"); actions.className = "run-stop-actions"; const cancel = document.createElement("button"); cancel.type = "button"; cancel.dataset.runMessageCancel = ""; cancel.textContent = "Cancel"; const review = document.createElement("button"); review.type = "button"; review.dataset.runMessageReview = ""; review.textContent = "Review message"; const confirm = document.createElement("button"); confirm.type = "button"; confirm.dataset.runMessageConfirm = ""; confirm.textContent = "Confirm message"; confirm.hidden = true; actions.append(cancel, review, confirm); panel.append(heading, label, input, notice, actions); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunMessage = { trigger, panel, run, input, notice, review, confirm, confirmationId: null }; input.focus();
 }
 
 function appendTimelineEvents(list, events) {
@@ -575,7 +608,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-run-message-open], [data-run-message-cancel], [data-run-message-review], [data-run-message-confirm], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
   if (target.matches("[data-agents-refresh]")) {
@@ -588,6 +621,9 @@ document.addEventListener("click", (event) => {
   if (target.matches("[data-run-stop-cancel]")) { closeActiveRunStop(); return; }
   if (target.matches("[data-run-stop-confirm]")) { confirmRunStop(); return; }
   if (target.matches("[data-run-stop-review]")) { if (activeRunStop?.panel.parentElement instanceof HTMLElement) reviewRunStop(activeRunStop); return; }
+  if (target.matches("[data-run-message-cancel]")) { closeActiveRunMessage(); return; }
+  if (target.matches("[data-run-message-review]")) { reviewRunMessage(); return; }
+  if (target.matches("[data-run-message-confirm]")) { confirmRunMessage(); return; }
   if (target.matches("[data-run-timeline-open]")) {
     const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
     if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunTimeline(run, card, target);
@@ -596,6 +632,11 @@ document.addEventListener("click", (event) => {
   if (target.matches("[data-run-stop-open]")) {
     const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
     if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunStop(run, card, target);
+    return;
+  }
+  if (target.matches("[data-run-message-open]")) {
+    const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
+    if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunMessage(run, card, target);
     return;
   }
   hideNavigationTooltip();

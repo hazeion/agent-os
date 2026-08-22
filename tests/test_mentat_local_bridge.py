@@ -415,6 +415,70 @@ class LocalBridgeTests(unittest.TestCase):
         )
         self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
 
+    def test_run_message_actions_are_fixed_authenticated_and_body_bounded(self):
+        preview = {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "action": "message", "run_id": "run_current",
+            "requires_confirmation": True, "confirmation_id": "a" * 64,
+        }
+        with patch.object(local_bridge, "bridge_run_message_preview_payload", return_value=(preview, 200)) as capability:
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/message/preview",
+                headers={"Content-Type": "application/json"}, body=b'{"text":"Stay focused"}',
+            )
+        self.assertEqual((status, payload), (200, preview))
+        capability.assert_called_once_with("run_current", "Stay focused")
+        unicode_text = "€" * 4_000
+        unicode_preview_body = json.dumps(
+            {"text": unicode_text}, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        with patch.object(local_bridge, "bridge_run_message_preview_payload", return_value=(preview, 200)) as unicode_capability:
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/message/preview",
+                headers={"Content-Type": "application/json"}, body=unicode_preview_body,
+            )
+        self.assertGreater(len(unicode_preview_body), 9_999)
+        self.assertLessEqual(len(unicode_preview_body), local_bridge.MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES)
+        self.assertEqual((status, payload), (200, preview))
+        unicode_capability.assert_called_once_with("run_current", unicode_text)
+        result = {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "action": "message", "run_id": "run_current",
+            "disposition": "accepted",
+        }
+        with patch.object(local_bridge, "bridge_confirm_run_message", return_value=(result, 202)) as confirmed:
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/message",
+                headers={"Content-Type": "application/json"},
+                body=(b'{"text":"Stay focused","confirmation_id":"' + b"a" * 64 + b'"}'),
+            )
+        self.assertEqual((status, payload), (202, result))
+        confirmed.assert_called_once_with("run_current", "Stay focused", "a" * 64)
+        unicode_confirmation_body = json.dumps(
+            {"text": unicode_text, "confirmation_id": "a" * 64},
+            ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")
+        with patch.object(local_bridge, "bridge_confirm_run_message", return_value=(result, 202)) as unicode_confirmed:
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/message",
+                headers={"Content-Type": "application/json"}, body=unicode_confirmation_body,
+            )
+        self.assertGreater(len(unicode_confirmation_body), 9_999)
+        self.assertLessEqual(len(unicode_confirmation_body), local_bridge.MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES)
+        self.assertEqual((status, payload), (202, result))
+        unicode_confirmed.assert_called_once_with("run_current", unicode_text, "a" * 64)
+        for path, body in (
+            ("/bridge/v1/runs/run_current/message/preview", b"{}"),
+            ("/bridge/v1/runs/run_current/message", b'{"confirmation_id":"' + b"a" * 64 + b'"}'),
+            ("/bridge/v1/runs/run_current/message/preview", b'{"text":"x","extra":true}'),
+            ("/bridge/v1/runs/run_current/message/preview", b'{"text":"' + b"x" * 24_600 + b'"}'),
+        ):
+            with self.subTest(path=path, body_length=len(body)):
+                status, payload, _headers = self.request(
+                    method="POST", path=path, headers={"Content-Type": "application/json"}, body=body,
+                )
+                self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
+
     def test_run_events_authority_reader_never_initializes_sqlite(self):
         source = Path(server.__file__).read_text(encoding="utf-8")
         start = source.index("def mentat_run_events_payload")

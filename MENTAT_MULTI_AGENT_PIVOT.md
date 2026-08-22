@@ -192,10 +192,10 @@ pivot.
 
 ## Optional infrastructure
 
-Vercel is a first-class, optional infrastructure target for Mentat. A
-dedicated later slice will make the services below viable behind Mentat's own
-connection and runtime contracts. Using a Vercel service must not require
-hosting the local-first Mentat console on Vercel.
+Vercel is a first-class, planned optional infrastructure target for Mentat.
+Slice 4A will make it a working choice behind Mentat's own connection and
+runtime contracts. Using a Vercel service must not require hosting the
+local-first Mentat console on Vercel.
 
 - AI Gateway for model access and usage data
 - harness or AI SDK adapters for compatible runtimes
@@ -215,6 +215,14 @@ is offered in the product:
   records; and
 - a disabled or unavailable Vercel service fails closed without blocking other
   runtimes.
+
+The viable option is concrete: an operator can configure a Vercel connection,
+see only its declared safe capabilities, assign a compatible Agent, run and
+observe work, and disconnect it without disrupting local or Hermes Agents.
+AI Gateway, Sandbox, and Connect remain separate adapters. Sandbox provides
+isolated execution, not durable Mentat storage or a permanently running server;
+Connect provides OAuth-backed service access and never returns tokens to the
+browser.
 
 ## Delivery phases
 
