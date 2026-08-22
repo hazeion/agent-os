@@ -47,7 +47,8 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
   }
   assert.match(routeSources.get("/agents") ?? "", /data-agents-root/);
   assert.match(routeSources.get("/agents") ?? "", /Loading canonical Agents/);
-  assert.match(routeSources.get("/tasks") ?? "", /Waiting for the Tasks data slice/);
+  assert.match(routeSources.get("/tasks") ?? "", /data-tasks-root/);
+  assert.match(routeSources.get("/tasks") ?? "", /Loading current Tasks/);
   assert.match(routeSources.get("/runs") ?? "", /Waiting for the Runs data slice/);
 });
 
@@ -119,7 +120,9 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   const runtime = source("public/shell-runtime.js");
   assert.match(runtime, /fetch\("\/api\/bridge\/health"/);
   assert.match(runtime, /fetch\("\/api\/agents"/);
+  assert.match(runtime, /fetch\("\/api\/tasks"/);
   assert.match(runtime, /data-agents-refresh/);
+  assert.match(runtime, /data-tasks-refresh/);
   assert.match(runtime, /textContent = agent\.name/);
   assert.doesNotMatch(runtime, /MENTAT_BRIDGE_TOKEN|X-Mentat-Bridge-Token|local path/);
   assert.match(runtime, /AbortSignal\.timeout\(3500\)/);
@@ -133,7 +136,9 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.match(runtime, /showNavigationTooltip/);
   assert.match(runtime, /document\.addEventListener\("focusin", \(event\) => \{\s*if \(!runtimeStarted\) return/);
   assert.match(runtime, /document\.addEventListener\("pointerover", \(event\) => \{\s*if \(!runtimeStarted\) return/);
-  assert.match(runtime, /document\.addEventListener\("scroll", \(\) => \{\s*if \(runtimeStarted\) hideNavigationTooltip/);
+  assert.match(runtime, /document\.addEventListener\("scroll", \(event\) => \{\s*if \(!runtimeStarted\) return/);
+  assert.match(runtime, /sidebar\?\.contains\(event\.target\) && focusedNavigationLink/);
+  assert.match(runtime, /root\.dataset\.shellRuntime = "ready"/);
   assert.match(runtime, /new MutationObserver\(synchronizeShell\)/);
   assert.match(runtime, /mentat:shell-hydrated/);
   assert.match(runtime, /frameworkRuntime[\s\S]*window\.addEventListener/);

@@ -43,6 +43,10 @@ Slice 2B-A is complete in this branch: the read-only Agents route uses one
 fixed bridge and Node API capability. It does not add Agent controls, provider
 credentials, or provider switching.
 
+Slice 2B-B is complete in this branch: the read-only Tasks route carries a
+small canonical SQLite projection through one fixed bridge and Node API
+capability. It does not add Task controls or expose Task details.
+
 ## Roadmap
 
 | Slice | Status | Result | Depends on |
@@ -54,7 +58,7 @@ credentials, or provider switching.
 | 2A-A | Complete | Node 24 gateway, private Python bridge, minimal Next.js shell, and six-run Lighthouse gate. | Slice 1C-D |
 | 2A-B | Complete | Emerald Operations shell, tokens, navigation, route frames, and shared UI basics. | Slice 2A-A |
 | 2B-A | Complete | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
-| 2B-B | Provisional | Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
+| 2B-B | Complete | Read-only Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
 | 2B-C | Provisional | Runs route backed by normalized Run and event APIs. | Slice 2B-B |
 | 2C-A | Provisional | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
 | 2C-B | Provisional | Messaging, stop controls, and supported approvals. | Slice 2C-A |
@@ -203,6 +207,21 @@ It does not create or switch Agents, configure a provider, accept credentials,
 or add a generic bridge proxy.
 
 Review log: `reviews/2026-08-22-agents-read-only-bridge.md`
+
+### Slice 2B-B: read-only Tasks route
+
+Status: Complete in this branch
+
+This slice makes the canonical Task list available through one fixed,
+read-only Python bridge capability and one safe Node route. The `/tasks`
+screen shows only ID, title, project, status, priority, due date, tags,
+attention/review flags, and last-updated time. It gives explicit loading,
+empty, unavailable, unsupported, and error feedback.
+
+It does not change Tasks, consult `tasks.json`, expose descriptions or planning
+details, add provider controls, or add a generic bridge proxy.
+
+Review log: `reviews/2026-08-22-tasks-read-only-bridge.md`
 
 ### Slice 2D: production cutover
 

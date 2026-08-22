@@ -9,6 +9,8 @@ let bridgeRequest = 0;
 let bridgeState = "checking";
 let agentsRequest = 0;
 let agentsAbortController = null;
+let tasksRequest = 0;
+let tasksAbortController = null;
 let navigationOwnsFocus = false;
 let observedPath = "";
 let runtimeStarted = false;
@@ -313,6 +315,57 @@ async function refreshAgents() {
   }
 }
 
+function tasksElements() {
+  const rootElement = document.querySelector("[data-tasks-root]");
+  if (!(rootElement instanceof HTMLElement)) return null;
+  const summary = rootElement.querySelector("[data-tasks-summary]");
+  const list = rootElement.querySelector("[data-tasks-list]");
+  const refresh = rootElement.querySelector("[data-tasks-refresh]");
+  return summary instanceof HTMLElement && list instanceof HTMLElement && refresh instanceof HTMLButtonElement ? { rootElement, summary, list, refresh } : null;
+}
+function taskIsSafe(task) {
+  return task && typeof task === "object" && !Array.isArray(task)
+    && Object.keys(task).sort().join(",") === "due_date,id,needs_attention,priority,project,review_required,status,tags,title,updated_at"
+    && typeof task.id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/.test(task.id)
+    && typeof task.title === "string" && task.title.trim() === task.title && task.title.length > 0 && task.title.length <= 160
+    && typeof task.project === "string" && task.project.trim() === task.project && task.project.length > 0 && task.project.length <= 120
+    && ["todo", "in progress", "waiting", "needs attention", "completed"].includes(task.status)
+    && ["high", "medium", "low"].includes(task.priority)
+    && (task.due_date === null || typeof task.due_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(task.due_date))
+    && Array.isArray(task.tags) && task.tags.length <= 64 && task.tags.every((tag) => typeof tag === "string" && tag.trim() === tag && tag.length > 0 && tag.length <= 48)
+    && new Set(task.tags).size === task.tags.length && typeof task.needs_attention === "boolean" && typeof task.review_required === "boolean" && typeof task.updated_at === "string";
+}
+function readTasksPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload.schema_version !== 1 || payload.status !== "ready" || !Array.isArray(payload.tasks) || !Number.isInteger(payload.count) || payload.count !== payload.tasks.length || payload.count > 2048 || !payload.tasks.every(taskIsSafe)) return null;
+  return new Set(payload.tasks.map((task) => task.id)).size === payload.tasks.length ? payload.tasks : null;
+}
+function renderTasks(tasks) {
+  const elements = tasksElements(); if (!elements) return; elements.list.replaceChildren();
+  for (const task of tasks) {
+    const card = document.createElement("article"); card.className = "task-card";
+    const header = document.createElement("div"); header.className = "task-card-header";
+    const content = document.createElement("div"); const title = document.createElement("h3"); title.textContent = task.title;
+    const meta = document.createElement("p"); meta.className = "task-card-meta"; meta.textContent = `${task.project} · ${task.priority}${task.due_date ? ` · Due ${task.due_date}` : ""}`;
+    const safeFields = document.createElement("p"); safeFields.className = "task-card-meta"; safeFields.textContent = `ID ${task.id} · Updated ${task.updated_at}${task.needs_attention ? " · Needs attention" : ""}${task.review_required ? " · Review required" : ""}`;
+    content.append(title, meta, safeFields); const status = document.createElement("p"); status.className = "task-status"; status.textContent = task.status; header.append(content, status); card.append(header);
+    if (task.tags.length) { const tags = document.createElement("ul"); tags.className = "task-tags"; for (const tag of task.tags) { const item = document.createElement("li"); item.textContent = tag; tags.append(item); } card.append(tags); }
+    elements.list.append(card);
+  }
+}
+function applyTasksState(state, detail, tasks = null) {
+  const elements = tasksElements(); if (!elements) return; elements.rootElement.dataset.tasksState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(tasks)) renderTasks(tasks); else elements.list.replaceChildren();
+}
+function clearTaskRequest() { tasksRequest += 1; tasksAbortController?.abort(); tasksAbortController = null; }
+async function refreshTasks() {
+  if (!tasksElements()) return; clearTaskRequest(); const request = tasksRequest; tasksAbortController = new AbortController(); applyTasksState("loading", "Loading current Tasks…");
+  try { const response = await fetch("/api/tasks", { cache: "no-store", headers: { Accept: "application/json" }, signal: tasksAbortController.signal }); const payload = await response.json(); if (request !== tasksRequest) return;
+    if (response.status === 200) { const tasks = readTasksPayload(payload); if (!tasks) throw new Error("tasks_response_invalid"); applyTasksState(tasks.length ? "ready" : "empty", tasks.length ? `${tasks.length} current Task${tasks.length === 1 ? "" : "s"}.` : "No current Tasks yet.", tasks); return; }
+    if (response.status === 501 && payload?.schema_version === 1 && payload?.status === "unsupported") { applyTasksState("unsupported", "This Python bridge does not support Task data yet."); return; }
+    if (response.status === 503 && payload?.schema_version === 1 && payload?.status === "unavailable") { applyTasksState("unavailable", "Task data is temporarily unavailable. Check the Python connection and retry."); return; }
+    throw new Error("tasks_response_invalid");
+  } catch { if (request === tasksRequest) applyTasksState("error", "Mentat could not safely read Task data. Try again."); } finally { if (request === tasksRequest) tasksAbortController = null; }
+}
+
 function synchronizeShell() {
   if (!document.querySelector(".app-shell")) return;
   applyContrast(root.dataset.contrastPreference || storedContrast());
@@ -328,6 +381,7 @@ function synchronizeShell() {
     } else {
       clearAgentRequest();
     }
+    if (tasksElements()) requestAnimationFrame(() => requestAnimationFrame(refreshTasks)); else clearTaskRequest();
   }
 }
 
@@ -353,13 +407,14 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-agents-refresh], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
   if (target.matches("[data-agents-refresh]")) {
     refreshAgents();
     return;
   }
+  if (target.matches("[data-tasks-refresh]")) { refreshTasks(); return; }
   hideNavigationTooltip();
   if (target.matches("[data-nav-open]")) {
     openNavigation();
@@ -399,8 +454,18 @@ document.addEventListener("pointerout", (event) => {
   }
 });
 
-document.addEventListener("scroll", () => {
-  if (runtimeStarted) hideNavigationTooltip();
+document.addEventListener("scroll", (event) => {
+  if (!runtimeStarted) return;
+  const { sidebar } = shellElements();
+  const activeElement = document.activeElement;
+  const focusedNavigationLink = activeElement instanceof Element
+    ? activeElement.closest(".nav-link[data-nav-link]")
+    : null;
+  if (sidebar?.contains(event.target) && focusedNavigationLink) {
+    showNavigationTooltip(focusedNavigationLink);
+    return;
+  }
+  hideNavigationTooltip();
 }, true);
 
 document.addEventListener("keydown", (event) => {
@@ -454,6 +519,7 @@ mobileNavigation.addEventListener("change", () => {
 function startShellRuntime() {
   if (runtimeStarted) return;
   runtimeStarted = true;
+  root.dataset.shellRuntime = "ready";
   applyContrast(root.dataset.contrastPreference || storedContrast());
   synchronizeShell();
   new MutationObserver(synchronizeShell).observe(document.body, {

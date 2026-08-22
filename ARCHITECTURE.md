@@ -53,14 +53,19 @@ The Node request boundary covers every public path, including framework
 assets. It accepts only the configured loopback Host and port. Cross-site,
 mismatched-origin, and malformed fetch metadata requests fail closed.
 
-The browser can call fixed same-origin routes only: `/api/bridge/health` and
-the read-only `/api/agents` route. Node builds each private request on the
+The browser can call fixed same-origin routes only: `/api/bridge/health`, the
+read-only `/api/agents` route, and the read-only `/api/tasks` route. Node builds each private request on the
 server, checks its bounded response, and returns only the route's safe public
 fields. The Agent route exposes canonical Mentat IDs, names, runtime types,
 runtime configuration IDs, and declared capabilities. It never exposes
 adapter-owned runtime references, credentials, paths, raw Hermes data, or
 legacy heartbeat observations. Browser input cannot choose a bridge path,
 target, headers, or token.
+
+The Task route reads canonical SQLite Tasks only. It exposes IDs, titles,
+projects, statuses, priorities, due dates, tags, attention/review flags, and
+timestamps. Descriptions, notes, attachments, delegation, planning fields,
+and other private Task details stay behind Python.
 
 The first shell is prerendered and has no React hydration runtime. One fixed
 local script reads the health route after first paint. Later routes may add

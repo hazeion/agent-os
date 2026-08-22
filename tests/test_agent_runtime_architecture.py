@@ -41,6 +41,7 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
         self.assertIn("| 2A-A | Complete |", PIVOT_PLAN)
         self.assertIn("| 2A-B | Complete |", PIVOT_PLAN)
         self.assertIn("| 2B-A | Complete |", PIVOT_PLAN)
+        self.assertIn("| 2B-B | Complete |", PIVOT_PLAN)
         self.assertIn("three desktop and three mobile Lighthouse runs", PIVOT_PLAN)
         self.assertIn("The legacy interface may be retired only after", PIVOT_PLAN)
         self.assertIn("reviews/2026-08-18-mentat-sqlite-task-cutover.md", PIVOT_PLAN)

@@ -88,6 +88,12 @@ class CiQualityGateTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("node-foundation-lighthouse-failure", workflow)
+        self.assertIn('preview_data_dir="$RUNNER_TEMP/mentat-web-preview-data"', workflow)
+        self.assertIn(
+            'timeout --preserve-status --signal=INT --kill-after=10s 10s env MENTAT_DATA_DIR="$preview_data_dir" python server.py --port "$bootstrap_port"',
+            workflow,
+        )
+        self.assertIn('test -f "$preview_data_dir/private/console/mentat.sqlite3"', workflow)
         self.assertIn("python scripts/mentat_web_preview.py --port 8896", workflow)
         self.assertIn("node scripts/web_foundation_smoke.mjs", workflow)
         self.assertIn("/_next/static/forged-host-probe.js", workflow)

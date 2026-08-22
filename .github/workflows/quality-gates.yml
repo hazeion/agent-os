@@ -189,13 +189,20 @@ jobs:
           MENTAT_WEB_BROWSER_RUNTIME_DIR: ${{ runner.temp }}/web-foundation-smoke-runtime
           MENTAT_LIGHTHOUSE_FAILURE_PATH: ${{ runner.temp }}/mentat-lighthouse-failure.json
         run: |
-          python scripts/mentat_web_preview.py --port 8896 >"$RUNNER_TEMP/mentat-web-preview.log" 2>&1 &
-          preview_pid=$!
+          preview_data_dir="$RUNNER_TEMP/mentat-web-preview-data"
+          bootstrap_port=8895
+          preview_pid=""
           cleanup() {
-            kill -TERM "$preview_pid" 2>/dev/null || true
-            wait "$preview_pid" 2>/dev/null || true
+            if test -n "$preview_pid"; then
+              kill -TERM "$preview_pid" 2>/dev/null || true
+              wait "$preview_pid" 2>/dev/null || true
+            fi
           }
           trap cleanup EXIT
+          timeout --preserve-status --signal=INT --kill-after=10s 10s env MENTAT_DATA_DIR="$preview_data_dir" python server.py --port "$bootstrap_port" >"$RUNNER_TEMP/mentat-web-bootstrap.log" 2>&1
+          test -f "$preview_data_dir/private/console/mentat.sqlite3"
+          MENTAT_DATA_DIR="$preview_data_dir" python scripts/mentat_web_preview.py --port 8896 >"$RUNNER_TEMP/mentat-web-preview.log" 2>&1 &
+          preview_pid=$!
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then
               break

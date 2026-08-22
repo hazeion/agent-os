@@ -7,6 +7,7 @@ proxy for ``server.py`` and it owns no durable state.
 from __future__ import annotations
 
 import argparse
+from datetime import date, datetime
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
@@ -25,13 +26,16 @@ BRIDGE_TOKEN_ENV = "MENTAT_BRIDGE_TOKEN"
 BRIDGE_TOKEN_HEADER = "X-Mentat-Bridge-Token"
 BRIDGE_HEALTH_PATH = "/bridge/v1/health"
 BRIDGE_AGENTS_PATH = "/bridge/v1/agents"
+BRIDGE_TASKS_PATH = "/bridge/v1/tasks"
 MINIMUM_TOKEN_LENGTH = 43
 MAXIMUM_TOKEN_LENGTH = 256
 SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
 MAXIMUM_BRIDGE_AGENTS = 128
+MAXIMUM_BRIDGE_TASKS = 2048
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
+_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 
 
 class BridgeConfigurationError(ValueError):
@@ -40,6 +44,10 @@ class BridgeConfigurationError(ValueError):
 
 class BridgeAgentProjectionError(ValueError):
     """Raised when canonical Agent data cannot cross this fixed capability."""
+
+
+class BridgeTaskProjectionError(ValueError):
+    """Raised when canonical Task data cannot cross this fixed capability."""
 
 
 class IPv6BridgeHTTPServer(ThreadingHTTPServer):
@@ -246,6 +254,71 @@ def bridge_agents_payload() -> tuple[dict[str, object], int]:
     }, code
 
 
+def _valid_iso_date(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _valid_timestamp(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
+
+
+def _public_task_record(value: object) -> dict[str, object]:
+    required = {"id", "title", "project", "status", "priority", "due_date", "tags", "needs_attention", "review_required", "updated_at"}
+    if not isinstance(value, dict) or not required.issubset(value):
+        raise BridgeTaskProjectionError("task_projection_invalid")
+    task_id, title, project = value.get("id"), value.get("title"), value.get("project")
+    status, priority, due_date, tags, updated_at = value.get("status"), value.get("priority"), value.get("due_date"), value.get("tags"), value.get("updated_at")
+    valid_text = lambda item, maximum: isinstance(item, str) and bool(item.strip()) and item.strip() == item and "\x00" not in item and len(item) <= maximum
+    if (
+        not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id)
+        or not valid_text(title, 160) or not valid_text(project, 120)
+        or status not in {"todo", "in progress", "waiting", "needs attention", "completed"}
+        or priority not in {"high", "medium", "low"}
+        or due_date is not None and not _valid_iso_date(due_date)
+        or not isinstance(tags, list) or len(tags) > 64 or any(not valid_text(tag, 48) for tag in tags) or len(set(tags)) != len(tags)
+        or not isinstance(value.get("needs_attention"), bool) or not isinstance(value.get("review_required"), bool)
+        or not _valid_timestamp(updated_at)
+    ):
+        raise BridgeTaskProjectionError("task_projection_invalid")
+    return {"id": task_id, "title": title, "project": project, "status": status, "priority": priority, "due_date": due_date, "tags": sorted(tags), "needs_attention": value["needs_attention"], "review_required": value["review_required"], "updated_at": updated_at}
+
+
+def bridge_tasks_payload() -> tuple[dict[str, object], int]:
+    """Read one bounded public Task projection through a fixed capability."""
+    try:
+        from task_repository import TaskRepositoryError, TaskRepositoryUnavailable
+        from server import mentat_tasks_payload
+        try:
+            source = mentat_tasks_payload()
+            tasks = source.get("tasks") if isinstance(source, dict) else None
+            if not isinstance(tasks, list) or len(tasks) > MAXIMUM_BRIDGE_TASKS:
+                raise BridgeTaskProjectionError("task_projection_invalid")
+            public_tasks = [_public_task_record(task) for task in tasks]
+            if len({task["id"] for task in public_tasks}) != len(public_tasks):
+                raise BridgeTaskProjectionError("task_projection_invalid")
+            return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "tasks": public_tasks, "count": len(public_tasks)}, 200
+        except TaskRepositoryUnavailable:
+            state, code = "unavailable", 503
+        except TaskRepositoryError as exc:
+            state, code = ("unsupported", 501) if exc.code in {"task_repository.schema_unsupported", "task_repository.schema_newer"} else ("error", 500)
+        except (BridgeTaskProjectionError, OSError, ValueError):
+            state, code = "error", 500
+    except Exception:
+        state, code = "error", 500
+    return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": state}, code
+
+
 class BridgeRequestHandler(BaseHTTPRequestHandler):
     server_version = "MentatLocalBridge"
     sys_version = ""
@@ -321,6 +394,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         if self.path == BRIDGE_AGENTS_PATH:
             payload, status = bridge_agents_payload()
+            self._send_json(payload, status)
+            return
+        if self.path == BRIDGE_TASKS_PATH:
+            payload, status = bridge_tasks_payload()
             self._send_json(payload, status)
             return
         else:
