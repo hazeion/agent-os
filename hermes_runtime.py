@@ -253,8 +253,8 @@ class HermesRuntime:
         if response_status != 200 or response.get("ok") is not True:
             raise AgentRuntimeError("runtime.message_failed")
 
-    def stop(self, run_id: str) -> None:
-        self._bound_snapshot(run_id)
+    def stop(self, run_id: str, *, context: RuntimeContext | None = None) -> None:
+        self._bound_snapshot(run_id, context=context)
         body, status = self._handlers().stop(run_id)
         if status not in {200, 202} or body.get("ok") is not True:
             raise AgentRuntimeError("runtime.stop_failed")
@@ -274,7 +274,17 @@ class HermesRuntime:
             task_id=str(snapshot["task_id"]),
         )
 
-    def _bound_snapshot(self, run_id: str) -> Mapping[str, Any]:
+    def _bound_snapshot(
+        self, run_id: str, *, context: RuntimeContext | None = None
+    ) -> Mapping[str, Any]:
+        if context is not None:
+            expected_run_ref = context.runtime_run_ref or context.mentat_run_id
+            if (
+                expected_run_ref is None
+                or context.mentat_run_id is None
+                or run_id != expected_run_ref
+            ):
+                raise AgentRuntimeError("runtime.identity_context_invalid")
         body, status = self._handlers().status(run_id, None)
         snapshot = body.get("run") if status == 200 else None
         if not isinstance(snapshot, Mapping):
@@ -283,6 +293,13 @@ class HermesRuntime:
         task_id = snapshot.get("task_id")
         if not isinstance(agent_id, str) or not isinstance(task_id, str):
             raise AgentRuntimeError("runtime.identity_context_required")
+        if context is not None:
+            if (
+                agent_id != context.agent_id
+                or task_id != context.task_id
+                or snapshot.get("id") != context.mentat_run_id
+            ):
+                raise AgentRuntimeError("runtime.identity_context_invalid")
         return snapshot
 
     def stream_events(
@@ -378,8 +395,10 @@ class HermesRuntime:
             projected.append(replace(base, sequence=sequence))
         return tuple(event for event in projected if event.sequence > after_sequence)
 
-    def capabilities_for_run(self, run_id: str) -> frozenset[str]:
-        snapshot = self._bound_snapshot(run_id)
+    def capabilities_for_run(
+        self, run_id: str, *, context: RuntimeContext | None = None
+    ) -> frozenset[str]:
+        snapshot = self._bound_snapshot(run_id, context=context)
         capabilities = {
             RuntimeCapability.STATUS.value,
             RuntimeCapability.EVENTS.value,

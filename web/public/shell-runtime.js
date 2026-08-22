@@ -14,6 +14,7 @@ let tasksAbortController = null;
 let runsRequest = 0;
 let runsAbortController = null;
 let activeRunTimeline = null;
+let activeRunStop = null;
 let renderedRuns = new Map();
 let navigationOwnsFocus = false;
 let observedPath = "";
@@ -395,7 +396,7 @@ function readRunsPayload(payload) {
 }
 function readableRunStatus(value) { return value.split(/[._]/).map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" "); }
 function renderRuns(runs) {
-  const elements = runsElements(); if (!elements) return; closeActiveRunTimeline({ restoreFocus: false }); renderedRuns = new Map(runs.map((run) => [run.id, run])); elements.list.replaceChildren();
+  const elements = runsElements(); if (!elements) return; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); renderedRuns = new Map(runs.map((run) => [run.id, run])); elements.list.replaceChildren();
   for (const run of runs) {
     const card = document.createElement("article"); card.className = "run-card"; card.dataset.runId = run.id;
     const header = document.createElement("div"); header.className = "run-card-header";
@@ -405,12 +406,15 @@ function renderRuns(runs) {
     const primary = document.createElement("p"); primary.className = "run-card-meta"; primary.textContent = `${run.runtime_type} · ${run.source} · ${run.dispatch_state}`;
     const detail = document.createElement("p"); detail.className = "run-card-meta"; detail.textContent = `Task ${run.task_id || "Not linked"} · Agent ${run.agent_id || "Not assigned"} · Created ${run.created_at} · Updated ${run.updated_at}`;
     const lifecycle = document.createElement("p"); lifecycle.className = "run-card-meta"; lifecycle.textContent = `Started ${run.started_at || "Not started"} · Completed ${run.completed_at || "Not completed"}${run.partial ? " · Partial" : ""}${run.timeline_truncated ? " · Timeline truncated" : ""}`;
+    const actions = document.createElement("div"); actions.className = "run-card-actions";
     const timeline = document.createElement("button"); timeline.className = "run-timeline-open"; timeline.dataset.runTimelineOpen = ""; timeline.dataset.runId = run.id; timeline.setAttribute("aria-expanded", "false"); timeline.type = "button"; timeline.textContent = "Open timeline";
-    card.append(primary, detail, lifecycle, timeline); elements.list.append(card);
+    actions.append(timeline);
+    if (["queued", "submitting", "starting", "running", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(run.status)) { const stop = document.createElement("button"); stop.className = "run-stop-open"; stop.dataset.runStopOpen = ""; stop.dataset.runId = run.id; stop.setAttribute("aria-expanded", "false"); stop.type = "button"; stop.textContent = "Stop run"; actions.append(stop); }
+    card.append(primary, detail, lifecycle, actions); elements.list.append(card);
   }
 }
-function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else { closeActiveRunTimeline({ restoreFocus: false }); renderedRuns = new Map(); elements.list.replaceChildren(); } }
-function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); }
+function applyRunsState(state, detail, runs = null) { const elements = runsElements(); if (!elements) return; elements.rootElement.dataset.runsState = state; elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false"); elements.summary.textContent = detail; elements.refresh.disabled = state === "loading"; if (Array.isArray(runs)) renderRuns(runs); else { closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); renderedRuns = new Map(); elements.list.replaceChildren(); } }
+function clearRunRequest() { runsRequest += 1; runsAbortController?.abort(); runsAbortController = null; closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false }); }
 async function refreshRuns() {
   if (!runsElements()) return; clearRunRequest(); const request = runsRequest; runsAbortController = new AbortController(); applyRunsState("loading", "Loading current Runs…");
   try { const response = await fetch("/api/runs", { cache: "no-store", headers: { Accept: "application/json" }, signal: runsAbortController.signal }); const payload = await response.json(); if (request !== runsRequest) return;
@@ -444,6 +448,44 @@ function closeActiveRunTimeline({ restoreFocus = true } = {}) {
   activeRunTimeline.trigger.setAttribute("aria-expanded", "false");
   if (restoreFocus && activeRunTimeline.trigger.isConnected) activeRunTimeline.trigger.focus();
   activeRunTimeline = null;
+}
+
+function closeActiveRunStop({ restoreFocus = true } = {}) {
+  if (!activeRunStop) return;
+  activeRunStop.panel.remove(); activeRunStop.trigger.setAttribute("aria-expanded", "false");
+  if (restoreFocus && activeRunStop.trigger.isConnected) activeRunStop.trigger.focus();
+  activeRunStop = null;
+}
+
+function stopStateMessage(response) {
+  if (response.status === 404) return "This Run is no longer available.";
+  if (response.status === 409) return "This Run changed. Review Stop again.";
+  if (response.status === 501) return "Stop is not available for this Run.";
+  if (response.status === 503) return "Run control is temporarily unavailable.";
+  return "Mentat could not safely process Stop.";
+}
+
+async function reviewRunStop(current) {
+  current.confirm.disabled = true; current.confirmationId = null; current.notice.textContent = "Reviewing the current Run state…";
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop/preview`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}" }); const payload = await response.json(); if (activeRunStop?.panel !== current.panel) return; if (response.status !== 200) { current.notice.textContent = stopStateMessage(response); return; } if (!payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,confirmation_id,requires_confirmation,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.requires_confirmation !== true || typeof payload.confirmation_id !== "string" || !/^[0-9a-f]{64}$/.test(payload.confirmation_id)) throw new Error("stop_preview_invalid"); current.confirmationId = payload.confirmation_id; delete current.confirm.dataset.runStopReview; current.confirm.dataset.runStopConfirm = ""; current.confirm.textContent = "Confirm stop"; current.notice.textContent = "Stopping asks Hermes to cancel this active Run."; current.confirm.disabled = false; } catch { if (activeRunStop?.panel !== current.panel) return; current.notice.textContent = "Mentat could not safely review Stop."; }
+}
+
+async function openRunStop(run, card, trigger) {
+  closeActiveRunTimeline({ restoreFocus: false }); closeActiveRunStop({ restoreFocus: false });
+  const panel = document.createElement("section"); panel.className = "run-stop"; panel.dataset.runStop = run.id;
+  const heading = document.createElement("h4"); heading.textContent = "Stop this Run?";
+  const notice = document.createElement("p"); notice.className = "run-stop-notice"; notice.setAttribute("aria-live", "polite"); notice.textContent = "Reviewing the current Run state…";
+  const actions = document.createElement("div"); actions.className = "run-stop-actions";
+  const cancel = document.createElement("button"); cancel.type = "button"; cancel.dataset.runStopCancel = ""; cancel.textContent = "Cancel";
+  const confirm = document.createElement("button"); confirm.type = "button"; confirm.dataset.runStopConfirm = ""; confirm.disabled = true; confirm.textContent = "Confirm stop";
+  actions.append(cancel, confirm); panel.append(heading, notice, actions); card.append(panel); trigger.setAttribute("aria-expanded", "true"); activeRunStop = { trigger, panel, run, confirmationId: null, notice, confirm };
+  reviewRunStop(activeRunStop);
+}
+
+async function confirmRunStop() {
+  const current = activeRunStop; if (!current?.confirmationId) return;
+  current.confirm.disabled = true; current.notice.textContent = "Requesting Stop…";
+  try { const response = await fetch(`/api/runs/${encodeURIComponent(current.run.id)}/stop`, { method: "POST", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ confirmation_id: current.confirmationId }) }); const payload = await response.json(); if (response.status !== 202 || !payload || typeof payload !== "object" || Object.keys(payload).sort().join(",") !== "action,disposition,run_id,runtime,schema_version,service,status" || payload.schema_version !== 1 || payload.service !== "mentat-local-bridge" || payload.runtime !== "python" || payload.status !== "ready" || payload.action !== "stop" || payload.run_id !== current.run.id || payload.disposition !== "requested") { current.notice.textContent = stopStateMessage(response); if (response.status === 409) { current.confirmationId = null; delete current.confirm.dataset.runStopConfirm; current.confirm.dataset.runStopReview = ""; current.confirm.textContent = "Review Stop again"; } current.confirm.disabled = false; return; } current.notice.textContent = "Stop requested. Refreshing the Run…"; refreshRuns(); } catch { if (activeRunStop?.panel === current.panel) { current.notice.textContent = "Mentat could not safely process Stop."; current.confirm.disabled = false; } }
 }
 
 function appendTimelineEvents(list, events) {
@@ -533,7 +575,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
   if (target.matches("[data-agents-refresh]")) {
@@ -543,9 +585,17 @@ document.addEventListener("click", (event) => {
   if (target.matches("[data-tasks-refresh]")) { refreshTasks(); return; }
   if (target.matches("[data-runs-refresh]")) { refreshRuns(); return; }
   if (target.matches("[data-run-timeline-close]")) { closeActiveRunTimeline(); return; }
+  if (target.matches("[data-run-stop-cancel]")) { closeActiveRunStop(); return; }
+  if (target.matches("[data-run-stop-confirm]")) { confirmRunStop(); return; }
+  if (target.matches("[data-run-stop-review]")) { if (activeRunStop?.panel.parentElement instanceof HTMLElement) reviewRunStop(activeRunStop); return; }
   if (target.matches("[data-run-timeline-open]")) {
     const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
     if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunTimeline(run, card, target);
+    return;
+  }
+  if (target.matches("[data-run-stop-open]")) {
+    const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
+    if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunStop(run, card, target);
     return;
   }
   hideNavigationTooltip();

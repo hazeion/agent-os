@@ -45,13 +45,14 @@ class LocalBridgeTests(unittest.TestCase):
         *,
         token: str | None = TOKEN,
         headers: dict[str, str] | None = None,
+        body: bytes | None = None,
     ) -> tuple[int, dict, dict[str, str]]:
         connection = HTTPConnection("127.0.0.1", self.port, timeout=3)
         request_headers = {"Host": f"127.0.0.1:{self.port}"}
         if token is not None:
             request_headers[local_bridge.BRIDGE_TOKEN_HEADER] = token
         request_headers.update(headers or {})
-        connection.request(method, path, headers=request_headers)
+        connection.request(method, path, body=body, headers=request_headers)
         response = connection.getresponse()
         body = response.read()
         response_headers = {name: value for name, value in response.getheaders()}
@@ -383,6 +384,36 @@ class LocalBridgeTests(unittest.TestCase):
             with self.subTest(path=invalid_path):
                 status, payload, _headers = self.request(path=invalid_path)
                 self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
+
+    def test_run_stop_actions_are_fixed_authenticated_and_body_bounded(self):
+        preview = {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "action": "stop", "run_id": "run_current",
+            "requires_confirmation": True, "confirmation_id": "a" * 64,
+        }
+        with patch.object(local_bridge, "bridge_run_stop_preview_payload", return_value=(preview, 200)):
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/stop/preview",
+                headers={"Content-Type": "application/json"}, body=b"{}",
+            )
+        self.assertEqual((status, payload), (200, preview))
+        result = {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python",
+            "status": "ready", "action": "stop", "run_id": "run_current",
+            "disposition": "requested",
+        }
+        with patch.object(local_bridge, "bridge_confirm_run_stop", return_value=(result, 202)) as confirmed:
+            status, payload, _headers = self.request(
+                method="POST", path="/bridge/v1/runs/run_current/stop",
+                headers={"Content-Type": "application/json"}, body=(b'{"confirmation_id":"' + b"a" * 64 + b'"}'),
+            )
+        self.assertEqual((status, payload), (202, result))
+        confirmed.assert_called_once_with("run_current", "a" * 64)
+        status, payload, _headers = self.request(
+            method="POST", path="/bridge/v1/runs/run_current/stop",
+            headers={"Content-Type": "application/json"}, body=b'{"action":"stop"}',
+        )
+        self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
 
     def test_run_events_authority_reader_never_initializes_sqlite(self):
         source = Path(server.__file__).read_text(encoding="utf-8")
