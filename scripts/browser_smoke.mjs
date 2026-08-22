@@ -438,6 +438,100 @@ async function verifyHomeBootCriticalPath(client) {
   return { resourceTiming, rejectedBootAssets };
 }
 
+async function verifyHomeFocusLayoutStabilityAtViewport(client, viewport) {
+  await setViewport(client, viewport.width, viewport.height);
+  let taskRequestId = '';
+  let taskRequestReleased = false;
+  const removeHandler = client.on('Fetch.requestPaused', async ({ requestId, request }) => {
+    if (!taskRequestId && new URL(request.url).pathname === '/api/tasks') {
+      taskRequestId = requestId;
+      return;
+    }
+    await client.call('Fetch.continueRequest', { requestId });
+  });
+  await client.call('Fetch.enable', {
+    patterns: [{ urlPattern: `${baseUrl}/api/tasks*`, requestStage: 'Request' }],
+  });
+  try {
+    await reloadPage(client);
+    await waitFor(() => Boolean(taskRequestId), 'paused Home task request', 30000);
+    await waitFor(
+      () => client.eval("Boolean(document.querySelector('#focus-task-list .home-focus-loading'))"),
+      'first-paint Home focus loading state',
+      30000,
+    );
+    const loadingGeometry = await client.eval(`(() => {
+      const list = document.querySelector('#focus-task-list');
+      const shell = document.querySelector('#focus-task-scroll-shell');
+      const panel = document.querySelector('#today-active-work-panel');
+      const listRect = list.getBoundingClientRect();
+      const shellRect = shell.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      return {
+        listTop: listRect.top,
+        listHeight: listRect.height,
+        shellHeight: shellRect.height,
+        panelHeight: panelRect.height,
+      };
+    })()`);
+    await client.call('Fetch.continueRequest', { requestId: taskRequestId });
+    taskRequestReleased = true;
+    await waitFor(
+      () => client.eval("window.__MENTAT_HOME_CORE_READY__ === true && !document.querySelector('#focus-task-list .home-focus-loading')"),
+      'loaded Home focus geometry',
+      30000,
+    );
+    const loadedGeometry = await client.eval(`(() => {
+      const list = document.querySelector('#focus-task-list');
+      const shell = document.querySelector('#focus-task-scroll-shell');
+      const panel = document.querySelector('#today-active-work-panel');
+      const listRect = list.getBoundingClientRect();
+      const shellRect = shell.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      return {
+        listTop: listRect.top,
+        listHeight: listRect.height,
+        shellHeight: shellRect.height,
+        panelHeight: panelRect.height,
+        renderedRows: list.querySelectorAll('.home-focus-row, .home-focus-empty').length,
+      };
+    })()`);
+    const geometryShift = Math.max(
+      Math.abs(loadingGeometry.listTop - loadedGeometry.listTop),
+      Math.abs(loadingGeometry.listHeight - loadedGeometry.listHeight),
+      Math.abs(loadingGeometry.shellHeight - loadedGeometry.shellHeight),
+      Math.abs(loadingGeometry.panelHeight - loadedGeometry.panelHeight),
+    );
+    if (
+      loadingGeometry.listHeight < 239
+      || loadedGeometry.renderedRows < 1
+      || geometryShift > 1
+    ) {
+      throw new Error(`Home focus geometry shifted during Task hydration: ${JSON.stringify({ loadingGeometry, loadedGeometry, geometryShift })}`);
+    }
+    return { viewport, loadingGeometry, loadedGeometry, geometryShift };
+  } finally {
+    if (taskRequestId && !taskRequestReleased) {
+      await Promise.allSettled([client.call('Fetch.continueRequest', { requestId: taskRequestId })]);
+    }
+    removeHandler();
+    await client.call('Fetch.disable');
+    client.throwEventErrors();
+  }
+}
+
+async function verifyHomeFocusLayoutStability(client) {
+  const results = [];
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+  ]) {
+    results.push(await verifyHomeFocusLayoutStabilityAtViewport(client, viewport));
+  }
+  await setViewport(client, 1440, 1000);
+  return results;
+}
+
 async function verifyHomeCoreRenderPriority(client) {
   const delayedPaths = new Set([
     '/api/overview',
@@ -709,6 +803,7 @@ async function main() {
       'clean Home restore after boot asset failure',
       30000,
     );
+    const homeFocusLayoutStability = await verifyHomeFocusLayoutStability(client);
     const homeCorePriority = await verifyHomeCoreRenderPriority(client);
     const homeCoreFailureFallback = await verifyHomeCoreFailureFallback(client);
     await reloadPage(client);
@@ -2536,7 +2631,7 @@ async function main() {
     );
     await setViewport(client, 1440, 1000);
 
-    console.log(JSON.stringify({ ok: true, baseUrl, homeBootCriticalPath, homeCorePriority, homeCoreFailureFallback, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'Home boot critical path', 'Home core render priority', 'Home core failure fallback', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'compact navigation label tooltip', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
+    console.log(JSON.stringify({ ok: true, baseUrl, homeBootCriticalPath, homeFocusLayoutStability, homeCorePriority, homeCoreFailureFallback, checks: ['Emerald shell defaults', 'legacy shell migration', 'theme and contrast reload', 'Home boot critical path', 'Home focus layout stability', 'Home core render priority', 'Home core failure fallback', 'reference-aligned Home desktop layout', 'reference-aligned Home mobile layout', 'Home disclosures across seven widths', 'Today-only schedule and degradation state', 'concurrent schedule lanes', '23:45 schedule target across seven widths', 'connection-bound Live Agents', 'unavailable-agent ranking', 'approval and clarification Console states', 'Home operational accessible names', 'no Home metric cards', 'Agent Console vertical layout', 'six-view responsive matrix', 'compact navigation label tooltip', 'mobile drawer keyboard and focus', 'skip link', 'today render', 'agent console controls', 'structured event render', 'default-hidden tool activity', 'tool visibility toggle', 'immediate provider switch', 'immediate model switch', 'failed switch reconciliation', 'agent runtime refresh', 'Mentat command manifest', 'nav', 'task controls', 'task status filter', 'Operator Week render', 'calendar week navigation', 'calendar preview safety', 'calendar event inspector', 'managed agents inventory', 'agent deletion safeguards', 'Agent Creator dialog', 'Context Packs workspace', 'equal Theme Studio cards', 'border-only dropdown focus', 'phone theme grid hiding', 'Settings support actions', 'Mentat version display', 'redacted diagnostics download'] }, null, 2));
     await client.ws.close?.();
   } finally {
     await stopChild(chrome);

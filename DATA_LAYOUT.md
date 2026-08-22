@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 1C-D SQLite Task runtime cleanup active
+Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 1C-D SQLite Task runtime cleanup complete
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
