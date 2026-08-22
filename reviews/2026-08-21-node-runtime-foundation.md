@@ -1,6 +1,6 @@
 # Feature Slice Review: Node Runtime Foundation
 
-Status: Ready for publication approval
+Status: Published in ready PR #114; CI green; merge pending
 
 Slice: `2a-a-node-runtime-foundation`
 
@@ -423,15 +423,19 @@ legacy `public/` frontend operational and unchanged.
   installers; real child-death integration is POSIX-only while Windows cleanup
   remains mocked; rendered evidence is Chromium-family only; synthetic local
   Lighthouse is not field telemetry; no real product route has migrated yet.
-- User authorization and scope: implementation approved; publication not yet
-  authorized for this final exact file set.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- User authorization and scope: the user approved the exact publication packet.
+  The foundation files were committed and pushed without the unrelated local
+  data, design, runtime, or scratch files.
+- Commit hash: `0f156e6d3b76d534ff0e2d9a6e2200091339df07`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/114
+- Hosted CI: every required check is green. The first Node quality-gate attempt
+  hit Lighthouse's transient `NO_NAVSTART` trace error on desktop run 2. An
+  unchanged failed-job rerun passed the browser smoke, all six Lighthouse
+  audits, process cleanup, and the required aggregate gate.
 
 ## Outcome review
 
-- Classification: implementation complete and locally verified; ready for
-  publication approval.
+- Classification: successful and published; merge pending.
 - Acceptance criteria summary: AC-1 through AC-8 are met.
 - Potential bugs or untested paths: real Windows process-tree behavior,
   non-Chromium rendering, installer-bundled Node, field performance, and
@@ -440,5 +444,7 @@ legacy `public/` frontend operational and unchanged.
   remediated and independently re-reviewed.
 - Compatibility/migration/rollback concerns: no migration or default-runtime
   cutover is planned.
-- User decision: final publication approval pending.
-- Next slice authorized: No
+- User decision: publication approved; the user authorized continuation to the
+  next slice after this PR merges.
+- Next slice authorized: Yes, after PR #114 merges and the Slice 2A-B contract
+  and test strategy are approved.

@@ -19,8 +19,10 @@ python -m pip install --require-hashes -r requirements-native.lock
 python scripts/build_native.py
 ```
 
-The bundle contains only the app, static UI, and public seed data. Operator
-data remains in Mentat's platform data directory and survives app removal.
+The bundle contains the Python app, the `public/` compatibility interface, and
+public seed data. It does not include the optional Next.js preview or Node yet.
+Operator data remains in Mentat's platform data directory and survives app
+removal.
 
 Unsigned bundles are test artifacts only. Release signing and macOS
 notarization must run in a protected trusted release environment. Signing

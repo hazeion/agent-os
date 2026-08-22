@@ -26,6 +26,9 @@ availability issues, but there is no guaranteed response-time SLA.
 
 - Mentat accepts dashboard traffic on loopback only and is designed for one
   local operator. It is not a remotely hosted multi-user service.
+- In the Next.js preview, the browser connects only to the local Node gateway.
+  Node reaches Python through fixed private bridge capabilities and a temporary
+  process token. The bridge is not a generic proxy.
 - Mentat reads Hermes state through supported interfaces and mutates Hermes
   only through fixed, validated, capability-gated operations. It does not
   directly edit Hermes core files.

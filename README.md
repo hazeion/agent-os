@@ -4,40 +4,50 @@
 
 # Mentat
 
-Mentat is a local web dashboard for planning projects, managing tasks, and
-working with [Hermes Agent](https://hermes-agent.nousresearch.com/).
+Mentat is a local operations console for planning work and running agents. It
+keeps your projects, tasks, runs, and activity on your computer. Hermes is the
+first supported agent runtime.
 
-I built Mentat because I wanted one friendly place to organize my projects and
-let an agent help move the work forward. It runs on your computer and opens in
-your browser.
+Mentat is moving to a new Next.js interface. The current Python app remains the
+default while the new interface is built and tested beside it.
 
-> Mentat is actively evolving. You can run the development build today; signed
-> installers will arrive with the public beta.
+> Mentat is in beta. You can run it from source today. Signed installers are
+> planned for the public beta.
 
-## What can it do?
+## What you can do
 
-- Plan your day and keep projects, tasks, reminders, and recurring work tidy.
+- Plan projects, tasks, reminders, and recurring work.
 - Chat with named Hermes agents and keep their sessions together.
-- Delegate longer-running work through Hermes Kanban.
-- Attach files and reuse Context Packs in agent conversations.
-- Search connected Obsidian notes and view Google Calendar events read-only.
-- Pick a comfortable light, dark, or editor-inspired theme.
+- Delegate longer work through Hermes Kanban.
+- Attach files and reuse Context Packs.
+- Search connected Obsidian notes.
+- View Google Calendar events without changing them.
+
+## How Mentat works
+
+The Python app owns local data and talks to Hermes. Tasks, runs, and events are
+stored in Mentat's private SQLite database.
+
+The optional Next.js preview runs through a local Node gateway. It reaches the
+Python app through a private bridge that is not exposed to the browser. Both
+apps listen only on your computer.
 
 ## Quick start
 
-There is no public installer yet, so the current way to try Mentat is from
-source. You need:
+There is no public installer yet. If you were invited to test a signed release
+candidate, follow the invitation and [beta testing guide](BETA_TESTING.md)
+instead of these source steps.
 
-- [Python 3.11–3.13](https://www.python.org/downloads/)
+You need:
+
+- [Python 3.11-3.13](https://www.python.org/downloads/)
 - [Git](https://git-scm.com/downloads)
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) for agent features
 
-macOS and Windows are the tier-one beta platforms; Linux is a preview. The
-macOS release provides separate native Apple Silicon (recommended) and Intel
-installers.
-Before you begin, check the [supported platforms and known limitations](SUPPORT.md).
+macOS and Windows are the main beta platforms. Linux is available as a preview.
+See [supported platforms and known limitations](SUPPORT.md) before installing.
 
-Open a terminal and run:
+### macOS or Linux
 
 ```bash
 git clone https://github.com/hazeion/agent-os.git
@@ -49,13 +59,11 @@ python scripts/mentat_setup.py
 ./run.sh
 ```
 
-Press Enter to accept the setup helper's recommended local values, or choose a
-supported remote Hermes connection when prompted. Then open
-[http://localhost:8888](http://localhost:8888). That's it! 🎉
-
-On Windows, replace the virtual-environment and launch commands above with:
+### Windows
 
 ```bat
+git clone https://github.com/hazeion/agent-os.git
+cd agent-os
 py -m venv .venv
 .venv\Scripts\activate
 python -m pip install -r requirements.txt
@@ -63,147 +71,88 @@ python scripts\mentat_setup.py
 run.bat
 ```
 
-Mentat works as a project planner without Hermes. Install and set up
-[Hermes Agent](https://hermes-agent.nousresearch.com/) to use chat, delegation,
-sessions, and other agent features.
+Open [http://localhost:8888](http://localhost:8888) if your browser does not
+open on its own.
 
-The setup helper stores settings only on your computer. Hermes continues to
-manage provider credentials. A remote server key is read only from an
-environment variable or owner-only env file; see the
-[remote Hermes guide](REMOTE_HERMES.md#operator-experience-local-and-remote-selection).
+Mentat works as a project planner without Hermes. Install Hermes when you want
+to use chat, delegation, sessions, and other agent features.
 
-### Connect to a remote Hermes
+The setup helper stores settings on your computer. Hermes continues to manage
+provider credentials. To connect Mentat to Hermes on another computer, follow
+the [remote Hermes guide](REMOTE_HERMES.md#operator-experience-local-and-remote-selection).
 
-There are two small pieces: turn on the API server in your Hermes fork, then
-give Mentat the same key.
+## Start and stop Mentat
 
-On the **remote Hermes computer**, add this to `~/.hermes/.env`:
+On macOS or Linux:
 
 ```bash
-API_SERVER_ENABLED=true
-API_SERVER_HOST=127.0.0.1
-API_SERVER_PORT=8642
-API_SERVER_KEY=replace-with-a-long-random-key
-```
-
-Generate a strong key with `openssl rand -hex 32`, save it in the file above,
-and restart `hermes gateway`. Put the local API server behind a trusted HTTPS
-address such as `https://hermes.example.com`. Mentat intentionally rejects
-ordinary remote HTTP, and port 8642 should not be exposed directly to the
-internet.
-
-On the **Mentat computer**, create an owner-only file such as
-`~/.config/mentat/remote-hermes.env` containing the same key:
-
-```bash
-MENTAT_REMOTE_HERMES_API_KEY="your-key"
-```
-
-On macOS or Linux, protect it with
-`chmod 600 ~/.config/mentat/remote-hermes.env`. On Windows, keep the file in a
-folder accessible only to your account. Then stop Mentat and connect:
-
-```bash
+./run.sh
+./status.sh
 ./stop.sh
-python -m mentat connection configure-remote \
-  --endpoint https://hermes.example.com \
-  --label "Remote Hermes" \
-  --api-key-file ~/.config/mentat/remote-hermes.env
-python -m mentat connection test remote
-./run.sh
 ```
 
-Use the HTTPS address without `/v1`. Mentat shows the planned change and asks
-before saving it.
+On Windows, use `run.bat`, `status.bat`, and `stop.bat`.
 
-Later, switching is quick—stop Mentat, choose the connection, and start it
-again:
+If port 8888 is busy, run:
 
 ```bash
-./stop.sh
-python -m mentat connection use local    # Use Hermes on this computer
-python -m mentat connection use remote   # Use the remembered remote
-./run.sh
+./run.sh --port 8889
 ```
 
-Only run the `use local` or `use remote` line you want. Windows users can use
-`stop.bat` and `run.bat`; the `python -m mentat connection ...` commands stay
-the same. For TLS, firewall, and recovery details, see the
-[remote Hermes guide](REMOTE_HERMES.md#operator-experience-local-and-remote-selection).
+Then open [http://localhost:8889](http://localhost:8889).
 
-If you were invited to test a signed release candidate, use the exact release
-link and instructions from the invitation instead. See [Beta Support](SUPPORT.md)
-for current platform and compatibility notes.
+## Try the Next.js preview
 
-## Starting and stopping
+The preview needs Node 24.19 or newer in the Node 24 release line.
 
-After the first setup, start Mentat from its folder:
+Check your version:
 
 ```bash
-./run.sh
+node --version
+npm --version
 ```
 
-Useful commands:
-
-```bash
-./status.sh    # Is Mentat running?
-./stop.sh      # Stop Mentat
-```
-
-Windows users can run `run.bat`, `status.bat`, and `stop.bat` instead. If port
-8888 is busy, start the normal dashboard with `./run.sh --port 8889` and open
-`http://localhost:8889`.
-
-### Try the next frontend preview
-
-The new frontend is currently an optional source preview. It requires Node.js
-24.19 or newer within the Node 24 release line. From the repository root, prepare
-it once:
+Install and build the web app from the repository root:
 
 ```bash
 npm --prefix web ci --ignore-scripts
 npm --prefix web run build
 ```
 
-Then launch both the Node gateway and its private Python bridge with one command:
+Start the Node gateway and private Python bridge:
 
 ```bash
 python3 scripts/mentat_web_preview.py
 ```
 
-Open [http://localhost:8890](http://localhost:8890) and press Ctrl+C when you
-are done. This preview does not replace the normal dashboard on port 8888.
+Open [http://localhost:8890](http://localhost:8890). Press Ctrl+C in the
+terminal when you are done.
 
-## A few good things to know
+The preview does not replace the Python app on port 8888. The normal app does
+not need npm.
 
-- Mentat stays on your computer and listens only on local addresses.
-- The normal dashboard still has no npm step. npm is needed only for the
-  optional next-frontend preview and frontend development.
-- Mentat does not directly edit Hermes' core files.
-- Mentat can use local Hermes or a supported remote Hermes server. It checks
-  available capabilities and hides actions that cannot be completed safely.
+## Keep in mind
+
+- Mentat listens only on local addresses.
+- Mentat does not edit Hermes core files directly.
 - Calendar events, Obsidian note contents, Hermes sessions, and cron jobs are
   read-only in Mentat.
+- Private data and runtime files stay out of the repository.
 
-## Want the technical details?
+## More documentation
 
-You do not need these documents to use Mentat, but they are here if you want to
-dig deeper:
-
-- [Architecture and safety boundaries](ARCHITECTURE.md)
-- [Data storage, migration, and backups](DATA_LAYOUT.md)
-- [Privacy](PRIVACY.md) and [security reporting](SECURITY.md)
-- [Beta support and known limitations](SUPPORT.md)
-- [Public beta status and roadmap](ROAD_TO_BETA.md)
-- [Remote Hermes contract](REMOTE_HERMES.md)
+- [Architecture and safety rules](ARCHITECTURE.md)
+- [Current pivot roadmap](MENTAT_PIVOT_IMPLEMENTATION_PLAN.md)
+- [Data, migration, and backups](DATA_LAYOUT.md)
+- [Remote Hermes setup](REMOTE_HERMES.md)
+- [Privacy](PRIVACY.md)
+- [Security](SECURITY.md)
+- [Beta support](SUPPORT.md)
 - [Recent changes](CHANGELOG.md)
 
 ## Contributing
 
-Contributions are welcome. Keep changes small, local-first, and easy to
-understand. The [contributor guide](CONTRIBUTING.md) gets you started, and the
-[repository guide](AGENTS.md) explains the deeper project boundaries.
+Contributions are welcome. Keep changes small and local. Read the
+[contributor guide](CONTRIBUTING.md) before opening a pull request.
 
-Mentat is made by a single developer, is licensed under the
-[MIT License](LICENSE), and is still finding its feet. If you find a rough edge,
-feel free to open an issue or a focused pull request.
+Mentat is licensed under the [MIT License](LICENSE).

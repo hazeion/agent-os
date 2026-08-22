@@ -17,11 +17,11 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
         self.assertIn("legacy browser `agent_id` field still", ARCHITECTURE)
         self.assertIn("without inventing profile-derived IDs", ARCHITECTURE)
 
-    def test_first_slice_remains_additive_and_hermes_only(self):
-        status = PIVOT.split("### Implementation status", 1)[1]
-        self.assertIn("runtime-neutral domain/protocol contracts", status)
-        self.assertIn("Durable Mentat Agent", status)
-        self.assertIn("remain separate follow-up slices", status)
+    def test_pivot_keeps_hermes_behind_the_runtime_boundary(self):
+        self.assertIn("Hermes is the first supported runtime", PIVOT)
+        self.assertIn("Python is becoming the Mentat Local Bridge", PIVOT)
+        self.assertIn("Hermes stays behind `HermesRuntime`", PIVOT)
+        self.assertIn("Add Codex as a second runtime", PIVOT)
 
     def test_console_transport_and_routes_cross_the_runtime_registry(self):
         self.assertIn('AGENT_RUNTIME_REGISTRY.require("hermes")', SERVER)
@@ -37,16 +37,13 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
 
     def test_pivot_plan_closes_sqlite_cutover_and_tracks_frontend_slices(self):
         self.assertIn("| 1B | Complete |", PIVOT_PLAN)
-        self.assertIn("| 1C-A | Complete |", PIVOT_PLAN)
-        self.assertIn("| 1C-B | Complete |", PIVOT_PLAN)
-        self.assertIn("| 1C-C | Complete |", PIVOT_PLAN)
-        self.assertIn("| 1C-D | Complete |", PIVOT_PLAN)
+        self.assertIn("| 1C-A to 1C-D | Complete |", PIVOT_PLAN)
         self.assertIn("| 2A-A | In progress |", PIVOT_PLAN)
         self.assertIn("| 2A-B | Proposed |", PIVOT_PLAN)
-        self.assertIn("repeatable Lighthouse 100/100/100/100 replacement gate moves intact to 2A", PIVOT_PLAN)
-        self.assertIn("before it may displace the legacy frontend", PIVOT_PLAN)
+        self.assertIn("three desktop and three mobile Lighthouse runs", PIVOT_PLAN)
+        self.assertIn("The legacy interface may be retired only after", PIVOT_PLAN)
         self.assertIn("reviews/2026-08-18-mentat-sqlite-task-cutover.md", PIVOT_PLAN)
-        self.assertIn("Next.js + React + TypeScript", PIVOT_PLAN)
+        self.assertIn("Build on the existing `web/` app", PIVOT_PLAN)
         self.assertIn("MENTAT_PIVOT_IMPLEMENTATION_PLAN.md", AGENT_GUIDE)
         self.assertIn("/api/orchestration/agents", ARCHITECTURE)
 

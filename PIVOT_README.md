@@ -1,11 +1,19 @@
-# Mentat Architecture Pivot Notice
+# Mentat pivot guide
 
-Read `MENTAT_MULTI_AGENT_PIVOT.md` before planning new architectural work. It describes the target architecture; `ARCHITECTURE.md` still describes much of the currently implemented system. Read `MENTAT_PIVOT_IMPLEMENTATION_PLAN.md` to identify the completed, active, proposed, and provisional delivery slices. For the Task/Run/Event persistence work, also read `design/system-design/MENTAT_SQLITE_ORCHESTRATION_SYSTEM_DESIGN.docx`; it records the middle-ground SQLite boundary and the later unified-database destination.
+Mentat is moving from a Hermes dashboard to a local multi-agent operations
+console. The change is gradual. The current Python app stays available while
+the new Next.js interface and runtime adapters are added in small slices.
 
-`ARCHITECTURE.md` remains important for understanding current implementation contracts, safety boundaries, and behavior that must be preserved during migration. `MENTAT_MULTI_AGENT_PIVOT.md` defines the intended direction for the multi-agent orchestration pivot.
+Read these files in order before planning architecture work:
 
-When the documents differ because of the migration, do not perform a wholesale rewrite. Preserve current behavior and introduce the smallest compatibility seam that advances the pivot.
+1. [MENTAT_PIVOT_IMPLEMENTATION_PLAN.md](MENTAT_PIVOT_IMPLEMENTATION_PLAN.md)
+   shows what is complete and what comes next.
+2. [MENTAT_MULTI_AGENT_PIVOT.md](MENTAT_MULTI_AGENT_PIVOT.md) explains the
+   target architecture.
+3. [ARCHITECTURE.md](ARCHITECTURE.md) defines the safety rules that the current
+   code enforces.
+4. The active slice review log contains its approved scope and test evidence.
 
-The implementation plan is a roadmap, not authorization to begin every listed
-slice. Use the active slice's review log for its approved scope, test strategy,
-verification evidence, and resume point.
+The roadmap is not permission to start a later slice. Finish the active slice
+first and keep the Python app working until its replacement has matching
+behavior, safe packaging, and a tested rollback.

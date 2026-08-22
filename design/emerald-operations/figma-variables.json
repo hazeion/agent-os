@@ -1,0 +1,403 @@
+{
+  "meta": {
+    "name": "Mentat Operations",
+    "direction": "Emerald Operations",
+    "version": "1.0.0",
+    "status": "design specification",
+    "notes": "Canonical review manifest for Figma variables or a Tokens Studio adapter. This is not a native Figma REST import payload."
+  },
+  "collections": {
+    "Primitives / Color": {
+      "type": "COLOR",
+      "modes": [
+        "Value"
+      ],
+      "variables": {
+        "color/neutral/1000": { "Value": "#05090B" },
+        "color/neutral/950": { "Value": "#070D11" },
+        "color/neutral/900": { "Value": "#0B1115" },
+        "color/neutral/850": { "Value": "#0F151A" },
+        "color/neutral/800": { "Value": "#121A20" },
+        "color/neutral/750": { "Value": "#182127" },
+        "color/neutral/700": { "Value": "#202B30" },
+        "color/neutral/650": { "Value": "#2A373B" },
+        "color/neutral/600": { "Value": "#344348" },
+        "color/neutral/550": { "Value": "#596B6F" },
+        "color/neutral/500": { "Value": "#566166" },
+        "color/neutral/400": { "Value": "#7E898B" },
+        "color/neutral/300": { "Value": "#AAB1AF" },
+        "color/neutral/200": { "Value": "#CBCFCB" },
+        "color/neutral/100": { "Value": "#EAE7DD" },
+        "color/neutral/0": { "Value": "#F6F3EA" },
+        "color/neutral/sidebar": { "Value": "#070B0F" },
+        "color/neutral/row": { "Value": "#10171B" },
+        "color/emerald/50": { "Value": "#EFF9F0" },
+        "color/emerald/100": { "Value": "#D8EEDB" },
+        "color/emerald/200": { "Value": "#BFE2C2" },
+        "color/emerald/300": { "Value": "#9DCE9B" },
+        "color/emerald/400": { "Value": "#7FBE87" },
+        "color/emerald/500": { "Value": "#61A66F" },
+        "color/emerald/600": { "Value": "#478758" },
+        "color/emerald/700": { "Value": "#326741" },
+        "color/emerald/800": { "Value": "#264B36" },
+        "color/emerald/900": { "Value": "#183225" },
+        "color/emerald/selected": { "Value": "#183225A3" },
+        "color/orange/100": { "Value": "#F7DDC4" },
+        "color/orange/300": { "Value": "#F0AC69" },
+        "color/orange/400": { "Value": "#E69148" },
+        "color/orange/500": { "Value": "#C96C32" },
+        "color/orange/700": { "Value": "#7A4027" },
+        "color/orange/900": { "Value": "#39241D" },
+        "color/red/500": { "Value": "#DB716B" },
+        "color/red/800": { "Value": "#5A2A2C" },
+        "color/red/high-contrast": { "Value": "#FF8B85" },
+        "color/blue/400": { "Value": "#70A9BD" },
+        "color/blue/high-contrast": { "Value": "#93C5D6" },
+        "color/ink/on-accent": { "Value": "#09110D" },
+        "color/ivory/operations": { "Value": "#F2F0E9" },
+        "color/emerald/logo-detail": { "Value": "#8BCF9B" }
+      }
+    },
+    "Semantic / Color": {
+      "type": "COLOR",
+      "modes": [
+        "Operations Dark",
+        "High Contrast"
+      ],
+      "variables": {
+        "surface/canvas": {
+          "Operations Dark": "{color/neutral/950}",
+          "High Contrast": "{color/neutral/1000}"
+        },
+        "surface/app-bar": {
+          "Operations Dark": "{color/neutral/1000}",
+          "High Contrast": "{color/neutral/1000}"
+        },
+        "surface/sidebar": {
+          "Operations Dark": "{color/neutral/sidebar}",
+          "High Contrast": "{color/neutral/1000}"
+        },
+        "surface/panel": {
+          "Operations Dark": "{color/neutral/850}",
+          "High Contrast": "{color/neutral/900}"
+        },
+        "surface/panel-raised": {
+          "Operations Dark": "{color/neutral/800}",
+          "High Contrast": "{color/neutral/850}"
+        },
+        "surface/row": {
+          "Operations Dark": "{color/neutral/row}",
+          "High Contrast": "{color/neutral/900}"
+        },
+        "surface/row-hover": {
+          "Operations Dark": "{color/neutral/750}",
+          "High Contrast": "{color/neutral/800}"
+        },
+        "surface/input": {
+          "Operations Dark": "{color/neutral/900}",
+          "High Contrast": "{color/neutral/1000}"
+        },
+        "surface/selected": {
+          "Operations Dark": "{color/emerald/selected}",
+          "High Contrast": "{color/emerald/900}"
+        },
+        "surface/attention": {
+          "Operations Dark": "{color/orange/900}",
+          "High Contrast": "{color/orange/900}"
+        },
+        "surface/danger": {
+          "Operations Dark": "{color/red/800}",
+          "High Contrast": "{color/red/800}"
+        },
+        "content/primary": {
+          "Operations Dark": "{color/neutral/100}",
+          "High Contrast": "{color/neutral/0}"
+        },
+        "content/secondary": {
+          "Operations Dark": "{color/neutral/300}",
+          "High Contrast": "{color/neutral/200}"
+        },
+        "content/tertiary": {
+          "Operations Dark": "{color/neutral/400}",
+          "High Contrast": "{color/neutral/300}"
+        },
+        "content/disabled": {
+          "Operations Dark": "{color/neutral/500}",
+          "High Contrast": "{color/neutral/400}"
+        },
+        "content/accent": {
+          "Operations Dark": "{color/emerald/300}",
+          "High Contrast": "{color/emerald/200}"
+        },
+        "content/on-accent": {
+          "Operations Dark": "{color/ink/on-accent}",
+          "High Contrast": "{color/neutral/1000}"
+        },
+        "border/subtle": {
+          "Operations Dark": "{color/neutral/700}",
+          "High Contrast": "{color/neutral/600}"
+        },
+        "border/default": {
+          "Operations Dark": "{color/neutral/650}",
+          "High Contrast": "{color/neutral/550}"
+        },
+        "border/strong": {
+          "Operations Dark": "{color/neutral/600}",
+          "High Contrast": "{color/neutral/400}"
+        },
+        "border/interactive": {
+          "Operations Dark": "{color/neutral/550}",
+          "High Contrast": "{color/neutral/300}"
+        },
+        "border/focus": {
+          "Operations Dark": "{color/emerald/300}",
+          "High Contrast": "{color/emerald/100}"
+        },
+        "status/ready": {
+          "Operations Dark": "{color/emerald/300}",
+          "High Contrast": "{color/emerald/200}"
+        },
+        "status/completed": {
+          "Operations Dark": "{color/emerald/300}",
+          "High Contrast": "{color/emerald/200}"
+        },
+        "status/attention": {
+          "Operations Dark": "{color/orange/400}",
+          "High Contrast": "{color/orange/300}"
+        },
+        "status/failed": {
+          "Operations Dark": "{color/red/500}",
+          "High Contrast": "{color/red/high-contrast}"
+        },
+        "status/offline": {
+          "Operations Dark": "{color/neutral/400}",
+          "High Contrast": "{color/neutral/200}"
+        },
+        "status/info": {
+          "Operations Dark": "{color/blue/400}",
+          "High Contrast": "{color/blue/high-contrast}"
+        }
+      }
+    },
+    "Dimensions": {
+      "type": "FLOAT",
+      "modes": [
+        "Default"
+      ],
+      "variables": {
+        "space/0": { "Default": 0 },
+        "space/1": { "Default": 4 },
+        "space/2": { "Default": 8 },
+        "space/3": { "Default": 12 },
+        "space/4": { "Default": 16 },
+        "space/5": { "Default": 20 },
+        "space/6": { "Default": 24 },
+        "space/8": { "Default": 32 },
+        "space/10": { "Default": 40 },
+        "space/12": { "Default": 48 },
+        "space/16": { "Default": 64 },
+        "radius/1": { "Default": 4 },
+        "radius/2": { "Default": 6 },
+        "radius/3": { "Default": 8 },
+        "radius/4": { "Default": 10 },
+        "radius/5": { "Default": 12 },
+        "radius/6": { "Default": 16 },
+        "radius/full": { "Default": 999 },
+        "shell/app-bar-height": { "Default": 64 },
+        "shell/rail-expanded": { "Default": 184 },
+        "shell/rail-compact": { "Default": 72 },
+        "layout/gutter": { "Default": 12 },
+        "layout/page-padding-desktop": { "Default": 24 },
+        "layout/page-padding-compact": { "Default": 16 },
+        "layout/page-padding-mobile": { "Default": 12 },
+        "control/height-compact": { "Default": 36 },
+        "control/height-default": { "Default": 40 },
+        "control/touch-target": { "Default": 44 },
+        "icon/small": { "Default": 16 },
+        "icon/default": { "Default": 18 },
+        "icon/large": { "Default": 20 },
+        "logo/desktop": { "Default": 32 },
+        "logo/mobile": { "Default": 28 },
+        "logo/minimum": { "Default": 24 }
+      }
+    },
+    "Motion / Duration": {
+      "type": "FLOAT",
+      "modes": [
+        "Standard",
+        "Reduced"
+      ],
+      "variables": {
+        "motion/fast-ms": {
+          "Standard": 120,
+          "Reduced": 1
+        },
+        "motion/standard-ms": {
+          "Standard": 160,
+          "Reduced": 1
+        },
+        "motion/emphasis-ms": {
+          "Standard": 220,
+          "Reduced": 1
+        }
+      }
+    },
+    "Motion / Easing": {
+      "type": "STRING",
+      "modes": [
+        "Standard",
+        "Reduced"
+      ],
+      "variables": {
+        "motion/ease": {
+          "Standard": "cubic-bezier(.2,.8,.2,1)",
+          "Reduced": "linear"
+        }
+      }
+    }
+  },
+  "styles": {
+    "text": {
+      "type/brand": {
+        "family": "Inter",
+        "fallback": "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+        "size": 20,
+        "lineHeight": 28,
+        "weight": 600
+      },
+      "type/page-title": {
+        "family": "Inter",
+        "size": 24,
+        "lineHeight": 32,
+        "weight": 600
+      },
+      "type/section-title": {
+        "family": "Inter",
+        "size": 18,
+        "lineHeight": 24,
+        "weight": 600
+      },
+      "type/card-title": {
+        "family": "Inter",
+        "size": 15,
+        "lineHeight": 20,
+        "weight": 600
+      },
+      "type/body": {
+        "family": "Inter",
+        "size": 14,
+        "lineHeight": 20,
+        "weight": 400
+      },
+      "type/body-medium": {
+        "family": "Inter",
+        "size": 14,
+        "lineHeight": 20,
+        "weight": 500
+      },
+      "type/body-small": {
+        "family": "Inter",
+        "size": 13,
+        "lineHeight": 18,
+        "weight": 400
+      },
+      "type/label": {
+        "family": "Inter",
+        "size": 12,
+        "lineHeight": 16,
+        "weight": 500
+      },
+      "type/meta": {
+        "family": "Inter",
+        "size": 11,
+        "lineHeight": 16,
+        "weight": 500
+      },
+      "type/metric-large": {
+        "family": "Inter",
+        "size": 28,
+        "lineHeight": 32,
+        "weight": 600,
+        "numeric": "tabular"
+      },
+      "type/metric": {
+        "family": "Inter",
+        "size": 20,
+        "lineHeight": 24,
+        "weight": 600,
+        "numeric": "tabular"
+      },
+      "type/button": {
+        "family": "Inter",
+        "size": 13,
+        "lineHeight": 20,
+        "weight": 500
+      }
+    },
+    "paint": {
+      "paint/panel": {
+        "type": "LINEAR_GRADIENT",
+        "angle": 145,
+        "stops": [
+          { "position": 0, "color": "#121A20" },
+          { "position": 1, "color": "#0D1418" }
+        ]
+      },
+      "paint/nested": {
+        "type": "LINEAR_GRADIENT",
+        "angle": 145,
+        "stops": [
+          { "position": 0, "color": "#182127" },
+          { "position": 1, "color": "#11191E" }
+        ]
+      },
+      "paint/navigation-active": {
+        "type": "LINEAR_GRADIENT",
+        "angle": 90,
+        "stops": [
+          { "position": 0, "color": "#61A66F1F" },
+          { "position": 1, "color": "#61A66F0A" }
+        ]
+      }
+    },
+    "effect": {
+      "effect/popover": {
+        "x": 0,
+        "y": 12,
+        "blur": 32,
+        "spread": 0,
+        "color": "#00000052"
+      },
+      "effect/dialog": {
+        "x": 0,
+        "y": 24,
+        "blur": 64,
+        "spread": 0,
+        "color": "#0000007A"
+      }
+    }
+  },
+  "cssAliases": {
+    "--bg": "surface/canvas",
+    "--card": "surface/panel",
+    "--line": "border/subtle",
+    "--text": "content/primary",
+    "--muted": "content/secondary",
+    "--accent": "content/accent",
+    "--color-surface-canvas": "surface/canvas",
+    "--color-surface-panel": "surface/panel",
+    "--color-surface-panel-raised": "surface/panel-raised",
+    "--color-surface-row": "surface/row",
+    "--color-surface-input": "surface/input",
+    "--color-text-primary": "content/primary",
+    "--color-text-secondary": "content/secondary",
+    "--color-text-tertiary": "content/tertiary",
+    "--color-border-subtle": "border/subtle",
+    "--color-border-default": "border/default",
+    "--color-border-focus": "border/focus",
+    "--color-accent-primary": "content/accent",
+    "--color-status-ready": "status/ready",
+    "--color-status-attention": "status/attention",
+    "--color-status-failed": "status/failed"
+  }
+}
