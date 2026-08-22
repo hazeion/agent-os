@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_registry import AgentRegistryError, AgentRegistryUnavailableError
+from task_repository import TaskRepositoryError
 from mentat import local_bridge
 import server
 
@@ -180,6 +181,25 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual(status, response_status)
                 self.assertEqual(payload["status"], state)
                 self.assertNotIn("private", json.dumps(payload))
+
+    def test_tasks_is_a_fixed_sqlite_projection_without_descriptions(self):
+        canonical = {"schema_version": 1, "count": 1, "tasks": [{"id": "task_1", "title": "Current task", "project": "Mentat", "status": "todo", "priority": "medium", "due_date": None, "tags": ["planning"], "needs_attention": False, "review_required": False, "updated_at": "2026-08-22T00:00:00Z", "description": "private"}]}
+        with patch.object(server, "mentat_tasks_payload", return_value=canonical):
+            payload, status = local_bridge.bridge_tasks_payload()
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["tasks"][0]["title"], "Current task")
+        self.assertNotIn("description", json.dumps(payload))
+        self.assertNotIn("tasks.json", json.dumps(payload))
+
+    def test_tasks_accept_canonical_wide_task_ids_and_map_corruption_to_error(self):
+        identifier = "task@" + "x" * 155
+        canonical = {"schema_version": 1, "count": 1, "tasks": [{"id": identifier, "title": "Task", "project": "Mentat", "status": "todo", "priority": "medium", "due_date": None, "tags": [], "needs_attention": False, "review_required": False, "updated_at": "2026-08-22T00:00:00Z"}]}
+        with patch.object(server, "mentat_tasks_payload", return_value=canonical):
+            payload, status = local_bridge.bridge_tasks_payload()
+        self.assertEqual((status, payload["tasks"][0]["id"]), (200, identifier))
+        with patch.object(server, "mentat_tasks_payload", side_effect=TaskRepositoryError("task_repository.corrupt")):
+            payload, status = local_bridge.bridge_tasks_payload()
+        self.assertEqual((status, payload["status"]), (500, "error"))
 
     def test_duplicate_or_body_headers_fail_closed(self):
         header_sets = (

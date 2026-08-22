@@ -5066,6 +5066,14 @@ def tasks_payload() -> dict:
     return {"tasks": public_tasks}
 
 
+def mentat_tasks_payload() -> dict:
+    """Return canonical Tasks for one fixed server-side bridge capability."""
+    tasks = read_authoritative_tasks(DATA_DIR)
+    if not isinstance(tasks, list):
+        raise TaskRepositoryError("task_repository.corrupt")
+    return {"schema_version": 1, "tasks": tasks, "count": len(tasks)}
+
+
 DELEGATION_ACTIONS = {"accept", "reply", "retry", "stop", "request_revision", "mark_blocked"}
 DELEGATION_ACTION_CAPABILITIES = {
     "reply": ("tasks.reply",),

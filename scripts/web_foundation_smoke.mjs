@@ -753,6 +753,36 @@ async function inspectAgentProjection(client) {
   }
 }
 
+async function inspectTasksWorkspace(client) {
+  await setViewport(client, viewports[1]);
+  await navigate(client, "/tasks", "Tasks workspace");
+  await waitFor(() => client.eval("document.querySelector('[data-tasks-root]')?.dataset.tasksState !== 'loading'"), "Tasks ready state");
+  const result = await client.eval(`(() => ({
+    state: document.querySelector('[data-tasks-root]')?.dataset.tasksState,
+    summary: document.querySelector('[data-tasks-summary]')?.textContent,
+    cards: document.querySelectorAll('.task-card').length,
+    rendered: document.querySelector('[data-tasks-list]')?.textContent,
+    overflow: document.documentElement.scrollWidth - innerWidth,
+  }))()`);
+  if (!new Set(["ready", "empty"]).has(result.state) || result.overflow > 1 || (result.state === "empty" && (result.summary !== "No current Tasks yet." || result.cards !== 0)) || (result.state === "ready" && result.cards === 0) || result.rendered.includes("description") || result.rendered.includes("delegation")) throw new Error(`Tasks workspace contract failed: ${JSON.stringify(result)}`);
+  const before = await client.eval("performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/tasks').length");
+  await client.eval("document.querySelector('[data-tasks-refresh]').click()");
+  await waitFor(() => client.eval(`performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/tasks').length > ${before}`), "Tasks refresh request");
+  return result;
+}
+
+async function inspectTaskFailureStates(client) {
+  const states = [
+    { name: "unsupported", status: 501, detail: "This Python bridge does not support Task data yet." },
+    { name: "unavailable", status: 503, detail: "Task data is temporarily unavailable. Check the Python connection and retry." },
+    { name: "error", status: 502, detail: "Mentat could not safely read Task data. Try again." },
+  ]; const results = [];
+  for (const state of states) {
+    const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); return url.pathname === '/api/tasks' ? Promise.resolve(new Response(JSON.stringify({ schema_version: 1, status: '${state.name}' }), { status: ${state.status}, headers: { 'Content-Type': 'application/json' } })) : nativeFetch(input, init); }; })();` });
+    try { await navigate(client, "/tasks", `Tasks ${state.name}`); await waitFor(() => client.eval(`document.querySelector('[data-tasks-root]')?.dataset.tasksState === '${state.name}'`), `Tasks ${state.name} state`); const result = await client.eval(`({ summary: document.querySelector('[data-tasks-summary]')?.textContent, cards: document.querySelectorAll('.task-card').length })`); if (result.summary !== state.detail || result.cards !== 0) throw new Error(`Tasks ${state.name} contract failed: ${JSON.stringify(result)}`); results.push({ name: state.name, result }); } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
+  } return results;
+}
+
 async function inspectCompactPointerAndTooltip(client) {
   await setViewport(client, viewports[2]);
   await navigate(client, "/", "compact navigation");
@@ -816,6 +846,10 @@ async function inspectCompactPointerAndTooltip(client) {
 async function inspectCompactShortHeight(client) {
   await setViewport(client, { width: 1024, height: 320, mobile: false });
   await navigate(client, "/", "short compact navigation");
+  await waitFor(
+    () => client.eval("document.documentElement.dataset.shellRuntime === 'ready'"),
+    "short compact shell runtime",
+  );
   await client.eval("document.activeElement?.blur()");
   for (let index = 0; index < 6; index += 1) await dispatchKey(client, "Tab");
   await waitFor(
@@ -1252,6 +1286,8 @@ async function main() {
     const agentsResult = await inspectAgentsWorkspace(client);
     const agentProjectionResult = await inspectAgentProjection(client);
     const agentFailureResult = await inspectAgentFailureStates(client);
+    const tasksResult = await inspectTasksWorkspace(client);
+    const taskFailureResult = await inspectTaskFailureStates(client);
     const unavailableResult = await inspectUnavailableBridge(client);
     const compactResult = await inspectCompactPointerAndTooltip(client);
     const compactHeightResult = await inspectCompactShortHeight(client);
@@ -1270,6 +1306,8 @@ async function main() {
       agents: agentsResult,
       agentProjection: agentProjectionResult,
       agentFailures: agentFailureResult,
+      tasks: tasksResult,
+      taskFailures: taskFailureResult,
       unavailable: unavailableResult,
       compact: compactResult,
       compactHeight: compactHeightResult,
