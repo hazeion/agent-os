@@ -175,3 +175,9 @@ source standalone tree before copying it.
 | `npm --prefix web run check` | Pass | Lint, type check, and 38 Node tests passed. |
 | Isolated sdist and wheel build | Pass | The verifier accepted the complete staged runtime and rejects native wheel members. |
 | Two independent final reviews | Pass | No blockers or non-blockers after source validation was moved before the copy. |
+
+After the correction commit reached GitHub, the secret scanner flagged the
+test-only key `PROVIDER_SECRET`; no credential or runtime behavior was
+involved. The test now uses the neutral `UNRELATED_PARENT_VALUE` marker. The
+targeted test suite passes locally; GitHub remains the authoritative scanner
+because the local `detect-secrets` module is unavailable.

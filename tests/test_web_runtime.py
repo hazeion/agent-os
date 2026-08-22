@@ -58,7 +58,7 @@ class WebRuntimeTests(unittest.TestCase):
     def test_node_environment_excludes_bridge_runtime_settings_and_parent_secrets(self):
         with patch.dict(
             web_runtime.os.environ,
-            {"PATH": "/fixed", "MENTAT_DATA_DIR": "/private/data", "HERMES_HOME": "/private/hermes", "PROVIDER_SECRET": "secret"},
+            {"PATH": "/fixed", "MENTAT_DATA_DIR": "/private/data", "HERMES_HOME": "/private/hermes", "UNRELATED_PARENT_VALUE": "ignored"},
             clear=True,
         ):
             environment = web_runtime.node_environment(
@@ -68,7 +68,7 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertEqual(environment["MENTAT_BRIDGE_TOKEN"], "x" * 43)
         self.assertNotIn("MENTAT_DATA_DIR", environment)
         self.assertNotIn("HERMES_HOME", environment)
-        self.assertNotIn("PROVIDER_SECRET", environment)
+        self.assertNotIn("UNRELATED_PARENT_VALUE", environment)
 
     def test_installed_runtime_uses_the_wheel_payload_when_source_build_is_absent(self):
         with patch.object(web_runtime, "SOURCE_ROOT", Path("/missing/source")), patch.object(
