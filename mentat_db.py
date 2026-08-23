@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import stat
@@ -23,10 +24,7 @@ DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
 SCHEMA_VERSION = 8
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
-EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = (
-    "e3b0c44298fc1c149afbf4c8996fb924"
-    "27ae41e4649b934ca495991b7852b855"
-)
+EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
 MAX_READONLY_WAL_BYTES = 32 * 1024 * 1024
 MAX_READONLY_SHM_BYTES = 4 * 1024 * 1024

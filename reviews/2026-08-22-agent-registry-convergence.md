@@ -120,6 +120,7 @@ identity and private runtime bindings.
 | Reviewer regression cases | Passed: legacy-only root, stale post-cutover source, hot rollback journals, source writer race, schema-7 format-3 restore, protocol-3 resume, old private-migration receipt, and schema-5 Agent export |
 | Released archive defaults | Format-2 and format-3 default private units both build, parse, validate, and round-trip |
 | Node 24 web gate | ESLint, TypeScript, and 39 tests passed |
+| Tracked-file secret scan | Empty-source SHA-256 is computed from `b""`; local scan passes without a new baseline exception |
 | Production browser smoke | Passed all routes, responsive layouts, keyboard/focus behavior, and Agent/Task/Run projections and controls |
 | Lighthouse | Six production audits passed 100/100/100/100; desktop LCP 215–224 ms, mobile LCP 1.11–1.14 s, TBT 0, CLS 0 or effectively 0 |
 | Source checks | Python compile and `git diff --check` passed |
