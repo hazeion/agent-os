@@ -38,6 +38,25 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertNotIn("ensure_task_authority", source)
         self.assertNotIn("prepare_task_authority", source)
 
+    def test_bridge_binding_uses_the_validated_literal_without_reverse_dns(self):
+        with patch.object(
+            local_bridge.socket,
+            "getfqdn",
+            side_effect=AssertionError("reverse DNS must not run"),
+        ):
+            bridge = local_bridge.build_bridge_server("127.0.0.1", 0, TOKEN)
+        try:
+            self.assertEqual(bridge.server_name, "127.0.0.1")
+            self.assertGreater(int(bridge.server_port), 0)
+            self.assertTrue(
+                issubclass(
+                    local_bridge.IPv6ConfiguredBridgeHTTPServer,
+                    local_bridge._LoopbackBridgeHTTPServer,
+                )
+            )
+        finally:
+            bridge.server_close()
+
     def request(
         self,
         method: str = "GET",

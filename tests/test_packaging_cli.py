@@ -1,8 +1,10 @@
 import ast
+import importlib.util
 import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -13,16 +15,24 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import health_checks
+from mentat import package_data
 import remote_hermes
 import runtime_config
 import server
 from data_layout import SEED_FILE_NAMES
 from mentat import __version__
 from mentat import cli
+from mentat import web_runtime
 from mentat.version import DISPLAY_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[1]
+NATIVE_ENTRY_SPEC = importlib.util.spec_from_file_location(
+    "mentat_native_entry", ROOT / "packaging" / "mentat_native.py"
+)
+assert NATIVE_ENTRY_SPEC is not None and NATIVE_ENTRY_SPEC.loader is not None
+native_entry = importlib.util.module_from_spec(NATIVE_ENTRY_SPEC)
+NATIVE_ENTRY_SPEC.loader.exec_module(native_entry)
 
 
 class PackagingContractTests(unittest.TestCase):
@@ -79,11 +89,20 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("prune data/private", manifest)
         self.assertIn("prune data/runtime", manifest)
         self.assertIn("include scripts/build_native.py", manifest)
+        self.assertIn("include scripts/stage_web_runtime.py", manifest)
+        self.assertIn("recursive-include web/package-runtime *", manifest)
+        stage_runtime = (ROOT / "scripts" / "stage_web_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("validate_web_runtime", stage_runtime)
+        self.assertLess(
+            stage_runtime.index("validate_web_runtime(SOURCE)"),
+            stage_runtime.index("shutil.copytree"),
+        )
         self.assertIn("include scripts/verify_macos_architecture.py", manifest)
         artifact_verifier = (
             ROOT / "scripts" / "verify_python_artifacts.py"
         ).read_text(encoding="utf-8")
         self.assertIn('"scripts/verify_macos_architecture.py"', artifact_verifier)
+        self.assertIn("native_runtime_reason", artifact_verifier)
         self.assertIn("include requirements-native.lock", manifest)
         for name in SEED_FILE_NAMES:
             self.assertIn(f"include data/{name}", manifest)
@@ -97,16 +116,45 @@ class PackagingContractTests(unittest.TestCase):
         ):
             self.assertIn(f"include public/{name}", manifest)
 
+    def test_universal_runtime_rejects_native_file_names_and_binaries(self):
+        self.assertEqual(
+            package_data.native_runtime_reason("node_modules/addon.so.1", b"plain text"),
+            "platform-native filename",
+        )
+        self.assertEqual(
+            package_data.native_runtime_reason("node_modules/addon", b"\x7fELFtest"),
+            "platform-native binary signature",
+        )
+        self.assertEqual(
+            package_data.native_runtime_reason("public/app.js", b"console."),
+            None,
+        )
+
+    def test_package_construction_rechecks_the_staged_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / package_data.WEB_RUNTIME_STAGE
+            runtime.mkdir(parents=True)
+            (runtime / "server.js").write_text("console.log('safe')", encoding="utf-8")
+            (runtime / "late-addon.so.1").write_bytes(b"not an executable")
+            with self.assertRaisesRegex(RuntimeError, "platform-native filename"):
+                package_data.package_data_files(root)
+
+            (runtime / "late-addon.so.1").unlink()
+            (runtime / "late-binary").write_bytes(b"\x7fELFtest")
+            with self.assertRaisesRegex(RuntimeError, "platform-native binary signature"):
+                package_data.package_data_files(root)
+
     def test_emerald_mark_is_in_every_static_asset_inventory(self):
         asset = "mentat-mark-emerald.png"
-        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        package_data = (ROOT / "mentat" / "package_data.py").read_text(encoding="utf-8")
         spec = (ROOT / "packaging" / "mentat.spec").read_text(encoding="utf-8")
         verifier = (
             ROOT / "scripts" / "verify_python_artifacts.py"
         ).read_text(encoding="utf-8")
-        self.assertIn(f"public/{asset}", pyproject)
+        self.assertIn(f"public/{asset}", package_data)
         self.assertIn(f'"{asset}"', spec)
-        self.assertIn(f"public/{asset}", verifier)
+        self.assertIn("package_data_files", verifier)
 
     def test_native_definitions_read_or_receive_the_single_version_source(self):
         spec = (ROOT / "packaging" / "mentat.spec").read_text(encoding="utf-8")
@@ -119,10 +167,13 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn('runpy.run_path(str(ROOT / "mentat" / "version.py"))', spec)
         self.assertIn('name="mentat"', spec)
         self.assertIn("console=True", spec)
+        self.assertIn('name="mentat-bridge"', spec)
         self.assertIn('"Mentat Launcher" if sys.platform.startswith("win")', spec)
         self.assertIn("MyAppVersion must be supplied", windows)
         self.assertNotIn("0.1.0-beta.1", windows)
         self.assertIn("from mentat.version import DISPLAY_VERSION, __version__", builder)
+        self.assertIn("def build_web_runtime()", builder)
+        self.assertIn('"web", "run", "build"', builder)
         self.assertIn('component["BundleIsRelocatable"] = False', builder)
         self.assertIn('"--component-plist"', builder)
         self.assertIn("-r requirements.txt", requirements)
@@ -136,7 +187,10 @@ class PackagingContractTests(unittest.TestCase):
     def test_native_entry_honors_explicit_cli_arguments(self):
         entry = (ROOT / "packaging" / "mentat_native.py").read_text(encoding="utf-8")
         self.assertIn("arguments = sys.argv[1:]", entry)
-        self.assertIn('main(arguments if arguments else ["start", "--open-browser"])', entry)
+        self.assertIn('launch_arguments = arguments if arguments else ["start", "--open-browser"]', entry)
+        self.assertIn('"--mentat-private-bridge"', entry)
+        self.assertIn('"--mentat-console-gateway"', entry)
+        self.assertIn("def console_gateway_companion()", entry)
 
     def test_native_ci_builds_unsigned_artifacts_without_signing_secrets(self):
         workflow = (
@@ -149,6 +203,17 @@ class PackagingContractTests(unittest.TestCase):
             "            runner: macos-15\n"
             "            architecture: arm64\n",
             matrix,
+        )
+        self.assertIn("test -f dist/Mentat.app/Contents/MacOS/mentat-bridge", workflow)
+        self.assertIn("test ! -L dist/Mentat.app/Contents/MacOS/mentat-bridge", workflow)
+        self.assertIn("curl --fail --silent --max-time 1 http://127.0.0.1:8896/api/bridge/health", workflow)
+        self.assertIn("stop_console_gateway()", workflow)
+        self.assertIn("os.setsid(); os.execv", workflow)
+        self.assertIn('kill -TERM -- "-$console_gateway_pid"', workflow)
+        self.assertIn('kill -KILL -- "-$console_gateway_pid"', workflow)
+        self.assertLess(
+            workflow.index('echo "direct_console_gateway=failed"'),
+            workflow.index("stop_console_gateway\n          /Applications/Mentat.app/Contents/MacOS/Mentat start"),
         )
         self.assertIn(
             "          - label: macOS Intel\n"
@@ -175,7 +240,12 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("mentat-macos-x86_64-unsigned", workflow)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("unsigned", workflow)
-        self.assertIn("api/health", workflow)
+        self.assertIn("api/bridge/health", workflow)
+        self.assertIn("api/gateway/health", workflow)
+        self.assertIn("curl --fail --silent --max-time 1 http://127.0.0.1:8897/api/gateway/health", workflow)
+        self.assertIn("Install the frozen web dependency tree", workflow)
+        self.assertIn("Resources/web/server.js", workflow)
+        self.assertIn("_internal/web/server.js", workflow)
         self.assertIn("unins000.exe", workflow)
         self.assertIn("upgrade-sentinel.txt", workflow)
         self.assertIn("mentat-baseline.pkg", workflow)
@@ -726,6 +796,77 @@ class PackagingContractTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_node_gateway_companion_emits_fixed_marker_before_exec(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            node = root / "node"
+            entrypoint = root / "Resources" / "web" / "server.js"
+            node.touch()
+            entrypoint.parent.mkdir(parents=True)
+            entrypoint.touch()
+            output = io.StringIO()
+            with patch.object(
+                native_entry.sys,
+                "argv",
+                ["mentat-node-gateway", "--mentat-node-gateway", str(node), str(entrypoint)],
+            ), patch.object(native_entry.sys, "frozen", True, create=True), patch.object(
+                native_entry.sys, "platform", "darwin"
+            ), patch.object(
+                native_entry, "application_root", return_value=root / "Resources"
+            ), patch.object(native_entry, "require_node_24") as require_node, patch.object(
+                native_entry.os, "execv"
+            ) as execute, redirect_stdout(output):
+                self.assertEqual(native_entry.native_main(), 2)
+            require_node.assert_called_once_with(str(node))
+            execute.assert_called_once_with(str(node), [str(node), str(entrypoint)])
+            self.assertEqual(output.getvalue(), "Mentat Node gateway handoff: exec\n")
+
+    def test_frozen_macos_start_uses_the_console_gateway_companion_once(self):
+        companion = Path("/fixed/Mentat.app/Contents/MacOS/mentat-bridge")
+        with patch.object(native_entry.sys, "argv", ["Mentat", "start", "--port", "8896"]), patch.object(
+            native_entry.sys, "frozen", True, create=True
+        ), patch.object(native_entry.sys, "platform", "darwin"), patch.object(
+            native_entry, "console_gateway_companion", return_value=companion
+        ), patch.object(native_entry.subprocess, "call", return_value=0) as launch, patch.object(
+            native_entry, "main"
+        ) as main:
+            self.assertEqual(native_entry.native_main(), 0)
+        launch.assert_called_once_with(
+            [str(companion), "--mentat-console-gateway", "start", "--port", "8896"]
+        )
+        main.assert_not_called()
+
+    def test_console_gateway_marker_bypasses_macos_handoff(self):
+        with patch.object(
+            native_entry.sys, "argv", ["mentat-bridge", "--mentat-console-gateway", "start", "--port", "8896"]
+        ), patch.object(native_entry, "main", return_value=0) as main, patch.object(
+            native_entry, "console_gateway_companion"
+        ) as companion:
+            self.assertEqual(native_entry.native_main(), 0)
+        main.assert_called_once_with(["start", "--port", "8896"])
+        companion.assert_not_called()
+
+    def test_private_bridge_marker_takes_precedence_over_gateway_handoff(self):
+        arguments = ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"]
+        with patch.object(native_entry.sys, "argv", arguments), patch(
+            "mentat.local_bridge.main", return_value=0
+        ) as bridge, patch.object(native_entry.runpy, "run_module") as run_module, patch.object(
+            native_entry, "main"
+        ) as main, patch.object(native_entry, "console_gateway_companion") as companion:
+            self.assertEqual(native_entry.native_main(), 0)
+        bridge.assert_called_once_with(["--port", "49152"])
+        run_module.assert_not_called()
+        self.assertEqual(arguments, ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"])
+        main.assert_not_called()
+        companion.assert_not_called()
+
+    def test_non_macos_start_keeps_the_direct_cli_fallback(self):
+        with patch.object(native_entry.sys, "argv", ["mentat", "start"]), patch.object(
+            native_entry.sys, "frozen", False, create=True
+        ), patch.object(native_entry, "main", return_value=0) as main:
+            self.assertEqual(native_entry.native_main(), 0)
+        main.assert_called_once_with(["start"])
+
     def test_version_is_light_and_friendly(self):
         output = io.StringIO()
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
@@ -733,6 +874,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 0)
         self.assertIn(DISPLAY_VERSION, output.getvalue())
         self.assertIn(__version__, output.getvalue())
+
+    def test_cli_module_entry_point_runs_the_command(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "mentat.cli", "--version"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(DISPLAY_VERSION, result.stdout)
+        self.assertIn(__version__, result.stdout)
 
     def test_runtime_arguments_forward_config_with_server_spelling(self):
         args = cli.build_parser().parse_args(
@@ -984,24 +1138,25 @@ class CliTests(unittest.TestCase):
         self.assertNotIn(private_root, output.getvalue())
         self.assertNotIn("8894", output.getvalue())
 
-    def test_start_runs_preflight_before_the_server_module(self):
+    def test_start_runs_preflight_before_the_node_gateway(self):
         args = cli.build_parser().parse_args(["start", "--port", "8891"])
         with patch.object(cli, "run_lifecycle", return_value=0) as preflight:
-            with patch.object(cli.subprocess, "call", return_value=0) as call:
-                self.assertEqual(cli.run_start(args), 0)
+            with patch.object(
+                cli,
+                "_load_config",
+                return_value=(None, SimpleNamespace(host="127.0.0.1", port=8891, data_dir=Path("/private/mentat"))),
+            ):
+                with patch.object(web_runtime, "run_gateway", return_value=0) as gateway:
+                    self.assertEqual(cli.run_start(args), 0)
         preflight.assert_called_once_with("preflight", args)
-        self.assertEqual(
-            call.call_args.args[0],
-            [sys.executable, "-m", "server", "--port", "8891"],
-        )
-        self.assertEqual(
-            call.call_args.kwargs["env"]["MENTAT_LAUNCHER_PID"],
-            str(os.getpid()),
-        )
+        self.assertEqual(gateway.call_args.kwargs["host"], "127.0.0.1")
+        self.assertEqual(gateway.call_args.kwargs["port"], 8891)
+        self.assertEqual(gateway.call_args.kwargs["data_dir"], Path("/private/mentat"))
+        self.assertEqual(gateway.call_args.kwargs["runtime_environment"]["MENTAT_LAUNCHER_PID"], str(os.getpid()))
 
     def test_native_start_opens_browser_only_after_health_is_ready(self):
         args = cli.build_parser().parse_args(
-            ["start", "--open-browser", "--port", "8895"]
+            ["start", "--legacy-ui", "--open-browser", "--port", "8895"]
         )
         process = MagicMock()
         process.poll.return_value = None
@@ -1021,14 +1176,18 @@ class CliTests(unittest.TestCase):
         open_browser.assert_called_once_with("http://127.0.0.1:8895")
         process.wait.assert_called_once_with()
 
-    def test_frozen_start_uses_internal_native_server_mode(self):
+    def test_frozen_start_uses_the_node_gateway_not_the_legacy_server(self):
         args = cli.build_parser().parse_args(["start", "--port", "8895"])
         with patch.object(cli.sys, "frozen", True, create=True):
             with patch.object(cli, "run_lifecycle", return_value=0):
-                with patch.object(cli.subprocess, "call", return_value=0) as call:
-                    self.assertEqual(cli.run_start(args), 0)
-        self.assertEqual(call.call_args.args[0], [sys.executable, "--port", "8895"])
-        self.assertEqual(call.call_args.kwargs["env"]["MENTAT_NATIVE_SERVER"], "1")
+                with patch.object(
+                    cli,
+                    "_load_config",
+                    return_value=(None, SimpleNamespace(host="127.0.0.1", port=8895, data_dir=Path("/private/mentat"))),
+                ):
+                    with patch.object(web_runtime, "run_gateway", return_value=0) as gateway:
+                        self.assertEqual(cli.run_start(args), 0)
+        self.assertEqual(gateway.call_args.kwargs["port"], 8895)
 
 
 if __name__ == "__main__":

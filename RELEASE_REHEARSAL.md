@@ -115,8 +115,8 @@ after restore.
 
 This guide is the artifact-install authority. [README.md](README.md) covers the
 source-development setup. Native installers are the supported macOS and
-Windows paths. `pipx` is supported on Python 3.11–3.13; Linux remains
-preview-only.
+Windows paths. `pipx` needs Python 3.11–3.13 and Node 24.19 or newer within
+Node 24. Linux remains preview-only.
 
 ## 3. Accept or replace it
 

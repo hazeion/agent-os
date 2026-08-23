@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import socket
+from socketserver import TCPServer
 import threading
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -66,13 +67,23 @@ class BridgeRunEventProjectionError(ValueError):
     """Raised when canonical Run events cannot cross this fixed capability."""
 
 
-class IPv6BridgeHTTPServer(ThreadingHTTPServer):
+class _LoopbackBridgeHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        """Bind the validated literal loopback address without reverse DNS."""
+
+        TCPServer.server_bind(self)
+        bound_host, bound_port = self.server_address[:2]
+        self.server_name = str(bound_host)
+        self.server_port = int(bound_port)
+
+
+class IPv6BridgeHTTPServer(_LoopbackBridgeHTTPServer):
     address_family = socket.AF_INET6
 
 
-class BridgeHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
-
+class BridgeHTTPServer(_LoopbackBridgeHTTPServer):
     def __init__(self, address: tuple[str, int], token: str):
         self.bridge_token = token
         super().__init__(address, BridgeRequestHandler)
@@ -117,6 +128,33 @@ def validate_bridge_token(value: object) -> str:
     ):
         raise BridgeConfigurationError("bridge_token_invalid")
     return token
+
+
+def configured_launcher_pid() -> int | None:
+    raw = str(os.environ.get("MENTAT_LAUNCHER_PID", "") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 and value != os.getpid() else None
+
+
+def launcher_is_running(pid: int | None) -> bool:
+    if pid is None:
+        return True
+    if os.name == "nt":
+        from private_state import _pid_is_running
+
+        return _pid_is_running(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def bridge_server_class(host: str) -> type[BridgeHTTPServer] | type[IPv6ConfiguredBridgeHTTPServer]:
@@ -955,6 +993,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     stopped = threading.Event()
+    launcher_pid = configured_launcher_pid()
 
     def request_stop(_signum: int, _frame: object) -> None:
         stopped.set()
@@ -971,7 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
     display_host = f"[{bound_host}]" if ":" in str(bound_host) else str(bound_host)
     print(f"Mentat Python Local Bridge ready on http://{display_host}:{bound_port}", flush=True)
     try:
-        while not stopped.is_set():
+        while not stopped.is_set() and launcher_is_running(launcher_pid):
             bridge.handle_request()
     except KeyboardInterrupt:
         pass

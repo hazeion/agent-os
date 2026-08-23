@@ -9,16 +9,19 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 import mentat_lifecycle as lifecycle
+from mentat.process_identity import parse_linux_process_start_ticks
 import private_state
 from private_state import connection_server_reservation_path, mentat_server_active
 import server
 
 
 class LocalServerLifecycleTests(unittest.TestCase):
-    def make_config(self, data_dir: Path, port: int = 8888) -> server.AppConfig:
+    def make_config(
+        self, data_dir: Path, port: int = 8888, host: str = "127.0.0.1"
+    ) -> server.AppConfig:
         return server.AppConfig(
             config_files=tuple(),
-            host="127.0.0.1",
+            host=host,
             port=port,
             data_dir=data_dir,
             public_dir=server.PUBLIC_DIR,
@@ -31,6 +34,13 @@ class LocalServerLifecycleTests(unittest.TestCase):
     def test_managed_ports_include_only_the_configured_port(self):
         self.assertEqual(lifecycle.managed_ports(8888), [8888])
         self.assertEqual(lifecycle.managed_ports(9001), [9001])
+
+    def test_linux_process_start_ticks_parser_handles_retitled_process_names(self):
+        fields = ["S", *("0" for _ in range(18)), "987654"]
+        payload = f"4321 (next-server (v16.0.10)) {' '.join(fields)}\n"
+        self.assertEqual(parse_linux_process_start_ticks(payload, 4321), 987654)
+        self.assertIsNone(parse_linux_process_start_ticks(payload, 4322))
+        self.assertIsNone(parse_linux_process_start_ticks(payload + ("0" * 4096), 4321))
 
     def test_exited_process_does_not_keep_server_reservation_active(self):
         with TemporaryDirectory() as tmpdir:
@@ -79,6 +89,25 @@ class LocalServerLifecycleTests(unittest.TestCase):
             self.assertTrue(lifecycle.probe_mentat("::1", 8888))
 
         urlopen.assert_called_once_with("http://[::1]:8888/api/overview", timeout=0.6)
+
+    def test_recorded_node_probe_requires_the_fixed_gateway_marker(self):
+        response = MagicMock(status=200)
+        response.__enter__.return_value = response
+        with patch.object(lifecycle, "urlopen", return_value=response) as urlopen, patch.object(
+            lifecycle.json,
+            "load",
+            return_value={"gateway": "mentat-node-gateway", "status": "ready"},
+        ):
+            self.assertTrue(lifecycle.probe_recorded_node_gateway("::1", 8888))
+
+        urlopen.assert_called_once_with(
+            "http://[::1]:8888/api/gateway/health", timeout=0.6
+        )
+        self.assertFalse(
+            lifecycle.looks_like_mentat_node_gateway(
+                {"generated_at": "2026-08-22T00:00:00Z", "cards": {}, "identity": {}}
+            )
+        )
 
     def test_listener_probe_cache_is_scoped_to_normalized_address_and_port(self):
         ipv4 = lifecycle.Listener(pid=4101, port=8888, local_address="127.0.0.1:8888", raw="")
@@ -241,6 +270,421 @@ class LocalServerLifecycleTests(unittest.TestCase):
             self.assertEqual(report["actions"][0]["reasons"], ["matches_runtime_state", "overview_probe"])
             kill_pid.assert_called_once_with(4321)
 
+    def test_cleanup_kills_recorded_node_gateway_after_bridge_failure(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            gateway = "/tmp/mentat-web/server.js"
+            state_path.write_text(
+                json.dumps({"pid": 4321, "runtime": "node-gateway", "command_path": gateway}) + "\n",
+                encoding="utf-8",
+            )
+            listener = lifecycle.Listener(pid=4321, port=8888, local_address="127.0.0.1:8888", raw="")
+            with patch.object(lifecycle, "netstat_listeners", return_value=[listener]), patch.object(
+                lifecycle, "process_commandline", return_value=f"node {gateway}"
+            ), patch.object(lifecycle, "probe_mentat", return_value=False), patch.object(
+                lifecycle, "kill_pid", return_value=(True, "terminated")
+            ) as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["actions"][0]["reasons"], ["matches_runtime_state", "recorded_node_gateway"])
+        kill_pid.assert_called_once_with(4321)
+
+    def test_cleanup_kills_healthy_recorded_node_gateway_when_listener_inventory_is_empty(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            gateway = "/tmp/mentat-web/server.js"
+            state_path.write_text(
+                json.dumps({"pid": 4321, "runtime": "node-gateway", "command_path": gateway}) + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(lifecycle, "netstat_listeners", return_value=[]), patch.object(
+                lifecycle, "process_commandline", return_value=f"node {gateway}"
+            ), patch.object(lifecycle, "probe_recorded_node_gateway", return_value=True), patch.object(
+                lifecycle, "kill_pid", return_value=(True, "terminated")
+            ) as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(
+                report["actions"][0],
+                {
+                    "port": 8888,
+                    "pid": 4321,
+                    "action": "killed",
+                    "reasons": ["matches_runtime_state", "recorded_node_gateway", "gateway_probe"],
+                    "message": "terminated",
+                },
+            )
+            self.assertFalse(state_path.exists())
+            kill_pid.assert_called_once_with(4321)
+
+    def test_empty_listener_inventory_accepts_exact_gateway_cwd_after_node_retitles(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            standalone = data_dir / "installed-web"
+            standalone.mkdir()
+            gateway = standalone / "server.js"
+            gateway.write_text("", encoding="utf-8")
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 4321,
+                        "runtime": "node-gateway",
+                        "command_path": str(gateway),
+                        "process_start_ticks": 555,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                lifecycle, "netstat_listeners", return_value=[]
+            ), patch.object(
+                lifecycle,
+                "process_commandline",
+                return_value="next-server (v16.0.10)",
+            ), patch.object(
+                lifecycle,
+                "process_working_directory",
+                return_value=str(standalone),
+            ), patch.object(
+                lifecycle, "linux_process_start_ticks", return_value=555
+            ), patch.object(
+                lifecycle, "probe_recorded_node_gateway", return_value=True
+            ), patch.object(
+                lifecycle,
+                "kill_linux_pid_with_start_ticks",
+                return_value=(True, "terminated"),
+            ) as kill_recorded_pid:
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(
+                report["actions"][0]["reasons"],
+                [
+                    "matches_runtime_state",
+                    "process_start_identity",
+                    "recorded_node_gateway_cwd",
+                    "gateway_probe",
+                ],
+            )
+            self.assertFalse(state_path.exists())
+            kill_recorded_pid.assert_called_once_with(4321, 555)
+
+    def test_empty_listener_inventory_rejects_reused_pid_despite_exact_command(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            standalone = data_dir / "installed-web"
+            standalone.mkdir()
+            gateway = standalone / "server.js"
+            gateway.write_text("", encoding="utf-8")
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 4321,
+                        "runtime": "node-gateway",
+                        "command_path": str(gateway),
+                        "process_start_ticks": 555,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                lifecycle, "netstat_listeners", return_value=[]
+            ), patch.object(
+                lifecycle, "process_commandline", return_value=f"node {gateway}"
+            ), patch.object(
+                lifecycle, "process_working_directory", return_value=str(standalone)
+            ), patch.object(
+                lifecycle, "linux_process_start_ticks", return_value=777
+            ), patch.object(
+                lifecycle, "probe_recorded_node_gateway", return_value=True
+            ), patch.object(
+                lifecycle, "kill_linux_pid_with_start_ticks"
+            ) as kill_recorded_pid, patch.object(lifecycle, "kill_pid") as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(
+                report["actions"][0]["reasons"],
+                ["matches_runtime_state", "process_identity_mismatch", "gateway_probe"],
+            )
+            self.assertTrue(state_path.exists())
+            kill_recorded_pid.assert_not_called()
+            kill_pid.assert_not_called()
+
+    def test_empty_listener_inventory_rejects_missing_recorded_gateway_file(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            standalone = data_dir / "installed-web"
+            standalone.mkdir()
+            gateway = standalone / "server.js"
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 4321,
+                        "runtime": "node-gateway",
+                        "command_path": str(gateway),
+                        "process_start_ticks": 555,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                lifecycle, "netstat_listeners", return_value=[]
+            ), patch.object(
+                lifecycle,
+                "process_commandline",
+                return_value="next-server (v16.0.10)",
+            ), patch.object(
+                lifecycle, "process_working_directory", return_value=str(standalone)
+            ), patch.object(
+                lifecycle, "linux_process_start_ticks", return_value=555
+            ), patch.object(
+                lifecycle, "probe_recorded_node_gateway", return_value=True
+            ), patch.object(
+                lifecycle, "kill_linux_pid_with_start_ticks"
+            ) as kill_recorded_pid:
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(
+                report["actions"][0]["reasons"],
+                ["matches_runtime_state", "process_start_identity", "gateway_probe"],
+            )
+            self.assertTrue(state_path.exists())
+            kill_recorded_pid.assert_not_called()
+
+    def test_empty_listener_inventory_rejects_same_cwd_unrelated_reused_process(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            standalone = data_dir / "installed-web"
+            standalone.mkdir()
+            gateway = standalone / "server.js"
+            gateway.write_text("", encoding="utf-8")
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 4321,
+                        "runtime": "node-gateway",
+                        "command_path": str(gateway),
+                        "process_start_ticks": 555,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                lifecycle, "netstat_listeners", return_value=[]
+            ), patch.object(
+                lifecycle,
+                "process_commandline",
+                return_value="python unrelated_worker.py",
+            ), patch.object(
+                lifecycle, "process_working_directory", return_value=str(standalone)
+            ), patch.object(
+                lifecycle, "linux_process_start_ticks", return_value=777
+            ), patch.object(
+                lifecycle, "probe_recorded_node_gateway", return_value=True
+            ), patch.object(
+                lifecycle, "kill_linux_pid_with_start_ticks"
+            ) as kill_recorded_pid:
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertFalse(report["ok"])
+            self.assertIn("process_identity_mismatch", report["actions"][0]["reasons"])
+            self.assertTrue(state_path.exists())
+            kill_recorded_pid.assert_not_called()
+
+    def test_empty_listener_inventory_requires_both_recorded_path_and_live_health(self):
+        cases = (
+            ("node /tmp/unrelated/server.js", True),
+            ("node /tmp/mentat-web/server.js", False),
+        )
+        for commandline, healthy in cases:
+            with self.subTest(commandline=commandline, healthy=healthy), TemporaryDirectory() as tmpdir:
+                data_dir = Path(tmpdir)
+                config = self.make_config(data_dir)
+                state_path = lifecycle.lifecycle_state_path(config)
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                gateway = "/tmp/mentat-web/server.js"
+                state_path.write_text(
+                    json.dumps({"pid": 4321, "runtime": "node-gateway", "command_path": gateway}) + "\n",
+                    encoding="utf-8",
+                )
+                with patch.object(lifecycle, "netstat_listeners", return_value=[]), patch.object(
+                    lifecycle, "process_commandline", return_value=commandline
+                ), patch.object(lifecycle, "probe_recorded_node_gateway", return_value=healthy), patch.object(
+                    lifecycle, "kill_pid"
+                ) as kill_pid:
+                    report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+                self.assertFalse(report["ok"])
+                expected_reason = "gateway_probe" if healthy else "recorded_node_gateway"
+                self.assertEqual(report["actions"][0]["action"], "blocked_unverified_gateway")
+                self.assertIn(expected_reason, report["actions"][0]["reasons"])
+                self.assertTrue(state_path.exists())
+                kill_pid.assert_not_called()
+
+    def test_empty_listener_inventory_clears_stale_gateway_state_without_evidence(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            gateway = "/tmp/mentat-web/server.js"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 4321,
+                        "runtime": "node-gateway",
+                        "command_path": gateway,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                lifecycle, "netstat_listeners", return_value=[]
+            ), patch.object(
+                lifecycle,
+                "process_commandline",
+                return_value="node /tmp/unrelated/server.js",
+            ), patch.object(
+                lifecycle, "probe_recorded_node_gateway", return_value=False
+            ), patch.object(lifecycle, "kill_pid") as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(
+                report["actions"],
+                [{"action": "cleared_runtime_state", "state_pid": 4321}],
+            )
+            self.assertFalse(state_path.exists())
+            kill_pid.assert_not_called()
+
+    def test_empty_listener_inventory_never_probes_or_kills_for_non_loopback_host(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir, host="192.0.2.10")
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            gateway = "/tmp/mentat-web/server.js"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 4321,
+                        "runtime": "node-gateway",
+                        "command_path": gateway,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                lifecycle, "netstat_listeners", return_value=[]
+            ), patch.object(
+                lifecycle, "process_commandline", return_value=f"node {gateway}"
+            ), patch.object(lifecycle, "probe_recorded_node_gateway") as probe, patch.object(
+                lifecycle, "kill_pid"
+            ) as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(
+                report["actions"],
+                [
+                    {
+                        "port": 8888,
+                        "pid": 4321,
+                        "action": "blocked_unverified_gateway",
+                        "reasons": ["matches_runtime_state", "non_loopback_host"],
+                    }
+                ],
+            )
+            self.assertTrue(state_path.exists())
+            probe.assert_not_called()
+            kill_pid.assert_not_called()
+
+    def test_empty_listener_inventory_blocks_malformed_recorded_process_identity(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            gateway = "/tmp/mentat-web/server.js"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 4321,
+                        "runtime": "node-gateway",
+                        "command_path": gateway,
+                        "process_start_ticks": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                lifecycle, "netstat_listeners", return_value=[]
+            ), patch.object(lifecycle, "process_commandline") as commandline, patch.object(
+                lifecycle, "probe_recorded_node_gateway"
+            ) as probe, patch.object(lifecycle, "kill_pid") as kill_pid:
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(
+                report["actions"][0]["reasons"],
+                ["matches_runtime_state", "invalid_process_identity"],
+            )
+            self.assertTrue(state_path.exists())
+            commandline.assert_not_called()
+            probe.assert_not_called()
+            kill_pid.assert_not_called()
+
+    def test_failed_recorded_gateway_stop_preserves_runtime_state(self):
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            config = self.make_config(data_dir)
+            state_path = lifecycle.lifecycle_state_path(config)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            gateway = "/tmp/mentat-web/server.js"
+            state_path.write_text(
+                json.dumps({"pid": 4321, "runtime": "node-gateway", "command_path": gateway}) + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(lifecycle, "netstat_listeners", return_value=[]), patch.object(
+                lifecycle, "process_commandline", return_value=f"node {gateway}"
+            ), patch.object(lifecycle, "probe_recorded_node_gateway", return_value=True), patch.object(
+                lifecycle, "kill_pid", return_value=(False, "permission denied")
+            ):
+                report = lifecycle.cleanup_mentat_listeners(config, stop_only=True)
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(report["actions"][0]["action"], "kill_failed")
+            self.assertTrue(state_path.exists())
+
     def test_commandline_detection_requires_exact_project_script_path(self):
         server_path = lifecycle.BASE_DIR / "server.py"
         windows_server_path = str(server_path).replace("/", "\\")
@@ -250,14 +694,87 @@ class LocalServerLifecycleTests(unittest.TestCase):
         self.assertFalse(lifecycle.looks_like_mentat_commandline(f"python {server_path}.backup --port 8888"))
         self.assertFalse(lifecycle.looks_like_mentat_commandline(f"python {lifecycle.BASE_DIR / 'other.py'} --port 8888"))
 
+    def test_recorded_node_gateway_path_accepts_windows_absolute_paths(self):
+        self.assertTrue(
+            lifecycle.commandline_contains_exact_path(
+                r'node "C:\Mentat\_internal\web\server.js"',
+                r"C:\Mentat\_internal\web\server.js",
+            )
+        )
+
+    def test_recorded_node_gateway_cwd_requires_the_exact_existing_parent(self):
+        with TemporaryDirectory() as tmpdir:
+            standalone = Path(tmpdir) / "standalone"
+            sibling = Path(tmpdir) / "sibling"
+            standalone.mkdir()
+            sibling.mkdir()
+            gateway = standalone / "server.js"
+            self.assertFalse(lifecycle.gateway_entrypoint_is_regular(str(gateway)))
+            gateway.write_text("", encoding="utf-8")
+            self.assertTrue(lifecycle.gateway_entrypoint_is_regular(str(gateway)))
+            self.assertFalse(lifecycle.gateway_entrypoint_is_regular(str(standalone)))
+            with patch.object(
+                lifecycle, "process_working_directory", return_value=str(standalone)
+            ):
+                self.assertTrue(
+                    lifecycle.working_directory_matches_gateway(4321, str(gateway))
+                )
+            with patch.object(
+                lifecycle, "process_working_directory", return_value=str(sibling)
+            ):
+                self.assertFalse(
+                    lifecycle.working_directory_matches_gateway(4321, str(gateway))
+                )
+            self.assertFalse(
+                lifecycle.working_directory_matches_gateway(4321, "server.js")
+            )
+
+    @unittest.skipUnless(hasattr(lifecycle.select, "poll"), "pidfd polling is Linux/POSIX only")
+    def test_pidfd_stop_rechecks_process_identity_before_signaling(self):
+        poller = MagicMock()
+        poller.poll.return_value = [(91, lifecycle.select.POLLIN)]
+        with patch.object(lifecycle, "IS_LINUX", True), patch.object(
+            lifecycle, "linux_process_start_ticks", side_effect=[555, 555]
+        ), patch.object(lifecycle.os, "pidfd_open", return_value=91, create=True) as pidfd_open, patch.object(
+            lifecycle.signal, "pidfd_send_signal", create=True
+        ) as pidfd_send_signal, patch.object(
+            lifecycle.select, "poll", return_value=poller
+        ), patch.object(lifecycle.os, "close") as close:
+            result = lifecycle.kill_linux_pid_with_start_ticks(4321, 555)
+
+        self.assertEqual(result, (True, "terminated with SIGTERM"))
+        pidfd_open.assert_called_once_with(4321, 0)
+        pidfd_send_signal.assert_called_once_with(91, lifecycle.signal.SIGTERM)
+        close.assert_called_once_with(91)
+
+    @unittest.skipUnless(hasattr(lifecycle.select, "poll"), "pidfd polling is Linux/POSIX only")
+    def test_pidfd_stop_blocks_when_identity_changes_after_open(self):
+        with patch.object(lifecycle, "IS_LINUX", True), patch.object(
+            lifecycle, "linux_process_start_ticks", side_effect=[555, 777]
+        ), patch.object(lifecycle.os, "pidfd_open", return_value=91, create=True), patch.object(
+            lifecycle.signal, "pidfd_send_signal", create=True
+        ) as pidfd_send_signal, patch.object(lifecycle.os, "close") as close:
+            result = lifecycle.kill_linux_pid_with_start_ticks(4321, 555)
+
+        self.assertEqual(result, (False, "recorded process identity changed"))
+        pidfd_send_signal.assert_not_called()
+        close.assert_called_once_with(91)
+
+    def test_pidfd_stop_fails_closed_when_race_safe_signaling_is_unavailable(self):
+        with patch.object(lifecycle, "IS_LINUX", True), patch.object(
+            lifecycle.os, "pidfd_open", None, create=True
+        ):
+            self.assertEqual(
+                lifecycle.kill_linux_pid_with_start_ticks(4321, 555),
+                (False, "race-safe process identity is unavailable"),
+            )
+
     def test_launchers_pass_absolute_script_paths(self):
         run_sh = (lifecycle.BASE_DIR / "run.sh").read_text(encoding="utf-8")
         run_bat = (lifecycle.BASE_DIR / "run.bat").read_text(encoding="utf-8")
 
-        self.assertIn('"$SCRIPT_DIR/mentat_lifecycle.py" preflight', run_sh)
-        self.assertIn('"$SCRIPT_DIR/server.py" "$@"', run_sh)
-        self.assertIn('"%CD%\\mentat_lifecycle.py" preflight', run_bat)
-        self.assertIn('"%CD%\\server.py" %*', run_bat)
+        self.assertIn('exec "$PYTHON" -m mentat.cli start "$@"', run_sh)
+        self.assertIn('"%PYTHON%" -m mentat.cli start %*', run_bat)
 
     def test_cleanup_blocks_unknown_process_on_configured_port(self):
         with TemporaryDirectory() as tmpdir:

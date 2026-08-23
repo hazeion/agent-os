@@ -70,10 +70,9 @@ connection is server to server. The browser never connects to Hermes directly.
 
 ## Current web layout
 
-The Python app and `public/` interface remain available on port 8888. They are
-the compatibility product during the migration.
-
-The optional Next.js app runs through a supervised Node gateway on port 8890.
+The Next.js app runs through a supervised Node gateway on the configured local
+port (8888 by default). The Python app and `public/` interface remain available
+only through the explicit `--legacy-ui` rollback switch during cutover.
 Node calls the Python Local Bridge through fixed, private capabilities. It does
 not get generic access to Python routes, SQLite, files, credentials, or Hermes.
 

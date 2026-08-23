@@ -101,6 +101,16 @@ jobs:
       - name: Install pinned build dependencies
         run: python -m pip install --require-hashes -r requirements-native.lock
 
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install the frozen web dependency tree
+        run: npm --prefix web ci --ignore-scripts
+
       - name: Build and inspect unsigned macOS content
         shell: bash
         env:
@@ -110,6 +120,7 @@ jobs:
           test "$(uname -m)" = "$EXPECTED_MACOS_ARCHITECTURE"
           test "$(find dist -maxdepth 1 -name "Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-unsigned.pkg" -type f | wc -l | tr -d ' ')" = 1
           test "$(find dist/Mentat.app/Contents/Resources/public -maxdepth 1 -type f | wc -l | tr -d ' ')" = 6
+          test -f dist/Mentat.app/Contents/Resources/web/server.js
           test "$(find dist/Mentat.app/Contents/Resources/data -maxdepth 1 -type f | wc -l | tr -d ' ')" = 9
           test ! -e dist/Mentat.app/Contents/Resources/data/private
           test ! -e dist/Mentat.app/Contents/Resources/data/runtime
@@ -254,15 +265,15 @@ jobs:
           /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8898 >"$RUNNER_TEMP/mentat-signed.log" 2>&1 &
           launcher_pid=$!
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:8898/api/bridge/health >/dev/null; then
               break
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null
+          curl --fail --silent http://127.0.0.1:8898/api/bridge/health >/dev/null
           /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8898
           wait "$launcher_pid" || true
-          if curl --fail --silent http://127.0.0.1:8898/api/health >/dev/null; then
+          if curl --fail --silent http://127.0.0.1:8898/api/bridge/health >/dev/null; then
             echo 'Mentat remained healthy after stop' >&2
             exit 1
           fi
@@ -365,6 +376,16 @@ jobs:
       - name: Install pinned build dependencies
         run: python -m pip install --require-hashes -r requirements-native.lock
 
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install the frozen web dependency tree
+        run: npm --prefix web ci --ignore-scripts
+
       - name: Verify pinned Windows installer compiler
         shell: pwsh
         run: |
@@ -446,7 +467,7 @@ jobs:
           $healthy = $false
           for ($attempt = 0; $attempt -lt 30; $attempt++) {
             try {
-              Invoke-RestMethod -Uri 'http://127.0.0.1:8898/api/health' | Out-Null
+              Invoke-RestMethod -Uri 'http://127.0.0.1:8898/api/bridge/health' | Out-Null
               $healthy = $true
               break
             } catch {
@@ -497,6 +518,19 @@ jobs:
         run: |
           python -m pip install --require-hashes -r requirements-native.lock
           python -m pip install --require-hashes -r requirements-quality.lock
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the packaged Node dashboard
+        run: |
+          npm --prefix web ci --ignore-scripts
+          npm --prefix web run build
+          python scripts/stage_web_runtime.py
 
       - name: Build and verify exact Python artifacts
         run: |

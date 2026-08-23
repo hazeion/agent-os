@@ -18,6 +18,7 @@ import {
 
 const CATEGORY_IDS = ["performance", "accessibility", "best-practices", "seo"];
 const RUNS_PER_MODE = 3;
+const AUDIT_ATTEMPTS = 2;
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const lighthouseCli = resolve(projectRoot, "node_modules", "lighthouse", "cli", "index.js");
 const chromeVersionFile = resolve(projectRoot, "..", ".chrome-for-testing-version");
@@ -202,7 +203,7 @@ function modeArguments(mode) {
   ];
 }
 
-async function runAudit(mode, run, reportDirectory) {
+async function runAuditAttempt(mode, run, reportDirectory) {
   const reportPath = resolve(reportDirectory, `${mode}-${run}.json`);
   let ownedChrome;
   try {
@@ -260,6 +261,22 @@ async function runAudit(mode, run, reportDirectory) {
   } finally {
     ownedChrome?.kill();
   }
+}
+
+function isTransientTraceFailure(error) {
+  return error instanceof Error && /\bNO_NAVSTART\b/u.test(error.message);
+}
+
+async function runAudit(mode, run, reportDirectory) {
+  for (let attempt = 1; attempt <= AUDIT_ATTEMPTS; attempt += 1) {
+    try {
+      return await runAuditAttempt(mode, run, reportDirectory);
+    } catch (error) {
+      if (attempt === AUDIT_ATTEMPTS || !isTransientTraceFailure(error)) throw error;
+      console.warn(`${mode} run ${run} encountered transient NO_NAVSTART; retrying once`);
+    }
+  }
+  throw new Error(`${mode} run ${run} exhausted Lighthouse attempts`);
 }
 
 function writeFailureEvidence(state, error) {

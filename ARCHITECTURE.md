@@ -16,30 +16,33 @@ approved adapter operation. It must never edit Hermes core files directly.
 
 ## Current local layout
 
-The Python app and `public/` interface remain the default product on port 8888.
-The optional Next.js preview runs on port 8890. Both listen only on loopback.
+The Next.js dashboard is the default product on the configured local port
+(8888 by default). The Python `public/` interface remains available only with
+the explicit `--legacy-ui` rollback switch. Both listen only on loopback.
 
 ```text
 Browser
-  -> Node gateway on 127.0.0.1:8890
+  -> Node gateway on 127.0.0.1:8888
   -> fixed same-origin API route
   -> private Python Local Bridge
   -> Mentat data and Hermes adapters
 ```
 
-Node is the only browser-facing process in the preview. Python remains the
+Node is the only browser-facing process. Python remains the
 authority for SQLite, files, credentials, Hermes, Tasks, Runs, and Agents.
 
-## Node preview boundary
+## Node gateway boundary
 
-The preview requires Node `>=24.19.0 <25`. Build `web/` and start it with:
+The gateway requires Node `>=24.19.0 <25`. Build `web/` before launching from
+source:
 
 ```bash
+npm --prefix web ci --ignore-scripts
 npm --prefix web run build
-python scripts/mentat_web_preview.py
+./run.sh
 ```
 
-The supervisor creates a private token, starts the Python bridge on an
+The launcher supervisor creates a private token, starts the Python bridge on an
 ephemeral loopback port, waits for `/bridge/v1/health`, and then starts Node.
 The token stays in child process environments. It does not appear in command
 arguments, logs, browser responses, or saved data.

@@ -54,6 +54,16 @@ jobs:
       - name: Install pinned native build dependencies
         run: python -m pip install --require-hashes -r requirements-native.lock
 
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install the frozen web dependency tree
+        run: npm --prefix web ci --ignore-scripts
+
       - name: Verify pinned Windows installer compiler
         if: runner.os == 'Windows'
         shell: pwsh
@@ -76,8 +86,11 @@ jobs:
         run: |
           test "$(uname -m)" = "$EXPECTED_MACOS_ARCHITECTURE"
           test -d dist/Mentat.app
+          test -f dist/Mentat.app/Contents/MacOS/mentat-bridge
+          test ! -L dist/Mentat.app/Contents/MacOS/mentat-bridge
           test "$(find dist -maxdepth 1 -name "Mentat-*-macos-${EXPECTED_MACOS_ARCHITECTURE}-unsigned.pkg" -type f | wc -l | tr -d ' ')" = 1
           test -f dist/Mentat.app/Contents/Resources/public/index.html
+          test -f dist/Mentat.app/Contents/Resources/web/server.js
           test -f dist/Mentat.app/Contents/Resources/data/tasks.json
           test ! -e dist/Mentat.app/Contents/Resources/data/private
           test ! -e dist/Mentat.app/Contents/Resources/data/runtime
@@ -109,18 +122,104 @@ jobs:
           sudo installer -pkg "$package_path" -target /
           test -f "$MENTAT_DATA_DIR/upgrade-sentinel.txt"
           test ! -e /Applications/Mentat.app/Contents/Resources/stale-from-baseline.txt
-          /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8896 >"$RUNNER_TEMP/mentat-native-upgrade.log" 2>&1 &
-          upgraded_launcher_pid=$!
+          packaged_gateway_log="$RUNNER_TEMP/mentat-packaged-gateway.log"
+          (
+            cd /Applications/Mentat.app/Contents/Resources/web
+            HOSTNAME=127.0.0.1 PORT=8897 NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 node server.js >"$packaged_gateway_log" 2>&1 &
+            packaged_gateway_pid=$!
+            for attempt in {1..15}; do
+              if curl --fail --silent --max-time 1 http://127.0.0.1:8897/api/gateway/health >/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            if ! curl --fail --silent --max-time 1 http://127.0.0.1:8897/api/gateway/health >/dev/null; then
+              cat "$packaged_gateway_log" >&2 || true
+              kill -TERM "$packaged_gateway_pid" 2>/dev/null || true
+              wait "$packaged_gateway_pid" 2>/dev/null || true
+              exit 1
+            fi
+            kill -TERM "$packaged_gateway_pid"
+            wait "$packaged_gateway_pid" || true
+          )
+          restricted_gateway_log="$RUNNER_TEMP/mentat-restricted-gateway.log"
+          (
+            cd /Applications/Mentat.app/Contents/Resources/web
+            env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" MENTAT_BRIDGE_TOKEN='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' MENTAT_BRIDGE_ORIGIN='http://127.0.0.1:49152' HOSTNAME=127.0.0.1 PORT=8898 NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production node server.js >"$restricted_gateway_log" 2>&1 &
+            restricted_gateway_pid=$!
+            for attempt in {1..15}; do
+              if curl --fail --silent --max-time 1 http://127.0.0.1:8898/api/gateway/health >/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            if ! curl --fail --silent --max-time 1 http://127.0.0.1:8898/api/gateway/health >/dev/null; then
+              cat "$restricted_gateway_log" >&2 || true
+              kill -TERM "$restricted_gateway_pid" 2>/dev/null || true
+              wait "$restricted_gateway_pid" 2>/dev/null || true
+              exit 1
+            fi
+            kill -TERM "$restricted_gateway_pid"
+            wait "$restricted_gateway_pid" || true
+          )
+          console_gateway_log="$RUNNER_TEMP/mentat-console-gateway.log"
+          python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+            /Applications/Mentat.app/Contents/MacOS/mentat-bridge \
+            --mentat-console-gateway start --port 8895 --data-dir "$MENTAT_DATA_DIR" \
+            >"$console_gateway_log" 2>&1 &
+          console_gateway_pid=$!
+          console_gateway_ready=false
+          stop_console_gateway() {
+            /Applications/Mentat.app/Contents/MacOS/mentat-bridge --mentat-console-gateway stop --port 8895 --data-dir "$MENTAT_DATA_DIR" >/dev/null 2>&1 || true
+            for attempt in {1..10}; do
+              if ! kill -0 -- "-$console_gateway_pid" 2>/dev/null; then
+                wait "$console_gateway_pid" 2>/dev/null || true
+                return
+              fi
+              sleep 1
+            done
+            kill -TERM -- "-$console_gateway_pid" 2>/dev/null || true
+            for attempt in {1..5}; do
+              if ! kill -0 -- "-$console_gateway_pid" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            kill -KILL -- "-$console_gateway_pid" 2>/dev/null || true
+            wait "$console_gateway_pid" 2>/dev/null || true
+          }
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8896/api/health >/dev/null; then
+            if curl --fail --silent --max-time 1 http://127.0.0.1:8895/api/bridge/health >/dev/null; then
+              console_gateway_ready=true
               break
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8896/api/health >/dev/null
-          /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8896
+          if "$console_gateway_ready"; then
+            echo "direct_console_gateway=ready" >&2
+          else
+            cat "$console_gateway_log" >&2 || true
+            echo "direct_console_gateway=failed" >&2
+          fi
+          stop_console_gateway
+          /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8896 --data-dir "$MENTAT_DATA_DIR" >"$RUNNER_TEMP/mentat-native-upgrade.log" 2>&1 &
+          upgraded_launcher_pid=$!
+          for attempt in {1..30}; do
+            if curl --fail --silent --max-time 1 http://127.0.0.1:8896/api/bridge/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if ! curl --fail --silent --max-time 1 http://127.0.0.1:8896/api/bridge/health >/dev/null; then
+            curl --silent --max-time 1 -i http://127.0.0.1:8896/api/bridge/health >&2 || true
+            cat "$RUNNER_TEMP/mentat-native-upgrade.log" >&2 || true
+            ls -l "$MENTAT_DATA_DIR/runtime" >&2 || true
+            find "$MENTAT_DATA_DIR/runtime" -maxdepth 1 -type f -name 'node-gateway-startup-*.log' -exec tail -c 4096 {} \; 2>/dev/null | head -c 8192 | sed -E -e 's/[A-Za-z0-9_-]{32,}/[redacted]/g' -e 's/((token|authorization|secret|password)[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[redacted]/Ig' >&2 || true
+            exit 1
+          fi
+          /Applications/Mentat.app/Contents/MacOS/Mentat stop --port 8896 --data-dir "$MENTAT_DATA_DIR"
           wait "$upgraded_launcher_pid" || true
-          if curl --fail --silent http://127.0.0.1:8896/api/health >/dev/null; then
+          if curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then
             echo 'Mentat remained healthy after stop' >&2
             exit 1
           fi
@@ -139,6 +238,7 @@ jobs:
           if (-not (Test-Path 'dist/Mentat/mentat.exe')) { throw 'Mentat console CLI missing' }
           if (-not (Test-Path 'dist/installer/Mentat-*-windows-x64.exe')) { throw 'Windows installer missing' }
           if (-not (Test-Path 'dist/Mentat/_internal/public/index.html')) { throw 'Static UI missing' }
+          if (-not (Test-Path 'dist/Mentat/_internal/web/server.js')) { throw 'Node web runtime missing' }
           if (-not (Test-Path 'dist/Mentat/_internal/data/tasks.json')) { throw 'Public seed data missing' }
           if (Test-Path 'dist/Mentat/_internal/data/private') { throw 'Private data entered artifact' }
           if (Test-Path 'dist/Mentat/_internal/data/runtime') { throw 'Runtime data entered artifact' }
@@ -171,7 +271,7 @@ jobs:
           $upgradedHealthy = $false
           for ($attempt = 0; $attempt -lt 30; $attempt++) {
             try {
-              Invoke-RestMethod -Uri 'http://127.0.0.1:8896/api/health' | Out-Null
+              Invoke-RestMethod -Uri 'http://127.0.0.1:8896/api/bridge/health' | Out-Null
               $upgradedHealthy = $true
               break
             } catch {

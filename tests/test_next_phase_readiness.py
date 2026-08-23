@@ -19,14 +19,13 @@ class NextPhaseReadinessTests(unittest.TestCase):
         self.assertIn("activeView === 'today' || activeView === 'agents'", refresh_block)
         self.assertIn("activeView === 'projects'", refresh_block)
 
-    def test_readme_keeps_node_preview_optional(self):
+    def test_readme_documents_the_node_dashboard_as_the_default_runtime(self):
         normalized_readme = " ".join(README.split())
-        self.assertIn("The normal app does not need npm", normalized_readme)
-        self.assertIn("Node 24.19 or newer in the Node 24 release line", normalized_readme)
+        self.assertIn("Node 24.19 or newer within Node 24", normalized_readme)
         self.assertIn("npm --prefix web ci --ignore-scripts", README)
         self.assertIn("npm --prefix web run build", README)
-        self.assertIn("python3 scripts/mentat_web_preview.py", README)
-        self.assertIn("does not replace the Python app on port 8888", normalized_readme)
+        self.assertIn("Mentat starts the Node dashboard and its private Python bridge", normalized_readme)
+        self.assertIn("--legacy-ui", README)
 
     def test_dashboard_identity_is_project_owned_not_hardcoded(self):
         self.assertIn('read_json_file("dashboard.json", {})', SERVER)

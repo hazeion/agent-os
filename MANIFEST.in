@@ -3,6 +3,7 @@ include requirements-native.txt
 include requirements-native.in
 include requirements-native.lock
 include scripts/build_native.py
+include scripts/stage_web_runtime.py
 include scripts/verify_macos_architecture.py
 recursive-include packaging *.md *.py *.spec *.iss
 include public/app.js
@@ -20,6 +21,7 @@ include data/dashboard.json
 include data/email.json
 include data/projects.json
 include data/tasks.json
+recursive-include web/package-runtime *
 prune data/private
 prune data/runtime
 prune tests

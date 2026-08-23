@@ -13,6 +13,8 @@ project data.
 ## Before you begin
 
 - Use a supported macOS or Windows computer. Linux is welcome as a preview.
+- Install Node 24.19 or newer within Node 24 before launching Mentat. Native
+  installers include the prebuilt dashboard but use this local Node runtime.
 - Finish the invitation's Hermes setup before timing the Mentat install.
 - Keep the release link and version from your invitation.
 - Never post credentials, private conversations, note contents, or personal
@@ -46,7 +48,9 @@ package's line in `SHA256SUMS`.
    ```
 
 Open the matching `.pkg` from Downloads and finish the installer. Then select
-**Open Mentat from Applications**. The dashboard should open in your browser.
+**Open Mentat from Applications**. The Node dashboard should open in your
+browser. Use `mentat start --legacy-ui` only if support asks you to test the
+temporary rollback interface.
 
 ### Windows native
 
@@ -60,14 +64,15 @@ Open the matching `.pkg` from Downloads and finish the installer. Then select
    ```
 
 3. Run the installer from Downloads and keep the recommended choices.
-4. Open Mentat from the Start menu. The dashboard should open in your browser.
+4. Open Mentat from the Start menu. The Node dashboard should open in your
+   browser. Use `mentat start --legacy-ui` only if support asks you to test the
+   temporary rollback interface.
 
 ### pipx
 
-This channel requires Python 3.11–3.13 and `pipx`. Confirm both are installed
-before starting the timer. If `pipx` is missing, use its
-[official installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html)
-and the Python setup assigned in your invitation.
+This channel requires Python 3.11–3.13, Node 24.19 or newer within Node 24,
+and `pipx`. Confirm they are installed before starting the timer. If `pipx` is
+missing, use its [official installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html).
 
 1. Download `mentat_local-0.1.0b1-py3-none-any.whl` and `SHA256SUMS` into
    Downloads.

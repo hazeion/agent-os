@@ -66,7 +66,7 @@ class CiQualityGateTests(unittest.TestCase):
         )
         self.assertEqual(workflow.count("runs-on: ubuntu-24.04"), 5)
         self.assertEqual(workflow.count("python-version: \"3.13.14\""), 4)
-        self.assertEqual(workflow.count("node-version: 24.19.0"), 2)
+        self.assertEqual(workflow.count("node-version: 24.19.0"), 3)
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("--require-hashes -r requirements-quality.lock", workflow)
         self.assertIn("python scripts/verify_python_artifacts.py dist", workflow)
@@ -75,6 +75,24 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("python -m pipx install dist/*.whl", workflow)
         self.assertIn('PIPX_BIN_DIR="$smoke_root/bin"', workflow)
         self.assertIn("Installed Mentat remained healthy after stop", workflow)
+        self.assertIn("Installed Mentat launcher did not exit after stop", workflow)
+        self.assertIn("Installed Mentat stop command failed", workflow)
+        self.assertIn('stop_succeeded=true\n          if ! "$PIPX_BIN_DIR/mentat" stop', workflow)
+        self.assertIn('setsid "$PIPX_BIN_DIR/mentat" start', workflow)
+        self.assertIn('kill -TERM -- "-$launcher_pid"', workflow)
+        self.assertIn('kill -KILL -- "-$launcher_pid"', workflow)
+        self.assertIn("trap cleanup_launcher_group EXIT", workflow)
+        self.assertIn("trap - EXIT", workflow)
+        self.assertIn("for attempt in {1..75}; do", workflow)
+        self.assertLess(
+            workflow.index("Installed Mentat launcher did not exit after stop"),
+            workflow.index(
+                '\n          wait "$launcher_pid" || true\n          if curl',
+                workflow.index("Exercise pipx installed lifecycle"),
+            ),
+        )
+        self.assertIn("MENTAT_WEB_BASE_URL=http://127.0.0.1:8894", workflow)
+        self.assertIn('MENTAT_WEB_BROWSER_RUNTIME_DIR="$RUNNER_TEMP/web-foundation-smoke-runtime"', workflow)
         self.assertIn("node scripts/browser_smoke.mjs", workflow)
         self.assertIn("npm --prefix web ci --ignore-scripts", workflow)
         self.assertIn("npm --prefix web run check", workflow)

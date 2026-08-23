@@ -36,6 +36,9 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   reactStrictMode: true,
+  images: {
+    unoptimized: true,
+  },
   async rewrites() {
     return {
       beforeFiles: staticShell
