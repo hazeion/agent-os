@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import socket
+import sys
 import threading
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -974,6 +975,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     token = os.environ.pop(BRIDGE_TOKEN_ENV, "")
+    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
+        print("Mentat private bridge bootstrap: binding", flush=True)
     try:
         bridge = build_bridge_server(args.host, validate_bridge_port(args.port), token)
     except (BridgeConfigurationError, OSError) as exc:

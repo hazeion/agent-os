@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 from http.client import HTTPConnection
+import io
 import json
 from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent_registry import AgentRegistryError, AgentRegistryUnavailableError
 from mentat_db import connect as connect_mentat_database, database_path as mentat_database_path
@@ -37,6 +39,39 @@ class LocalBridgeTests(unittest.TestCase):
 
         self.assertNotIn("ensure_task_authority", source)
         self.assertNotIn("prepare_task_authority", source)
+
+    def test_binding_diagnostic_is_frozen_macos_only(self):
+        cases = ((True, "darwin", True), (False, "darwin", False), (True, "win32", False))
+        for frozen, platform, expected in cases:
+            with self.subTest(frozen=frozen, platform=platform):
+                bridge = MagicMock()
+                bridge.server_address = ("127.0.0.1", 49152)
+                output = io.StringIO()
+                with redirect_stdout(output), patch.dict(
+                    local_bridge.os.environ,
+                    {local_bridge.BRIDGE_TOKEN_ENV: TOKEN},
+                    clear=False,
+                ), patch.object(local_bridge.sys, "frozen", frozen, create=True), patch.object(
+                    local_bridge.sys, "platform", platform
+                ), patch.object(
+                    local_bridge, "build_bridge_server", return_value=bridge
+                ) as build, patch.object(
+                    local_bridge, "configured_launcher_pid", return_value=4321
+                ), patch.object(
+                    local_bridge, "launcher_is_running", return_value=False
+                ):
+                    self.assertEqual(
+                        local_bridge.main(["--host", "127.0.0.1", "--port", "49152"]),
+                        0,
+                    )
+                expected_output = ""
+                if expected:
+                    expected_output += "Mentat private bridge bootstrap: binding\n"
+                expected_output += "Mentat Python Local Bridge ready on http://127.0.0.1:49152\n"
+                self.assertEqual(output.getvalue(), expected_output)
+                build.assert_called_once_with("127.0.0.1", 49152, TOKEN)
+                bridge.handle_request.assert_not_called()
+                bridge.server_close.assert_called_once_with()
 
     def request(
         self,

@@ -190,6 +190,28 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn('"--mentat-private-bridge"', entry)
         self.assertIn('"--mentat-console-gateway"', entry)
         self.assertIn("def console_gateway_companion()", entry)
+        self.assertIn("Mentat private bridge bootstrap: entry", entry)
+
+    def test_private_bridge_entry_diagnostic_is_frozen_macos_only(self):
+        arguments = ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"]
+        cases = ((True, "darwin", True), (False, "darwin", False), (True, "win32", False))
+        for index, (frozen, platform, expected) in enumerate(cases):
+            with self.subTest(frozen=frozen, platform=platform):
+                output = io.StringIO()
+                spec = importlib.util.spec_from_file_location(
+                    f"mentat_native_entry_diagnostic_{index}",
+                    ROOT / "packaging" / "mentat_native.py",
+                )
+                assert spec is not None and spec.loader is not None
+                module = importlib.util.module_from_spec(spec)
+                with redirect_stdout(output), patch.object(sys, "argv", arguments), patch.object(
+                    sys, "frozen", frozen, create=True
+                ), patch.object(sys, "platform", platform):
+                    spec.loader.exec_module(module)
+                self.assertEqual(
+                    output.getvalue(),
+                    "Mentat private bridge bootstrap: entry\n" if expected else "",
+                )
 
     def test_native_ci_builds_unsigned_artifacts_without_signing_secrets(self):
         workflow = (
@@ -847,7 +869,10 @@ class CliTests(unittest.TestCase):
 
     def test_private_bridge_marker_takes_precedence_over_gateway_handoff(self):
         arguments = ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"]
-        with patch.object(native_entry.sys, "argv", arguments), patch(
+        output = io.StringIO()
+        with redirect_stdout(output), patch.object(native_entry.sys, "argv", arguments), patch.object(
+            native_entry.sys, "frozen", True, create=True
+        ), patch.object(native_entry.sys, "platform", "darwin"), patch(
             "mentat.local_bridge.main", return_value=0
         ) as bridge, patch.object(native_entry.runpy, "run_module") as run_module, patch.object(
             native_entry, "main"
@@ -856,8 +881,26 @@ class CliTests(unittest.TestCase):
         bridge.assert_called_once_with(["--port", "49152"])
         run_module.assert_not_called()
         self.assertEqual(arguments, ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"])
+        self.assertEqual(
+            output.getvalue(),
+            "Mentat private bridge bootstrap: imports ready\n"
+            "Mentat private bridge bootstrap: dispatch\n",
+        )
         main.assert_not_called()
         companion.assert_not_called()
+
+    def test_private_bridge_diagnostics_are_frozen_macos_only(self):
+        arguments = ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"]
+        for frozen, platform in ((False, "darwin"), (True, "win32")):
+            with self.subTest(frozen=frozen, platform=platform):
+                output = io.StringIO()
+                with redirect_stdout(output), patch.object(
+                    native_entry.sys, "argv", arguments
+                ), patch.object(native_entry.sys, "frozen", frozen, create=True), patch.object(
+                    native_entry.sys, "platform", platform
+                ), patch("mentat.local_bridge.main", return_value=0):
+                    self.assertEqual(native_entry.native_main(), 0)
+                self.assertEqual(output.getvalue(), "")
 
     def test_non_macos_start_keeps_the_direct_cli_fallback(self):
         with patch.object(native_entry.sys, "argv", ["mentat", "start"]), patch.object(

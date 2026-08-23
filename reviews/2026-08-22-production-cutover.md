@@ -553,3 +553,52 @@ Two independent reviewers reported no findings. They confirmed that direct
 dispatch preserves the fixed bridge arguments, token and lifecycle handling,
 dispatch precedence, frozen import semantics, and the existing security
 boundary while removing the duplicate module execution.
+
+### CI diagnostic round 14
+
+Native run 254 confirmed that direct dispatch removed the frozen duplicate-
+module warning, but both macOS architectures still timed out at private-bridge
+readiness. Windows passed. A local Intel bundle was then built with Python
+3.13.14, PyInstaller 6.21.0, and Node 24.19.0 after every existing Mentat
+listener had been stopped. Its direct private bridge, direct console
+supervisor, visible launcher, and background redirected launcher all reached
+the authenticated bridge health route and were shut down afterward. This
+clears the bundled code paths locally and leaves a hosted-runner startup-stage
+or cold-start timing difference to identify.
+
+The frozen private bridge now emits four fixed, secret-free stage markers:
+
+1. entry point reached;
+2. project imports ready;
+3. bridge dispatch reached; and
+4. socket binding started.
+
+The existing ready marker remains the final stage. GitHub timestamps around
+these markers will identify the exact interval without printing arguments,
+ports, process IDs, paths, environment values, tokens, or provider state. The
+binding marker is frozen-only, so source-checkout output is unchanged.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| Local frozen Intel bridge and gateway matrix | Pass | Direct bridge, direct supervisor, visible launcher, and background redirected launcher all became ready; all listeners were stopped afterward. |
+| `python3 -m unittest tests.test_packaging_cli tests.test_web_runtime tests.test_ci_quality_gate tests.test_mentat_local_bridge -v` | Pass | 96 focused startup, packaging, CI, and authenticated bridge checks passed with loopback test access. |
+| `python3 -m py_compile packaging/mentat_native.py mentat/local_bridge.py` | Pass | Both instrumented entry points compile. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+The local diagnostic regenerated only the ignored standalone web payload with
+webpack because this host blocks Turbopack's temporary worker port. The tracked
+build remains Turbopack, and GitHub's Turbopack bundle step passed before both
+macOS smoke failures.
+
+The first adversarial review found that the initial entry markers were broader
+than the macOS-only diagnostic scope. All markers now require both a frozen
+runtime and macOS. Fresh-module and isolated bridge-main tests prove the entry,
+dispatch, and binding markers are present on frozen macOS and silent for source
+macOS and frozen Windows.
+
+### Final diagnostic round 14 review
+
+After the platform-scope and test-evidence corrections, two independent
+reviewers reported no remaining findings. They confirmed the frozen-macOS-only
+gates, fixed secret-free output, import-time coverage, dispatch coverage,
+binding coverage, and isolated cleanup behavior.
