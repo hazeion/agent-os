@@ -1,4 +1,4 @@
-import { fetchBridgeHealth } from "@/lib/bridge-health";
+import { BridgeHealthError, fetchBridgeHealth } from "@/lib/bridge-health";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,9 +17,10 @@ export async function GET() {
       headers: RESPONSE_HEADERS,
       status: 200,
     });
-  } catch {
+  } catch (error) {
     return Response.json(
       {
+        error: error instanceof BridgeHealthError ? error.code : "bridge_unavailable",
         gateway: "mentat-node-gateway",
         runtime: "python",
         schema_version: 1,

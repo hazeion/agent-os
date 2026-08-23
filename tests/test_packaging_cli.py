@@ -196,6 +196,7 @@ class PackagingContractTests(unittest.TestCase):
         )
         self.assertIn("test -f dist/Mentat.app/Contents/MacOS/mentat-bridge", workflow)
         self.assertIn("test ! -L dist/Mentat.app/Contents/MacOS/mentat-bridge", workflow)
+        self.assertIn("curl --fail --silent --max-time 1 http://127.0.0.1:8896/api/bridge/health", workflow)
         self.assertIn(
             "          - label: macOS Intel\n"
             "            runner: macos-15-intel\n"

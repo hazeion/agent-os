@@ -363,6 +363,16 @@ calls do not receive it.
 Both independent reviewers reported no findings after the supervisor-wiring
 assertion was added.
 
+### CI correction round 8
+
+The bridge stayed alive throughout the failed Node readiness wait, so the
+remaining issue is Node's fixed bridge request rather than process lifecycle.
+The bridge health route now returns only a bounded failure reason
+(`bridge_configuration_invalid`, `bridge_unavailable`, or
+`bridge_response_invalid`) on its loopback-only `503` response. The macOS
+smoke prints that existing health response only when it fails. No path, port,
+token, child output, or credential is returned.
+
 | Check | Result | Notes |
 | --- | --- | --- |
 | Frozen console bridge health | Pass | The temporary macOS companion answered its authenticated loopback health route. |
