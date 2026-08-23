@@ -142,6 +142,26 @@ jobs:
             kill -TERM "$packaged_gateway_pid"
             wait "$packaged_gateway_pid" || true
           )
+          restricted_gateway_log="$RUNNER_TEMP/mentat-restricted-gateway.log"
+          (
+            cd /Applications/Mentat.app/Contents/Resources/web
+            env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" MENTAT_BRIDGE_TOKEN='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' MENTAT_BRIDGE_ORIGIN='http://127.0.0.1:49152' HOSTNAME=127.0.0.1 PORT=8898 NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production node server.js >"$restricted_gateway_log" 2>&1 &
+            restricted_gateway_pid=$!
+            for attempt in {1..15}; do
+              if curl --fail --silent --max-time 1 http://127.0.0.1:8898/api/gateway/health >/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            if ! curl --fail --silent --max-time 1 http://127.0.0.1:8898/api/gateway/health >/dev/null; then
+              cat "$restricted_gateway_log" >&2 || true
+              kill -TERM "$restricted_gateway_pid" 2>/dev/null || true
+              wait "$restricted_gateway_pid" 2>/dev/null || true
+              exit 1
+            fi
+            kill -TERM "$restricted_gateway_pid"
+            wait "$restricted_gateway_pid" || true
+          )
           /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8896 >"$RUNNER_TEMP/mentat-native-upgrade.log" 2>&1 &
           upgraded_launcher_pid=$!
           for attempt in {1..30}; do
