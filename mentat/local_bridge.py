@@ -16,7 +16,7 @@ import os
 import re
 import signal
 import socket
-import sys
+from socketserver import TCPServer
 import threading
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -67,13 +67,23 @@ class BridgeRunEventProjectionError(ValueError):
     """Raised when canonical Run events cannot cross this fixed capability."""
 
 
-class IPv6BridgeHTTPServer(ThreadingHTTPServer):
+class _LoopbackBridgeHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        """Bind the validated literal loopback address without reverse DNS."""
+
+        TCPServer.server_bind(self)
+        bound_host, bound_port = self.server_address[:2]
+        self.server_name = str(bound_host)
+        self.server_port = int(bound_port)
+
+
+class IPv6BridgeHTTPServer(_LoopbackBridgeHTTPServer):
     address_family = socket.AF_INET6
 
 
-class BridgeHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
-
+class BridgeHTTPServer(_LoopbackBridgeHTTPServer):
     def __init__(self, address: tuple[str, int], token: str):
         self.bridge_token = token
         super().__init__(address, BridgeRequestHandler)
@@ -975,8 +985,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     token = os.environ.pop(BRIDGE_TOKEN_ENV, "")
-    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
-        print("Mentat private bridge bootstrap: binding", flush=True)
     try:
         bridge = build_bridge_server(args.host, validate_bridge_port(args.port), token)
     except (BridgeConfigurationError, OSError) as exc:

@@ -6,19 +6,6 @@ import runpy
 import subprocess
 import sys
 
-
-def frozen_macos_private_bridge() -> bool:
-    return (
-        bool(getattr(sys, "frozen", False))
-        and sys.platform == "darwin"
-        and len(sys.argv) > 1
-        and sys.argv[1] == "--mentat-private-bridge"
-    )
-
-
-if frozen_macos_private_bridge():
-    print("Mentat private bridge bootstrap: entry", flush=True)
-
 from mentat.cli import main
 from mentat.web_runtime import application_root, require_node_24
 
@@ -39,13 +26,8 @@ def native_main() -> int:
         runpy.run_module("server", run_name="__main__")
         return 0
     if len(sys.argv) > 1 and sys.argv[1] == "--mentat-private-bridge":
-        diagnostic = frozen_macos_private_bridge()
-        if diagnostic:
-            print("Mentat private bridge bootstrap: imports ready", flush=True)
         from mentat.local_bridge import main as local_bridge_main
 
-        if diagnostic:
-            print("Mentat private bridge bootstrap: dispatch", flush=True)
         return local_bridge_main(sys.argv[2:])
     if len(sys.argv) == 4 and sys.argv[1] == "--mentat-node-gateway":
         node_path = Path(sys.argv[2])

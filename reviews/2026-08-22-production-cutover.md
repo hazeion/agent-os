@@ -602,3 +602,43 @@ After the platform-scope and test-evidence corrections, two independent
 reviewers reported no remaining findings. They confirmed the frozen-macOS-only
 gates, fixed secret-free output, import-time coverage, dispatch coverage,
 binding coverage, and isolated cleanup behavior.
+
+### CI correction round 15
+
+Native run 255 reached entry, completed imports, dispatched the bridge, and
+started binding, but never reached the existing ready marker before the
+private-bridge timeout. Python's `HTTPServer.server_bind()` binds the socket and
+then calls `socket.getfqdn(host)` to populate display metadata. The validated
+literal loopback socket was therefore ready to bind, but the GitHub macOS
+runner stalled on an unnecessary reverse-DNS lookup before Mentat could report
+readiness.
+
+Mentat's private bridge server now calls `TCPServer.server_bind()` directly and
+sets `server_name` and `server_port` from the already-validated bound loopback
+address. IPv4 and IPv6 bridge classes share this behavior. The loopback
+allowlist, authenticated health route, token handling, port selection, Node
+handoff, and Hermes boundary are unchanged. The temporary bootstrap markers
+have been removed now that they identified the blocking call.
+
+Acceptance evidence:
+
+1. Bridge construction performs no hostname or reverse-DNS lookup.
+2. The bound server metadata contains the literal validated loopback address
+   and actual bound port.
+3. Both IPv4 and IPv6 configured bridge classes inherit the same binding path.
+4. Node still starts only after the authenticated private health route reports
+   ready.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_packaging_cli tests.test_web_runtime tests.test_ci_quality_gate tests.test_mentat_local_bridge -v` | Pass | 94 focused startup, packaging, CI, and authenticated bridge checks passed with loopback test access. |
+| Reverse-DNS regression test | Pass | `socket.getfqdn()` is forced to fail if called; bridge construction succeeds and retains literal loopback metadata. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+### Final correction round 15 review
+
+Two independent reviewers reported no findings. They confirmed that the custom
+bind retains `TCPServer`'s real socket bind and bound-address update, restores
+the required `HTTPServer` metadata without DNS, applies to IPv4 and IPv6, and
+does not change shutdown, request handling, authentication, or loopback
+validation.
