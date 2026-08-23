@@ -46,16 +46,17 @@ class WebRuntimeTests(unittest.TestCase):
 
     def test_frozen_macos_caps_direct_node_output_at_the_private_log_limit(self):
         log = MagicMock()
+        resource = MagicMock()
+        resource.RLIMIT_FSIZE = 1
         with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
             web_runtime.sys, "platform", "darwin"
-        ):
+        ), patch.object(web_runtime, "resource", resource):
             options = web_runtime.node_output_options(log)
+            options["preexec_fn"]()
         self.assertIs(options["stdout"], log)
         self.assertIs(options["stderr"], web_runtime.subprocess.STDOUT)
-        with patch.object(web_runtime.resource, "setrlimit") as limit:
-            options["preexec_fn"]()
-        limit.assert_called_once_with(
-            web_runtime.resource.RLIMIT_FSIZE,
+        resource.setrlimit.assert_called_once_with(
+            resource.RLIMIT_FSIZE,
             (web_runtime.STARTUP_LOG_MAXIMUM_BYTES, web_runtime.STARTUP_LOG_MAXIMUM_BYTES),
         )
 
@@ -111,7 +112,8 @@ class WebRuntimeTests(unittest.TestCase):
             with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
                 web_runtime.sys, "platform", "darwin"
             ), patch.object(web_runtime.sys, "executable", str(executable)):
-                self.assertEqual(web_runtime.bridge_command(49152)[0], str(companion.resolve()))
+                command = web_runtime.bridge_command(49152)
+                self.assertTrue(Path(command[0]).samefile(companion))
 
     def test_frozen_macos_refuses_to_launch_the_bridge_without_its_console_companion(self):
         with TemporaryDirectory() as temporary:
@@ -288,7 +290,11 @@ class WebRuntimeTests(unittest.TestCase):
             self.assertEqual(path.parent, root / "runtime")
             self.assertRegex(path.name, r"^node-gateway-startup-[0-9a-f]{16}\.log$")
             self.assertEqual(path.read_bytes(), b"safe startup detail\n")
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            if os.name == "nt":
+                self.assertTrue(path.is_file())
+                self.assertFalse(path.is_symlink())
+            else:
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_gateway_startup_log_never_follows_an_existing_link(self):
         with TemporaryDirectory() as temporary:

@@ -642,3 +642,32 @@ bind retains `TCPServer`'s real socket bind and bound-address update, restores
 the required `HTTPServer` metadata without DNS, applies to IPv4 and IPv6, and
 does not change shutdown, request handling, authentication, or loopback
 validation.
+
+### CI correction round 16
+
+Native run 256 passed the complete Apple Silicon, Intel macOS, and Windows
+installer jobs after the reverse-DNS correction. The broader CI matrix then
+exposed three existing macOS-simulation assertions in the Windows group-9
+test shard. Those tests assumed the POSIX `resource` module, exact textual path
+spelling, and POSIX permission bits even while running on Windows.
+
+The tests now inject a fixed resource stub while simulating frozen macOS,
+compare the launcher companion by file identity so Windows short and long path
+spellings are equivalent, and require owner-only `0600` mode only on platforms
+that expose POSIX mode bits. On Windows they retain regular-file and no-symlink
+checks. No runtime or product code changed in this round.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| Native artifact run 256 platform jobs | Pass | Apple Silicon, Intel macOS, and Windows installers built, installed, launched, verified, stopped, uninstalled, and uploaded successfully. |
+| `python3 -m unittest tests.test_web_runtime -v` | Pass | All 27 web-runtime tests passed locally. |
+| `python3 -m py_compile tests/test_web_runtime.py` | Pass | The cross-platform test correction compiles. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+### Final correction round 16 review
+
+Two independent reviewers reported no findings. They confirmed that the
+resource-limit closure is still exercised, file identity preserves the
+launcher-companion contract across Windows path spellings, and the private-log
+assertions retain every permission and symlink guarantee supported by each
+platform without masking a runtime defect.
