@@ -380,6 +380,7 @@ class AgentRegistryTests(unittest.TestCase):
             }
             attempts = (
                 ({**valid, "api_key": "must-not-be-accepted"}, 400),  # pragma: allowlist secret
+                ({**valid, "runtime_type": "unsupported"}, 400),
                 ({**valid, "runtime_type": "codex"}, 400),
                 ({**valid, "runtime_agent_ref": "../profile"}, 400),
             )
@@ -399,6 +400,212 @@ class AgentRegistryTests(unittest.TestCase):
             self.assertIn("error", duplicate)
             self.assertEqual(listed["count"], 1)
             self.assertEqual(listed["agents"], [created["agent"]])
+
+    def test_codex_agent_requires_the_fixed_available_binding(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = server.CodexRuntime(
+                workspace_root=root,
+                command=server.codex_app_server_command(
+                    str((root / "codex.exe").resolve())
+                ),
+                client=Mock(
+                    request=Mock(
+                        return_value={
+                            "account": {"type": "chatgpt"},
+                            "requiresOpenaiAuth": True,
+                        }
+                    ),
+                    close=Mock(),
+                ),
+            )
+            registry = server.AgentRuntimeRegistry((server.HERMES_RUNTIME, runtime))
+            payload = {
+                "name": "Local Codex",
+                "runtime_type": "codex",
+                "runtime_agent_ref": "default",
+                "capabilities": ["run.start", "run.status"],
+            }
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "AGENT_RUNTIME_REGISTRY", registry
+            ):
+                created, status = server.create_mentat_agent(payload)
+                listed = server.mentat_agents_payload()
+
+        self.assertEqual(status, 201)
+        self.assertEqual(created["agent"]["runtime_type"], "codex")
+        self.assertEqual(listed["agents"], [created["agent"]])
+        self.assertNotIn("runtime_agent_ref", json.dumps(created))
+
+    def test_signed_out_codex_blocks_creation_without_mutating_the_registry(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            client = Mock(
+                request=Mock(
+                    return_value={"account": None, "requiresOpenaiAuth": True}
+                ),
+                close=Mock(),
+            )
+            runtime = server.CodexRuntime(
+                workspace_root=root,
+                command=server.codex_app_server_command(
+                    str((root / "codex.exe").resolve())
+                ),
+                client=client,
+            )
+            runtimes = server.AgentRuntimeRegistry(
+                (server.HERMES_RUNTIME, runtime)
+            )
+            payload = {
+                "name": "Signed-out Codex",
+                "runtime_type": "codex",
+                "runtime_agent_ref": "default",
+                "capabilities": ["run.start"],
+            }
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "AGENT_RUNTIME_REGISTRY", runtimes
+            ):
+                rejected, status = server.create_mentat_agent(payload)
+                listed = server.mentat_agents_payload()
+
+        self.assertEqual(status, 400)
+        self.assertIn("error", rejected)
+        self.assertEqual(listed["agents"], [])
+
+    def test_agent_registry_reads_do_not_probe_the_optional_codex_runtime(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            client = Mock(request=Mock(side_effect=AssertionError("unexpected probe")))
+            runtime = server.CodexRuntime(
+                workspace_root=root,
+                command=server.codex_app_server_command(
+                    str((root / "codex.exe").resolve())
+                ),
+                client=client,
+            )
+            runtimes = server.AgentRuntimeRegistry(
+                (server.HERMES_RUNTIME, runtime)
+            )
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "AGENT_RUNTIME_REGISTRY", runtimes
+            ):
+                listed = server.mentat_agents_payload()
+
+        self.assertEqual(listed["agents"], [])
+        client.request.assert_not_called()
+
+    def test_unavailable_codex_blocks_creation_but_preserves_registry_reads(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            stored = AgentRegistry(
+                root, supported_runtime_types={"codex", "hermes"}
+            ).create_agent(
+                agent_id="agent_existing_codex",
+                name="Existing Codex",
+                runtime_config_id="runtime_config_existing_codex",
+                runtime_type="codex",
+                runtime_agent_ref="default",
+                capabilities=(),
+            )
+            unavailable = server.CodexRuntime(
+                workspace_root=root,
+                command=None,
+            )
+            runtimes = server.AgentRuntimeRegistry(
+                (server.HERMES_RUNTIME, unavailable)
+            )
+            payload = {
+                "name": "Unavailable Codex",
+                "runtime_type": "codex",
+                "runtime_agent_ref": "default",
+                "capabilities": [],
+            }
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "AGENT_RUNTIME_REGISTRY", runtimes
+            ):
+                listed = server.mentat_agents_payload()
+                rejected, status = server.create_mentat_agent(payload)
+
+        self.assertEqual(listed["agents"], [public_agent_record(stored)])
+        self.assertEqual(status, 400)
+        self.assertIn("error", rejected)
+
+    def test_private_snapshot_round_trips_a_codex_binding(self):
+        with TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source"
+            registry = AgentRegistry(
+                source, supported_runtime_types={"codex", "hermes"}
+            )
+            agent = registry.create_agent(
+                agent_id="agent_codex",
+                name="Local Codex",
+                runtime_config_id="runtime_config_codex",
+                runtime_type="codex",
+                runtime_agent_ref="default",
+                capabilities=("run.start", "run.status"),
+            )
+            unit = capture_private_console_unit(source)
+            restored = Path(tmpdir) / "restored"
+            (restored / "private").mkdir(parents=True, mode=0o700)
+            stage = materialize_private_console_unit(
+                restored,
+                unit,
+                restored / "private" / "restore-stage",
+            )
+            stage.rename(restored / "private" / "console")
+            reopened = AgentRegistry(
+                restored, supported_runtime_types={"codex", "hermes"}
+            )
+            restored_agents = reopened.list_agents()
+            binding = reopened.get_runtime_binding(agent.id)
+
+        self.assertEqual(restored_agents, (agent,))
+        self.assertEqual(binding.runtime_type, "codex")
+        self.assertEqual(binding.runtime_agent_ref, "default")
+
+    def test_private_snapshot_rejects_unusable_codex_bindings(self):
+        corruptions = (
+            "UPDATE agent_runtime_configs SET runtime_agent_ref = 'other'",
+            "UPDATE mentat_agents SET capabilities_json = "
+            "'[\"provider.login\",\"run.start\"]'",
+        )
+        for index, statement in enumerate(corruptions):
+            with self.subTest(statement=statement), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir) / "source"
+                registry = AgentRegistry(
+                    root, supported_runtime_types={"codex", "hermes"}
+                )
+                registry.create_agent(
+                    agent_id="agent_codex",
+                    name="Local Codex",
+                    runtime_config_id="runtime_config_codex",
+                    runtime_type="codex",
+                    runtime_agent_ref="default",
+                    capabilities=("run.start", "run.status"),
+                )
+                unit = capture_private_console_unit(root)
+
+                live = sqlite3.connect(registry_database_path(root))
+                try:
+                    live.execute(statement)
+                    live.commit()
+                finally:
+                    live.close()
+                with self.assertRaises(PrivateConsoleUnitError):
+                    capture_private_console_unit(root)
+
+                snapshot = Path(tmpdir) / f"snapshot-{index}.sqlite3"
+                snapshot.write_bytes(unit.registry_database_raw)
+                saved = sqlite3.connect(snapshot)
+                try:
+                    saved.execute(statement)
+                    saved.commit()
+                finally:
+                    saved.close()
+                with self.assertRaises(PrivateConsoleUnitError):
+                    validate_private_console_unit(
+                        replace(unit, registry_database_raw=snapshot.read_bytes())
+                    )
 
     def test_api_blocks_creation_while_private_restore_is_reserved(self):
         with TemporaryDirectory() as tmpdir:
@@ -593,7 +800,7 @@ class AgentRegistryTests(unittest.TestCase):
                 "INSERT INTO agent_runtime_configs VALUES "
                 "('runtime_config_orphan','hermes','orphan',1,1)",
                 "UPDATE mentat_agents SET capabilities_json = '{}'",
-                "UPDATE agent_runtime_configs SET runtime_type = 'codex'",
+                "UPDATE agent_runtime_configs SET runtime_type = 'unsupported'",
                 "UPDATE mentat_agents SET updated_at = 'not-a-number'",
                 "CREATE TABLE unexpected_private_values (value TEXT)",
             )

@@ -12,8 +12,9 @@ Mentat needs:
 - Git
 - macOS, Windows, or Linux
 
-Agent features need a supported Hermes runtime. Planning still works when
-Hermes is unavailable.
+Agent execution needs a supported Hermes runtime or a signed-in local Codex
+CLI. Planning still works when neither runtime is available. Hermes-specific
+chat, delegation, session, and profile features still require Hermes.
 
 The default dashboard is a local Node gateway with a private Python bridge.
 Native packages include the prebuilt dashboard; Node remains a host

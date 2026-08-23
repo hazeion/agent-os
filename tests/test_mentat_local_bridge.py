@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent_registry import AgentRegistryError, AgentRegistryUnavailableError
 from mentat_db import connect as connect_mentat_database, database_path as mentat_database_path
@@ -665,6 +666,30 @@ class LocalBridgeTests(unittest.TestCase):
                 f"user@127.0.0.1:{self.port}", "127.0.0.1", self.port
             )
         )
+
+
+class LocalBridgeMainTests(unittest.TestCase):
+    def test_main_closes_loaded_process_owning_runtimes(self):
+        bridge = SimpleNamespace(
+            server_address=("127.0.0.1", 43210),
+            timeout=None,
+            handle_request=Mock(),
+            server_close=Mock(),
+        )
+        with patch.object(
+            local_bridge, "build_bridge_server", return_value=bridge
+        ), patch.object(
+            local_bridge, "configured_launcher_pid", return_value=None
+        ), patch.object(
+            local_bridge, "launcher_is_running", return_value=False
+        ), patch.object(
+            server, "shutdown_agent_runtimes"
+        ) as shutdown:
+            result = local_bridge.main(["--host", "127.0.0.1", "--port", "0"])
+
+        self.assertEqual(result, 0)
+        bridge.server_close.assert_called_once_with()
+        shutdown.assert_called_once_with()
 
 
 if __name__ == "__main__":

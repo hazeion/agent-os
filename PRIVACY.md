@@ -23,6 +23,11 @@ share them as carefully as any other personal file.
   connection record and reads the key from an environment variable or
   owner-only env file. It never returns the endpoint, source, or key to the
   browser, diagnostics, or normal backups.
+- **Codex:** When a Task uses the Codex runtime, Mentat sends its bounded
+  objective and acceptance criteria through the signed-in local Codex CLI.
+  Codex owns its account, provider communication, and thread storage. Mentat
+  keeps Codex thread and turn references private and does not return raw tool
+  payloads, commands, paths, or account details to the browser.
 - **Google Calendar:** Calendar access is read-only. Mentat can create or link a
   Mentat task from an event, but does not edit the calendar event.
 - **Obsidian:** Mentat reads validated Markdown notes from the configured vault.

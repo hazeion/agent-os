@@ -38,6 +38,7 @@ Main files:
 
 ```text
 server.py
+codex_runtime.py
 hermes_kanban.py
 hermes_profile_identity.py
 task_planning.py
@@ -123,9 +124,21 @@ pinned parent on POSIX, or use missing-only Windows directory publication with
 `MOVEFILE_WRITE_THROUGH`, before reporting durable success. Post-rename failures
 must be reported as partial writes.
 
-Hermes remains the first capability-scoped runtime adapter. New orchestration
-code must use the runtime-neutral boundary and must not depend directly on
-Hermes-specific execution schemas.
+Hermes is the first capability-scoped runtime adapter. Codex is the second,
+through one fixed local App Server stdio connection in `codex_runtime.py`.
+New orchestration code must use the runtime-neutral boundary and must not
+depend directly on Hermes- or Codex-specific execution schemas.
+
+The first Codex binding is the fixed `default` local CLI identity. Mentat may
+reuse an existing Codex CLI sign-in, but browser input must never select the
+executable, working directory, provider, model, credential source, App Server
+method, thread ID, or turn ID. Codex App Server requests use fixed arguments,
+an allowlisted child environment, the `workspaceWrite` sandbox, and approval policy
+`never`. Unsupported approval and attachment capabilities fail closed. Stop
+success requires exact canonical Run reconciliation, and runtime shutdown must
+close the App Server's owned process tree. Routine Agent registry reads must
+not launch or wait for Codex; live readiness probes belong only on explicit
+Codex capability, binding, or dispatch paths.
 
 Hermes mutations are allowed only when an approved adapter operation uses a
 fixed Hermes CLI/API call with validation, capability checks, confirmation,

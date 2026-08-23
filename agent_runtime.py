@@ -441,7 +441,17 @@ class AgentRuntimeRegistry:
         runtime_type = _require_runtime_type(runtime.runtime_type)
         if runtime_type in self._runtimes:
             raise ValueError(f"runtime already registered: {runtime_type}")
-        _capabilities(runtime.capabilities)
+        # Process-backed adapters may need a live probe before they can
+        # truthfully advertise capabilities. Registration validates their
+        # closed, static vocabulary without forcing that process to start.
+        registration_capabilities = getattr(
+            runtime, "registration_capabilities", None
+        )
+        _capabilities(
+            runtime.capabilities
+            if registration_capabilities is None
+            else registration_capabilities
+        )
         self._runtimes[runtime_type] = runtime
 
     def require(self, runtime_type: str) -> AgentRuntime:
@@ -450,6 +460,12 @@ class AgentRuntimeRegistry:
             return self._runtimes[normalized]
         except KeyError as exc:
             raise AgentRuntimeError("runtime.unavailable") from exc
+
+    @property
+    def runtime_types(self) -> tuple[str, ...]:
+        """Return registered type names without probing live adapters."""
+
+        return tuple(sorted(self._runtimes))
 
     def public_inventory(self) -> tuple[Mapping[str, Any], ...]:
         return tuple(

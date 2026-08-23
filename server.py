@@ -169,6 +169,11 @@ from hermes_transport import (
     select_hermes_console_transport,
 )
 from hermes_runtime import HermesCompatibilityHandlers, HermesRuntime
+from codex_runtime import (
+    CodexRuntime,
+    codex_app_server_command,
+    find_codex_command,
+)
 from remote_hermes import (
     RemoteHermesError,
     SESSION_LIST_LIMIT as REMOTE_SESSION_LIST_LIMIT,
@@ -1565,10 +1570,7 @@ def upsert_agent_heartbeat(payload):
 
 
 def _mentat_agent_registry() -> AgentRegistry:
-    runtime_types = {
-        str(item["runtime_type"])
-        for item in AGENT_RUNTIME_REGISTRY.public_inventory()
-    }
+    runtime_types = set(AGENT_RUNTIME_REGISTRY.runtime_types)
     return AgentRegistry(DATA_DIR, supported_runtime_types=runtime_types)
 
 
@@ -1599,7 +1601,11 @@ def create_mentat_agent(payload):
     if not isinstance(runtime_type, str):
         return {"error": "Agent runtime type is invalid."}, 400
     try:
-        AGENT_RUNTIME_REGISTRY.require(runtime_type)
+        runtime = AGENT_RUNTIME_REGISTRY.require(runtime_type)
+        if isinstance(runtime, CodexRuntime):
+            runtime.validate_agent_binding(
+                payload.get("runtime_agent_ref"), capabilities
+            )
         with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
             if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
                 return {"error": "Agent storage is unavailable during recovery."}, 503
@@ -1999,6 +2005,36 @@ def mentat_confirm_run_stop(run_id: str, confirmation_id: object) -> dict:
         except AgentRuntimeError:
             raise OrchestrationRunActionError("run.stop_failed") from None
         updated = _load_run_for_action(run_id)
+        if (
+            updated.state_revision <= run.state_revision
+            or updated.status not in {"cancelling", "cancelled", "stopped"}
+        ):
+            service = OrchestrationService(
+                DATA_DIR,
+                runtime_registry=AGENT_RUNTIME_REGISTRY,
+                agent_registry=_mentat_agent_registry(),
+            )
+            owner = f"stop_reconciler_{uuid4().hex}"
+            # One Codex turn can expose at most 4,098 normalized events. Page
+            # all five bounded batches before deciding whether Stop is durable.
+            for _attempt in range(5):
+                try:
+                    report = service.reconcile_run(run_id=run_id, owner=owner)
+                except (
+                    OrchestrationServiceError,
+                    RunRepositoryError,
+                    OSError,
+                    sqlite3.Error,
+                ):
+                    break
+                updated = _load_run_for_action(run_id)
+                if (
+                    updated.state_revision > run.state_revision
+                    and updated.status in {"cancelling", "cancelled", "stopped"}
+                ):
+                    break
+                if report.leased == 0 or report.unavailable:
+                    break
     if updated.state_revision <= run.state_revision:
         raise OrchestrationRunActionError("run.stop_partial")
     if updated.status not in {"cancelling", "cancelled", "stopped"}:
@@ -6691,7 +6727,22 @@ def _select_legacy_hermes_console_transport() -> HermesConsoleTransport:
 HERMES_RUNTIME = HermesRuntime(
     transport_factory=_select_legacy_hermes_console_transport,
 )
-AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry((HERMES_RUNTIME,))
+_CODEX_COMMAND_PATH = find_codex_command()
+CODEX_RUNTIME = CodexRuntime(
+    workspace_root=BASE_DIR,
+    command=(
+        codex_app_server_command(_CODEX_COMMAND_PATH)
+        if _CODEX_COMMAND_PATH is not None
+        else None
+    ),
+)
+AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry((HERMES_RUNTIME, CODEX_RUNTIME))
+
+
+def shutdown_agent_runtimes() -> None:
+    """Close process-owning runtime adapters during either server lifecycle."""
+
+    CODEX_RUNTIME.close()
 
 
 def hermes_console_transport() -> HermesConsoleTransport:
@@ -11472,6 +11523,7 @@ def serve_dashboard() -> None:
             try:
                 detach_and_stop_hermes_refresh(refresh_coordinator)
                 stop_agent_console_processes()
+                shutdown_agent_runtimes()
             finally:
                 try:
                     if server is not None:

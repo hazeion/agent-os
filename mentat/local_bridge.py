@@ -17,6 +17,7 @@ import re
 import signal
 import socket
 from socketserver import TCPServer
+import sys
 import threading
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -1016,6 +1017,13 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         bridge.server_close()
+        loaded_server = sys.modules.get("server")
+        shutdown_runtimes = getattr(loaded_server, "shutdown_agent_runtimes", None)
+        if callable(shutdown_runtimes):
+            try:
+                shutdown_runtimes()
+            except Exception:
+                pass
         for signum, handler in previous_handlers.items():
             try:
                 signal.signal(signum, handler)

@@ -5,8 +5,8 @@
 # Mentat
 
 Mentat is a local operations console for planning work and running agents. It
-keeps your projects, tasks, runs, and activity on your computer. Hermes is the
-first supported agent runtime.
+keeps your projects, tasks, runs, and activity on your computer. It can run
+work through Hermes or a signed-in local Codex CLI.
 
 Mentat uses a Next.js dashboard with a small private Python bridge. The older
 Python interface is available only as a temporary troubleshooting fallback.
@@ -42,7 +42,10 @@ You need:
 - [Python 3.11-3.13](https://www.python.org/downloads/)
 - [Node 24.19 or newer within Node 24](https://nodejs.org/)
 - [Git](https://git-scm.com/downloads)
-- [Hermes Agent](https://hermes-agent.nousresearch.com/) for agent features
+- [Hermes Agent](https://hermes-agent.nousresearch.com/) for Hermes features
+
+Codex execution needs an installed Codex CLI that is already signed in. Hermes
+is still required for Hermes chat, delegation, sessions, and profile features.
 
 macOS and Windows are the main beta platforms. Linux is available as a preview.
 See [supported platforms and known limitations](SUPPORT.md) before installing.
@@ -78,8 +81,8 @@ run.bat
 Open [http://localhost:8888](http://localhost:8888) if your browser does not
 open on its own.
 
-Mentat works as a project planner without Hermes. Install Hermes when you want
-to use chat, delegation, sessions, and other agent features.
+Mentat works as a project planner without an agent runtime. Install Hermes for
+Hermes features, or sign in through the Codex CLI for Codex task execution.
 
 The setup helper stores settings on your computer. Hermes continues to manage
 provider credentials. To connect Mentat to Hermes on another computer, follow
@@ -130,7 +133,7 @@ npm --prefix web run build
 ## Keep in mind
 
 - Mentat listens only on local addresses.
-- Mentat does not edit Hermes core files directly.
+- Mentat does not edit Hermes or Codex configuration files directly.
 - Calendar events, Obsidian note contents, Hermes sessions, and cron jobs are
   read-only in Mentat.
 - Private data and runtime files stay out of the repository.

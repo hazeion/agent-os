@@ -82,9 +82,7 @@ class OrchestrationService:
         self.runtime_registry = runtime_registry
         self.agent_registry = agent_registry or AgentRegistry(
             self.data_dir,
-            supported_runtime_types=tuple(
-                item["runtime_type"] for item in runtime_registry.public_inventory()
-            ),
+            supported_runtime_types=runtime_registry.runtime_types,
         )
         self.id_factory = id_factory or (
             lambda prefix: f"{prefix}_{uuid4().hex}"
@@ -418,6 +416,31 @@ class OrchestrationService:
                 )
             finally:
                 connection.close()
+        return self._reconcile_leased_runs(leased, owner=owner)
+
+    def reconcile_run(self, *, run_id: str, owner: str) -> ReconciliationReport:
+        """Reconcile one exact Run after a capability-scoped action."""
+
+        with private_state_lock(self.data_dir):
+            connection = self._connect()
+            try:
+                leased = RunRepository(connection).lease_reconcilable_run(
+                    run_id=run_id,
+                    owner=owner,
+                )
+            finally:
+                connection.close()
+        return self._reconcile_leased_runs(
+            () if leased is None else (leased,),
+            owner=owner,
+        )
+
+    def _reconcile_leased_runs(
+        self,
+        leased: tuple[RunRecord, ...],
+        *,
+        owner: str,
+    ) -> ReconciliationReport:
         reconciled: list[str] = []
         unavailable: list[str] = []
         for run in leased:
