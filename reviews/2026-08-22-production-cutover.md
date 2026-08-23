@@ -1,6 +1,6 @@
 # Feature Slice Review: Production cutover
 
-Status: In progress
+Status: Complete in this branch
 
 Slice: `2d-production-cutover`
 
@@ -34,12 +34,12 @@ tested, explicit legacy rollback until cutover acceptance is complete.
 
 | ID | Criterion | Evidence | Status |
 | --- | --- | --- | --- |
-| AC-1 | Installed product contains a prebuilt Node web runtime and fixed bridge assets. | Package inspection | Pending |
-| AC-2 | Default launcher starts Node, bridge, and data bootstrap without network access. | Isolated install/lifecycle tests | Pending |
-| AC-3 | Stop, unexpected-child recovery, and port collision fail closed. | Lifecycle tests | Pending |
-| AC-4 | Explicit legacy rollback launches only the existing Python UI and never changes data authority. | Rollback tests | Pending |
-| AC-5 | Installer and release documentation match the supported path. | Docs and package tests | Pending |
-| AC-6 | Clean production browser and six-run Lighthouse gates remain perfect. | CI | Pending |
+| AC-1 | Installed product contains a prebuilt Node web runtime and fixed bridge assets. | Package inspection | Pass |
+| AC-2 | Default launcher starts Node, bridge, and data bootstrap without network access. | Isolated install/lifecycle tests | Pass |
+| AC-3 | Stop, unexpected-child recovery, and port collision fail closed. | Lifecycle tests | Pass |
+| AC-4 | Explicit legacy rollback launches only the existing Python UI and never changes data authority. | Rollback tests | Pass |
+| AC-5 | Installer and release documentation match the supported path. | Docs and package tests | Pass |
+| AC-6 | Clean production browser and six-run Lighthouse gates remain perfect. | CI | Pass |
 
 ### Standing approval
 
@@ -772,3 +772,23 @@ Final independent round-18 re-review:
 - Lifecycle and process safety: no findings; revised contract satisfied.
 - Linux, CI, packaging, and compatibility: no findings; revised contract
   satisfied.
+
+CI run 371 then found a test-only Windows path assumption: the portable helper
+tests created drive-absolute temporary paths while two helpers recognized only
+a leading POSIX slash. They now use `Path.is_absolute()`. This is equivalent on
+Linux and does not enable cwd evidence on Windows, where process start identity
+and `/proc` cwd discovery remain unavailable. Both independent reviewers found
+no issue and confirmed that the correction contract is preserved.
+
+### Slice acceptance
+
+- Quality Gates run 251 passed the installed package lifecycle, browser smoke,
+  dependency and secret scan, production browser checks, and all three desktop
+  plus three mobile Lighthouse audits at 100 in every category.
+- The installed stop report verified `process_start_identity`,
+  `recorded_node_gateway_cwd`, and `gateway_probe` before the pidfd-backed kill.
+- Native artifact smoke run 259 passed Windows x64, macOS Intel, and macOS Apple
+  Silicon package build, shape, install, launch, stop, and uninstall checks.
+- All acceptance criteria are satisfied, both final independent reviews have no
+  findings, and the standing approval accepts publication and merge once the
+  final PR head's required checks are green.

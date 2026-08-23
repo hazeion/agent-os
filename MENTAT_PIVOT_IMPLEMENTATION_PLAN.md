@@ -47,6 +47,14 @@ Slice 2B-B is complete in this branch: the read-only Tasks route carries a
 small canonical SQLite projection through one fixed bridge and Node API
 capability. It does not add Task controls or expose Task details.
 
+Slice 2D is complete in this branch. The installed product launches the
+supervised Node dashboard by default, keeps `--legacy-ui` as an explicit local
+rollback, ships prebuilt web assets, and passes the installed lifecycle,
+browser, native packaging, and six-run perfect Lighthouse gates.
+
+The next resume point after PR #123 merges is proposed Slice 3A: add Codex as a
+second runtime behind Mentat's existing runtime-neutral contracts.
+
 ## Roadmap
 
 | Slice | Status | Result | Depends on |
@@ -64,8 +72,8 @@ capability. It does not add Task controls or expose Task details.
 | 2C-B | Complete in this branch | Safe preview-confirm stop control for a selected Run. Messaging and approvals need separate contracts. | Slice 2C-A |
 | 2C-C | Complete in this branch | Safe preview-confirm text message for a selected active Run. | Slice 2C-B |
 | 2C-D | Complete | Supported approval and clarification responses. | Slice 2C-C |
-| 2D | In progress | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
-| 3A | Provisional | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
+| 2D | Complete in this branch | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
+| 3A | Proposed | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
 | 3B | Provisional | Hermes and Codex run together in one interface. | Slice 3A |
 | 3C | Provisional | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
 | 4A | Planned | Vercel infrastructure adapter: optional AI Gateway, Sandbox, and Connect behind Mentat contracts. | Slice 3C |
@@ -309,7 +317,7 @@ Review log: `reviews/2026-08-22-run-response-control.md`
 
 ### Slice 2D: production cutover
 
-Status: In progress
+Status: Complete in this branch
 
 The source preview is not an installed product. This slice must decide how Node
 ships, starts, updates, and rolls back on supported platforms after the
@@ -322,6 +330,15 @@ The legacy interface may be retired only after:
 - lifecycle and recovery checks pass on supported platforms
 - performance and accessibility gates pass
 - a tested rollback remains available
+
+The completion contract is met in PR #123:
+
+- installed and native packages contain the prebuilt Node runtime
+- launch requires no web dependency download or build
+- the supervisor owns Node and the private Python bridge together
+- shutdown and failure cleanup are bounded and process-instance safe
+- `--legacy-ui` remains the explicit local rollback
+- browser, accessibility, security, and all six Lighthouse audits pass
 
 ## Runtime number two
 

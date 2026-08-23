@@ -297,14 +297,15 @@ def process_working_directory(pid: int) -> str:
 
 def working_directory_matches_gateway(pid: int, expected_path: str) -> bool:
     expected = str(expected_path or "").strip()
-    if not expected.startswith("/"):
+    expected_file = Path(expected)
+    if not expected_file.is_absolute():
         return False
     working_directory = process_working_directory(pid)
     if not working_directory:
         return False
     try:
         actual_root = Path(working_directory).resolve(strict=True)
-        expected_root = Path(expected).parent.resolve(strict=True)
+        expected_root = expected_file.parent.resolve(strict=True)
     except (OSError, RuntimeError):
         return False
     return actual_root == expected_root
@@ -312,7 +313,7 @@ def working_directory_matches_gateway(pid: int, expected_path: str) -> bool:
 
 def gateway_entrypoint_is_regular(expected_path: str) -> bool:
     expected = str(expected_path or "").strip()
-    if not expected.startswith("/"):
+    if not Path(expected).is_absolute():
         return False
     try:
         return stat.S_ISREG(os.lstat(expected).st_mode)
