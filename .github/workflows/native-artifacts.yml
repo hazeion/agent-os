@@ -162,6 +162,46 @@ jobs:
             kill -TERM "$restricted_gateway_pid"
             wait "$restricted_gateway_pid" || true
           )
+          console_gateway_log="$RUNNER_TEMP/mentat-console-gateway.log"
+          python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+            /Applications/Mentat.app/Contents/MacOS/mentat-bridge \
+            --mentat-console-gateway start --port 8895 --data-dir "$MENTAT_DATA_DIR" \
+            >"$console_gateway_log" 2>&1 &
+          console_gateway_pid=$!
+          console_gateway_ready=false
+          stop_console_gateway() {
+            /Applications/Mentat.app/Contents/MacOS/mentat-bridge --mentat-console-gateway stop --port 8895 --data-dir "$MENTAT_DATA_DIR" >/dev/null 2>&1 || true
+            for attempt in {1..10}; do
+              if ! kill -0 -- "-$console_gateway_pid" 2>/dev/null; then
+                wait "$console_gateway_pid" 2>/dev/null || true
+                return
+              fi
+              sleep 1
+            done
+            kill -TERM -- "-$console_gateway_pid" 2>/dev/null || true
+            for attempt in {1..5}; do
+              if ! kill -0 -- "-$console_gateway_pid" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            kill -KILL -- "-$console_gateway_pid" 2>/dev/null || true
+            wait "$console_gateway_pid" 2>/dev/null || true
+          }
+          for attempt in {1..30}; do
+            if curl --fail --silent --max-time 1 http://127.0.0.1:8895/api/bridge/health >/dev/null; then
+              console_gateway_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if "$console_gateway_ready"; then
+            echo "direct_console_gateway=ready" >&2
+          else
+            cat "$console_gateway_log" >&2 || true
+            echo "direct_console_gateway=failed" >&2
+          fi
+          stop_console_gateway
           /Applications/Mentat.app/Contents/MacOS/Mentat start --port 8896 --data-dir "$MENTAT_DATA_DIR" >"$RUNNER_TEMP/mentat-native-upgrade.log" 2>&1 &
           upgraded_launcher_pid=$!
           for attempt in {1..30}; do

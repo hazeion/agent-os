@@ -196,8 +196,9 @@ class WebRuntimeTests(unittest.TestCase):
                     process=process,
                     timeout=0.1,
                     unavailable_error="gateway_bridge_unavailable",
+                    timeout_error="node_bridge_readiness_timeout",
                 )
-        self.assertEqual(str(raised.exception), "gateway_readiness_timeout")
+        self.assertEqual(str(raised.exception), "node_bridge_readiness_timeout")
 
     def test_readiness_stops_when_the_required_private_bridge_exits(self):
         process = MagicMock()
@@ -256,6 +257,9 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertLess(events.index("/bridge/v1/health"), events.index("node"))
         self.assertLess(events.index("node"), events.index("/api/gateway/health"))
         self.assertLess(events.index("/api/gateway/health"), events.index("/api/bridge/health"))
+        self.assertEqual(readiness_calls[0]["timeout_error"], "private_bridge_readiness_timeout")
+        self.assertEqual(readiness_calls[1]["timeout_error"], "node_gateway_readiness_timeout")
+        self.assertEqual(readiness_calls[2]["timeout_error"], "node_bridge_readiness_timeout")
         self.assertNotIn("required_process", readiness_calls[0])
         self.assertNotIn("required_process", readiness_calls[1])
         self.assertIs(readiness_calls[2]["required_process"], bridge)

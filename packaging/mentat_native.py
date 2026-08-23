@@ -40,6 +40,7 @@ def native_main() -> int:
         ):
             return 2
         require_node_24(str(node_path))
+        print("Mentat Node gateway handoff: exec", flush=True)
         os.execv(str(node_path), [str(node_path), str(entrypoint)])
         return 2
     arguments = sys.argv[1:]

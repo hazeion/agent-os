@@ -475,3 +475,43 @@ Two independent reviewers reported no findings. They confirmed that the
 resource-root lookup no longer depends on an optional module, the fallback
 retains bounded diagnostics and closed descriptors, and the change is limited
 to frozen macOS behavior.
+
+### CI diagnostic round 12
+
+The user approved a diagnostic-only pass to identify the exact frozen macOS
+startup stage before changing runtime behavior. The supervisor now reports
+distinct bounded errors for private-bridge readiness, Node gateway readiness,
+and Node-to-bridge readiness. The fixed macOS Node companion prints one
+secret-free marker immediately before replacing itself with Node. Native CI
+also compares a direct console-supervisor start with the visible launcher.
+That comparison runs in a dedicated process session and cleanup targets the
+whole process group with bounded TERM/KILL escalation before the normal smoke.
+
+Acceptance evidence:
+
+1. A failed startup identifies one of the three readiness stages.
+2. The fixed handoff marker proves whether the companion reached `exec`.
+3. The direct-console comparison cannot leave its Node child or listener for
+   the following visible-launcher test.
+4. No token, path, credential, arbitrary child output, or Hermes state enters
+   the public API or fixed error codes.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_web_runtime tests.test_packaging_cli tests.test_ci_quality_gate -v` | Pass | 68 focused checks passed. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
+| `python3 -m py_compile mentat/web_runtime.py packaging/mentat_native.py` | Pass | Both changed Python runtime entry points compile. |
+| Extracted macOS smoke block with `bash -n` | Pass | The diagnostic and bounded process-group cleanup are valid Bash. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+The user has explicitly approved this step-by-step diagnostic and retains the
+standing publication approval recorded above. Full native behavior remains a
+GitHub macOS-runner gate; no runtime correction will be selected until this
+diagnostic returns evidence.
+
+### Final diagnostic round 12 review
+
+Two independent reviewers reported no findings. They confirmed that all three
+stage errors are fixed and secret-free, the marker occurs immediately before
+`exec`, the direct comparison owns a separate process group, and bounded
+cleanup completes before the visible-launcher smoke.

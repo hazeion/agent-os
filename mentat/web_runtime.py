@@ -223,6 +223,7 @@ def node_environment(*, token: str, bridge_port: int, gateway_port: int, gateway
 def wait_for_health(*, port: int, path: str, process: subprocess.Popen, host: str = GATEWAY_HOST,
                     token: str | None = None, timeout: float = STARTUP_TIMEOUT_SECONDS,
                     unavailable_error: str | None = None,
+                    timeout_error: str = "gateway_readiness_timeout",
                     required_process: subprocess.Popen | None = None) -> dict:
     deadline = time.monotonic() + timeout
     last_response_status: int | None = None
@@ -252,7 +253,7 @@ def wait_for_health(*, port: int, path: str, process: subprocess.Popen, host: st
         time.sleep(0.1)
     if last_response_status == 503 and unavailable_error is not None:
         raise WebRuntimeError(unavailable_error)
-    raise WebRuntimeError("gateway_readiness_timeout")
+    raise WebRuntimeError(timeout_error)
 
 
 def stop_process(process: subprocess.Popen | None, timeout: float = SHUTDOWN_TIMEOUT_SECONDS) -> None:
@@ -478,7 +479,8 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             env=child_environment(token=token, runtime_environment=runtime_environment),
         )
         wait_for_health(port=bridge_port, path="/bridge/v1/health", process=bridge_process,
-                        host=safe_host, token=token)
+                        host=safe_host, token=token,
+                        timeout_error="private_bridge_readiness_timeout")
         node_startup_log_path, node_startup_log = open_gateway_startup_log(data_dir)
         node_process = subprocess.Popen(
             node_command(node_path, standalone), cwd=standalone,
@@ -488,13 +490,17 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
         )
         if node_process.stdout is not None:
             node_startup_capture = start_startup_output_capture(node_process, node_startup_log)
-        wait_for_health(port=port, path="/api/gateway/health", process=node_process, host=safe_host)
+        wait_for_health(
+            port=port, path="/api/gateway/health", process=node_process, host=safe_host,
+            timeout_error="node_gateway_readiness_timeout",
+        )
         wait_for_health(
             port=port,
             path="/api/bridge/health",
             process=node_process,
             host=safe_host,
             unavailable_error="gateway_bridge_unavailable",
+            timeout_error="node_bridge_readiness_timeout",
             required_process=bridge_process,
         )
         write_runtime_state(data_dir=data_dir, node_process=node_process, host=safe_host, port=port,

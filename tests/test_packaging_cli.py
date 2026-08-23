@@ -206,6 +206,14 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("test -f dist/Mentat.app/Contents/MacOS/mentat-bridge", workflow)
         self.assertIn("test ! -L dist/Mentat.app/Contents/MacOS/mentat-bridge", workflow)
         self.assertIn("curl --fail --silent --max-time 1 http://127.0.0.1:8896/api/bridge/health", workflow)
+        self.assertIn("stop_console_gateway()", workflow)
+        self.assertIn("os.setsid(); os.execv", workflow)
+        self.assertIn('kill -TERM -- "-$console_gateway_pid"', workflow)
+        self.assertIn('kill -KILL -- "-$console_gateway_pid"', workflow)
+        self.assertLess(
+            workflow.index('echo "direct_console_gateway=failed"'),
+            workflow.index("stop_console_gateway\n          /Applications/Mentat.app/Contents/MacOS/Mentat start"),
+        )
         self.assertIn(
             "          - label: macOS Intel\n"
             "            runner: macos-15-intel\n"
@@ -787,6 +795,31 @@ class PackagingContractTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_node_gateway_companion_emits_fixed_marker_before_exec(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            node = root / "node"
+            entrypoint = root / "Resources" / "web" / "server.js"
+            node.touch()
+            entrypoint.parent.mkdir(parents=True)
+            entrypoint.touch()
+            output = io.StringIO()
+            with patch.object(
+                native_entry.sys,
+                "argv",
+                ["mentat-node-gateway", "--mentat-node-gateway", str(node), str(entrypoint)],
+            ), patch.object(native_entry.sys, "frozen", True, create=True), patch.object(
+                native_entry.sys, "platform", "darwin"
+            ), patch.object(
+                native_entry, "application_root", return_value=root / "Resources"
+            ), patch.object(native_entry, "require_node_24") as require_node, patch.object(
+                native_entry.os, "execv"
+            ) as execute, redirect_stdout(output):
+                self.assertEqual(native_entry.native_main(), 2)
+            require_node.assert_called_once_with(str(node))
+            execute.assert_called_once_with(str(node), [str(node), str(entrypoint)])
+            self.assertEqual(output.getvalue(), "Mentat Node gateway handoff: exec\n")
+
     def test_frozen_macos_start_uses_the_console_gateway_companion_once(self):
         companion = Path("/fixed/Mentat.app/Contents/MacOS/mentat-bridge")
         with patch.object(native_entry.sys, "argv", ["Mentat", "start", "--port", "8896"]), patch.object(
