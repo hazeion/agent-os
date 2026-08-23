@@ -329,8 +329,8 @@ affecting local, Codex, or Hermes operation.
 - Unresolved risks: no live account smoke without operator credentials.
 - User authorization and scope: standing explicit authorization recorded above;
   the exact packet above is approved under that standing authorization.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- Implementation commit: `351cc96582377ce37dfbb3731d787de9fa571a73`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/127
 
 ## Outcome review
 
