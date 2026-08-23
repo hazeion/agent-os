@@ -63,10 +63,10 @@ Slice 3C is complete. PR #126 merged schema-8 Agent identity and private
 runtime bindings into `mentat.sqlite3` alongside Tasks, Runs, and events.
 Existing roots use an explicit backed-up convergence command before startup.
 
-Slice 4A is in progress on its approved branch. Schema 9 adds one private
-Vercel connection, a bounded AI Gateway runtime, separate Sandbox and Connect
-readiness adapters, exact CLI workflows, and a safe Agents-workspace status
-view. Vercel remains optional and credentials stay outside Mentat storage.
+Slice 4A is complete. PR #127 adds one private Vercel connection, a bounded AI
+Gateway runtime, separate Sandbox and Connect readiness adapters, exact CLI
+workflows, and a safe Agents-workspace status view. Vercel remains optional and
+credentials stay outside Mentat storage.
 
 ## Roadmap
 
@@ -89,7 +89,7 @@ view. Vercel remains optional and credentials stay outside Mentat storage.
 | 3A | Complete | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
 | 3B | Complete | Hermes and Codex run together in one interface. | Slice 3A |
 | 3C | Complete | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
-| 4A | In progress | Optional AI Gateway, Sandbox, and Connect adapters behind Mentat contracts. | Slice 3C |
+| 4A | Complete | Optional AI Gateway, Sandbox, and Connect adapters behind Mentat contracts. | Slice 3C |
 | 4B+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 4A |
 
 ## Completed foundation
@@ -403,6 +403,8 @@ Review log: `reviews/2026-08-22-agent-registry-convergence.md`
 ## Optional Vercel infrastructure
 
 ### Slice 4A: Vercel infrastructure adapter
+
+Status: Complete
 
 Vercel becomes a real, optional infrastructure choice for compatible agent
 workloads. This is not a requirement to host the Mentat console on Vercel.

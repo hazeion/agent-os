@@ -1,6 +1,6 @@
 # Feature Slice Review: Optional Vercel capability adapters
 
-Status: In progress
+Status: Complete
 
 Slice: `4a-vercel-capability-adapters`
 
@@ -207,6 +207,8 @@ affecting local, Codex, or Hermes operation.
 | --- | --- | --- | --- | --- |
 | `python3 -m unittest discover -s tests -q` | macOS, Python 3.13, disposable clean mirror of the final working tree | Pass | 1,503 passed; 5 skipped | The mirror used committed fixture data and excluded all user-owned worktree edits. Every Slice 4A, bridge, schema, backup, downgrade, packaging, runtime, UI, lifecycle, and platform contract passed. |
 | Targeted rerun of configuration tests affected by an earlier environment override | macOS, normal config resolution | Pass | 2 passed | Confirms those transient failures were test-launch configuration, not product regressions. |
+| Closure documentation contract tests | macOS, Python 3.11 | Pass | 13 passed | Roadmap and data-layout completion updates satisfy their repository contracts. |
+| GitHub Actions runs `32639115496`, `32639115499`, and `32639115500` | Linux, macOS, and Windows; Python 3.11-3.13; Node 24 | Pass | Native artifact smoke, quality gates, and full CI green | Two unrelated Windows test flakes passed on isolated rerun. The corrected Windows TLS deadline regression also passed in the full matrix. |
 
 ### Rendered or manual behavior
 
@@ -287,6 +289,7 @@ affecting local, Codex, or Hermes operation.
 | 4 | Compatibility and product | Python 3.11 reads and writes SSL-context attributes during `HTTPSConnection` construction; the first deadline wrapper did not delegate them. | Non-private reads and writes now delegate to the verified real context. An unmocked constructor regression and the full 36-test Vercel suite pass under Python 3.11.15 and 3.13.14. Reviewer response after correction: `APPROVED`. |
 | 5 | GitHub CI | Windows Python 3.12 could observe the timer-closed TLS socket's `OSError` one clock tick before `monotonic()` compared at the deadline, classifying the safe timeout as `unknown`. | The explicit timer-expired event is now authoritative before accepting a connect failure code. A deterministic immediate-timer test covers the Windows ordering. Both reviewers rechecked the correction and responded `APPROVED`. |
 | Final | Both independent reviewers | Rechecked the complete final TLS, compatibility, Windows timing, test-canary, and transport delta. | Both reviewer responses: `APPROVED`. |
+| Closure | Both independent reviewers | Checked the completion labels, CI rerun evidence, outcome, live-account gap, rollback wording, and 4B+ deferral. | The roadmap's explicit feature-branch exception permits the intended post-merge `Complete` status. Both reviewers responded `APPROVED`. |
 
 ### Reverification
 
@@ -299,7 +302,7 @@ affecting local, Codex, or Hermes operation.
   browser smoke, computer-use walkthrough, and all six perfect Lighthouse
   audits passed.
 - Final review: both original independent reviewers returned `APPROVED` on the
-  corrected final diff.
+  corrected implementation and the docs-only closure diff.
 
 ## Documentation updates
 
@@ -335,10 +338,16 @@ affecting local, Codex, or Hermes operation.
 
 ## Outcome review
 
-- Classification: Pending.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending.
-- Remaining reviewer dissent: Pending.
-- Compatibility/migration/rollback concerns: Pending.
-- User decision: Pending.
-- Next slice authorized: No
+- Classification: Successful.
+- Acceptance criteria summary: AC-1 through AC-9 pass.
+- Potential bugs or untested paths: no live paid Vercel account request was run
+  because this host has no operator-owned Vercel credentials. The explicit
+  readiness command and deterministic transport tests cover the bounded path.
+- Remaining reviewer dissent: none. Both independent reviewers approved the
+  final correction and complete diff.
+- Compatibility/migration/rollback concerns: schema 9 requires the current
+  build. Disconnect, format-4 restore, and schema-5 compatible-root export are
+  verified recovery paths.
+- User decision: accepted and authorized for publication and merge.
+- Next slice authorized: no concrete 4B slice is defined. The 4B+ roadmap entry
+  remains deferred until its own contract is written.
