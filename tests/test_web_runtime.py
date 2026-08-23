@@ -31,6 +31,7 @@ class WebRuntimeTests(unittest.TestCase):
             executable = macos / "Mentat"
             companion = macos / "mentat-bridge"
             macos.mkdir(parents=True)
+            (macos.parent / "Resources").mkdir()
             executable.touch()
             companion.touch()
             with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
@@ -38,7 +39,7 @@ class WebRuntimeTests(unittest.TestCase):
             ), patch.object(web_runtime.sys, "executable", str(executable)):
                 self.assertEqual(
                     web_runtime.bridge_command(49152),
-                    [str(companion), "--mentat-private-bridge", "--host", "127.0.0.1", "--port", "49152"],
+                    [str(companion.resolve()), "--mentat-private-bridge", "--host", "127.0.0.1", "--port", "49152"],
                 )
 
     def test_frozen_macos_uses_lexical_launcher_sibling_for_the_console_bridge(self):
@@ -50,18 +51,20 @@ class WebRuntimeTests(unittest.TestCase):
             companion = macos / "mentat-bridge"
             framework_launcher.parent.mkdir(parents=True)
             macos.mkdir()
+            (contents / "Resources").mkdir()
             framework_launcher.touch()
             executable.symlink_to("../Frameworks/Mentat")
             companion.touch()
             with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
                 web_runtime.sys, "platform", "darwin"
             ), patch.object(web_runtime.sys, "executable", str(executable)):
-                self.assertEqual(web_runtime.bridge_command(49152)[0], str(companion))
+                self.assertEqual(web_runtime.bridge_command(49152)[0], str(companion.resolve()))
 
     def test_frozen_macos_refuses_to_launch_the_bridge_without_its_console_companion(self):
         with TemporaryDirectory() as temporary:
             executable = Path(temporary) / "Mentat.app" / "Contents" / "MacOS" / "Mentat"
             executable.parent.mkdir(parents=True)
+            (executable.parent.parent / "Resources").mkdir()
             executable.touch()
             with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
                 web_runtime.sys, "platform", "darwin"

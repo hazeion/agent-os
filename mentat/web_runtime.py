@@ -136,7 +136,7 @@ def bridge_command(port: int, host: str = GATEWAY_HOST) -> list[str]:
     if bool(getattr(sys, "frozen", False)):
         executable = Path(sys.executable)
         if sys.platform == "darwin":
-            companion = executable.parent / "mentat-bridge"
+            companion = application_root().parent / "MacOS" / "mentat-bridge"
             if not companion.is_file() or companion.is_symlink():
                 raise WebRuntimeError("bridge_companion_missing")
             executable = companion

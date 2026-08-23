@@ -332,6 +332,18 @@ companion lookup now stays beside the un-resolved launcher path and fails
 closed if that regular companion is missing. The test suite models the bundle
 symlink layout and the missing-companion failure.
 
+The installed artifact confirmed that the companion is present, but the frozen
+macOS process can report its executable from `Frameworks`. The companion path
+now derives from the validated app Resources root, whose parent is always the
+app `Contents` directory, rather than from the runtime executable location.
+
+### Final correction round 6 review
+
+Both independent reviewers reported no findings. They confirmed that the
+Resources-root derivation works whether the frozen process reports from
+`MacOS` or `Frameworks`, keeps the companion regular and macOS-only, preserves
+the loopback token boundary, and does not affect Windows.
+
 | Check | Result | Notes |
 | --- | --- | --- |
 | Frozen console bridge health | Pass | The temporary macOS companion answered its authenticated loopback health route. |
