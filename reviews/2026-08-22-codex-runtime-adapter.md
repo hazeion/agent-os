@@ -152,8 +152,8 @@ references to the browser.
 - `python -m py_compile` for all touched Python modules and `git diff --check`:
   pass.
 - The first PR CI pass found two test-infrastructure issues: fake Codex paths
-  were POSIX-only in three Agent Registry tests, and two deliberately fake
-  credential names lacked the repository secret-scanner annotation. The
+  were POSIX-only in three Agent Registry tests, and deliberately fake
+  credential fixtures lacked the repository secret-scanner annotation. The
   fixtures are now platform-neutral and explicitly allowlisted. The corrected
   Codex and Agent Registry suites passed 53 tests with one expected
   Windows-only skip on macOS.

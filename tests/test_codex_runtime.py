@@ -142,7 +142,7 @@ class CodexRuntimeTests(unittest.TestCase):
                 "CODEX_HOME": "/safe/codex-home",
                 "MENTAT_LOCAL_BRIDGE_TOKEN": "bridge-secret",
                 "CODEX_API_KEY": "provider-secret",  # pragma: allowlist secret
-                "OPENAI_API_KEY": "provider-secret",
+                "OPENAI_API_KEY": "provider-secret",  # pragma: allowlist secret
                 "UNRELATED_PARENT_VALUE": "private-parent-value",
             }
         )
