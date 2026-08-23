@@ -27,6 +27,23 @@ class WebRuntimeTests(unittest.TestCase):
                 [sys.executable, "--mentat-private-bridge", "--host", "127.0.0.1", "--port", "49152"],
             )
 
+    def test_frozen_macos_uses_a_regular_node_gateway_exec_companion(self):
+        with TemporaryDirectory() as temporary:
+            contents = Path(temporary) / "Mentat.app" / "Contents"
+            executable = contents / "MacOS" / "Mentat"
+            companion = contents / "MacOS" / "mentat-node-gateway"
+            executable.parent.mkdir(parents=True)
+            (contents / "Resources" / "web").mkdir(parents=True)
+            executable.touch()
+            companion.touch()
+            with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
+                web_runtime.sys, "platform", "darwin"
+            ), patch.object(web_runtime.sys, "executable", str(executable)):
+                self.assertEqual(
+                    web_runtime.node_command("/fixed/node", contents / "Resources" / "web"),
+                    [str(companion.resolve()), "--mentat-node-gateway", "/fixed/node", str(contents / "Resources" / "web" / "server.js")],
+                )
+
     def test_frozen_macos_uses_its_console_bridge_companion(self):
         with TemporaryDirectory() as temporary:
             macos = Path(temporary) / "Mentat.app" / "Contents" / "MacOS"

@@ -150,6 +150,11 @@ def bridge_command(port: int, host: str = GATEWAY_HOST) -> list[str]:
 
 
 def node_command(node_path: str, standalone_root: Path) -> list[str]:
+    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
+        companion = application_root().parent / "MacOS" / "mentat-node-gateway"
+        if not companion.is_file() or companion.is_symlink():
+            raise WebRuntimeError("node_gateway_companion_missing")
+        return [str(companion), "--mentat-node-gateway", node_path, str(standalone_root / "server.js")]
     return [node_path, str(standalone_root / "server.js")]
 
 

@@ -95,6 +95,19 @@ elif sys.platform == "darwin":
         console=True,
     )
     executables.append(bridge_executable)
+    node_gateway_executable = EXE(
+        pyz,
+        analysis.scripts,
+        [],
+        exclude_binaries=True,
+        name="mentat-node-gateway",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=True,
+    )
+    executables.append(node_gateway_executable)
 
 bundle = COLLECT(
     *executables,
