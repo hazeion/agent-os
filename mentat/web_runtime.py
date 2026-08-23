@@ -51,7 +51,7 @@ class WebRuntimeError(RuntimeError):
 def application_root() -> Path:
     """Return the source root or the PyInstaller resource root."""
 
-    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin" and resource is not None:
+    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
         resource_root = Path(sys.executable).resolve().parent.parent / "Resources"
         if resource_root.is_dir() and not resource_root.is_symlink():
             return resource_root
@@ -166,7 +166,11 @@ def node_command(node_path: str, standalone_root: Path) -> list[str]:
 def node_output_options(startup_log) -> dict:
     """Keep macOS Node output off a pipe while enforcing the private log cap."""
 
-    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
+    if (
+        bool(getattr(sys, "frozen", False))
+        and sys.platform == "darwin"
+        and resource is not None
+    ):
         def limit_output_file() -> None:
             resource.setrlimit(resource.RLIMIT_FSIZE, (STARTUP_LOG_MAXIMUM_BYTES, STARTUP_LOG_MAXIMUM_BYTES))
         return {"stdout": startup_log, "stderr": subprocess.STDOUT, "preexec_fn": limit_output_file}

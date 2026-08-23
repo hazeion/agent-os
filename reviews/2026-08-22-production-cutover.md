@@ -447,3 +447,31 @@ does not recurse. Windows and non-frozen launches keep their existing paths.
 Two independent reviewers found no remaining blockers. They confirmed the
 fixed argument handoff, regular non-symlink companion check, dispatch order,
 non-recursive bridge path, and behavioral test coverage.
+
+### CI correction round 11
+
+The latest macOS smoke still timed out after the bridge became ready. Its
+intended fixture data root contained no retained startup log. The frozen
+macOS resource-root selection was unnecessarily conditional on importing the
+optional Python `resource` module. Resource lookup now always uses the regular
+`Contents/Resources` directory. If that optional module is unavailable, Node
+uses the existing bounded pipe capture rather than a direct file descriptor;
+the default closed-descriptor boundary is preserved.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_web_runtime tests.test_packaging_cli -v` | Pass | 58 focused checks passed. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
+| `python3 -m unittest discover -s tests -v` | Environment-limited | 1,375 tests ran; one assertion reads the user-modified `data/projects.json`, and 32 bridge-route tests cannot bind a loopback test port in this sandbox. The affected focused suite passed. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+The user previously granted standing approval for implementation and
+publication actions. That standing approval is the recorded exception to the
+skill's per-publication approval prompt for this narrow CI correction.
+
+### Final correction round 11 review
+
+Two independent reviewers reported no findings. They confirmed that the
+resource-root lookup no longer depends on an optional module, the fallback
+retains bounded diagnostics and closed descriptors, and the change is limited
+to frozen macOS behavior.

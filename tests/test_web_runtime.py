@@ -59,6 +59,25 @@ class WebRuntimeTests(unittest.TestCase):
             (web_runtime.STARTUP_LOG_MAXIMUM_BYTES, web_runtime.STARTUP_LOG_MAXIMUM_BYTES),
         )
 
+    def test_frozen_macos_uses_resources_when_resource_module_is_unavailable(self):
+        with TemporaryDirectory() as temporary:
+            contents = Path(temporary) / "Mentat.app" / "Contents"
+            executable = contents / "MacOS" / "Mentat"
+            resources = contents / "Resources"
+            executable.parent.mkdir(parents=True)
+            resources.mkdir()
+            executable.touch()
+            with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
+                web_runtime.sys, "platform", "darwin"
+            ), patch.object(web_runtime.sys, "executable", str(executable)), patch.object(
+                web_runtime, "resource", None
+            ):
+                self.assertEqual(web_runtime.application_root(), resources.resolve())
+                self.assertEqual(
+                    web_runtime.node_output_options(MagicMock())["stdout"],
+                    web_runtime.subprocess.PIPE,
+                )
+
     def test_frozen_macos_uses_its_console_bridge_companion(self):
         with TemporaryDirectory() as temporary:
             macos = Path(temporary) / "Mentat.app" / "Contents" / "MacOS"
