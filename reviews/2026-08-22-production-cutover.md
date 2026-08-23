@@ -400,3 +400,27 @@ Both independent reviewers reported no findings in the macOS companion
 correction. One reviewer separately flagged user-owned `data/tasks.json`
 changes as private, non-slice content; those changes are excluded from this
 commit and remain untouched in the working tree.
+
+### CI correction round 9
+
+The macOS artifact confirmed that the private bridge remains live while the
+Node gateway never binds to its loopback port. To preserve that evidence
+without exposing process state, Node startup output now goes to a fresh,
+owner-private runtime log. The capture drains continuously but retains no more
+than 8 KiB. Failed starts keep at most three regular, single-link logs owned by
+the current user; clean user-requested shutdown closes the capture before it
+removes its log. The installer smoke prints no more than a redacted 8 KiB
+aggregate tail when it fails.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_web_runtime tests.test_packaging_cli -v` | Pass | 51 focused Python checks passed, including symlink, byte-cap, cleanup-order, and retention coverage. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+### Final correction round 9 review
+
+Two independent reviewers found no remaining blockers. They confirmed the
+private-log creation, bounded draining capture, Windows-safe shutdown order,
+regular-file retention filter, and aggregate CI output cap. User-owned data
+and untracked workspace files remain excluded from the slice.

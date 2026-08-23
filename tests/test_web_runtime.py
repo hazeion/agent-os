@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from io import BytesIO
+import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -188,10 +190,12 @@ class WebRuntimeTests(unittest.TestCase):
                 web_runtime,
                 "wait_for_health",
                 side_effect=lambda **kwargs: (readiness_calls.append(kwargs), events.append(kwargs["path"])),
+            ), patch.object(
+                web_runtime, "start_startup_output_capture", return_value=MagicMock()
             ), patch.object(web_runtime, "write_runtime_state"), patch.object(web_runtime, "clear_runtime_state"):
                 self.assertEqual(
                     web_runtime.run_gateway(
-                        host="127.0.0.1", port=8890, data_dir=Path("/private/mentat"), standalone_root=standalone
+                        host="127.0.0.1", port=8890, data_dir=standalone / "data", standalone_root=standalone
                     ),
                     1,
                 )
@@ -219,6 +223,65 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertNotIn("MENTAT_DATA_DIR", environment)
         self.assertNotIn("HERMES_HOME", environment)
         self.assertNotIn("UNRELATED_PARENT_VALUE", environment)
+
+    def test_gateway_startup_log_is_owner_private_and_runtime_scoped(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, startup_log = web_runtime.open_gateway_startup_log(root)
+            with startup_log:
+                startup_log.write(b"safe startup detail\n")
+            self.assertEqual(path.parent, root / "runtime")
+            self.assertRegex(path.name, r"^node-gateway-startup-[0-9a-f]{16}\.log$")
+            self.assertEqual(path.read_bytes(), b"safe startup detail\n")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_gateway_startup_log_never_follows_an_existing_link(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "outside.txt"
+            target.write_text("keep this", encoding="utf-8")
+            link = root / "runtime" / "node-gateway-startup-0000000000000000.log"
+            link.parent.mkdir()
+            link.symlink_to(target)
+            with patch.object(web_runtime.secrets, "token_hex", return_value="0000000000000000"):
+                with self.assertRaisesRegex(web_runtime.WebRuntimeError, "gateway_startup_log_unavailable"):
+                    web_runtime.open_gateway_startup_log(root)
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep this")
+
+    def test_gateway_startup_log_retention_removes_only_old_owned_regular_files(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            logs = [runtime / f"node-gateway-startup-{index:016x}.log" for index in range(3)]
+            for index, path in enumerate(logs):
+                path.write_bytes(b"log")
+                os.utime(path, (index + 1, index + 1))
+            external = root / "outside.txt"
+            external.write_text("keep this", encoding="utf-8")
+            (runtime / "node-gateway-startup-unsafe-link.log").symlink_to(external)
+            web_runtime.prune_gateway_startup_logs(root, keep=2)
+            self.assertFalse(logs[0].exists())
+            self.assertTrue(logs[1].exists())
+            self.assertTrue(logs[2].exists())
+            self.assertEqual(external.read_text(encoding="utf-8"), "keep this")
+
+    def test_startup_output_capture_is_byte_bounded(self):
+        source = BytesIO(b"first" + (b"x" * 64))
+        destination = BytesIO()
+        web_runtime.copy_bounded_startup_output(source, destination, maximum_bytes=5)
+        self.assertEqual(destination.getvalue(), b"first")
+
+    def test_successful_startup_log_cleanup_closes_the_capture_before_unlinking(self):
+        capture = MagicMock()
+        destination = MagicMock()
+        path = MagicMock()
+        events: list[str] = []
+        capture.join.side_effect = lambda **_kwargs: events.append("join")
+        destination.close.side_effect = lambda: events.append("close")
+        path.unlink.side_effect = lambda **_kwargs: events.append("unlink")
+        web_runtime.close_startup_output_capture(capture, destination, path, remove=True)
+        self.assertEqual(events, ["join", "close", "unlink"])
 
     def test_installed_runtime_uses_the_wheel_payload_when_source_build_is_absent(self):
         with patch.object(web_runtime, "SOURCE_ROOT", Path("/missing/source")), patch.object(

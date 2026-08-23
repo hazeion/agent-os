@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from http.client import HTTPConnection
+from io import BufferedReader
 import json
 import os
 from pathlib import Path
@@ -12,9 +13,11 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
+import threading
 import webbrowser
 
 from json_store import write_json_atomic
@@ -31,6 +34,8 @@ MINIMUM_NODE_VERSION = (24, 19, 0)
 NODE_MAJOR = 24
 STARTUP_TIMEOUT_SECONDS = 15.0
 SHUTDOWN_TIMEOUT_SECONDS = 10.0
+STARTUP_LOG_MAXIMUM_BYTES = 8192
+STARTUP_LOG_RETAINED_FILES = 3
 NODE_VERSION_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?$")
 
 
@@ -250,6 +255,110 @@ def runtime_state_path(data_dir: Path) -> Path:
     return Path(data_dir) / "runtime" / "server-state.json"
 
 
+def gateway_startup_log_path(data_dir: Path, nonce: str) -> Path:
+    """Keep a bounded Node startup diagnostic inside the private runtime area."""
+
+    return Path(data_dir) / "runtime" / f"node-gateway-startup-{nonce}.log"
+
+
+def prune_gateway_startup_logs(data_dir: Path, *, keep: int = STARTUP_LOG_RETAINED_FILES - 1) -> None:
+    """Keep only a few owner-private startup diagnostics from failed launches."""
+
+    runtime_root = Path(data_dir) / "runtime"
+    candidates: list[tuple[float, Path]] = []
+    for path in runtime_root.glob("node-gateway-startup-*.log"):
+        try:
+            details = path.lstat()
+        except OSError:
+            continue
+        if (
+            stat.S_ISREG(details.st_mode)
+            and details.st_nlink == 1
+            and (not hasattr(os, "getuid") or details.st_uid == os.getuid())
+        ):
+            candidates.append((details.st_mtime, path))
+    for _mtime, path in sorted(candidates, reverse=True)[max(0, keep):]:
+        try:
+            path.unlink()
+        except OSError:
+            continue
+
+
+def open_gateway_startup_log(data_dir: Path):
+    """Create a new private Node startup log without following an existing path."""
+
+    runtime_root = Path(data_dir) / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    prune_gateway_startup_logs(data_dir)
+    for _attempt in range(3):
+        path = gateway_startup_log_path(data_dir, secrets.token_hex(8))
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        try:
+            details = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_nlink != 1
+                or (hasattr(os, "getuid") and details.st_uid != os.getuid())
+            ):
+                raise WebRuntimeError("gateway_startup_log_unavailable")
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            else:
+                os.chmod(path, 0o600)
+            return path, os.fdopen(descriptor, "wb")
+        except Exception:
+            os.close(descriptor)
+            path.unlink(missing_ok=True)
+            raise
+    raise WebRuntimeError("gateway_startup_log_unavailable")
+
+
+def copy_bounded_startup_output(source: BufferedReader, destination, maximum_bytes: int = STARTUP_LOG_MAXIMUM_BYTES) -> None:
+    """Drain Node output while retaining only a small private startup diagnostic."""
+
+    retained = 0
+    while True:
+        chunk = source.read(1024)
+        if not chunk:
+            break
+        remaining = maximum_bytes - retained
+        if remaining > 0:
+            kept = chunk[:remaining]
+            destination.write(kept)
+            retained += len(kept)
+    destination.flush()
+
+
+def start_startup_output_capture(process: subprocess.Popen, destination) -> threading.Thread:
+    """Drain the Node output pipe without allowing its diagnostic file to grow."""
+
+    if process.stdout is None:
+        raise WebRuntimeError("gateway_startup_log_unavailable")
+    capture = threading.Thread(
+        target=copy_bounded_startup_output,
+        args=(process.stdout, destination),
+        name="mentat-node-startup-output",
+        daemon=True,
+    )
+    capture.start()
+    return capture
+
+
+def close_startup_output_capture(capture: threading.Thread | None, destination, path: Path | None,
+                                 *, remove: bool) -> None:
+    """Close capture handles before optionally removing their private log on any platform."""
+
+    if capture is not None:
+        capture.join(timeout=1)
+    if destination is not None:
+        destination.close()
+    if remove and path is not None:
+        path.unlink(missing_ok=True)
+
+
 def write_runtime_state(*, data_dir: Path, node_process: subprocess.Popen, host: str, port: int,
                         standalone_root: Path) -> None:
     write_json_atomic(
@@ -314,6 +423,10 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
     bridge_port = find_free_bridge_port(safe_host)
     bridge_process: subprocess.Popen | None = None
     node_process: subprocess.Popen | None = None
+    node_startup_log_path: Path | None = None
+    node_startup_log = None
+    node_startup_capture: threading.Thread | None = None
+    remove_startup_log = False
     stop_requested = False
     reserved = False
 
@@ -342,11 +455,15 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
         )
         wait_for_health(port=bridge_port, path="/bridge/v1/health", process=bridge_process,
                         host=safe_host, token=token)
+        node_startup_log_path, node_startup_log = open_gateway_startup_log(data_dir)
         node_process = subprocess.Popen(
             node_command(node_path, standalone), cwd=standalone,
             env=node_environment(token=token, bridge_port=bridge_port, gateway_port=port,
                                  gateway_host=safe_host),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
+        node_startup_capture = start_startup_output_capture(node_process, node_startup_log)
         wait_for_health(port=port, path="/api/gateway/health", process=node_process, host=safe_host)
         wait_for_health(
             port=port,
@@ -370,10 +487,14 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             if node_return is not None:
                 return int(node_return or 1)
             time.sleep(0.2)
+        remove_startup_log = True
         return 0
     finally:
         clear_runtime_state(data_dir, node_process)
         stop_gateway_processes(node_process, bridge_process)
+        close_startup_output_capture(
+            node_startup_capture, node_startup_log, node_startup_log_path, remove=remove_startup_log
+        )
         if reserved:
             release_mentat_server(data_dir)
         for signum, handler in previous_handlers.items():
