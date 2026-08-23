@@ -383,6 +383,8 @@ def _fixed_https_request_result(
             addresses,
             deadline_at=deadline_at,
         )
+        if expired.is_set():
+            return None, "vercel.request_timeout"
         if failure_code is not None:
             return None, failure_code
         active_socket = connection.sock

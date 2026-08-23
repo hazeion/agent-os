@@ -197,7 +197,7 @@ affecting local, Codex, or Hermes operation.
 | `/usr/local/bin/node scripts/run-next.mjs build --webpack` plus `scripts/prepare-standalone.mjs` | Node 24.19.0, final working tree | Pass | Production fallback build | Final standalone output was rebuilt with the documented webpack fallback because this execution environment blocks Turbopack's local helper process. The repository default remains Turbopack. |
 | `uv build` plus `scripts/verify_python_artifacts.py` | Host uv cache, temporary artifact directory | Pass | Wheel and sdist verified | Exact public inventories include the three Vercel modules and provider bridge; private/runtime content remains excluded. |
 | `git diff --check` and changed-module `py_compile` | macOS | Pass | No errors | Patch formatting and Python syntax are clean. |
-| Vercel focused suite | Python 3.11.15 and 3.13.14 | Pass | 35 passed under each version | The supported oldest and newest Python versions both accept the delegated SSL context and pass every connection, transport, runtime, and secret-containment test. CI supplies Python 3.12. |
+| Vercel focused suite | Python 3.11.15 and 3.13.14 | Pass | 36 passed under each version | The supported oldest and newest Python versions both accept the delegated SSL context and pass every connection, transport, runtime, and secret-containment test. CI supplies Python 3.12. |
 | Detached-body and blocked-TLS deadline regressions | Four concurrent Python processes | Pass | 8 passed | Socket publication and direct close remain deterministic under scheduling pressure. |
 | `scripts/check_tracked_secrets.py` | `detect-secrets` 1.5.0 | Pass | No unreviewed candidates | Synthetic credential canaries carry only the repository's narrow inline review annotation. |
 
@@ -205,7 +205,7 @@ affecting local, Codex, or Hermes operation.
 
 | Command or action | Environment | Exit/result | Pass/fail/skip counts | Notes |
 | --- | --- | --- | --- | --- |
-| `python3 -m unittest discover -s tests -q` | macOS, Python 3.13, disposable clean mirror of the final working tree | Pass | 1,502 passed; 5 skipped | The mirror used committed fixture data and excluded all user-owned worktree edits. Every Slice 4A, bridge, schema, backup, downgrade, packaging, runtime, UI, lifecycle, and platform contract passed. |
+| `python3 -m unittest discover -s tests -q` | macOS, Python 3.13, disposable clean mirror of the final working tree | Pass | 1,503 passed; 5 skipped | The mirror used committed fixture data and excluded all user-owned worktree edits. Every Slice 4A, bridge, schema, backup, downgrade, packaging, runtime, UI, lifecycle, and platform contract passed. |
 | Targeted rerun of configuration tests affected by an earlier environment override | macOS, normal config resolution | Pass | 2 passed | Confirms those transient failures were test-launch configuration, not product regressions. |
 
 ### Rendered or manual behavior
@@ -284,15 +284,16 @@ affecting local, Codex, or Hermes operation.
 | Final | Compatibility and product | Rechecked the final transport-only correction and complete diff. | Reviewer response: `APPROVED`. |
 | 4 | Release gate | Under scheduling pressure, the deadline could expire after connection construction but before the active socket was published to the timer callback. | Cleanup now closes the retained socket, a published TLS socket, or the connection's current socket in that order. Four concurrent regressions pass. |
 | 4 | Correctness and safety | Python can detach the raw TCP socket into an `SSLSocket` while a blocking handshake is still hidden from `HTTPSConnection.sock`. | A delegated SSL context disables automatic handshake, publishes the `SSLSocket`, then performs the handshake under the remaining absolute deadline. A detached-raw-socket regression proves only direct TLS-socket closure unblocks it. Reviewer response after correction: `APPROVED`. |
-| 4 | Compatibility and product | Python 3.11 reads and writes SSL-context attributes during `HTTPSConnection` construction; the first deadline wrapper did not delegate them. | Non-private reads and writes now delegate to the verified real context. An unmocked constructor regression and the full 35-test Vercel suite pass under Python 3.11.15 and 3.13.14. Reviewer response after correction: `APPROVED`. |
-| Final | Both independent reviewers | Rechecked the complete final TLS, compatibility, test-canary, and transport delta. | Both reviewer responses: `APPROVED`. |
+| 4 | Compatibility and product | Python 3.11 reads and writes SSL-context attributes during `HTTPSConnection` construction; the first deadline wrapper did not delegate them. | Non-private reads and writes now delegate to the verified real context. An unmocked constructor regression and the full 36-test Vercel suite pass under Python 3.11.15 and 3.13.14. Reviewer response after correction: `APPROVED`. |
+| 5 | GitHub CI | Windows Python 3.12 could observe the timer-closed TLS socket's `OSError` one clock tick before `monotonic()` compared at the deadline, classifying the safe timeout as `unknown`. | The explicit timer-expired event is now authoritative before accepting a connect failure code. A deterministic immediate-timer test covers the Windows ordering. Both reviewers rechecked the correction and responded `APPROVED`. |
+| Final | Both independent reviewers | Rechecked the complete final TLS, compatibility, Windows timing, test-canary, and transport delta. | Both reviewer responses: `APPROVED`. |
 
 ### Reverification
 
 - Focused tests: 111 Python adapter/orchestration/repository/coexistence tests,
   30 Python local-bridge tests, and 44 Node tests passed. The final transport
-  delta additionally passed all 35 Vercel tests under Python 3.11 and 3.13.
-- Full suite: 1,502 passed and 5 expected platform skips in a disposable clean
+  delta additionally passed all 36 Vercel tests under Python 3.11 and 3.13.
+- Full suite: 1,503 passed and 5 expected platform skips in a disposable clean
   mirror of the final working tree.
 - Package/render gates: wheel/sdist verification, production build, production
   browser smoke, computer-use walkthrough, and all six perfect Lighthouse

@@ -515,6 +515,58 @@ class VercelInfrastructureTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.5)
         self.assertNotIn(AUTHORIZATION_SECRET_CANARY, exception_graph_text(error))
 
+    def test_expired_timer_overrides_connect_unknown_classification(self):
+        class ImmediateTimer:
+            daemon = False
+
+            def __init__(self, _interval, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+            def cancel(self):
+                return None
+
+        class InterruptedConnection:
+            def __init__(self, *_args, **_kwargs):
+                self.sock = None
+
+            def request(self, *_args, **_kwargs):
+                raise AssertionError("request must not run after deadline expiry")
+
+            def close(self):
+                return None
+
+        with patch(
+            "vercel_infrastructure.http.client.HTTPSConnection",
+            InterruptedConnection,
+        ), patch(
+            "vercel_infrastructure.threading.Timer",
+            ImmediateTimer,
+        ), patch(
+            "vercel_infrastructure._resolve_before_deadline",
+            return_value=(TEST_ADDRESSES, None),
+        ), patch(
+            "vercel_infrastructure._connect_resolved_before_deadline",
+            return_value="vercel.request_unknown",
+        ):
+            error = capture_vercel_error(
+                lambda: fixed_https_request(
+                    "POST",
+                    "https://api.vercel.com/v1/connect/token/github/mentat",
+                    headers={
+                        "Authorization": f"Bearer {AUTHORIZATION_SECRET_CANARY}"
+                    },
+                    json_body={"subject": {"type": "app"}},
+                    params=None,
+                    timeout=(0.02, 0.03),
+                    maximum_bytes=1024,
+                )
+            )
+        self.assertEqual(error.code, "vercel.request_timeout")
+        self.assertNotIn(AUTHORIZATION_SECRET_CANARY, exception_graph_text(error))
+
     def test_transport_publishes_tls_socket_before_blocking_handshake(self):
         raw_sockets = []
         tls_sockets = []
