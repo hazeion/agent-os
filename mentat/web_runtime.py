@@ -20,6 +20,11 @@ import time
 import threading
 import webbrowser
 
+try:
+    import resource
+except ImportError:  # pragma: no cover - unavailable on Windows
+    resource = None
+
 from json_store import write_json_atomic
 from private_state import PrivateStateError, release_mentat_server, reserve_mentat_server
 from private_state import history_path as private_history_path
@@ -46,7 +51,7 @@ class WebRuntimeError(RuntimeError):
 def application_root() -> Path:
     """Return the source root or the PyInstaller resource root."""
 
-    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
+    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin" and resource is not None:
         resource_root = Path(sys.executable).resolve().parent.parent / "Resources"
         if resource_root.is_dir() and not resource_root.is_symlink():
             return resource_root
@@ -156,6 +161,16 @@ def node_command(node_path: str, standalone_root: Path) -> list[str]:
             raise WebRuntimeError("node_gateway_companion_missing")
         return [str(companion), "--mentat-node-gateway", node_path, str(standalone_root / "server.js")]
     return [node_path, str(standalone_root / "server.js")]
+
+
+def node_output_options(startup_log) -> dict:
+    """Keep macOS Node output off a pipe while enforcing the private log cap."""
+
+    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
+        def limit_output_file() -> None:
+            resource.setrlimit(resource.RLIMIT_FSIZE, (STARTUP_LOG_MAXIMUM_BYTES, STARTUP_LOG_MAXIMUM_BYTES))
+        return {"stdout": startup_log, "stderr": subprocess.STDOUT, "preexec_fn": limit_output_file}
+    return {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}
 
 
 def child_environment(
@@ -465,10 +480,10 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             node_command(node_path, standalone), cwd=standalone,
             env=node_environment(token=token, bridge_port=bridge_port, gateway_port=port,
                                  gateway_host=safe_host),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            **node_output_options(node_startup_log),
         )
-        node_startup_capture = start_startup_output_capture(node_process, node_startup_log)
+        if node_process.stdout is not None:
+            node_startup_capture = start_startup_output_capture(node_process, node_startup_log)
         wait_for_health(port=port, path="/api/gateway/health", process=node_process, host=safe_host)
         wait_for_health(
             port=port,

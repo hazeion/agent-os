@@ -44,6 +44,21 @@ class WebRuntimeTests(unittest.TestCase):
                     [str(companion.resolve()), "--mentat-node-gateway", "/fixed/node", str(contents / "Resources" / "web" / "server.js")],
                 )
 
+    def test_frozen_macos_caps_direct_node_output_at_the_private_log_limit(self):
+        log = MagicMock()
+        with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
+            web_runtime.sys, "platform", "darwin"
+        ):
+            options = web_runtime.node_output_options(log)
+        self.assertIs(options["stdout"], log)
+        self.assertIs(options["stderr"], web_runtime.subprocess.STDOUT)
+        with patch.object(web_runtime.resource, "setrlimit") as limit:
+            options["preexec_fn"]()
+        limit.assert_called_once_with(
+            web_runtime.resource.RLIMIT_FSIZE,
+            (web_runtime.STARTUP_LOG_MAXIMUM_BYTES, web_runtime.STARTUP_LOG_MAXIMUM_BYTES),
+        )
+
     def test_frozen_macos_uses_its_console_bridge_companion(self):
         with TemporaryDirectory() as temporary:
             macos = Path(temporary) / "Mentat.app" / "Contents" / "MacOS"
