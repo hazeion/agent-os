@@ -19,6 +19,8 @@ import webbrowser
 
 from json_store import write_json_atomic
 from private_state import PrivateStateError, release_mentat_server, reserve_mentat_server
+from private_state import history_path as private_history_path
+from run_repository import RunRepositoryError, ensure_run_sqlite_authority
 from task_repository import TaskRepositoryError, ensure_task_sqlite_authority
 from .local_bridge import BRIDGE_TOKEN_ENV, BRIDGE_TOKEN_HEADER
 
@@ -39,6 +41,10 @@ class WebRuntimeError(RuntimeError):
 def application_root() -> Path:
     """Return the source root or the PyInstaller resource root."""
 
+    if bool(getattr(sys, "frozen", False)) and sys.platform == "darwin":
+        resource_root = Path(sys.executable).resolve().parent.parent / "Resources"
+        if resource_root.is_dir() and not resource_root.is_symlink():
+            return resource_root
     frozen_root = getattr(sys, "_MEIPASS", None)
     return Path(frozen_root) if frozen_root else SOURCE_ROOT
 
@@ -269,6 +275,15 @@ def establish_task_authority(data_dir: Path) -> None:
         raise WebRuntimeError("task_authority_unavailable") from exc
 
 
+def establish_run_authority(data_dir: Path) -> None:
+    """Complete the one-time Run cutover before the bridge can read it."""
+
+    try:
+        ensure_run_sqlite_authority(Path(data_dir), private_history_path(Path(data_dir)))
+    except (OSError, RunRepositoryError) as exc:
+        raise WebRuntimeError("run_authority_unavailable") from exc
+
+
 def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path | None = None,
                 runtime_environment: dict[str, str] | None = None, open_browser: bool = False) -> int:
     """Run one Node gateway with its authenticated, loopback-only bridge."""
@@ -311,6 +326,7 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
         except PrivateStateError as exc:
             raise WebRuntimeError("mentat_server_already_active") from exc
         establish_task_authority(data_dir)
+        establish_run_authority(data_dir)
         bridge_process = subprocess.Popen(
             bridge_command(bridge_port, safe_host), cwd=application_root(),
             env=child_environment(token=token, runtime_environment=runtime_environment),

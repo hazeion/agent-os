@@ -118,6 +118,9 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn("writeFailureEvidence(runtimeState", lighthouse_gate)
         self.assertIn("MENTAT_LIGHTHOUSE_FAILURE_PATH", lighthouse_gate)
         self.assertNotIn("spawnSync(\n", lighthouse_gate)
+        self.assertIn("const AUDIT_ATTEMPTS = 2;", lighthouse_gate)
+        self.assertIn("isTransientTraceFailure", lighthouse_gate)
+        self.assertIn("NO_NAVSTART", lighthouse_gate)
         self.assertIn("Install pinned Chrome for Testing", quality)
         self.assertIn("CHROME_FOR_TESTING_VERSION: 152.0.7923.0", quality)
         self.assertIn(

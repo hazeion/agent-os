@@ -117,7 +117,9 @@ class WebRuntimeTests(unittest.TestCase):
                 web_runtime, "find_free_bridge_port", return_value=49152
             ), patch.object(web_runtime, "reserve_mentat_server", side_effect=lambda _root: events.append("reserve")), patch.object(
                 web_runtime, "release_mentat_server", side_effect=lambda _root: events.append("release")
-            ), patch.object(web_runtime, "establish_task_authority", side_effect=lambda _root: events.append("authority")), patch.object(
+            ), patch.object(web_runtime, "establish_task_authority", side_effect=lambda _root: events.append("task_authority")), patch.object(
+                web_runtime, "establish_run_authority", side_effect=lambda _root: events.append("run_authority")
+            ), patch.object(
                 web_runtime.subprocess, "Popen", side_effect=spawn
             ), patch.object(
                 web_runtime, "wait_for_health", side_effect=lambda **kwargs: events.append(kwargs["path"])
@@ -128,7 +130,8 @@ class WebRuntimeTests(unittest.TestCase):
                     ),
                     1,
                 )
-        self.assertLess(events.index("authority"), events.index("bridge"))
+        self.assertLess(events.index("task_authority"), events.index("run_authority"))
+        self.assertLess(events.index("run_authority"), events.index("bridge"))
         self.assertLess(events.index("bridge"), events.index("/bridge/v1/health"))
         self.assertLess(events.index("/bridge/v1/health"), events.index("node"))
         self.assertLess(events.index("node"), events.index("/api/gateway/health"))
@@ -158,10 +161,32 @@ class WebRuntimeTests(unittest.TestCase):
                 Path("/installed/share/mentat/web"),
             )
 
+    def test_frozen_macos_uses_the_real_resources_root_not_the_frameworks_link(self):
+        with TemporaryDirectory() as temporary:
+            contents = Path(temporary) / "Mentat.app" / "Contents"
+            executable = contents / "MacOS" / "Mentat"
+            resources = contents / "Resources"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            resources.mkdir()
+            with patch.object(web_runtime.sys, "frozen", True, create=True), patch.object(
+                web_runtime.sys, "platform", "darwin"
+            ), patch.object(web_runtime.sys, "executable", str(executable)), patch.object(
+                web_runtime.sys, "_MEIPASS", str(contents / "Frameworks"), create=True
+            ):
+                self.assertEqual(web_runtime.application_root(), resources.resolve())
+
     def test_gateway_establishes_task_authority_before_the_bridge_reads_tasks(self):
         with patch.object(web_runtime, "ensure_task_sqlite_authority") as establish:
             web_runtime.establish_task_authority(Path("/private/mentat"))
         establish.assert_called_once_with(Path("/private/mentat"), required_source_mode=0o600)
+
+    def test_gateway_establishes_run_authority_before_the_bridge_reads_runs(self):
+        with patch.object(web_runtime, "ensure_run_sqlite_authority") as establish:
+            web_runtime.establish_run_authority(Path("/private/mentat"))
+        establish.assert_called_once_with(
+            Path("/private/mentat"), Path("/private/mentat/private/console/agent-console-runs.json")
+        )
 
     def test_node_lookup_uses_validated_gui_launch_fallbacks(self):
         with patch.object(web_runtime.shutil, "which", return_value=None), patch.object(

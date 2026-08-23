@@ -241,3 +241,43 @@ Both independent reviewers reported no findings after the transient-response,
 startup-order, and Node-route tests were added. The correction is ready for
 the existing PR. GitHub CI remains the required authority for the isolated
 wheel lifecycle, native installer smoke, browser smoke, and Lighthouse gates.
+
+### CI correction round 3
+
+The pushed correction exposed three new CI facts:
+
+- the installed wheel had completed Task authority but not Run authority, so
+  the Runs workspace was unavailable;
+- the Lighthouse score gate reached a Chrome `NO_NAVSTART` trace-recording
+  error, before any score was produced;
+- macOS native Node stayed alive but did not answer the Node-only readiness
+  route. The gateway used PyInstaller's Frameworks resource link, while the
+  actual Node runtime is packaged under `Contents/Resources/web`.
+
+The supervisor now establishes Run authority before bridge startup, retries a
+single `NO_NAVSTART` trace error without accepting an audit result, and uses
+the real macOS Resources root for frozen assets. Native CI also starts the
+installed `Resources/web/server.js` and verifies its fixed gateway route
+before it exercises the app. The normal web build remains unchanged.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_web_runtime tests.test_packaging_cli tests.test_node_runtime_foundation tests.test_ci_quality_gate -v` | Pass | 54 checks passed. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
+| `node --check web/scripts/lighthouse-gate.mjs` | Pass | Retry script parses. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+Two independent macOS investigations disagreed on the primary cause. The
+Resources-root correction was selected because `runtime_config.py` already
+uses the canonical macOS app Resources directory, whereas `web_runtime.py`
+uniquely used `_MEIPASS`; the new frozen-path test covers that exact boundary.
+The Turbopack packaging hypothesis was not adopted without a reproducing
+failure after the canonical-path correction. Final re-review is pending.
+
+### Final correction round 3 review
+
+The compatibility reviewer found one blocking workflow issue: a live but
+non-responsive packaged Node process could leave an unbounded `curl` probe
+stuck. Both probes now use `--max-time 1`, and the workflow contract test
+requires that bound. The originating reviewer and the independent
+correctness/safety reviewer both reported no findings after the fix.

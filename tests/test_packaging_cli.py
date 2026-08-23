@@ -219,6 +219,8 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("--require-hashes -r requirements-native.lock", workflow)
         self.assertIn("unsigned", workflow)
         self.assertIn("api/bridge/health", workflow)
+        self.assertIn("api/gateway/health", workflow)
+        self.assertIn("curl --fail --silent --max-time 1 http://127.0.0.1:8897/api/gateway/health", workflow)
         self.assertIn("Install the frozen web dependency tree", workflow)
         self.assertIn("Resources/web/server.js", workflow)
         self.assertIn("_internal/web/server.js", workflow)
