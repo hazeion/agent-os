@@ -81,6 +81,20 @@ if sys.platform.startswith("win"):
         console=True,
     )
     executables.append(cli_executable)
+elif sys.platform == "darwin":
+    bridge_executable = EXE(
+        pyz,
+        analysis.scripts,
+        [],
+        exclude_binaries=True,
+        name="mentat-bridge",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=True,
+    )
+    executables.append(bridge_executable)
 
 bundle = COLLECT(
     *executables,

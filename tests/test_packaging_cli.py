@@ -159,17 +159,13 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn('runpy.run_path(str(ROOT / "mentat" / "version.py"))', spec)
         self.assertIn('name="mentat"', spec)
         self.assertIn("console=True", spec)
+        self.assertIn('name="mentat-bridge"', spec)
         self.assertIn('"Mentat Launcher" if sys.platform.startswith("win")', spec)
         self.assertIn("MyAppVersion must be supplied", windows)
         self.assertNotIn("0.1.0-beta.1", windows)
         self.assertIn("from mentat.version import DISPLAY_VERSION, __version__", builder)
         self.assertIn("def build_web_runtime()", builder)
-        self.assertIn('"web", "run", "build:portable"', builder)
-        package = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual(
-            package["scripts"]["build:portable"],
-            "node scripts/run-next.mjs build --webpack && node scripts/prepare-standalone.mjs",
-        )
+        self.assertIn('"web", "run", "build"', builder)
         self.assertIn('component["BundleIsRelocatable"] = False', builder)
         self.assertIn('"--component-plist"', builder)
         self.assertIn("-r requirements.txt", requirements)
@@ -198,6 +194,8 @@ class PackagingContractTests(unittest.TestCase):
             "            architecture: arm64\n",
             matrix,
         )
+        self.assertIn("test -f dist/Mentat.app/Contents/MacOS/mentat-bridge", workflow)
+        self.assertIn("test ! -L dist/Mentat.app/Contents/MacOS/mentat-bridge", workflow)
         self.assertIn(
             "          - label: macOS Intel\n"
             "            runner: macos-15-intel\n"

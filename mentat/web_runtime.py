@@ -134,7 +134,13 @@ def gateway_port_is_available(port: int, host: str = GATEWAY_HOST) -> bool:
 
 def bridge_command(port: int, host: str = GATEWAY_HOST) -> list[str]:
     if bool(getattr(sys, "frozen", False)):
-        return [sys.executable, "--mentat-private-bridge", "--host", host, "--port", str(port)]
+        executable = Path(sys.executable)
+        if sys.platform == "darwin":
+            companion = executable.parent / "mentat-bridge"
+            if not companion.is_file() or companion.is_symlink():
+                raise WebRuntimeError("bridge_companion_missing")
+            executable = companion
+        return [str(executable), "--mentat-private-bridge", "--host", host, "--port", str(port)]
     return [sys.executable, "-m", "mentat.local_bridge", "--host", host, "--port", str(port)]
 
 

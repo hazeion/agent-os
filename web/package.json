@@ -10,7 +10,6 @@
   "scripts": {
     "dev": "node scripts/run-next.mjs dev --hostname 127.0.0.1",
     "build": "node scripts/run-next.mjs build && node scripts/prepare-standalone.mjs",
-    "build:portable": "node scripts/run-next.mjs build --webpack && node scripts/prepare-standalone.mjs",
     "lighthouse:gate": "node scripts/lighthouse-gate.mjs",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",

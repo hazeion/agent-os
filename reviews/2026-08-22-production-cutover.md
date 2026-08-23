@@ -291,17 +291,17 @@ contract, and Windows native smoke passes. This isolates the remaining risk to
 the macOS frozen standalone build rather than the bridge protocol or data
 authority.
 
-Native packaging now uses the explicit Webpack standalone build, which is the
-portable production build path for the installer. Normal `npm run build` and
-local dashboard development remain on Turbopack. This is intentionally scoped
-to native artifact construction; it does not change runtime providers, browser
-behavior, or the Node gateway contract.
+Native packaging temporarily used an explicit Webpack standalone build to test
+whether Turbopack caused the macOS bridge failure. It reproduced the same
+failure, so native packaging has returned to the normal Turbopack build. This
+test did not change runtime providers, browser behavior, or the Node gateway
+contract.
 
 | Check | Result | Notes |
 | --- | --- | --- |
 | `python3 -m unittest tests.test_packaging_cli tests.test_web_runtime tests.test_node_runtime_foundation tests.test_ci_quality_gate -v` | Pass | 54 focused checks passed. |
 | `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
-| `npm --prefix web run build:portable` | Pass | Webpack produced and staged the standalone runtime. |
+| `node scripts/run-next.mjs build --webpack && node scripts/prepare-standalone.mjs` | Pass | Webpack produced and staged the standalone runtime for the diagnostic comparison. |
 | `git diff --check` | Pass | No whitespace errors. |
 
 The complete local native bundle could not be retained for a smoke run because
@@ -315,3 +315,47 @@ Both independent reviewers reported no findings. They confirmed that the
 portable Webpack command is fixed, is supported by the installed Next CLI, is
 covered by the packaging contract test, and stays isolated to native packaging.
 Normal Turbopack development and dashboard builds are unchanged.
+
+### CI correction round 5
+
+The portable Webpack package reproduced the same macOS bridge failure, so the
+build engine is not the cause and native packaging has returned to Turbopack.
+The app's private bridge is currently launched through the windowed macOS
+executable. Native packaging now supplies a regular console companion used
+only for the private bridge process. The visible Mentat.app launcher remains
+unchanged; the bridge's fixed arguments, loopback binding, token boundary,
+lifecycle, and data authority remain unchanged.
+
+The first final review found that resolving the macOS launcher could select a
+Frameworks symlink instead of its lexical `Contents/MacOS` sibling. The
+companion lookup now stays beside the un-resolved launcher path and fails
+closed if that regular companion is missing. The test suite models the bundle
+symlink layout and the missing-companion failure.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| Frozen console bridge health | Pass | The temporary macOS companion answered its authenticated loopback health route. |
+| Frozen app → bridge → Node health | Pass | The temporary macOS app reached `/api/bridge/health` through the companion. |
+| `python3 -m unittest tests.test_packaging_cli tests.test_web_runtime tests.test_node_runtime_foundation tests.test_ci_quality_gate -v` | Pass | 57 focused checks passed. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+### Correction round 5 review
+
+The compatibility reviewer found that resolving a macOS launcher could select
+a Frameworks symlink rather than its lexical `MacOS` sibling. The correction
+uses the lexical sibling and fails closed when the regular console companion is
+missing; dedicated tests cover both cases. The correctness reviewer noted that
+the shipped artifact verifier already rejects a symlinked main launcher, so it
+classified this as defense-in-depth rather than a release blocker. The stricter
+in-scope correction was retained because it is safe and makes the bridge
+selection explicit. Both reviewers agreed that the companion remains isolated
+to frozen macOS builds and leaves the visible launcher and Windows behavior
+unchanged. Final re-review is pending.
+
+### Final correction round 5 review
+
+Both independent reviewers reported no findings in the macOS companion
+correction. One reviewer separately flagged user-owned `data/tasks.json`
+changes as private, non-slice content; those changes are excluded from this
+commit and remain untouched in the working tree.
