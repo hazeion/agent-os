@@ -43,6 +43,7 @@ from agent_run_history import (
 )
 from agent_runtime import (
     AgentEvent,
+    AgentRun,
     AgentRuntimeError,
     AgentRuntimeRegistry,
     PendingRunAction,
@@ -1819,7 +1820,7 @@ def mentat_runs_payload() -> dict:
             with connect_existing_mentat_database(DATA_DIR) as connection:
                 repository = RunRepository(connection)
                 repository.authority_receipt(required=True)
-                runs = repository.list_runs(limit=50)
+                runs = repository.list_workspace_runs(limit=50)
     except RunRepositoryError:
         raise
     except (MentatDatabaseError, OSError, sqlite3.Error) as exc:
@@ -1948,6 +1949,22 @@ def _load_run_for_action(run_id: str) -> RunRecord:
     except (MentatDatabaseError, RunRepositoryError, OSError, sqlite3.Error):
         raise OrchestrationRunActionError("run.unavailable") from None
     return run
+
+
+def _verified_runtime_run(
+    run: RunRecord, observed: object, *, partial_code: str
+) -> AgentRun:
+    """Require a post-control readback for the exact canonical Run identity."""
+
+    if (
+        not isinstance(observed, AgentRun)
+        or observed.id != run.id
+        or observed.task_id != run.task_id
+        or observed.agent_id != run.agent_id
+        or observed.runtime_type != run.runtime_type
+    ):
+        raise OrchestrationRunActionError(partial_code)
+    return observed
 
 
 def _current_run_for_stop(run_id: str) -> RunRecord:
@@ -2132,6 +2149,9 @@ def mentat_confirm_run_message(
             verified = runtime.get_status(run.runtime_run_ref or run.id, context=context)
         except AgentRuntimeError:
             raise OrchestrationRunActionError("run.message_partial") from None
+        verified = _verified_runtime_run(
+            run, verified, partial_code="run.message_partial"
+        )
     if verified.status.value not in {
         "running",
         "waiting",
@@ -2284,6 +2304,9 @@ def mentat_confirm_run_response(run_id: str, response: object, confirmation_id: 
             verified = runtime.get_status(run.runtime_run_ref or run.id, context=context)
         except AgentRuntimeError:
             raise OrchestrationRunActionError("run.response_partial") from None
+        verified = _verified_runtime_run(
+            run, verified, partial_code="run.response_partial"
+        )
         try:
             pending_after_response = runtime.pending_action(
                 run.runtime_run_ref or run.id, context=context

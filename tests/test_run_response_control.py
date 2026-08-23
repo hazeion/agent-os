@@ -155,3 +155,44 @@ class RunResponseControlTests(unittest.TestCase):
             self.assertRaisesRegex(server.OrchestrationRunActionError, "run.response_partial"),
         ):
             server.mentat_confirm_run_response(run.id, {"kind": "approval", "choice": "once"}, preview["confirmation_id"])
+
+    def test_response_is_partial_when_runtime_readback_changes_identity(self):
+        run = run_fixture()
+        runtime = FakeRuntime(
+            PendingRunAction(
+                kind="approval",
+                request_id="request_current",
+                choices=(("once", "Allow once"),),
+            )
+        )
+        with (
+            patch.object(server, "_current_run_for_response", return_value=run),
+            patch.object(
+                server, "_run_stop_context", return_value=(runtime, object())
+            ),
+        ):
+            preview = server.mentat_run_response_preview_payload(
+                run.id, {"kind": "approval", "choice": "once"}
+            )
+        mismatched = AgentRun(
+            id=run.id,
+            task_id=run.task_id,
+            agent_id="agent_other",
+            runtime_type=run.runtime_type,
+            status=RunStatus.RUNNING,
+        )
+        with (
+            patch.object(server, "_current_run_for_response", return_value=run),
+            patch.object(
+                server, "_run_stop_context", return_value=(runtime, object())
+            ),
+            patch.object(runtime, "get_status", return_value=mismatched),
+            self.assertRaisesRegex(
+                server.OrchestrationRunActionError, "run.response_partial"
+            ),
+        ):
+            server.mentat_confirm_run_response(
+                run.id,
+                {"kind": "approval", "choice": "once"},
+                preview["confirmation_id"],
+            )

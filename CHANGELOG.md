@@ -5,6 +5,10 @@ All notable changes to Mentat.
 ## 2026-08-22
 
 ### Added
+- Added one runtime-neutral Runs view for concurrent Hermes and Codex work,
+  with exact Agent-name joins, readable runtime labels, and safe ID fallbacks.
+- Added a deterministic two-runtime integration test covering concurrent
+  dispatch, reconciliation, events, message, Stop, and confirmation isolation.
 - Added Codex as a second runtime through one fixed local App Server stdio
   connection. It reuses an existing Codex CLI sign-in and supports task start,
   status, bounded events, active-turn messages, and exact-turn stop.
@@ -16,6 +20,9 @@ All notable changes to Mentat.
   existing Emerald mark.
 
 ### Changed
+- Kept active Runs ahead of terminal history in the bounded 50-Run workspace.
+- Required post-message and post-response runtime readback to match the exact
+  canonical Run, Task, Agent, and runtime identity.
 - Kept layout responsive through CSS while using a small browser runtime for
   drawer focus, contrast preferences, and the existing bounded bridge-health
   check. Initial content never waits for bridge health.
@@ -25,6 +32,8 @@ All notable changes to Mentat.
   100/100/100/100 with zero TBT and zero practical layout shift.
 
 ### Safety
+- Kept Run status, runtime, and controls authoritative when Agent display data
+  is unavailable, malformed, or stale. Legacy heartbeat data is never joined.
 - Kept Codex credentials, configuration, account details, thread IDs, turn IDs,
   commands, paths, and raw tool payloads out of browser responses. Stop results
   are reported only after exact SQLite Run reconciliation.

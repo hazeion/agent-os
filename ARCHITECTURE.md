@@ -76,6 +76,13 @@ truncation flags, and lifecycle timestamps. Runtime references, revisions,
 event counters, event contents, attachments, task snapshots, and adapter data
 stay behind Python.
 
+The Runs workspace returns at most 50 records, with every retained active Run
+ahead of newer terminal history. It may add a display name from the canonical
+Agent Registry only when both Mentat Agent ID and runtime type match the Run.
+Unavailable, malformed, missing, or mismatched Agent data leaves the Run
+visible under a safe ID label and does not change its status, runtime, or
+controls. Legacy `data/agents.json` observations are never used for this join.
+
 The selected-Run timeline is one bounded same-origin SSE stream. Node validates
 the Run ID and browser reconnect cursor, polls one fixed authenticated bridge
 capability, emits a keepalive, and regularly closes so the browser reconnects.
@@ -88,9 +95,9 @@ this boundary. Only one timeline is active in the Runs workspace at a time.
 The selected-Run Stop flow is one separate fixed preview-confirm action. Node
 accepts only the selected Run ID and a state-bound confirmation token, while
 Python checks the active task-bound Run, Agent and runtime binding, declared
-`run.stop` capability, and current state under the Hermes operation lock. It
-reads the canonical Run again before returning a requested result. The browser
-never selects an adapter reference, action name, or bridge target.
+`run.stop` capability, and current state under the shared runtime operation
+lock. It reads the canonical Run again before returning a requested result.
+The browser never selects an adapter reference, action name, or bridge target.
 
 The selected-Run message flow is a separate fixed preview-confirm action. Node
 accepts only the selected Run ID, one text-only message of at most 6,000
@@ -98,8 +105,10 @@ Unicode code points, and its state-bound confirmation. Python validates the acti
 task-bound Run, Agent and runtime binding, declared `run.message` capability,
 normalized message digest, and current state under the operation lock. It
 checks the runtime state after the supported message operation before returning
-an accepted result. A changed message or Run requires a new preview. Approval
-and clarification responses require their own bounded contracts.
+an accepted result. Message and response readback must match the exact canonical
+Run, Task, Agent, and runtime identity; a mismatch is a partial failure. A
+changed message or Run requires a new preview. Approval and clarification
+responses use their own bounded preview-confirm contracts.
 
 The first shell is prerendered and has no React hydration runtime. One fixed
 local script reads the health route after first paint. Later routes may add

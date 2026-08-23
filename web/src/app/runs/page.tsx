@@ -8,7 +8,7 @@ export const metadata: Metadata = { title: "Runs · Mentat" };
 export default function RunsPage() {
   return (
     <AppShell route="/runs">
-      <Panel eyebrow="SQLite authority" title="Run workspace">
+      <Panel eyebrow="Runtime coexistence" title="Run workspace">
         <section className="runs-workspace" data-runs-root data-runs-state="loading">
           <div className="runs-toolbar">
             <p aria-atomic="true" aria-live="polite" className="runs-summary" data-runs-summary>Loading current Runs…</p>

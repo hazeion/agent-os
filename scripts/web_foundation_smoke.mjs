@@ -801,6 +801,178 @@ async function inspectRunsWorkspace(client) {
   return { state: result.state, summary: result.summary, cards: result.cards, overflow: result.overflow };
 }
 
+async function inspectRuntimeCoexistence(client) {
+  await setViewport(client, viewports[1]);
+  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.__runtimeCoexistenceRequests = [];
+    window.__runtimeCoexistenceEventUrls = [];
+    window.__runtimeCoexistencePhase = 0;
+    const respond = (payload, status = 200) => Promise.resolve(new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } }));
+    const pendingRequest = { kind: 'approval', title: 'Allow Codex to continue?', summary: 'Review the bounded action.', choices: [{ id: 'once', label: 'Allow once' }, { id: 'deny', label: 'Deny' }] };
+    class MockEventSource extends EventTarget {
+      constructor(url) {
+        super();
+        this.url = url;
+        this.readyState = 1;
+        window.__runtimeCoexistenceEventUrls.push(String(url));
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({ cursor: 0, reset: false, events: [] }) })));
+      }
+      close() { this.readyState = 2; }
+    }
+    window.EventSource = MockEventSource;
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+      window.__runtimeCoexistenceRequests.push({ path: url.pathname, method: init?.method || 'GET', body: init?.body || null });
+      if (url.pathname === '/api/agents') return respond({
+        schema_version: 1,
+        status: 'ready',
+        count: 2,
+        agents: [
+          { id: 'agent_hermes', name: 'Hermes Researcher', runtime_type: 'hermes', runtime_config_id: 'config_hermes', capabilities: ['events', 'send_message', 'start_task', 'status', 'stop'] },
+          { id: 'agent_codex', name: 'Codex Engineer', runtime_type: 'codex', runtime_config_id: 'config_codex', capabilities: ['events', 'start_task', 'status', 'stop'] },
+        ],
+      });
+      if (url.pathname === '/api/runs') {
+        const codexStatus = window.__runtimeCoexistencePhase === 1 ? 'waiting_for_approval' : window.__runtimeCoexistencePhase >= 3 ? 'stopped' : 'running';
+        return respond({
+          schema_version: 1,
+          service: 'mentat-local-bridge',
+          runtime: 'python',
+          status: 'ready',
+          count: 2,
+          runs: [
+            { id: 'run_hermes', source: 'task_dispatch', task_id: 'task_research', agent_id: 'agent_hermes', runtime_type: 'hermes', status: 'running', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T10:00:00Z', updated_at: '2026-08-22T10:01:00Z', started_at: '2026-08-22T10:00:01Z', completed_at: null },
+            { id: 'run_codex', source: 'task_dispatch', task_id: 'task_engineering', agent_id: 'agent_codex', runtime_type: 'codex', status: codexStatus, dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T10:00:02Z', updated_at: '2026-08-22T10:01:02Z', started_at: '2026-08-22T10:00:03Z', completed_at: codexStatus === 'stopped' ? '2026-08-22T10:02:00Z' : null },
+          ],
+        });
+      }
+      if (url.pathname === '/api/runs/run_hermes/message/preview') return respond({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'message', run_id: 'run_hermes', requires_confirmation: true, confirmation_id: 'a'.repeat(64) });
+      if (url.pathname === '/api/runs/run_hermes/message') { window.__runtimeCoexistencePhase = 1; return respond({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'message', run_id: 'run_hermes', disposition: 'accepted' }, 202); }
+      if (url.pathname === '/api/runs/run_codex/response/preview') return respond({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'respond', run_id: 'run_codex', request: pendingRequest, requires_confirmation: true, confirmation_id: 'b'.repeat(64) });
+      if (url.pathname === '/api/runs/run_codex/response') {
+        if (init?.body === '{}') return respond({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'respond', run_id: 'run_codex', request: pendingRequest, requires_confirmation: false });
+        window.__runtimeCoexistencePhase = 2;
+        return respond({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'respond', run_id: 'run_codex', disposition: 'accepted' }, 202);
+      }
+      if (url.pathname === '/api/runs/run_codex/stop/preview') return respond({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'stop', run_id: 'run_codex', requires_confirmation: true, confirmation_id: 'c'.repeat(64) });
+      if (url.pathname === '/api/runs/run_codex/stop') { window.__runtimeCoexistencePhase = 3; return respond({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'stop', run_id: 'run_codex', disposition: 'requested' }, 202); }
+      return nativeFetch(input, init);
+    };
+  })();` });
+  try {
+    await navigate(client, "/runs", "runtime coexistence");
+    await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState === 'ready'"), "runtime coexistence state");
+    const initial = await client.eval(`(() => {
+      const hermes = document.querySelector('.run-card[data-run-id="run_hermes"]');
+      const codex = document.querySelector('.run-card[data-run-id="run_codex"]');
+      const controls = [...document.querySelectorAll('.run-card-actions button')].map((button) => button.getAttribute('aria-label'));
+      return {
+        summary: document.querySelector('[data-runs-summary]')?.textContent,
+        cards: document.querySelectorAll('.run-card').length,
+        hermes: { heading: hermes?.querySelector('h3')?.textContent, runtime: hermes?.querySelector('.run-runtime')?.textContent, status: hermes?.querySelector('.run-status')?.textContent },
+        codex: { heading: codex?.querySelector('h3')?.textContent, runtime: codex?.querySelector('.run-runtime')?.textContent, status: codex?.querySelector('.run-status')?.textContent },
+        articlesNamed: [...document.querySelectorAll('.run-card')].every((card) => card.getAttribute('aria-labelledby') === card.querySelector('h3')?.id),
+        controls,
+        uniqueControls: new Set(controls).size,
+        overflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    })()`);
+    const expectedControls = [
+      "Open timeline for Hermes Researcher (run_hermes)",
+      "Send message to Hermes Researcher (run_hermes)",
+      "Stop run for Hermes Researcher (run_hermes)",
+      "Open timeline for Codex Engineer (run_codex)",
+      "Send message to Codex Engineer (run_codex)",
+      "Stop run for Codex Engineer (run_codex)",
+    ];
+    if (initial.summary !== "2 current Runs across 2 runtimes." || initial.cards !== 2 || initial.overflow > 1 || !initial.articlesNamed || initial.uniqueControls !== expectedControls.length || JSON.stringify(initial.controls) !== JSON.stringify(expectedControls) || JSON.stringify(initial.hermes) !== JSON.stringify({ heading: "Hermes Researcher", runtime: "Hermes", status: "Running" }) || JSON.stringify(initial.codex) !== JSON.stringify({ heading: "Codex Engineer", runtime: "Codex", status: "Running" })) throw new Error(`Runtime coexistence display contract failed: ${JSON.stringify(initial)}`);
+    await client.eval("document.querySelector('.run-card[data-run-id=\"run_hermes\"] [data-run-timeline-open]').click()");
+    await waitFor(() => client.eval("window.__runtimeCoexistenceEventUrls.length === 1 && document.querySelectorAll('[data-run-timeline]').length === 1"), "Hermes Run timeline isolation");
+    await client.eval("document.querySelector('[data-run-timeline-close]').click(); document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-timeline-open]').click()");
+    await waitFor(() => client.eval("window.__runtimeCoexistenceEventUrls.length === 2 && document.querySelector('[data-run-timeline]')?.closest('.run-card')?.dataset.runId === 'run_codex'"), "Codex Run timeline isolation");
+    await client.eval("(() => { document.querySelector('[data-run-timeline-close]').click(); const card = document.querySelector('.run-card[data-run-id=\"run_hermes\"]'); card.querySelector('[data-run-message-open]').click(); const input = card.querySelector('.run-message textarea'); input.value = 'Keep the Hermes research bounded.'; card.querySelector('[data-run-message-review]').click(); })()");
+    await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_hermes\"] [data-run-message-confirm]')?.hidden === false"), "Hermes Run message preview isolation");
+    await client.eval("document.querySelector('.run-card[data-run-id=\"run_hermes\"] [data-run-message-confirm]').click()");
+    await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-response-open]') instanceof HTMLButtonElement && document.querySelectorAll('.run-message').length === 0"), "Hermes message confirmation refresh");
+    await client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-response-open]').click()");
+    await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] .run-response input[value=once]') instanceof HTMLInputElement"), "Codex pending response isolation");
+    await client.eval("(() => { const card = document.querySelector('.run-card[data-run-id=\"run_codex\"]'); card.querySelector('.run-response input[value=once]').click(); card.querySelector('[data-run-response-review]').click(); })()");
+    await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-response-confirm]')?.hidden === false"), "Codex response preview isolation");
+    await client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-response-confirm]').click()");
+    await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-message-open]') instanceof HTMLButtonElement && document.querySelectorAll('.run-response').length === 0"), "Codex response confirmation refresh");
+    await client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-stop-open]').click()");
+    await waitFor(() => client.eval("document.querySelector('[data-run-stop-confirm]')?.disabled === false"), "Codex Run Stop isolation");
+    await client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-stop-confirm]').click()");
+    await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_codex\"] .run-status')?.textContent === 'Stopped' && document.querySelectorAll('[data-run-stop]').length === 0"), "Codex Stop confirmation refresh");
+    const result = await client.eval(`(() => {
+      const codex = document.querySelector('.run-card[data-run-id="run_codex"]');
+      return {
+        summary: document.querySelector('[data-runs-summary]')?.textContent,
+        cards: document.querySelectorAll('.run-card').length,
+        codexStatus: codex?.querySelector('.run-status')?.textContent,
+        timelineUrls: window.__runtimeCoexistenceEventUrls,
+        actionRequests: window.__runtimeCoexistenceRequests.filter((request) => request.path.startsWith('/api/runs/run_')),
+        phase: window.__runtimeCoexistencePhase,
+        overflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    })()`);
+    const expectedRequests = [
+      { path: "/api/runs/run_hermes/message/preview", method: "POST", body: JSON.stringify({ text: "Keep the Hermes research bounded." }) },
+      { path: "/api/runs/run_hermes/message", method: "POST", body: JSON.stringify({ text: "Keep the Hermes research bounded.", confirmation_id: "a".repeat(64) }) },
+      { path: "/api/runs/run_codex/response", method: "POST", body: "{}" },
+      { path: "/api/runs/run_codex/response/preview", method: "POST", body: JSON.stringify({ response: { kind: "approval", choice: "once" } }) },
+      { path: "/api/runs/run_codex/response", method: "POST", body: JSON.stringify({ response: { kind: "approval", choice: "once" }, confirmation_id: "b".repeat(64) }) },
+      { path: "/api/runs/run_codex/stop/preview", method: "POST", body: "{}" },
+      { path: "/api/runs/run_codex/stop", method: "POST", body: JSON.stringify({ confirmation_id: "c".repeat(64) }) },
+    ];
+    if (
+      result.summary !== "2 current Runs across 2 runtimes."
+      || result.cards !== 2
+      || result.overflow > 1
+      || result.codexStatus !== "Stopped"
+      || result.phase !== 3
+      || JSON.stringify(result.timelineUrls) !== JSON.stringify(["/api/runs/run_hermes/events", "/api/runs/run_codex/events"])
+      || JSON.stringify(result.actionRequests) !== JSON.stringify(expectedRequests)
+    ) throw new Error(`Runtime coexistence UI contract failed: ${JSON.stringify(result)}`);
+    return { ...result, initial };
+  } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
+}
+
+async function inspectRunAgentFallbacks(client) {
+  const cases = [
+    { name: "runtime mismatch", status: 200, body: { schema_version: 1, status: "ready", count: 1, agents: [{ id: "agent_shared", name: "Wrong Runtime Name", runtime_type: "hermes", runtime_config_id: "config_hermes", capabilities: [] }] } },
+    { name: "malformed Agent data", status: 200, body: { schema_version: 1, status: "ready", count: 1, agents: [{ unexpected: true }] } },
+    { name: "unavailable Agent data", status: 503, body: { schema_version: 1, status: "unavailable" } },
+  ];
+  const results = [];
+  for (const current of cases) {
+    const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        if (url.pathname === '/api/agents') return Promise.resolve(new Response(${JSON.stringify(JSON.stringify(current.body))}, { status: ${current.status}, headers: { 'Content-Type': 'application/json' } }));
+        if (url.pathname === '/api/runs') return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', count: 1, runs: [{ id: 'run_fallback', source: 'task_dispatch', task_id: 'task_fallback', agent_id: 'agent_shared', runtime_type: 'codex', status: 'running', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T10:00:00Z', updated_at: '2026-08-22T10:01:00Z', started_at: '2026-08-22T10:00:01Z', completed_at: null }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        return nativeFetch(input, init);
+      };
+    })();` });
+    try {
+      await navigate(client, "/runs", `Runs ${current.name}`);
+      await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState === 'ready'"), `Runs ${current.name} fallback`);
+      const result = await client.eval(`(() => ({
+        summary: document.querySelector('[data-runs-summary]')?.textContent,
+        cards: document.querySelectorAll('.run-card').length,
+        heading: document.querySelector('.run-card h3')?.textContent,
+        runtime: document.querySelector('.run-runtime')?.textContent,
+        rendered: document.querySelector('[data-runs-list]')?.textContent,
+      }))()`);
+      if (result.summary !== "1 current Run." || result.cards !== 1 || result.heading !== "Agent agent_shared" || result.runtime !== "Codex" || result.rendered.includes("Wrong Runtime Name")) throw new Error(`Runs ${current.name} fallback contract failed: ${JSON.stringify(result)}`);
+      results.push({ name: current.name, heading: result.heading });
+    } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
+  }
+  return results;
+}
+
 async function inspectRunFailureStates(client) {
   const states = [
     { name: "unsupported", status: 501, detail: "This Python bridge does not support Run data yet." },
@@ -844,7 +1016,7 @@ async function inspectRunProjection(client) {
     await client.eval("document.querySelector('[data-run-message-confirm]').click()");
     await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState === 'ready' && document.querySelectorAll('.run-message').length === 0"), "Runs message confirmation refresh");
     const result = await client.eval(`(() => ({ summary: document.querySelector('[data-runs-summary]')?.textContent, cards: document.querySelectorAll('.run-card').length, rendered: document.querySelector('[data-runs-list]')?.textContent, overflow: document.documentElement.scrollWidth - innerWidth, focus: document.activeElement?.getAttribute('data-run-timeline-open') }))()`);
-    if (result.summary !== "1 current Run." || result.cards !== 1 || result.overflow > 1 || !["task_dispatch", "task_1", "agent_researcher", "hermes", "Running", "accepted", "2026-08-22T00:00:00Z", "2026-08-22T00:01:00Z", "Not completed", "Stop run", "Send message"].every((value) => result.rendered.includes(value)) || !["2026-08-22T00:01:01Z", "Runtime accepted dispatch", "Total Tokens: 12"].every((value) => timelineText.includes(value)) || result.rendered.includes("runtime_run_ref") || result.rendered.includes("state_revision")) throw new Error(`Runs projection contract failed: ${JSON.stringify({ summary: result.summary, cards: result.cards, overflow: result.overflow, focus: result.focus })}`);
+    if (result.summary !== "1 current Run." || result.cards !== 1 || result.overflow > 1 || !["task_dispatch", "task_1", "agent_researcher", "Hermes", "Running", "accepted", "2026-08-22T00:00:00Z", "2026-08-22T00:01:00Z", "Not completed", "Stop run", "Send message"].every((value) => result.rendered.includes(value)) || !["2026-08-22T00:01:01Z", "Runtime accepted dispatch", "Total Tokens: 12"].every((value) => timelineText.includes(value)) || result.rendered.includes("runtime_run_ref") || result.rendered.includes("state_revision")) throw new Error(`Runs projection contract failed: ${JSON.stringify({ summary: result.summary, cards: result.cards, overflow: result.overflow, focus: result.focus })}`);
     return { summary: result.summary, cards: result.cards, overflow: result.overflow };
   } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
 }
@@ -1377,6 +1549,8 @@ async function main() {
     const tasksResult = await inspectTasksWorkspace(client);
     const taskFailureResult = await inspectTaskFailureStates(client);
     const runsResult = await inspectRunsWorkspace(client);
+    const runtimeCoexistenceResult = await inspectRuntimeCoexistence(client);
+    const runAgentFallbackResult = await inspectRunAgentFallbacks(client);
     const runProjectionResult = await inspectRunProjection(client);
     const runMalformedResult = await inspectRunMalformedPayload(client);
     const runRejectedResult = await inspectRunRejectedFetch(client);
@@ -1402,6 +1576,8 @@ async function main() {
       tasks: tasksResult,
       taskFailures: taskFailureResult,
       runs: runsResult,
+      runtimeCoexistence: runtimeCoexistenceResult,
+      runAgentFallbacks: runAgentFallbackResult,
       runProjection: runProjectionResult,
       runMalformed: runMalformedResult,
       runRejected: runRejectedResult,

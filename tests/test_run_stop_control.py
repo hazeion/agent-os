@@ -100,6 +100,38 @@ class RunStopControlTests(unittest.TestCase):
         ):
             server.mentat_confirm_run_message(run.id, "Stay focused", preview["confirmation_id"])
         self.assertEqual(runtime.message_calls, [(run.id, "Stay focused", context)])
+
+    def test_message_reports_partial_when_runtime_readback_changes_identity(self):
+        run = run_fixture()
+        runtime = FakeRuntime(frozenset({RuntimeCapability.SEND_MESSAGE.value}))
+        context = object()
+        with (
+            patch.object(server, "_current_run_for_message", return_value=run),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+        ):
+            preview = server.mentat_run_message_preview_payload(
+                run.id, "Stay focused"
+            )
+        mismatched = AgentRun(
+            id="run_other",
+            task_id=run.task_id,
+            agent_id=run.agent_id,
+            runtime_type=run.runtime_type,
+            status=RunStatus.RUNNING,
+        )
+        with (
+            patch.object(server, "_current_run_for_message", return_value=run),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+            patch.object(runtime, "get_status", return_value=mismatched),
+            self.assertRaisesRegex(
+                server.OrchestrationRunActionError, "run.message_partial"
+            ),
+        ):
+            server.mentat_confirm_run_message(
+                run.id, "Stay focused", preview["confirmation_id"]
+            )
+        self.assertEqual(runtime.message_calls, [(run.id, "Stay focused", context)])
+
     def test_stop_accepts_active_waiting_states(self):
         for status in ("waiting", "waiting_for_approval", "waiting_for_clarification"):
             with self.subTest(status=status), patch.object(
