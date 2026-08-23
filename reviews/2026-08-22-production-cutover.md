@@ -515,3 +515,41 @@ Two independent reviewers reported no findings. They confirmed that all three
 stage errors are fixed and secret-free, the marker occurs immediately before
 `exec`, the direct comparison owns a separate process group, and bounded
 cleanup completes before the visible-launcher smoke.
+
+### CI correction round 13
+
+The stage diagnostics showed that both frozen macOS launch paths stopped at
+private-bridge readiness, before Node was launched. The frozen entry point had
+already imported `mentat.local_bridge` through the web runtime, then tried to
+execute that same module again with `runpy`. Python reported the duplicate
+execution warning and the bridge never printed its ready marker. The private
+bridge marker now calls the already-loaded bridge `main()` directly with the
+fixed remaining arguments. It no longer mutates process-wide `sys.argv` or
+executes the module a second time.
+
+Acceptance evidence:
+
+1. The private marker dispatches only to `mentat.local_bridge.main()`.
+2. The fixed `--host` and `--port` arguments pass through unchanged.
+3. The server, Node gateway, visible-app handoff, and Hermes boundaries are
+   unchanged.
+4. The focused test verifies no `runpy` execution and no global argument
+   mutation.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_packaging_cli tests.test_web_runtime -v` | Pass | 59 focused startup and packaging checks passed. |
+| `python3 -m unittest tests.test_ci_quality_gate -v` | Pass | 9 CI contract checks passed. |
+| `python3 -m py_compile packaging/mentat_native.py` | Pass | The corrected native entry point compiles. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+The user explicitly approved this step-by-step correction and retains the
+standing publication approval recorded above. GitHub's macOS runner remains
+the required frozen-bundle verification environment.
+
+### Final correction round 13 review
+
+Two independent reviewers reported no findings. They confirmed that direct
+dispatch preserves the fixed bridge arguments, token and lifecycle handling,
+dispatch precedence, frozen import semantics, and the existing security
+boundary while removing the duplicate module execution.

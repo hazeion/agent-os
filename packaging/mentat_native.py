@@ -26,9 +26,9 @@ def native_main() -> int:
         runpy.run_module("server", run_name="__main__")
         return 0
     if len(sys.argv) > 1 and sys.argv[1] == "--mentat-private-bridge":
-        sys.argv = [sys.argv[0], *sys.argv[2:]]
-        runpy.run_module("mentat.local_bridge", run_name="__main__")
-        return 0
+        from mentat.local_bridge import main as local_bridge_main
+
+        return local_bridge_main(sys.argv[2:])
     if len(sys.argv) == 4 and sys.argv[1] == "--mentat-node-gateway":
         node_path = Path(sys.argv[2])
         entrypoint = Path(sys.argv[3])

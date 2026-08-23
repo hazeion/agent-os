@@ -846,13 +846,16 @@ class CliTests(unittest.TestCase):
         companion.assert_not_called()
 
     def test_private_bridge_marker_takes_precedence_over_gateway_handoff(self):
-        with patch.object(
-            native_entry.sys, "argv", ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"]
-        ), patch.object(native_entry.runpy, "run_module") as bridge, patch.object(
+        arguments = ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"]
+        with patch.object(native_entry.sys, "argv", arguments), patch(
+            "mentat.local_bridge.main", return_value=0
+        ) as bridge, patch.object(native_entry.runpy, "run_module") as run_module, patch.object(
             native_entry, "main"
         ) as main, patch.object(native_entry, "console_gateway_companion") as companion:
             self.assertEqual(native_entry.native_main(), 0)
-        bridge.assert_called_once_with("mentat.local_bridge", run_name="__main__")
+        bridge.assert_called_once_with(["--port", "49152"])
+        run_module.assert_not_called()
+        self.assertEqual(arguments, ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"])
         main.assert_not_called()
         companion.assert_not_called()
 
