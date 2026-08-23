@@ -5,6 +5,12 @@ All notable changes to Mentat.
 ## 2026-08-22
 
 ### Added
+- Added schema-8 Agent identity and private runtime bindings to the canonical
+  `mentat.sqlite3` database, with a singleton authority receipt.
+- Added `mentat agent-registry-migration`, an offline read-only preview and
+  exact confirmation workflow that creates a verified pre-cutover backup.
+- Added format-4 private backups with one embedded Console database while
+  retaining restore support for released format-2 and format-3 archives.
 - Added one runtime-neutral Runs view for concurrent Hermes and Codex work,
   with exact Agent-name joins, readable runtime labels, and safe ID fallbacks.
 - Added a deterministic two-runtime integration test covering concurrent
@@ -20,6 +26,10 @@ All notable changes to Mentat.
   existing Emerald mark.
 
 ### Changed
+- Made fresh roots use an empty embedded Agent authority and made existing roots
+  complete the explicit convergence before normal startup.
+- Kept schema-5 compatible-root export working by synthesizing the retired
+  standalone registry only inside the downgrade artifact.
 - Kept active Runs ahead of terminal history in the bounded 50-Run workspace.
 - Required post-message and post-response runtime readback to match the exact
   canonical Run, Task, Agent, and runtime identity.
@@ -32,6 +42,9 @@ All notable changes to Mentat.
   100/100/100/100 with zero TBT and zero practical layout shift.
 
 ### Safety
+- Agent rows, private bindings, and their authority receipt now commit in one
+  transaction. After cutover, live paths ignore the old registry file and never
+  fall back to or dual-write it.
 - Kept Run status, runtime, and controls authoritative when Agent display data
   is unavailable, malformed, or stale. Legacy heartbeat data is never joined.
 - Kept Codex credentials, configuration, account details, thread IDs, turn IDs,

@@ -9,7 +9,12 @@ from pathlib import Path
 import stat
 from typing import Callable, Iterator, TypeVar
 
-from data_layout import _absolute_without_following, _secure_directory
+from data_layout import (
+    _absolute_without_following,
+    _is_redirecting_entry,
+    _redirected_component_issue,
+    _secure_directory,
+)
 from json_store import _durable_mutation_lock
 
 
@@ -103,6 +108,41 @@ def ensure_console_root(data_root: Path) -> Path:
     if resolved_console.parent.parent != resolved_root:
         raise PrivateStateError("Mentat private Console directory escapes the data root")
     return resolved_console
+
+
+def inspect_console_root(
+    data_root: Path,
+    *,
+    allow_missing: bool = False,
+) -> tuple[Path, tuple[tuple[int, int], ...]] | None:
+    """Inspect the Console directory chain without creating or hardening it."""
+
+    root = _absolute_without_following(Path(data_root))
+    target = console_root(root)
+    if _redirected_component_issue(target, "private_console") is not None:
+        raise PrivateStateError("Mentat private Console directory is unsafe")
+    identities: list[tuple[int, int]] = []
+    for directory in (root, private_root(root), target):
+        try:
+            details = os.lstat(directory)
+        except FileNotFoundError:
+            if allow_missing:
+                return None
+            raise PrivateStateError("Mentat private Console directory is missing")
+        except OSError as exc:
+            raise PrivateStateError("Mentat private Console directory is unsafe") from exc
+        if (
+            _is_redirecting_entry(details)
+            or not stat.S_ISDIR(details.st_mode)
+            or (os.name == "posix" and details.st_uid != os.getuid())
+        ):
+            raise PrivateStateError("Mentat private Console directory is unsafe")
+        identities.append((int(details.st_dev), int(details.st_ino)))
+    resolved_root = root.resolve(strict=True)
+    resolved_console = target.resolve(strict=True)
+    if resolved_console.parent.parent != resolved_root:
+        raise PrivateStateError("Mentat private Console directory escapes the data root")
+    return resolved_console, tuple(identities)
 
 
 def ensure_private_root(data_root: Path) -> Path:

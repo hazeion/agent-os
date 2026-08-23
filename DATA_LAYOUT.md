@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 1C-D SQLite Task runtime cleanup complete
+Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 3C database convergence complete in this branch
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -147,8 +147,8 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 | Current surface | Target class | Notes |
 | --- | --- | --- |
 | Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | One-time Run migration source and derived backup/downgrade compatibility evidence. After the SQLite Run-authority receipt exists, no live path reads or writes it as authority. |
-| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Attachment/blob references plus authoritative Tasks, Runs, AgentEvents, dispatch reservations/heads, retention metadata, and authority receipts; live WAL/SHM remain SQLite-owned beside the database. |
-| Canonical Mentat Agent registry | `<data-root>/private/console/agent-registry.sqlite3` | Independently versioned Agent identities and private runtime bindings; capped at 128 records and semantically validated during backup/restore. |
+| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Schema-8 authority for Agent identities, private runtime bindings, Tasks, Runs, AgentEvents, dispatch reservations/heads, attachment/blob references, retention metadata, and authority receipts; live WAL/SHM remain SQLite-owned beside the database. |
+| Retired standalone Agent registry | `<data-root>/private/console/agent-registry.sqlite3` | Exact migration or recovery input for an existing root. After the schema-8 convergence receipt exists, live code ignores this file and never reads, updates, shadows, or falls back to it. |
 | Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
 | Remote connection selection | `<data-root>/private/remote-hermes-connection-v1.json` | Schema-v2, server-only, owner-only, and atomically replaced. Stores the active mode, local label, one remembered remote label/endpoint, binding ID, and credential-source reference—but no API-key value. The historical filename is retained for compatible migration. A missing record means local mode. |
 | Migrated legacy remote credential | `<data-root>/private/remote-hermes-credential.env` | Owner-only, server-only env file created only when migrating the former schema-v1 embedded credential or by a trusted internal compatibility operation. New setup should reference an operator-owned environment variable or owner-only env file instead. |
@@ -538,13 +538,13 @@ backup fails closed. Runtime scratch, caches, logs, browser storage, and externa
 Hermes/Obsidian/Google state are not restored as operator data.
 
 Milestone 1E-A implements the schema-governed durable-operator portion of this
-contract. Milestone 1E-B introduced deterministic owner-only format 2. The
-multi-agent registry slice extends it as `mentat-backup-v3-<id>.zip`, with one
+contract. Milestone 1E-B introduced deterministic owner-only format 2, and the
+first multi-agent registry slice added format 3 with a separate Agent registry
+snapshot. Current backups use `mentat-backup-v4-<id>.zip`. They contain one
 canonical manifest, the nine fixed `data/*.json` entries, canonical retained
-history, a supported-schema SQLite
-snapshot captured through SQLite's backup API and pruned to retained run
-references, an independently versioned and semantically validated Agent
-registry SQLite snapshot, and exactly the verified ready blobs referenced by
+history, a supported-schema SQLite snapshot captured through SQLite's backup
+API and pruned to retained run references, embedded canonical Agents and
+private runtime bindings, and exactly the verified ready blobs referenced by
 that snapshot.
 The Console SQLite snapshot also carries canonical Task rows, records their
 count in private-unit evidence, and must pass semantic reconstruction plus
@@ -560,9 +560,9 @@ exact entry count, and a tight central-directory bound before constructing a ZIP
 reader; JSON trees are decoded one document at a time for shape validation and
 discarded rather than retained with the raw snapshot.
 
-Restore accepts canonical version-3 archives, pre-registry version-2 archives,
-and the prior canonical version-1 JSON-only format on an initialized
-current-schema target. Preview is read-only, reports replace/unchanged actions,
+Restore accepts current version-4 archives, canonical version-3 archives,
+pre-registry version-2 archives, and the prior canonical version-1 JSON-only
+format on an initialized current-schema target. Preview is read-only, reports replace/unchanged actions,
 refuses newer or malformed input, and binds an opaque token to the safe archive
 identity and bytes plus exact target identity and live bytes. Confirmation
 revalidates beneath the shared pinned-root lock, imports exact source evidence,
@@ -577,12 +577,17 @@ temporary has its own previewed, confirmed cleanup path and is never silently
 deleted.
 
 Format-2 and format-3 private snapshots containing exact released Console
-schemas 4, 5, and 6 remain supported. They are restored without rewriting the
-source archive and migrate transactionally to schema 7 on the next normal
-database open. Schema 6 adds the Task authority receipt; schema 7 adds canonical
-Runs, AgentEvents, and dispatch reservations. Normal startup imports
-the exact retained `tasks.json` only when that receipt is absent and the Task
-repository is empty.
+schemas 4 through 7 remain supported. They are restored without rewriting the
+source archive. Their standalone Agent registry remains migration input, so
+normal startup blocks until `mentat agent-registry-migration` completes the
+explicit schema-8 convergence. Schema 6 adds the Task authority receipt; schema
+7 adds canonical Runs, AgentEvents, and dispatch reservations; schema 8 embeds
+Agent identity, private runtime bindings, and their authority receipt. Normal
+startup imports the exact retained `tasks.json` only when the Task receipt is
+absent and the Task repository is empty.
+
+Current format-4 backups store the complete private Console recovery unit in
+schema-8 `mentat.sqlite3` and do not carry a separate registry member.
 
 After cutover, a current backup is the supported lossless recovery unit because
 it includes authoritative SQLite. `tasks.json` is deliberately stale. To run a
@@ -594,8 +599,9 @@ current durable JSON documents, exact exported Tasks, retained private Console
 history/attachments/blobs, Agent registry, and a validated schema-5 Console
 database whose Task tables are empty. The exported `tasks.json` is the old
 build's sole Task authority, and any old-build changes import exactly if the
-sibling is upgraded again. The authoritative schema-7 source root remains
-unchanged.
+sibling is upgraded again. When the source is schema 8, the sibling's
+standalone Agent registry is synthesized only as a downgrade artifact; the
+authoritative schema-8 source root remains unchanged.
 
 Connection credentials remain excluded. If the source actively selects remote
 Hermes, compatible-root export fails closed instead of creating a sibling that
@@ -622,10 +628,11 @@ that discards later Task mutations. Running Mentat never automatically falls
 back to stale `tasks.json`, and neither export mode removes or downgrades the
 source SQLite authority receipt.
 
-For versions 2 and 3, private restore exchanges a complete staged Console
+For versions 2, 3, and 4, private restore exchanges a complete staged Console
 directory, keeps the old directory until new-state verification, and resumes
 only exact recognized old/new/staged states. Version-1 restore preserves the
-current private Console unit. The current schema manifest and its bootstrap
+current private Console unit. Format 4 carries embedded Agent authority; format
+3 carries the standalone registry needed for explicit convergence. The current schema manifest and its bootstrap
 evidence stay at the destination:
 they describe the supported document schema and remain valid across legitimate
 document mutations. Migration receipts, schema backups, and all excluded
@@ -636,13 +643,12 @@ state. A version-2 restore materializes the canonical empty Agent registry
 because that format predates the registry. Version 1 remains a supported
 JSON-only legacy format.
 
-Current source-checkout CLI form (the unified installed `mentat backup` and
-`mentat restore` commands remain Milestone 3):
+Current CLI form:
 
 ```bash
-python server.py --data-dir "/path/to/mentat-data" --create-backup
-python server.py --data-dir "/path/to/mentat-data" --preview-restore --restore-backup "/path/to/mentat-backup-v3-ID.zip"
-python server.py --data-dir "/path/to/mentat-data" --confirm-restore TOKEN_FROM_PREVIEW --restore-backup "/path/to/mentat-backup-v3-ID.zip"
+mentat backup --data-dir "/path/to/mentat-data"
+mentat restore --data-dir "/path/to/mentat-data" "/path/to/mentat-backup-v4-ID.zip"
+mentat restore --data-dir "/path/to/mentat-data" "/path/to/mentat-backup-v4-ID.zip" --confirm TOKEN_FROM_PREVIEW
 ```
 
 Legacy private Console state is never moved silently. Preview and confirmation

@@ -136,16 +136,21 @@ the supervisor must own both processes.
 - A Mentat **heartbeat agent** remains an observation about a running or
   recently completed process. Records in `data/agents.json` are not the new
   canonical Agent registry.
-- Canonical Mentat Agents are persisted in an independently versioned,
-  owner-private `agent-registry.sqlite3`, separately from the schema-versioned
-  Console database and from one-to-one adapter runtime configurations. The runtime configuration retains
+- Canonical Mentat Agents and their one-to-one adapter runtime configurations
+  are persisted in schema-8 owner-private `mentat.sqlite3`. The runtime configuration retains
   the private runtime-owned Agent reference; ordinary browser projections omit
   that reference and expose only Mentat identity, runtime type/config identity,
   and declared capabilities. The local registry is transactionally capped at
   128 Agents so create/list responses and private recovery remain bounded.
-- The additive registry supports create/list behavior only during its first
-  slice. It does not auto-import or mutate Hermes profiles, store credentials,
-  dispatch tasks, edit/delete Agents, or replace heartbeat observations.
+- Existing roots converge only through `mentat agent-registry-migration`.
+  Preview performs no write and binds the exact standalone source and Mentat
+  database state. Confirmation refuses an active server, creates or verifies a
+  format-3 backup, revalidates both sides under the durable mutation lock, and
+  commits Agent/config rows with the singleton authority receipt in one
+  transaction. After that receipt exists, the old `agent-registry.sqlite3` is
+  ignored and never updated or used as fallback authority.
+- The registry does not auto-import or mutate Hermes profiles, store
+  credentials, edit/delete Agents, or replace heartbeat observations.
 - A Hermes **session** remains conversation history owned by a specific Hermes
   profile and is a runtime reference, not Mentat workflow authority.
 - Durable Agent persistence remains additive without inventing profile-derived IDs.
@@ -293,7 +298,7 @@ new validated sibling data root containing current durable documents, exported
 Tasks, retained Console/attachment/blob state, the Agent registry, and an exact
 schema-5 copy of the Console database with empty Task tables. Exported
 `tasks.json` is therefore the sibling's sole Task authority, so changes made by
-the old build import exactly if that sibling is later upgraded. The schema-7
+the old build import exactly if that sibling is later upgraded. The schema-8
 source root stays unchanged.
 
 Remote Hermes selection is separate private state and its credential is not a
@@ -312,15 +317,16 @@ uses missing-only `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`. A durability
 failure after publication is a partial write, never a no-write result or
 success.
 
-Released format-2 and format-3 backups with exact Console schema 4, 5, or 6
-remain valid and migrate transactionally to schema 7. Current backups retain
-Tasks, Runs, AgentEvents, dispatch state, and both authority receipts as one
+Released format-2 and format-3 backups with exact Console schemas 4 through 7
+remain valid. Restored pre-convergence Agent state must complete the explicit
+registry migration before normal startup. Current format-4 backups retain
+Agents, Tasks, Runs, AgentEvents, dispatch state, and all authority receipts as one
 recovery unit. To downgrade after live Task
 mutations, stop Mentat, preview `mentat task-export --compatible-root`, confirm
 its exact token, and point the older build at the reported schema-5 sibling
 data-root name. Restoring a pre-cutover backup remains an alternative that
 discards later Task mutations. Mentat never uses stale `tasks.json`
-automatically and never downgrades the authoritative schema-7 source database.
+automatically and never downgrades the authoritative schema-8 source database.
 
 ### SQLite Run and AgentEvent authority
 
@@ -342,7 +348,7 @@ not regress a Run already advanced by a worker. Rejected and ambiguous outcomes
 are durable. An ambiguous attempt becomes `unknown` and is never automatically
 resubmitted. A restart rejects a reservation that never reached an adapter and
 marks an in-flight submission unknown without retrying it. Reconciliation uses
-short compare-and-swap leases, revalidates the separate Agent Registry binding,
+short compare-and-swap leases, revalidates the canonical Agent Registry binding,
 performs runtime reads outside database transactions, and commits only
 identity-matching, forward-only status and normalized events. Webhooks may wake
 this readback; their payloads never prove Run state.
@@ -527,9 +533,11 @@ runtime, and never returns the adapter-owned runtime reference. A configured
 Agent authorizes work only through an exact Task assignment, capability match,
 binding snapshot, and durable dispatch reservation. Codex Agents use only the
 fixed `default` binding and capabilities implemented by the available adapter.
-Backup format 3 includes and semantically validates both Hermes and Codex
-bindings, including Codex's fixed binding and capability vocabulary;
-pre-registry format-2 backups remain restorable and produce an empty registry.
+Backup format 4 includes and semantically validates embedded Hermes and Codex
+bindings, including Codex's fixed binding and capability vocabulary. Format-3
+backups retain the former standalone registry, and pre-registry format-2
+backups restore an empty migration source; both require the explicit
+convergence command before normal startup.
 
 ## Remote Hermes connection boundary
 

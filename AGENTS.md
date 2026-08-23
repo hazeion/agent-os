@@ -90,14 +90,20 @@ Agent. During the migration, legacy browser `agent_id` values remain Hermes
 profile IDs for compatibility; do not treat that alias or `data/agents.json`
 heartbeat observations as the durable Mentat Agent registry.
 
-Canonical Mentat Agents and their runtime bindings are stored separately in an
-independently versioned owner-private `agent-registry.sqlite3`, leaving the
-existing Console database schema downgrade-compatible. Browser-facing Agent projections may expose Mentat IDs,
+Canonical Mentat Agents and their runtime bindings are stored in owner-private
+`mentat.sqlite3` under a singleton authority receipt. Existing roots move from
+the retired `agent-registry.sqlite3` source only through `mentat
+agent-registry-migration`: preview is read-only, confirmation requires a
+validated backup, and Agent/config rows plus the receipt commit together. Once
+the receipt exists, live code must never read, write, shadow, synchronize, or
+fall back to the old file. Browser-facing Agent projections may expose Mentat IDs,
 names, runtime types, runtime configuration IDs, and declared capabilities, but
 must not expose adapter-owned runtime references. `data/agents.json` remains a
 legacy heartbeat-observation surface and must not be merged into or substituted
 for the canonical registry. The registry is capped at 128 Agents and is part of
-the validated private Console backup/restore consistency unit.
+the validated private Console backup/restore consistency unit. New format-4
+backups carry the embedded authority without a separate registry member;
+format-2/3 restores remain supported and require convergence before normal use.
 
 Pivot Slice 1C-B makes the canonical Task tables in owner-private
 `mentat.sqlite3` authoritative. The exact one-time startup import and singleton
@@ -113,7 +119,7 @@ ignore that file while the SQLite authority receipt exists. Use its
 `--compatible-root` mode for an actual pre-cutover build: it publishes a new
 schema-5 sibling data root whose Task tables are empty and whose exported
 `tasks.json` is the old build's sole Task authority. It must leave the
-authoritative schema-7 root unchanged. Compatible-root export must fail closed
+authoritative schema-8 root unchanged. Compatible-root export must fail closed
 while the source actively selects remote Hermes because connection credentials
 are deliberately excluded; the operator must explicitly return the source to
 local mode and reconfigure the sibling before any remote operation.

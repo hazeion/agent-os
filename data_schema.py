@@ -2188,8 +2188,14 @@ def prepare_fresh_schema_initialization(
     try:
         if not _pinned_target_matches(target, root_descriptor):
             return "fresh_schema_target_changed"
-        _reconcile_fresh_temporary(target, root_descriptor)
+        if (
+            any(item.status != "initialize" for item in plan.items)
+            and _schema_artifact_issue_pinned(target, root_descriptor)
+            in {None, "schema_backup_present"}
+        ):
+            return None
         reservation = target / FRESH_SCHEMA_RESERVATION_NAME
+        _reconcile_fresh_temporary(target, root_descriptor)
         if _entry_exists_at(reservation, root_descriptor):
             if not _fresh_reservation_valid_at(target, root_descriptor):
                 return "invalid_fresh_schema_reservation"

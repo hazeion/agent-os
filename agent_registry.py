@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
 import time
@@ -15,12 +18,20 @@ from tempfile import TemporaryDirectory
 from typing import Callable, Iterable, Mapping
 
 from agent_runtime import MentatAgent, RuntimeContext
-from private_state import ensure_console_root
+from mentat_db import (
+    AGENT_REGISTRY_AUTHORITY_CONTRACT,
+    LEGACY_AGENT_REGISTRY_DATABASE_NAME,
+    MentatDatabaseError,
+    connect as connect_database,
+    migrate as migrate_database,
+)
+from private_state import console_root, ensure_console_root
 
 
-REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
+REGISTRY_DATABASE_NAME = LEGACY_AGENT_REGISTRY_DATABASE_NAME
 REGISTRY_SCHEMA_VERSION = 1
 MAX_AGENTS = 128
+MAX_LEGACY_REGISTRY_BYTES = 4 * 1024 * 1024
 
 _SCHEMA = """
 CREATE TABLE registry_schema (
@@ -80,8 +91,59 @@ class RuntimeBinding:
     runtime_agent_ref: str
 
 
+@dataclass(frozen=True)
+class AgentAuthorityReceipt:
+    source_kind: str
+    source_sha256: str
+    source_agent_count: int
+    cutover_at: float
+
+
+@dataclass(frozen=True)
+class LegacyAgentRecord:
+    agent: MentatAgent
+    binding: RuntimeBinding
+    agent_created_at: float
+    agent_updated_at: float
+    config_created_at: float
+    config_updated_at: float
+
+
+@dataclass(frozen=True)
+class LegacyRegistrySnapshot:
+    raw: bytes
+    sha256: str
+    source_binding: str
+    records: tuple[LegacyAgentRecord, ...]
+
+    @property
+    def agents(self) -> tuple[MentatAgent, ...]:
+        return tuple(record.agent for record in self.records)
+
+
+def _legacy_record_digest(records: Iterable[LegacyAgentRecord]) -> str:
+    payload = [
+        {
+            "agent_id": record.agent.id,
+            "name": record.agent.name,
+            "runtime_config_id": record.binding.id,
+            "capabilities": sorted(record.agent.capabilities),
+            "agent_created_at": record.agent_created_at,
+            "agent_updated_at": record.agent_updated_at,
+            "runtime_type": record.binding.runtime_type,
+            "runtime_agent_ref": record.binding.runtime_agent_ref,
+            "config_created_at": record.config_created_at,
+            "config_updated_at": record.config_updated_at,
+        }
+        for record in records
+    ]
+    return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+
+
 def registry_database_path(data_dir: Path) -> Path:
-    return ensure_console_root(Path(data_dir)) / REGISTRY_DATABASE_NAME
+    """Return the retired standalone-registry path without creating it."""
+
+    return console_root(Path(data_dir)) / REGISTRY_DATABASE_NAME
 
 
 def _secure_file(
@@ -113,17 +175,32 @@ def _database_files(path: Path) -> tuple[Path, Path, Path]:
     return path, Path(f"{path}-wal"), Path(f"{path}-shm")
 
 
+def _reject_unrecognized_database_artifacts(path: Path, *, parent: Path) -> None:
+    allowed = {candidate.name for candidate in _database_files(path)}
+    prefix = f"{path.name}-"
+    try:
+        names = {entry.name for entry in os.scandir(parent)}
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise AgentRegistryUnavailableError("agent_registry.unavailable") from exc
+    if any(name.startswith(prefix) and name not in allowed for name in names):
+        raise AgentRegistryError("agent_registry.unsafe")
+
+
 def _validate_database_set(
     path: Path,
     *,
     parent: Path,
     require_mode: bool = True,
 ) -> dict[Path, tuple[int, int]]:
+    _reject_unrecognized_database_artifacts(path, parent=parent)
     identities: dict[Path, tuple[int, int]] = {}
     for candidate in _database_files(path):
         identity = _secure_file(candidate, parent=parent, require_mode=require_mode)
         if identity is not None:
             identities[candidate] = identity
+    _reject_unrecognized_database_artifacts(path, parent=parent)
     return identities
 
 
@@ -185,54 +262,28 @@ def _initialize(connection: sqlite3.Connection, *, applied_at: float | None = No
 
 
 def connect_registry(data_dir: Path) -> sqlite3.Connection:
-    """Open the independently versioned, owner-private Agent registry."""
+    """Open the converged Agent authority inside ``mentat.sqlite3``."""
 
-    path = registry_database_path(data_dir)
-    parent = path.parent
-    _validate_database_set(path, parent=parent)
-    if not path.exists():
-        descriptor = None
-        try:
-            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            pass
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-    opened = _validate_database_set(path, parent=parent)
-    identity = opened.get(path)
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        if identity is None or _secure_file(path, parent=parent) != identity:
-            raise AgentRegistryError("agent_registry.unsafe")
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        _initialize(connection)
-        observed = _validate_database_set(path, parent=parent, require_mode=False)
-        # WAL and shared-memory sidecars may legitimately disappear or be
-        # recreated while another connection closes. Each snapshot above is
-        # still fully safety-validated; only the durable database must retain
-        # the same filesystem identity across snapshots.
-        if not _same_primary_database(opened, observed, path=path):
-            raise AgentRegistryError("agent_registry.unsafe")
-        if os.name != "nt":
-            for candidate in observed:
-                candidate.chmod(0o600)
-        secured = _validate_database_set(path, parent=parent)
-        if not _same_primary_database(observed, secured, path=path):
-            raise AgentRegistryError("agent_registry.unsafe")
+        connection = connect_database(Path(data_dir))
+        authority_receipt(connection, required=True)
         return connection
+    except AgentRegistryError:
+        if connection is not None:
+            connection.close()
+        raise
     except sqlite3.Error as exc:
         if connection is not None:
             connection.close()
         raise _translate_sqlite_error(exc) from exc
-    except Exception:
+    except MentatDatabaseError as exc:
         if connection is not None:
             connection.close()
-        raise
+        message = str(exc).lower()
+        if "newer" in message or "schema" in message:
+            raise AgentRegistryError("agent_registry.unsupported") from exc
+        raise AgentRegistryUnavailableError("agent_registry.unavailable") from exc
 
 
 def initialize_registry_file(path: Path) -> None:
@@ -246,6 +297,278 @@ def initialize_registry_file(path: Path) -> None:
         connection.close()
     if os.name != "nt":
         path.chmod(0o600)
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _read_legacy_file(
+    path: Path,
+    *,
+    identity: tuple[int, int],
+    parent: Path,
+) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise AgentRegistryUnavailableError("agent_registry.unavailable") from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            (int(before.st_dev), int(before.st_ino)) != identity
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > MAX_LEGACY_REGISTRY_BYTES
+        ):
+            raise AgentRegistryError("agent_registry.unsafe")
+        chunks: list[bytes] = []
+        remaining = MAX_LEGACY_REGISTRY_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+        if (
+            len(raw) > MAX_LEGACY_REGISTRY_BYTES
+            or len(raw) != before.st_size
+            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or _secure_file(path, parent=parent) != identity
+        ):
+            raise AgentRegistryError("agent_registry.changed")
+        return raw
+    except OSError as exc:
+        raise AgentRegistryUnavailableError("agent_registry.unavailable") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _legacy_records(
+    connection: sqlite3.Connection,
+    *,
+    supported_runtime_types: Iterable[str],
+    runtime_binding_validator: Callable[[MentatAgent, str], bool] | None,
+) -> tuple[LegacyAgentRecord, ...]:
+    agents = validate_registry_connection(
+        connection,
+        supported_runtime_types=supported_runtime_types,
+        runtime_binding_validator=runtime_binding_validator,
+    )
+    rows = connection.execute(
+        """
+        SELECT a.id, a.created_at AS agent_created_at,
+               a.updated_at AS agent_updated_at,
+               c.id AS runtime_config_id, c.runtime_type,
+               c.runtime_agent_ref, c.created_at AS config_created_at,
+               c.updated_at AS config_updated_at
+        FROM mentat_agents AS a
+        JOIN agent_runtime_configs AS c ON c.id = a.runtime_config_id
+        ORDER BY a.name COLLATE NOCASE, a.id
+        """
+    ).fetchall()
+    if len(rows) != len(agents):
+        raise AgentRegistryError("agent_registry.corrupt")
+    records: list[LegacyAgentRecord] = []
+    for agent, row in zip(agents, rows, strict=True):
+        if str(row["id"]) != agent.id:
+            raise AgentRegistryError("agent_registry.corrupt")
+        records.append(
+            LegacyAgentRecord(
+                agent=agent,
+                binding=RuntimeBinding(
+                    id=str(row["runtime_config_id"]),
+                    runtime_type=str(row["runtime_type"]),
+                    runtime_agent_ref=str(row["runtime_agent_ref"]),
+                ),
+                agent_created_at=float(row["agent_created_at"]),
+                agent_updated_at=float(row["agent_updated_at"]),
+                config_created_at=float(row["config_created_at"]),
+                config_updated_at=float(row["config_updated_at"]),
+            )
+        )
+    return tuple(records)
+
+
+def capture_legacy_registry_snapshot(
+    data_dir: Path,
+    *,
+    supported_runtime_types: Iterable[str] = ("codex", "hermes"),
+    runtime_binding_validator: Callable[[MentatAgent, str], bool] | None = None,
+) -> LegacyRegistrySnapshot:
+    """Capture the retired standalone registry without changing operator state."""
+
+    path = registry_database_path(data_dir)
+    parent = path.parent
+    initial = _validate_database_set(path, parent=parent)
+    if path not in initial:
+        if initial:
+            raise AgentRegistryError("agent_registry.unsafe")
+        with TemporaryDirectory(prefix="mentat-empty-agent-source-") as temporary:
+            snapshot = Path(temporary) / REGISTRY_DATABASE_NAME
+            initialize_registry_file(snapshot)
+            raw = snapshot.read_bytes()
+            connection = sqlite3.connect(snapshot)
+            connection.row_factory = sqlite3.Row
+            try:
+                records = _legacy_records(
+                    connection,
+                    supported_runtime_types=supported_runtime_types,
+                    runtime_binding_validator=runtime_binding_validator,
+                )
+            finally:
+                connection.close()
+        binding = hashlib.sha256(
+            _canonical_bytes(
+                {
+                    "path": os.path.normcase(os.path.abspath(os.fspath(path))),
+                    "state": "absent",
+                }
+            )
+        ).hexdigest()
+        return LegacyRegistrySnapshot(
+            raw=raw,
+            sha256=_legacy_record_digest(records),
+            source_binding=binding,
+            records=records,
+        )
+
+    captured = {
+        candidate: _read_legacy_file(
+            candidate,
+            identity=identity,
+            parent=parent,
+        )
+        for candidate, identity in initial.items()
+    }
+    with TemporaryDirectory(prefix="mentat-agent-source-") as temporary:
+        copied = Path(temporary) / REGISTRY_DATABASE_NAME
+        copied.write_bytes(captured[path])
+        if os.name != "nt":
+            copied.chmod(0o600)
+        wal = Path(f"{path}-wal")
+        if wal in captured:
+            copied_wal = Path(f"{copied}-wal")
+            copied_wal.write_bytes(captured[wal])
+            if os.name != "nt":
+                copied_wal.chmod(0o600)
+        snapshot = Path(temporary) / "snapshot.sqlite3"
+        source = sqlite3.connect(copied)
+        destination = sqlite3.connect(snapshot)
+        try:
+            source.backup(destination)
+        except sqlite3.Error as exc:
+            raise _translate_sqlite_error(exc) from exc
+        finally:
+            destination.close()
+            source.close()
+        connection = sqlite3.connect(snapshot)
+        connection.row_factory = sqlite3.Row
+        try:
+            records = _legacy_records(
+                connection,
+                supported_runtime_types=supported_runtime_types,
+                runtime_binding_validator=runtime_binding_validator,
+            )
+        finally:
+            connection.close()
+        raw = snapshot.read_bytes()
+    terminal = _validate_database_set(path, parent=parent)
+    if terminal != initial or set(terminal) != set(captured):
+        raise AgentRegistryError("agent_registry.changed")
+    for candidate, identity in terminal.items():
+        if (
+            _read_legacy_file(candidate, identity=identity, parent=parent)
+            != captured[candidate]
+        ):
+            raise AgentRegistryError("agent_registry.changed")
+    main_identity = initial[path]
+    evidence = {
+        "path": os.path.normcase(os.path.abspath(os.fspath(path))),
+        "device": main_identity[0],
+        "inode": main_identity[1],
+    }
+    return LegacyRegistrySnapshot(
+        raw=raw,
+        sha256=_legacy_record_digest(records),
+        source_binding=hashlib.sha256(_canonical_bytes(evidence)).hexdigest(),
+        records=records,
+    )
+
+
+@contextmanager
+def _hold_legacy_registry_cutover_lock(data_dir: Path):
+    """Prevent legacy-registry writers until the caller finishes cutover."""
+
+    path = registry_database_path(data_dir)
+    parent = path.parent
+    opened = _validate_database_set(path, parent=parent)
+    identity = opened.get(path)
+    if identity is None:
+        if opened:
+            raise AgentRegistryError("agent_registry.unsafe")
+        def validate_absent() -> None:
+            if _validate_database_set(path, parent=parent):
+                raise AgentRegistryError("agent_registry.changed")
+
+        try:
+            yield validate_absent
+        finally:
+            validate_absent()
+        return
+    connection: sqlite3.Connection | None = None
+    try:
+        resolved = path.resolve(strict=True)
+        connection = sqlite3.connect(
+            f"{resolved.as_uri()}?mode=rw",
+            uri=True,
+            timeout=5.0,
+            isolation_level=None,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("PRAGMA query_only = ON")
+        locked = _validate_database_set(path, parent=parent, require_mode=False)
+        if not _same_primary_database(opened, locked, path=path):
+            raise AgentRegistryError("agent_registry.changed")
+        validate_registry_connection(
+            connection,
+            supported_runtime_types=("codex", "hermes"),
+        )
+        def validate_locked() -> None:
+            terminal = _validate_database_set(
+                path,
+                parent=parent,
+                require_mode=False,
+            )
+            if not _same_primary_database(locked, terminal, path=path):
+                raise AgentRegistryError("agent_registry.changed")
+
+        yield validate_locked
+        validate_locked()
+    except sqlite3.Error as exc:
+        raise _translate_sqlite_error(exc) from exc
+    finally:
+        if connection is not None:
+            try:
+                connection.rollback()
+            finally:
+                connection.close()
 
 
 def _validate_agent_row(
@@ -281,6 +604,101 @@ def _validate_agent_row(
         raise AgentRegistryError("agent_registry.corrupt") from exc
 
 
+def _table_names(connection: sqlite3.Connection) -> frozenset[str]:
+    try:
+        return frozenset(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        )
+    except sqlite3.Error as exc:
+        raise _translate_sqlite_error(exc) from exc
+
+
+def _embedded_schema_signature(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[str, str, str, str], ...]:
+    agent_tables = (
+        "agent_runtime_configs",
+        "mentat_agents",
+        "mentat_agent_registry_state",
+    )
+    placeholders = ",".join("?" for _item in agent_tables)
+    return tuple(
+        (str(row[0]), str(row[1]), str(row[2]), "".join(str(row[3] or "").split()))
+        for row in connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            f"WHERE tbl_name IN ({placeholders}) "
+            "AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY type, name",
+            agent_tables,
+        )
+    )
+
+
+@lru_cache(maxsize=1)
+def _expected_embedded_schema_signature(
+) -> tuple[tuple[str, str, str, str], ...]:
+    with TemporaryDirectory(prefix="mentat-embedded-agent-schema-") as temporary:
+        connection = sqlite3.connect(Path(temporary) / "mentat.sqlite3")
+        try:
+            migrate_database(connection)
+            return _embedded_schema_signature(connection)
+        finally:
+            connection.close()
+
+
+def authority_receipt(
+    connection: sqlite3.Connection,
+    *,
+    required: bool = False,
+) -> AgentAuthorityReceipt | None:
+    """Return and validate the embedded Agent-authority receipt."""
+
+    if "mentat_agent_registry_state" not in _table_names(connection):
+        if required:
+            raise AgentRegistryUnavailableError("agent_registry.migration_required")
+        return None
+    try:
+        rows = connection.execute(
+            "SELECT authority, migration_contract, source_kind, source_sha256, "
+            "source_agent_count, cutover_at FROM mentat_agent_registry_state "
+            "WHERE singleton = 1"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise _translate_sqlite_error(exc) from exc
+    if not rows:
+        if required:
+            raise AgentRegistryUnavailableError("agent_registry.migration_required")
+        return None
+    if len(rows) != 1:
+        raise AgentRegistryError("agent_registry.corrupt")
+    row = rows[0]
+    try:
+        source_kind = str(row["source_kind"])
+        source_sha256 = str(row["source_sha256"])
+        source_agent_count = int(row["source_agent_count"])
+        cutover_at = float(row["cutover_at"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AgentRegistryError("agent_registry.corrupt") from exc
+    if (
+        row["authority"] != "sqlite"
+        or row["migration_contract"] != AGENT_REGISTRY_AUTHORITY_CONTRACT
+        or source_kind not in {"fresh", "legacy"}
+        or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+        or not 0 <= source_agent_count <= MAX_AGENTS
+        or not math.isfinite(cutover_at)
+        or cutover_at <= 0
+    ):
+        raise AgentRegistryError("agent_registry.corrupt")
+    return AgentAuthorityReceipt(
+        source_kind=source_kind,
+        source_sha256=source_sha256,
+        source_agent_count=source_agent_count,
+        cutover_at=cutover_at,
+    )
+
+
 def validate_registry_connection(
     connection: sqlite3.Connection,
     *,
@@ -294,11 +712,34 @@ def validate_registry_connection(
             raise AgentRegistryError("agent_registry.corrupt")
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise AgentRegistryError("agent_registry.corrupt")
-        versions = [int(row[0]) for row in connection.execute("SELECT version FROM registry_schema")]
-        if versions != [REGISTRY_SCHEMA_VERSION]:
-            raise AgentRegistryError("agent_registry.unsupported")
-        if _schema_signature(connection) != _expected_schema_signature():
-            raise AgentRegistryError("agent_registry.schema_invalid")
+        tables = _table_names(connection)
+        standalone = "registry_schema" in tables
+        if standalone:
+            versions = [
+                int(row[0])
+                for row in connection.execute("SELECT version FROM registry_schema")
+            ]
+            if versions != [REGISTRY_SCHEMA_VERSION]:
+                raise AgentRegistryError("agent_registry.unsupported")
+            if _schema_signature(connection) != _expected_schema_signature():
+                raise AgentRegistryError("agent_registry.schema_invalid")
+        else:
+            required = {
+                "schema_migrations",
+                "mentat_agent_registry_state",
+                "agent_runtime_configs",
+                "mentat_agents",
+            }
+            if not required.issubset(tables):
+                raise AgentRegistryUnavailableError(
+                    "agent_registry.migration_required"
+                )
+            if (
+                _embedded_schema_signature(connection)
+                != _expected_embedded_schema_signature()
+            ):
+                raise AgentRegistryError("agent_registry.schema_invalid")
+            authority_receipt(connection, required=True)
         config_count = int(connection.execute("SELECT COUNT(*) FROM agent_runtime_configs").fetchone()[0])
         agent_count = int(connection.execute("SELECT COUNT(*) FROM mentat_agents").fetchone()[0])
         if config_count != agent_count or agent_count > MAX_AGENTS:
@@ -515,14 +956,20 @@ class AgentRegistry:
 
 
 __all__ = [
+    "AgentAuthorityReceipt",
     "AgentRegistry",
     "AgentRegistryConflict",
     "AgentRegistryError",
     "AgentRegistryLimitError",
     "AgentRegistryUnavailableError",
     "AgentRegistryValidationError",
+    "LegacyAgentRecord",
+    "LegacyRegistrySnapshot",
+    "MAX_LEGACY_REGISTRY_BYTES",
     "MAX_AGENTS",
     "REGISTRY_DATABASE_NAME",
+    "authority_receipt",
+    "capture_legacy_registry_snapshot",
     "connect_registry",
     "initialize_registry_file",
     "registry_database_path",

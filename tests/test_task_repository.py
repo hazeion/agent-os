@@ -18,6 +18,7 @@ import data_backup_restore
 import private_console_unit
 import remote_hermes
 import task_repository
+from agent_registry import AgentRegistry, capture_legacy_registry_snapshot
 from agent_console_attachments import bind_run_attachment, create_attachment
 from mentat.cli import main as mentat_cli_main
 from mentat_db import SCHEMA_VERSION, MentatDatabaseError, connect, database_path, transaction
@@ -214,7 +215,7 @@ class TaskRepositoryTests(unittest.TestCase):
                         "2025-02-03T04:07:08.123456+00:00",
                     )
 
-    def test_schema_seven_preserves_task_tables_and_refuses_forward_schema(self):
+    def test_current_schema_preserves_task_tables_and_refuses_forward_schema(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             connection = connect(root)
@@ -234,7 +235,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 7)
+            self.assertEqual(SCHEMA_VERSION, 8)
             self.assertTrue(
                 {
                     "mentat_tasks",
@@ -302,7 +303,12 @@ class TaskRepositoryTests(unittest.TestCase):
                     connection.execute("DROP TABLE mentat_run_store_state")
                     connection.execute("DROP TABLE mentat_tasks")
                     connection.execute("DROP TABLE mentat_task_store_state")
-                    connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6, 7)")
+                    connection.execute("DROP TABLE mentat_agent_registry_state")
+                    connection.execute("DROP TABLE mentat_agents")
+                    connection.execute("DROP TABLE agent_runtime_configs")
+                    connection.execute(
+                        "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8)"
+                    )
             finally:
                 connection.close()
             path = database_path(root)
@@ -1246,6 +1252,17 @@ class TaskRepositoryTests(unittest.TestCase):
             root = Path(tmpdir) / "data"
             source = write_seed_root(root, [task("task_a")])
             ensure_task_sqlite_authority(root)
+            AgentRegistry(
+                root,
+                supported_runtime_types={"hermes"},
+            ).create_agent(
+                agent_id="agent_exported",
+                name="Exported Agent",
+                runtime_config_id="runtime_config_exported",
+                runtime_type="hermes",
+                runtime_agent_ref="export-profile",
+                capabilities=(),
+            )
             mutate_authoritative_tasks(
                 root,
                 lambda tasks: ([*tasks, task("task_b")], None),
@@ -1314,6 +1331,14 @@ class TaskRepositoryTests(unittest.TestCase):
                 )
             finally:
                 downgraded.close()
+            legacy_registry = capture_legacy_registry_snapshot(
+                target,
+                runtime_binding_validator=lambda _agent, _runtime_ref: True,
+            )
+            self.assertEqual(
+                [record.agent.id for record in legacy_registry.records],
+                ["agent_exported"],
+            )
 
             legacy_tasks = json.loads(
                 (target / "tasks.json").read_text(encoding="utf-8")
@@ -1972,8 +1997,11 @@ class TaskRepositoryTests(unittest.TestCase):
                     connection.execute("DROP TABLE mentat_runs")
                     connection.execute("DROP TABLE mentat_run_store_state")
                     connection.execute("DROP TABLE mentat_task_store_state")
+                    connection.execute("DROP TABLE mentat_agent_registry_state")
+                    connection.execute("DROP TABLE mentat_agents")
+                    connection.execute("DROP TABLE agent_runtime_configs")
                     connection.execute(
-                        "DELETE FROM schema_migrations WHERE version IN (6, 7)"
+                        "DELETE FROM schema_migrations WHERE version IN (6, 7, 8)"
                     )
             finally:
                 connection.close()

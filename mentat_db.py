@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Iterator
+from typing import Callable, Iterator
 
 from private_state import (
     console_root,
@@ -20,7 +20,13 @@ from private_state import (
 
 
 DATABASE_NAME = "mentat.sqlite3"
-SCHEMA_VERSION = 7
+LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
+SCHEMA_VERSION = 8
+AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
+EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb924"
+    "27ae41e4649b934ca495991b7852b855"
+)
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
 MAX_READONLY_WAL_BYTES = 32 * 1024 * 1024
 MAX_READONLY_SHM_BYTES = 4 * 1024 * 1024
@@ -29,6 +35,28 @@ MAX_READONLY_SNAPSHOT_BYTES = 96 * 1024 * 1024
 # must not overlap a webhook delivery transaction on Windows. Ordinary queries
 # release this process-wide boundary as soon as their connection is ready.
 DATABASE_OPEN_BARRIER = threading.RLock()
+
+
+def legacy_agent_registry_artifacts_present_at(parent: Path) -> bool:
+    """Fail closed when a Console directory holds any retired-registry artifact."""
+
+    parent = Path(parent)
+    prefix = f"{LEGACY_AGENT_REGISTRY_DATABASE_NAME}-"
+    try:
+        with os.scandir(parent) as entries:
+            return any(
+                entry.name == LEGACY_AGENT_REGISTRY_DATABASE_NAME
+                or entry.name.startswith(prefix)
+                for entry in entries
+            )
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def legacy_agent_registry_artifacts_present(data_dir: Path) -> bool:
+    return legacy_agent_registry_artifacts_present_at(console_root(Path(data_dir)))
 
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -471,6 +499,50 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON mentat_dispatch_reservations(task_id, task_revision, created_at);
         """,
     ),
+    (
+        8,
+        """
+        CREATE TABLE agent_runtime_configs (
+            id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
+            runtime_type TEXT NOT NULL CHECK (length(runtime_type) BETWEEN 1 AND 32),
+            runtime_agent_ref TEXT NOT NULL CHECK (
+                length(runtime_agent_ref) BETWEEN 1 AND 160
+            ),
+            created_at REAL NOT NULL CHECK (created_at >= 0),
+            updated_at REAL NOT NULL CHECK (updated_at >= 0),
+            UNIQUE (runtime_type, runtime_agent_ref)
+        );
+
+        CREATE TABLE mentat_agents (
+            id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
+            name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+            runtime_config_id TEXT NOT NULL UNIQUE
+                REFERENCES agent_runtime_configs(id) ON DELETE RESTRICT,
+            capabilities_json TEXT NOT NULL CHECK (
+                length(capabilities_json) BETWEEN 2 AND 8192
+            ),
+            created_at REAL NOT NULL CHECK (created_at >= 0),
+            updated_at REAL NOT NULL CHECK (updated_at >= 0)
+        );
+
+        CREATE TABLE mentat_agent_registry_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            authority TEXT NOT NULL CHECK (authority = 'sqlite'),
+            migration_contract TEXT NOT NULL CHECK (
+                migration_contract = 'mentat-agent-registry-convergence-v1'
+            ),
+            source_kind TEXT NOT NULL CHECK (source_kind IN ('fresh', 'legacy')),
+            source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+            source_agent_count INTEGER NOT NULL CHECK (
+                source_agent_count BETWEEN 0 AND 128
+            ),
+            cutover_at REAL NOT NULL CHECK (cutover_at > 0)
+        );
+
+        CREATE INDEX idx_mentat_agents_name
+            ON mentat_agents(name COLLATE NOCASE, id);
+        """,
+    ),
 )
 
 
@@ -565,7 +637,13 @@ def _secure_database_files(path: Path) -> None:
             continue
 
 
-def migrate(connection: sqlite3.Connection) -> None:
+def migrate(
+    connection: sqlite3.Connection,
+    *,
+    claim_fresh_agent_authority: bool = True,
+    fresh_agent_authority_allowed: Callable[[], bool] | None = None,
+) -> float | None:
+    fresh_agent_cutover_at: float | None = None
     connection.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations "
         "(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
@@ -574,6 +652,14 @@ def migrate(connection: sqlite3.Connection) -> None:
         int(row[0])
         for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
     }
+    existing_tables = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+    fresh_database = not applied and existing_tables == {"schema_migrations"}
     if applied and max(applied) > SCHEMA_VERSION:
         raise MentatDatabaseError("Mentat database schema is newer than this application")
     for version, script in MIGRATIONS:
@@ -588,14 +674,125 @@ def migrate(connection: sqlite3.Connection) -> None:
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (version, time.time()),
             )
+            should_claim_fresh_agent_authority = (
+                version == SCHEMA_VERSION
+                and fresh_database
+                and claim_fresh_agent_authority
+                and (
+                    fresh_agent_authority_allowed is None
+                    or fresh_agent_authority_allowed()
+                )
+            )
+            if should_claim_fresh_agent_authority:
+                cutover_at = time.time()
+                connection.execute(
+                    "INSERT INTO mentat_agent_registry_state ("
+                    "singleton, authority, migration_contract, source_kind, "
+                    "source_sha256, source_agent_count, cutover_at"
+                    ") VALUES (1, 'sqlite', ?, 'fresh', ?, 0, ?)",
+                    (
+                        AGENT_REGISTRY_AUTHORITY_CONTRACT,
+                        EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
+                        cutover_at,
+                    ),
+                )
+                if (
+                    fresh_agent_authority_allowed is not None
+                    and not fresh_agent_authority_allowed()
+                ):
+                    raise MentatDatabaseError(
+                        "Retired Agent registry state changed during authority claim"
+                    )
+                fresh_agent_cutover_at = cutover_at
             connection.commit()
         except Exception:
             connection.rollback()
             raise
+    return fresh_agent_cutover_at
+
+
+def _remove_exact_fresh_authority_if_unchanged(
+    connection: sqlite3.Connection,
+    data_dir: Path,
+    cutover_at: float,
+) -> bool:
+    """Remove a raced fresh receipt only while its empty state remains exact."""
+
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        if not legacy_agent_registry_artifacts_present(data_dir):
+            connection.commit()
+            return False
+        receipt_rows = connection.execute(
+            "SELECT authority, migration_contract, source_kind, source_sha256, "
+            "source_agent_count, cutover_at FROM mentat_agent_registry_state"
+        ).fetchall()
+        agent_count = int(
+            connection.execute("SELECT COUNT(*) FROM mentat_agents").fetchone()[0]
+        )
+        config_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM agent_runtime_configs"
+            ).fetchone()[0]
+        )
+        expected_receipt = [
+            (
+                "sqlite",
+                AGENT_REGISTRY_AUTHORITY_CONTRACT,
+                "fresh",
+                EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
+                0,
+                cutover_at,
+            )
+        ]
+        if (
+            [tuple(row) for row in receipt_rows] != expected_receipt
+            or agent_count
+            or config_count
+        ):
+            connection.rollback()
+            raise MentatDatabaseError(
+                "Mentat Agent authority changed during fresh-state verification"
+            )
+        deleted = connection.execute(
+            "DELETE FROM mentat_agent_registry_state WHERE singleton = 1 "
+            "AND authority = 'sqlite' AND migration_contract = ? "
+            "AND source_kind = 'fresh' AND source_sha256 = ? "
+            "AND source_agent_count = 0 AND cutover_at = ?",
+            (
+                AGENT_REGISTRY_AUTHORITY_CONTRACT,
+                EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
+                cutover_at,
+            ),
+        )
+        if deleted.rowcount != 1:
+            raise MentatDatabaseError(
+                "Mentat Agent authority cleanup target changed"
+            )
+        connection.commit()
+        remaining = sum(
+            int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in (
+                "mentat_agent_registry_state",
+                "mentat_agents",
+                "agent_runtime_configs",
+            )
+        )
+        if remaining:
+            raise MentatDatabaseError(
+                "Mentat Agent authority cleanup could not be verified"
+            )
+        return True
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
 
 
 def _connect_with_identity_locked(
     data_dir: Path,
+    *,
+    claim_fresh_agent_authority: bool = True,
 ) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
     private = ensure_private_console_dir(data_dir)
     path = private / DATABASE_NAME
@@ -616,7 +813,25 @@ def _connect_with_identity_locked(
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
         connection.execute("PRAGMA journal_mode = WAL")
-        migrate(connection)
+        fresh_agent_cutover_at = migrate(
+            connection,
+            claim_fresh_agent_authority=claim_fresh_agent_authority,
+            fresh_agent_authority_allowed=lambda: not legacy_agent_registry_artifacts_present(
+                data_dir
+            ),
+        )
+        if (
+            fresh_agent_cutover_at is not None
+            and legacy_agent_registry_artifacts_present(data_dir)
+        ):
+            if _remove_exact_fresh_authority_if_unchanged(
+                connection,
+                data_dir,
+                fresh_agent_cutover_at,
+            ):
+                raise MentatDatabaseError(
+                    "Retired Agent registry state changed during authority claim"
+                )
         _secure_database_files(path)
         verified = _validate_database_set(path, private)
         for candidate, identity in identities.items():
@@ -641,6 +856,17 @@ def connect(data_dir: Path) -> sqlite3.Connection:
     """Open a migrated SQLite connection with Mentat's local concurrency defaults."""
 
     connection, _identities = connect_with_identity(data_dir)
+    return connection
+
+
+def connect_for_agent_registry_migration(data_dir: Path) -> sqlite3.Connection:
+    """Open a destination without claiming empty authority before legacy import."""
+
+    with DATABASE_OPEN_BARRIER:
+        connection, _identities = _connect_with_identity_locked(
+            data_dir,
+            claim_fresh_agent_authority=False,
+        )
     return connection
 
 
