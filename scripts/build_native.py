@@ -21,12 +21,14 @@ from mentat.version import DISPLAY_VERSION, __version__
 
 
 def build_web_runtime() -> None:
-    """Create the standalone web payload before native packaging collects it."""
+    """Create a portable standalone web payload before native packaging collects it."""
 
     npm = shutil.which("npm")
     if npm is None:
         raise RuntimeError("Node 24.19 and the frozen web dependencies are required for native packaging")
-    run([npm, "--prefix", "web", "run", "build"])
+    # Native installers use Webpack's stable standalone path. The normal web
+    # build stays on Turbopack for local development and the Node dashboard.
+    run([npm, "--prefix", "web", "run", "build:portable"])
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> None:

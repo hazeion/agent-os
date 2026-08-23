@@ -281,3 +281,37 @@ non-responsive packaged Node process could leave an unbounded `curl` probe
 stuck. Both probes now use `--max-time 1`, and the workflow contract test
 requires that bound. The originating reviewer and the independent
 correctness/safety reviewer both reported no findings after the fix.
+
+### CI correction round 4
+
+Both macOS native installers now reach the packaged Node-only health route,
+but the frozen app's Node-to-private-bridge route remains unavailable. The
+same Node 24 process can reach a source Python bridge through the fixed token
+contract, and Windows native smoke passes. This isolates the remaining risk to
+the macOS frozen standalone build rather than the bridge protocol or data
+authority.
+
+Native packaging now uses the explicit Webpack standalone build, which is the
+portable production build path for the installer. Normal `npm run build` and
+local dashboard development remain on Turbopack. This is intentionally scoped
+to native artifact construction; it does not change runtime providers, browser
+behavior, or the Node gateway contract.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_packaging_cli tests.test_web_runtime tests.test_node_runtime_foundation tests.test_ci_quality_gate -v` | Pass | 54 focused checks passed. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
+| `npm --prefix web run build:portable` | Pass | Webpack produced and staged the standalone runtime. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+The complete local native bundle could not be retained for a smoke run because
+this environment's normal native build path lacks PyInstaller and its isolated
+temporary build was interrupted by the execution sandbox. GitHub's signed-free
+macOS installer smoke remains the required cross-platform evidence.
+
+### Final correction round 4 review
+
+Both independent reviewers reported no findings. They confirmed that the
+portable Webpack command is fixed, is supported by the installed Next CLI, is
+covered by the packaging contract test, and stays isolated to native packaging.
+Normal Turbopack development and dashboard builds are unchanged.

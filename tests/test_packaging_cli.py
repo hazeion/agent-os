@@ -164,7 +164,12 @@ class PackagingContractTests(unittest.TestCase):
         self.assertNotIn("0.1.0-beta.1", windows)
         self.assertIn("from mentat.version import DISPLAY_VERSION, __version__", builder)
         self.assertIn("def build_web_runtime()", builder)
-        self.assertIn('"web", "run", "build"', builder)
+        self.assertIn('"web", "run", "build:portable"', builder)
+        package = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            package["scripts"]["build:portable"],
+            "node scripts/run-next.mjs build --webpack && node scripts/prepare-standalone.mjs",
+        )
         self.assertIn('component["BundleIsRelocatable"] = False', builder)
         self.assertIn('"--component-plist"', builder)
         self.assertIn("-r requirements.txt", requirements)
