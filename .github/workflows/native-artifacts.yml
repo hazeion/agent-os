@@ -173,6 +173,7 @@ jobs:
           if ! curl --fail --silent --max-time 1 http://127.0.0.1:8896/api/bridge/health >/dev/null; then
             curl --silent --max-time 1 -i http://127.0.0.1:8896/api/bridge/health >&2 || true
             cat "$RUNNER_TEMP/mentat-native-upgrade.log" >&2 || true
+            ls -l "$MENTAT_DATA_DIR/runtime" >&2 || true
             find "$MENTAT_DATA_DIR/runtime" -maxdepth 1 -type f -name 'node-gateway-startup-*.log' -exec tail -c 4096 {} \; 2>/dev/null | head -c 8192 | sed -E -e 's/[A-Za-z0-9_-]{32,}/[redacted]/g' -e 's/((token|authorization|secret|password)[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[redacted]/Ig' >&2 || true
             exit 1
           fi
