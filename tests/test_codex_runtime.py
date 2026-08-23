@@ -119,15 +119,17 @@ def thread_read(*, status="inProgress", items=None) -> dict:
 
 class CodexRuntimeTests(unittest.TestCase):
     def runtime(self, root: Path, client: FakeClient) -> CodexRuntime:
+        command_path = str((root / "codex.exe").resolve())
         return CodexRuntime(
             workspace_root=root,
-            command=codex_app_server_command("/trusted/codex"),
+            command=codex_app_server_command(command_path),
             client=client,
         )
 
     def test_fixed_command_and_environment_do_not_forward_credentials(self):
-        command = codex_app_server_command("/trusted/codex")
-        self.assertEqual(command[0], "/trusted/codex")
+        command_path = str((Path.cwd() / "codex.exe").resolve())
+        command = codex_app_server_command(command_path)
+        self.assertEqual(command[0], command_path)
         self.assertEqual(command[-2:], ("app-server", "--stdio"))
         self.assertIn('shell_environment_policy.inherit="core"', command)
         self.assertIn("shell_environment_policy.ignore_default_excludes=false", command)
@@ -139,7 +141,7 @@ class CodexRuntimeTests(unittest.TestCase):
                 "PATH": "/safe/bin",
                 "CODEX_HOME": "/safe/codex-home",
                 "MENTAT_LOCAL_BRIDGE_TOKEN": "bridge-secret",
-                "CODEX_API_KEY": "provider-secret",
+                "CODEX_API_KEY": "provider-secret",  # pragma: allowlist secret
                 "OPENAI_API_KEY": "provider-secret",
                 "UNRELATED_PARENT_VALUE": "private-parent-value",
             }
@@ -159,15 +161,16 @@ class CodexRuntimeTests(unittest.TestCase):
     def test_runtime_rejects_a_non_fixed_command_or_missing_workspace(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
+            command_path = str((root / "codex.exe").resolve())
             with self.assertRaisesRegex(ValueError, "command is not fixed"):
                 CodexRuntime(
                     workspace_root=root,
-                    command=("/trusted/codex", "exec", "browser-controlled"),
+                    command=(command_path, "exec", "browser-controlled"),
                 )
             with self.assertRaisesRegex(ValueError, "workspace root is invalid"):
                 CodexRuntime(
                     workspace_root=root / "missing",
-                    command=codex_app_server_command("/trusted/codex"),
+                    command=codex_app_server_command(command_path),
                 )
 
     @unittest.skipIf(os.name == "nt", "POSIX executable trust rules")
@@ -346,9 +349,12 @@ class CodexRuntimeTests(unittest.TestCase):
             return client
 
         with TemporaryDirectory() as temporary:
+            root = Path(temporary)
             runtime = CodexRuntime(
-                workspace_root=Path(temporary),
-                command=codex_app_server_command("/trusted/codex"),
+                workspace_root=root,
+                command=codex_app_server_command(
+                    str((root / "codex.exe").resolve())
+                ),
                 client_factory=factory,
             )
             request_thread = threading.Thread(target=runtime._require_client)
@@ -569,7 +575,7 @@ class CodexAppServerClientTests(unittest.TestCase):
                 "HOME": str(root),
                 "PATH": os.environ.get("PATH", ""),
                 "MENTAT_LOCAL_BRIDGE_TOKEN": "must-not-cross",
-                "CODEX_API_KEY": "must-not-cross",
+                "CODEX_API_KEY": "must-not-cross",  # pragma: allowlist secret
             }
         )
         return CodexAppServerClient(

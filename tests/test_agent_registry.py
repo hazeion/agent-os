@@ -406,7 +406,9 @@ class AgentRegistryTests(unittest.TestCase):
             root = Path(tmpdir)
             runtime = server.CodexRuntime(
                 workspace_root=root,
-                command=server.codex_app_server_command("/trusted/codex"),
+                command=server.codex_app_server_command(
+                    str((root / "codex.exe").resolve())
+                ),
                 client=Mock(
                     request=Mock(
                         return_value={
@@ -446,7 +448,9 @@ class AgentRegistryTests(unittest.TestCase):
             )
             runtime = server.CodexRuntime(
                 workspace_root=root,
-                command=server.codex_app_server_command("/trusted/codex"),
+                command=server.codex_app_server_command(
+                    str((root / "codex.exe").resolve())
+                ),
                 client=client,
             )
             runtimes = server.AgentRuntimeRegistry(
@@ -474,7 +478,9 @@ class AgentRegistryTests(unittest.TestCase):
             client = Mock(request=Mock(side_effect=AssertionError("unexpected probe")))
             runtime = server.CodexRuntime(
                 workspace_root=root,
-                command=server.codex_app_server_command("/trusted/codex"),
+                command=server.codex_app_server_command(
+                    str((root / "codex.exe").resolve())
+                ),
                 client=client,
             )
             runtimes = server.AgentRuntimeRegistry(

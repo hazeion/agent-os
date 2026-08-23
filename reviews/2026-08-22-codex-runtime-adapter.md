@@ -151,6 +151,12 @@ references to the browser.
   mobile LCP ranged from 1,114 to 1,209 ms; TBT was 0 ms in every run.
 - `python -m py_compile` for all touched Python modules and `git diff --check`:
   pass.
+- The first PR CI pass found two test-infrastructure issues: fake Codex paths
+  were POSIX-only in three Agent Registry tests, and two deliberately fake
+  credential names lacked the repository secret-scanner annotation. The
+  fixtures are now platform-neutral and explicitly allowlisted. The corrected
+  Codex and Agent Registry suites passed 53 tests with one expected
+  Windows-only skip on macOS.
 
 ## Adversarial review
 
@@ -188,7 +194,7 @@ Updated `README.md`, `AGENTS.md`, `ARCHITECTURE.md`, `SUPPORT.md`,
 ## Publication gate
 
 Standing authorization and both final reviewer approvals are recorded. The
-slice is ready to publish; CI will be monitored before merge.
+slice is published; the corrected CI run will be monitored before merge.
 
 ## Outcome review
 
