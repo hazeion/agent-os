@@ -6,7 +6,8 @@
 
 Mentat is a local operations console for planning work and running agents. It
 keeps your projects, tasks, runs, and activity on your computer. It can run
-work through Hermes or a signed-in local Codex CLI.
+work through Hermes, a signed-in local Codex CLI, or an optional Vercel AI
+Gateway connection.
 
 Mentat uses a Next.js dashboard with a small private Python bridge. The older
 Python interface is available only as a temporary troubleshooting fallback.
@@ -25,8 +26,8 @@ Python interface is available only as a temporary troubleshooting fallback.
 
 ## How Mentat works
 
-The Python bridge owns local data and talks to Hermes. Tasks, runs, and events
-are stored in Mentat's private SQLite database.
+The Python bridge owns local data and runtime access. Tasks, agents, runs,
+events, and provider settings are stored in Mentat's private SQLite database.
 
 The dashboard reaches the bridge through a private local connection that is not
 exposed to the browser. Both parts listen only on your computer.
@@ -87,6 +88,48 @@ Hermes features, or sign in through the Codex CLI for Codex task execution.
 The setup helper stores settings on your computer. Hermes continues to manage
 provider credentials. To connect Mentat to Hermes on another computer, follow
 the [remote Hermes guide](REMOTE_HERMES.md#operator-experience-local-and-remote-selection).
+
+### Optional Vercel connection
+
+Vercel is optional. AI Gateway can run a compatible Agent, while Sandbox and
+Connect are separate readiness checks. Mentat reads credentials from your
+environment and never saves their values.
+
+For an AI Gateway API key:
+
+```bash
+export AI_GATEWAY_API_KEY="your-key"
+python -m mentat.cli vercel configure --auth api_key --model openai/gpt-5.4
+```
+
+On Windows, set the key in your current terminal with
+`$env:AI_GATEWAY_API_KEY = "your-key"` in PowerShell, or
+`set AI_GATEWAY_API_KEY=your-key` in Command Prompt.
+
+Review the preview, then repeat the command with `--confirm TOKEN`. Create an
+Agent the same way:
+
+```bash
+python -m mentat.cli vercel create-agent --name "Vercel Agent"
+```
+
+Use `python -m mentat.cli vercel status` to check the safe connection state.
+`Configured` means the local settings are valid. `Credential present` means
+the required environment value is available. Use the confirmed `vercel test`
+command when you need a live readiness check.
+Sandbox also needs `VERCEL_TOKEN`, `--team-id`, and `--project-id`. OIDC and
+Connect use `VERCEL_OIDC_TOKEN`; Connect also needs `--connector`. Run
+`python -m mentat.cli vercel configure --help` for setup options. Stop Mentat
+before changing or testing this connection.
+
+If a Gateway request ends in `unknown`, Mentat will not retry it. After you
+check the provider, stop Mentat and review this recovery command:
+
+```bash
+python -m mentat.cli vercel recover-run --run-id RUN_ID
+```
+
+Confirming it marks the Run interrupted without sending the request again.
 
 ## Start and stop Mentat
 

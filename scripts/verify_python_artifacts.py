@@ -45,6 +45,7 @@ PUBLIC_MODULES = {
     "mentat_db", "mentat_lifecycle", "orchestration_service", "private_console_migration",
     "private_console_unit", "private_state", "remote_hermes", "runtime_config",
     "run_repository", "server", "task_planning", "task_repository",
+    "vercel_connections", "vercel_infrastructure", "vercel_runtime",
 }
 PUBLIC_PACKAGES = {"mentat"}
 PUBLIC_DATA_FILES = {destination: set(sources) for destination, sources in PACKAGE_PUBLIC_DATA_FILES.items()}

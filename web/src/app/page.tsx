@@ -5,26 +5,26 @@ export default function HomePage() {
   return (
     <AppShell route="/">
       <div className="dashboard-grid grid min-w-0 gap-3">
-        <Panel eyebrow="Current slice" title="Operational focus">
+        <Panel eyebrow="Current system" title="Operational status">
           <FoundationState
-            detail="The shared React shell is ready. Live planning data remains in the Python dashboard until the Tasks migration slice."
-            label="Shell foundation ready"
+            detail="The Next.js workspace reads Agents, SQLite Tasks, runtime-neutral Runs, and provider status through the private Python bridge."
+            label="Pivot workspace ready"
           />
         </Panel>
 
-        <Panel eyebrow="Next connections" title="Migration status">
+        <Panel eyebrow="Live workspaces" title="Connected surfaces">
           <ol className="migration-list">
             <li>
               <strong>Agents</strong>
-              <span>Connect the canonical Agent registry.</span>
+              <span>Canonical Agent registry and provider status.</span>
             </li>
             <li>
               <strong>Tasks</strong>
-              <span>Move the planning workspace onto the SQLite API.</span>
+              <span>SQLite-backed planning data.</span>
             </li>
             <li>
               <strong>Runs</strong>
-              <span>Add runtime-neutral execution visibility.</span>
+              <span>Runtime-neutral history, timelines, and controls.</span>
             </li>
           </ol>
         </Panel>

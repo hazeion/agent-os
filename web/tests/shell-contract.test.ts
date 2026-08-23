@@ -47,6 +47,9 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
   }
   assert.match(routeSources.get("/agents") ?? "", /data-agents-root/);
   assert.match(routeSources.get("/agents") ?? "", /Loading canonical Agents/);
+  assert.match(routeSources.get("/agents") ?? "", /data-provider-connections-root/);
+  assert.match(routeSources.get("/agents") ?? "", /Loading provider connections/);
+  assert.match(routeSources.get("/agents") ?? "", /provider-connection-placeholder/);
   assert.match(routeSources.get("/tasks") ?? "", /data-tasks-root/);
   assert.match(routeSources.get("/tasks") ?? "", /Loading current Tasks/);
   assert.match(routeSources.get("/runs") ?? "", /data-runs-root/);
@@ -122,14 +125,23 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   const runtime = source("public/shell-runtime.js");
   assert.match(runtime, /fetch\("\/api\/bridge\/health"/);
   assert.match(runtime, /fetch\("\/api\/agents"/);
+  assert.match(runtime, /fetch\("\/api\/provider-connections"/);
   assert.match(runtime, /fetch\("\/api\/tasks"/);
   assert.match(runtime, /Promise\.allSettled\(\[load\("\/api\/runs"\), load\("\/api\/agents"\)\]\)/);
   assert.match(runtime, /data-agents-refresh/);
+  assert.match(runtime, /data-provider-connections-refresh/);
+  assert.match(runtime, /provider-connection-card provider-connection-placeholder/);
   assert.match(runtime, /data-tasks-refresh/);
   assert.match(runtime, /data-runs-refresh/);
   assert.ok(runtime.includes("`${agent.id}\\0${agent.runtime_type}`"));
   assert.ok(runtime.includes("indexedAgents.get(`${run.agent_id}\\0${run.runtime_type}`)"));
   assert.ok(runtime.includes("agent?.name || (run.agent_id ? `Agent ${run.agent_id}` : `Run ${run.id}`)"));
+  assert.ok(runtime.includes('agent?.capabilities.includes(capability) === true'));
+  assert.doesNotMatch(runtime, /!agent \|\| agent\.capabilities\.includes/);
+  assert.ok(runtime.includes('supports("run.events")'));
+  assert.ok(runtime.includes('supports("run.message")'));
+  assert.ok(runtime.includes('supports("run.approval_response")'));
+  assert.ok(runtime.includes('supports("run.stop")'));
   assert.match(runtime, /card\.setAttribute\("aria-labelledby", heading\.id\)/);
   assert.match(runtime, /`Open timeline for \$\{runLabel\}`/);
   assert.match(runtime, /`Send message to \$\{runLabel\}`/);
@@ -137,6 +149,7 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.match(runtime, /`Stop run for \$\{runLabel\}`/);
   assert.match(runtime, /readableRunStatus/);
   assert.match(runtime, /textContent = agent\.name/);
+  assert.match(runtime, /textContent = connection\.label/);
   assert.match(runtime, /Stopping asks the selected runtime to cancel this active Run\./);
   assert.doesNotMatch(runtime, /Stopping asks Hermes/);
   assert.doesNotMatch(runtime, /MENTAT_BRIDGE_TOKEN|X-Mentat-Bridge-Token|local path/);

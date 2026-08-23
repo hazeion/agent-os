@@ -2,6 +2,32 @@
 
 All notable changes to Mentat.
 
+## 2026-08-23
+
+### Added
+- Added one optional private Vercel connection with exact configure, test,
+  Agent-create, status, and disconnect commands.
+- Added a bounded AI Gateway runtime plus separate fixed Sandbox Node 24 and
+  Connect token readiness checks.
+- Added a safe provider status view to the responsive Agents workspace.
+- Added explicit recovery for an ambiguous Vercel dispatch. It marks one exact
+  Run interrupted without retrying the provider request.
+
+### Changed
+- Advanced the private Console database to schema 9 while keeping released
+  backups restorable and the schema-5 compatible-root export usable.
+- Included provider settings and compatible Agent bindings in the same
+  format-4 backup and restore unit.
+- Made Vercel result messages visible in the bounded Run timeline and hid Run
+  controls that a known Agent does not support.
+
+### Safety
+- Kept Vercel optional. Credentials stay in operator environment variables and
+  never enter SQLite, backups, browser responses, or normalized Run evidence.
+- Limited Vercel traffic to fixed HTTPS operations. Sandbox commands are fixed
+  and temporary, use one total deadline, and require verified stopped cleanup;
+  Connect tokens are validated and immediately discarded.
+
 ## 2026-08-22
 
 ### Added

@@ -163,6 +163,68 @@ def build_parser() -> argparse.ArgumentParser:
     )
     connection_configure.add_argument("--confirm", metavar="TOKEN")
     _runtime_arguments(connection_configure)
+
+    vercel = commands.add_parser(
+        "vercel",
+        help="Configure and test optional Vercel capabilities.",
+    )
+    vercel_commands = vercel.add_subparsers(
+        dest="vercel_command",
+        required=True,
+    )
+    vercel_status = vercel_commands.add_parser(
+        "status",
+        help="Show the safe Vercel connection status.",
+    )
+    _runtime_arguments(vercel_status)
+    vercel_configure = vercel_commands.add_parser(
+        "configure",
+        help="Preview or confirm one private Vercel connection.",
+    )
+    vercel_configure.add_argument("--label", default="Vercel")
+    vercel_configure.add_argument(
+        "--auth",
+        choices=("api_key", "oidc"),
+        required=True,
+        help=(
+            "Credential source: api_key reads AI_GATEWAY_API_KEY and "
+            "VERCEL_TOKEN; oidc reads VERCEL_OIDC_TOKEN."
+        ),
+    )
+    vercel_configure.add_argument("--model", required=True)
+    vercel_configure.add_argument("--team-id")
+    vercel_configure.add_argument("--project-id")
+    vercel_configure.add_argument("--connector")
+    vercel_configure.add_argument("--scope", action="append", default=[])
+    vercel_configure.add_argument("--confirm", metavar="TOKEN")
+    _runtime_arguments(vercel_configure)
+    vercel_test = vercel_commands.add_parser(
+        "test",
+        help="Preview or confirm one bounded Vercel readiness test.",
+    )
+    vercel_test.add_argument("capability", choices=("gateway", "sandbox", "connect"))
+    vercel_test.add_argument("--confirm", metavar="TOKEN")
+    _runtime_arguments(vercel_test)
+    vercel_agent = vercel_commands.add_parser(
+        "create-agent",
+        help="Preview or confirm one Agent bound to Vercel AI Gateway.",
+    )
+    vercel_agent.add_argument("--name", required=True)
+    vercel_agent.add_argument("--confirm", metavar="TOKEN")
+    _runtime_arguments(vercel_agent)
+    vercel_recover = vercel_commands.add_parser(
+        "recover-run",
+        help="Preview or confirm abandoning one ambiguous Vercel Run without retrying it.",
+    )
+    vercel_recover.add_argument("--run-id", required=True)
+    vercel_recover.add_argument("--confirm", metavar="TOKEN")
+    _runtime_arguments(vercel_recover)
+    vercel_disconnect = vercel_commands.add_parser(
+        "disconnect",
+        help="Preview or confirm disabling the Vercel connection.",
+    )
+    vercel_disconnect.add_argument("--confirm", metavar="TOKEN")
+    _runtime_arguments(vercel_disconnect)
     return parser
 
 
@@ -611,6 +673,198 @@ def run_connection(args: argparse.Namespace) -> int:
     raise RuntimeError("unknown connection command")
 
 
+def _safe_vercel_error(error) -> int:
+    code = getattr(error, "code", "vercel.operation_failed")
+    _print_json(
+        {
+            "ok": False,
+            "status": "blocked",
+            "error_code": str(code),
+            "message": "The Vercel operation was not applied.",
+        }
+    )
+    return 2
+
+
+def _confirm_vercel_change(args, preview, apply) -> int:
+    provided = getattr(args, "confirm", None)
+    if provided is None:
+        payload = preview.public_summary()
+        payload["message"] = "Review this exact operation, then confirm it."
+        _print_json(payload)
+        if not sys.stdin.isatty():
+            return 3
+        response = input("Apply this Vercel operation? [y/N]: ").strip().lower()
+        if response not in {"y", "yes"}:
+            _print_json({"ok": False, "status": "cancelled"})
+            return 1
+        provided = preview.confirmation_token
+    if (
+        not isinstance(provided, str)
+        or not hmac.compare_digest(provided, preview.confirmation_token)
+    ):
+        _print_json(
+            {
+                "ok": False,
+                "status": "blocked",
+                "error_code": "vercel.confirmation_invalid",
+                "message": "The Vercel operation changed or the confirmation token is invalid.",
+            }
+        )
+        return 2
+    _runtime_config, config = _load_config(args)
+    if _connection_server_running(config):
+        _print_json(
+            {
+                "ok": False,
+                "status": "blocked",
+                "error_code": "vercel.server_running",
+                "message": "Stop Mentat before changing or testing Vercel.",
+            }
+        )
+        return 2
+    try:
+        result = apply(provided)
+    except Exception as exc:
+        from vercel_connections import VercelConnectionError
+        from vercel_infrastructure import VercelInfrastructureError
+
+        if isinstance(exc, (VercelConnectionError, VercelInfrastructureError)):
+            return _safe_vercel_error(exc)
+        raise
+    payload = result.public_summary() if hasattr(result, "public_summary") else result
+    _print_json({"ok": True, **payload})
+    return 0
+
+
+def run_vercel(args: argparse.Namespace) -> int:
+    from agent_registry import public_agent_record
+    from private_state import private_state_lock
+    from vercel_connections import (
+        VercelConnectionError,
+        confirm_abandon_vercel_run,
+        confirm_configure_vercel,
+        confirm_create_vercel_agent,
+        confirm_disconnect_vercel,
+        preview_configure_vercel,
+        preview_abandon_vercel_run,
+        preview_create_vercel_agent,
+        preview_disconnect_vercel,
+        preview_test_vercel,
+        public_connection_record,
+        public_vercel_connections,
+        require_vercel_server_stopped,
+        validate_test_vercel_confirmation,
+    )
+    from vercel_infrastructure import VercelConnectAdapter, VercelSandboxAdapter
+    from vercel_runtime import VercelRuntime
+
+    _runtime_config, config = _load_config(args)
+    try:
+        if args.vercel_command == "status":
+            payload = public_vercel_connections(config.data_dir)
+            _print_json({"ok": True, "status": "ready", **payload})
+            return 0
+        if args.vercel_command == "configure":
+            preview = preview_configure_vercel(
+                config.data_dir,
+                label=args.label,
+                auth_kind=args.auth,
+                model=args.model,
+                team_id=args.team_id,
+                project_id=args.project_id,
+                connector=args.connector,
+                connect_scopes=args.scope,
+            )
+            return _confirm_vercel_change(
+                args,
+                preview,
+                lambda token: {
+                    "schema_version": 1,
+                    "status": "configured",
+                    "connection": public_connection_record(
+                        confirm_configure_vercel(config.data_dir, preview, token)
+                    ),
+                },
+            )
+        if args.vercel_command == "create-agent":
+            preview = preview_create_vercel_agent(
+                config.data_dir,
+                name=args.name,
+            )
+            return _confirm_vercel_change(
+                args,
+                preview,
+                lambda token: {
+                    "schema_version": 1,
+                    "status": "created",
+                    "agent": public_agent_record(
+                        confirm_create_vercel_agent(config.data_dir, preview, token)
+                    ),
+                },
+            )
+        if args.vercel_command == "recover-run":
+            preview = preview_abandon_vercel_run(
+                config.data_dir,
+                run_id=args.run_id,
+            )
+            return _confirm_vercel_change(
+                args,
+                preview,
+                lambda token: confirm_abandon_vercel_run(
+                    config.data_dir,
+                    preview,
+                    token,
+                ),
+            )
+        if args.vercel_command == "disconnect":
+            preview = preview_disconnect_vercel(config.data_dir)
+            return _confirm_vercel_change(
+                args,
+                preview,
+                lambda token: {
+                    "schema_version": 1,
+                    "status": "disconnected",
+                    "connection": public_connection_record(
+                        confirm_disconnect_vercel(config.data_dir, preview, token)
+                    ),
+                },
+            )
+        if args.vercel_command == "test":
+            preview = preview_test_vercel(
+                config.data_dir,
+                capability=args.capability,
+            )
+
+            def apply_test(token):
+                # The cross-process mutation boundary keeps the exact private
+                # configuration stable, while no SQLite transaction crosses
+                # the external request.
+                with private_state_lock(config.data_dir):
+                    require_vercel_server_stopped(config.data_dir)
+                    record = validate_test_vercel_confirmation(
+                        config.data_dir,
+                        preview,
+                        token,
+                    )
+                    if args.capability == "gateway":
+                        return VercelRuntime(config.data_dir).test_readiness()
+                    if args.capability == "sandbox":
+                        return VercelSandboxAdapter().test_readiness(
+                            record,
+                            environment=os.environ,
+                        )
+                    return VercelConnectAdapter().test_readiness(
+                        record,
+                        environment=os.environ,
+                    )
+
+            return _confirm_vercel_change(args, preview, apply_test)
+    except VercelConnectionError as exc:
+        return _safe_vercel_error(exc)
+    raise RuntimeError("unknown Vercel command")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {
@@ -625,6 +879,7 @@ def main(argv: list[str] | None = None) -> int:
         "task-export": run_task_export,
         "agent-registry-migration": run_agent_registry_migration,
         "connection": run_connection,
+        "vercel": run_vercel,
     }
     return handlers[args.command](args)
 

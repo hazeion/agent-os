@@ -2,7 +2,7 @@
 
 Status: Active roadmap
 
-Last updated: 2026-08-22
+Last updated: 2026-08-23
 
 This file shows what is complete, what is active, and what comes next. It does
 not approve a proposed slice. Each nontrivial slice needs its own approved scope
@@ -59,9 +59,14 @@ Slice 3B is complete. The Runs workspace proves that Hermes
 and Codex can stay visible and controllable together without crossing Agent,
 Task, Run, event, or runtime identities.
 
-Slice 3C is complete in this branch. Schema-8 `mentat.sqlite3` now owns Agent
-identity and private runtime bindings alongside Tasks, Runs, and events.
+Slice 3C is complete. PR #126 merged schema-8 Agent identity and private
+runtime bindings into `mentat.sqlite3` alongside Tasks, Runs, and events.
 Existing roots use an explicit backed-up convergence command before startup.
+
+Slice 4A is in progress on its approved branch. Schema 9 adds one private
+Vercel connection, a bounded AI Gateway runtime, separate Sandbox and Connect
+readiness adapters, exact CLI workflows, and a safe Agents-workspace status
+view. Vercel remains optional and credentials stay outside Mentat storage.
 
 ## Roadmap
 
@@ -83,8 +88,8 @@ Existing roots use an explicit backed-up convergence command before startup.
 | 2D | Complete | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
 | 3A | Complete | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
 | 3B | Complete | Hermes and Codex run together in one interface. | Slice 3A |
-| 3C | Complete in this branch | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
-| 4A | Planned | Vercel infrastructure adapter: optional AI Gateway, Sandbox, and Connect behind Mentat contracts. | Slice 3C |
+| 3C | Complete | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
+| 4A | In progress | Optional AI Gateway, Sandbox, and Connect adapters behind Mentat contracts. | Slice 3C |
 | 4B+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 4A |
 
 ## Completed foundation
@@ -402,18 +407,16 @@ Review log: `reviews/2026-08-22-agent-registry-convergence.md`
 Vercel becomes a real, optional infrastructure choice for compatible agent
 workloads. This is not a requirement to host the Mentat console on Vercel.
 
-The slice evaluates and, where appropriate, adds capability-scoped adapters
-for:
+The approved slice adds capability-scoped adapters for:
 
 - AI Gateway for model access and usage reporting
 - Sandbox for isolated workload execution
 - Connect for OAuth-backed, scoped service access
 
 Mentat remains the owner of Agent, provider-connection, Run, event, and policy
-records. The integration must be optional, preserve local operation without
-Vercel, keep credentials private, and fail closed if a configured service is
-unavailable. Exact implementation begins only after the runtime and data model
-are stable through Slice 3C.
+records. The integration is optional, preserves local operation without
+Vercel, keeps credentials private, and fails closed if a configured service is
+unavailable.
 
 The Slice 4A completion bar is a working optional connection, not a research
 note: an operator can explicitly configure a Vercel connection, see its safe
@@ -423,6 +426,8 @@ Sandbox, and Connect remain separate capability-scoped adapters. Sandbox is
 for isolated workloads, not Mentat's durable database or permanently running
 server. Connect is for OAuth-backed service access; it does not expose tokens
 to the browser or replace every provider's authentication flow.
+
+Review log: `reviews/2026-08-23-vercel-capability-adapters.md`
 
 ## Working rules
 

@@ -4,7 +4,7 @@ import test from "node:test";
 import { BridgeRunEventsError, type PublicBridgeRunEvents } from "../src/lib/bridge-run-events.ts";
 import { createRunTimelineStream } from "../src/lib/run-timeline-stream.ts";
 
-const event = { id: "event_current", run_id: "run_current", sequence: 1, type: "run.started", occurred_at: "2026-08-22T00:01:00Z", summary: "Runtime accepted dispatch", metrics: {} };
+const event = { id: "event_current", run_id: "run_current", sequence: 1, type: "run.started", occurred_at: "2026-08-22T00:01:00Z", summary: "Runtime accepted dispatch", message: null, metrics: {} };
 const readText = (stream: ReadableStream<Uint8Array>) => new Response(stream).text();
 
 test("timeline stream frames one initial snapshot, incremental events, keepalives, and reconnect retry", async () => {

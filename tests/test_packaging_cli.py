@@ -81,6 +81,12 @@ class PackagingContractTests(unittest.TestCase):
             "run_repository",
             document["tool"]["setuptools"]["py-modules"],
         )
+        for module in (
+            "vercel_connections",
+            "vercel_infrastructure",
+            "vercel_runtime",
+        ):
+            self.assertIn(module, document["tool"]["setuptools"]["py-modules"])
 
     def test_source_manifest_allowlists_public_seed_files(self):
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")

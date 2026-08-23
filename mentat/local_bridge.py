@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime
+import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
@@ -28,12 +29,14 @@ BRIDGE_TOKEN_ENV = "MENTAT_BRIDGE_TOKEN"
 BRIDGE_TOKEN_HEADER = "X-Mentat-Bridge-Token"
 BRIDGE_HEALTH_PATH = "/bridge/v1/health"
 BRIDGE_AGENTS_PATH = "/bridge/v1/agents"
+BRIDGE_PROVIDER_CONNECTIONS_PATH = "/bridge/v1/provider-connections"
 BRIDGE_TASKS_PATH = "/bridge/v1/tasks"
 BRIDGE_RUNS_PATH = "/bridge/v1/runs"
 MINIMUM_TOKEN_LENGTH = 43
 MAXIMUM_TOKEN_LENGTH = 256
 SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
 MAXIMUM_BRIDGE_AGENTS = 128
+MAXIMUM_BRIDGE_PROVIDER_CONNECTIONS = 1
 MAXIMUM_BRIDGE_TASKS = 2048
 MAXIMUM_BRIDGE_RUNS = 50
 MAXIMUM_BRIDGE_RUN_EVENTS = 100
@@ -54,6 +57,10 @@ class BridgeConfigurationError(ValueError):
 
 class BridgeAgentProjectionError(ValueError):
     """Raised when canonical Agent data cannot cross this fixed capability."""
+
+
+class BridgeProviderConnectionProjectionError(ValueError):
+    """Raised when safe provider status cannot cross this fixed capability."""
 
 
 class BridgeTaskProjectionError(ValueError):
@@ -309,6 +316,142 @@ def bridge_agents_payload() -> tuple[dict[str, object], int]:
     }, code
 
 
+def _public_provider_connection(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "id", "provider", "label", "state", "model", "capabilities"
+    }:
+        raise BridgeProviderConnectionProjectionError(
+            "provider_connection_projection_invalid"
+        )
+    label = value.get("label")
+    model = value.get("model")
+    capabilities = value.get("capabilities")
+    if (
+        value.get("id") != "connection_vercel"
+        or value.get("provider") != "vercel"
+        or not isinstance(label, str)
+        or not label.strip()
+        or label.strip() != label
+        or len(label) > 80
+        or any(ord(character) < 32 or ord(character) == 127 for character in label)
+        or value.get("state") not in {"configured", "needs_auth", "disconnected"}
+        or not isinstance(model, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:+@/-]{1,159}", model)
+        or "/" not in model
+        or "//" in model
+        or not isinstance(capabilities, list)
+        or not 1 <= len(capabilities) <= 3
+    ):
+        raise BridgeProviderConnectionProjectionError(
+            "provider_connection_projection_invalid"
+        )
+    allowed_ids = ("ai.gateway", "sandbox.readiness", "connect.token")
+    public_capabilities: list[dict[str, str]] = []
+    seen: set[str] = set()
+    last_index = -1
+    for capability in capabilities:
+        if not isinstance(capability, dict) or set(capability) != {"id", "status"}:
+            raise BridgeProviderConnectionProjectionError(
+                "provider_connection_projection_invalid"
+            )
+        identifier = capability.get("id")
+        status = capability.get("status")
+        if identifier not in allowed_ids or status not in {
+            "credential_present", "needs_auth", "disconnected"
+        }:
+            raise BridgeProviderConnectionProjectionError(
+                "provider_connection_projection_invalid"
+            )
+        index = allowed_ids.index(identifier)
+        if identifier in seen or index <= last_index:
+            raise BridgeProviderConnectionProjectionError(
+                "provider_connection_projection_invalid"
+            )
+        seen.add(identifier)
+        last_index = index
+        public_capabilities.append({"id": identifier, "status": status})
+    state = value["state"]
+    gateway = public_capabilities[0]
+    if (
+        gateway["id"] != "ai.gateway"
+        or state == "configured" and gateway["status"] != "credential_present"
+        or state == "needs_auth" and gateway["status"] != "needs_auth"
+        or state == "disconnected"
+        and any(item["status"] != "disconnected" for item in public_capabilities)
+    ):
+        raise BridgeProviderConnectionProjectionError(
+            "provider_connection_projection_invalid"
+        )
+    return {
+        "id": "connection_vercel",
+        "provider": "vercel",
+        "label": label,
+        "state": state,
+        "model": model,
+        "capabilities": public_capabilities,
+    }
+
+
+def _ready_provider_connections_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "connections", "count"
+    }:
+        raise BridgeProviderConnectionProjectionError(
+            "provider_connection_projection_invalid"
+        )
+    connections = value.get("connections")
+    count = value.get("count")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(connections, list)
+        or type(count) is not int
+        or count != len(connections)
+        or not 0 <= count <= MAXIMUM_BRIDGE_PROVIDER_CONNECTIONS
+    ):
+        raise BridgeProviderConnectionProjectionError(
+            "provider_connection_projection_invalid"
+        )
+    public = [_public_provider_connection(item) for item in connections]
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": "ready",
+        "connections": public,
+        "count": count,
+    }
+
+
+def bridge_provider_connections_payload() -> tuple[dict[str, object], int]:
+    """Read one secret-free provider projection through a fixed capability."""
+
+    try:
+        from server import mentat_provider_connections_payload
+        from vercel_connections import VercelConnectionError
+
+        try:
+            return _ready_provider_connections_payload(
+                mentat_provider_connections_payload()
+            ), 200
+        except VercelConnectionError as exc:
+            if exc.code == "vercel.connection_unsupported":
+                state, code = "unsupported", 501
+            elif exc.code == "vercel.connection_unavailable":
+                state, code = "unavailable", 503
+            else:
+                state, code = "error", 500
+        except (BridgeProviderConnectionProjectionError, OSError, ValueError):
+            state, code = "error", 500
+    except Exception:
+        state, code = "error", 500
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": state,
+    }, code
+
+
 def _valid_iso_date(value: object) -> bool:
     if not isinstance(value, str):
         return False
@@ -424,11 +567,25 @@ def bridge_runs_payload() -> tuple[dict[str, object], int]:
 
 
 def _public_run_event_record(value: object, *, expected_run_id: str) -> dict[str, object]:
-    required = {"id", "run_id", "sequence", "type", "occurred_at", "summary", "metrics"}
+    required = {
+        "id",
+        "run_id",
+        "sequence",
+        "type",
+        "occurred_at",
+        "summary",
+        "message",
+        "metrics",
+    }
     if not isinstance(value, dict) or set(value) != required:
         raise BridgeRunEventProjectionError("event_projection_invalid")
     event_id, run_id, sequence = value.get("id"), value.get("run_id"), value.get("sequence")
-    event_type, occurred_at, summary, metrics = value.get("type"), value.get("occurred_at"), value.get("summary"), value.get("metrics")
+    event_type, occurred_at = value.get("type"), value.get("occurred_at")
+    summary, message, metrics = (
+        value.get("summary"),
+        value.get("message"),
+        value.get("metrics"),
+    )
     allowed_metrics = {"input_tokens", "output_tokens", "total_tokens", "context_tokens", "context_length"}
     if (
         not isinstance(event_id, str) or not _OPAQUE_ID.fullmatch(event_id)
@@ -437,11 +594,37 @@ def _public_run_event_record(value: object, *, expected_run_id: str) -> dict[str
         or event_type not in {"run.created", "dispatch.reserved", "run.started", "submission.unknown", "run.interrupted", "tool.requested", "tool.completed", "approval.required", "artifact.created", "cost", "run.stopped", "run.completed", "run.failed", "message"}
         or not _valid_timestamp(occurred_at)
         or not isinstance(summary, str) or not summary or summary.strip() != summary or len(summary) > 500 or "\0" in summary
+        or message is not None and (
+            event_type != "message"
+            or not isinstance(message, str)
+            or not message
+            or message.strip() != message
+            or len(message) > 20_000
+            or "\0" in message
+        )
         or not isinstance(metrics, dict) or set(metrics) - allowed_metrics
         or any(type(metric) is not int or not 0 <= metric <= 10**9 for metric in metrics.values())
     ):
         raise BridgeRunEventProjectionError("event_projection_invalid")
-    return {"id": event_id, "run_id": run_id, "sequence": sequence, "type": event_type, "occurred_at": occurred_at, "summary": summary, "metrics": dict(metrics)}
+    return {
+        "id": event_id,
+        "run_id": run_id,
+        "sequence": sequence,
+        "type": event_type,
+        "occurred_at": occurred_at,
+        "summary": summary,
+        "message": message,
+        "metrics": dict(metrics),
+    }
+
+
+def _trusted_vercel_message_event_id(run_id: str) -> str:
+    source_event_id = "vercel_message_" + hashlib.sha256(
+        (run_id + ":message").encode("utf-8")
+    ).hexdigest()[:24]
+    return "event_" + hashlib.sha256(
+        (run_id + ":" + source_event_id).encode("utf-8")
+    ).hexdigest()[:24]
 
 
 def bridge_run_events_payload(run_id: str, after_sequence: int) -> tuple[dict[str, object], int]:
@@ -465,7 +648,20 @@ def bridge_run_events_payload(run_id: str, after_sequence: int) -> tuple[dict[st
                 raise BridgeRunEventProjectionError("event_projection_invalid")
             public_events = [_public_run_event_record(event, expected_run_id=run_id) for event in events]
             sequences = [event["sequence"] for event in public_events]
-            if len(set(sequences)) != len(sequences) or sequences != sorted(sequences):
+            message_count = sum(
+                event["message"] is not None for event in public_events
+            )
+            trusted_message_id = _trusted_vercel_message_event_id(run_id)
+            if (
+                len(set(sequences)) != len(sequences)
+                or sequences != sorted(sequences)
+                or message_count > 1
+                or any(
+                    event["message"] is not None
+                    and event["id"] != trusted_message_id
+                    for event in public_events
+                )
+            ):
                 raise BridgeRunEventProjectionError("event_projection_invalid")
             if sequences and sequences[-1] != cursor:
                 raise BridgeRunEventProjectionError("event_projection_invalid")
@@ -888,6 +1084,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == BRIDGE_AGENTS_PATH and not parsed.query:
             payload, status = bridge_agents_payload()
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PROVIDER_CONNECTIONS_PATH and not parsed.query:
+            payload, status = bridge_provider_connections_payload()
             self._send_json(payload, status)
             return
         if parsed.path == BRIDGE_TASKS_PATH and not parsed.query:

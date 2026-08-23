@@ -644,9 +644,9 @@ class TaskRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise TaskRepositoryError("task_repository.schema_unsupported") from exc
         allowed_versions = (
-            {5, 6, 7, DATABASE_SCHEMA_VERSION}
+            {5, 6, 7, 8, DATABASE_SCHEMA_VERSION}
             if self.allow_pre_authority_schema
-            else {6, 7, DATABASE_SCHEMA_VERSION}
+            else {6, 7, 8, DATABASE_SCHEMA_VERSION}
         )
         if version not in allowed_versions:
             raise TaskRepositoryError("task_repository.schema_unsupported")
@@ -2018,6 +2018,7 @@ def _schema5_private_unit(unit):
                 connection.execute("DROP TABLE mentat_agent_registry_state")
                 connection.execute("DROP TABLE mentat_agents")
                 connection.execute("DROP TABLE agent_runtime_configs")
+                connection.execute("DROP TABLE provider_connections")
                 connection.execute("DROP TABLE mentat_agent_events")
                 connection.execute("DROP TABLE mentat_dispatch_reservations")
                 connection.execute("DROP TABLE mentat_task_dispatch_heads")
@@ -2083,6 +2084,7 @@ def _capture_compatible_downgrade(data_root: Path, root_descriptor):
     from private_console_unit import (
         capture_private_console_unit,
         private_console_unit_digest,
+        schema5_excluded_agent_ids,
     )
     from remote_hermes import RemoteHermesError, load_connection_state_read_only
 
@@ -2094,7 +2096,18 @@ def _capture_compatible_downgrade(data_root: Path, root_descriptor):
                 "task_export.compatible_remote_reconfigure_required"
             )
         documents = _load_compatible_non_task_documents(data_root, root_descriptor)
-        private_unit = _schema5_private_unit(capture_private_console_unit(data_root))
+        source_private_unit = capture_private_console_unit(data_root)
+        excluded_agent_ids = schema5_excluded_agent_ids(source_private_unit)
+        exported_tasks = json.loads(exported.raw.decode("utf-8"))
+        if any(
+            isinstance(task, dict)
+            and task.get("assigned_agent_id") in excluded_agent_ids
+            for task in exported_tasks
+        ):
+            raise TaskRepositoryConflict(
+                "task_export.compatible_agent_unsupported"
+            )
+        private_unit = _schema5_private_unit(source_private_unit)
         target = _compatible_downgrade_target(data_root)
         if os.path.lexists(os.fspath(target)):
             raise TaskRepositoryConflict("task_export.compatible_target_exists")

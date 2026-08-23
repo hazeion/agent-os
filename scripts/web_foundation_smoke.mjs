@@ -656,6 +656,186 @@ async function inspectAgentsWorkspace(client) {
   }
 }
 
+async function inspectProviderConnectionsWorkspace(client) {
+  const results = [];
+  for (const probe of [
+    { name: "desktop", viewport: viewports[1] },
+    { name: "phone", viewport: viewports.at(-1) },
+  ]) {
+    await setViewport(client, probe.viewport);
+    let requestId = "";
+    const removePausedHandler = client.on("Fetch.requestPaused", (event) => {
+      requestId = event.requestId;
+    });
+    await client.call("Fetch.enable", {
+      patterns: [{ urlPattern: `${baseUrl.origin}/api/provider-connections*`, requestStage: "Request" }],
+    });
+    try {
+      await navigate(client, "/agents", `${probe.name} provider connections`);
+      await waitFor(() => requestId, `${probe.name} held provider request`);
+      const loading = await client.eval(`(() => {
+        const list = document.querySelector('[data-provider-connections-list]');
+        return {
+          state: document.querySelector('[data-provider-connections-root]')?.dataset.providerConnectionsState,
+          summary: document.querySelector('[data-provider-connections-summary]')?.textContent,
+          busy: document.querySelector('[data-provider-connections-root]')?.getAttribute('aria-busy'),
+          refreshDisabled: document.querySelector('[data-provider-connections-refresh]')?.disabled,
+          placeholders: document.querySelectorAll('.provider-connection-placeholder').length,
+          listHeight: list?.getBoundingClientRect().height,
+          overflow: document.documentElement.scrollWidth - innerWidth,
+        };
+      })()`);
+      await client.call("Fetch.continueRequest", { requestId });
+      requestId = "";
+      await client.call("Fetch.disable");
+      await waitFor(
+        () => client.eval("document.querySelector('[data-provider-connections-root]')?.dataset.providerConnectionsState !== 'loading'"),
+        `${probe.name} provider completion`,
+      );
+      const loaded = await client.eval(`(() => {
+        const list = document.querySelector('[data-provider-connections-list]');
+        return {
+          state: document.querySelector('[data-provider-connections-root]')?.dataset.providerConnectionsState,
+          summary: document.querySelector('[data-provider-connections-summary]')?.textContent,
+          busy: document.querySelector('[data-provider-connections-root]')?.getAttribute('aria-busy'),
+          refreshDisabled: document.querySelector('[data-provider-connections-refresh]')?.disabled,
+          cards: document.querySelectorAll('.provider-connection-card:not(.provider-connection-placeholder)').length,
+          listHeight: list?.getBoundingClientRect().height,
+          overflow: document.documentElement.scrollWidth - innerWidth,
+          rendered: list?.textContent || '',
+        };
+      })()`);
+      if (
+        loading.state !== "loading"
+        || loading.summary !== "Loading provider connections…"
+        || loading.busy !== "true"
+        || !loading.refreshDisabled
+        || loading.placeholders !== 1
+        || loading.listHeight < 188
+        || loading.overflow > 1
+        || !new Set(["ready", "empty"]).has(loaded.state)
+        || loaded.busy !== "false"
+        || loaded.refreshDisabled
+        || loaded.listHeight < 188
+        || loaded.overflow > 1
+        || (loaded.state === "empty" && (loaded.summary !== "No optional provider connections configured." || loaded.cards !== 0))
+        || (loaded.state === "ready" && loaded.cards !== 1)
+        || /credential_ref|team_id|project_id|token|secret/i.test(loaded.rendered)
+      ) throw new Error(`${probe.name} provider workspace contract failed: ${JSON.stringify({ loading, loaded })}`);
+      results.push({ probe: probe.name, loading, loaded });
+    } finally {
+      if (requestId) await Promise.allSettled([client.call("Fetch.continueRequest", { requestId })]);
+      removePausedHandler();
+      await Promise.allSettled([client.call("Fetch.disable")]);
+    }
+  }
+
+  await setViewport(client, viewports[1]);
+  const resourcesBefore = await client.eval(
+    "performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/provider-connections').length",
+  );
+  await client.eval("document.querySelector('[data-provider-connections-refresh]').click()");
+  await waitFor(
+    () => client.eval(`performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/provider-connections').length > ${resourcesBefore}`),
+    "provider connection refresh request",
+  );
+  await waitFor(
+    () => client.eval("document.querySelector('[data-provider-connections-root]')?.dataset.providerConnectionsState !== 'loading'"),
+    "provider connection refresh completion",
+  );
+  return results;
+}
+
+async function inspectProviderConnectionProjection(client) {
+  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+      if (url.pathname !== '/api/provider-connections') return nativeFetch(input, init);
+      return Promise.resolve(new Response(JSON.stringify({
+        schema_version: 1,
+        service: 'mentat-local-bridge',
+        runtime: 'python',
+        status: 'ready',
+        count: 1,
+        connections: [{
+          id: 'connection_vercel',
+          provider: 'vercel',
+          label: 'Vercel',
+          state: 'configured',
+          model: 'openai/gpt-5.4',
+          capabilities: [
+            { id: 'ai.gateway', status: 'credential_present' },
+            { id: 'sandbox.readiness', status: 'needs_auth' },
+            { id: 'connect.token', status: 'credential_present' },
+          ],
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    };
+  })();` });
+  try {
+    await setViewport(client, viewports.at(-1));
+    await navigate(client, "/agents", "provider connection projection");
+    await waitFor(() => client.eval("document.querySelector('[data-provider-connections-root]')?.dataset.providerConnectionsState === 'ready'"), "provider projection state");
+    const result = await client.eval(`(() => ({
+      summary: document.querySelector('[data-provider-connections-summary]')?.textContent,
+      heading: document.querySelector('.provider-connection-card h3')?.textContent,
+      state: document.querySelector('.provider-connection-state')?.textContent,
+      fields: [...document.querySelectorAll('.provider-connection-card .agent-field dd')].map((item) => item.textContent),
+      capabilities: [...document.querySelectorAll('.provider-capabilities li')].map((item) => item.textContent),
+      rendered: document.querySelector('[data-provider-connections-list]')?.textContent || '',
+      overflow: document.documentElement.scrollWidth - innerWidth,
+    }))()`);
+    if (
+      result.summary !== "1 provider connection."
+      || result.heading !== "Vercel"
+      || result.state !== "Configured"
+      || JSON.stringify(result.fields) !== JSON.stringify(["vercel", "openai/gpt-5.4"])
+      || JSON.stringify(result.capabilities) !== JSON.stringify(["AI GatewayCredential present", "Sandbox readinessNeeds credentials", "Connect tokenCredential present"])
+      || /credential_ref|credential_source|team_id|project_id|token_ref|vercel_(?:ai_gateway|oidc|token)|bearer\s|secret/i.test(result.rendered)
+      || result.overflow > 1
+    ) throw new Error(`Provider projection contract failed: ${JSON.stringify(result)}`);
+    return result;
+  } finally {
+    await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier });
+  }
+}
+
+async function inspectProviderConnectionFailureStates(client) {
+  const cases = [
+    { name: "unsupported", status: 501, detail: "This Python bridge does not support provider connections yet." },
+    { name: "unavailable", status: 503, detail: "Provider status is temporarily unavailable. Check the Python connection and retry." },
+    { name: "error", status: 502, detail: "Mentat could not safely read provider status. Try again." },
+  ];
+  const results = [];
+  for (const current of cases) {
+    const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        if (url.pathname !== '/api/provider-connections') return nativeFetch(input, init);
+        return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, status: '${current.name}' }), { status: ${current.status}, headers: { 'Content-Type': 'application/json' } }));
+      };
+    })();` });
+    try {
+      await navigate(client, "/agents", `provider ${current.name}`);
+      await waitFor(() => client.eval(`document.querySelector('[data-provider-connections-root]')?.dataset.providerConnectionsState === '${current.name}'`), `provider ${current.name} state`);
+      const result = await client.eval(`(() => ({
+        summary: document.querySelector('[data-provider-connections-summary]')?.textContent,
+        busy: document.querySelector('[data-provider-connections-root]')?.getAttribute('aria-busy'),
+        cards: document.querySelectorAll('.provider-connection-card').length,
+        refreshDisabled: document.querySelector('[data-provider-connections-refresh]')?.disabled,
+        listHeight: document.querySelector('[data-provider-connections-list]')?.getBoundingClientRect().height,
+      }))()`);
+      if (result.summary !== current.detail || result.busy !== "false" || result.cards !== 0 || result.refreshDisabled || result.listHeight < 188) throw new Error(`Provider ${current.name} contract failed: ${JSON.stringify(result)}`);
+      results.push({ name: current.name, result });
+    } finally {
+      await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier });
+    }
+  }
+  return results;
+}
+
 async function inspectAgentFailureStates(client) {
   const states = [
     { name: "unsupported", status: 501, detail: "This Python bridge does not support Agent data yet." },
@@ -816,7 +996,9 @@ async function inspectRuntimeCoexistence(client) {
         this.url = url;
         this.readyState = 1;
         window.__runtimeCoexistenceEventUrls.push(String(url));
-        queueMicrotask(() => this.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({ cursor: 0, reset: false, events: [] }) })));
+        const vercel = String(url).includes('/run_vercel/events');
+        const events = vercel ? [{ id: 'event_vercel_result', run_id: 'run_vercel', sequence: 1, type: 'message', occurred_at: '2026-08-22T10:01:05Z', summary: 'Vercel AI Gateway returned a response', message: 'Vercel result <script>window.__vercelMessageExecuted = true</script>', metrics: { total_tokens: 21 } }] : [];
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({ cursor: vercel ? 1 : 0, reset: false, events }) })));
       }
       close() { this.readyState = 2; }
     }
@@ -827,10 +1009,11 @@ async function inspectRuntimeCoexistence(client) {
       if (url.pathname === '/api/agents') return respond({
         schema_version: 1,
         status: 'ready',
-        count: 2,
+        count: 3,
         agents: [
-          { id: 'agent_hermes', name: 'Hermes Researcher', runtime_type: 'hermes', runtime_config_id: 'config_hermes', capabilities: ['events', 'send_message', 'start_task', 'status', 'stop'] },
-          { id: 'agent_codex', name: 'Codex Engineer', runtime_type: 'codex', runtime_config_id: 'config_codex', capabilities: ['events', 'start_task', 'status', 'stop'] },
+          { id: 'agent_hermes', name: 'Hermes Researcher', runtime_type: 'hermes', runtime_config_id: 'config_hermes', capabilities: ['run.events', 'run.message', 'run.start', 'run.status', 'run.stop'] },
+          { id: 'agent_codex', name: 'Codex Engineer', runtime_type: 'codex', runtime_config_id: 'config_codex', capabilities: ['run.approval_response', 'run.events', 'run.message', 'run.start', 'run.status', 'run.stop'] },
+          { id: 'agent_vercel', name: 'Vercel Generator', runtime_type: 'vercel', runtime_config_id: 'config_vercel', capabilities: ['model.generate', 'run.events', 'run.start', 'run.status'] },
         ],
       });
       if (url.pathname === '/api/runs') {
@@ -840,10 +1023,11 @@ async function inspectRuntimeCoexistence(client) {
           service: 'mentat-local-bridge',
           runtime: 'python',
           status: 'ready',
-          count: 2,
+          count: 3,
           runs: [
             { id: 'run_hermes', source: 'task_dispatch', task_id: 'task_research', agent_id: 'agent_hermes', runtime_type: 'hermes', status: 'running', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T10:00:00Z', updated_at: '2026-08-22T10:01:00Z', started_at: '2026-08-22T10:00:01Z', completed_at: null },
             { id: 'run_codex', source: 'task_dispatch', task_id: 'task_engineering', agent_id: 'agent_codex', runtime_type: 'codex', status: codexStatus, dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T10:00:02Z', updated_at: '2026-08-22T10:01:02Z', started_at: '2026-08-22T10:00:03Z', completed_at: codexStatus === 'stopped' ? '2026-08-22T10:02:00Z' : null },
+            { id: 'run_vercel', source: 'task_dispatch', task_id: 'task_generation', agent_id: 'agent_vercel', runtime_type: 'vercel', status: 'completed', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T10:00:04Z', updated_at: '2026-08-22T10:01:05Z', started_at: '2026-08-22T10:00:05Z', completed_at: '2026-08-22T10:01:05Z' },
           ],
         });
       }
@@ -866,12 +1050,14 @@ async function inspectRuntimeCoexistence(client) {
     const initial = await client.eval(`(() => {
       const hermes = document.querySelector('.run-card[data-run-id="run_hermes"]');
       const codex = document.querySelector('.run-card[data-run-id="run_codex"]');
+      const vercel = document.querySelector('.run-card[data-run-id="run_vercel"]');
       const controls = [...document.querySelectorAll('.run-card-actions button')].map((button) => button.getAttribute('aria-label'));
       return {
         summary: document.querySelector('[data-runs-summary]')?.textContent,
         cards: document.querySelectorAll('.run-card').length,
         hermes: { heading: hermes?.querySelector('h3')?.textContent, runtime: hermes?.querySelector('.run-runtime')?.textContent, status: hermes?.querySelector('.run-status')?.textContent },
         codex: { heading: codex?.querySelector('h3')?.textContent, runtime: codex?.querySelector('.run-runtime')?.textContent, status: codex?.querySelector('.run-status')?.textContent },
+        vercel: { heading: vercel?.querySelector('h3')?.textContent, runtime: vercel?.querySelector('.run-runtime')?.textContent, status: vercel?.querySelector('.run-status')?.textContent },
         articlesNamed: [...document.querySelectorAll('.run-card')].every((card) => card.getAttribute('aria-labelledby') === card.querySelector('h3')?.id),
         controls,
         uniqueControls: new Set(controls).size,
@@ -885,12 +1071,16 @@ async function inspectRuntimeCoexistence(client) {
       "Open timeline for Codex Engineer (run_codex)",
       "Send message to Codex Engineer (run_codex)",
       "Stop run for Codex Engineer (run_codex)",
+      "Open timeline for Vercel Generator (run_vercel)",
     ];
-    if (initial.summary !== "2 current Runs across 2 runtimes." || initial.cards !== 2 || initial.overflow > 1 || !initial.articlesNamed || initial.uniqueControls !== expectedControls.length || JSON.stringify(initial.controls) !== JSON.stringify(expectedControls) || JSON.stringify(initial.hermes) !== JSON.stringify({ heading: "Hermes Researcher", runtime: "Hermes", status: "Running" }) || JSON.stringify(initial.codex) !== JSON.stringify({ heading: "Codex Engineer", runtime: "Codex", status: "Running" })) throw new Error(`Runtime coexistence display contract failed: ${JSON.stringify(initial)}`);
+    if (initial.summary !== "3 current Runs across 3 runtimes." || initial.cards !== 3 || initial.overflow > 1 || !initial.articlesNamed || initial.uniqueControls !== expectedControls.length || JSON.stringify(initial.controls) !== JSON.stringify(expectedControls) || JSON.stringify(initial.hermes) !== JSON.stringify({ heading: "Hermes Researcher", runtime: "Hermes", status: "Running" }) || JSON.stringify(initial.codex) !== JSON.stringify({ heading: "Codex Engineer", runtime: "Codex", status: "Running" }) || JSON.stringify(initial.vercel) !== JSON.stringify({ heading: "Vercel Generator", runtime: "Vercel", status: "Completed" })) throw new Error(`Runtime coexistence display contract failed: ${JSON.stringify(initial)}`);
     await client.eval("document.querySelector('.run-card[data-run-id=\"run_hermes\"] [data-run-timeline-open]').click()");
     await waitFor(() => client.eval("window.__runtimeCoexistenceEventUrls.length === 1 && document.querySelectorAll('[data-run-timeline]').length === 1"), "Hermes Run timeline isolation");
     await client.eval("document.querySelector('[data-run-timeline-close]').click(); document.querySelector('.run-card[data-run-id=\"run_codex\"] [data-run-timeline-open]').click()");
     await waitFor(() => client.eval("window.__runtimeCoexistenceEventUrls.length === 2 && document.querySelector('[data-run-timeline]')?.closest('.run-card')?.dataset.runId === 'run_codex'"), "Codex Run timeline isolation");
+    await client.eval("document.querySelector('[data-run-timeline-close]').click(); document.querySelector('.run-card[data-run-id=\"run_vercel\"] [data-run-timeline-open]').click()");
+    await waitFor(() => client.eval("window.__runtimeCoexistenceEventUrls.length === 3 && document.querySelector('[data-run-timeline]')?.closest('.run-card')?.dataset.runId === 'run_vercel' && document.querySelector('.run-event-message')?.textContent.includes('Vercel result <script>')"), "Vercel result timeline isolation");
+    if (await client.eval("window.__vercelMessageExecuted === true")) throw new Error("Vercel result message executed as markup");
     await client.eval("(() => { document.querySelector('[data-run-timeline-close]').click(); const card = document.querySelector('.run-card[data-run-id=\"run_hermes\"]'); card.querySelector('[data-run-message-open]').click(); const input = card.querySelector('.run-message textarea'); input.value = 'Keep the Hermes research bounded.'; card.querySelector('[data-run-message-review]').click(); })()");
     await waitFor(() => client.eval("document.querySelector('.run-card[data-run-id=\"run_hermes\"] [data-run-message-confirm]')?.hidden === false"), "Hermes Run message preview isolation");
     await client.eval("document.querySelector('.run-card[data-run-id=\"run_hermes\"] [data-run-message-confirm]').click()");
@@ -927,12 +1117,12 @@ async function inspectRuntimeCoexistence(client) {
       { path: "/api/runs/run_codex/stop", method: "POST", body: JSON.stringify({ confirmation_id: "c".repeat(64) }) },
     ];
     if (
-      result.summary !== "2 current Runs across 2 runtimes."
-      || result.cards !== 2
+      result.summary !== "3 current Runs across 3 runtimes."
+      || result.cards !== 3
       || result.overflow > 1
       || result.codexStatus !== "Stopped"
       || result.phase !== 3
-      || JSON.stringify(result.timelineUrls) !== JSON.stringify(["/api/runs/run_hermes/events", "/api/runs/run_codex/events"])
+      || JSON.stringify(result.timelineUrls) !== JSON.stringify(["/api/runs/run_hermes/events", "/api/runs/run_codex/events", "/api/runs/run_vercel/events"])
       || JSON.stringify(result.actionRequests) !== JSON.stringify(expectedRequests)
     ) throw new Error(`Runtime coexistence UI contract failed: ${JSON.stringify(result)}`);
     return { ...result, initial };
@@ -964,9 +1154,10 @@ async function inspectRunAgentFallbacks(client) {
         cards: document.querySelectorAll('.run-card').length,
         heading: document.querySelector('.run-card h3')?.textContent,
         runtime: document.querySelector('.run-runtime')?.textContent,
+        controls: document.querySelectorAll('.run-card-actions button').length,
         rendered: document.querySelector('[data-runs-list]')?.textContent,
       }))()`);
-      if (result.summary !== "1 current Run." || result.cards !== 1 || result.heading !== "Agent agent_shared" || result.runtime !== "Codex" || result.rendered.includes("Wrong Runtime Name")) throw new Error(`Runs ${current.name} fallback contract failed: ${JSON.stringify(result)}`);
+      if (result.summary !== "1 current Run." || result.cards !== 1 || result.heading !== "Agent agent_shared" || result.runtime !== "Codex" || result.controls !== 0 || result.rendered.includes("Wrong Runtime Name")) throw new Error(`Runs ${current.name} fallback contract failed: ${JSON.stringify(result)}`);
       results.push({ name: current.name, heading: result.heading });
     } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
   }
@@ -987,7 +1178,7 @@ async function inspectRunFailureStates(client) {
 
 async function inspectRunProjection(client) {
   await setViewport(client, viewports.at(-1));
-  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { class MockEventSource extends EventTarget { constructor(url) { super(); this.url = url; this.readyState = 1; queueMicrotask(() => this.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({ cursor: 1, reset: false, events: [{ id: 'event_current', run_id: 'run_' + 'x'.repeat(124), sequence: 1, type: 'run.started', occurred_at: '2026-08-22T00:01:01Z', summary: 'Runtime accepted dispatch', metrics: { total_tokens: 12 } }] }) }))); } close() { this.readyState = 2; } } window.EventSource = MockEventSource; const runId = 'run_' + 'x'.repeat(124); let stopRequests = 0, messageRequests = 0; const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); if (url.pathname === '/api/runs/' + encodeURIComponent(runId) + '/stop/preview') return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'stop', run_id: runId, requires_confirmation: true, confirmation_id: String.fromCharCode(97 + stopRequests).repeat(64) }), { status: 200, headers: { 'Content-Type': 'application/json' } })); if (url.pathname === '/api/runs/' + encodeURIComponent(runId) + '/stop') { stopRequests += 1; const conflict = stopRequests === 1; return Promise.resolve(new Response(JSON.stringify(conflict ? { schema_version: 1, status: 'conflict' } : { schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'stop', run_id: runId, disposition: 'requested' }), { status: conflict ? 409 : 202, headers: { 'Content-Type': 'application/json' } })); } if (url.pathname === '/api/runs/' + encodeURIComponent(runId) + '/message/preview') return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'message', run_id: runId, requires_confirmation: true, confirmation_id: String.fromCharCode(97 + messageRequests).repeat(64) }), { status: 200, headers: { 'Content-Type': 'application/json' } })); if (url.pathname === '/api/runs/' + encodeURIComponent(runId) + '/message') { messageRequests += 1; const conflict = messageRequests === 1; return Promise.resolve(new Response(JSON.stringify(conflict ? { schema_version: 1, status: 'conflict' } : { schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'message', run_id: runId, disposition: 'accepted' }), { status: conflict ? 409 : 202, headers: { 'Content-Type': 'application/json' } })); } if (url.pathname !== '/api/runs') return nativeFetch(input, init); return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', count: 1, runs: [{ id: runId, source: 'task_dispatch', task_id: 'task_1', agent_id: 'agent_researcher', runtime_type: 'hermes', status: 'running', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T00:00:00Z', updated_at: '2026-08-22T00:01:00Z', started_at: '2026-08-22T00:00:01Z', completed_at: null }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })); }; })();` });
+  const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { class MockEventSource extends EventTarget { constructor(url) { super(); this.url = url; this.readyState = 1; queueMicrotask(() => this.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({ cursor: 1, reset: false, events: [{ id: 'event_current', run_id: 'run_' + 'x'.repeat(124), sequence: 1, type: 'run.started', occurred_at: '2026-08-22T00:01:01Z', summary: 'Runtime accepted dispatch', message: null, metrics: { total_tokens: 12 } }] }) }))); } close() { this.readyState = 2; } } window.EventSource = MockEventSource; const runId = 'run_' + 'x'.repeat(124); let stopRequests = 0, messageRequests = 0; const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); if (url.pathname === '/api/runs/' + encodeURIComponent(runId) + '/stop/preview') return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'stop', run_id: runId, requires_confirmation: true, confirmation_id: String.fromCharCode(97 + stopRequests).repeat(64) }), { status: 200, headers: { 'Content-Type': 'application/json' } })); if (url.pathname === '/api/runs/' + encodeURIComponent(runId) + '/stop') { stopRequests += 1; const conflict = stopRequests === 1; return Promise.resolve(new Response(JSON.stringify(conflict ? { schema_version: 1, status: 'conflict' } : { schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'stop', run_id: runId, disposition: 'requested' }), { status: conflict ? 409 : 202, headers: { 'Content-Type': 'application/json' } })); } if (url.pathname === '/api/runs/' + encodeURIComponent(runId) + '/message/preview') return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'message', run_id: runId, requires_confirmation: true, confirmation_id: String.fromCharCode(97 + messageRequests).repeat(64) }), { status: 200, headers: { 'Content-Type': 'application/json' } })); if (url.pathname === '/api/runs/' + encodeURIComponent(runId) + '/message') { messageRequests += 1; const conflict = messageRequests === 1; return Promise.resolve(new Response(JSON.stringify(conflict ? { schema_version: 1, status: 'conflict' } : { schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', action: 'message', run_id: runId, disposition: 'accepted' }), { status: conflict ? 409 : 202, headers: { 'Content-Type': 'application/json' } })); } if (url.pathname === '/api/agents') return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, status: 'ready', count: 1, agents: [{ id: 'agent_researcher', name: 'Researcher', runtime_type: 'hermes', runtime_config_id: 'runtime_config_researcher', capabilities: ['run.events', 'run.message', 'run.stop'] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })); if (url.pathname !== '/api/runs') return nativeFetch(input, init); return Promise.resolve(new Response(JSON.stringify({ schema_version: 1, service: 'mentat-local-bridge', runtime: 'python', status: 'ready', count: 1, runs: [{ id: runId, source: 'task_dispatch', task_id: 'task_1', agent_id: 'agent_researcher', runtime_type: 'hermes', status: 'running', dispatch_state: 'accepted', partial: false, timeline_truncated: false, created_at: '2026-08-22T00:00:00Z', updated_at: '2026-08-22T00:01:00Z', started_at: '2026-08-22T00:00:01Z', completed_at: null }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })); }; })();` });
   try {
     await navigate(client, "/runs", "Runs projection");
     await waitFor(() => client.eval("document.querySelector('[data-runs-root]')?.dataset.runsState === 'ready'"), "Runs projection state");
@@ -1544,6 +1735,9 @@ async function main() {
     }
     const interactionResult = await inspectKeyboardDrawerAndContrast(client);
     const agentsResult = await inspectAgentsWorkspace(client);
+    const providerConnectionsResult = await inspectProviderConnectionsWorkspace(client);
+    const providerProjectionResult = await inspectProviderConnectionProjection(client);
+    const providerFailureResult = await inspectProviderConnectionFailureStates(client);
     const agentProjectionResult = await inspectAgentProjection(client);
     const agentFailureResult = await inspectAgentFailureStates(client);
     const tasksResult = await inspectTasksWorkspace(client);
@@ -1571,6 +1765,9 @@ async function main() {
       viewports: viewportResults,
       interactions: interactionResult,
       agents: agentsResult,
+      providerConnections: providerConnectionsResult,
+      providerProjection: providerProjectionResult,
+      providerFailures: providerFailureResult,
       agentProjection: agentProjectionResult,
       agentFailures: agentFailureResult,
       tasks: tasksResult,

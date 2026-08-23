@@ -301,13 +301,39 @@ class OrchestrationService:
         with private_state_lock(self.data_dir):
             connection = self._connect()
             try:
-                return (
-                    RunRepository(connection).record_submission_outcome(
+                repository = RunRepository(connection)
+                persistence_failed = False
+                try:
+                    recorded = repository.record_submission_outcome(
                         dispatch_id=reservation.dispatch_id,
                         outcome=outcome,
-                    ),
-                    outcome,
+                    )
+                except Exception:
+                    persistence_failed = True
+                    recorded = None
+                if not persistence_failed and recorded is not None:
+                    return recorded, outcome
+                if outcome.disposition != SubmissionDisposition.ACCEPTED:
+                    raise OrchestrationServiceError(
+                        "dispatch.outcome_persistence_failed"
+                    )
+                # The runtime may have accepted work even though its normalized
+                # evidence could not be persisted. Never leave the durable Run
+                # in `submitting`, and never retry the provider request.
+                fallback = SubmissionOutcome(
+                    SubmissionDisposition.UNKNOWN,
+                    failure_code="runtime.outcome_persistence_unknown",
                 )
+                try:
+                    recorded = repository.record_submission_outcome(
+                        dispatch_id=reservation.dispatch_id,
+                        outcome=fallback,
+                    )
+                except Exception as exc:
+                    raise OrchestrationServiceError(
+                        "dispatch.outcome_persistence_failed"
+                    ) from exc
+                return recorded, fallback
             finally:
                 connection.close()
 

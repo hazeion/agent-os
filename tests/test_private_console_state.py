@@ -54,6 +54,13 @@ from run_repository import (
 from tests.sqlite_authority_support import ensure_run_sqlite_authority
 from runtime_config import AppConfig, prepare_data_root_for_startup
 from task_repository import TaskRepository, TaskSourceSnapshot
+from vercel_connections import (
+    confirm_configure_vercel,
+    confirm_create_vercel_agent,
+    load_vercel_connection,
+    preview_configure_vercel,
+    preview_create_vercel_agent,
+)
 
 
 THREAD_TIMEOUT_SECONDS = 15
@@ -116,8 +123,9 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 connection.execute("DROP TABLE mentat_agent_registry_state")
                 connection.execute("DROP TABLE mentat_agents")
                 connection.execute("DROP TABLE agent_runtime_configs")
+                connection.execute("DROP TABLE provider_connections")
                 connection.execute(
-                    "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8)"
+                    "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9)"
                 )
                 connection.commit()
             finally:
@@ -147,8 +155,9 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 connection.execute("DROP TABLE mentat_agent_registry_state")
                 connection.execute("DROP TABLE mentat_agents")
                 connection.execute("DROP TABLE agent_runtime_configs")
+                connection.execute("DROP TABLE provider_connections")
                 connection.execute(
-                    "DELETE FROM schema_migrations WHERE version IN (7, 8)"
+                    "DELETE FROM schema_migrations WHERE version IN (7, 8, 9)"
                 )
                 connection.commit()
             finally:
@@ -173,8 +182,9 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 connection.execute("DROP TABLE mentat_agent_registry_state")
                 connection.execute("DROP TABLE mentat_agents")
                 connection.execute("DROP TABLE agent_runtime_configs")
+                connection.execute("DROP TABLE provider_connections")
                 connection.execute(
-                    "DELETE FROM schema_migrations WHERE version = 8"
+                    "DELETE FROM schema_migrations WHERE version IN (8, 9)"
                 )
                 connection.commit()
             finally:
@@ -183,6 +193,29 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 history_raw=unit.history_raw,
                 database_raw=path.read_bytes(),
                 registry_database_raw=registry_raw,
+                blobs=unit.blobs,
+            )
+
+    def schema_eight_unit(
+        self,
+        unit: private_console_unit.PrivateConsoleUnit,
+    ) -> private_console_unit.PrivateConsoleUnit:
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mentat.sqlite3"
+            path.write_bytes(unit.database_raw)
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("DROP TABLE provider_connections")
+                connection.execute(
+                    "DELETE FROM schema_migrations WHERE version = 9"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            return private_console_unit.PrivateConsoleUnit(
+                history_raw=unit.history_raw,
+                database_raw=path.read_bytes(),
+                registry_database_raw=None,
                 blobs=unit.blobs,
             )
 
@@ -654,6 +687,116 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 connection.close()
             self.assertIn(retained["id"], ids)
             self.assertNotIn(staged["id"], ids)
+
+    def test_schema_nine_backup_restores_vercel_connection_and_agent_together(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source", "source")
+            connection_preview = preview_configure_vercel(
+                source,
+                label="Vercel",
+                auth_kind="oidc",
+                model="openai/gpt-5.4",
+                team_id="team_mentat",
+                project_id="prj_mentat",
+            )
+            confirm_configure_vercel(
+                source,
+                connection_preview,
+                connection_preview.confirmation_token,
+            )
+            agent_preview = preview_create_vercel_agent(
+                source, name="Vercel Backup Agent"
+            )
+            expected_agent = confirm_create_vercel_agent(
+                source, agent_preview, agent_preview.confirmation_token
+            )
+
+            captured = capture_private_console_unit(source)
+            self.assertEqual(captured.agent_count, 1)
+            self.assertIsNone(captured.registry_database_raw)
+            backup = data_backup_restore.create_durable_backup(source)
+            self.assertEqual(backup.status, "created")
+
+            target = self.make_current(base, "target", "target")
+            backup_path = source / "backups" / str(backup.backup_name)
+            preview = data_backup_restore.preview_durable_restore(target, backup_path)
+            restored = data_backup_restore.restore_durable_backup(
+                target,
+                backup_path,
+                confirmation_token=preview.confirmation_token or "",
+            )
+
+            self.assertEqual(restored.status, "restored")
+            provider = load_vercel_connection(target)
+            self.assertIsNotNone(provider)
+            self.assertEqual(provider.project_id, "prj_mentat")
+            agents = AgentRegistry(
+                target,
+                supported_runtime_types=("codex", "hermes", "vercel"),
+            ).list_agents()
+            self.assertEqual([agent.id for agent in agents], [expected_agent.id])
+
+    def test_released_schema_eight_format_four_backup_restores_and_upgrades(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source-eight", "source")
+            AgentRegistry(source, supported_runtime_types={"hermes"}).create_agent(
+                agent_id="agent_schema_eight",
+                name="Schema Eight Agent",
+                runtime_config_id="runtime_config_schema_eight",
+                runtime_type="hermes",
+                runtime_agent_ref="schema-eight-profile",
+                capabilities=(),
+            )
+            documents = data_backup_restore._load_live_documents(source, None)
+            schema_eight = self.schema_eight_unit(
+                capture_private_console_unit(source)
+            )
+            private_console_unit.validate_private_console_unit(schema_eight)
+            raw = data_backup_restore._build_backup(
+                documents,
+                schema_eight,
+                format_version=4,
+            )
+            path = base / data_backup_restore._backup_name(
+                documents,
+                schema_eight,
+                format_version=4,
+            )
+            path.write_bytes(raw)
+            if os.name == "posix":
+                path.chmod(0o600)
+
+            target = self.make_current(base, "target-eight", "target")
+            preview = data_backup_restore.preview_durable_restore(target, path)
+            restored = data_backup_restore.restore_durable_backup(
+                target,
+                path,
+                confirmation_token=preview.confirmation_token or "",
+            )
+            self.assertEqual(restored.status, "restored")
+            database = connect(target)
+            try:
+                self.assertEqual(
+                    database.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0],
+                    DATABASE_SCHEMA_VERSION,
+                )
+                self.assertEqual(
+                    database.execute(
+                        "SELECT COUNT(*) FROM provider_connections"
+                    ).fetchone()[0],
+                    0,
+                )
+            finally:
+                database.close()
+            agents = AgentRegistry(
+                target,
+                supported_runtime_types=("codex", "hermes", "vercel"),
+            ).list_agents()
+            self.assertEqual([agent.id for agent in agents], ["agent_schema_eight"])
 
     def test_missing_referenced_blob_blocks_backup(self):
         with TemporaryDirectory() as temporary:

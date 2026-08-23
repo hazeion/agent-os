@@ -39,6 +39,9 @@ Main files:
 ```text
 server.py
 codex_runtime.py
+vercel_connections.py
+vercel_infrastructure.py
+vercel_runtime.py
 hermes_kanban.py
 hermes_profile_identity.py
 task_planning.py
@@ -75,6 +78,7 @@ Current priorities:
 - durable task delegation through Hermes' supported Kanban adapter
 - read-only Hermes session visibility
 - runtime-neutral orchestration with capability-scoped runtime adapters
+- optional Vercel AI Gateway, Sandbox, and Connect adapters
 - capability-scoped Hermes control through fixed, supported interfaces
 - safe project-owned write paths
 
@@ -90,8 +94,8 @@ Agent. During the migration, legacy browser `agent_id` values remain Hermes
 profile IDs for compatibility; do not treat that alias or `data/agents.json`
 heartbeat observations as the durable Mentat Agent registry.
 
-Canonical Mentat Agents and their runtime bindings are stored in owner-private
-`mentat.sqlite3` under a singleton authority receipt. Existing roots move from
+Canonical Mentat Agents, runtime bindings, and optional provider settings are
+stored in schema-9 owner-private `mentat.sqlite3`. Existing roots move from
 the retired `agent-registry.sqlite3` source only through `mentat
 agent-registry-migration`: preview is read-only, confirmation requires a
 validated backup, and Agent/config rows plus the receipt commit together. Once
@@ -104,6 +108,22 @@ for the canonical registry. The registry is capped at 128 Agents and is part of
 the validated private Console backup/restore consistency unit. New format-4
 backups carry the embedded authority without a separate registry member;
 format-2/3 restores remain supported and require convergence before normal use.
+
+Vercel is optional. Its private connection record may store validated settings
+and the credential-source kind, but never a credential value. Vercel setup,
+readiness tests, Agent creation, and disconnect use stopped-server exact
+preview/confirmation CLI operations. The browser may see only the safe
+connection projection and cannot create or bind a Vercel Agent directly.
+AI Gateway, Sandbox, and Connect stay behind separate fixed-host, bounded
+adapters. Sandbox accepts no arbitrary commands and Connect tokens must be
+discarded immediately. Schema-5 compatible-root export must omit Vercel Agents
+and provider tables while leaving the schema-9 source unchanged.
+Browser status reports configuration and credential presence, not live
+readiness. Only an explicit confirmed CLI test may claim readiness. Ambiguous
+Gateway submissions must remain `unknown` without retry until the stopped-
+server `mentat vercel recover-run` flow explicitly marks the exact Run
+interrupted. A Vercel result may cross the browser event boundary only as one
+bounded message; raw provider payloads and runtime references remain private.
 
 Pivot Slice 1C-B makes the canonical Task tables in owner-private
 `mentat.sqlite3` authoritative. The exact one-time startup import and singleton
@@ -119,7 +139,7 @@ ignore that file while the SQLite authority receipt exists. Use its
 `--compatible-root` mode for an actual pre-cutover build: it publishes a new
 schema-5 sibling data root whose Task tables are empty and whose exported
 `tasks.json` is the old build's sole Task authority. It must leave the
-authoritative schema-8 root unchanged. Compatible-root export must fail closed
+authoritative schema-9 root unchanged. Compatible-root export must fail closed
 while the source actively selects remote Hermes because connection credentials
 are deliberately excluded; the operator must explicitly return the source to
 local mode and reconfigure the sibling before any remote operation.

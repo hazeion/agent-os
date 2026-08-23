@@ -41,6 +41,11 @@ from private_console_unit import (
     private_console_unit_digest,
 )
 from private_state import mentat_server_active, private_control_issue
+from vercel_connections import (
+    VercelConnectionError,
+    validate_provider_connections,
+    vercel_binding_is_valid,
+)
 
 
 PROTOCOL_VERSION = 1
@@ -138,13 +143,26 @@ def _destination_snapshot(unit: PrivateConsoleUnit) -> DestinationSnapshot:
                         "agent_registry_migration.destination_occupied"
                     )
             if receipt is not None:
+                provider_ids: frozenset[str] = frozenset()
+                supported_runtime_types = ("codex", "hermes")
+                if version >= 9:
+                    provider_ids = frozenset(
+                        record.id for record in validate_provider_connections(connection)
+                    )
+                    supported_runtime_types = ("codex", "hermes", "vercel")
                 count = len(
                     validate_registry_connection(
                         connection,
-                        supported_runtime_types=("codex", "hermes"),
+                        supported_runtime_types=supported_runtime_types,
                         runtime_binding_validator=lambda agent, runtime_ref: (
                             codex_binding_is_valid(runtime_ref, agent.capabilities)
                             if agent.runtime_type == "codex"
+                            else vercel_binding_is_valid(
+                                runtime_ref,
+                                agent.capabilities,
+                                provider_ids,
+                            )
+                            if agent.runtime_type == "vercel"
                             else True
                         ),
                     )
@@ -247,7 +265,13 @@ def preview_agent_registry_migration(
             confirmation_token=token,
             _unit=unit,
         )
-    except (AgentRegistryError, AgentRegistryMigrationError, OSError, sqlite3.Error):
+    except (
+        AgentRegistryError,
+        AgentRegistryMigrationError,
+        VercelConnectionError,
+        OSError,
+        sqlite3.Error,
+    ):
         return AgentRegistryMigrationPreview(
             status="blocked",
             source=None,

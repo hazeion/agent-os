@@ -24,6 +24,7 @@ from mentat_db import SCHEMA_VERSION, connect
 from private_state import history_path
 from private_console_unit import PrivateConsoleUnitError, capture_private_console_unit
 import run_repository
+import server
 from run_repository import (
     RunRepository,
     RunRepositoryConflict,
@@ -128,8 +129,8 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(SCHEMA_VERSION, 8)
-        self.assertEqual(version, 8)
+        self.assertEqual(SCHEMA_VERSION, 9)
+        self.assertEqual(version, 9)
         self.assertTrue(
             {
                 "mentat_run_store_state",
@@ -1320,6 +1321,123 @@ class RunRepositoryTests(unittest.TestCase):
             AgentEventType.RUN_STARTED,
         ])
         self.assertEqual(cursor, 2)
+
+    def test_vercel_result_projection_requires_the_exact_submission_source(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task = task_fixture()
+            task["required_capabilities"] = ["model.generate"]
+            source = root / "tasks.json"
+            source.write_text(
+                json.dumps([task], sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            source.chmod(0o600)
+            ensure_run_sqlite_authority(root, history_path(root))
+            binding_digest = runtime_binding_digest(
+                agent_id="agent-main",
+                runtime_type="vercel",
+                runtime_config_id="connection-vercel",
+                runtime_agent_ref="connection-vercel",
+                capabilities=("model.generate",),
+            )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                reservation = repository.reserve_dispatch(
+                    idempotency_key="vercel-result-source-key",
+                    dispatch_id="dispatch-vercel-source",
+                    run_id="run_vercel_projection",
+                    task=task,
+                    task_revision=1,
+                    agent_id="agent-main",
+                    runtime_type="vercel",
+                    runtime_config_id="connection-vercel",
+                    binding_digest=binding_digest,
+                    capabilities=("model.generate",),
+                    now=timestamp(),
+                )
+                repository.claim_dispatch_attempt(
+                    dispatch_id=reservation.dispatch_id,
+                    expected_binding_digest=binding_digest,
+                    now=timestamp(1),
+                )
+                source_event_id = "vercel_message_" + hashlib.sha256(
+                    b"run_vercel_projection:message"
+                ).hexdigest()[:24]
+                repository.record_submission_outcome(
+                    dispatch_id=reservation.dispatch_id,
+                    outcome=SubmissionOutcome(
+                        SubmissionDisposition.ACCEPTED,
+                        run=AgentRun(
+                            id=reservation.run_id,
+                            task_id=task["id"],
+                            agent_id="agent-main",
+                            runtime_type="vercel",
+                            status=RunStatus.COMPLETED,
+                        ),
+                        runtime_run_ref="vercel-runtime-reference",
+                        initial_events=(
+                            AgentEvent(
+                                id=source_event_id,
+                                run_id=reservation.run_id,
+                                sequence=1,
+                                type=AgentEventType.MESSAGE,
+                                occurred_at=timestamp(2),
+                                summary="Vercel AI Gateway returned a response",
+                                content="Trusted result.",
+                            ),
+                        ),
+                    ),
+                    now=timestamp(2),
+                )
+                trusted_id = repository.trusted_vercel_result_message_id(
+                    reservation.run_id
+                )
+                row = connection.execute(
+                    "SELECT * FROM mentat_agent_events WHERE id = ?",
+                    (trusted_id,),
+                ).fetchone()
+                forged_source = "submission:vercel_message_" + "0" * 24
+                digest_payload = {
+                    key: (forged_source if key == "source_key" else row[key])
+                    for key in (
+                        "id",
+                        "run_id",
+                        "sequence",
+                        "event_type",
+                        "source_type",
+                        "source_key",
+                        "occurred_at",
+                        "summary",
+                        "content",
+                        "metrics_json",
+                        "data_json",
+                    )
+                }
+                forged_digest = hashlib.sha256(
+                    run_repository._canonical_json(
+                        digest_payload,
+                        maximum=32_768,
+                        code="event.invalid",
+                    ).encode("ascii")
+                ).hexdigest()
+                connection.execute(
+                    "UPDATE mentat_agent_events SET source_key = ?, "
+                    "payload_digest = ? WHERE id = ?",
+                    (forged_source, forged_digest, trusted_id),
+                )
+                repository.list_events(reservation.run_id)
+                with self.assertRaisesRegex(RunRepositoryError, "event.corrupt"):
+                    repository.trusted_vercel_result_message_id(reservation.run_id)
+            finally:
+                connection.close()
+
+            with patch.object(server, "DATA_DIR", root), self.assertRaisesRegex(
+                RunRepositoryError,
+                "event.corrupt",
+            ):
+                server.mentat_run_events_payload("run_vercel_projection", 0)
 
     def test_dispatch_claim_revalidates_task_revision_inside_claim_transaction(self):
         with TemporaryDirectory() as tmpdir:

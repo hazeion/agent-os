@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const PRIVATE_PATH_PREFIX = "/bridge/v1/runs/";
 const MAX_BYTES = 262_144;
 const MAX_EVENTS = 100;
@@ -9,7 +11,7 @@ const METRICS = new Set(["input_tokens", "output_tokens", "total_tokens", "conte
 type Environment = Readonly<Record<string, string | undefined>>;
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export type PublicRunEvent = { id: string; run_id: string; sequence: number; type: string; occurred_at: string; summary: string; metrics: Record<string, number> };
+export type PublicRunEvent = { id: string; run_id: string; sequence: number; type: string; occurred_at: string; summary: string; message: string | null; metrics: Record<string, number> };
 export type PublicBridgeRunEvents = { schema_version: 1; service: "mentat-local-bridge"; runtime: "python"; status: "ready"; run_id: string; after: number; next_cursor: number; cursor_reset_required: boolean; events: PublicRunEvent[] };
 
 export class BridgeRunEventsError extends Error {
@@ -29,11 +31,15 @@ function config(environment: Environment) {
 
 function cursor(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000; }
 function timestamp(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 40 && TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value)); }
+function trustedVercelMessageId(runId: string): string {
+  const source = `vercel_message_${createHash("sha256").update(`${runId}:message`, "utf8").digest("hex").slice(0, 24)}`;
+  return `event_${createHash("sha256").update(`${runId}:${source}`, "utf8").digest("hex").slice(0, 24)}`;
+}
 function validEvent(value: unknown, runId: string): value is PublicRunEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const event = value as Record<string, unknown>;
-  if (Object.keys(event).sort().join(",") !== "id,metrics,occurred_at,run_id,sequence,summary,type") return false;
-  if (typeof event.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(event.id) || event.run_id !== runId || !cursor(event.sequence) || event.sequence < 1 || typeof event.type !== "string" || !EVENT_TYPES.has(event.type) || !timestamp(event.occurred_at) || typeof event.summary !== "string" || event.summary.length === 0 || event.summary.length > 500 || event.summary.trim() !== event.summary || event.summary.includes("\0") || !event.metrics || typeof event.metrics !== "object" || Array.isArray(event.metrics)) return false;
+  if (Object.keys(event).sort().join(",") !== "id,message,metrics,occurred_at,run_id,sequence,summary,type") return false;
+  if (typeof event.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(event.id) || event.run_id !== runId || !cursor(event.sequence) || event.sequence < 1 || typeof event.type !== "string" || !EVENT_TYPES.has(event.type) || !timestamp(event.occurred_at) || typeof event.summary !== "string" || event.summary.length === 0 || event.summary.length > 500 || event.summary.trim() !== event.summary || event.summary.includes("\0") || (event.message !== null && (event.type !== "message" || event.id !== trustedVercelMessageId(runId) || typeof event.message !== "string" || event.message.length === 0 || event.message.length > 20_000 || event.message.trim() !== event.message || event.message.includes("\0"))) || !event.metrics || typeof event.metrics !== "object" || Array.isArray(event.metrics)) return false;
   const metricMap = event.metrics as Record<string, unknown>;
   return Object.entries(metricMap).every(([name, metric]) => typeof metric === "number" && METRICS.has(name) && Number.isSafeInteger(metric) && metric >= 0 && metric <= 1_000_000_000);
 }
@@ -70,7 +76,8 @@ export async function fetchBridgeRunEvents(runId: string, after: number, fetcher
   const payload = await bounded(response);
   if (response.status === 200 && payload && typeof payload === "object" && !Array.isArray(payload)) {
     const item = payload as Record<string, unknown>; const events = item.events;
-    if (Object.keys(item).sort().join(",") === "after,cursor_reset_required,events,next_cursor,run_id,runtime,schema_version,service,status" && item.schema_version === 1 && item.service === "mentat-local-bridge" && item.runtime === "python" && item.status === "ready" && item.run_id === runId && item.after === after && cursor(item.next_cursor) && typeof item.cursor_reset_required === "boolean" && Array.isArray(events) && events.length <= MAX_EVENTS && events.every((event) => validEvent(event, runId))) {
+    const messageCount = Array.isArray(events) ? events.filter((event) => (event as PublicRunEvent)?.message !== null).length : 0;
+    if (Object.keys(item).sort().join(",") === "after,cursor_reset_required,events,next_cursor,run_id,runtime,schema_version,service,status" && item.schema_version === 1 && item.service === "mentat-local-bridge" && item.runtime === "python" && item.status === "ready" && item.run_id === runId && item.after === after && cursor(item.next_cursor) && typeof item.cursor_reset_required === "boolean" && Array.isArray(events) && events.length <= MAX_EVENTS && messageCount <= 1 && events.every((event) => validEvent(event, runId))) {
       const sequences = events.map((event) => event.sequence);
       const continuous = sequences.every((sequence, index) => index === 0 || sequence === sequences[index - 1] + 1);
       if (new Set(sequences).size === sequences.length && sequences.every((sequence) => sequence > after) && continuous && (!sequences.length || sequences.at(-1) === item.next_cursor) && (item.cursor_reset_required || item.next_cursor === after + sequences.length)) return { ...item, events: events.map((event) => ({ ...event, metrics: { ...event.metrics } })) } as PublicBridgeRunEvents;

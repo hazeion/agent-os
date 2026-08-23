@@ -31,7 +31,13 @@ from agent_run_history import (
     secure_history_permissions,
     summarize_run,
 )
-from agent_runtime import AgentEvent, AgentEventType, MentatTask, TaskStatus
+from agent_runtime import (
+    AgentEvent,
+    AgentEventType,
+    MentatTask,
+    TaskStatus,
+    canonical_event_storage_fields,
+)
 from agent_runtime import AgentRun, SubmissionDisposition, SubmissionOutcome
 from mentat_db import (
     MIGRATIONS,
@@ -62,6 +68,9 @@ _EVENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _SOURCE_TYPE = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _SOURCE_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_VERCEL_MESSAGE_SOURCE = re.compile(
+    r"submission:(vercel_message_[0-9a-f]{24})\Z"
+)
 _ACTIVE_STATUSES = frozenset(
     {
         "reserved",
@@ -773,9 +782,11 @@ def _event_record(run_id: str, run_status: str, raw: Mapping[str, Any]) -> dict[
 
 
 def _event_from_domain(event: AgentEvent) -> dict[str, Any]:
-    content = bounded_excerpt(event.content, 20_000)[0] if event.content is not None else None
-    metrics_json = _canonical_json(dict(event.metrics), maximum=1_024, code="event.metrics_invalid")
-    data_json = "{}"
+    summary, content, metrics_json, data_json = canonical_event_storage_fields(
+        event
+    )
+    if len(metrics_json.encode("ascii")) > 1_024:
+        raise RunRepositoryValidationError("event.metrics_invalid")
     payload = {
         "id": event.id,
         "run_id": event.run_id,
@@ -784,7 +795,7 @@ def _event_from_domain(event: AgentEvent) -> dict[str, Any]:
         "source_type": event.type.value,
         "source_key": event.id,
         "occurred_at": _timestamp(event.occurred_at),
-        "summary": bounded_excerpt(event.summary, 500)[0],
+        "summary": summary,
         "content": content,
         "metrics_json": metrics_json,
         "data_json": data_json,
@@ -795,6 +806,37 @@ def _event_from_domain(event: AgentEvent) -> dict[str, Any]:
     payload["payload_digest"] = digest
     payload["content_bytes"] = len((content or "").encode("utf-8"))
     return payload
+
+
+def _validate_vercel_submission_events(outcome: SubmissionOutcome) -> None:
+    events = tuple(outcome.initial_events)
+    messages = [event for event in events if event.type == AgentEventType.MESSAGE]
+    costs = [event for event in events if event.type == AgentEventType.COST]
+    if outcome.run is None:
+        raise RunRepositoryValidationError("event.vercel_submission_invalid")
+    expected_message_id = "vercel_message_" + hashlib.sha256(
+        (outcome.run.id + ":message").encode("utf-8")
+    ).hexdigest()[:24]
+    expected_cost_id = "vercel_usage_" + hashlib.sha256(
+        (outcome.run.id + ":usage").encode("utf-8")
+    ).hexdigest()[:24]
+    if (
+        len(messages) != 1
+        or len(costs) > 1
+        or len(events) != len(messages) + len(costs)
+        or events[0] is not messages[0]
+        or not re.fullmatch(r"vercel_message_[0-9a-f]{24}", messages[0].id)
+        or messages[0].id != expected_message_id
+        or (
+            costs
+            and (
+                events[-1] is not costs[0]
+                or not re.fullmatch(r"vercel_usage_[0-9a-f]{24}", costs[0].id)
+                or costs[0].id != expected_cost_id
+            )
+        )
+    ):
+        raise RunRepositoryValidationError("event.vercel_submission_invalid")
 
 
 def _details_for_run(run: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -1510,6 +1552,8 @@ class RunRepository:
                     or outcome.run.runtime_type != current["runtime_type"]
                 ):
                     raise RunRepositoryConflict("dispatch.runtime_identity_mismatch")
+                if str(current["runtime_type"]) == "vercel":
+                    _validate_vercel_submission_events(outcome)
                 observed_status = outcome.run.status.value
                 if (
                     observed_status not in _ALL_STATUSES
@@ -1585,6 +1629,40 @@ class RunRepository:
                 summary=summary,
                 source_key=f"dispatch:{dispatch_id}:{reservation_state}",
             )
+            if reservation_state == "accepted":
+                for source_event in outcome.initial_events:
+                    row = self.connection.execute(
+                        "SELECT last_event_sequence FROM mentat_runs WHERE id = ?",
+                        (run_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise RunRepositoryConflict("run.not_found")
+                    record = dict(_event_from_domain(source_event))
+                    source_key = f"submission:{source_event.id}"
+                    record["id"] = (
+                        "event_"
+                        + hashlib.sha256(
+                            (run_id + ":" + source_event.id).encode("utf-8")
+                        ).hexdigest()[:24]
+                    )
+                    record["sequence"] = int(row[0]) + 1
+                    record["source_key"] = source_key
+                    digest_payload = {
+                        key: record[key]
+                        for key in (
+                            "id", "run_id", "sequence", "event_type",
+                            "source_type", "source_key", "occurred_at",
+                            "summary", "content", "metrics_json", "data_json",
+                        )
+                    }
+                    record["payload_digest"] = hashlib.sha256(
+                        _canonical_json(
+                            digest_payload,
+                            maximum=32_768,
+                            code="event.invalid",
+                        ).encode("ascii")
+                    ).hexdigest()
+                    self._append_event_record(record)
             terminal_event = {
                 "completed": AgentEventType.RUN_COMPLETED,
                 "failed": AgentEventType.RUN_FAILED,
@@ -1797,6 +1875,75 @@ class RunRepository:
                 recovered.append(run_id)
             self._apply_retention()
             return tuple(recovered)
+
+    def abandon_unknown_vercel_run(
+        self,
+        run_id: str,
+        *,
+        expected_state_revision: int,
+        now: str | None = None,
+    ) -> RunRecord:
+        """Terminalize one explicitly confirmed ambiguous one-shot request."""
+
+        identifier = _identifier(run_id)
+        if type(expected_state_revision) is not int or expected_state_revision < 1:
+            raise RunRepositoryValidationError("run.state_revision_invalid")
+        occurred_at = _timestamp(now or _now_iso())
+        with self.mutation():
+            self.authority_receipt(required=True)
+            row = self.connection.execute(
+                "SELECT * FROM mentat_runs WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                raise RunRepositoryConflict("run.not_found")
+            _validate_run_row(row)
+            reservation = self.connection.execute(
+                "SELECT dispatch_id, state, attempt_count FROM "
+                "mentat_dispatch_reservations WHERE run_id = ?",
+                (identifier,),
+            ).fetchone()
+            if (
+                str(row["source"]) != "task_dispatch"
+                or str(row["runtime_type"]) != "vercel"
+                or str(row["status"]) != "unknown"
+                or str(row["dispatch_state"]) != "unknown"
+                or row["runtime_run_ref"] is not None
+                or int(row["state_revision"]) != expected_state_revision
+                or reservation is None
+                or str(reservation["state"]) != "unknown"
+                or int(reservation["attempt_count"]) != 1
+            ):
+                raise RunRepositoryConflict("run.recovery_state_changed")
+            updated = self.connection.execute(
+                "UPDATE mentat_runs SET status = 'interrupted', partial = 1, "
+                "state_revision = state_revision + 1, updated_at = ?, "
+                "completed_at = ? WHERE id = ? AND runtime_type = 'vercel' "
+                "AND status = 'unknown' AND dispatch_state = 'unknown' "
+                "AND runtime_run_ref IS NULL AND state_revision = ?",
+                (
+                    occurred_at,
+                    occurred_at,
+                    identifier,
+                    expected_state_revision,
+                ),
+            ).rowcount
+            if updated != 1:
+                raise RunRepositoryConflict("run.recovery_state_changed")
+            self.connection.execute(
+                "UPDATE mentat_dispatch_reservations SET updated_at = ? "
+                "WHERE run_id = ? AND state = 'unknown' AND attempt_count = 1",
+                (occurred_at, identifier),
+            )
+            self._append_next_lifecycle_event(
+                identifier,
+                event_type=AgentEventType.RUN_INTERRUPTED,
+                occurred_at=occurred_at,
+                summary="Operator abandoned an ambiguous Vercel submission",
+                source_key=f"vercel:{identifier}:abandon-unknown",
+            )
+            self._apply_retention()
+            return self.get_run(identifier)
 
     def recover_console_runs_as_interrupted(
         self, *, now: str | None = None
@@ -2510,6 +2657,50 @@ class RunRepository:
             or after_sequence < int(row["first_retained_sequence"]) - 1
         )
         return tuple(events), reset, int(row["last_event_sequence"])
+
+    def trusted_vercel_result_message_id(self, run_id: str) -> str | None:
+        """Return the sole provenance-bound Vercel result message, if retained."""
+
+        identifier = _identifier(run_id)
+        run = self.connection.execute(
+            "SELECT * FROM mentat_runs WHERE id = ?",
+            (identifier,),
+        ).fetchone()
+        if run is None:
+            raise RunRepositoryConflict("run.not_found")
+        _validate_run_row(run)
+        if str(run["runtime_type"]) != "vercel":
+            return None
+        rows = self.connection.execute(
+            "SELECT id, event_type, source_type, source_key, content "
+            "FROM mentat_agent_events WHERE run_id = ? AND event_type = 'message' "
+            "ORDER BY sequence",
+            (identifier,),
+        ).fetchall()
+        if len(rows) > 1:
+            raise RunRepositoryError("event.corrupt")
+        if not rows:
+            return None
+        row = rows[0]
+        source_key = str(row["source_key"])
+        expected_source_event_id = "vercel_message_" + hashlib.sha256(
+            (identifier + ":message").encode("utf-8")
+        ).hexdigest()[:24]
+        expected_source_key = f"submission:{expected_source_event_id}"
+        if (
+            str(row["event_type"]) != AgentEventType.MESSAGE.value
+            or str(row["source_type"]) != AgentEventType.MESSAGE.value
+            or _VERCEL_MESSAGE_SOURCE.fullmatch(source_key) is None
+            or source_key != expected_source_key
+            or row["content"] is None
+        ):
+            raise RunRepositoryError("event.corrupt")
+        expected_id = "event_" + hashlib.sha256(
+            (identifier + ":" + expected_source_event_id).encode("utf-8")
+        ).hexdigest()[:24]
+        if str(row["id"]) != expected_id:
+            raise RunRepositoryError("event.corrupt")
+        return expected_id
 
     def _compact_events(self, run_id: str) -> bool:
         rows = self.connection.execute(
