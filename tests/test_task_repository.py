@@ -49,6 +49,13 @@ from task_repository import (
     read_authoritative_tasks,
     mutate_authoritative_tasks,
 )
+from vercel_connections import (
+    confirm_configure_vercel,
+    confirm_create_vercel_agent,
+    load_vercel_connection,
+    preview_configure_vercel,
+    preview_create_vercel_agent,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -235,7 +242,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 8)
+            self.assertEqual(SCHEMA_VERSION, 9)
             self.assertTrue(
                 {
                     "mentat_tasks",
@@ -306,8 +313,9 @@ class TaskRepositoryTests(unittest.TestCase):
                     connection.execute("DROP TABLE mentat_agent_registry_state")
                     connection.execute("DROP TABLE mentat_agents")
                     connection.execute("DROP TABLE agent_runtime_configs")
+                    connection.execute("DROP TABLE provider_connections")
                     connection.execute(
-                        "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8)"
+                        "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9)"
                     )
             finally:
                 connection.close()
@@ -1263,6 +1271,21 @@ class TaskRepositoryTests(unittest.TestCase):
                 runtime_agent_ref="export-profile",
                 capabilities=(),
             )
+            vercel_preview = preview_configure_vercel(
+                root,
+                label="Vercel",
+                auth_kind="oidc",
+                model="openai/gpt-5.4",
+            )
+            confirm_configure_vercel(
+                root, vercel_preview, vercel_preview.confirmation_token
+            )
+            agent_preview = preview_create_vercel_agent(
+                root, name="Vercel Export Boundary"
+            )
+            vercel_agent = confirm_create_vercel_agent(
+                root, agent_preview, agent_preview.confirmation_token
+            )
             mutate_authoritative_tasks(
                 root,
                 lambda tasks: ([*tasks, task("task_b")], None),
@@ -1322,6 +1345,12 @@ class TaskRepositoryTests(unittest.TestCase):
                         "WHERE name = 'mentat_task_store_state'"
                     ).fetchone()
                 )
+                self.assertIsNone(
+                    downgraded.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE name = 'provider_connections'"
+                    ).fetchone()
+                )
                 self.assertEqual(
                     TaskRepository(
                         downgraded,
@@ -1339,6 +1368,11 @@ class TaskRepositoryTests(unittest.TestCase):
                 [record.agent.id for record in legacy_registry.records],
                 ["agent_exported"],
             )
+            self.assertNotIn(
+                vercel_agent.id,
+                [record.agent.id for record in legacy_registry.records],
+            )
+            self.assertEqual(load_vercel_connection(root).state, "configured")
 
             legacy_tasks = json.loads(
                 (target / "tasks.json").read_text(encoding="utf-8")
@@ -1359,6 +1393,45 @@ class TaskRepositoryTests(unittest.TestCase):
                 "compatible_target_exists",
             ):
                 preview_task_compatible_export(root)
+
+    def test_schema_five_downgrade_rejects_task_assigned_to_filtered_vercel_agent(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            write_seed_root(root, [task("task_vercel_assigned")])
+            ensure_task_sqlite_authority(root)
+            configure = preview_configure_vercel(
+                root,
+                label="Vercel",
+                auth_kind="oidc",
+                model="openai/gpt-5.4",
+            )
+            confirm_configure_vercel(
+                root,
+                configure,
+                configure.confirmation_token,
+            )
+            create = preview_create_vercel_agent(
+                root,
+                name="Vercel downgrade boundary",
+            )
+            agent = confirm_create_vercel_agent(
+                root,
+                create,
+                create.confirmation_token,
+            )
+
+            def assign(tasks):
+                updated = deepcopy(tasks)
+                updated[0]["assigned_agent_id"] = agent.id
+                return updated, None
+
+            mutate_authoritative_tasks(root, assign)
+            with self.assertRaisesRegex(
+                TaskRepositoryConflict,
+                "task_export.compatible_agent_unsupported",
+            ):
+                preview_task_compatible_export(root)
+            self.assertFalse(root.with_name("data-schema5-downgrade").exists())
 
     def test_schema_five_downgrade_filters_blobs_for_runs_omitted_from_projection(self):
         with TemporaryDirectory() as tmpdir:
@@ -2000,8 +2073,9 @@ class TaskRepositoryTests(unittest.TestCase):
                     connection.execute("DROP TABLE mentat_agent_registry_state")
                     connection.execute("DROP TABLE mentat_agents")
                     connection.execute("DROP TABLE agent_runtime_configs")
+                    connection.execute("DROP TABLE provider_connections")
                     connection.execute(
-                        "DELETE FROM schema_migrations WHERE version IN (6, 7, 8)"
+                        "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9)"
                     )
             finally:
                 connection.close()

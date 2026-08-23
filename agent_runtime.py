@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+import hashlib
+import json
 import re
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
@@ -20,6 +22,9 @@ _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
+_VERCEL_MESSAGE_EVENT_ID = re.compile(r"vercel_message_[0-9a-f]{24}\Z")
+_VERCEL_COST_EVENT_ID = re.compile(r"vercel_usage_[0-9a-f]{24}\Z")
+_CANONICAL_EVENT_BYTES = 32_768
 
 
 class AgentStatus(StrEnum):
@@ -85,6 +90,7 @@ class RuntimeCapability(StrEnum):
     EVENTS = "run.events"
     ATTACHMENTS = "run.attachments"
     APPROVAL_RESPONSE = "run.approval_response"
+    MODEL_GENERATE = "model.generate"
 
 
 class AgentRuntimeError(RuntimeError):
@@ -116,7 +122,12 @@ def _require_runtime_type(value: str) -> str:
 
 
 def _bounded_text(value: str, label: str, *, maximum: int) -> str:
-    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or "\x00" in value
+        or any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+    ):
         raise ValueError(f"{label} is required")
     result = value.strip()
     if len(result) > maximum:
@@ -276,6 +287,7 @@ class SubmissionOutcome:
     run: AgentRun | None = None
     runtime_run_ref: str | None = None
     failure_code: str | None = None
+    initial_events: tuple[AgentEvent, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "disposition", SubmissionDisposition(self.disposition))
@@ -294,6 +306,61 @@ class SubmissionOutcome:
                 raise ValueError("submission failure code is invalid")
         if self.disposition == SubmissionDisposition.ACCEPTED and self.failure_code is not None:
             raise ValueError("accepted submission cannot include a failure code")
+        events = tuple(self.initial_events)
+        if events and self.disposition != SubmissionDisposition.ACCEPTED:
+            raise ValueError("only accepted submissions can include initial events")
+        if len(events) > 16:
+            raise ValueError("too many initial submission events")
+        if events:
+            if self.run is None:
+                raise ValueError("initial submission events require a run")
+            if [event.sequence for event in events] != list(range(1, len(events) + 1)):
+                raise ValueError("initial submission event sequence is invalid")
+            if len({event.id for event in events}) != len(events):
+                raise ValueError("initial submission events must be unique")
+            if any(
+                event.run_id != self.run.id
+                or event.type not in {AgentEventType.MESSAGE, AgentEventType.COST}
+                for event in events
+            ):
+                raise ValueError("initial submission event is invalid")
+            for event in events:
+                _validate_initial_event_storage(self.run, event)
+        if (
+            self.disposition == SubmissionDisposition.ACCEPTED
+            and self.run is not None
+            and self.run.runtime_type == "vercel"
+        ):
+            message_events = [
+                event for event in events if event.type == AgentEventType.MESSAGE
+            ]
+            cost_events = [
+                event for event in events if event.type == AgentEventType.COST
+            ]
+            expected_message_id = "vercel_message_" + hashlib.sha256(
+                (self.run.id + ":message").encode("utf-8")
+            ).hexdigest()[:24]
+            expected_cost_id = "vercel_usage_" + hashlib.sha256(
+                (self.run.id + ":usage").encode("utf-8")
+            ).hexdigest()[:24]
+            if (
+                len(message_events) != 1
+                or len(cost_events) > 1
+                or len(events) != len(message_events) + len(cost_events)
+                or events[0] is not message_events[0]
+                or not _VERCEL_MESSAGE_EVENT_ID.fullmatch(message_events[0].id)
+                or message_events[0].id != expected_message_id
+                or (
+                    cost_events
+                    and (
+                        events[-1] is not cost_events[0]
+                        or not _VERCEL_COST_EVENT_ID.fullmatch(cost_events[0].id)
+                        or cost_events[0].id != expected_cost_id
+                    )
+                )
+            ):
+                raise ValueError("Vercel submission events are invalid")
+        object.__setattr__(self, "initial_events", events)
 
 
 @dataclass(frozen=True)
@@ -342,6 +409,77 @@ class AgentEvent:
                 raise ValueError("event metrics are invalid")
             normalized_metrics[name] = value
         object.__setattr__(self, "metrics", MappingProxyType(normalized_metrics))
+
+
+def canonical_event_storage_fields(
+    event: AgentEvent,
+) -> tuple[str, str | None, str, str]:
+    """Return the exact redacted fields used by durable event persistence."""
+
+    # Import lazily so the runtime-neutral domain module does not create an
+    # import cycle while the legacy history compatibility module initializes.
+    from agent_run_history import bounded_excerpt
+
+    summary = bounded_excerpt(event.summary, 500)[0]
+    content = (
+        bounded_excerpt(event.content, 20_000)[0]
+        if event.content is not None
+        else None
+    )
+    metrics_json = json.dumps(
+        dict(event.metrics),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return summary, content, metrics_json, "{}"
+
+
+def _validate_initial_event_storage(run: AgentRun, event: AgentEvent) -> None:
+    """Keep accepted events within both exact SQLite canonical envelopes."""
+
+    summary, content, metrics_json, data_json = canonical_event_storage_fields(
+        event
+    )
+    common = {
+        "run_id": event.run_id,
+        "event_type": event.type.value,
+        "source_type": event.type.value,
+        "occurred_at": event.occurred_at,
+        "summary": summary,
+        "content": content,
+        "metrics_json": metrics_json,
+        "data_json": data_json,
+    }
+    envelopes = (
+        {
+            **common,
+            "id": event.id,
+            "sequence": event.sequence,
+            "source_key": event.id,
+        },
+        {
+            **common,
+            "id": "event_"
+            + hashlib.sha256(
+                (run.id + ":" + event.id).encode("utf-8")
+            ).hexdigest()[:24],
+            # Task dispatch reserves sequence 1 and records acceptance at 2.
+            "sequence": event.sequence + 2,
+            "source_key": f"submission:{event.id}",
+        },
+    )
+    for envelope in envelopes:
+        encoded = json.dumps(
+            envelope,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("ascii")
+        if len(encoded) > _CANONICAL_EVENT_BYTES:
+            raise ValueError("initial submission event exceeds durable storage")
 
 
 @dataclass(frozen=True)

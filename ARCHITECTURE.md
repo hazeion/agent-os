@@ -3,8 +3,9 @@
 ## What Mentat is
 
 Mentat is a local operations console for planning work and running agents. It
-owns Agent, Task, Run, and event records. Hermes and a signed-in local Codex CLI
-can execute work through separate runtime adapters.
+owns Agent, Task, Run, event, and provider-connection records. Hermes, a
+signed-in local Codex CLI, and optional Vercel services execute work through
+separate capability-scoped adapters.
 
 The migration keeps the current Python app working while new parts are added.
 Python owns local data, runtime access, and the existing safety checks. New
@@ -57,10 +58,11 @@ assets. It accepts only the configured loopback Host and port. Cross-site,
 mismatched-origin, and malformed fetch metadata requests fail closed.
 
 The browser can call fixed same-origin routes only: `/api/bridge/health`, the
-read-only `/api/agents`, `/api/tasks`, `/api/runs`, and selected-Run timeline
-route. Node builds each private request on the server, checks its bounded
-response, and returns only the route's safe public fields. The Agent route exposes canonical Mentat IDs,
-names, runtime types, runtime configuration IDs, and declared capabilities. It
+read-only `/api/agents`, `/api/provider-connections`, `/api/tasks`, `/api/runs`,
+and selected-Run timeline route. Node builds each private request on the
+server, checks its bounded response, and returns only the route's safe public
+fields. The Agent route exposes canonical Mentat IDs, names, runtime types,
+runtime configuration IDs, and declared capabilities. It
 never exposes adapter-owned runtime references, credentials, paths, raw Hermes
 data, or legacy heartbeat observations. Browser input cannot choose a bridge
 path, target, headers, or token.
@@ -137,11 +139,12 @@ the supervisor must own both processes.
   recently completed process. Records in `data/agents.json` are not the new
   canonical Agent registry.
 - Canonical Mentat Agents and their one-to-one adapter runtime configurations
-  are persisted in schema-8 owner-private `mentat.sqlite3`. The runtime configuration retains
-  the private runtime-owned Agent reference; ordinary browser projections omit
-  that reference and expose only Mentat identity, runtime type/config identity,
-  and declared capabilities. The local registry is transactionally capped at
-  128 Agents so create/list responses and private recovery remain bounded.
+  are persisted in schema-9 owner-private `mentat.sqlite3`. The runtime
+  configuration retains the private runtime-owned Agent reference; ordinary
+  browser projections omit that reference and expose only Mentat identity,
+  runtime type/config identity, and declared capabilities. The local registry
+  is transactionally capped at 128 Agents so create/list responses and private
+  recovery remain bounded.
 - Existing roots converge only through `mentat agent-registry-migration`.
   Preview performs no write and binds the exact standalone source and Mentat
   database state. Confirmation refuses an active server, creates or verifies a
@@ -154,6 +157,46 @@ the supervisor must own both processes.
 - A Hermes **session** remains conversation history owned by a specific Hermes
   profile and is a runtime reference, not Mentat workflow authority.
 - Durable Agent persistence remains additive without inventing profile-derived IDs.
+
+## Optional Vercel boundary
+
+Schema 9 adds one private, versioned Vercel connection record. It stores only
+validated settings and the credential-source kind. Credential values stay in
+operator environment variables and never enter SQLite, backups, logs, Node, or
+browser responses. The browser receives only the connection label, model,
+safe state, and declared capability states.
+
+Vercel is not required to start or use Mentat. Configuration, readiness tests,
+Agent creation, and disconnect are stopped-server CLI operations with exact
+preview and confirmation. Browser Agent creation cannot select a Vercel
+binding.
+
+The AI Gateway runtime makes one bounded request to its fixed HTTPS endpoint
+and stores only normalized Mentat Run, message, and token-usage evidence.
+Only the bounded Gateway result message may cross the Run-event bridge; raw
+provider payloads and runtime references remain private. Ambiguous transport
+or provider results become `unknown` and are not retried. The stopped-server
+`mentat vercel recover-run` flow can explicitly mark one exact unknown Vercel
+submission interrupted. Its preview and confirmation bind the connection,
+Run revision, and data-root identity, and never resend the request.
+The Sandbox adapter can run only one fixed Node 24 readiness probe in a
+non-persistent, time-limited sandbox through Vercel's fixed
+`https://api.vercel.com/v2/sandboxes` runtime route. Every HTTPS operation has
+one total wall-clock deadline, and a
+created session is successful only after cleanup reports that exact session as
+stopped. The
+Connect adapter requests one configured app-scoped token, validates it, and
+immediately discards it. Neither adapter accepts arbitrary browser commands,
+hosts, headers, scopes, or tokens.
+
+The read-only browser state deliberately distinguishes configuration from a
+live probe: `configured` and `credential_present` report validated local
+configuration only. Only an explicit confirmed CLI test may report `ready`.
+
+Format-4 backup and restore treat provider settings and their bound Agents as
+one schema-9 consistency unit. The schema-5 compatible-root export omits the
+provider table and Vercel Agents so an older build never opens schema 9 or sees
+an unsupported runtime binding.
 
 ## Data ownership and layout
 
@@ -298,7 +341,7 @@ new validated sibling data root containing current durable documents, exported
 Tasks, retained Console/attachment/blob state, the Agent registry, and an exact
 schema-5 copy of the Console database with empty Task tables. Exported
 `tasks.json` is therefore the sibling's sole Task authority, so changes made by
-the old build import exactly if that sibling is later upgraded. The schema-8
+the old build import exactly if that sibling is later upgraded. The schema-9
 source root stays unchanged.
 
 Remote Hermes selection is separate private state and its credential is not a
@@ -326,7 +369,7 @@ mutations, stop Mentat, preview `mentat task-export --compatible-root`, confirm
 its exact token, and point the older build at the reported schema-5 sibling
 data-root name. Restoring a pre-cutover backup remains an alternative that
 discards later Task mutations. Mentat never uses stale `tasks.json`
-automatically and never downgrades the authoritative schema-8 source database.
+automatically and never downgrades the authoritative schema-9 source database.
 
 ### SQLite Run and AgentEvent authority
 

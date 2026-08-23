@@ -1,10 +1,10 @@
 """Validated snapshots of Mentat's durable private Agent Console unit.
 
-Schema 8 preserves embedded Agents and bindings with canonical SQLite Runs,
-events, Tasks, attachments, and ready blobs even when the bounded legacy-history
-projection omits older detail. Schema 4/5/6 compatibility units remain filtered
-to rows reachable from that legacy projection. Runtime scratch and future
-credentials are outside this boundary.
+Schema 9 preserves private provider connections alongside embedded Agents,
+canonical SQLite Runs, events, Tasks, attachments, and ready blobs even when
+the bounded legacy-history projection omits older detail. Schema 4-8 recovery
+units remain supported. Runtime scratch and credential values are outside this
+boundary.
 """
 
 from __future__ import annotations
@@ -55,6 +55,11 @@ from private_state import (
 )
 from run_repository import MAX_SOURCE_RUNS, RunRepository, RunRepositoryError
 from task_repository import TaskRepositoryError, validate_repository_connection
+from vercel_connections import (
+    VercelConnectionError,
+    validate_provider_connections,
+    vercel_binding_is_valid,
+)
 
 
 MAX_HISTORY_BYTES = 4 * 1024 * 1024
@@ -67,11 +72,14 @@ LEGACY_DATABASE_SCHEMA_VERSION = 4
 PREVIOUS_DATABASE_SCHEMA_VERSION = 5
 TASK_DATABASE_SCHEMA_VERSION = 6
 RUN_DATABASE_SCHEMA_VERSION = 7
+AGENT_DATABASE_SCHEMA_VERSION = 8
+PROVIDER_DATABASE_SCHEMA_VERSION = 9
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
     TASK_DATABASE_SCHEMA_VERSION,
     RUN_DATABASE_SCHEMA_VERSION,
+    AGENT_DATABASE_SCHEMA_VERSION,
     DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
@@ -303,7 +311,7 @@ def _initialize_database(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, 0)",
                 (version,),
             )
-        if schema_version >= DATABASE_SCHEMA_VERSION:
+        if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             connection.execute(
                 "INSERT OR IGNORE INTO mentat_agent_registry_state ("
                 "singleton, authority, migration_contract, source_kind, "
@@ -351,6 +359,18 @@ def _validate_registry_snapshot(path: Path) -> int:
 def _validate_embedded_registry(connection: sqlite3.Connection) -> int | None:
     connection.row_factory = sqlite3.Row
     try:
+        versions = [
+            int(row[0])
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+        schema_version = max(versions, default=0)
+        provider_ids: frozenset[str] = frozenset()
+        if schema_version >= PROVIDER_DATABASE_SCHEMA_VERSION:
+            provider_ids = frozenset(
+                record.id for record in validate_provider_connections(connection)
+            )
         receipt = authority_receipt(connection)
         if receipt is None:
             total = sum(
@@ -363,15 +383,25 @@ def _validate_embedded_registry(connection: sqlite3.Connection) -> int | None:
         return len(
             validate_registry_connection(
                 connection,
-                supported_runtime_types=("codex", "hermes"),
+                supported_runtime_types=(
+                    ("codex", "hermes", "vercel")
+                    if schema_version >= PROVIDER_DATABASE_SCHEMA_VERSION
+                    else ("codex", "hermes")
+                ),
                 runtime_binding_validator=lambda agent, runtime_agent_ref: (
                     codex_binding_is_valid(runtime_agent_ref, agent.capabilities)
                     if agent.runtime_type == "codex"
+                    else vercel_binding_is_valid(
+                        runtime_agent_ref,
+                        agent.capabilities,
+                        provider_ids,
+                    )
+                    if agent.runtime_type == "vercel"
                     else True
                 ),
             )
         )
-    except AgentRegistryError as exc:
+    except (AgentRegistryError, VercelConnectionError) as exc:
         raise PrivateConsoleUnitError("private_agent_registry_invalid") from exc
 
 
@@ -401,25 +431,13 @@ def _database_agent_count(raw: bytes) -> int | None:
                     "SELECT version FROM schema_migrations ORDER BY version"
                 )
             ]
-            if max(versions, default=0) < DATABASE_SCHEMA_VERSION:
+            if max(versions, default=0) < AGENT_DATABASE_SCHEMA_VERSION:
                 return None
             if authority_receipt(connection) is None:
                 return None
-            return len(
-                validate_registry_connection(
-                    connection,
-                    supported_runtime_types=("codex", "hermes"),
-                    runtime_binding_validator=lambda agent, runtime_agent_ref: (
-                        codex_binding_is_valid(
-                            runtime_agent_ref,
-                            agent.capabilities,
-                        )
-                        if agent.runtime_type == "codex"
-                        else True
-                    ),
-                )
-            )
-        except (sqlite3.Error, AgentRegistryError) as exc:
+            count = _validate_embedded_registry(connection)
+            return 0 if count is None else count
+        except (sqlite3.Error, AgentRegistryError, PrivateConsoleUnitError) as exc:
             raise PrivateConsoleUnitError(
                 "private_agent_registry_invalid"
             ) from exc
@@ -738,7 +756,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             raise PrivateConsoleUnitError("private_database_unsupported")
         if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version >= DATABASE_SCHEMA_VERSION:
+        if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
             try:
@@ -803,7 +821,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-        if schema_version >= DATABASE_SCHEMA_VERSION:
+        if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
@@ -829,7 +847,7 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             raise PrivateConsoleUnitError("private_database_unsupported")
         if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version >= DATABASE_SCHEMA_VERSION:
+        if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
             try:
@@ -957,7 +975,7 @@ def capture_private_console_unit(
             and _sqlite_run_authority_claimed(snapshot_path)
         )
         embedded_agent_authority = (
-            schema_version >= DATABASE_SCHEMA_VERSION
+            schema_version >= AGENT_DATABASE_SCHEMA_VERSION
             and _sqlite_agent_authority_claimed(snapshot_path)
         )
         if run_authority:
@@ -1164,7 +1182,7 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         elif database_references != history_references:
             raise PrivateConsoleUnitError("private_history_database_mismatch")
         embedded_agents = (
-            schema_version >= DATABASE_SCHEMA_VERSION
+            schema_version >= AGENT_DATABASE_SCHEMA_VERSION
             and _sqlite_agent_authority_claimed(database)
         )
         if embedded_agents:
@@ -1329,6 +1347,7 @@ def standalone_agent_registry_raw(unit: PrivateConsoleUnit) -> bytes:
                 "c.runtime_agent_ref, c.created_at AS config_created_at, "
                 "c.updated_at AS config_updated_at FROM mentat_agents AS a "
                 "JOIN agent_runtime_configs AS c ON c.id = a.runtime_config_id "
+                "WHERE c.runtime_type IN ('codex', 'hermes') "
                 "ORDER BY a.name COLLATE NOCASE, a.id"
             ).fetchall()
             destination.execute("BEGIN IMMEDIATE")
@@ -1368,6 +1387,32 @@ def standalone_agent_registry_raw(unit: PrivateConsoleUnit) -> bytes:
         if os.name != "nt":
             destination_path.chmod(0o600)
         return destination_path.read_bytes()
+
+
+def schema5_excluded_agent_ids(unit: PrivateConsoleUnit) -> frozenset[str]:
+    """Return Agent IDs that the schema-5 compatibility registry cannot carry."""
+
+    if unit.registry_database_raw is not None:
+        _registry_agent_count(unit.registry_database_raw)
+        return frozenset()
+    with TemporaryDirectory(prefix="mentat-schema5-agent-check-") as temporary:
+        source_path = Path(temporary) / "mentat.sqlite3"
+        source_path.write_bytes(unit.database_raw)
+        source = sqlite3.connect(_sqlite_readonly_uri(source_path), uri=True)
+        source.row_factory = sqlite3.Row
+        try:
+            if _validate_embedded_registry(source) is None:
+                return frozenset()
+            return frozenset(
+                str(row[0])
+                for row in source.execute(
+                    "SELECT a.id FROM mentat_agents AS a JOIN "
+                    "agent_runtime_configs AS c ON c.id = a.runtime_config_id "
+                    "WHERE c.runtime_type = 'vercel' ORDER BY a.id"
+                )
+            )
+        finally:
+            source.close()
 
 
 def _write_private_file(path: Path, raw: bytes) -> None:

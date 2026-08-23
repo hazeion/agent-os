@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +24,7 @@ from orchestration_service import OrchestrationService
 from private_state import history_path
 from run_repository import RunRepository
 import server
+from mentat import local_bridge
 from task_repository import TaskRepository
 from tests.sqlite_authority_support import ensure_run_sqlite_authority
 
@@ -60,10 +62,11 @@ def _task_fixture(
 
 
 class _SubmissionGate:
-    """Require both runtime submissions to enter before either can return."""
+    """Require every runtime submission to enter before any can return."""
 
-    def __init__(self) -> None:
-        self.barrier = threading.Barrier(2)
+    def __init__(self, expected: frozenset[str]) -> None:
+        self.expected = expected
+        self.barrier = threading.Barrier(len(expected))
         self.lock = threading.Lock()
         self.entered: set[str] = set()
         self.crossed: set[str] = set()
@@ -80,8 +83,8 @@ class _SubmissionGate:
                 "both runtime submissions did not enter concurrently"
             ) from exc
         with self.lock:
-            if self.entered != {"hermes", "codex"}:
-                raise AssertionError("submission barrier released without both runtimes")
+            if self.entered != self.expected:
+                raise AssertionError("submission barrier released without every runtime")
             self.crossed.add(runtime_type)
 
 
@@ -136,21 +139,33 @@ class _StrictFakeRuntime:
 
         self.gate.rendezvous(self.runtime_type)
 
+        event_id = f"{self.runtime_type}_progress"
+        if self.runtime_type == "vercel":
+            event_id = "vercel_message_" + hashlib.sha256(
+                (context.mentat_run_id + ":message").encode("utf-8")
+            ).hexdigest()[:24]
         progress = AgentEvent(
-            id=f"{self.runtime_type}_progress",
+            id=event_id,
             run_id=context.mentat_run_id,
             sequence=1,
             type=AgentEventType.MESSAGE,
             occurred_at=_TIMESTAMP,
             summary=f"{self.runtime_type} runtime is running",
+            content=(
+                "Vercel returned one bounded result."
+                if self.runtime_type == "vercel"
+                else None
+            ),
         )
+        initial_events = (progress,) if self.runtime_type == "vercel" else ()
+        runtime_events = [] if self.runtime_type == "vercel" else [progress]
         with self._lock:
             self._runs[runtime_run_ref] = {
                 "task_id": task.id,
                 "agent_id": self.agent_id,
                 "mentat_run_id": context.mentat_run_id,
                 "status": RunStatus.RUNNING,
-                "events": [progress],
+                "events": runtime_events,
             }
         return SubmissionOutcome(
             SubmissionDisposition.ACCEPTED,
@@ -162,6 +177,7 @@ class _StrictFakeRuntime:
                 status=RunStatus.STARTING,
             ),
             runtime_run_ref=runtime_run_ref,
+            initial_events=initial_events,
         )
 
     def _bound_run(self, run_id, context):
@@ -250,7 +266,7 @@ class _StrictFakeRuntime:
 
 
 class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
-    def test_hermes_and_codex_dispatch_reconcile_and_control_independently(self):
+    def test_hermes_codex_and_vercel_dispatch_bridge_and_control_independently(self):
         with TemporaryDirectory(prefix="mentat-runtime-coexistence-") as tmpdir:
             root = Path(tmpdir)
             tasks = (
@@ -266,6 +282,12 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                     agent_id="agent_codex_engineer",
                     required_capability=RuntimeCapability.STOP.value,
                 ),
+                _task_fixture(
+                    task_id="task_vercel_generation",
+                    title="Vercel generation",
+                    agent_id="agent_vercel_generator",
+                    required_capability=RuntimeCapability.MODEL_GENERATE.value,
+                ),
             )
             source = root / "tasks.json"
             source.write_text(
@@ -279,9 +301,11 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
             events = RuntimeCapability.EVENTS.value
             stop = RuntimeCapability.STOP.value
             message = RuntimeCapability.SEND_MESSAGE.value
+            generate = RuntimeCapability.MODEL_GENERATE.value
             hermes_capabilities = frozenset({start, status, events, stop, message})
             codex_capabilities = frozenset({start, status, events, stop})
-            gate = _SubmissionGate()
+            vercel_capabilities = frozenset({start, status, events, generate})
+            gate = _SubmissionGate(frozenset({"hermes", "codex", "vercel"}))
             hermes = _StrictFakeRuntime(
                 runtime_type="hermes",
                 agent_id="agent_hermes_researcher",
@@ -298,7 +322,15 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                 required_capability=stop,
                 gate=gate,
             )
-            runtime_registry = AgentRuntimeRegistry((hermes, codex))
+            vercel = _StrictFakeRuntime(
+                runtime_type="vercel",
+                agent_id="agent_vercel_generator",
+                runtime_agent_ref="connection_vercel",
+                capabilities=vercel_capabilities,
+                required_capability=generate,
+                gate=gate,
+            )
+            runtime_registry = AgentRuntimeRegistry((hermes, codex, vercel))
             agent_registry = AgentRegistry(
                 root, supported_runtime_types=runtime_registry.runtime_types
             )
@@ -317,6 +349,14 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                 runtime_type=codex.runtime_type,
                 runtime_agent_ref=codex.runtime_agent_ref,
                 capabilities=codex_capabilities,
+            )
+            agent_registry.create_agent(
+                agent_id=vercel.agent_id,
+                name="Vercel Generator",
+                runtime_config_id="config_vercel_generator",
+                runtime_type=vercel.runtime_type,
+                runtime_agent_ref=vercel.runtime_agent_ref,
+                capabilities=vercel_capabilities,
             )
 
             connection = connect(root)
@@ -343,10 +383,17 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                     agent_registry=agent_registry,
                     id_factory=lambda prefix: f"{prefix}_codex_coexistence",
                 ),
+                "vercel": OrchestrationService(
+                    root,
+                    runtime_registry=runtime_registry,
+                    agent_registry=agent_registry,
+                    id_factory=lambda prefix: f"{prefix}_vercel_coexistence",
+                ),
             }
             task_ids = {
                 "hermes": "task_hermes_research",
                 "codex": "task_codex_engineering",
+                "vercel": "task_vercel_generation",
             }
             results = {}
             failures = []
@@ -372,7 +419,7 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                     args=(runtime_type,),
                     name=f"slice-3b-{runtime_type}",
                 )
-                for runtime_type in ("hermes", "codex")
+                for runtime_type in ("hermes", "codex", "vercel")
             ]
             for worker in workers:
                 worker.start()
@@ -384,11 +431,12 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                     worker.join(timeout=2)
             self.assertTrue(all(not worker.is_alive() for worker in workers))
             self.assertEqual(failures, [], msg=repr(failures))
-            self.assertEqual(set(results), {"hermes", "codex"})
-            self.assertEqual(gate.entered, {"hermes", "codex"})
-            self.assertEqual(gate.crossed, {"hermes", "codex"})
+            self.assertEqual(set(results), {"hermes", "codex", "vercel"})
+            self.assertEqual(gate.entered, {"hermes", "codex", "vercel"})
+            self.assertEqual(gate.crossed, {"hermes", "codex", "vercel"})
             self.assertEqual(len(hermes.submit_calls), 1)
             self.assertEqual(len(codex.submit_calls), 1)
+            self.assertEqual(len(vercel.submit_calls), 1)
             self.assertTrue(all(result.disposition == "accepted" for result in results.values()))
 
             reconciler = OrchestrationService(
@@ -398,13 +446,14 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
             )
             report = reconciler.reconcile_runs(owner="runtime_coexistence_reconciler")
             run_ids = {runtime_type: result.run.id for runtime_type, result in results.items()}
-            self.assertEqual(report.leased, 2)
+            self.assertEqual(report.leased, 3)
             self.assertEqual(set(report.reconciled), set(run_ids.values()))
             self.assertEqual(report.unavailable, ())
 
             expected_identity = {
                 "hermes": (tasks[0]["id"], hermes.agent_id, hermes.runtime_type),
                 "codex": (tasks[1]["id"], codex.agent_id, codex.runtime_type),
+                "vercel": (tasks[2]["id"], vercel.agent_id, vercel.runtime_type),
             }
             connection = connect(root)
             try:
@@ -433,6 +482,7 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
 
             hermes_run_id = run_ids["hermes"]
             codex_run_id = run_ids["codex"]
+            vercel_run_id = run_ids["vercel"]
             message_text = "Continue with the bounded research summary."
             with (
                 patch.object(server, "DATA_DIR", root),
@@ -468,14 +518,41 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                 self.assertEqual(stop_result["run_id"], codex_run_id)
                 self.assertEqual(stop_result["disposition"], "requested")
 
+                agents_payload = local_bridge._ready_agents_payload(
+                    server.mentat_agents_payload()
+                )
+                runs_payload, runs_status = local_bridge.bridge_runs_payload()
+                vercel_events, vercel_events_status = (
+                    local_bridge.bridge_run_events_payload(vercel_run_id, 0)
+                )
+                self.assertEqual(runs_status, 200)
+                self.assertEqual(vercel_events_status, 200)
+                self.assertEqual(
+                    {agent["runtime_type"] for agent in agents_payload["agents"]},
+                    {"hermes", "codex", "vercel"},
+                )
+                self.assertEqual(
+                    {run["runtime_type"] for run in runs_payload["runs"]},
+                    {"hermes", "codex", "vercel"},
+                )
+                self.assertTrue(vercel_events["events"])
+                messages = [
+                    event["message"]
+                    for event in vercel_events["events"]
+                    if event["message"] is not None
+                ]
+                self.assertEqual(messages, ["Vercel returned one bounded result."])
+
             self.assertEqual(len(hermes.message_calls), 1)
             message_call = hermes.message_calls[0]
             self.assertEqual(message_call[0], results["hermes"].run.runtime_run_ref)
             self.assertEqual(message_call[1], message_text)
             self.assertEqual(message_call[2].mentat_run_id, hermes_run_id)
             self.assertEqual(codex.message_calls, [])
+            self.assertEqual(vercel.message_calls, [])
             self.assertEqual(hermes.stop_calls, [])
             self.assertEqual(len(codex.stop_calls), 1)
+            self.assertEqual(vercel.stop_calls, [])
             self.assertEqual(
                 codex.stop_calls[0][0], results["codex"].run.runtime_run_ref
             )
@@ -486,9 +563,11 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                 repository = RunRepository(connection)
                 hermes_run = repository.get_run(hermes_run_id)
                 codex_run = repository.get_run(codex_run_id)
+                vercel_run = repository.get_run(vercel_run_id)
                 codex_events, reset, _cursor = repository.list_events(codex_run_id)
                 self.assertEqual(hermes_run.status, "running")
                 self.assertEqual(codex_run.status, "stopped")
+                self.assertEqual(vercel_run.status, "running")
                 self.assertFalse(reset)
                 self.assertTrue(all(event.run_id == codex_run_id for event in codex_events))
                 self.assertTrue(

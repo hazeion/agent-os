@@ -43,6 +43,7 @@ from agent_run_history import (
 )
 from agent_runtime import (
     AgentEvent,
+    AgentEventType,
     AgentRun,
     AgentRuntimeError,
     AgentRuntimeRegistry,
@@ -174,6 +175,11 @@ from codex_runtime import (
     CodexRuntime,
     codex_app_server_command,
     find_codex_command,
+)
+from vercel_runtime import VercelRuntime
+from vercel_connections import (
+    VercelConnectionError,
+    public_vercel_connections,
 )
 from remote_hermes import (
     RemoteHermesError,
@@ -1587,6 +1593,15 @@ def mentat_agents_payload():
     }
 
 
+def mentat_provider_connections_payload():
+    """Return only the safe provider status projection used by the Node BFF."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise VercelConnectionError("vercel.connection_unavailable")
+        return public_vercel_connections(DATA_DIR)
+
+
 def create_mentat_agent(payload):
     if not isinstance(payload, dict):
         return {"error": "Agent payload must be a JSON object."}, 400
@@ -1601,6 +1616,10 @@ def create_mentat_agent(payload):
     runtime_type = payload.get("runtime_type")
     if not isinstance(runtime_type, str):
         return {"error": "Agent runtime type is invalid."}, 400
+    if runtime_type == "vercel":
+        return {
+            "error": "Create a Vercel Agent with the confirmed `mentat vercel create-agent` command."
+        }, 400
     try:
         runtime = AGENT_RUNTIME_REGISTRY.require(runtime_type)
         if isinstance(runtime, CodexRuntime):
@@ -1658,10 +1677,14 @@ def _public_orchestration_run(run: RunRecord) -> dict:
     }
 
 
-def _public_orchestration_event(event: AgentEvent) -> dict:
-    # Content is intentionally omitted from this first stable projection. The
-    # normalized summary and numeric metrics cannot expose raw adapter payloads,
-    # tool arguments/results, or private reasoning.
+def _public_orchestration_event(
+    event: AgentEvent,
+    *,
+    trusted_message_id: str | None = None,
+) -> dict:
+    # Only a normalized Vercel message result may cross this boundary. Raw
+    # adapter payloads, tool arguments/results, and private reasoning remain
+    # excluded.
     return {
         "id": event.id,
         "run_id": event.run_id,
@@ -1669,6 +1692,11 @@ def _public_orchestration_event(event: AgentEvent) -> dict:
         "type": event.type.value,
         "occurred_at": event.occurred_at,
         "summary": event.summary,
+        "message": (
+            event.content
+            if event.id == trusted_message_id and event.type == AgentEventType.MESSAGE
+            else None
+        ),
         "metrics": dict(event.metrics),
     }
 
@@ -1844,8 +1872,12 @@ def mentat_run_events_payload(run_id: str, after_sequence: int) -> dict:
             with connect_existing_mentat_database(DATA_DIR) as connection:
                 repository = RunRepository(connection)
                 repository.authority_receipt(required=True)
+                run = repository.get_run(run_id)
                 events, reset, cursor = repository.list_events(
                     run_id, after_sequence=after_sequence
+                )
+                trusted_message_id = repository.trusted_vercel_result_message_id(
+                    run_id
                 )
     except (RunRepositoryConflict, RunRepositoryValidationError):
         raise
@@ -1865,7 +1897,13 @@ def mentat_run_events_payload(run_id: str, after_sequence: int) -> dict:
         "after": after_sequence,
         "next_cursor": cursor,
         "cursor_reset_required": reset,
-        "events": [_public_orchestration_event(event) for event in events],
+        "events": [
+            _public_orchestration_event(
+                event,
+                trusted_message_id=trusted_message_id,
+            )
+            for event in events
+        ],
     }
 
 
@@ -2351,8 +2389,13 @@ def orchestration_run_events_payload(run_id: str, query: str = ""):
         with private_state_lock(DATA_DIR):
             connection = connect_mentat_database(DATA_DIR)
             try:
-                events, reset, cursor = RunRepository(connection).list_events(
+                repository = RunRepository(connection)
+                run = repository.get_run(run_id)
+                events, reset, cursor = repository.list_events(
                     run_id, after_sequence=int(raw_after)
+                )
+                trusted_message_id = repository.trusted_vercel_result_message_id(
+                    run_id
                 )
             finally:
                 connection.close()
@@ -2366,7 +2409,13 @@ def orchestration_run_events_payload(run_id: str, query: str = ""):
         "after": int(raw_after),
         "next_cursor": cursor,
         "cursor_reset_required": reset,
-        "events": [_public_orchestration_event(event) for event in events],
+        "events": [
+            _public_orchestration_event(
+                event,
+                trusted_message_id=trusted_message_id,
+            )
+            for event in events
+        ],
     }, 200
 
 
@@ -6759,7 +6808,10 @@ CODEX_RUNTIME = CodexRuntime(
         else None
     ),
 )
-AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry((HERMES_RUNTIME, CODEX_RUNTIME))
+VERCEL_RUNTIME = VercelRuntime(DATA_DIR)
+AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry(
+    (HERMES_RUNTIME, CODEX_RUNTIME, VERCEL_RUNTIME)
+)
 
 
 def shutdown_agent_runtimes() -> None:

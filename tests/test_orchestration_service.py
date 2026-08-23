@@ -25,7 +25,7 @@ from mentat_db import MentatDatabaseError, connect
 from orchestration_service import OrchestrationService, OrchestrationServiceError
 from private_state import history_path
 from private_console_unit import capture_private_console_unit
-from run_repository import RunRepository
+from run_repository import RunRepository, RunRepositoryValidationError
 from tests.sqlite_authority_support import ensure_run_sqlite_authority
 from task_repository import TaskRepository
 
@@ -543,6 +543,61 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertTrue(duplicate.duplicate)
         self.assertEqual(len(runtime.calls), 1)
         self.assertEqual(events[-1].type.value, "submission.unknown")
+
+    def test_accepted_outcome_persistence_failure_becomes_durable_unknown(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service = self.prepare(root, runtime)
+            original = RunRepository.record_submission_outcome
+            recorded_dispositions = []
+
+            def reject_first_outcome(
+                repository,
+                *,
+                dispatch_id,
+                outcome,
+                now=None,
+            ):
+                recorded_dispositions.append(outcome.disposition)
+                if len(recorded_dispositions) == 1:
+                    raise RunRepositoryValidationError("event.invalid")
+                return original(
+                    repository,
+                    dispatch_id=dispatch_id,
+                    outcome=outcome,
+                    now=now,
+                )
+
+            with patch.object(
+                RunRepository,
+                "record_submission_outcome",
+                new=reject_first_outcome,
+            ):
+                result = service.dispatch_task(
+                    task_id="task-service",
+                    expected_revision=1,
+                    idempotency_key="accepted-persistence-failure-key",
+                )
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                events, _reset, _cursor = repository.list_events(result.run.id)
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(len(runtime.calls), 1)
+        self.assertEqual(
+            recorded_dispositions,
+            [SubmissionDisposition.ACCEPTED, SubmissionDisposition.UNKNOWN],
+        )
+        self.assertEqual(result.disposition, "unknown")
+        self.assertEqual(result.run.status, "unknown")
+        self.assertEqual(result.run.dispatch_state, "unknown")
+        self.assertTrue(result.run.partial)
+        self.assertEqual(events[-1].type, AgentEventType.SUBMISSION_UNKNOWN)
 
     def test_public_dispatch_run_and_event_apis_are_cursor_based_and_private(self):
         with TemporaryDirectory() as tmpdir:

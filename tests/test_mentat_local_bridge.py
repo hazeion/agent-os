@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from http.client import HTTPConnection
 import json
 from pathlib import Path
@@ -16,9 +17,19 @@ from run_repository import RunRepository, RunRepositoryConflict, RunRepositoryEr
 from task_repository import TaskRepositoryError
 from mentat import local_bridge
 import server
+from vercel_connections import VercelConnectionError, VercelConnectionUnavailable
 
 
 TOKEN = "bridge-token-that-is-long-enough-for-256-bits-of-entropy"
+
+
+def trusted_vercel_message_event_id(run_id: str) -> str:
+    source_event_id = "vercel_message_" + hashlib.sha256(
+        (run_id + ":message").encode("utf-8")
+    ).hexdigest()[:24]
+    return "event_" + hashlib.sha256(
+        (run_id + ":" + source_event_id).encode("utf-8")
+    ).hexdigest()[:24]
 
 
 class LocalBridgeTests(unittest.TestCase):
@@ -214,6 +225,120 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual(payload["status"], state)
                 self.assertNotIn("private", json.dumps(payload))
 
+    def test_provider_connections_is_a_fixed_secret_free_projection(self):
+        canonical = {
+            "schema_version": 1,
+            "count": 1,
+            "connections": [{
+                "id": "connection_vercel",
+                "provider": "vercel",
+                "label": "Vercel",
+                "state": "configured",
+                "model": "openai/gpt-5.4",
+                "capabilities": [
+                    {"id": "ai.gateway", "status": "credential_present"},
+                    {"id": "sandbox.readiness", "status": "needs_auth"},
+                    {"id": "connect.token", "status": "credential_present"},
+                ],
+            }],
+        }
+        ready = local_bridge._ready_provider_connections_payload(canonical)
+        with patch.object(
+            local_bridge,
+            "bridge_provider_connections_payload",
+            return_value=(ready, 200),
+        ):
+            status, payload, _headers = self.request(
+                path=local_bridge.BRIDGE_PROVIDER_CONNECTIONS_PATH
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["connections"], canonical["connections"])
+        encoded = json.dumps(payload)
+        for private_name in (
+            "auth_kind",
+            "team_id",
+            "project_id",
+            "connector",
+            "connect_scopes",
+            "credential_ref",
+        ):
+            self.assertNotIn(private_name, encoded)
+        self.assertNotIn('"credential":', encoded)
+        self.assertNotIn("secret-canary", encoded)
+
+    def test_provider_connections_rejects_private_fields_and_inconsistent_state(self):
+        base = {
+            "schema_version": 1,
+            "count": 1,
+            "connections": [{
+                "id": "connection_vercel",
+                "provider": "vercel",
+                "label": "Vercel",
+                "state": "needs_auth",
+                "model": "openai/gpt-5.4",
+                "capabilities": [{"id": "ai.gateway", "status": "needs_auth"}],
+            }],
+        }
+        candidates = (
+            {
+                **base,
+                "connections": [{**base["connections"][0], "token": "secret-canary"}],
+            },
+            {
+                **base,
+                "connections": [{
+                    **base["connections"][0],
+                    "state": "configured",
+                }],
+            },
+            {
+                **base,
+                "connections": [{
+                    **base["connections"][0],
+                    "capabilities": [
+                        {"id": "connect.token", "status": "needs_auth"},
+                        {"id": "ai.gateway", "status": "needs_auth"},
+                    ],
+                }],
+            },
+        )
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(
+                    local_bridge.BridgeProviderConnectionProjectionError
+                ):
+                    local_bridge._ready_provider_connections_payload(candidate)
+
+    def test_provider_connection_capability_maps_failures_without_details(self):
+        empty = {"schema_version": 1, "connections": [], "count": 0}
+        cases = (
+            (empty, "ready", 200),
+            (
+                VercelConnectionUnavailable("vercel.connection_unavailable"),
+                "unavailable",
+                503,
+            ),
+            (
+                VercelConnectionError("vercel.connection_unsupported"),
+                "unsupported",
+                501,
+            ),
+            (VercelConnectionError("private-canary"), "error", 500),
+        )
+        for outcome, expected_state, expected_status in cases:
+            with self.subTest(expected_state=expected_state):
+                with patch.object(
+                    server,
+                    "mentat_provider_connections_payload",
+                    side_effect=outcome if isinstance(outcome, Exception) else None,
+                    return_value=None if isinstance(outcome, Exception) else outcome,
+                ):
+                    payload, status = local_bridge.bridge_provider_connections_payload()
+                self.assertEqual(status, expected_status)
+                self.assertEqual(payload["status"], expected_state)
+                self.assertNotIn("private-canary", json.dumps(payload))
+
     def test_tasks_is_a_fixed_sqlite_projection_without_descriptions(self):
         canonical = {"schema_version": 1, "count": 1, "tasks": [{"id": "task_1", "title": "Current task", "project": "Mentat", "status": "todo", "priority": "medium", "due_date": None, "tags": ["planning"], "needs_attention": False, "review_required": False, "updated_at": "2026-08-22T00:00:00Z", "description": "private"}]}
         with (
@@ -325,12 +450,12 @@ class LocalBridgeTests(unittest.TestCase):
             status, payload, _headers = self.request(path=local_bridge.BRIDGE_RUNS_PATH)
         self.assertEqual((status, payload), (200, response))
 
-    def test_run_events_are_a_fixed_bounded_projection_without_content(self):
+    def test_run_events_are_a_fixed_bounded_projection_with_safe_vercel_messages(self):
         canonical = {
             "schema_version": 1,
             "run_id": "run_current",
             "after": 3,
-            "next_cursor": 4,
+            "next_cursor": 5,
             "cursor_reset_required": False,
             "events": [{
                 "id": "event_current",
@@ -339,13 +464,24 @@ class LocalBridgeTests(unittest.TestCase):
                 "type": "run.started",
                 "occurred_at": "2026-08-22T00:01:00Z",
                 "summary": "Runtime accepted dispatch",
+                "message": None,
                 "metrics": {"total_tokens": 12},
+            }, {
+                "id": trusted_vercel_message_event_id("run_current"),
+                "run_id": "run_current",
+                "sequence": 5,
+                "type": "message",
+                "occurred_at": "2026-08-22T00:01:01Z",
+                "summary": "Vercel AI Gateway returned a response",
+                "message": "A bounded result from Vercel.",
+                "metrics": {},
             }],
         }
         with patch.object(server, "mentat_run_events_payload", return_value=canonical):
             payload, status = local_bridge.bridge_run_events_payload("run_current", 3)
-        self.assertEqual((status, payload["next_cursor"]), (200, 4))
+        self.assertEqual((status, payload["next_cursor"]), (200, 5))
         self.assertEqual(payload["events"][0]["summary"], "Runtime accepted dispatch")
+        self.assertEqual(payload["events"][1]["message"], "A bounded result from Vercel.")
         for private_name in ("content", "runtime_run_ref", "payload", "data"):
             self.assertNotIn(private_name, json.dumps(payload))
 
@@ -358,11 +494,55 @@ class LocalBridgeTests(unittest.TestCase):
             "cursor_reset_required": False,
             "events": [{
                 "id": "event_current", "run_id": "run_current", "sequence": 1,
-                "type": "message", "occurred_at": "2026-08-22T00:01:00Z",
-                "summary": "Event", "metrics": {}, "content": "private",
+                "type": "run.started", "occurred_at": "2026-08-22T00:01:00Z",
+                "summary": "Event", "message": "not allowed", "metrics": {},
             }],
         }
         with patch.object(server, "mentat_run_events_payload", return_value=malformed):
+            payload, status = local_bridge.bridge_run_events_payload("run_current", 0)
+        self.assertEqual((status, payload["status"]), (500, "error"))
+        wrong_provenance = {
+            **malformed,
+            "events": [{
+                **malformed["events"][0],
+                "id": "event_result",
+                "type": "message",
+                "message": "A result without trusted provenance.",
+            }],
+        }
+        with patch.object(
+            server,
+            "mentat_run_events_payload",
+            return_value=wrong_provenance,
+        ):
+            payload, status = local_bridge.bridge_run_events_payload(
+                "run_current", 0
+            )
+        self.assertEqual((status, payload["status"]), (500, "error"))
+        duplicate_results = {
+            **malformed,
+            "next_cursor": 2,
+            "events": [
+                {
+                    **malformed["events"][0],
+                    "id": "event_result_one",
+                    "type": "message",
+                    "message": "First result.",
+                },
+                {
+                    **malformed["events"][0],
+                    "id": "event_result_two",
+                    "sequence": 2,
+                    "type": "message",
+                    "message": "Second result.",
+                },
+            ],
+        }
+        with patch.object(
+            server,
+            "mentat_run_events_payload",
+            return_value=duplicate_results,
+        ):
             payload, status = local_bridge.bridge_run_events_payload("run_current", 0)
         self.assertEqual((status, payload["status"]), (500, "error"))
         cases = (

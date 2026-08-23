@@ -192,10 +192,10 @@ pivot.
 
 ## Optional infrastructure
 
-Vercel is a first-class, planned optional infrastructure target for Mentat.
-Slice 4A will make it a working choice behind Mentat's own connection and
-runtime contracts. Using a Vercel service must not require hosting the
-local-first Mentat console on Vercel.
+Vercel is a first-class optional infrastructure target for Mentat. Slice 4A
+implements it behind Mentat's own connection and runtime contracts. Using a
+Vercel service does not require hosting the local-first Mentat console on
+Vercel.
 
 - AI Gateway for model access and usage data
 - harness or AI SDK adapters for compatible runtimes
@@ -235,8 +235,9 @@ The implementation plan splits these phases into reviewable slices.
 5. Add Codex as a second runtime.
 6. Prove that Hermes and Codex can run at the same time.
 7. Converge Mentat-owned relational data into one private SQLite database.
-8. Add shared tools, policy, credentials, routing, and agent delegation in later
-   slices.
+8. Add Vercel as an optional capability-scoped infrastructure choice.
+9. Add shared tools, policy, credentials, routing, and agent delegation in
+   later slices.
 
 The proof for runtime number two is simple:
 

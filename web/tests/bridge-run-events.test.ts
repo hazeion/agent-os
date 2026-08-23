@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { BridgeRunEventsError, fetchBridgeRunEvents, lastEventCursor } from "../src/lib/bridge-run-events.ts";
 
 const environment = { MENTAT_BRIDGE_ORIGIN: "http://127.0.0.1:49152", MENTAT_BRIDGE_TOKEN: "A_very_long_urlsafe_bridge_token_with_more_than_43_chars" };
-const event = { id: "event_current", run_id: "run_current", sequence: 4, type: "run.started", occurred_at: "2026-08-22T00:01:00Z", summary: "Runtime accepted dispatch", metrics: { total_tokens: 12 } };
+const event = { id: "event_current", run_id: "run_current", sequence: 4, type: "run.started", occurred_at: "2026-08-22T00:01:00Z", summary: "Runtime accepted dispatch", message: null, metrics: { total_tokens: 12 } };
 const payload = { schema_version: 1, service: "mentat-local-bridge", runtime: "python", status: "ready", run_id: "run_current", after: 3, next_cursor: 4, cursor_reset_required: false, events: [event] };
+function trustedVercelMessageId(runId: string) {
+  const source = `vercel_message_${createHash("sha256").update(`${runId}:message`, "utf8").digest("hex").slice(0, 24)}`;
+  return `event_${createHash("sha256").update(`${runId}:${source}`, "utf8").digest("hex").slice(0, 24)}`;
+}
 
 test("Run event bridge uses one fixed path and rejects private or discontinuous events", async () => {
   let url = "";
@@ -23,6 +28,68 @@ test("Run event bridge returns a copied bounded projection and maps fixed failur
   await assert.rejects(fetchBridgeRunEvents("run_current", 0, async () => Response.json(unavailable, { status: 503 }), environment), (error: unknown) => error instanceof BridgeRunEventsError && error.code === "bridge_unavailable");
   await assert.rejects(fetchBridgeRunEvents("run_current", 0, async () => Response.json({ ...reset, events: Array.from({ length: 101 }, () => event) }), environment), BridgeRunEventsError);
   await assert.rejects(fetchBridgeRunEvents("run_invalid!", 0, async () => Response.json(payload), environment), (error: unknown) => error instanceof BridgeRunEventsError && error.code === "request_invalid");
+});
+
+test("Run event bridge returns only a bounded message on message events", async () => {
+  const resultEvent = {
+    ...event,
+    id: trustedVercelMessageId("run_current"),
+    message: "A bounded result from Vercel.",
+    sequence: 5,
+    summary: "Vercel AI Gateway returned a response",
+    type: "message",
+  };
+  const resultPayload = { ...payload, events: [event, resultEvent], next_cursor: 5 };
+  const result = await fetchBridgeRunEvents(
+    "run_current",
+    3,
+    async () => Response.json(resultPayload),
+    environment,
+  );
+  assert.equal(result.events[1].message, "A bounded result from Vercel.");
+  await assert.rejects(
+    fetchBridgeRunEvents(
+      "run_current",
+      3,
+      async () => Response.json({
+        ...resultPayload,
+        events: [event, { ...resultEvent, id: "event_result" }],
+      }),
+      environment,
+    ),
+    BridgeRunEventsError,
+  );
+  await assert.rejects(
+    fetchBridgeRunEvents(
+      "run_current",
+      3,
+      async () => Response.json({ ...payload, events: [{ ...event, message: "not allowed" }] }),
+      environment,
+    ),
+    BridgeRunEventsError,
+  );
+  await assert.rejects(
+    fetchBridgeRunEvents(
+      "run_current",
+      3,
+      async () => Response.json({
+        ...payload,
+        events: [
+          event,
+          resultEvent,
+          {
+            ...resultEvent,
+            id: "event_result_duplicate",
+            sequence: 6,
+            message: "A second result must fail closed.",
+          },
+        ],
+        next_cursor: 6,
+      }),
+      environment,
+    ),
+    BridgeRunEventsError,
+  );
 });
 
 test("Run event bridge encodes a valid colon-containing Run ID once", async () => {

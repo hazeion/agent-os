@@ -50,7 +50,7 @@ class AgentRegistryTests(unittest.TestCase):
             capabilities=("research.web", "browser-use"),
         )
 
-    def test_registry_uses_schema_eight_core_database_with_fresh_authority(self):
+    def test_registry_uses_current_core_database_with_fresh_authority(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             connection = connect_registry(root)
@@ -322,6 +322,14 @@ class AgentRegistryTests(unittest.TestCase):
                 ({**valid, "api_key": "must-not-be-accepted"}, 400),  # pragma: allowlist secret
                 ({**valid, "runtime_type": "unsupported"}, 400),
                 ({**valid, "runtime_type": "codex"}, 400),
+                (
+                    {
+                        **valid,
+                        "runtime_type": "vercel",
+                        "runtime_agent_ref": "connection_vercel",
+                    },
+                    400,
+                ),
                 ({**valid, "runtime_agent_ref": "../profile"}, 400),
             )
             with patch.object(server, "DATA_DIR", root):

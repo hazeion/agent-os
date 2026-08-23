@@ -1,6 +1,6 @@
 # Mentat Data Layout Contract
 
-Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 3C database convergence complete in this branch
+Status: Milestone 1 durable-data boundary complete through 1F; pivot Slice 4A complete
 
 This document defines where Mentat-owned state belongs for the public beta. It
 began as the contract-only Milestone 1A. Milestone 1B implements deterministic
@@ -147,7 +147,7 @@ under `<data-root>` and the packaged copies remain read-only seeds.
 | Current surface | Target class | Notes |
 | --- | --- | --- |
 | Legacy `data/runtime/agent-console-runs.json` | `<data-root>/private/console/agent-console-runs.json` | One-time Run migration source and derived backup/downgrade compatibility evidence. After the SQLite Run-authority receipt exists, no live path reads or writes it as authority. |
-| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Schema-8 authority for Agent identities, private runtime bindings, Tasks, Runs, AgentEvents, dispatch reservations/heads, attachment/blob references, retention metadata, and authority receipts; live WAL/SHM remain SQLite-owned beside the database. |
+| Legacy `data/runtime/mentat.sqlite3` plus WAL/SHM | `<data-root>/private/console/mentat.sqlite3` | Schema-9 authority for Agent identities, private runtime bindings, provider settings, Tasks, Runs, AgentEvents, dispatch reservations/heads, attachment/blob references, retention metadata, and authority receipts; live WAL/SHM remain SQLite-owned beside the database. |
 | Retired standalone Agent registry | `<data-root>/private/console/agent-registry.sqlite3` | Exact migration or recovery input for an existing root. After the schema-8 convergence receipt exists, live code ignores this file and never reads, updates, shadows, or falls back to it. |
 | Legacy `data/runtime/blobs/sha256/` | `<data-root>/private/console/blobs/sha256/` | Content-addressed attachment/artifact bytes protected by references and grace periods. |
 | Remote connection selection | `<data-root>/private/remote-hermes-connection-v1.json` | Schema-v2, server-only, owner-only, and atomically replaced. Stores the active mode, local label, one remembered remote label/endpoint, binding ID, and credential-source reference—but no API-key value. The historical filename is retained for compatible migration. A missing record means local mode. |
@@ -586,8 +586,15 @@ Agent identity, private runtime bindings, and their authority receipt. Normal
 startup imports the exact retained `tasks.json` only when the Task receipt is
 absent and the Task repository is empty.
 
-Current format-4 backups store the complete private Console recovery unit in
-schema-8 `mentat.sqlite3` and do not carry a separate registry member.
+Schema 9 adds one Vercel provider-connection table. It stores validated
+configuration and a credential-source kind, never credential values. Current
+format-4 backups store the complete private Console recovery unit in schema-9
+`mentat.sqlite3` and do not carry a separate registry member.
+
+An ambiguous one-shot Vercel dispatch remains `unknown` and is never retried
+automatically. The stopped-server `mentat vercel recover-run` preview and
+confirmation may move one exact unknown Run to `interrupted`; the dispatch
+reservation remains evidence that delivery could not be proven.
 
 After cutover, a current backup is the supported lossless recovery unit because
 it includes authoritative SQLite. `tasks.json` is deliberately stale. To run a
@@ -599,9 +606,10 @@ current durable JSON documents, exact exported Tasks, retained private Console
 history/attachments/blobs, Agent registry, and a validated schema-5 Console
 database whose Task tables are empty. The exported `tasks.json` is the old
 build's sole Task authority, and any old-build changes import exactly if the
-sibling is upgraded again. When the source is schema 8, the sibling's
-standalone Agent registry is synthesized only as a downgrade artifact; the
-authoritative schema-8 source root remains unchanged.
+sibling is upgraded again. When the source is schema 9, the sibling's
+standalone Agent registry is synthesized only as a downgrade artifact. Vercel
+Agents and the provider table are omitted because the schema-5 build cannot use
+them. The authoritative schema-9 source root remains unchanged.
 
 Connection credentials remain excluded. If the source actively selects remote
 Hermes, compatible-root export fails closed instead of creating a sibling that

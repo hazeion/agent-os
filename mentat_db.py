@@ -22,7 +22,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -539,6 +539,38 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
 
         CREATE INDEX idx_mentat_agents_name
             ON mentat_agents(name COLLATE NOCASE, id);
+        """,
+    ),
+    (
+        9,
+        """
+        CREATE TABLE provider_connections (
+            id TEXT PRIMARY KEY CHECK (id = 'connection_vercel'),
+            provider TEXT NOT NULL CHECK (provider = 'vercel'),
+            label TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 80),
+            state TEXT NOT NULL CHECK (state IN ('configured', 'disconnected')),
+            auth_kind TEXT NOT NULL CHECK (auth_kind IN ('api_key', 'oidc')),
+            model TEXT NOT NULL CHECK (length(model) BETWEEN 3 AND 160),
+            team_id TEXT CHECK (
+                team_id IS NULL OR length(team_id) BETWEEN 1 AND 128
+            ),
+            project_id TEXT CHECK (
+                project_id IS NULL OR length(project_id) BETWEEN 1 AND 128
+            ),
+            connector TEXT CHECK (
+                connector IS NULL OR length(connector) BETWEEN 1 AND 200
+            ),
+            connect_scopes_json TEXT NOT NULL DEFAULT '[]' CHECK (
+                length(connect_scopes_json) BETWEEN 2 AND 4096
+            ),
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            created_at REAL NOT NULL CHECK (created_at >= 0),
+            updated_at REAL NOT NULL CHECK (updated_at >= created_at),
+            CHECK ((team_id IS NULL) = (project_id IS NULL))
+        );
+
+        CREATE UNIQUE INDEX idx_provider_connections_provider
+            ON provider_connections(provider);
         """,
     ),
 )

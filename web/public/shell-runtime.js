@@ -9,6 +9,8 @@ let bridgeRequest = 0;
 let bridgeState = "checking";
 let agentsRequest = 0;
 let agentsAbortController = null;
+let providerConnectionsRequest = 0;
+let providerConnectionsAbortController = null;
 let tasksRequest = 0;
 let tasksAbortController = null;
 let runsRequest = 0;
@@ -323,6 +325,208 @@ async function refreshAgents() {
   }
 }
 
+function providerConnectionsElements() {
+  const rootElement = document.querySelector("[data-provider-connections-root]");
+  if (!(rootElement instanceof HTMLElement)) return null;
+  const summary = rootElement.querySelector("[data-provider-connections-summary]");
+  const list = rootElement.querySelector("[data-provider-connections-list]");
+  const refresh = rootElement.querySelector("[data-provider-connections-refresh]");
+  return summary instanceof HTMLElement && list instanceof HTMLElement && refresh instanceof HTMLButtonElement
+    ? { list, refresh, rootElement, summary }
+    : null;
+}
+
+function providerCapabilityIsSafe(value) {
+  return value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.keys(value).sort().join(",") === "id,status"
+    && ["ai.gateway", "sandbox.readiness", "connect.token"].includes(value.id)
+    && ["credential_present", "needs_auth", "disconnected"].includes(value.status);
+}
+
+function providerConnectionIsSafe(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (Object.keys(value).sort().join(",") !== "capabilities,id,label,model,provider,state") return false;
+  if (
+    value.id !== "connection_vercel"
+    || value.provider !== "vercel"
+    || typeof value.label !== "string"
+    || value.label.trim() !== value.label
+    || value.label.length < 1
+    || value.label.length > 80
+    || /[\u0000-\u001f\u007f]/.test(value.label)
+    || typeof value.model !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._:+@/-]{1,159}$/.test(value.model)
+    || !value.model.includes("/")
+    || value.model.includes("//")
+    || !["configured", "needs_auth", "disconnected"].includes(value.state)
+    || !Array.isArray(value.capabilities)
+    || value.capabilities.length < 1
+    || value.capabilities.length > 3
+    || !value.capabilities.every(providerCapabilityIsSafe)
+  ) return false;
+  const order = new Map([["ai.gateway", 0], ["sandbox.readiness", 1], ["connect.token", 2]]);
+  if (
+    value.capabilities[0].id !== "ai.gateway"
+    || value.capabilities.some((capability, index, capabilities) => (
+      index > 0 && order.get(capabilities[index - 1].id) >= order.get(capability.id)
+    ))
+  ) return false;
+  const gatewayStatus = value.capabilities[0].status;
+  return (
+    (value.state === "configured" && gatewayStatus === "credential_present")
+    || (value.state === "needs_auth" && gatewayStatus === "needs_auth")
+    || (
+      value.state === "disconnected"
+      && value.capabilities.every((capability) => capability.status === "disconnected")
+    )
+  );
+}
+
+function readProviderConnectionsPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  if (
+    Object.keys(payload).sort().join(",") !== "connections,count,runtime,schema_version,service,status"
+    || payload.schema_version !== 1
+    || payload.service !== "mentat-local-bridge"
+    || payload.runtime !== "python"
+    || payload.status !== "ready"
+    || !Array.isArray(payload.connections)
+    || payload.connections.length > 1
+    || !Number.isInteger(payload.count)
+    || payload.count !== payload.connections.length
+    || !payload.connections.every(providerConnectionIsSafe)
+  ) return null;
+  return payload.connections;
+}
+
+function readableProviderState(state) {
+  return {
+    configured: "Configured",
+    credential_present: "Credential present",
+    needs_auth: "Needs credentials",
+    disconnected: "Disconnected",
+  }[state] || "Unavailable";
+}
+
+function renderProviderConnections(connections) {
+  const elements = providerConnectionsElements();
+  if (!elements) return;
+  elements.list.replaceChildren();
+  const capabilityNames = {
+    "ai.gateway": "AI Gateway",
+    "sandbox.readiness": "Sandbox readiness",
+    "connect.token": "Connect token",
+  };
+  for (const connection of connections) {
+    const card = document.createElement("article");
+    card.className = "provider-connection-card";
+    const header = document.createElement("div");
+    header.className = "provider-connection-header";
+    const heading = document.createElement("h3");
+    heading.id = `provider-heading-${connection.id}`;
+    heading.textContent = connection.label;
+    const state = document.createElement("span");
+    state.className = "provider-connection-state";
+    state.dataset.providerStatus = connection.state;
+    state.textContent = readableProviderState(connection.state);
+    header.append(heading, state);
+    card.setAttribute("aria-labelledby", heading.id);
+    card.append(header);
+
+    const fields = document.createElement("dl");
+    fields.className = "agent-fields";
+    writeAgentField(fields, "Provider", connection.provider);
+    writeAgentField(fields, "Model", connection.model);
+    card.append(fields);
+
+    const label = document.createElement("p");
+    label.className = "agent-capability-label";
+    label.textContent = "Available capabilities";
+    const capabilities = document.createElement("ul");
+    capabilities.className = "provider-capabilities";
+    for (const capability of connection.capabilities) {
+      const item = document.createElement("li");
+      const name = document.createElement("span");
+      name.textContent = capabilityNames[capability.id];
+      const status = document.createElement("strong");
+      status.dataset.providerStatus = capability.status;
+      status.textContent = readableProviderState(capability.status);
+      item.append(name, status);
+      capabilities.append(item);
+    }
+    card.append(label, capabilities);
+    elements.list.append(card);
+  }
+}
+
+function applyProviderConnectionsState(state, detail, connections = null) {
+  const elements = providerConnectionsElements();
+  if (!elements) return;
+  elements.rootElement.dataset.providerConnectionsState = state;
+  elements.rootElement.setAttribute("aria-busy", state === "loading" ? "true" : "false");
+  elements.summary.textContent = detail;
+  elements.refresh.disabled = state === "loading";
+  if (Array.isArray(connections)) renderProviderConnections(connections);
+  else if (state === "loading") {
+    const placeholder = document.createElement("article");
+    placeholder.className = "provider-connection-card provider-connection-placeholder";
+    placeholder.setAttribute("aria-hidden", "true");
+    elements.list.replaceChildren(placeholder);
+  } else elements.list.replaceChildren();
+}
+
+function clearProviderConnectionsRequest() {
+  providerConnectionsRequest += 1;
+  providerConnectionsAbortController?.abort();
+  providerConnectionsAbortController = null;
+}
+
+async function refreshProviderConnections() {
+  const elements = providerConnectionsElements();
+  if (!elements) return;
+  clearProviderConnectionsRequest();
+  const request = providerConnectionsRequest;
+  providerConnectionsAbortController = new AbortController();
+  applyProviderConnectionsState("loading", "Loading provider connections…");
+  try {
+    const response = await fetch("/api/provider-connections", {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal: providerConnectionsAbortController.signal,
+    });
+    const payload = await response.json();
+    if (request !== providerConnectionsRequest) return;
+    if (response.status === 200) {
+      const connections = readProviderConnectionsPayload(payload);
+      if (!connections) throw new Error("provider_connections_response_invalid");
+      applyProviderConnectionsState(
+        connections.length === 0 ? "empty" : "ready",
+        connections.length === 0
+          ? "No optional provider connections configured."
+          : `${connections.length} provider connection${connections.length === 1 ? "" : "s"}.`,
+        connections,
+      );
+      return;
+    }
+    if (response.status === 501 && payload?.schema_version === 1 && payload?.status === "unsupported") {
+      applyProviderConnectionsState("unsupported", "This Python bridge does not support provider connections yet.");
+      return;
+    }
+    if (response.status === 503 && payload?.schema_version === 1 && payload?.status === "unavailable") {
+      applyProviderConnectionsState("unavailable", "Provider status is temporarily unavailable. Check the Python connection and retry.");
+      return;
+    }
+    throw new Error("provider_connections_response_invalid");
+  } catch {
+    if (request !== providerConnectionsRequest) return;
+    applyProviderConnectionsState("error", "Mentat could not safely read provider status. Try again.");
+  } finally {
+    if (request === providerConnectionsRequest) providerConnectionsAbortController = null;
+  }
+}
+
 function tasksElements() {
   const rootElement = document.querySelector("[data-tasks-root]");
   if (!(rootElement instanceof HTMLElement)) return null;
@@ -419,11 +623,11 @@ function renderRuns(runs, agents = []) {
     const lifecycle = document.createElement("p"); lifecycle.className = "run-card-meta"; lifecycle.textContent = `Started ${run.started_at || "Not started"} · Completed ${run.completed_at || "Not completed"}${run.partial ? " · Partial" : ""}${run.timeline_truncated ? " · Timeline truncated" : ""}`;
     const actions = document.createElement("div"); actions.className = "run-card-actions";
     const runLabel = `${heading.textContent} (${run.id})`;
-    const timeline = document.createElement("button"); timeline.className = "run-timeline-open"; timeline.dataset.runTimelineOpen = ""; timeline.dataset.runId = run.id; timeline.setAttribute("aria-expanded", "false"); timeline.setAttribute("aria-label", `Open timeline for ${runLabel}`); timeline.type = "button"; timeline.textContent = "Open timeline";
-    actions.append(timeline);
-    if (run.status === "running") { const message = document.createElement("button"); message.className = "run-message-open"; message.dataset.runMessageOpen = ""; message.dataset.runId = run.id; message.setAttribute("aria-expanded", "false"); message.setAttribute("aria-label", `Send message to ${runLabel}`); message.type = "button"; message.textContent = "Send message"; actions.append(message); }
-    if (["waiting_for_approval", "waiting_for_clarification"].includes(run.status)) { const response = document.createElement("button"); response.className = "run-response-open"; response.dataset.runResponseOpen = ""; response.dataset.runId = run.id; response.setAttribute("aria-expanded", "false"); response.setAttribute("aria-label", `Respond to ${runLabel}`); response.type = "button"; response.textContent = "Respond"; actions.append(response); }
-    if (["queued", "submitting", "starting", "running", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(run.status)) { const stop = document.createElement("button"); stop.className = "run-stop-open"; stop.dataset.runStopOpen = ""; stop.dataset.runId = run.id; stop.setAttribute("aria-expanded", "false"); stop.setAttribute("aria-label", `Stop run for ${runLabel}`); stop.type = "button"; stop.textContent = "Stop run"; actions.append(stop); }
+    const supports = (capability) => agent?.capabilities.includes(capability) === true;
+    if (supports("run.events")) { const timeline = document.createElement("button"); timeline.className = "run-timeline-open"; timeline.dataset.runTimelineOpen = ""; timeline.dataset.runId = run.id; timeline.setAttribute("aria-expanded", "false"); timeline.setAttribute("aria-label", `Open timeline for ${runLabel}`); timeline.type = "button"; timeline.textContent = "Open timeline"; actions.append(timeline); }
+    if (run.status === "running" && supports("run.message")) { const message = document.createElement("button"); message.className = "run-message-open"; message.dataset.runMessageOpen = ""; message.dataset.runId = run.id; message.setAttribute("aria-expanded", "false"); message.setAttribute("aria-label", `Send message to ${runLabel}`); message.type = "button"; message.textContent = "Send message"; actions.append(message); }
+    if (["waiting_for_approval", "waiting_for_clarification"].includes(run.status) && supports("run.approval_response")) { const response = document.createElement("button"); response.className = "run-response-open"; response.dataset.runResponseOpen = ""; response.dataset.runId = run.id; response.setAttribute("aria-expanded", "false"); response.setAttribute("aria-label", `Respond to ${runLabel}`); response.type = "button"; response.textContent = "Respond"; actions.append(response); }
+    if (["queued", "submitting", "starting", "running", "waiting", "waiting_for_approval", "waiting_for_clarification"].includes(run.status) && supports("run.stop")) { const stop = document.createElement("button"); stop.className = "run-stop-open"; stop.dataset.runStopOpen = ""; stop.dataset.runId = run.id; stop.setAttribute("aria-expanded", "false"); stop.setAttribute("aria-label", `Stop run for ${runLabel}`); stop.type = "button"; stop.textContent = "Stop run"; actions.append(stop); }
     card.append(primary, detail, lifecycle, actions); elements.list.append(card);
   }
 }
@@ -443,11 +647,12 @@ async function refreshRuns() {
 function runEventIsSafe(event, runId) {
   const metrics = new Set(["input_tokens", "output_tokens", "total_tokens", "context_tokens", "context_length"]);
   const timestamp = (value) => typeof value === "string" && value.length > 0 && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && !Number.isNaN(Date.parse(value));
-  return event && typeof event === "object" && !Array.isArray(event) && Object.keys(event).sort().join(",") === "id,metrics,occurred_at,run_id,sequence,summary,type"
+  return event && typeof event === "object" && !Array.isArray(event) && Object.keys(event).sort().join(",") === "id,message,metrics,occurred_at,run_id,sequence,summary,type"
     && typeof event.id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(event.id) && event.run_id === runId
     && Number.isSafeInteger(event.sequence) && event.sequence >= 1 && event.sequence <= 1_000_000_000
     && ["run.created", "dispatch.reserved", "run.started", "submission.unknown", "run.interrupted", "tool.requested", "tool.completed", "approval.required", "artifact.created", "cost", "run.stopped", "run.completed", "run.failed", "message"].includes(event.type)
     && timestamp(event.occurred_at) && typeof event.summary === "string" && event.summary.length > 0 && event.summary.length <= 500 && event.summary.trim() === event.summary && !event.summary.includes("\0")
+    && (event.message === null || (event.type === "message" && typeof event.message === "string" && event.message.length > 0 && event.message.length <= 20000 && event.message.trim() === event.message && !event.message.includes("\0")))
     && event.metrics && typeof event.metrics === "object" && !Array.isArray(event.metrics) && Object.entries(event.metrics).every(([name, value]) => metrics.has(name) && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000);
 }
 
@@ -599,6 +804,7 @@ function appendTimelineEvents(list, events) {
     const summary = document.createElement("p"); summary.textContent = event.summary;
     const occurred = document.createElement("time"); occurred.dateTime = event.occurred_at; occurred.textContent = event.occurred_at;
     item.append(title, summary, occurred);
+    if (event.message !== null) { const message = document.createElement("pre"); message.className = "run-event-message"; message.textContent = event.message; item.append(message); }
     const metrics = Object.entries(event.metrics);
     if (metrics.length) { const detail = document.createElement("p"); detail.className = "run-event-metrics"; detail.textContent = metrics.map(([name, value]) => `${readableRunStatus(name)}: ${value}`).join(" · "); item.append(detail); }
     list.append(item); known.add(String(event.sequence));
@@ -650,6 +856,11 @@ function synchronizeShell() {
     } else {
       clearAgentRequest();
     }
+    if (providerConnectionsElements()) {
+      requestAnimationFrame(() => requestAnimationFrame(refreshProviderConnections));
+    } else {
+      clearProviderConnectionsRequest();
+    }
     if (tasksElements()) requestAnimationFrame(() => requestAnimationFrame(refreshTasks)); else clearTaskRequest();
     if (runsElements()) requestAnimationFrame(() => requestAnimationFrame(refreshRuns)); else clearRunRequest();
   }
@@ -677,11 +888,15 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-agents-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-run-message-open], [data-run-message-cancel], [data-run-message-review], [data-run-message-confirm], [data-run-response-open], [data-run-response-cancel], [data-run-response-review], [data-run-response-confirm], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-provider-connections-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-run-message-open], [data-run-message-cancel], [data-run-message-review], [data-run-message-confirm], [data-run-response-open], [data-run-response-cancel], [data-run-response-review], [data-run-response-confirm], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
   if (target.matches("[data-agents-refresh]")) {
     refreshAgents();
+    return;
+  }
+  if (target.matches("[data-provider-connections-refresh]")) {
+    refreshProviderConnections();
     return;
   }
   if (target.matches("[data-tasks-refresh]")) { refreshTasks(); return; }
