@@ -424,3 +424,26 @@ Two independent reviewers found no remaining blockers. They confirmed the
 private-log creation, bounded draining capture, Windows-safe shutdown order,
 regular-file retention filter, and aggregate CI output cap. User-owned data
 and untracked workspace files remain excluded from the slice.
+
+### CI correction round 10
+
+The packaged Next server passed its fixed gateway health check under the exact
+minimal environment used by Mentat. Turbopack and the Node environment are
+therefore not the macOS failure. The remaining difference is the windowed
+macOS launcher supervising Node. On frozen macOS starts, the visible launcher
+now delegates the existing start arguments to its validated regular console
+companion using a fixed internal marker. That companion runs the normal CLI
+gateway; its already-fixed private-bridge marker still takes precedence, so it
+does not recurse. Windows and non-frozen launches keep their existing paths.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `python3 -m unittest tests.test_packaging_cli tests.test_web_runtime -v` | Pass | 55 focused Python checks passed, including exact macOS delegation, marker precedence, and fallback coverage. |
+| `npm --prefix web run check` | Pass | Lint, type check, and 39 Node tests passed. |
+| `git diff --check` | Pass | No whitespace errors. |
+
+### Final correction round 10 review
+
+Two independent reviewers found no remaining blockers. They confirmed the
+fixed argument handoff, regular non-symlink companion check, dispatch order,
+non-recursive bridge path, and behavioral test coverage.

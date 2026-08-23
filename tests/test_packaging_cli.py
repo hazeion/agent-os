@@ -1,4 +1,5 @@
 import ast
+import importlib.util
 import io
 import json
 import os
@@ -25,6 +26,12 @@ from mentat.version import DISPLAY_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[1]
+NATIVE_ENTRY_SPEC = importlib.util.spec_from_file_location(
+    "mentat_native_entry", ROOT / "packaging" / "mentat_native.py"
+)
+assert NATIVE_ENTRY_SPEC is not None and NATIVE_ENTRY_SPEC.loader is not None
+native_entry = importlib.util.module_from_spec(NATIVE_ENTRY_SPEC)
+NATIVE_ENTRY_SPEC.loader.exec_module(native_entry)
 
 
 class PackagingContractTests(unittest.TestCase):
@@ -179,8 +186,10 @@ class PackagingContractTests(unittest.TestCase):
     def test_native_entry_honors_explicit_cli_arguments(self):
         entry = (ROOT / "packaging" / "mentat_native.py").read_text(encoding="utf-8")
         self.assertIn("arguments = sys.argv[1:]", entry)
-        self.assertIn('main(arguments if arguments else ["start", "--open-browser"])', entry)
+        self.assertIn('launch_arguments = arguments if arguments else ["start", "--open-browser"]', entry)
         self.assertIn('"--mentat-private-bridge"', entry)
+        self.assertIn('"--mentat-console-gateway"', entry)
+        self.assertIn("def console_gateway_companion()", entry)
 
     def test_native_ci_builds_unsigned_artifacts_without_signing_secrets(self):
         workflow = (
@@ -778,6 +787,49 @@ class PackagingContractTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_frozen_macos_start_uses_the_console_gateway_companion_once(self):
+        companion = Path("/fixed/Mentat.app/Contents/MacOS/mentat-bridge")
+        with patch.object(native_entry.sys, "argv", ["Mentat", "start", "--port", "8896"]), patch.object(
+            native_entry.sys, "frozen", True, create=True
+        ), patch.object(native_entry.sys, "platform", "darwin"), patch.object(
+            native_entry, "console_gateway_companion", return_value=companion
+        ), patch.object(native_entry.subprocess, "call", return_value=0) as launch, patch.object(
+            native_entry, "main"
+        ) as main:
+            self.assertEqual(native_entry.native_main(), 0)
+        launch.assert_called_once_with(
+            [str(companion), "--mentat-console-gateway", "start", "--port", "8896"]
+        )
+        main.assert_not_called()
+
+    def test_console_gateway_marker_bypasses_macos_handoff(self):
+        with patch.object(
+            native_entry.sys, "argv", ["mentat-bridge", "--mentat-console-gateway", "start", "--port", "8896"]
+        ), patch.object(native_entry, "main", return_value=0) as main, patch.object(
+            native_entry, "console_gateway_companion"
+        ) as companion:
+            self.assertEqual(native_entry.native_main(), 0)
+        main.assert_called_once_with(["start", "--port", "8896"])
+        companion.assert_not_called()
+
+    def test_private_bridge_marker_takes_precedence_over_gateway_handoff(self):
+        with patch.object(
+            native_entry.sys, "argv", ["mentat-bridge", "--mentat-private-bridge", "--port", "49152"]
+        ), patch.object(native_entry.runpy, "run_module") as bridge, patch.object(
+            native_entry, "main"
+        ) as main, patch.object(native_entry, "console_gateway_companion") as companion:
+            self.assertEqual(native_entry.native_main(), 0)
+        bridge.assert_called_once_with("mentat.local_bridge", run_name="__main__")
+        main.assert_not_called()
+        companion.assert_not_called()
+
+    def test_non_macos_start_keeps_the_direct_cli_fallback(self):
+        with patch.object(native_entry.sys, "argv", ["mentat", "start"]), patch.object(
+            native_entry.sys, "frozen", False, create=True
+        ), patch.object(native_entry, "main", return_value=0) as main:
+            self.assertEqual(native_entry.native_main(), 0)
+        main.assert_called_once_with(["start"])
+
     def test_version_is_light_and_friendly(self):
         output = io.StringIO()
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):

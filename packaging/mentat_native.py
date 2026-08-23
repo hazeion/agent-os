@@ -1,10 +1,24 @@
 """Small entry point used by native bundles and installer shortcuts."""
 
 import os
+from pathlib import Path
 import runpy
+import subprocess
 import sys
 
 from mentat.cli import main
+from mentat.web_runtime import application_root
+
+
+def console_gateway_companion() -> Path | None:
+    """Return the fixed macOS console sibling used to supervise the Node gateway."""
+
+    if not (bool(getattr(sys, "frozen", False)) and sys.platform == "darwin"):
+        return None
+    companion = application_root().parent / "MacOS" / "mentat-bridge"
+    if not companion.is_file() or companion.is_symlink():
+        return None
+    return companion
 
 
 def native_main() -> int:
@@ -16,7 +30,13 @@ def native_main() -> int:
         runpy.run_module("mentat.local_bridge", run_name="__main__")
         return 0
     arguments = sys.argv[1:]
-    return main(arguments if arguments else ["start", "--open-browser"])
+    if arguments and arguments[0] == "--mentat-console-gateway":
+        return main(arguments[1:])
+    launch_arguments = arguments if arguments else ["start", "--open-browser"]
+    companion = console_gateway_companion()
+    if companion is not None and launch_arguments[0] == "start":
+        return subprocess.call([str(companion), "--mentat-console-gateway", *launch_arguments])
+    return main(launch_arguments)
 
 
 if __name__ == "__main__":
