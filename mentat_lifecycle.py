@@ -181,6 +181,14 @@ def looks_like_mentat_gateway_health(payload) -> bool:
     )
 
 
+def looks_like_mentat_node_gateway(payload) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get("gateway") == "mentat-node-gateway"
+        and payload.get("status") == "ready"
+    )
+
+
 def normalized_listener_host(local_address: str, port: int | None = None) -> str:
     """Return the address portion of an OS listener endpoint.
 
@@ -222,6 +230,24 @@ def probe_mentat(local_address: str, port: int, timeout: float = 0.6) -> bool:
         except (HTTPError, URLError, TimeoutError, OSError, ValueError):
             continue
     return False
+
+
+def probe_recorded_node_gateway(
+    local_address: str, port: int, timeout: float = 0.6
+) -> bool:
+    """Verify the fixed public Node marker without depending on the bridge."""
+
+    host = normalized_listener_host(local_address, port)
+    display_host = f"[{host.replace('%', '%25')}]" if ":" in host else host
+    try:
+        with urlopen(
+            f"http://{display_host}:{port}/api/gateway/health", timeout=timeout
+        ) as response:
+            return response.status == 200 and looks_like_mentat_node_gateway(
+                json.load(response)
+            )
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        return False
 
 
 def process_commandline(pid: int) -> str:
@@ -366,6 +392,72 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
     probe_cache: dict[tuple[str, int], bool] = {}
     command_cache: dict[int, str] = {}
 
+    # Some constrained POSIX environments expose listening sockets without
+    # their owning PID. Recover only the exact recorded Node gateway: both its
+    # fixed command path and Mentat's live gateway marker must agree before a
+    # signal is allowed.
+    if (
+        state_pid is not None
+        and state_gateway_path is not None
+        and not listeners
+    ):
+        probe_host = normalized_listener_host(config.host, config.port)
+        if probe_host == "localhost":
+            probe_host = "127.0.0.1"
+        if probe_host not in {"127.0.0.1", "::1"}:
+            blocked = True
+            actions.append(
+                {
+                    "port": config.port,
+                    "pid": state_pid,
+                    "action": "blocked_unverified_gateway",
+                    "reasons": ["matches_runtime_state", "non_loopback_host"],
+                }
+            )
+        else:
+            commandline = command_cache.setdefault(
+                state_pid, process_commandline(state_pid)
+            )
+            command_matches = commandline_contains_exact_path(
+                commandline, state_gateway_path
+            )
+            probe_key = (probe_host, config.port)
+            if probe_key not in probe_cache:
+                probe_cache[probe_key] = probe_recorded_node_gateway(
+                    probe_host, config.port
+                )
+            gateway_matches = probe_cache[probe_key]
+            reasons = ["matches_runtime_state"]
+            if command_matches:
+                reasons.append("recorded_node_gateway")
+            if gateway_matches:
+                reasons.append("gateway_probe")
+            if command_matches and gateway_matches:
+                ok, message = kill_pid(state_pid)
+                actions.append(
+                    {
+                        "port": config.port,
+                        "pid": state_pid,
+                        "action": "killed" if ok else "kill_failed",
+                        "reasons": reasons,
+                        "message": message,
+                    }
+                )
+                if ok:
+                    killed_pids.add(state_pid)
+                else:
+                    blocked = True
+            elif command_matches or gateway_matches:
+                blocked = True
+                actions.append(
+                    {
+                        "port": config.port,
+                        "pid": state_pid,
+                        "action": "blocked_unverified_gateway",
+                        "reasons": reasons,
+                    }
+                )
+
     for listener in sorted(listeners, key=lambda item: (item.port, item.pid)):
         is_mentat, reasons, _commandline = identify_listener(
             listener, state_pid, probe_cache, command_cache, state_gateway_path
@@ -410,11 +502,15 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
             }
         )
 
-    if state_path.exists() and (state_pid is None or state_pid in killed_pids or not any(listener.pid == state_pid for listener in listeners)):
+    if not blocked and state_path.exists() and (
+        state_pid is None
+        or state_pid in killed_pids
+        or not any(listener.pid == state_pid for listener in listeners)
+    ):
         remove_runtime_state(state_path)
         actions.append({"action": "cleared_runtime_state", "state_pid": state_pid})
 
-    if not listeners and state_path.exists():
+    if not listeners and state_path.exists() and not blocked:
         remove_runtime_state(state_path)
         actions.append({"action": "cleared_runtime_state", "state_pid": state_pid})
 

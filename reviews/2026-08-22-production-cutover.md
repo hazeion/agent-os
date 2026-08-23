@@ -671,3 +671,73 @@ resource-limit closure is still exercised, file identity preserves the
 launcher-companion contract across Windows path spellings, and the private-log
 assertions retain every permission and symlink guarantee supported by each
 platform without masking a runtime defect.
+
+### CI correction round 17
+
+Quality Gates run 249 completed every installed-package startup and browser
+check, then timed out at `wait "$launcher_pid"` after `mentat stop` returned
+success. The stop report contained only `cleared_runtime_state` for the live
+Node PID. GitHub later found the original Mentat launcher and Python bridge as
+orphans. The main CI matrix and native installer smoke both passed.
+
+The narrow correction contract is:
+
+1. If POSIX listener inventory is empty, a stop may target the runtime-state
+   PID only when its command line contains the exact recorded Node gateway path
+   and the configured loopback port returns Mentat's fixed gateway-health
+   marker.
+2. A missing command-path match or missing health proof must never authorize a
+   kill.
+3. A successful fallback stop must remove the matching runtime state so the
+   launcher can observe Node exit and clean up its private bridge.
+4. The installed lifecycle check must use a bounded launcher-exit assertion so
+   a future regression fails with diagnostics instead of consuming the whole
+   job timeout.
+
+The first regression test represents the exact hosted failure: empty listener
+inventory, a matching recorded gateway command, and a healthy fixed Mentat
+probe. It must fail before the lifecycle correction and pass afterward.
+
+The isolated local reproduction also found that the source launch scripts
+invoke `python -m mentat.cli`, while that module defined `main()` without
+executing it. Both scripts therefore returned success without starting a
+server. A direct-module subprocess regression now requires the friendly version
+output before the entry-point guard is added. The installed `mentat` entry point
+used by the hosted failure already calls the same `main()` function and was not
+affected by this source-script defect.
+
+Post-correction verification:
+
+- 42 focused lifecycle, packaging-entry-point, and CI-contract tests pass after
+  the final stale-state and fail-closed safety audit.
+- The broader lifecycle, web-runtime, packaging, and CI group passes all 101
+  checks; the web lint, typecheck, and 39 Node tests also pass.
+- The complete Python suite ran 1,382 tests: 1,381 passed and four were skipped.
+  Its sole failure is the pre-existing fixture assertion against the user's
+  modified `data/projects.json`; this slice does not alter that file.
+- A controlled Node 24.19.0 production launch on port 8894 made the private
+  bridge and public gateway healthy. `mentat stop` killed the recorded gateway,
+  the launcher exited, and both listeners disappeared.
+- Python compilation and `git diff --check` pass.
+
+The first correction-round review found two failure-path gaps. The empty-
+inventory probe could use a non-loopback configured host before preflight
+validation, and a nonzero installed `mentat stop` could make `bash -e` skip the
+bounded launcher cleanup. The fallback now permits only an exact normalized
+loopback host and preserves state without probing or killing otherwise. The
+workflow captures stop failure, always performs the bounded launcher check,
+cleans the exact launcher, emits diagnostics, and then fails. Exact regressions
+cover both paths.
+
+Re-review additionally required failure cleanup to cover descendants, not just
+the launcher PID. The installed smoke now starts Mentat in a dedicated POSIX
+session, installs an immediate EXIT trap, and signals the whole process group
+before waiting. The trap is removed only after every post-stop assertion
+passes, so Node and the private bridge cannot be left as CI orphans when an
+intermediate command fails.
+
+Final independent re-review:
+
+- Lifecycle correctness and process safety: no findings; contract satisfied.
+- Packaging, CI, compatibility, and product contract: no findings; contract
+  satisfied.

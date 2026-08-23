@@ -582,3 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         "connection": run_connection,
     }
     return handlers[args.command](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -65,8 +65,20 @@ jobs:
           "$PIPX_BIN_DIR/mentat" --version
           "$PIPX_BIN_DIR/mentat" setup --data-dir "$smoke_root/data" --port 8894
           "$PIPX_BIN_DIR/mentat" doctor --data-dir "$smoke_root/data" --port 8894
-          "$PIPX_BIN_DIR/mentat" start --data-dir "$smoke_root/data" --port 8894 >"$RUNNER_TEMP/mentat-package.log" 2>&1 &
+          launcher_pid=""
+          cleanup_launcher_group() {
+            if [ -z "$launcher_pid" ]; then
+              return
+            fi
+            if kill -TERM -- "-$launcher_pid" 2>/dev/null; then
+              sleep 1
+              kill -KILL -- "-$launcher_pid" 2>/dev/null || true
+            fi
+            wait "$launcher_pid" 2>/dev/null || true
+          }
+          setsid "$PIPX_BIN_DIR/mentat" start --data-dir "$smoke_root/data" --port 8894 >"$RUNNER_TEMP/mentat-package.log" 2>&1 &
           launcher_pid=$!
+          trap cleanup_launcher_group EXIT
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null; then
               break
@@ -81,13 +93,38 @@ jobs:
             MENTAT_WEB_BROWSER_DEBUG_PORT=9337 \
             MENTAT_WEB_BROWSER_RUNTIME_DIR="$RUNNER_TEMP/web-foundation-smoke-runtime" \
             node scripts/web_foundation_smoke.mjs
-          "$PIPX_BIN_DIR/mentat" stop --data-dir "$smoke_root/data" --port 8894
+          stop_succeeded=true
+          if ! "$PIPX_BIN_DIR/mentat" stop --data-dir "$smoke_root/data" --port 8894; then
+            stop_succeeded=false
+          fi
+          launcher_exited=false
+          for attempt in {1..75}; do
+            if ! kill -0 "$launcher_pid" 2>/dev/null; then
+              launcher_exited=true
+              break
+            fi
+            sleep 0.2
+          done
+          if [ "$stop_succeeded" != true ] || [ "$launcher_exited" != true ]; then
+            tail -c 8192 "$RUNNER_TEMP/mentat-package.log" >&2 || true
+            cleanup_launcher_group
+            launcher_pid=""
+            if [ "$stop_succeeded" != true ]; then
+              echo 'Installed Mentat stop command failed' >&2
+            fi
+            if [ "$launcher_exited" != true ]; then
+              echo 'Installed Mentat launcher did not exit after stop' >&2
+            fi
+            exit 1
+          fi
           wait "$launcher_pid" || true
           if curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null; then
             echo 'Installed Mentat remained healthy after stop' >&2
             exit 1
           fi
           test -f "$smoke_root/data/tasks.json"
+          trap - EXIT
+          launcher_pid=""
 
       - name: Upload verified Python artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

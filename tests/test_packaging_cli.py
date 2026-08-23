@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -873,6 +874,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 0)
         self.assertIn(DISPLAY_VERSION, output.getvalue())
         self.assertIn(__version__, output.getvalue())
+
+    def test_cli_module_entry_point_runs_the_command(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "mentat.cli", "--version"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(DISPLAY_VERSION, result.stdout)
+        self.assertIn(__version__, result.stdout)
 
     def test_runtime_arguments_forward_config_with_server_spelling(self):
         args = cli.build_parser().parse_args(
