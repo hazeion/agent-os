@@ -47,13 +47,14 @@ Slice 2B-B is complete in this branch: the read-only Tasks route carries a
 small canonical SQLite projection through one fixed bridge and Node API
 capability. It does not add Task controls or expose Task details.
 
-Slice 2D is complete in this branch. The installed product launches the
+Slice 2D is complete. PR #123 made the installed product launch the
 supervised Node dashboard by default, keeps `--legacy-ui` as an explicit local
 rollback, ships prebuilt web assets, and passes the installed lifecycle,
 browser, native packaging, and six-run perfect Lighthouse gates.
 
-The next resume point after PR #123 merges is proposed Slice 3A: add Codex as a
-second runtime behind Mentat's existing runtime-neutral contracts.
+Slice 3A is complete in this branch. It adds Codex as a second backend runtime
+through the stable local App Server stdio protocol, while leaving runtime
+coexistence UI to Slice 3B.
 
 ## Roadmap
 
@@ -72,8 +73,8 @@ second runtime behind Mentat's existing runtime-neutral contracts.
 | 2C-B | Complete in this branch | Safe preview-confirm stop control for a selected Run. Messaging and approvals need separate contracts. | Slice 2C-A |
 | 2C-C | Complete in this branch | Safe preview-confirm text message for a selected active Run. | Slice 2C-B |
 | 2C-D | Complete | Supported approval and clarification responses. | Slice 2C-C |
-| 2D | Complete in this branch | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
-| 3A | Proposed | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
+| 2D | Complete | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
+| 3A | Complete | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
 | 3B | Provisional | Hermes and Codex run together in one interface. | Slice 3A |
 | 3C | Provisional | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
 | 4A | Planned | Vercel infrastructure adapter: optional AI Gateway, Sandbox, and Connect behind Mentat contracts. | Slice 3C |
@@ -351,6 +352,14 @@ and Codex can run at the same time and remain independently visible and
 controllable.
 
 Do not add dynamic routing until that proof is stable.
+
+Slice 3A uses Codex App Server over a private stdio JSONL connection. It reuses
+the operator's existing Codex CLI sign-in, keeps runtime references and
+credentials server-side, and exposes only the fixed capabilities Mentat
+implements. Account login UI, provider/model selection, and Hermes/Codex UI
+coexistence remain separate work.
+
+Review log: `reviews/2026-08-22-codex-runtime-adapter.md`
 
 ### Slice 3C: database convergence
 

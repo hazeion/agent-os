@@ -771,6 +771,37 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(source_key, "runtime:" + runtime_event_id)
         self.assertEqual(unit.run_count, 1)
 
+    def test_targeted_reconciliation_leases_only_the_requested_run(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service = self.prepare(root, runtime)
+            dispatched = service.dispatch_task(
+                task_id="task-service",
+                expected_revision=1,
+                idempotency_key="targeted-reconciliation-key",
+            )
+            missing = service.reconcile_run(
+                run_id="run_not_the_requested_run",
+                owner="targeted_reconciler",
+            )
+            runtime.observed_status = RunStatus.STOPPED
+            report = service.reconcile_run(
+                run_id=dispatched.run.id,
+                owner="targeted_reconciler",
+            )
+            connection = connect(root)
+            try:
+                stored = RunRepository(connection).get_run(dispatched.run.id)
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(missing.leased, 0)
+        self.assertEqual(report.reconciled, (dispatched.run.id,))
+        self.assertEqual(stored.status, "stopped")
+        self.assertEqual(runtime.status_queries, ["runtime-service-ref"])
+
     def test_startup_reconciliation_reads_durable_runtime_reference(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

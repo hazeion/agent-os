@@ -40,6 +40,9 @@ availability issues, but there is no guaranteed response-time SLA.
   requests and are excluded from normal backups and diagnostics.
 - Hermes owns provider credentials and authentication. Mentat does not expose
   credential values to the browser.
+- Codex execution uses one fixed local App Server stdio process and the CLI's
+  existing sign-in. Mentat does not collect Codex credentials or expose Codex
+  configuration, account details, thread IDs, or turn IDs to the browser.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete capability and mutation
 contract.

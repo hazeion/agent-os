@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent_runtime import RuntimeCapability
 from agent_runtime import AgentRun, RunStatus
@@ -154,6 +155,48 @@ class RunStopControlTests(unittest.TestCase):
             result = server.mentat_confirm_run_stop(run.id, preview["confirmation_id"])
         self.assertEqual(result, {"schema_version": 1, "action": "stop", "run_id": run.id, "disposition": "requested"})
         self.assertEqual(runtime.stop_calls, [(run.id, context)])
+
+    def test_confirm_reconciles_the_exact_run_when_adapter_does_not_write_sqlite(self):
+        run = replace(
+            run_fixture(),
+            source="task_dispatch",
+            runtime_type="codex",
+            runtime_run_ref="thread:turn",
+        )
+        stopped = replace(run, status="stopped", state_revision=6)
+        runtime = FakeRuntime()
+        context = object()
+        reconciler = Mock()
+        reconciler.reconcile_run.return_value = SimpleNamespace(
+            leased=1,
+            reconciled=(run.id,),
+            unavailable=(),
+        )
+        with (
+            patch.object(server, "_current_run_for_stop", return_value=run),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+        ):
+            preview = server.mentat_run_stop_preview_payload(run.id)
+        with (
+            patch.object(server, "_current_run_for_stop", return_value=run),
+            patch.object(
+                server,
+                "_load_run_for_action",
+                side_effect=(run, stopped),
+            ),
+            patch.object(server, "_run_stop_context", return_value=(runtime, context)),
+            patch.object(server, "_mentat_agent_registry", return_value=object()),
+            patch.object(server, "OrchestrationService", return_value=reconciler),
+        ):
+            result = server.mentat_confirm_run_stop(
+                run.id, preview["confirmation_id"]
+            )
+
+        self.assertEqual(result["disposition"], "requested")
+        reconciler.reconcile_run.assert_called_once()
+        self.assertEqual(
+            reconciler.reconcile_run.call_args.kwargs["run_id"], run.id
+        )
 
     def test_confirm_rejects_a_run_that_changed_after_preview_revalidation(self):
         run = run_fixture()

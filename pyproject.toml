@@ -47,6 +47,7 @@ py-modules = [
   "agent_console_telemetry",
   "agent_run_history",
   "command_manifest",
+  "codex_runtime",
   "data_backup_restore",
   "data_layout",
   "data_migration",

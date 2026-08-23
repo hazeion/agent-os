@@ -1863,6 +1863,56 @@ class RunRepository:
                     leased.append(self.get_run(str(row["id"])))
         return tuple(leased)
 
+    def lease_reconcilable_run(
+        self,
+        *,
+        run_id: str,
+        owner: str,
+        now_epoch: float | None = None,
+        lease_seconds: float = 30.0,
+    ) -> RunRecord | None:
+        """Lease one exact task-dispatch Run for post-action readback."""
+
+        identifier = _identifier(run_id)
+        owner_id = _identifier(owner)
+        moment = time.time() if now_epoch is None else now_epoch
+        if (
+            not isinstance(moment, (int, float))
+            or isinstance(moment, bool)
+            or not math.isfinite(moment)
+            or moment <= 0
+            or not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not 1 <= lease_seconds <= 300
+        ):
+            raise RunRepositoryValidationError("reconcile.request_invalid")
+        with self.mutation():
+            row = self.connection.execute(
+                "SELECT id, state_revision FROM mentat_runs "
+                "WHERE id = ? AND source = 'task_dispatch' "
+                "AND status IN ('queued', 'starting', 'running', 'cancelling', "
+                "'waiting', 'waiting_for_approval', 'waiting_for_clarification', 'unknown') "
+                "AND dispatch_state IN ('accepted', 'unknown') "
+                "AND (reconcile_lease_until IS NULL OR reconcile_lease_until <= ?)",
+                (identifier, float(moment)),
+            ).fetchone()
+            if row is None:
+                return None
+            updated = self.connection.execute(
+                "UPDATE mentat_runs SET reconcile_lease_owner = ?, "
+                "reconcile_lease_until = ?, state_revision = state_revision + 1 "
+                "WHERE id = ? AND state_revision = ? "
+                "AND (reconcile_lease_until IS NULL OR reconcile_lease_until <= ?)",
+                (
+                    owner_id,
+                    float(moment + lease_seconds),
+                    identifier,
+                    row["state_revision"],
+                    float(moment),
+                ),
+            ).rowcount
+            return self.get_run(identifier) if updated == 1 else None
+
     def release_reconciliation_lease(
         self,
         *,

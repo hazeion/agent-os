@@ -3,11 +3,11 @@
 ## What Mentat is
 
 Mentat is a local operations console for planning work and running agents. It
-owns Agent, Task, Run, and event records. Agent runtimes execute the work.
-Hermes is the first supported runtime.
+owns Agent, Task, Run, and event records. Hermes and a signed-in local Codex CLI
+can execute work through separate runtime adapters.
 
 The migration keeps the current Python app working while new parts are added.
-Python owns local data, Hermes access, and the existing safety checks. New
+Python owns local data, runtime access, and the existing safety checks. New
 runtimes must use small, named capabilities instead of direct access to runtime
 files.
 
@@ -489,14 +489,37 @@ profile-scoped turn through fixed Runs API operations, reads only the advertised
 complete profile/runtime inventories, and can neither inspect nor launch local
 Hermes.
 
+`codex_runtime.py` registers the second runtime through Codex App Server's
+local stdio JSONL protocol. Mentat discovers one trusted native CLI executable,
+launches it directly with fixed arguments, and reuses the CLI's existing local
+sign-in. The browser cannot choose the command, workspace, provider, model,
+credential source, App Server method, thread, or turn. The child receives an
+allowlisted environment; commands run with Codex's trimmed core environment,
+the `workspaceWrite` sandbox, approval policy `never`, and the default credential-name
+exclusions. This slice supports start, status, bounded events, active-turn
+messages, and exact-turn interruption. Approvals and attachments are not
+advertised. Capability and binding checks use a bounded read-only App Server
+account probe. Ordinary registry reads use the static registered runtime names
+and never start or wait for Codex.
+
+Codex thread and turn IDs remain private runtime references. Public records use
+Mentat Run and event IDs. App Server text, commands, paths, and tool payloads
+are omitted from the normalized event projection. A confirmed Stop is reported
+only after a short exact-Run lease reconciles the terminal state into SQLite;
+the private bridge and legacy server both close the App Server's owned process
+tree during shutdown. POSIX uses a private process session; Windows uses a
+kill-on-close Job Object rather than a reusable numeric PID.
+
 The runtime-neutral Agent registry is available at
 `/api/orchestration/agents`, separate from the legacy `/api/agents` heartbeat
 projection. Creation is serialized with the durable backup/restore boundary,
-stores the Agent and Hermes binding atomically, accepts only a registered
+stores the Agent and runtime binding atomically, accepts only a registered
 runtime, and never returns the adapter-owned runtime reference. A configured
 Agent authorizes work only through an exact Task assignment, capability match,
-binding snapshot, and durable dispatch reservation. Backup format 3 includes
-and semantically validates the registry;
+binding snapshot, and durable dispatch reservation. Codex Agents use only the
+fixed `default` binding and capabilities implemented by the available adapter.
+Backup format 3 includes and semantically validates both Hermes and Codex
+bindings, including Codex's fixed binding and capability vocabulary;
 pre-registry format-2 backups remain restorable and produce an empty registry.
 
 ## Remote Hermes connection boundary

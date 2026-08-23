@@ -35,6 +35,13 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
         ):
             self.assertIn(method, SERVER)
 
+    def test_codex_uses_the_same_private_runtime_boundary(self):
+        self.assertIn("codex_runtime.py", AGENT_GUIDE)
+        self.assertIn("Codex App Server's", ARCHITECTURE)
+        self.assertIn("fixed `default` binding", ARCHITECTURE)
+        self.assertIn("AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry", SERVER)
+        self.assertIn("shutdown_agent_runtimes", SERVER)
+
     def test_pivot_plan_closes_sqlite_cutover_and_tracks_frontend_slices(self):
         self.assertIn("| 1B | Complete |", PIVOT_PLAN)
         self.assertIn("| 1C-A to 1C-D | Complete |", PIVOT_PLAN)

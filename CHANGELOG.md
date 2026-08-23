@@ -5,6 +5,9 @@ All notable changes to Mentat.
 ## 2026-08-22
 
 ### Added
+- Added Codex as a second runtime through one fixed local App Server stdio
+  connection. It reuses an existing Codex CLI sign-in and supports task start,
+  status, bounded events, active-turn messages, and exact-turn stop.
 - Added the responsive Emerald Operations shell to the Next.js preview, with
   honest Home, Agents, Tasks, and Runs route frames built from shared React
   components and Tailwind-backed styles.
@@ -22,6 +25,9 @@ All notable changes to Mentat.
   100/100/100/100 with zero TBT and zero practical layout shift.
 
 ### Safety
+- Kept Codex credentials, configuration, account details, thread IDs, turn IDs,
+  commands, paths, and raw tool payloads out of browser responses. Stop results
+  are reported only after exact SQLite Run reconciliation.
 - Kept Agent, Task, Run, SQLite, Hermes, filesystem, and credential authority
   in Python. Unconnected routes show named foundation states instead of sample
   operational data.

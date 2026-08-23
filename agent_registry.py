@@ -12,7 +12,7 @@ import sqlite3
 import stat
 import time
 from tempfile import TemporaryDirectory
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from agent_runtime import MentatAgent, RuntimeContext
 from private_state import ensure_console_root
@@ -248,7 +248,11 @@ def initialize_registry_file(path: Path) -> None:
         path.chmod(0o600)
 
 
-def _validate_agent_row(row: Mapping[str, object], supported_runtime_types: Iterable[str]) -> MentatAgent:
+def _validate_agent_row(
+    row: Mapping[str, object],
+    supported_runtime_types: Iterable[str],
+    runtime_binding_validator: Callable[[MentatAgent, str], bool] | None = None,
+) -> MentatAgent:
     try:
         capabilities = json.loads(str(row["capabilities_json"]))
         if not isinstance(capabilities, list) or any(not isinstance(value, str) for value in capabilities):
@@ -260,9 +264,14 @@ def _validate_agent_row(row: Mapping[str, object], supported_runtime_types: Iter
             runtime_config_id=str(row["runtime_config_id"]),
             capabilities=frozenset(capabilities),
         )
-        RuntimeContext(agent_id=agent.id, runtime_agent_ref=str(row["runtime_agent_ref"]))
+        runtime_agent_ref = str(row["runtime_agent_ref"])
+        RuntimeContext(agent_id=agent.id, runtime_agent_ref=runtime_agent_ref)
         if agent.runtime_type not in frozenset(supported_runtime_types) or len(agent.capabilities) > 64:
             raise ValueError("unsupported registry row")
+        if runtime_binding_validator is not None and not runtime_binding_validator(
+            agent, runtime_agent_ref
+        ):
+            raise ValueError("unsupported runtime binding")
         for key in ("agent_created_at", "agent_updated_at", "config_created_at", "config_updated_at"):
             value = row[key]
             if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) < 0:
@@ -276,6 +285,7 @@ def validate_registry_connection(
     connection: sqlite3.Connection,
     *,
     supported_runtime_types: Iterable[str] = ("hermes",),
+    runtime_binding_validator: Callable[[MentatAgent, str], bool] | None = None,
 ) -> tuple[MentatAgent, ...]:
     """Validate schema, relationships, bounds, and every persisted value."""
 
@@ -306,7 +316,14 @@ def validate_registry_connection(
         ).fetchall()
         if len(rows) != agent_count:
             raise AgentRegistryError("agent_registry.corrupt")
-        return tuple(_validate_agent_row(row, supported_runtime_types) for row in rows)
+        return tuple(
+            _validate_agent_row(
+                row,
+                supported_runtime_types,
+                runtime_binding_validator,
+            )
+            for row in rows
+        )
     except sqlite3.Error as exc:
         raise _translate_sqlite_error(exc) from exc
 

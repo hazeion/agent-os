@@ -28,6 +28,7 @@ from agent_registry import (
     initialize_registry_file,
     validate_registry_connection,
 )
+from codex_runtime import codex_binding_is_valid
 from agent_run_history import (
     DEFAULT_RETENTION,
     LEGACY_SCHEMA_VERSIONS,
@@ -272,7 +273,15 @@ def _validate_registry_snapshot(path: Path) -> int:
     connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
     connection.row_factory = sqlite3.Row
     try:
-        agents = validate_registry_connection(connection, supported_runtime_types=("hermes",))
+        agents = validate_registry_connection(
+            connection,
+            supported_runtime_types=("codex", "hermes"),
+            runtime_binding_validator=lambda agent, runtime_agent_ref: (
+                codex_binding_is_valid(runtime_agent_ref, agent.capabilities)
+                if agent.runtime_type == "codex"
+                else True
+            ),
+        )
         return len(agents)
     except AgentRegistryError as exc:
         raise PrivateConsoleUnitError("private_agent_registry_invalid") from exc

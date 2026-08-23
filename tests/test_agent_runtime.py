@@ -92,6 +92,7 @@ class AgentRuntimeContractTests(unittest.TestCase):
         registry = AgentRuntimeRegistry((runtime,))
 
         self.assertIs(registry.require("codex"), runtime)
+        self.assertEqual(registry.runtime_types, ("codex",))
         self.assertEqual(
             [dict(item) for item in registry.public_inventory()],
             [{"runtime_type": "codex", "capabilities": ["run.status"]}],
