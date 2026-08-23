@@ -193,12 +193,15 @@ def node_environment(*, token: str, bridge_port: int, gateway_port: int, gateway
 
 def wait_for_health(*, port: int, path: str, process: subprocess.Popen, host: str = GATEWAY_HOST,
                     token: str | None = None, timeout: float = STARTUP_TIMEOUT_SECONDS,
-                    unavailable_error: str | None = None) -> dict:
+                    unavailable_error: str | None = None,
+                    required_process: subprocess.Popen | None = None) -> dict:
     deadline = time.monotonic() + timeout
     last_response_status: int | None = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise WebRuntimeError("gateway_process_exited_during_startup")
+        if required_process is not None and required_process.poll() is not None:
+            raise WebRuntimeError("bridge_process_stopped")
         connection = HTTPConnection(host, port, timeout=0.5)
         display_host = f"[{host}]" if ":" in host else host
         headers = {"Accept": "application/json", "Host": f"{display_host}:{port}"}
@@ -351,6 +354,7 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             process=node_process,
             host=safe_host,
             unavailable_error="gateway_bridge_unavailable",
+            required_process=bridge_process,
         )
         write_runtime_state(data_dir=data_dir, node_process=node_process, host=safe_host, port=port,
                             standalone_root=standalone)

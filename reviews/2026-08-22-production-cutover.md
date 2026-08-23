@@ -344,6 +344,25 @@ Resources-root derivation works whether the frozen process reports from
 `MacOS` or `Frameworks`, keeps the companion regular and macOS-only, preserves
 the loopback token boundary, and does not affect Windows.
 
+### CI correction round 7
+
+The installed gateway still timed out after the companion lookup was corrected.
+The supervisor now checks that the already-verified private bridge remains
+alive while it waits for the Node bridge route. A stopped bridge returns the
+bounded `bridge_process_stopped` code; a live bridge with an unavailable proxy
+continues to return the existing bounded proxy failure. This distinguishes the
+two failure modes without extending timeouts or exposing process output.
+
+The correctness review found a narrow coverage gap: the supervisor test did
+not prove that its final bridge-route readiness call received the bridge
+process. The test now asserts that exact wiring and that the earlier readiness
+calls do not receive it.
+
+### Final correction round 7 review
+
+Both independent reviewers reported no findings after the supervisor-wiring
+assertion was added.
+
 | Check | Result | Notes |
 | --- | --- | --- |
 | Frozen console bridge health | Pass | The temporary macOS companion answered its authenticated loopback health route. |

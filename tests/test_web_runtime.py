@@ -146,8 +146,22 @@ class WebRuntimeTests(unittest.TestCase):
                 )
         self.assertEqual(str(raised.exception), "gateway_readiness_timeout")
 
+    def test_readiness_stops_when_the_required_private_bridge_exits(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        bridge = MagicMock()
+        bridge.poll.return_value = 2
+        with self.assertRaisesRegex(web_runtime.WebRuntimeError, "bridge_process_stopped"):
+            web_runtime.wait_for_health(
+                port=8890,
+                path="/api/bridge/health",
+                process=process,
+                required_process=bridge,
+            )
+
     def test_gateway_establishes_task_authority_before_spawning_the_bridge(self):
         events: list[str] = []
+        readiness_calls: list[dict] = []
         bridge = MagicMock()
         bridge.poll.return_value = None
         node = MagicMock()
@@ -171,7 +185,9 @@ class WebRuntimeTests(unittest.TestCase):
             ), patch.object(
                 web_runtime.subprocess, "Popen", side_effect=spawn
             ), patch.object(
-                web_runtime, "wait_for_health", side_effect=lambda **kwargs: events.append(kwargs["path"])
+                web_runtime,
+                "wait_for_health",
+                side_effect=lambda **kwargs: (readiness_calls.append(kwargs), events.append(kwargs["path"])),
             ), patch.object(web_runtime, "write_runtime_state"), patch.object(web_runtime, "clear_runtime_state"):
                 self.assertEqual(
                     web_runtime.run_gateway(
@@ -185,6 +201,9 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertLess(events.index("/bridge/v1/health"), events.index("node"))
         self.assertLess(events.index("node"), events.index("/api/gateway/health"))
         self.assertLess(events.index("/api/gateway/health"), events.index("/api/bridge/health"))
+        self.assertNotIn("required_process", readiness_calls[0])
+        self.assertNotIn("required_process", readiness_calls[1])
+        self.assertIs(readiness_calls[2]["required_process"], bridge)
 
     def test_node_environment_excludes_bridge_runtime_settings_and_parent_secrets(self):
         with patch.dict(
