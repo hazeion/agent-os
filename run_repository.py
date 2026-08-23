@@ -43,6 +43,7 @@ from private_state import private_state_lock
 
 
 RUN_AUTHORITY_CONTRACT = "mentat-run-sqlite-cutover-v1"
+RUN_SCHEMA_VERSION = 7
 MAX_SOURCE_RUNS = 10_000
 TERMINAL_RUN_RETENTION = 250
 EVENT_COUNT_RETENTION = 1_000
@@ -892,7 +893,7 @@ class RunRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise RunRepositoryError("run_repository.schema_unsupported") from exc
         if (
-            version != DATABASE_SCHEMA_VERSION
+            version not in {RUN_SCHEMA_VERSION, DATABASE_SCHEMA_VERSION}
             or not _RUN_SCHEMA_OBJECTS.issubset(names)
             or _run_schema_fingerprint(self.connection)
             != _expected_run_schema_fingerprint()

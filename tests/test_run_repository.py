@@ -112,7 +112,7 @@ class RunRepositoryTests(unittest.TestCase):
         )
         return task, digest
 
-    def test_schema_seven_creates_exact_run_event_and_dispatch_tables(self):
+    def test_current_schema_keeps_exact_run_event_and_dispatch_tables(self):
         with TemporaryDirectory() as tmpdir:
             connection = connect(Path(tmpdir))
             try:
@@ -128,8 +128,8 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(SCHEMA_VERSION, 7)
-        self.assertEqual(version, 7)
+        self.assertEqual(SCHEMA_VERSION, 8)
+        self.assertEqual(version, 8)
         self.assertTrue(
             {
                 "mentat_run_store_state",

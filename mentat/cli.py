@@ -108,6 +108,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a schema-5 sibling data root for a pre-cutover Mentat build.",
     )
 
+    agent_registry_migration = commands.add_parser(
+        "agent-registry-migration",
+        help="Preview or confirm the Agent registry database convergence.",
+    )
+    _runtime_arguments(agent_registry_migration)
+    agent_registry_migration.add_argument("--confirm", metavar="TOKEN")
+
     connection = commands.add_parser(
         "connection",
         help="Configure, test, or select local and remote Hermes.",
@@ -410,6 +417,43 @@ def run_task_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_agent_registry_migration(args: argparse.Namespace) -> int:
+    from agent_registry_migration import (
+        AgentRegistryMigrationError,
+        confirm_agent_registry_migration,
+        preview_agent_registry_migration,
+    )
+
+    _runtime_config, config = _load_config(args)
+    try:
+        if args.confirm:
+            payload = confirm_agent_registry_migration(
+                config.data_dir,
+                args.confirm,
+            )
+        else:
+            payload = preview_agent_registry_migration(
+                config.data_dir
+            ).public_summary()
+    except AgentRegistryMigrationError as exc:
+        _print_json(
+            {
+                "ok": False,
+                "status": "blocked" if not exc.writes_performed else "partial",
+                "error_code": exc.code,
+                "writes_performed": exc.writes_performed,
+            }
+        )
+        return 2
+    ok = payload.get("status") in {
+        "ready",
+        "migrated",
+        "already_converged",
+    }
+    _print_json({"ok": ok, **payload})
+    return 0 if ok else 2
+
+
 def _connection_server_running(config) -> bool:
     import mentat_lifecycle
     from private_state import mentat_server_active
@@ -579,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
         "restore": run_restore,
         "task-migration": run_task_migration,
         "task-export": run_task_export,
+        "agent-registry-migration": run_agent_registry_migration,
         "connection": run_connection,
     }
     return handlers[args.command](args)

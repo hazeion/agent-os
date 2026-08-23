@@ -22,7 +22,6 @@ from agent_registry import (
     AgentRegistryUnavailableError,
     AgentRegistryValidationError,
     MAX_AGENTS,
-    REGISTRY_SCHEMA_VERSION,
     connect_registry,
     public_agent_record,
     registry_database_path,
@@ -51,11 +50,9 @@ class AgentRegistryTests(unittest.TestCase):
             capabilities=("research.web", "browser-use"),
         )
 
-    def test_registry_uses_separate_versioned_database_without_bumping_core_schema(self):
+    def test_registry_uses_schema_eight_core_database_with_fresh_authority(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            core = connect(root)
-            core.close()
             connection = connect_registry(root)
             try:
                 tables = {
@@ -66,16 +63,19 @@ class AgentRegistryTests(unittest.TestCase):
                 }
                 version = int(
                     connection.execute(
-                        "SELECT MAX(version) FROM registry_schema"
+                        "SELECT MAX(version) FROM schema_migrations"
                     ).fetchone()[0]
                 )
                 foreign_keys = connection.execute(
                     "PRAGMA foreign_key_list(mentat_agents)"
                 ).fetchall()
+                connected_path = Path(
+                    connection.execute("PRAGMA database_list").fetchone()[2]
+                )
             finally:
                 connection.close()
 
-            self.assertEqual(version, REGISTRY_SCHEMA_VERSION)
+            self.assertEqual(version, SCHEMA_VERSION)
             self.assertIn("mentat_agents", tables)
             self.assertIn("agent_runtime_configs", tables)
             self.assertTrue(
@@ -85,29 +85,18 @@ class AgentRegistryTests(unittest.TestCase):
                     for row in foreign_keys
                 )
             )
-            core = sqlite3.connect(database_path(root))
-            try:
-                self.assertEqual(
-                    core.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
-                    SCHEMA_VERSION,
-                )
-                self.assertIsNone(
-                    core.execute(
-                        "SELECT name FROM sqlite_master WHERE name = 'mentat_agents'"
-                    ).fetchone()
-                )
-            finally:
-                core.close()
+            self.assertFalse(registry_database_path(root).exists())
+            self.assertEqual(connected_path.resolve(), database_path(root).resolve())
 
     @unittest.skipIf(os.name == "nt", "POSIX link and mode contract")
-    def test_registry_rejects_unsafe_existing_wal_and_shm_sidecars(self):
+    def test_registry_rejects_unsafe_core_database_sidecars(self):
         cases = ("symlink", "hardlink", "wrong_mode")
         for kind in cases:
             with self.subTest(kind=kind), TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
                 connection = connect_registry(root)
                 connection.close()
-                path = registry_database_path(root)
+                path = database_path(root)
                 sidecar = Path(f"{path}-wal" if kind != "wrong_mode" else f"{path}-shm")
                 decoy = root / "decoy"
                 decoy.write_bytes(b"decoy")
@@ -119,33 +108,7 @@ class AgentRegistryTests(unittest.TestCase):
                 else:
                     sidecar.write_bytes(b"cache")
                     sidecar.chmod(0o644)
-                with self.assertRaisesRegex(AgentRegistryError, "agent_registry.unsafe"):
-                    connect_registry(root)
-
-    def test_registry_rejects_database_identity_change_during_open(self):
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            connection = connect_registry(root)
-            connection.close()
-            real_validate = agent_registry._validate_database_set
-            calls = 0
-
-            def changed_identity(*args, **kwargs):
-                nonlocal calls
-                calls += 1
-                identities = real_validate(*args, **kwargs)
-                if calls == 3:
-                    path = registry_database_path(root)
-                    device, inode = identities[path]
-                    identities[path] = (device, inode + 1)
-                return identities
-
-            with patch.object(
-                agent_registry,
-                "_validate_database_set",
-                side_effect=changed_identity,
-            ):
-                with self.assertRaisesRegex(AgentRegistryError, "agent_registry.unsafe"):
+                with self.assertRaises(AgentRegistryUnavailableError):
                     connect_registry(root)
 
     def test_registry_identity_continuity_ignores_transient_sidecar_identity(self):
@@ -167,29 +130,6 @@ class AgentRegistryTests(unittest.TestCase):
             )
         )
 
-    def test_first_registry_creation_rejects_identity_change_after_open_snapshot(self):
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            real_validate = agent_registry._validate_database_set
-            calls = 0
-
-            def changed_new_identity(*args, **kwargs):
-                nonlocal calls
-                calls += 1
-                identities = real_validate(*args, **kwargs)
-                if calls == 3:
-                    path = registry_database_path(root)
-                    device, inode = identities[path]
-                    identities[path] = (device, inode + 1)
-                return identities
-
-            with patch.object(
-                agent_registry,
-                "_validate_database_set",
-                side_effect=changed_new_identity,
-            ):
-                with self.assertRaisesRegex(AgentRegistryError, "agent_registry.unsafe"):
-                    connect_registry(root)
 
     def test_create_reopen_and_private_snapshot_preserve_agent_binding(self):
         with TemporaryDirectory() as tmpdir:
@@ -267,7 +207,7 @@ class AgentRegistryTests(unittest.TestCase):
                     with self.assertRaises(AgentRegistryValidationError):
                         registry.create_agent(**values)
 
-            connection = sqlite3.connect(registry_database_path(root))
+            connection = sqlite3.connect(database_path(root))
             try:
                 agent_count = connection.execute(
                     "SELECT COUNT(*) FROM mentat_agents"
@@ -585,7 +525,7 @@ class AgentRegistryTests(unittest.TestCase):
                 )
                 unit = capture_private_console_unit(root)
 
-                live = sqlite3.connect(registry_database_path(root))
+                live = sqlite3.connect(database_path(root))
                 try:
                     live.execute(statement)
                     live.commit()
@@ -595,7 +535,7 @@ class AgentRegistryTests(unittest.TestCase):
                     capture_private_console_unit(root)
 
                 snapshot = Path(tmpdir) / f"snapshot-{index}.sqlite3"
-                snapshot.write_bytes(unit.registry_database_raw)
+                snapshot.write_bytes(unit.database_raw)
                 saved = sqlite3.connect(snapshot)
                 try:
                     saved.execute(statement)
@@ -604,7 +544,7 @@ class AgentRegistryTests(unittest.TestCase):
                     saved.close()
                 with self.assertRaises(PrivateConsoleUnitError):
                     validate_private_console_unit(
-                        replace(unit, registry_database_raw=snapshot.read_bytes())
+                        replace(unit, database_raw=snapshot.read_bytes())
                     )
 
     def test_api_blocks_creation_while_private_restore_is_reserved(self):
@@ -710,6 +650,7 @@ class AgentRegistryTests(unittest.TestCase):
                 rejected.do_POST()
             self.assertEqual(rejected.send_response.call_args.args, (403,))
             self.assertFalse(registry_database_path(root).exists())
+            self.assertFalse(database_path(root).exists())
 
             statuses = []
             for _ in range(2):
@@ -741,7 +682,9 @@ class AgentRegistryTests(unittest.TestCase):
     def test_http_list_maps_malformed_registry_to_one_redacted_500_response(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            path = registry_database_path(root)
+            connection = connect_registry(root)
+            connection.close()
+            path = database_path(root)
             path.write_bytes(b"not a sqlite database")
             if os.name != "nt":
                 path.chmod(0o600)
@@ -779,7 +722,7 @@ class AgentRegistryTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.create_researcher(self.registry(root))
-            connection = sqlite3.connect(registry_database_path(root))
+            connection = sqlite3.connect(database_path(root))
             try:
                 connection.execute(
                     "UPDATE mentat_agents SET capabilities_json = '{}' WHERE id = 'agent_researcher'"
@@ -788,6 +731,22 @@ class AgentRegistryTests(unittest.TestCase):
             finally:
                 connection.close()
             with self.assertRaises(AgentRegistryError):
+                self.registry(root).list_agents()
+
+    def test_list_fails_closed_for_changed_embedded_agent_schema(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.create_researcher(self.registry(root))
+            connection = sqlite3.connect(database_path(root))
+            try:
+                connection.execute("DROP INDEX idx_mentat_agents_name")
+                connection.commit()
+            finally:
+                connection.close()
+            with self.assertRaisesRegex(
+                AgentRegistryError,
+                "agent_registry.schema_invalid",
+            ):
                 self.registry(root).list_agents()
 
     def test_private_snapshot_rejects_registry_relationship_and_value_corruption(self):
@@ -807,7 +766,7 @@ class AgentRegistryTests(unittest.TestCase):
             for index, statement in enumerate(corruptions):
                 with self.subTest(statement=statement):
                     path = Path(tmpdir) / f"corrupt-{index}.sqlite3"
-                    path.write_bytes(unit.registry_database_raw)
+                    path.write_bytes(unit.database_raw)
                     connection = sqlite3.connect(path)
                     try:
                         connection.execute(statement)
@@ -816,7 +775,7 @@ class AgentRegistryTests(unittest.TestCase):
                         connection.close()
                     with self.assertRaises(PrivateConsoleUnitError):
                         validate_private_console_unit(
-                            replace(unit, registry_database_raw=path.read_bytes())
+                            replace(unit, database_raw=path.read_bytes())
                         )
 
 

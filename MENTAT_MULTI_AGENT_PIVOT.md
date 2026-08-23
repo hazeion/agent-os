@@ -157,9 +157,10 @@ limit inside `HermesRuntime`. It must not block unrelated runtimes.
 
 Mentat is the source of truth for its Agents, Tasks, Runs, and events.
 
-Tasks, Runs, and AgentEvents use owner-private `mentat.sqlite3`. Agent identity
-and runtime bindings remain in `agent-registry.sqlite3` until the approved
-database convergence slice.
+Agents, private runtime bindings, Tasks, Runs, and AgentEvents use owner-private
+`mentat.sqlite3`. Existing data roots move their former standalone Agent
+registry through the explicit preview-and-confirm convergence workflow; after
+cutover, that old file is ignored rather than used as fallback authority.
 
 Tracked JSON files are public-safe examples or recovery inputs. They are not a
 second live authority after a SQLite cutover.

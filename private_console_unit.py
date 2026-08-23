@@ -1,10 +1,10 @@
 """Validated snapshots of Mentat's durable private Agent Console unit.
 
-Schema 7 preserves canonical SQLite Runs, events, Tasks, attachments, and ready
-blobs even when the bounded legacy-history projection omits older detail.
-Schema 4/5/6 compatibility units remain filtered to rows reachable from that
-legacy projection. Runtime scratch and future credentials are outside this
-boundary.
+Schema 8 preserves embedded Agents and bindings with canonical SQLite Runs,
+events, Tasks, attachments, and ready blobs even when the bounded legacy-history
+projection omits older detail. Schema 4/5/6 compatibility units remain filtered
+to rows reachable from that legacy projection. Runtime scratch and future
+credentials are outside this boundary.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from typing import Iterable
 from agent_registry import (
     AgentRegistryError,
     REGISTRY_DATABASE_NAME,
+    authority_receipt,
     initialize_registry_file,
     validate_registry_connection,
 )
@@ -37,8 +38,21 @@ from agent_run_history import (
     summarize_run,
 )
 from agent_console_attachments import MAX_RETAINED_BLOB_BYTES, MAX_RETAINED_BLOBS
-from mentat_db import MIGRATIONS, SCHEMA_VERSION as DATABASE_SCHEMA_VERSION
-from private_state import blobs_root, console_root, database_path, ensure_console_root, history_path
+from mentat_db import (
+    AGENT_REGISTRY_AUTHORITY_CONTRACT,
+    EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
+    MIGRATIONS,
+    SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
+    legacy_agent_registry_artifacts_present_at,
+)
+from private_state import (
+    blobs_root,
+    console_root,
+    database_path,
+    ensure_console_root,
+    history_path,
+    inspect_console_root,
+)
 from run_repository import MAX_SOURCE_RUNS, RunRepository, RunRepositoryError
 from task_repository import TaskRepositoryError, validate_repository_connection
 
@@ -52,10 +66,12 @@ MAX_PRIVATE_UNIT_BYTES = 96 * 1024 * 1024
 LEGACY_DATABASE_SCHEMA_VERSION = 4
 PREVIOUS_DATABASE_SCHEMA_VERSION = 5
 TASK_DATABASE_SCHEMA_VERSION = 6
+RUN_DATABASE_SCHEMA_VERSION = 7
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
     TASK_DATABASE_SCHEMA_VERSION,
+    RUN_DATABASE_SCHEMA_VERSION,
     DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
@@ -80,7 +96,7 @@ class PrivateBlob:
 class PrivateConsoleUnit:
     history_raw: bytes
     database_raw: bytes
-    registry_database_raw: bytes
+    registry_database_raw: bytes | None
     blobs: tuple[PrivateBlob, ...]
 
     @property
@@ -90,6 +106,13 @@ class PrivateConsoleUnit:
 
     @property
     def agent_count(self) -> int:
+        embedded = _database_agent_count(self.database_raw)
+        if embedded is not None:
+            if self.registry_database_raw is not None:
+                raise PrivateConsoleUnitError("private_agent_registry_duplicate")
+            return embedded
+        if self.registry_database_raw is None:
+            raise PrivateConsoleUnitError("private_agent_registry_missing")
         return _registry_agent_count(self.registry_database_raw)
 
     @property
@@ -221,18 +244,43 @@ def empty_private_console_unit() -> PrivateConsoleUnit:
 
     with TemporaryDirectory(prefix="mentat-private-empty-") as temporary:
         database = Path(temporary) / "mentat.sqlite3"
-        registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
         _initialize_database(database)
-        initialize_registry_file(registry_database)
         rows = _validate_and_filter_database(database, ())
         if rows:
             raise PrivateConsoleUnitError("private_database_invalid")
         return PrivateConsoleUnit(
             history_raw=_empty_history(),
             database_raw=database.read_bytes(),
-            registry_database_raw=registry_database.read_bytes(),
+            registry_database_raw=None,
             blobs=(),
         )
+
+
+def empty_preconvergence_private_console_unit() -> PrivateConsoleUnit:
+    """Return the canonical empty schema-7 unit used by old backup formats."""
+
+    with TemporaryDirectory(prefix="mentat-private-empty-v3-") as temporary:
+        database = Path(temporary) / "mentat.sqlite3"
+        _initialize_database(database, schema_version=RUN_DATABASE_SCHEMA_VERSION)
+        rows = _validate_and_filter_database(database, ())
+        if rows:
+            raise PrivateConsoleUnitError("private_database_invalid")
+        unit = PrivateConsoleUnit(
+            history_raw=_empty_history(),
+            database_raw=database.read_bytes(),
+            registry_database_raw=empty_legacy_registry_raw(),
+            blobs=(),
+        )
+    return validate_private_console_unit(unit)
+
+
+def empty_legacy_registry_raw() -> bytes:
+    """Return the canonical empty standalone registry used by old backups."""
+
+    with TemporaryDirectory(prefix="mentat-empty-legacy-registry-") as temporary:
+        path = Path(temporary) / REGISTRY_DATABASE_NAME
+        initialize_registry_file(path)
+        return path.read_bytes()
 
 
 def _initialize_database(
@@ -254,6 +302,17 @@ def _initialize_database(
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, 0)",
                 (version,),
+            )
+        if schema_version >= DATABASE_SCHEMA_VERSION:
+            connection.execute(
+                "INSERT OR IGNORE INTO mentat_agent_registry_state ("
+                "singleton, authority, migration_contract, source_kind, "
+                "source_sha256, source_agent_count, cutover_at"
+                ") VALUES (1, 'sqlite', ?, 'fresh', ?, 0, 1)",
+                (
+                    AGENT_REGISTRY_AUTHORITY_CONTRACT,
+                    EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
+                ),
             )
         connection.commit()
     finally:
@@ -289,6 +348,33 @@ def _validate_registry_snapshot(path: Path) -> int:
         connection.close()
 
 
+def _validate_embedded_registry(connection: sqlite3.Connection) -> int | None:
+    connection.row_factory = sqlite3.Row
+    try:
+        receipt = authority_receipt(connection)
+        if receipt is None:
+            total = sum(
+                int(connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
+                for name in ("mentat_agents", "agent_runtime_configs")
+            )
+            if total:
+                raise PrivateConsoleUnitError("private_agent_registry_invalid")
+            return None
+        return len(
+            validate_registry_connection(
+                connection,
+                supported_runtime_types=("codex", "hermes"),
+                runtime_binding_validator=lambda agent, runtime_agent_ref: (
+                    codex_binding_is_valid(runtime_agent_ref, agent.capabilities)
+                    if agent.runtime_type == "codex"
+                    else True
+                ),
+            )
+        )
+    except AgentRegistryError as exc:
+        raise PrivateConsoleUnitError("private_agent_registry_invalid") from exc
+
+
 def _registry_agent_count(raw: bytes) -> int:
     if len(raw) > MAX_REGISTRY_DATABASE_BYTES:
         raise PrivateConsoleUnitError("private_agent_registry_invalid")
@@ -298,6 +384,47 @@ def _registry_agent_count(raw: bytes) -> int:
         if os.name != "nt":
             path.chmod(0o600)
         return _validate_registry_snapshot(path)
+
+
+def _database_agent_count(raw: bytes) -> int | None:
+    if len(raw) > MAX_DATABASE_BYTES:
+        raise PrivateConsoleUnitError("private_database_invalid")
+    with TemporaryDirectory(prefix="mentat-embedded-agent-count-") as temporary:
+        path = Path(temporary) / "mentat.sqlite3"
+        path.write_bytes(raw)
+        connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            versions = [
+                int(row[0])
+                for row in connection.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                )
+            ]
+            if max(versions, default=0) < DATABASE_SCHEMA_VERSION:
+                return None
+            if authority_receipt(connection) is None:
+                return None
+            return len(
+                validate_registry_connection(
+                    connection,
+                    supported_runtime_types=("codex", "hermes"),
+                    runtime_binding_validator=lambda agent, runtime_agent_ref: (
+                        codex_binding_is_valid(
+                            runtime_agent_ref,
+                            agent.capabilities,
+                        )
+                        if agent.runtime_type == "codex"
+                        else True
+                    ),
+                )
+            )
+        except (sqlite3.Error, AgentRegistryError) as exc:
+            raise PrivateConsoleUnitError(
+                "private_agent_registry_invalid"
+            ) from exc
+        finally:
+            connection.close()
 
 
 def _database_task_count(raw: bytes) -> int:
@@ -427,6 +554,25 @@ def _sqlite_run_authority_claimed(path: Path) -> bool:
         connection.close()
 
 
+def _sqlite_agent_authority_claimed(path: Path) -> bool:
+    connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "mentat_agent_registry_state" not in tables:
+            return False
+        return authority_receipt(connection) is not None
+    except (sqlite3.Error, AgentRegistryError) as exc:
+        raise PrivateConsoleUnitError("private_agent_registry_invalid") from exc
+    finally:
+        connection.close()
+
+
 def _require_empty_unclaimed_run_store(path: Path) -> None:
     connection = sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
     try:
@@ -454,10 +600,25 @@ def _database_run_count(raw: bytes) -> int | None:
         path = Path(temporary) / "mentat.sqlite3"
         path.write_bytes(raw)
         version = _database_schema_version(path)
-        if version == DATABASE_SCHEMA_VERSION and _sqlite_run_authority_claimed(path):
+        if version >= RUN_DATABASE_SCHEMA_VERSION and _sqlite_run_authority_claimed(path):
             _history, run_ids = _sqlite_run_history(path)
             return len(run_ids)
         return None
+
+
+def _reject_unrecognized_sqlite_artifacts(source: Path) -> None:
+    allowed = {
+        source.name,
+        f"{source.name}-wal",
+        f"{source.name}-shm",
+    }
+    prefix = f"{source.name}-"
+    try:
+        names = {entry.name for entry in os.scandir(source.parent)}
+    except OSError as exc:
+        raise PrivateConsoleUnitError("private_database_invalid") from exc
+    if any(name.startswith(prefix) and name not in allowed for name in names):
+        raise PrivateConsoleUnitError("private_database_unsafe")
 
 
 def _sqlite_backup(
@@ -469,6 +630,7 @@ def _sqlite_backup(
     if source is None:
         _initialize_database(destination)
         return
+    _reject_unrecognized_sqlite_artifacts(source)
     source_raw = _safe_regular(source, maximum=MAX_DATABASE_BYTES)
     before = source.lstat()
     wal = Path(f"{source}-wal")
@@ -512,6 +674,7 @@ def _sqlite_backup(
             source_connection.close()
         if source_temporary is not None:
             source_temporary.cleanup()
+    _reject_unrecognized_sqlite_artifacts(source)
     after_raw = _safe_regular(source, maximum=MAX_DATABASE_BYTES)
     after = source.lstat()
     if source.is_symlink() or (
@@ -575,11 +738,9 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             raise PrivateConsoleUnitError("private_database_unsupported")
         if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version in {
-            PREVIOUS_DATABASE_SCHEMA_VERSION,
-            TASK_DATABASE_SCHEMA_VERSION,
-            DATABASE_SCHEMA_VERSION,
-        }:
+        if schema_version >= DATABASE_SCHEMA_VERSION:
+            _validate_embedded_registry(connection)
+        if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
             try:
                 validate_repository_connection(
                     connection,
@@ -589,7 +750,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-        if schema_version == DATABASE_SCHEMA_VERSION:
+        if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _derived_history, derived_ids = _sqlite_run_history(path)
                 if set(retained) != set(derived_ids):
@@ -632,11 +793,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         connection.execute("VACUUM")
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise PrivateConsoleUnitError("private_database_invalid")
-        if schema_version in {
-            PREVIOUS_DATABASE_SCHEMA_VERSION,
-            TASK_DATABASE_SCHEMA_VERSION,
-            DATABASE_SCHEMA_VERSION,
-        }:
+        if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
             try:
                 validate_repository_connection(
                     connection,
@@ -646,7 +803,9 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-        if schema_version == DATABASE_SCHEMA_VERSION:
+        if schema_version >= DATABASE_SCHEMA_VERSION:
+            _validate_embedded_registry(connection)
+        if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _sqlite_run_history(path)
             else:
@@ -670,11 +829,9 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             raise PrivateConsoleUnitError("private_database_unsupported")
         if _schema_signature(connection) != _expected_schema_signature(schema_version):
             raise PrivateConsoleUnitError("private_database_schema_invalid")
-        if schema_version in {
-            PREVIOUS_DATABASE_SCHEMA_VERSION,
-            TASK_DATABASE_SCHEMA_VERSION,
-            DATABASE_SCHEMA_VERSION,
-        }:
+        if schema_version >= DATABASE_SCHEMA_VERSION:
+            _validate_embedded_registry(connection)
+        if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
             try:
                 validate_repository_connection(
                     connection,
@@ -684,7 +841,7 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-        if schema_version == DATABASE_SCHEMA_VERSION:
+        if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _derived_history, derived_ids = _sqlite_run_history(path)
                 if retained != set(derived_ids):
@@ -740,28 +897,70 @@ def capture_private_console_unit(
     *,
     source_console: Path | None = None,
     copy_sqlite_source: bool = True,
+    harden_source: bool = True,
 ) -> PrivateConsoleUnit:
     """Capture one validated, filtered private unit while the caller holds its lock."""
 
     requested = console_root(data_root)
-    if source_console is None and not os.path.lexists(os.fspath(requested)):
-        return empty_private_console_unit()
-    canonical = ensure_console_root(data_root) if source_console is None else requested
+    readonly_identity: tuple[tuple[int, int], ...] | None = None
+    if source_console is None and harden_source:
+        if not os.path.lexists(os.fspath(requested)):
+            return empty_private_console_unit()
+        canonical = ensure_console_root(data_root)
+    elif source_console is None:
+        inspected = inspect_console_root(data_root, allow_missing=True)
+        if inspected is None:
+            return empty_private_console_unit()
+        canonical, readonly_identity = inspected
+    else:
+        canonical = requested
     source = Path(source_console) if source_console is not None else canonical
     if source.is_symlink() or (source.exists() and not source.is_dir()):
         raise PrivateConsoleUnitError("private_console_unsafe")
     database = source / database_path(data_root).name
-    database_source = database if database.exists() else None
-    registry_database = source / REGISTRY_DATABASE_NAME
-    registry_source = registry_database if registry_database.exists() else None
+    database_source = (
+        database if os.path.lexists(os.fspath(database)) else None
+    )
     with TemporaryDirectory(prefix="mentat-console-capture-") as temporary:
         snapshot_path = Path(temporary) / "mentat.sqlite3"
-        _sqlite_backup(database_source, snapshot_path, copy_source=copy_sqlite_source)
-        schema_seven_authority = (
-            _database_schema_version(snapshot_path) == DATABASE_SCHEMA_VERSION
+        registry_database = source / REGISTRY_DATABASE_NAME
+        legacy_registry_exists = False
+        if database_source is None:
+            legacy_registry_exists = os.path.lexists(
+                os.fspath(registry_database)
+            )
+            if (
+                not legacy_registry_exists
+                and legacy_agent_registry_artifacts_present_at(source)
+            ):
+                raise PrivateConsoleUnitError("private_agent_registry_unsafe")
+            if legacy_registry_exists:
+                _initialize_database(
+                    snapshot_path,
+                    schema_version=RUN_DATABASE_SCHEMA_VERSION,
+                )
+            else:
+                _sqlite_backup(
+                    None,
+                    snapshot_path,
+                    copy_source=copy_sqlite_source,
+                )
+        else:
+            _sqlite_backup(
+                database_source,
+                snapshot_path,
+                copy_source=copy_sqlite_source,
+            )
+        schema_version = _database_schema_version(snapshot_path)
+        run_authority = (
+            schema_version >= RUN_DATABASE_SCHEMA_VERSION
             and _sqlite_run_authority_claimed(snapshot_path)
         )
-        if schema_seven_authority:
+        embedded_agent_authority = (
+            schema_version >= DATABASE_SCHEMA_VERSION
+            and _sqlite_agent_authority_claimed(snapshot_path)
+        )
+        if run_authority:
             history_raw, run_ids = _sqlite_run_history(snapshot_path)
         else:
             history = source / history_path(data_root).name
@@ -782,23 +981,43 @@ def capture_private_console_unit(
             connection.close()
         history_references = _history_reference_pairs(history_raw)
         if (
-            schema_seven_authority
+            run_authority
         ):
             if not history_references.issubset(database_references):
                 raise PrivateConsoleUnitError("private_history_database_mismatch")
         elif database_references != history_references:
             raise PrivateConsoleUnitError("private_history_database_mismatch")
         database_raw = _safe_regular(snapshot_path, maximum=MAX_DATABASE_BYTES)
-        registry_snapshot = Path(temporary) / REGISTRY_DATABASE_NAME
-        if registry_source is None:
-            initialize_registry_file(registry_snapshot)
-        else:
-            _sqlite_backup(registry_source, registry_snapshot, copy_source=copy_sqlite_source)
-        _validate_registry_snapshot(registry_snapshot)
-        registry_database_raw = _safe_regular(
-            registry_snapshot,
-            maximum=MAX_REGISTRY_DATABASE_BYTES,
-        )
+        registry_database_raw = None
+        if not embedded_agent_authority:
+            if database_source is not None:
+                legacy_registry_exists = os.path.lexists(
+                    os.fspath(registry_database)
+                )
+                if (
+                    not legacy_registry_exists
+                    and legacy_agent_registry_artifacts_present_at(source)
+                ):
+                    raise PrivateConsoleUnitError(
+                        "private_agent_registry_unsafe"
+                    )
+            registry_source = (
+                registry_database if legacy_registry_exists else None
+            )
+            registry_snapshot = Path(temporary) / REGISTRY_DATABASE_NAME
+            if registry_source is None:
+                initialize_registry_file(registry_snapshot)
+            else:
+                _sqlite_backup(
+                    registry_source,
+                    registry_snapshot,
+                    copy_source=copy_sqlite_source,
+                )
+            _validate_registry_snapshot(registry_snapshot)
+            registry_database_raw = _safe_regular(
+                registry_snapshot,
+                maximum=MAX_REGISTRY_DATABASE_BYTES,
+            )
     source_blobs = source / "blobs" / "sha256"
     blobs: list[PrivateBlob] = []
     for storage_key, expected_digest, expected_size in blob_rows:
@@ -809,17 +1028,22 @@ def capture_private_console_unit(
     if (
         len(history_raw)
         + len(database_raw)
-        + len(registry_database_raw)
+        + len(registry_database_raw or b"")
         + sum(len(blob.raw) for blob in blobs)
         > MAX_PRIVATE_UNIT_BYTES
     ):
         raise PrivateConsoleUnitError("private_unit_too_large")
-    return PrivateConsoleUnit(
+    unit = PrivateConsoleUnit(
         history_raw=history_raw,
         database_raw=database_raw,
         registry_database_raw=registry_database_raw,
         blobs=tuple(blobs),
     )
+    if readonly_identity is not None:
+        inspected = inspect_console_root(data_root)
+        if inspected is None or inspected[1] != readonly_identity:
+            raise PrivateConsoleUnitError("private_console_changed")
+    return unit
 
 
 def validate_private_console_stage_inventory(
@@ -850,8 +1074,9 @@ def validate_private_console_stage_inventory(
     expected_files = {
         history_path(data_root).name,
         database_path(data_root).name,
-        REGISTRY_DATABASE_NAME,
     }
+    if unit.registry_database_raw is not None:
+        expected_files.add(REGISTRY_DATABASE_NAME)
     expected_directories = {"blobs", "blobs/sha256"}
     for blob in unit.blobs:
         match = STORAGE_KEY_RE.fullmatch(blob.storage_key)
@@ -900,7 +1125,7 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
     if (
         len(unit.history_raw)
         + len(unit.database_raw)
-        + len(unit.registry_database_raw)
+        + len(unit.registry_database_raw or b"")
         + sum(len(blob.raw) for blob in unit.blobs)
         > MAX_PRIVATE_UNIT_BYTES
     ):
@@ -911,8 +1136,9 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         database.write_bytes(unit.database_raw)
         if os.name != "nt":
             database.chmod(0o600)
+        schema_version = _database_schema_version(database)
         if (
-            _database_schema_version(database) == DATABASE_SCHEMA_VERSION
+            schema_version >= RUN_DATABASE_SCHEMA_VERSION
             and _sqlite_run_authority_claimed(database)
         ):
             derived_history, derived_ids = _sqlite_run_history(database)
@@ -930,18 +1156,28 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
             connection.close()
         history_references = _history_reference_pairs(unit.history_raw)
         if (
-            _database_schema_version(database) == DATABASE_SCHEMA_VERSION
+            schema_version >= RUN_DATABASE_SCHEMA_VERSION
             and _sqlite_run_authority_claimed(database)
         ):
             if not history_references.issubset(database_references):
                 raise PrivateConsoleUnitError("private_history_database_mismatch")
         elif database_references != history_references:
             raise PrivateConsoleUnitError("private_history_database_mismatch")
-        registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
-        registry_database.write_bytes(unit.registry_database_raw)
-        if os.name != "nt":
-            registry_database.chmod(0o600)
-        _validate_registry_snapshot(registry_database)
+        embedded_agents = (
+            schema_version >= DATABASE_SCHEMA_VERSION
+            and _sqlite_agent_authority_claimed(database)
+        )
+        if embedded_agents:
+            if unit.registry_database_raw is not None:
+                raise PrivateConsoleUnitError("private_agent_registry_duplicate")
+        else:
+            if unit.registry_database_raw is None:
+                raise PrivateConsoleUnitError("private_agent_registry_missing")
+            registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
+            registry_database.write_bytes(unit.registry_database_raw)
+            if os.name != "nt":
+                registry_database.chmod(0o600)
+            _validate_registry_snapshot(registry_database)
     expected = {key: (digest, size) for key, digest, size in rows}
     supplied = {blob.storage_key: blob for blob in unit.blobs}
     if len(supplied) != len(unit.blobs) or set(supplied) != set(expected):
@@ -963,17 +1199,29 @@ def private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
             logical_database = "\n".join(connection.iterdump()).encode("utf-8")
         finally:
             connection.close()
-        registry_database = Path(temporary) / REGISTRY_DATABASE_NAME
-        registry_database.write_bytes(unit.registry_database_raw)
-        connection = sqlite3.connect(_sqlite_readonly_uri(registry_database), uri=True)
-        try:
-            logical_registry = "\n".join(connection.iterdump()).encode("utf-8")
-        finally:
-            connection.close()
+    if unit.registry_database_raw is None:
+        registry_identity = agent_registry_digest(unit)
+    else:
+        with TemporaryDirectory(
+            prefix="mentat-private-registry-identity-"
+        ) as temporary:
+            registry = Path(temporary) / REGISTRY_DATABASE_NAME
+            registry.write_bytes(unit.registry_database_raw)
+            connection = sqlite3.connect(
+                _sqlite_readonly_uri(registry),
+                uri=True,
+            )
+            try:
+                logical_registry = "\n".join(connection.iterdump()).encode(
+                    "utf-8"
+                )
+            finally:
+                connection.close()
+        registry_identity = hashlib.sha256(logical_registry).hexdigest()
     identity = {
         "history": hashlib.sha256(unit.history_raw).hexdigest(),
         "database": hashlib.sha256(logical_database).hexdigest(),
-        "agent_registry": hashlib.sha256(logical_registry).hexdigest(),
+        "agent_registry": registry_identity,
         "blobs": [(blob.storage_key, blob.sha256, len(blob.raw)) for blob in unit.blobs],
     }
     return hashlib.sha256(_canonical_json(identity)).hexdigest()
@@ -1000,20 +1248,126 @@ def legacy_private_console_unit_digest(unit: PrivateConsoleUnit) -> str:
 
 
 def agent_registry_digest(unit: PrivateConsoleUnit) -> str:
-    """Return a logical digest of only the validated Agent registry snapshot."""
+    """Return a storage-neutral digest of validated canonical Agent rows."""
 
     with TemporaryDirectory(prefix="mentat-agent-registry-identity-") as temporary:
-        database = Path(temporary) / REGISTRY_DATABASE_NAME
-        database.write_bytes(unit.registry_database_raw)
+        embedded = unit.registry_database_raw is None
+        database = Path(temporary) / (
+            "mentat.sqlite3" if embedded else REGISTRY_DATABASE_NAME
+        )
+        database.write_bytes(
+            unit.database_raw if embedded else unit.registry_database_raw or b""
+        )
         if os.name != "nt":
             database.chmod(0o600)
-        _validate_registry_snapshot(database)
         connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
+        connection.row_factory = sqlite3.Row
         try:
-            logical_registry = "\n".join(connection.iterdump()).encode("utf-8")
+            if embedded:
+                _validate_embedded_registry(connection)
+            else:
+                validate_registry_connection(
+                    connection,
+                    supported_runtime_types=("codex", "hermes"),
+                    runtime_binding_validator=lambda agent, runtime_agent_ref: (
+                        codex_binding_is_valid(
+                            runtime_agent_ref,
+                            agent.capabilities,
+                        )
+                        if agent.runtime_type == "codex"
+                        else True
+                    ),
+                )
+            rows = [
+                {
+                    "agent_id": str(row[0]),
+                    "name": str(row[1]),
+                    "runtime_config_id": str(row[2]),
+                    "capabilities": sorted(json.loads(str(row[3]))),
+                    "agent_created_at": float(row[4]),
+                    "agent_updated_at": float(row[5]),
+                    "runtime_type": str(row[6]),
+                    "runtime_agent_ref": str(row[7]),
+                    "config_created_at": float(row[8]),
+                    "config_updated_at": float(row[9]),
+                }
+                for row in connection.execute(
+                    "SELECT a.id, a.name, a.runtime_config_id, "
+                    "a.capabilities_json, a.created_at, a.updated_at, "
+                    "c.runtime_type, c.runtime_agent_ref, c.created_at, "
+                    "c.updated_at FROM mentat_agents AS a JOIN "
+                    "agent_runtime_configs AS c ON c.id = a.runtime_config_id "
+                    "ORDER BY a.name COLLATE NOCASE, a.id"
+                )
+            ]
         finally:
             connection.close()
-    return hashlib.sha256(logical_registry).hexdigest()
+    return hashlib.sha256(_canonical_json(rows)).hexdigest()
+
+
+def standalone_agent_registry_raw(unit: PrivateConsoleUnit) -> bytes:
+    """Materialize Agents as an explicit pre-convergence recovery artifact."""
+
+    if unit.registry_database_raw is not None:
+        _registry_agent_count(unit.registry_database_raw)
+        return unit.registry_database_raw
+    with TemporaryDirectory(prefix="mentat-agent-registry-export-") as temporary:
+        source_path = Path(temporary) / "mentat.sqlite3"
+        source_path.write_bytes(unit.database_raw)
+        destination_path = Path(temporary) / REGISTRY_DATABASE_NAME
+        initialize_registry_file(destination_path)
+        source = sqlite3.connect(_sqlite_readonly_uri(source_path), uri=True)
+        source.row_factory = sqlite3.Row
+        destination = sqlite3.connect(destination_path)
+        try:
+            if _validate_embedded_registry(source) is None:
+                raise PrivateConsoleUnitError("private_agent_registry_missing")
+            rows = source.execute(
+                "SELECT a.id AS agent_id, a.name, a.runtime_config_id, "
+                "a.capabilities_json, a.created_at AS agent_created_at, "
+                "a.updated_at AS agent_updated_at, c.runtime_type, "
+                "c.runtime_agent_ref, c.created_at AS config_created_at, "
+                "c.updated_at AS config_updated_at FROM mentat_agents AS a "
+                "JOIN agent_runtime_configs AS c ON c.id = a.runtime_config_id "
+                "ORDER BY a.name COLLATE NOCASE, a.id"
+            ).fetchall()
+            destination.execute("BEGIN IMMEDIATE")
+            for row in rows:
+                destination.execute(
+                    "INSERT INTO agent_runtime_configs (id, runtime_type, "
+                    "runtime_agent_ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        row["runtime_config_id"],
+                        row["runtime_type"],
+                        row["runtime_agent_ref"],
+                        row["config_created_at"],
+                        row["config_updated_at"],
+                    ),
+                )
+                destination.execute(
+                    "INSERT INTO mentat_agents (id, name, runtime_config_id, "
+                    "capabilities_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        row["agent_id"],
+                        row["name"],
+                        row["runtime_config_id"],
+                        row["capabilities_json"],
+                        row["agent_created_at"],
+                        row["agent_updated_at"],
+                    ),
+                )
+            destination.commit()
+            destination.row_factory = sqlite3.Row
+            _validate_registry_snapshot(destination_path)
+        except Exception:
+            destination.rollback()
+            raise
+        finally:
+            destination.close()
+            source.close()
+        if os.name != "nt":
+            destination_path.chmod(0o600)
+        return destination_path.read_bytes()
 
 
 def _write_private_file(path: Path, raw: bytes) -> None:
@@ -1068,7 +1422,11 @@ def materialize_private_console_unit(
     try:
         _write_private_file(destination / history_path(data_root).name, unit.history_raw)
         _write_private_file(destination / database_path(data_root).name, unit.database_raw)
-        _write_private_file(destination / REGISTRY_DATABASE_NAME, unit.registry_database_raw)
+        if unit.registry_database_raw is not None:
+            _write_private_file(
+                destination / REGISTRY_DATABASE_NAME,
+                unit.registry_database_raw,
+            )
         blob_root = destination / "blobs" / "sha256"
         blob_root.mkdir(parents=True, mode=0o700)
         if os.name != "nt":
@@ -1083,9 +1441,13 @@ def materialize_private_console_unit(
         staged_unit = PrivateConsoleUnit(
             history_raw=_safe_regular(destination / history_path(data_root).name, maximum=MAX_HISTORY_BYTES),
             database_raw=_safe_regular(destination / database_path(data_root).name, maximum=MAX_DATABASE_BYTES),
-            registry_database_raw=_safe_regular(
-                destination / REGISTRY_DATABASE_NAME,
-                maximum=MAX_REGISTRY_DATABASE_BYTES,
+            registry_database_raw=(
+                _safe_regular(
+                    destination / REGISTRY_DATABASE_NAME,
+                    maximum=MAX_REGISTRY_DATABASE_BYTES,
+                )
+                if unit.registry_database_raw is not None
+                else None
             ),
             blobs=tuple(
                 PrivateBlob(

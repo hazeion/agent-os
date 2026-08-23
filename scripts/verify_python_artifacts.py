@@ -33,7 +33,7 @@ DIST_INFO = f"{DIST_NAME}.dist-info"
 EGG_INFO = "mentat_local.egg-info"
 PUBLIC_MODULES = {
     "agent_console_artifacts", "agent_console_attachments", "agent_console_telemetry",
-    "agent_registry", "agent_run_history", "agent_runtime",
+    "agent_registry", "agent_registry_migration", "agent_run_history", "agent_runtime",
     "codex_runtime", "command_manifest", "data_backup_restore", "data_layout",
     "data_migration",
     "data_schema", "delegation_artifacts", "diagnostics_bundle", "health_checks",

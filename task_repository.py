@@ -644,9 +644,9 @@ class TaskRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise TaskRepositoryError("task_repository.schema_unsupported") from exc
         allowed_versions = (
-            {5, 6, DATABASE_SCHEMA_VERSION}
+            {5, 6, 7, DATABASE_SCHEMA_VERSION}
             if self.allow_pre_authority_schema
-            else {6, DATABASE_SCHEMA_VERSION}
+            else {6, 7, DATABASE_SCHEMA_VERSION}
         )
         if version not in allowed_versions:
             raise TaskRepositoryError("task_repository.schema_unsupported")
@@ -1971,9 +1971,11 @@ def _schema5_private_unit(unit):
     from private_console_unit import (
         PrivateConsoleUnit,
         _history_run_ids,
+        standalone_agent_registry_raw,
         validate_private_console_unit,
     )
 
+    registry_database_raw = standalone_agent_registry_raw(unit)
     with TemporaryDirectory(prefix="mentat-schema5-export-") as temporary:
         path = Path(temporary) / "mentat.sqlite3"
         path.write_bytes(unit.database_raw)
@@ -2013,6 +2015,9 @@ def _schema5_private_unit(unit):
                         "SELECT storage_key FROM blobs"
                     )
                 }
+                connection.execute("DROP TABLE mentat_agent_registry_state")
+                connection.execute("DROP TABLE mentat_agents")
+                connection.execute("DROP TABLE agent_runtime_configs")
                 connection.execute("DROP TABLE mentat_agent_events")
                 connection.execute("DROP TABLE mentat_dispatch_reservations")
                 connection.execute("DROP TABLE mentat_task_dispatch_heads")
@@ -2023,8 +2028,7 @@ def _schema5_private_unit(unit):
                 connection.execute("DELETE FROM mentat_tasks")
                 connection.execute("DROP TABLE mentat_task_store_state")
                 connection.execute(
-                    "DELETE FROM schema_migrations WHERE version IN (?, ?)",
-                    (DATABASE_SCHEMA_VERSION - 1, DATABASE_SCHEMA_VERSION),
+                    "DELETE FROM schema_migrations WHERE version >= 6"
                 )
             connection.execute("VACUUM")
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -2039,7 +2043,7 @@ def _schema5_private_unit(unit):
         PrivateConsoleUnit(
             history_raw=unit.history_raw,
             database_raw=database_raw,
-            registry_database_raw=unit.registry_database_raw,
+            registry_database_raw=registry_database_raw,
             blobs=tuple(
                 blob
                 for blob in unit.blobs

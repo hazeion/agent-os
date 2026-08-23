@@ -138,11 +138,11 @@ class DataBackupRestoreTests(unittest.TestCase):
                         *(f"data/{name}" for name in data_layout.SEED_FILE_NAMES),
                         "private/history.json",
                         "private/mentat.sqlite3",
-                        "private/agent-registry.sqlite3",
                     ],
                 )
                 manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual(manifest["kind"], backup_restore.BACKUP_KIND)
+            self.assertEqual(manifest["format_version"], 4)
             self.assertEqual(len(manifest["items"]), len(data_layout.SEED_FILE_NAMES) + 1)
             self.assertIn("private_console", {item["name"] for item in manifest["items"]})
             self.assertNotIn("private_console", {item["name"] for item in manifest["excluded"]})
@@ -150,6 +150,26 @@ class DataBackupRestoreTests(unittest.TestCase):
             self.assertNotIn(b"must-not-enter", encoded)
             self.assertNotIn(b"runtime-secret", encoded)
             self.assertNotIn(os.fsencode(str(base)), encoded)
+
+    def test_default_released_private_units_round_trip_for_formats_two_and_three(self):
+        with TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            _seeds, source = self.make_current(base, "source", "source")
+            documents = backup_restore._load_live_documents(source, None)
+
+            for format_version in (2, 3):
+                with self.subTest(format_version=format_version):
+                    raw = backup_restore._build_backup(
+                        documents,
+                        format_version=format_version,
+                    )
+                    parsed_documents, unit, parsed_version = (
+                        backup_restore._contents_from_backup(raw)
+                    )
+                    self.assertEqual(parsed_documents, documents)
+                    self.assertEqual(parsed_version, format_version)
+                    self.assertIsNotNone(unit)
+                    self.assertEqual(unit.agent_count if unit else -1, 0)
 
     def test_backup_snapshot_serializes_with_ordinary_json_mutation(self):
         with TemporaryDirectory() as tmpdir:

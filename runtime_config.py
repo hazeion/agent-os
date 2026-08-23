@@ -27,6 +27,7 @@ from data_migration import (
     migration_startup_status,
     preview_legacy_migration,
 )
+from agent_registry_migration import preview_agent_registry_migration
 from private_console_migration import (
     migrate_private_console,
     preview_private_console_migration,
@@ -78,6 +79,13 @@ DEFAULT_APP_NAME = "Mentat"
 DEFAULT_OBSIDIAN_VAULT = Path.home() / "Documents" / "Obsidian Vault"
 PACKAGED_SEED_DIR = bundled_asset_dir("data")
 PATH_SETTING_KEYS = {"data_dir", "public_dir", "hermes_home", "obsidian_vault"}
+
+
+def _agent_registry_converged(data_dir: Path) -> bool:
+    return (
+        preview_agent_registry_migration(data_dir).status
+        == "already_converged"
+    )
 
 
 @dataclass(frozen=True)
@@ -142,6 +150,16 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             "migration preview and confirm its exact plan before startup."
         )
 
+    if not _agent_registry_converged(config.data_dir):
+        return (
+            "Mentat needs to move its Agent registry into the main private "
+            "database (agent_registry_migration_required). From a source "
+            "checkout, run `python -m mentat.cli agent-registry-migration`; "
+            "an installed build may use `mentat agent-registry-migration`. "
+            "Review the preview, then repeat the same command with "
+            "`--confirm TOKEN`."
+        )
+
     def migration_guard(target: Path, descriptor: int | None) -> str | None:
         if restore_status_under_lock(target, descriptor) != "clear":
             return "restore_incomplete_or_invalid"
@@ -154,6 +172,8 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             return "private_console_state_invalid"
         if preview_private_console_migration(target).status not in {"not_required", "already_migrated"}:
             return "private_console_migration_required"
+        if not _agent_registry_converged(target):
+            return "agent_registry_migration_required"
         locked_schema = schema_status_under_lock(target, descriptor)
         if locked_schema == "newer":
             return "schema_version_newer_than_supported"
@@ -187,6 +207,8 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             return "private_console_state_invalid"
         if preview_private_console_migration(target).status not in {"not_required", "already_migrated"}:
             return "private_console_migration_required"
+        if not _agent_registry_converged(target):
+            return "agent_registry_migration_required"
         final_migration = migration_status_under_lock(target, descriptor)
         if migration_status == "complete" and final_migration != "complete":
             return "migration_incomplete_or_invalid"
@@ -239,10 +261,14 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
                     locked_private_migration = preview_private_console_migration(
                         config.data_dir
                     ).status
+                    locked_agent_registry = _agent_registry_converged(
+                        config.data_dir
+                    )
             except OSError:
                 locked_restore = "invalid"
                 locked_private = "invalid"
                 locked_private_migration = "blocked"
+                locked_agent_registry = False
             if locked_restore != "clear":
                 return (
                     "Mentat found an incomplete or invalid durable-data restore "
@@ -257,6 +283,11 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
                     "(private_console_state_invalid). Re-run the private migration "
                     "or restore preview before startup."
                 )
+            if not locked_agent_registry:
+                return (
+                    "Mentat needs the confirmed Agent registry migration "
+                    "(agent_registry_migration_required)."
+                )
             return None
         try:
             with _initialization_lock(config.data_dir) as descriptor:
@@ -270,6 +301,9 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
                 private_migration_status = preview_private_console_migration(
                     config.data_dir
                 ).status
+                agent_registry_converged = _agent_registry_converged(
+                    config.data_dir
+                )
                 final_identity = _pinned_root_identity(config.data_dir, descriptor)
         except OSError:
             current_identity = None
@@ -278,6 +312,7 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             schema_status = "invalid"
             private_status = "invalid"
             private_migration_status = "blocked"
+            agent_registry_converged = False
         if restore_status != "clear":
             return (
                 "Mentat found an incomplete or invalid durable-data restore "
@@ -291,6 +326,11 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
                 "Mentat found incomplete or legacy private Console state "
                 "(private_console_state_invalid). Re-run the private migration "
                 "or restore preview before startup."
+            )
+        if not agent_registry_converged:
+            return (
+                "Mentat needs the confirmed Agent registry migration "
+                "(agent_registry_migration_required)."
             )
         if (
             verified_schema_status is None
@@ -335,6 +375,11 @@ def prepare_data_root_for_startup(config: AppConfig) -> str | None:
             "Mentat found incomplete or legacy private Console state "
             "(private_console_state_invalid). Re-run the private migration "
             "or restore preview before startup."
+        )
+    if "agent_registry_migration_required" in result.issues:
+        return (
+            "Mentat needs the confirmed Agent registry migration "
+            "(agent_registry_migration_required)."
         )
     if "invalid_data_schema" in result.issues:
         return (

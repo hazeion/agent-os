@@ -55,9 +55,13 @@ browser, native packaging, and six-run perfect Lighthouse gates.
 Slice 3A is complete. PR #124 added Codex as a second backend runtime through
 the stable local App Server stdio protocol.
 
-Slice 3B is complete in this branch. The Runs workspace now proves that Hermes
+Slice 3B is complete. The Runs workspace proves that Hermes
 and Codex can stay visible and controllable together without crossing Agent,
 Task, Run, event, or runtime identities.
+
+Slice 3C is complete in this branch. Schema-8 `mentat.sqlite3` now owns Agent
+identity and private runtime bindings alongside Tasks, Runs, and events.
+Existing roots use an explicit backed-up convergence command before startup.
 
 ## Roadmap
 
@@ -72,14 +76,14 @@ Task, Run, event, or runtime identities.
 | 2B-A | Complete | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
 | 2B-B | Complete | Read-only Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
 | 2B-C | Complete | Read-only Runs route backed by normalized Run APIs. | Slice 2B-B |
-| 2C-A | Complete in this branch | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
-| 2C-B | Complete in this branch | Safe preview-confirm stop control for a selected Run. Messaging and approvals need separate contracts. | Slice 2C-A |
-| 2C-C | Complete in this branch | Safe preview-confirm text message for a selected active Run. | Slice 2C-B |
+| 2C-A | Complete | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
+| 2C-B | Complete | Safe preview-confirm stop control for a selected Run. Messaging and approvals need separate contracts. | Slice 2C-A |
+| 2C-C | Complete | Safe preview-confirm text message for a selected active Run. | Slice 2C-B |
 | 2C-D | Complete | Supported approval and clarification responses. | Slice 2C-C |
 | 2D | Complete | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
 | 3A | Complete | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
-| 3B | Complete in this branch | Hermes and Codex run together in one interface. | Slice 3A |
-| 3C | Proposed | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
+| 3B | Complete | Hermes and Codex run together in one interface. | Slice 3A |
+| 3C | Complete in this branch | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
 | 4A | Planned | Vercel infrastructure adapter: optional AI Gateway, Sandbox, and Connect behind Mentat contracts. | Slice 3C |
 | 4B+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 4A |
 
@@ -114,8 +118,10 @@ storage.
 
 Important rules:
 
-- `mentat.sqlite3` owns Tasks, Runs, and events.
-- `agent-registry.sqlite3` owns Agent identity and runtime bindings until 3C.
+- Schema-8 `mentat.sqlite3` owns Agents, private runtime bindings, Tasks, Runs,
+  and events.
+- The former `agent-registry.sqlite3` is only an ignored migration or recovery
+  source after the convergence receipt exists.
 - `tasks.json` is a seed or recovery file, not live Task state.
 - There is no live dual read or dual write path.
 - Runtime-specific limits stay inside their adapters.
@@ -375,9 +381,19 @@ Review log: `reviews/2026-08-22-runtime-coexistence-view.md`
 
 ### Slice 3C: database convergence
 
-Move Agent identity and runtime bindings from `agent-registry.sqlite3` into
-`mentat.sqlite3` through an exact preview, backup, confirmation, and cutover.
-Do not create a dual-authority period.
+Schema-8 `mentat.sqlite3` stores Agent identity and private runtime bindings.
+Fresh roots receive an empty embedded authority. Existing roots run `mentat
+agent-registry-migration` for a read-only exact preview, a verified format-3
+backup, and one atomic confirmation that imports the rows with an authority
+receipt. Startup blocks until that explicit cutover is complete, and live code
+never falls back to or dual-writes the old file afterward.
+
+New format-4 backups keep the full private Console state in the one embedded
+database. Released format-2 and format-3 backups remain restorable, and the
+schema-5 compatible-root workflow materializes a standalone registry only as a
+downgrade artifact.
+
+Review log: `reviews/2026-08-22-agent-registry-convergence.md`
 
 ## Optional Vercel infrastructure
 
