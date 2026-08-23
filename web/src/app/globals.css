@@ -633,7 +633,9 @@ button {
 .task-card-meta { margin: 4px 0 0; overflow-wrap: anywhere; color: var(--text-tertiary); font-size: 0.8rem; }
 .task-status { margin: 0; color: var(--accent); font-size: 0.78rem; font-weight: 650; text-transform: capitalize; }
 .run-card-header { display: flex; align-items: start; gap: 10px; justify-content: space-between; }
+.run-identity { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 7px; }
 .run-card h3 { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); font-size: 0.9rem; }
+.run-runtime { margin: 0; padding: 3px 6px; border: 1px solid var(--border-subtle); border-radius: 5px; color: var(--accent); font-size: 0.68rem; font-weight: 650; line-height: 1.2; }
 .run-card-meta { margin: 0; overflow-wrap: anywhere; color: var(--text-tertiary); font-size: 0.8rem; }
 .run-status { margin: 0; color: var(--accent); font-size: 0.78rem; font-weight: 650; text-transform: capitalize; }
 .run-timeline-open,

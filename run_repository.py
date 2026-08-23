@@ -1112,6 +1112,25 @@ class RunRepository:
             records.append(self._run_record(row))
         return tuple(records)
 
+    def list_workspace_runs(self, *, limit: int = 50) -> tuple[RunRecord, ...]:
+        """Return a bounded workspace view with active Runs before history."""
+
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise RunRepositoryValidationError("run.limit_invalid")
+        statuses = tuple(sorted(_ACTIVE_STATUSES))
+        placeholders = ",".join("?" for _ in statuses)
+        rows = self.connection.execute(
+            "SELECT * FROM mentat_runs "
+            f"ORDER BY CASE WHEN status IN ({placeholders}) THEN 0 ELSE 1 END, "
+            "updated_at DESC, id DESC LIMIT ?",
+            (*statuses, limit),
+        ).fetchall()
+        records: list[RunRecord] = []
+        for row in rows:
+            _validate_event_window(row, self._event_rows(str(row["id"])))
+            records.append(self._run_record(row))
+        return tuple(records)
+
     def lookup_dispatch_retry(
         self,
         *,

@@ -198,4 +198,7 @@ slice is published; the corrected CI run will be monitored before merge.
 
 ## Outcome review
 
-Pending.
+- Successful. PR #124 merged to `main` as
+  `464fffa9f792521880b3b6be19c414e194cffc36` after CI, quality gates, and
+  native artifact smoke passed. One existing Windows backup-lock test timed
+  out once and passed when its exact shard was retried.

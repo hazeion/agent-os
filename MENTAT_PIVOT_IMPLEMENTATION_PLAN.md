@@ -52,9 +52,12 @@ supervised Node dashboard by default, keeps `--legacy-ui` as an explicit local
 rollback, ships prebuilt web assets, and passes the installed lifecycle,
 browser, native packaging, and six-run perfect Lighthouse gates.
 
-Slice 3A is complete in this branch. It adds Codex as a second backend runtime
-through the stable local App Server stdio protocol, while leaving runtime
-coexistence UI to Slice 3B.
+Slice 3A is complete. PR #124 added Codex as a second backend runtime through
+the stable local App Server stdio protocol.
+
+Slice 3B is complete in this branch. The Runs workspace now proves that Hermes
+and Codex can stay visible and controllable together without crossing Agent,
+Task, Run, event, or runtime identities.
 
 ## Roadmap
 
@@ -75,8 +78,8 @@ coexistence UI to Slice 3B.
 | 2C-D | Complete | Supported approval and clarification responses. | Slice 2C-C |
 | 2D | Complete | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
 | 3A | Complete | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
-| 3B | Provisional | Hermes and Codex run together in one interface. | Slice 3A |
-| 3C | Provisional | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
+| 3B | Complete in this branch | Hermes and Codex run together in one interface. | Slice 3A |
+| 3C | Proposed | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
 | 4A | Planned | Vercel infrastructure adapter: optional AI Gateway, Sandbox, and Connect behind Mentat contracts. | Slice 3C |
 | 4B+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 4A |
 
@@ -360,6 +363,15 @@ implements. Account login UI, provider/model selection, and Hermes/Codex UI
 coexistence remain separate work.
 
 Review log: `reviews/2026-08-22-codex-runtime-adapter.md`
+
+Slice 3B keeps the existing runtime router and bridge routes. `/runs` reads
+canonical Runs and canonical Agents in parallel, joins a display name only on
+an exact Mentat Agent ID and runtime-type match, and otherwise keeps the Run
+visible under a safe ID label. Active Runs stay ahead of terminal history in
+the bounded workspace. A deterministic two-adapter test proves concurrent
+dispatch, reconciliation, events, message, Stop, and confirmation isolation.
+
+Review log: `reviews/2026-08-22-runtime-coexistence-view.md`
 
 ### Slice 3C: database convergence
 

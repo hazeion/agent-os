@@ -406,6 +406,32 @@ class RunRepositoryTests(unittest.TestCase):
         self.assertTrue(run.partial)
         self.assertEqual(events[-1].type, AgentEventType.RUN_INTERRUPTED)
 
+    def test_workspace_runs_keep_active_work_ahead_of_newer_terminal_history(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ensure_run_sqlite_authority(root, history_path(root))
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                active = run_fixture(
+                    "run_active_workspace", status="running", offset=-100
+                )
+                active["completed_at"] = None
+                terminal = [
+                    run_fixture(f"run_terminal_{index:02d}", offset=index)
+                    for index in range(51)
+                ]
+                repository.sync_summaries([active, *terminal])
+
+                visible = repository.list_workspace_runs(limit=50)
+            finally:
+                connection.close()
+
+        self.assertEqual(len(visible), 50)
+        self.assertEqual(visible[0].id, "run_active_workspace")
+        self.assertEqual(visible[0].status, "running")
+        self.assertNotIn("run_terminal_00", {run.id for run in visible})
+
     @unittest.skipIf(os.name == "nt", "POSIX link semantics")
     def test_linked_legacy_history_fails_before_authority_claim(self):
         with TemporaryDirectory() as tmpdir:
