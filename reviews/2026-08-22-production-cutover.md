@@ -741,3 +741,34 @@ Final independent re-review:
 - Lifecycle correctness and process safety: no findings; contract satisfied.
 - Packaging, CI, compatibility, and product contract: no findings; contract
   satisfied.
+
+### CI correction round 18
+
+Quality Gates run 250 proved that the bounded failure and process-group cleanup
+work: the installed job failed in seconds instead of hanging and left no
+Mentat process tree for the shell to wait on. Its stop report contained a live
+gateway probe but no command-path match. Next.js rewrites the Linux process
+title after startup, so `ps -o command=` no longer preserves the original
+absolute `server.js` argument.
+
+The fail-closed ownership rule now records the Linux process start identity.
+After Next retitles itself, fallback requires that identity, the exact live
+working directory, a regular recorded `server.js`, and the fixed gateway-health
+marker. The final signal uses a pidfd and rechecks the process identity after
+opening it, eliminating a PID-reuse race. Exact command-path fallback remains
+available for older state; new Linux state also binds that path to its recorded
+process identity. Non-loopback hosts, malformed identity, missing or relative
+paths, sibling directories, stale PIDs, one-sided evidence, and platforms
+without the required ownership proof fail closed.
+
+The retitled-Node regression failed before this correction and now passes. All
+52 focused lifecycle, packaging-entry-point, and CI-contract checks pass; the
+broader lifecycle, web-runtime, packaging, and CI group passes all 113 checks.
+Web lint, typecheck, and all 39 Node tests pass, together with Python
+compilation and `git diff --check`.
+
+Final independent round-18 re-review:
+
+- Lifecycle and process safety: no findings; revised contract satisfied.
+- Linux, CI, packaging, and compatibility: no findings; revised contract
+  satisfied.

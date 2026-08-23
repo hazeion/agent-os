@@ -6,7 +6,9 @@ import ipaddress
 import json
 import os
 import re
+import select
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -16,6 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 import server
+from mentat.process_identity import IS_LINUX, linux_process_start_ticks
 
 BASE_DIR = Path(__file__).resolve().parent
 MENTAT_COMMAND_PATHS = {
@@ -281,6 +284,42 @@ def process_commandline(pid: int) -> str:
     return ""
 
 
+def process_working_directory(pid: int) -> str:
+    """Read the live Linux process cwd without trusting its mutable title."""
+
+    if not IS_LINUX:
+        return ""
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except (OSError, ValueError):
+        return ""
+
+
+def working_directory_matches_gateway(pid: int, expected_path: str) -> bool:
+    expected = str(expected_path or "").strip()
+    if not expected.startswith("/"):
+        return False
+    working_directory = process_working_directory(pid)
+    if not working_directory:
+        return False
+    try:
+        actual_root = Path(working_directory).resolve(strict=True)
+        expected_root = Path(expected).parent.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return actual_root == expected_root
+
+
+def gateway_entrypoint_is_regular(expected_path: str) -> bool:
+    expected = str(expected_path or "").strip()
+    if not expected.startswith("/"):
+        return False
+    try:
+        return stat.S_ISREG(os.lstat(expected).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
 def looks_like_mentat_commandline(commandline: str) -> bool:
     text = (commandline or "").strip().lower().replace("\\", "/")
     if not text:
@@ -375,14 +414,75 @@ def kill_pid(pid: int) -> tuple[bool, str]:
     return True, "terminated with SIGKILL"
 
 
+def kill_linux_pid_with_start_ticks(
+    pid: int, expected_start_ticks: int
+) -> tuple[bool, str]:
+    """Signal the exact recorded Linux process through a race-safe pidfd."""
+
+    pidfd_open = getattr(os, "pidfd_open", None)
+    pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+    if (
+        not IS_LINUX
+        or not callable(pidfd_open)
+        or not callable(pidfd_send_signal)
+    ):
+        return False, "race-safe process identity is unavailable"
+    if linux_process_start_ticks(pid) != expected_start_ticks:
+        return False, "recorded process identity changed"
+    try:
+        process_fd = pidfd_open(pid, 0)
+    except (OSError, ValueError) as exc:
+        return False, f"could not open recorded process identity: {exc}"
+    try:
+        if linux_process_start_ticks(pid) != expected_start_ticks:
+            return False, "recorded process identity changed"
+        try:
+            pidfd_send_signal(process_fd, signal.SIGTERM)
+        except ProcessLookupError:
+            return True, "recorded process already exited"
+        poller = select.poll()
+        poller.register(process_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        if poller.poll(3000):
+            return True, "terminated with SIGTERM"
+        try:
+            pidfd_send_signal(process_fd, signal.SIGKILL)
+        except ProcessLookupError:
+            return True, "terminated with SIGTERM"
+        if poller.poll(1000):
+            return True, "terminated with SIGKILL"
+        return False, "recorded process did not exit after SIGKILL"
+    except OSError as exc:
+        return False, str(exc)
+    finally:
+        os.close(process_fd)
+
+
 def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = False) -> dict:
     state_path = lifecycle_state_path(config)
     state = read_runtime_state(state_path) or {}
-    state_pid = state.get("pid") if isinstance(state.get("pid"), int) else None
+    raw_state_pid = state.get("pid")
+    state_pid = (
+        raw_state_pid
+        if isinstance(raw_state_pid, int)
+        and not isinstance(raw_state_pid, bool)
+        and raw_state_pid > 0
+        else None
+    )
     state_gateway_path = (
         state.get("command_path")
         if state.get("runtime") == "node-gateway" and isinstance(state.get("command_path"), str)
         else None
+    )
+    raw_start_ticks = state.get("process_start_ticks")
+    state_start_ticks = (
+        raw_start_ticks
+        if isinstance(raw_start_ticks, int)
+        and not isinstance(raw_start_ticks, bool)
+        and raw_start_ticks > 0
+        else None
+    )
+    state_start_ticks_invalid = (
+        "process_start_ticks" in state and state_start_ticks is None
     )
     ports = managed_ports(config.port)
     listeners = [listener for listener in netstat_listeners() if listener.port in ports]
@@ -393,14 +493,26 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
     command_cache: dict[int, str] = {}
 
     # Some constrained POSIX environments expose listening sockets without
-    # their owning PID. Recover only the exact recorded Node gateway: both its
-    # fixed command path and Mentat's live gateway marker must agree before a
-    # signal is allowed.
-    if (
+    # their owning PID. Recover only the exact recorded Node gateway: either
+    # its fixed command path or its exact live Linux working directory and
+    # recorded process-start identity must agree with Mentat's live gateway
+    # marker before a signal is allowed.
+    recorded_gateway_without_listener = (
         state_pid is not None
         and state_gateway_path is not None
         and not listeners
-    ):
+    )
+    if recorded_gateway_without_listener and state_start_ticks_invalid:
+        blocked = True
+        actions.append(
+            {
+                "port": config.port,
+                "pid": state_pid,
+                "action": "blocked_unverified_gateway",
+                "reasons": ["matches_runtime_state", "invalid_process_identity"],
+            }
+        )
+    elif recorded_gateway_without_listener:
         probe_host = normalized_listener_host(config.host, config.port)
         if probe_host == "localhost":
             probe_host = "127.0.0.1"
@@ -418,8 +530,27 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
             commandline = command_cache.setdefault(
                 state_pid, process_commandline(state_pid)
             )
-            command_matches = commandline_contains_exact_path(
+            raw_command_matches = commandline_contains_exact_path(
                 commandline, state_gateway_path
+            )
+            live_start_ticks = (
+                linux_process_start_ticks(state_pid)
+                if state_start_ticks is not None
+                else None
+            )
+            identity_matches = (
+                state_start_ticks is not None
+                and live_start_ticks == state_start_ticks
+            )
+            command_matches = raw_command_matches and (
+                state_start_ticks is None or identity_matches
+            )
+            cwd_matches = (
+                identity_matches
+                and gateway_entrypoint_is_regular(state_gateway_path)
+                and working_directory_matches_gateway(
+                    state_pid, state_gateway_path
+                )
             )
             probe_key = (probe_host, config.port)
             if probe_key not in probe_cache:
@@ -428,12 +559,24 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
                 )
             gateway_matches = probe_cache[probe_key]
             reasons = ["matches_runtime_state"]
+            if state_start_ticks is not None and not identity_matches:
+                reasons.append("process_identity_mismatch")
+            elif identity_matches:
+                reasons.append("process_start_identity")
             if command_matches:
                 reasons.append("recorded_node_gateway")
+            if cwd_matches:
+                reasons.append("recorded_node_gateway_cwd")
             if gateway_matches:
                 reasons.append("gateway_probe")
-            if command_matches and gateway_matches:
-                ok, message = kill_pid(state_pid)
+            ownership_matches = command_matches or cwd_matches
+            if ownership_matches and gateway_matches:
+                if state_start_ticks is not None:
+                    ok, message = kill_linux_pid_with_start_ticks(
+                        state_pid, state_start_ticks
+                    )
+                else:
+                    ok, message = kill_pid(state_pid)
                 actions.append(
                     {
                         "port": config.port,
@@ -447,7 +590,7 @@ def cleanup_mentat_listeners(config: server.AppConfig, *, stop_only: bool = Fals
                     killed_pids.add(state_pid)
                 else:
                     blocked = True
-            elif command_matches or gateway_matches:
+            elif ownership_matches or gateway_matches:
                 blocked = True
                 actions.append(
                     {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import os
 from pathlib import Path
 import sys
@@ -13,6 +14,55 @@ from mentat import local_bridge
 
 
 class WebRuntimeTests(unittest.TestCase):
+    def test_linux_runtime_state_records_the_node_process_identity(self):
+        with TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            (data_dir / "runtime").mkdir()
+            standalone = data_dir / "web"
+            standalone.mkdir()
+            process = MagicMock(pid=4321)
+            with patch.object(web_runtime, "IS_LINUX", True), patch.object(
+                web_runtime, "linux_process_start_ticks", return_value=987654
+            ):
+                web_runtime.write_runtime_state(
+                    data_dir=data_dir,
+                    node_process=process,
+                    host="127.0.0.1",
+                    port=8894,
+                    standalone_root=standalone,
+                )
+
+            payload = json.loads(
+                web_runtime.runtime_state_path(data_dir).read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["pid"], 4321)
+            self.assertEqual(payload["process_start_ticks"], 987654)
+            self.assertEqual(payload["command_path"], str(standalone / "server.js"))
+
+    def test_linux_runtime_start_fails_closed_without_process_identity(self):
+        with TemporaryDirectory() as temporary:
+            data_dir = Path(temporary)
+            (data_dir / "runtime").mkdir()
+            standalone = data_dir / "web"
+            standalone.mkdir()
+            process = MagicMock(pid=4321)
+            with patch.object(web_runtime, "IS_LINUX", True), patch.object(
+                web_runtime, "linux_process_start_ticks", return_value=None
+            ):
+                with self.assertRaisesRegex(
+                    web_runtime.WebRuntimeError,
+                    "gateway_process_identity_unavailable",
+                ):
+                    web_runtime.write_runtime_state(
+                        data_dir=data_dir,
+                        node_process=process,
+                        host="127.0.0.1",
+                        port=8894,
+                        standalone_root=standalone,
+                    )
+
+            self.assertFalse(web_runtime.runtime_state_path(data_dir).exists())
+
     def test_source_and_frozen_bridge_commands_are_fixed_and_secret_free(self):
         source = web_runtime.bridge_command(49152)
         self.assertEqual(

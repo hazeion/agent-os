@@ -31,6 +31,7 @@ from private_state import history_path as private_history_path
 from run_repository import RunRepositoryError, ensure_run_sqlite_authority
 from task_repository import TaskRepositoryError, ensure_task_sqlite_authority
 from .local_bridge import BRIDGE_TOKEN_ENV, BRIDGE_TOKEN_HEADER
+from .process_identity import IS_LINUX, linux_process_start_ticks
 
 
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
@@ -386,13 +387,19 @@ def close_startup_output_capture(capture: threading.Thread | None, destination, 
 
 def write_runtime_state(*, data_dir: Path, node_process: subprocess.Popen, host: str, port: int,
                         standalone_root: Path) -> None:
+    payload = {
+        "pid": int(node_process.pid), "host": host, "port": port,
+        "managed_ports": [port], "runtime": "node-gateway",
+        "command_path": str(standalone_root / "server.js"), "started_at": int(time.time()),
+    }
+    process_start_ticks = linux_process_start_ticks(int(node_process.pid))
+    if IS_LINUX:
+        if process_start_ticks is None:
+            raise WebRuntimeError("gateway_process_identity_unavailable")
+        payload["process_start_ticks"] = process_start_ticks
     write_json_atomic(
         runtime_state_path(data_dir),
-        {
-            "pid": int(node_process.pid), "host": host, "port": port,
-            "managed_ports": [port], "runtime": "node-gateway",
-            "command_path": str(standalone_root / "server.js"), "started_at": int(time.time()),
-        },
+        payload,
         mode=0o600,
         maximum_bytes=1024,
     )
