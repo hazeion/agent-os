@@ -9,6 +9,8 @@
   "packageManager": "npm@11.17.0",
   "scripts": {
     "dev": "node scripts/run-next.mjs dev --hostname 127.0.0.1",
+    "prototype:agent-console": "node scripts/run-next.mjs dev --hostname 127.0.0.1 --port 8893",
+    "prototype:agent-console:measure": "node scripts/agent-console-prototype-measure.mjs",
     "build": "node scripts/run-next.mjs build && node scripts/prepare-standalone.mjs",
     "lighthouse:gate": "node scripts/lighthouse-gate.mjs",
     "lint": "eslint . --max-warnings=0",
