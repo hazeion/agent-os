@@ -31,7 +31,6 @@ for (const packagePath of [
 }
 
 const routes = [
-  { source: "index.html", output: "home.html", currentLabel: "Home" },
   { source: "agents.html", output: "agents.html", currentLabel: "Agents" },
   { source: "tasks.html", output: "tasks.html", currentLabel: "Tasks" },
   { source: "runs.html", output: "runs.html", currentLabel: "Runs" },
@@ -41,6 +40,7 @@ const shellOutputRoot = resolve(standaloneRoot, "public", "shell");
 const frameworkScriptPattern = /<script\b[^>]*>[\s\S]*?<\/script>/giu;
 const scriptPreloadPattern = /<link\b(?=[^>]*\brel="(?:modulepreload|preload)")(?=[^>]*\bas="script")[^>]*>/giu;
 
+rmSync(shellOutputRoot, { force: true, recursive: true });
 mkdirSync(shellOutputRoot, { recursive: true });
 
 for (const route of routes) {

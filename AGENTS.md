@@ -8,6 +8,19 @@ sequence and resume point. Continue to use `ARCHITECTURE.md` for implemented
 contracts and safety boundaries. A provisional roadmap entry is not approval to
 implement that slice.
 
+## Agent skills
+
+### Issue tracker
+
+Issues, specs, and Wayfinder maps are tracked in GitHub Issues for
+`hazeion/agent-os`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Mentat uses a single-context domain-document layout. Existing architecture,
+pivot, design, implementation-plan, and review documents remain authoritative.
+See `docs/agents/domain.md`.
+
 ## Overview
 
 Mentat is a local-first multi-agent operations console in a strangler migration

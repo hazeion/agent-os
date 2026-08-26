@@ -1,6 +1,7 @@
 """Validated snapshots of Mentat's durable private Agent Console unit.
 
-Schema 9 preserves private provider connections alongside embedded Agents,
+Schema 10 preserves private provider connections and Conversation foundation
+alongside embedded Agents,
 canonical SQLite Runs, events, Tasks, attachments, and ready blobs even when
 the bounded legacy-history projection omits older detail. Schema 4-8 recovery
 units remain supported. Runtime scratch and credential values are outside this
@@ -30,6 +31,10 @@ from agent_registry import (
     validate_registry_connection,
 )
 from codex_runtime import codex_binding_is_valid
+from conversation_repository import (
+    ConversationRepositoryError,
+    validate_repository_connection as validate_conversation_repository_connection,
+)
 from agent_run_history import (
     DEFAULT_RETENTION,
     LEGACY_SCHEMA_VERSIONS,
@@ -74,12 +79,14 @@ TASK_DATABASE_SCHEMA_VERSION = 6
 RUN_DATABASE_SCHEMA_VERSION = 7
 AGENT_DATABASE_SCHEMA_VERSION = 8
 PROVIDER_DATABASE_SCHEMA_VERSION = 9
+CONVERSATION_DATABASE_SCHEMA_VERSION = 10
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
     TASK_DATABASE_SCHEMA_VERSION,
     RUN_DATABASE_SCHEMA_VERSION,
     AGENT_DATABASE_SCHEMA_VERSION,
+    PROVIDER_DATABASE_SCHEMA_VERSION,
     DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
@@ -467,14 +474,30 @@ def _database_task_count(raw: bytes) -> int:
                 raise PrivateConsoleUnitError("private_database_schema_invalid")
             if version == LEGACY_DATABASE_SCHEMA_VERSION:
                 return 0
-            return validate_repository_connection(
+            task_count = validate_repository_connection(
                 connection,
                 require_authority_consistency=version >= TASK_DATABASE_SCHEMA_VERSION,
             )
+            _validate_conversation_repository(connection, version)
+            return task_count
         except TaskRepositoryError as exc:
             raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        except ConversationRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_conversation_repository_invalid") from exc
         finally:
             connection.close()
+
+
+def _validate_conversation_repository(
+    connection: sqlite3.Connection,
+    schema_version: int,
+) -> None:
+    if schema_version < CONVERSATION_DATABASE_SCHEMA_VERSION:
+        return
+    try:
+        validate_conversation_repository_connection(connection)
+    except ConversationRepositoryError as exc:
+        raise PrivateConsoleUnitError("private_conversation_repository_invalid") from exc
 
 
 def _database_schema_version(path: Path) -> int:
@@ -768,6 +791,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+            _validate_conversation_repository(connection, schema_version)
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _derived_history, derived_ids = _sqlite_run_history(path)
@@ -821,6 +845,7 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+            _validate_conversation_repository(connection, schema_version)
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
@@ -859,6 +884,7 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+            _validate_conversation_repository(connection, schema_version)
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _derived_history, derived_ids = _sqlite_run_history(path)

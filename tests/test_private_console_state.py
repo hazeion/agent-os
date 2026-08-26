@@ -98,124 +98,117 @@ class PrivateConsoleStateTests(unittest.TestCase):
         self,
         unit: private_console_unit.PrivateConsoleUnit,
     ) -> private_console_unit.PrivateConsoleUnit:
-        registry_raw = standalone_agent_registry_raw(unit)
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "mentat.sqlite3"
-            path.write_bytes(unit.database_raw)
-            connection = sqlite3.connect(path)
-            try:
-                for name in (
-                    "idx_mentat_task_dependencies_target",
-                    "idx_mentat_tasks_assigned_agent",
-                    "idx_mentat_tasks_project_order",
-                    "idx_mentat_tasks_status_order",
-                ):
-                    connection.execute(f"DROP INDEX {name}")
-                connection.execute("DROP TABLE mentat_task_dependencies")
-                connection.execute("DROP TABLE mentat_task_tags")
-                connection.execute("DROP TABLE mentat_agent_events")
-                connection.execute("DROP TABLE mentat_dispatch_reservations")
-                connection.execute("DROP TABLE mentat_task_dispatch_heads")
-                connection.execute("DROP TABLE mentat_runs")
-                connection.execute("DROP TABLE mentat_run_store_state")
-                connection.execute("DROP TABLE mentat_tasks")
-                connection.execute("DROP TABLE mentat_task_store_state")
-                connection.execute("DROP TABLE mentat_agent_registry_state")
-                connection.execute("DROP TABLE mentat_agents")
-                connection.execute("DROP TABLE agent_runtime_configs")
-                connection.execute("DROP TABLE provider_connections")
-                connection.execute(
-                    "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9)"
-                )
-                connection.commit()
-            finally:
-                connection.close()
-            return private_console_unit.PrivateConsoleUnit(
-                history_raw=unit.history_raw,
-                database_raw=path.read_bytes(),
-                registry_database_raw=registry_raw,
-                blobs=unit.blobs,
-            )
+        return self.rebuild_schema_unit(unit, 4)
 
     def schema_six_unit(
         self,
         unit: private_console_unit.PrivateConsoleUnit,
     ) -> private_console_unit.PrivateConsoleUnit:
-        registry_raw = standalone_agent_registry_raw(unit)
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "mentat.sqlite3"
-            path.write_bytes(unit.database_raw)
-            connection = sqlite3.connect(path)
-            try:
-                connection.execute("DROP TABLE mentat_agent_events")
-                connection.execute("DROP TABLE mentat_dispatch_reservations")
-                connection.execute("DROP TABLE mentat_task_dispatch_heads")
-                connection.execute("DROP TABLE mentat_runs")
-                connection.execute("DROP TABLE mentat_run_store_state")
-                connection.execute("DROP TABLE mentat_agent_registry_state")
-                connection.execute("DROP TABLE mentat_agents")
-                connection.execute("DROP TABLE agent_runtime_configs")
-                connection.execute("DROP TABLE provider_connections")
-                connection.execute(
-                    "DELETE FROM schema_migrations WHERE version IN (7, 8, 9)"
-                )
-                connection.commit()
-            finally:
-                connection.close()
-            return private_console_unit.PrivateConsoleUnit(
-                history_raw=unit.history_raw,
-                database_raw=path.read_bytes(),
-                registry_database_raw=registry_raw,
-                blobs=unit.blobs,
-            )
+        return self.rebuild_schema_unit(unit, 6)
 
     def schema_seven_unit(
         self,
         unit: private_console_unit.PrivateConsoleUnit,
     ) -> private_console_unit.PrivateConsoleUnit:
-        registry_raw = standalone_agent_registry_raw(unit)
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "mentat.sqlite3"
-            path.write_bytes(unit.database_raw)
-            connection = sqlite3.connect(path)
-            try:
-                connection.execute("DROP TABLE mentat_agent_registry_state")
-                connection.execute("DROP TABLE mentat_agents")
-                connection.execute("DROP TABLE agent_runtime_configs")
-                connection.execute("DROP TABLE provider_connections")
-                connection.execute(
-                    "DELETE FROM schema_migrations WHERE version IN (8, 9)"
-                )
-                connection.commit()
-            finally:
-                connection.close()
-            return private_console_unit.PrivateConsoleUnit(
-                history_raw=unit.history_raw,
-                database_raw=path.read_bytes(),
-                registry_database_raw=registry_raw,
-                blobs=unit.blobs,
-            )
+        return self.rebuild_schema_unit(unit, 7)
 
     def schema_eight_unit(
         self,
         unit: private_console_unit.PrivateConsoleUnit,
     ) -> private_console_unit.PrivateConsoleUnit:
+        return self.rebuild_schema_unit(unit, 8)
+
+    def rebuild_schema_unit(
+        self,
+        unit: private_console_unit.PrivateConsoleUnit,
+        schema_version: int,
+    ) -> private_console_unit.PrivateConsoleUnit:
+        """Build a genuine historical schema instead of mutating schema 10."""
+
+        registry_raw = (
+            standalone_agent_registry_raw(unit) if schema_version < 8 else None
+        )
+        tables = (
+            "blobs",
+            "attachments",
+            "run_attachments",
+            "task_artifacts",
+            "hermes_webhook_deliveries",
+        )
+        if schema_version >= 5:
+            tables += (
+                "mentat_tasks",
+                "mentat_task_tags",
+                "mentat_task_dependencies",
+            )
+        if schema_version >= 6:
+            tables += ("mentat_task_store_state",)
+        if schema_version >= 7:
+            tables += (
+                "mentat_run_store_state",
+                "mentat_runs",
+                "mentat_agent_events",
+                "mentat_dispatch_reservations",
+                "mentat_task_dispatch_heads",
+            )
+        if schema_version >= 8:
+            tables += (
+                "agent_runtime_configs",
+                "mentat_agents",
+                "mentat_agent_registry_state",
+            )
+
         with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "mentat.sqlite3"
-            path.write_bytes(unit.database_raw)
-            connection = sqlite3.connect(path)
+            source_path = Path(temporary) / "source.sqlite3"
+            source_path.write_bytes(unit.database_raw)
+            target_path = Path(temporary) / "mentat.sqlite3"
+            private_console_unit._initialize_database(
+                target_path,
+                schema_version=schema_version,
+            )
+            source = sqlite3.connect(source_path)
+            target = sqlite3.connect(target_path)
+            source.row_factory = sqlite3.Row
+            target.row_factory = sqlite3.Row
             try:
-                connection.execute("DROP TABLE provider_connections")
-                connection.execute(
-                    "DELETE FROM schema_migrations WHERE version = 9"
-                )
-                connection.commit()
+                for table in tables:
+                    source_columns = {
+                        str(row[1])
+                        for row in source.execute(f"PRAGMA table_info({table})")
+                    }
+                    target_columns = [
+                        str(row[1])
+                        for row in target.execute(f"PRAGMA table_info({table})")
+                    ]
+                    columns = [
+                        column
+                        for column in target_columns
+                        if column in source_columns
+                    ]
+                    if not columns:
+                        continue
+                    quoted = ", ".join(f'"{column}"' for column in columns)
+                    rows = source.execute(
+                        f"SELECT {quoted} FROM {table}"
+                    ).fetchall()
+                    placeholders = ", ".join("?" for _ in columns)
+                    insert_verb = (
+                        "INSERT OR REPLACE"
+                        if table == "mentat_agent_registry_state"
+                        else "INSERT"
+                    )
+                    target.executemany(
+                        f"{insert_verb} INTO {table} ({quoted}) VALUES ({placeholders})",
+                        [tuple(row) for row in rows],
+                    )
+                target.commit()
             finally:
-                connection.close()
+                target.close()
+                source.close()
             return private_console_unit.PrivateConsoleUnit(
                 history_raw=unit.history_raw,
-                database_raw=path.read_bytes(),
-                registry_database_raw=None,
+                database_raw=target_path.read_bytes(),
+                registry_database_raw=registry_raw,
                 blobs=unit.blobs,
             )
 

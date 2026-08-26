@@ -86,7 +86,6 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         eslint_config = (ROOT / "web" / "eslint.config.mjs").read_text(encoding="utf-8")
         self.assertIn('"package-runtime/**"', eslint_config)
         for destination in (
-            "/shell/home.html",
             "/shell/agents.html",
             "/shell/tasks.html",
             "/shell/runs.html",
@@ -108,6 +107,10 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn('storageKey = "mentat-contrast-v1"', preference_preload)
         self.assertFalse((ROOT / "web" / "public" / "foundation-status.js").exists())
         self.assertIn('matcher: ["/:path*"]', proxy)
+        self.assertIn("contentSecurityPolicy(nonce)", proxy)
+        self.assertIn("nonce-${nonce}", proxy)
+        self.assertNotIn("unsafe-eval", proxy)
+        self.assertNotIn("Content-Security-Policy", next_config)
         self.assertNotIn("?!_next/static", proxy)
         self.assertIn("const RUNS_PER_MODE = 3", lighthouse_gate)
         self.assertIn('score !== 100', lighthouse_gate)

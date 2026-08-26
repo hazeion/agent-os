@@ -129,8 +129,8 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(SCHEMA_VERSION, 9)
-        self.assertEqual(version, 9)
+        self.assertEqual(SCHEMA_VERSION, 10)
+        self.assertEqual(version, 10)
         self.assertTrue(
             {
                 "mentat_run_store_state",

@@ -22,8 +22,9 @@ from mentat_db import (
     AGENT_REGISTRY_AUTHORITY_CONTRACT,
     LEGACY_AGENT_REGISTRY_DATABASE_NAME,
     MentatDatabaseError,
+    MIGRATIONS,
+    SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
     connect as connect_database,
-    migrate as migrate_database,
 )
 from private_state import console_root, ensure_console_root
 
@@ -32,6 +33,18 @@ REGISTRY_DATABASE_NAME = LEGACY_AGENT_REGISTRY_DATABASE_NAME
 REGISTRY_SCHEMA_VERSION = 1
 MAX_AGENTS = 128
 MAX_LEGACY_REGISTRY_BYTES = 4 * 1024 * 1024
+DIRECT_AGENT_ROLE = "direct"
+DIRECT_AGENT_ID = "agent_direct"
+DIRECT_RUNTIME_CONFIG_ID = "runtime_config_direct"
+DIRECT_RUNTIME_TYPE = "codex"
+DIRECT_RUNTIME_AGENT_REF = "default"
+DIRECT_AGENT_CAPABILITIES = (
+    "run.events",
+    "run.message",
+    "run.start",
+    "run.status",
+    "run.stop",
+)
 
 _SCHEMA = """
 CREATE TABLE registry_schema (
@@ -89,6 +102,15 @@ class RuntimeBinding:
     id: str
     runtime_type: str
     runtime_agent_ref: str
+
+
+@dataclass(frozen=True)
+class CanonicalAgentRecord:
+    """The safe identity metadata needed by Conversation projections."""
+
+    agent: MentatAgent
+    revision: int
+    system_role: str | None
 
 
 @dataclass(frozen=True)
@@ -599,6 +621,13 @@ def _validate_agent_row(
             value = row[key]
             if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) < 0:
                 raise ValueError("invalid timestamp")
+        row_keys = row.keys() if hasattr(row, "keys") else row
+        revision = row["agent_revision"] if "agent_revision" in row_keys else 1
+        if type(revision) is not int or revision < 1:
+            raise ValueError("invalid Agent revision")
+        system_role = row["system_role"] if "system_role" in row_keys else None
+        if system_role not in {None, DIRECT_AGENT_ROLE}:
+            raise ValueError("invalid Agent system role")
         return agent
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise AgentRegistryError("agent_registry.corrupt") from exc
@@ -638,11 +667,22 @@ def _embedded_schema_signature(
 
 @lru_cache(maxsize=1)
 def _expected_embedded_schema_signature(
+    schema_version: int = DATABASE_SCHEMA_VERSION,
 ) -> tuple[tuple[str, str, str, str], ...]:
     with TemporaryDirectory(prefix="mentat-embedded-agent-schema-") as temporary:
         connection = sqlite3.connect(Path(temporary) / "mentat.sqlite3")
         try:
-            migrate_database(connection)
+            connection.execute(
+                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
+            )
+            for version, script in MIGRATIONS:
+                if version > schema_version:
+                    break
+                connection.executescript(script)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                    (version,),
+                )
             return _embedded_schema_signature(connection)
         finally:
             connection.close()
@@ -714,6 +754,7 @@ def validate_registry_connection(
             raise AgentRegistryError("agent_registry.corrupt")
         tables = _table_names(connection)
         standalone = "registry_schema" in tables
+        schema_version = 0
         if standalone:
             versions = [
                 int(row[0])
@@ -734,9 +775,20 @@ def validate_registry_connection(
                 raise AgentRegistryUnavailableError(
                     "agent_registry.migration_required"
                 )
+            try:
+                schema_version = int(
+                    connection.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0]
+                    or 0
+                )
+            except (sqlite3.Error, TypeError, ValueError) as exc:
+                raise AgentRegistryError("agent_registry.corrupt") from exc
+            if schema_version not in {8, 9, DATABASE_SCHEMA_VERSION}:
+                raise AgentRegistryError("agent_registry.unsupported")
             if (
                 _embedded_schema_signature(connection)
-                != _expected_embedded_schema_signature()
+                != _expected_embedded_schema_signature(schema_version)
             ):
                 raise AgentRegistryError("agent_registry.schema_invalid")
             authority_receipt(connection, required=True)
@@ -744,12 +796,31 @@ def validate_registry_connection(
         agent_count = int(connection.execute("SELECT COUNT(*) FROM mentat_agents").fetchone()[0])
         if config_count != agent_count or agent_count > MAX_AGENTS:
             raise AgentRegistryError("agent_registry.corrupt")
+        if not standalone and schema_version >= DATABASE_SCHEMA_VERSION:
+            role_rows = connection.execute(
+                "SELECT system_role FROM mentat_agents ORDER BY id"
+            ).fetchall()
+            if sum(row[0] == DIRECT_AGENT_ROLE for row in role_rows) > 1 or any(
+                row[0] not in {None, DIRECT_AGENT_ROLE} for row in role_rows
+            ):
+                raise AgentRegistryError("agent_registry.corrupt")
+        columns = (
+            "a.id, a.name, a.runtime_config_id, a.capabilities_json, "
+            "a.created_at AS agent_created_at, a.updated_at AS agent_updated_at, "
+            "c.runtime_type, c.runtime_agent_ref, "
+            "c.created_at AS config_created_at, c.updated_at AS config_updated_at"
+        )
+        if not standalone and schema_version >= DATABASE_SCHEMA_VERSION:
+            columns = (
+                "a.id, a.name, a.runtime_config_id, a.capabilities_json, "
+                "a.revision AS agent_revision, a.system_role, "
+                "a.created_at AS agent_created_at, a.updated_at AS agent_updated_at, "
+                "c.runtime_type, c.runtime_agent_ref, "
+                "c.created_at AS config_created_at, c.updated_at AS config_updated_at"
+            )
         rows = connection.execute(
-            """
-            SELECT a.id, a.name, a.runtime_config_id, a.capabilities_json,
-                   a.created_at AS agent_created_at, a.updated_at AS agent_updated_at,
-                   c.runtime_type, c.runtime_agent_ref,
-                   c.created_at AS config_created_at, c.updated_at AS config_updated_at
+            f"""
+            SELECT {columns}
             FROM mentat_agents AS a
             JOIN agent_runtime_configs AS c ON c.id = a.runtime_config_id
             ORDER BY a.name COLLATE NOCASE, a.id
@@ -779,6 +850,45 @@ def public_agent_record(agent: MentatAgent) -> dict:
         "runtime_config_id": agent.runtime_config_id,
         "capabilities": sorted(agent.capabilities),
     }
+
+
+def _canonical_agent_records(
+    connection: sqlite3.Connection,
+    *,
+    supported_runtime_types: Iterable[str],
+) -> tuple[CanonicalAgentRecord, ...]:
+    """Return validated identity metadata without exposing runtime references."""
+
+    agents = validate_registry_connection(
+        connection,
+        supported_runtime_types=supported_runtime_types,
+    )
+    versions = [
+        int(row[0])
+        for row in connection.execute("SELECT version FROM schema_migrations")
+    ]
+    schema_version = max(versions, default=0)
+    if schema_version >= DATABASE_SCHEMA_VERSION:
+        rows = connection.execute(
+            "SELECT id, revision, system_role FROM mentat_agents ORDER BY name COLLATE NOCASE, id"
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT id, 1 AS revision, NULL AS system_role FROM mentat_agents ORDER BY name COLLATE NOCASE, id"
+        ).fetchall()
+    if len(rows) != len(agents):
+        raise AgentRegistryError("agent_registry.corrupt")
+    records = tuple(
+        CanonicalAgentRecord(
+            agent=agent,
+            revision=int(row["revision"]),
+            system_role=str(row["system_role"]) if row["system_role"] is not None else None,
+        )
+        for agent, row in zip(agents, rows, strict=True)
+    )
+    if sum(record.system_role == DIRECT_AGENT_ROLE for record in records) > 1:
+        raise AgentRegistryError("agent_registry.corrupt")
+    return records
 
 
 class AgentRegistry:
@@ -911,6 +1021,142 @@ class AgentRegistry:
         finally:
             connection.close()
 
+    def list_agent_records(self) -> tuple[CanonicalAgentRecord, ...]:
+        """Return canonical Agent identity metadata for safe Console joins."""
+
+        connection = connect_registry(self.data_dir)
+        try:
+            return _canonical_agent_records(
+                connection,
+                supported_runtime_types=self.supported_runtime_types,
+            )
+        finally:
+            connection.close()
+
+    def ensure_direct_agent(self) -> CanonicalAgentRecord | None:
+        """Idempotently seed the canonical Direct Agent when its binding is free."""
+
+        if DIRECT_RUNTIME_TYPE not in self.supported_runtime_types:
+            return None
+        from codex_runtime import codex_binding_is_valid, find_codex_command
+
+        if find_codex_command() is None or not codex_binding_is_valid(
+            DIRECT_RUNTIME_AGENT_REF,
+            DIRECT_AGENT_CAPABILITIES,
+        ):
+            return None
+        try:
+            direct = MentatAgent(
+                id=DIRECT_AGENT_ID,
+                name="Direct Agent",
+                runtime_type=DIRECT_RUNTIME_TYPE,
+                runtime_config_id=DIRECT_RUNTIME_CONFIG_ID,
+                capabilities=DIRECT_AGENT_CAPABILITIES,
+            )
+            RuntimeContext(
+                agent_id=direct.id,
+                runtime_agent_ref=DIRECT_RUNTIME_AGENT_REF,
+            )
+        except (TypeError, ValueError):
+            return None
+        encoded_capabilities = json.dumps(
+            sorted(direct.capabilities),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        now = time.time()
+        connection = connect_registry(self.data_dir)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            records = _canonical_agent_records(
+                connection,
+                supported_runtime_types=self.supported_runtime_types,
+            )
+            existing_direct = next(
+                (
+                    record
+                    for record in records
+                    if record.system_role == DIRECT_AGENT_ROLE
+                ),
+                None,
+            )
+            if existing_direct is not None:
+                binding = connection.execute(
+                    """
+                    SELECT a.id, a.name, a.runtime_config_id, a.capabilities_json,
+                           c.runtime_type, c.runtime_agent_ref
+                    FROM mentat_agents AS a
+                    JOIN agent_runtime_configs AS c ON c.id = a.runtime_config_id
+                    WHERE a.id = ?
+                    """,
+                    (DIRECT_AGENT_ID,),
+                ).fetchone()
+                if (
+                    binding is None
+                    or binding["name"] != direct.name
+                    or binding["runtime_config_id"] != DIRECT_RUNTIME_CONFIG_ID
+                    or binding["runtime_type"] != DIRECT_RUNTIME_TYPE
+                    or binding["runtime_agent_ref"] != DIRECT_RUNTIME_AGENT_REF
+                    or json.loads(str(binding["capabilities_json"]))
+                    != sorted(DIRECT_AGENT_CAPABILITIES)
+                ):
+                    connection.rollback()
+                    raise AgentRegistryError("agent_registry.corrupt")
+                connection.rollback()
+                return existing_direct
+            binding_in_use = connection.execute(
+                """
+                SELECT 1
+                FROM agent_runtime_configs
+                WHERE runtime_type = ? AND runtime_agent_ref = ?
+                """,
+                (DIRECT_RUNTIME_TYPE, DIRECT_RUNTIME_AGENT_REF),
+            ).fetchone()
+            if binding_in_use is not None or len(records) >= MAX_AGENTS:
+                connection.rollback()
+                return None
+            connection.execute(
+                """
+                INSERT INTO agent_runtime_configs (
+                    id, runtime_type, runtime_agent_ref, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    DIRECT_RUNTIME_CONFIG_ID,
+                    DIRECT_RUNTIME_TYPE,
+                    DIRECT_RUNTIME_AGENT_REF,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO mentat_agents (
+                    id, name, runtime_config_id, capabilities_json,
+                    revision, system_role, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+                (
+                    direct.id,
+                    direct.name,
+                    DIRECT_RUNTIME_CONFIG_ID,
+                    encoded_capabilities,
+                    DIRECT_AGENT_ROLE,
+                    now,
+                    now,
+                ),
+            )
+            connection.commit()
+            return CanonicalAgentRecord(agent=direct, revision=1, system_role=DIRECT_AGENT_ROLE)
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise AgentRegistryConflict("agent.conflict") from exc
+        except sqlite3.Error as exc:
+            connection.rollback()
+            raise _translate_sqlite_error(exc) from exc
+        finally:
+            connection.close()
+
     def get_runtime_binding(self, agent_id: str) -> RuntimeBinding:
         try:
             MentatAgent(
@@ -963,6 +1209,13 @@ __all__ = [
     "AgentRegistryLimitError",
     "AgentRegistryUnavailableError",
     "AgentRegistryValidationError",
+    "CanonicalAgentRecord",
+    "DIRECT_AGENT_CAPABILITIES",
+    "DIRECT_AGENT_ID",
+    "DIRECT_AGENT_ROLE",
+    "DIRECT_RUNTIME_AGENT_REF",
+    "DIRECT_RUNTIME_CONFIG_ID",
+    "DIRECT_RUNTIME_TYPE",
     "LegacyAgentRecord",
     "LegacyRegistrySnapshot",
     "MAX_LEGACY_REGISTRY_BYTES",

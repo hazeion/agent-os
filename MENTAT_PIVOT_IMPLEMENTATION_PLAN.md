@@ -1,453 +1,81 @@
-# Mentat pivot implementation plan
+# Mentat implementation roadmap
 
-Status: Active roadmap
+Status: active
 
-Last updated: 2026-08-23
+This is the short resume map for the local-first Mentat migration. It records
+current direction and slice order; it does not authorize work. Every non-trivial
+slice needs an approved scope, test strategy, and active review log.
 
-This file shows what is complete, what is active, and what comes next. It does
-not approve a proposed slice. Each nontrivial slice needs its own approved scope
-and test plan.
+## Read before implementation
 
-Read it with:
+1. `AGENTS.md` — repository operating rules.
+2. `ARCHITECTURE.md` — authority, capability, and safety boundaries.
+3. `MENTAT_MULTI_AGENT_PIVOT.md` — target product direction.
+4. `CONTEXT.md` — domain language, when present.
+5. `MENTAT_WEB_DESIGN.md` and `MENTAT_NEXTJS_AGENT_CONSOLE_SPEC.md` — Next.js
+   Console work.
+6. The active slice review log — approved scope and evidence.
 
-- [MENTAT_MULTI_AGENT_PIVOT.md](MENTAT_MULTI_AGENT_PIVOT.md) for the target
-  architecture
-- [ARCHITECTURE.md](ARCHITECTURE.md) for current safety rules
-- the active slice review log for exact scope and evidence
-
-## Status labels
-
-- `Complete`: merged into `main`
-- `In progress`: approved work on an active branch
-- `Proposed`: recommended next slice, not yet approved
-- `Provisional`: later work that may change
-- `Deferred`: outside the current work window
-
-A feature branch may show its intended post-merge status. The version on
-`main` remains canonical.
+Historical implementation detail belongs in GitHub issues and pull requests,
+not in a growing collection of repository narratives.
 
 ## Current position
 
-The runtime-neutral Python foundation and SQLite orchestration work are
-complete through Slice 1C-D.
-
-Slice 2A-A is complete. PR #114 merged the supervised Node 24 gateway, private
-Python health bridge, and repeatable Lighthouse gate without replacing the
-Python app.
-
-Slice 2A-B is complete in this branch. It ports the completed Emerald shell
-into React and Tailwind before any operational route receives new data
-authority.
-
-Slice 2B-A is complete in this branch: the read-only Agents route uses one
-fixed bridge and Node API capability. It does not add Agent controls, provider
-credentials, or provider switching.
-
-Slice 2B-B is complete in this branch: the read-only Tasks route carries a
-small canonical SQLite projection through one fixed bridge and Node API
-capability. It does not add Task controls or expose Task details.
-
-Slice 2D is complete. PR #123 made the installed product launch the
-supervised Node dashboard by default, keeps `--legacy-ui` as an explicit local
-rollback, ships prebuilt web assets, and passes the installed lifecycle,
-browser, native packaging, and six-run perfect Lighthouse gates.
-
-Slice 3A is complete. PR #124 added Codex as a second backend runtime through
-the stable local App Server stdio protocol.
-
-Slice 3B is complete. The Runs workspace proves that Hermes
-and Codex can stay visible and controllable together without crossing Agent,
-Task, Run, event, or runtime identities.
-
-Slice 3C is complete. PR #126 merged schema-8 Agent identity and private
-runtime bindings into `mentat.sqlite3` alongside Tasks, Runs, and events.
-Existing roots use an explicit backed-up convergence command before startup.
-
-Slice 4A is complete. PR #127 adds one private Vercel connection, a bounded AI
-Gateway runtime, separate Sandbox and Connect readiness adapters, exact CLI
-workflows, and a safe Agents-workspace status view. Vercel remains optional and
-credentials stay outside Mentat storage.
-
-## Roadmap
-
-| Slice | Status | Result | Depends on |
-| --- | --- | --- | --- |
-| 0 | Complete | Hermes webhooks trigger safe Mentat readbacks and normalized events. | Existing Hermes integration |
-| 1A | Complete | Runtime-neutral Agent, Task, Run, event, and runtime contracts wrap Hermes. | Slice 0 |
-| 1B | Complete | Mentat Agents and runtime bindings are durable and separate. | Slice 1A |
-| 1C-A to 1C-D | Complete | SQLite owns Tasks, Runs, and events. Live Task paths no longer use JSON. | Slice 1B |
-| 2A-A | Complete | Node 24 gateway, private Python bridge, minimal Next.js shell, and six-run Lighthouse gate. | Slice 1C-D |
-| 2A-B | Complete | Emerald Operations shell, tokens, navigation, route frames, and shared UI basics. | Slice 2A-A |
-| 2B-A | Complete | Read-only Agents route through one fixed bridge and Node API capability. | Slice 2A-B |
-| 2B-B | Complete | Read-only Tasks route backed by Mentat's SQLite Task APIs. | Slice 2B-A |
-| 2B-C | Complete | Read-only Runs route backed by normalized Run APIs. | Slice 2B-B |
-| 2C-A | Complete | SSE run timeline with reconnect and bounded event handling. | Slice 2B-C |
-| 2C-B | Complete | Safe preview-confirm stop control for a selected Run. Messaging and approvals need separate contracts. | Slice 2C-A |
-| 2C-C | Complete | Safe preview-confirm text message for a selected active Run. | Slice 2C-B |
-| 2C-D | Complete | Supported approval and clarification responses. | Slice 2C-C |
-| 2D | Complete | Production packaging, launch, rollback, and legacy interface cutover after control parity. | Slice 2C-D |
-| 3A | Complete | Codex runtime adapter with clear capability and credential boundaries. | Slice 2D |
-| 3B | Complete | Hermes and Codex run together in one interface. | Slice 3A |
-| 3C | Complete | Move the Agent Registry into `mentat.sqlite3`. | Slice 3B |
-| 4A | Complete | Optional AI Gateway, Sandbox, and Connect adapters behind Mentat contracts. | Slice 3C |
-| 4B+ | Deferred | Shared tools, policy, credentials, routing, MCP, and A2A evaluation. | Slice 4A |
-
-## Completed foundation
-
-### Slice 0: Hermes webhook boundary
-
-Hermes webhooks are authenticated freshness hints. Mentat performs its own
-readback before changing state.
-
-Evidence is stored in the `reviews/2026-08-10-*`, `reviews/2026-08-14-*`, and
-`reviews/2026-08-17-hermes-fallback-retirement-audit.md` records.
-
-### Slice 1A: runtime contract
-
-Mentat has runtime-neutral Agent, Task, Run, event, context, capability, and
-runtime contracts. `HermesRuntime` is the first adapter.
-
-Review log: `reviews/2026-08-17-mentat-agent-runtime-boundary.md`
-
-### Slice 1B: durable Agent Registry
-
-Mentat Agents have their own IDs and private SQLite records. Hermes profile
-bindings are adapter-owned references and are never returned to the browser.
-
-Review log: `reviews/2026-08-18-mentat-durable-agent-registry.md`
-
-### Slices 1C-A to 1C-D: SQLite orchestration
-
-These slices moved Tasks, Runs, and normalized events into private SQLite
-storage.
-
-Important rules:
-
-- Schema-8 `mentat.sqlite3` owns Agents, private runtime bindings, Tasks, Runs,
-  and events.
-- The former `agent-registry.sqlite3` is only an ignored migration or recovery
-  source after the convergence receipt exists.
-- `tasks.json` is a seed or recovery file, not live Task state.
-- There is no live dual read or dual write path.
-- Runtime-specific limits stay inside their adapters.
-
-Design reference:
-`design/system-design/MENTAT_SQLITE_ORCHESTRATION_SYSTEM_DESIGN.docx`
-
-Review logs:
-
-- `reviews/2026-08-18-mentat-sqlite-task-cutover.md`
-- `reviews/2026-08-18-mentat-sqlite-run-event-dispatch.md`
-- `reviews/2026-08-21-mentat-sqlite-task-cleanup.md`
-- `reviews/2026-08-21-pivot-1c-d-closure.md`
-
-## Active frontend work
-
-### Slice 2A-A: Node web foundation
-
-Status: Complete
-
-This slice provides:
-
-- Node `>=24.19.0 <25`, pinned to 24.19.0 in source and CI
-- a supervised Next.js production preview on port 8890
-- one private Python health capability
-- one safe same-origin Node health route
-- a prerendered shell with no general React hydration runtime
-- three desktop and three mobile Lighthouse runs at 100 in every category
-
-The Python app on port 8888 remains the default product. Node receives no
-SQLite, filesystem, credential, Hermes, Task, Run, or Agent authority.
-
-Review log: `reviews/2026-08-21-node-runtime-foundation.md`
-
-Merged in PR #114.
-
-### Slice 2A-B: Emerald Operations shell
-
-Status: Complete
-
-Build on the existing `web/` app. Do not create another frontend project or
-another local server.
-
-Scope:
-
-- Emerald semantic tokens and local assets
-- responsive navigation and utility bar
-- route frames for `/`, `/agents`, `/tasks`, and `/runs`
-- accessible shared components needed by those frames
-- small client boundaries only where interaction requires them
-- the same six-run Lighthouse gate
-
-Keep route content honest. A route with no live data yet must show a clear
-foundation state instead of sample operational data.
-
-Do not add real orchestration APIs, TanStack Query, SSE, runtime controls, or
-legacy interface removal in this slice.
-
-Design sources:
-
-- the current Emerald compatibility interface
-- `public/styles.css`, especially its final Emerald foundation layer
-- `public/index.html` for shell composition
-- `design/emerald-operations/DESIGN_SYSTEM.md`
-- `design/emerald-operations/IMPLEMENTATION_PLAN.md`
-
-## Operational routes
-
-### Slices 2B-A to 2B-C
-
-Add one real vertical route at a time: Agents, Tasks, then Runs.
-
-Each slice must add only the bridge and Node API capabilities that route needs.
-Do not add a generic Python proxy. Python and SQLite remain authoritative.
-
-TanStack Query may be added with the first route that needs client-side server
-state, caching, or invalidation.
-
-Before the new Home shows Scheduled Automations, the Python API must hide local
-Hermes cron data when a remote runtime is selected. That safety fix needs its
-own approved backend slice.
-
-### Slices 2C-A and 2C-B
-
-Add event streaming before controls.
-
-2C-A adds normalized SSE with reconnect, bounded history, and explicit
-truncation. 2C-B adds one state-bound Stop action. 2C-C adds a separate,
-bounded preview-confirm text-message action. 2C-D adds supported approval and
-clarification responses. Keeping each mutation contract separate prevents a
-generic action route and makes the cutover's control-parity requirement honest.
-
-All browser traffic stays same-origin through Node. Python performs authority,
-capability, confirmation, and state checks.
-
-### Slice 2B-A: read-only Agents route
-
-Status: Complete in this branch
-
-This slice makes the canonical Agent list available through one fixed,
-read-only Python bridge capability and one safe Node route. The new `/agents`
-screen shows only the public Agent projection and gives clear loading, empty,
-unavailable, unsupported, and error feedback.
-
-It does not create or switch Agents, configure a provider, accept credentials,
-or add a generic bridge proxy.
-
-Review log: `reviews/2026-08-22-agents-read-only-bridge.md`
-
-### Slice 2B-B: read-only Tasks route
-
-Status: Complete in this branch
-
-This slice makes the canonical Task list available through one fixed,
-read-only Python bridge capability and one safe Node route. The `/tasks`
-screen shows only ID, title, project, status, priority, due date, tags,
-attention/review flags, and last-updated time. It gives explicit loading,
-empty, unavailable, unsupported, and error feedback.
-
-It does not change Tasks, consult `tasks.json`, expose descriptions or planning
-details, add provider controls, or add a generic bridge proxy.
-
-Review log: `reviews/2026-08-22-tasks-read-only-bridge.md`
-
-### Slice 2B-C: read-only Runs route
-
-Status: Complete
-
-This slice makes a bounded canonical Run list available through one fixed,
-read-only Python bridge capability and one safe Node route. The `/runs` screen
-shows only lifecycle summary fields and gives clear loading, empty,
-unavailable, unsupported, and error feedback.
-
-It does not control Runs, stream events, expose runtime references or
-revisions, add a details page, or add a generic bridge proxy.
-
-Review log: `reviews/2026-08-22-runs-read-only-bridge.md`
-
-### Slice 2C-A: selected Run timeline SSE
-
-Status: Complete in this branch
-
-This slice adds one selected Run's bounded normalized event timeline. The
-browser connects only to a same-origin SSE route. Node validates the Run ID and
-reconnect cursor, reads one fixed loopback bridge projection, emits keepalives,
-and reconnects through bounded stream windows.
-
-The timeline shows only safe event IDs, sequence, type, timestamp, summary,
-and approved numeric usage metrics. It reports unavailable, missing, malformed,
-and retention-reset states clearly.
-
-It does not add Run controls, details pages, raw event content, browser-chosen
-limits, generic bridge forwarding, or multi-Run streams.
-
-Review log: `reviews/2026-08-22-runs-timeline-sse.md`
-
-### Slice 2C-B: selected Run stop control
-
-Status: Complete in this branch
-
-This slice adds one fixed Stop action for a selected, active, task-bound Run.
-The person first receives an exact preview, then confirms it. Python checks the
-current Agent and runtime binding, current capability, current Run state, and a
-state-bound confirmation while holding the operation lock. It reads the Run
-again before reporting that the Stop request was accepted.
-
-It does not add browser-selected actions, direct Hermes access, messages,
-steering, approval responses, or generic bridge forwarding.
-
-Review log: `reviews/2026-08-22-run-stop-control.md`
-
-### Slice 2C-C: selected Run message control
-
-Status: Complete in this branch
-
-This slice adds one fixed, text-only message action for a selected active Run.
-The person types a bounded message, reviews the exact current state, then
-confirms the same message. Python validates current identity, capability,
-binding, state, and confirmation before calling the runtime-neutral message
-operation. It rechecks the supported run state before returning an accepted
-result.
-
-It does not add arbitrary commands, attachments, local-run messaging, approval
-responses, generic bridge forwarding, or browser-selected runtime references.
-
-Review log: `reviews/2026-08-22-run-message-control.md`
-
-### Slice 2C-D: selected Run response control
-
-Status: Complete
-
-This slice adds separate fixed review-confirm controls for the current pending
-approval or clarification on a selected task-bound Run. Python reads the
-current request through the runtime-neutral adapter, validates the active Run,
-identity, binding, capability, request kind/ID, allowed choice or bounded text,
-and state-bound confirmation, then verifies the resulting runtime state.
-
-It does not add a generic response form, arbitrary commands, message/steer
-controls, attachments, local-run responses, browser-selected runtime
-references, or legacy Console changes.
-
-Review log: `reviews/2026-08-22-run-response-control.md`
-
-### Slice 2D: production cutover
-
-Status: Complete in this branch
-
-The source preview is not an installed product. This slice must decide how Node
-ships, starts, updates, and rolls back on supported platforms after the
-separate Run-message and supported-approval contracts reach parity.
-
-The legacy interface may be retired only after:
-
-- required workflows have parity
-- packaging works without network access at launch
-- lifecycle and recovery checks pass on supported platforms
-- performance and accessibility gates pass
-- a tested rollback remains available
-
-The completion contract is met in PR #123:
-
-- installed and native packages contain the prebuilt Node runtime
-- launch requires no web dependency download or build
-- the supervisor owns Node and the private Python bridge together
-- shutdown and failure cleanup are bounded and process-instance safe
-- `--legacy-ui` remains the explicit local rollback
-- browser, accessibility, security, and all six Lighthouse audits pass
-
-## Runtime number two
-
-### Slices 3A and 3B
-
-Node is the web runtime. It is not the second Agent runtime.
-
-3A adds Codex behind the same Mentat runtime contract. 3B proves that Hermes
-and Codex can run at the same time and remain independently visible and
-controllable.
-
-Do not add dynamic routing until that proof is stable.
-
-Slice 3A uses Codex App Server over a private stdio JSONL connection. It reuses
-the operator's existing Codex CLI sign-in, keeps runtime references and
-credentials server-side, and exposes only the fixed capabilities Mentat
-implements. Account login UI, provider/model selection, and Hermes/Codex UI
-coexistence remain separate work.
-
-Review log: `reviews/2026-08-22-codex-runtime-adapter.md`
-
-Slice 3B keeps the existing runtime router and bridge routes. `/runs` reads
-canonical Runs and canonical Agents in parallel, joins a display name only on
-an exact Mentat Agent ID and runtime-type match, and otherwise keeps the Run
-visible under a safe ID label. Active Runs stay ahead of terminal history in
-the bounded workspace. A deterministic two-adapter test proves concurrent
-dispatch, reconciliation, events, message, Stop, and confirmation isolation.
-
-Review log: `reviews/2026-08-22-runtime-coexistence-view.md`
-
-### Slice 3C: database convergence
-
-Schema-8 `mentat.sqlite3` stores Agent identity and private runtime bindings.
-Fresh roots receive an empty embedded authority. Existing roots run `mentat
-agent-registry-migration` for a read-only exact preview, a verified format-3
-backup, and one atomic confirmation that imports the rows with an authority
-receipt. Startup blocks until that explicit cutover is complete, and live code
-never falls back to or dual-writes the old file afterward.
-
-New format-4 backups keep the full private Console state in the one embedded
-database. Released format-2 and format-3 backups remain restorable, and the
-schema-5 compatible-root workflow materializes a standalone registry only as a
-downgrade artifact.
-
-Review log: `reviews/2026-08-22-agent-registry-convergence.md`
-
-## Optional Vercel infrastructure
-
-### Slice 4A: Vercel infrastructure adapter
-
-Status: Complete
-
-Vercel becomes a real, optional infrastructure choice for compatible agent
-workloads. This is not a requirement to host the Mentat console on Vercel.
-
-The approved slice adds capability-scoped adapters for:
-
-- AI Gateway for model access and usage reporting
-- Sandbox for isolated workload execution
-- Connect for OAuth-backed, scoped service access
-
-Mentat remains the owner of Agent, provider-connection, Run, event, and policy
-records. The integration is optional, preserves local operation without
-Vercel, keeps credentials private, and fails closed if a configured service is
-unavailable.
-
-The Slice 4A completion bar is a working optional connection, not a research
-note: an operator can explicitly configure a Vercel connection, see its safe
-capabilities, assign a compatible Agent to it, start and observe a bounded
-Run, and disconnect it without affecting local or Hermes Agents. AI Gateway,
-Sandbox, and Connect remain separate capability-scoped adapters. Sandbox is
-for isolated workloads, not Mentat's durable database or permanently running
-server. Connect is for OAuth-backed service access; it does not expose tokens
-to the browser or replace every provider's authentication flow.
-
-Review log: `reviews/2026-08-23-vercel-capability-adapters.md`
+The runtime-neutral Python foundation, SQLite authority, Node gateway,
+Emerald shell, read-only Agents/Tasks/Runs routes, Run timeline and controls,
+production packaging, Codex adapter, runtime coexistence, Agent registry
+convergence, and optional Vercel capability adapters are complete through Slice
+4A.
+
+The current work is Agent Console Slice 1: Conversation foundation and visual
+composition (GitHub issue #133). Its active review log is:
+
+`reviews/2026-08-25-agent-console-conversation-foundation.md`
+
+## Slice order
+
+| Slice | Status | Purpose |
+| --- | --- | --- |
+| 0 | Complete | Safe Hermes webhook hints and readbacks. |
+| 1A | Complete | Runtime-neutral Agent, Task, Run, event, and runtime contracts. |
+| 1B | Complete | Durable Mentat Agents and private runtime bindings. |
+| 1C-A to 1C-D | Complete | SQLite authority for Tasks, Runs, and events. |
+| 2A-A | Complete | Node gateway, private bridge, Next.js shell, and three desktop and three mobile Lighthouse runs. |
+| 2A-B | Complete | Emerald Operations shell, navigation, route frames, and shared UI. |
+| 2B-A | Complete | Read-only Agents route through the fixed bridge. |
+| 2B-B | Complete | Read-only Tasks route through canonical SQLite Tasks. |
+| 2B-C | Complete | Read-only Runs route through normalized Run APIs. |
+| 2C-A–2C-D | Complete | Run timeline, controls, and supported operator responses. |
+| 2D | Complete | Production packaging, launch, rollback, and legacy interface cutover. |
+| 3A–3C | Complete | Codex runtime, coexistence, and Agent registry convergence. |
+| 4A | Complete | Optional Vercel Gateway, Sandbox, and Connect adapters. |
+| Console 1 | In progress | Conversation/message read foundation, Direct Agent identity, and three-column Home. |
+| Console 2+ | Proposed | Dispatch, queued turns, steering, rich rendering, attachments, and deeper operations. |
 
 ## Working rules
 
-1. Start from current `origin/main` on a focused branch.
-2. Work on one approved slice at a time.
-3. Keep the Python app and compatibility interface working.
-4. Keep Mentat IDs separate from runtime and provider references.
-5. Keep runtime-specific schemas inside adapters.
-6. Keep credentials out of tracked files, browser state, and review evidence.
-7. Update this roadmap when a slice is accepted, split, moved, or removed.
-8. Store detailed test evidence in the slice review log.
+- Work on one approved slice at a time from a focused `codex/` branch.
+- Build on the existing `web/` app; do not create another frontend project.
+- Keep Python authoritative for local data, SQLite, credentials, Hermes, and
+  runtime adapters. Node exposes only named, bounded capabilities.
+- Keep Mentat Agent, Conversation, Task, Run, and event identities separate
+  from runtime-owned profiles, sessions, threads, and references.
+- Keep browser projections safe, bounded, and free of credentials, private
+  paths, raw provider payloads, and adapter-owned runtime references.
+- Preserve the Python compatibility interface as the explicit rollback path
+  until matching workflows, packaging, and rollback tests exist.
+- The legacy interface may be retired only after required workflows have parity,
+  offline packaging works, lifecycle and recovery checks pass, and rollback is
+  tested.
+- Update this roadmap only when slice status or sequence changes. Keep detailed
+  evidence in the active review log.
 
 ## Resume checklist
 
-1. Confirm `main` matches `origin/main` and preserve unrelated local work.
-2. Read this plan, the pivot, architecture, repository guide, and active review
-   log.
-3. Resume the first `In progress` slice. If none exists, choose the first
-   `Proposed` slice.
-4. Confirm the scope and test plan have explicit approval.
-5. Continue from the review log's last recorded state.
+1. Confirm the working tree and branch before editing; preserve unrelated user
+   changes.
+2. Read the documents in the order above and inspect the active review log.
+3. Verify the slice has explicit approval before implementation.
+4. Run focused tests first, then the proportionate full verification suite.
+5. Use two independent read-only adversarial reviews for non-trivial slices.
+6. Record evidence and the outcome before requesting publication approval.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { hasExactEmptyJsonBody, readConfirmationId, readMessageConfirmation, readMessagePreview, readRunResponsePreview, readRunResponseRouteBody } from "../src/lib/exact-json-body.ts";
+import { hasExactEmptyJsonBody, readConfirmationId, readConversationCreateBody, readMessageConfirmation, readMessagePreview, readRunResponsePreview, readRunResponseRouteBody } from "../src/lib/exact-json-body.ts";
 
 test("Run Stop preview accepts only its exact bounded JSON body", async () => {
   const request = (body: string, contentType = "application/json") => new Request("http://127.0.0.1:8890/api/runs/run_current/stop/preview", { method: "POST", headers: { "Content-Type": contentType }, body });
@@ -9,6 +9,21 @@ test("Run Stop preview accepts only its exact bounded JSON body", async () => {
   assert.equal(await hasExactEmptyJsonBody(request('{"extra":true}')), false);
   assert.equal(await hasExactEmptyJsonBody(request("{} ")), false);
   assert.equal(await hasExactEmptyJsonBody(request("{}", "text/plain")), false);
+});
+
+test("Conversation create accepts only an optional canonical Agent id", async () => {
+  const request = (body: string, contentType = "application/json") => new Request("http://127.0.0.1:8890/api/conversations", { method: "POST", headers: { "Content-Type": contentType }, body });
+  assert.deepEqual(await readConversationCreateBody(request("{}")), { agentId: null });
+  assert.deepEqual(await readConversationCreateBody(request('{"agent_id":"agent_direct"}')), { agentId: "agent_direct" });
+  assert.deepEqual(await readConversationCreateBody(request('{"agent_id":null}')), { agentId: null });
+  for (const body of [
+    '{"agent_id":"agent_direct","extra":true}',
+    '{"agent_id":"bad id"}',
+    '{"agent_id":42}',
+  ]) {
+    assert.equal(await readConversationCreateBody(request(body)), null);
+  }
+  assert.equal(await readConversationCreateBody(request("{}", "text/plain")), null);
 });
 
 test("Run Stop confirmation has one bounded JSON field", async () => {

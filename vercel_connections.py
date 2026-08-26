@@ -264,7 +264,7 @@ def _schema_version(connection: sqlite3.Connection) -> int:
         ]
     except sqlite3.Error as exc:
         raise VercelConnectionError("vercel.connection_corrupt") from exc
-    if versions != list(range(1, SCHEMA_VERSION + 1)):
+    if not versions or versions != list(range(1, versions[-1] + 1)) or versions[-1] not in {9, SCHEMA_VERSION}:
         raise VercelConnectionError("vercel.connection_unsupported")
     return versions[-1]
 

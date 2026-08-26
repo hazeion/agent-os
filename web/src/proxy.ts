@@ -10,6 +10,21 @@ const FORBIDDEN_HEADERS = {
   "X-Frame-Options": "DENY",
 };
 
+function contentSecurityPolicy(nonce: string): string {
+  return [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "font-src 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data:",
+    "object-src 'none'",
+    `script-src 'self' 'nonce-${nonce}'`,
+    "style-src 'self' 'unsafe-inline'",
+  ].join("; ");
+}
+
 export function proxy(request: NextRequest) {
   const decision = evaluateRequestBoundary({
     expectedPort: parseGatewayPort(process.env.PORT),
@@ -24,7 +39,13 @@ export function proxy(request: NextRequest) {
       headers: FORBIDDEN_HEADERS,
     });
   }
-  return NextResponse.next();
+  const nonce = btoa(crypto.randomUUID());
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("Content-Security-Policy", contentSecurityPolicy(nonce));
+  requestHeaders.set("x-nonce", nonce);
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  response.headers.set("Content-Security-Policy", contentSecurityPolicy(nonce));
+  return response;
 }
 
 export const config = {

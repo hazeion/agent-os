@@ -455,6 +455,39 @@ export separately filters attachments and blobs to the Runs its legacy
 projection retains. Startup performs one bounded reconciliation pass for native
 Runs that have a durable runtime reference.
 
+### Target Conversation authority (accepted, not yet implemented)
+
+[ADR 0001](docs/adr/0001-conversation-owned-agent-console.md) fixes the target
+Next.js Agent Console persistence and concurrency contract. Planned schema 10
+adds durable Conversation-owned Messages and Turns to the same owner-private
+SQLite authority and extends Console-source Runs with Conversation/Turn
+identity, Agent and RuntimeConfig revisions, immutable execution-configuration
+evidence, and private adapter-capacity evidence. The ADR is implementation
+planning until its approved slices change production schema and runtime code.
+
+The target invariant is one nonterminal Run per Conversation, not one Run for
+the product. Runtime adapters declare a private capacity scope and bounded limit;
+admission counts matching nonterminal Runs transactionally and projects
+unavailable capacity without exposing scopes or digests. Existing
+Task-dispatch Runs retain their current Task, reservation, dispatch-head, and
+idempotency authority. Legacy Console Runs remain unbound compatibility evidence
+and are not inferred into Conversations.
+
+Accepted user Turns and safe transcript Messages persist independently of
+bounded Run/Event detail. Send and normalized event-to-message projection are
+idempotent transactions. At most eight queue-active Turns belong to one
+Conversation, in FIFO order. A verified success may reserve only that
+Conversation's next Turn; Stop, failure, interruption, unknown/partial results,
+or capacity blockage pause it for explicit operator action. This has no timers,
+automatic retry, cross-Conversation routing, Task mutation, or Agent Message
+consumption and is not a scheduler.
+
+Format-4 backup remains the recovery container because it embeds the private
+database, but capture, restore, fingerprint, and semantic validation must become
+schema-10 aware. Compatible-root export intentionally omits Conversation
+authority and leaves the source unchanged. Lossless rollback uses a validated
+pre-migration backup; in-place schema downgrade is unsupported.
+
 Milestone 9 adds a loopback-only signed Hermes native-event receiver as an
 observation wakeup. The receiver authenticates the exact raw body, accepts an
 exact 17-event lifecycle, post-operation, and Kanban observer allowlist, stores
@@ -531,9 +564,11 @@ contract. A later server-side outbound connection to one remote Hermes endpoint
 is allowed only under [REMOTE_HERMES.md](REMOTE_HERMES.md); that does not expose
 Mentat itself or permit the browser to call Hermes directly.
 
-In the current Hermes compatibility mode, Agent Console execution is globally
-single-run. This is a Hermes adapter capacity constraint, not the target Mentat
-orchestrator concurrency model.
+Compatibility paths may serialize starts within a runtime adapter while the
+strangler cutover is incomplete. Adapter capacity is not a product-wide Mentat
+execution policy: the target Console permits concurrent Conversations, limits
+each Conversation to one active Run, and represents unavailable adapter capacity
+as an explicit waiting state.
 Every run records its Hermes profile id, launches with a fixed
 `-p <profile>` selector, and may resume only a session already associated with
 that same profile. `agent_runtime.py` owns the runtime-neutral domain/protocol
@@ -773,8 +808,13 @@ path. It uses fixed local Hermes operations or the authenticated,
 capability-advertised remote Kanban surface with the same revision and
 read-back behavior. Hosts without the complete contract fail closed. Agent
 Messages remains a project-owned communication
-queue, and Agent Console remains an interactive, globally single-run
-conversation surface; neither is a durable dispatcher.
+queue, and Agent Console remains an interactive Conversation surface; neither is
+a durable task dispatcher. The Console's separate bounded pending-turn contract
+may retain up to eight user-authored turns for one Conversation and dispatch the
+next turn only after that Conversation's active Run reaches a verified successful
+terminal state. It has no timers, automatic retries, cross-Agent routing, or Task
+orchestration. Stop, failure, unknown, interrupted, and capacity-blocked states
+pause automatic dispatch and require explicit operator action.
 
 The adapter uses shell-free argument arrays and a fixed set of supported Kanban
 operations. It omits workspace paths, process identifiers, arbitrary metadata,
@@ -984,9 +1024,9 @@ command manifest. Each entry declares its dashboard handler, arguments,
 description, and safety classification. The frontend accepts only the current
 schema and a fixed handler registry. The allowlist is `/model`, `/new`,
 `/steer`, and `/help`; this is intentionally distinct from the full Hermes
-CLI. `/steer` is a remote-control command, not CLI passthrough: it dispatches
-the same fixed, revision-bound server operation as the active Console's Steer
-button.
+CLI. `/steer` is a remote-control command, not CLI passthrough, and dispatches a
+fixed, revision-bound exact-Run operation. The target Next.js Console has no
+Steer button.
 
 Remote active-run steering is available only when Hermes advertises
 `run_steer` with the exact `POST /v1/runs/{run_id}/steer` endpoint. Mentat
@@ -998,14 +1038,14 @@ partial failure and is never retried automatically. The steer text and remote
 run identifier remain private and are not persisted; only a bounded text-free
 status event enters Console history.
 
-While a compatible run is active, the existing Console textbox remains
-writable but changes visibly and accessibly from Send mode to text-only Steer
-mode. Attachments, ordinary Send, new-session, profile/provider changes, and
-parallel run submission remain locked. Local one-shot CLI runs and remote hosts
-without the exact capability keep the composer locked. Stop remains a separate
-hard-stop control. Attachment steering remains unavailable until Hermes
-advertises a versioned media contract with exact bounds and verifiable
-read-back.
+The Python compatibility Console retains its implemented active-run control
+behavior during cutover. The target Next.js composer instead remains writable:
+ordinary text creates a durable Conversation Turn, and only text beginning with
+`/steer` attempts active-Run steering. Unsupported or stale steering preserves
+the draft and reports why it was not sent; it is never silently queued. Stop
+remains a separate hard-stop control. Attachment steering remains unavailable
+until a runtime advertises a versioned media contract with exact bounds and
+verifiable read-back.
 
 Future command sources must be introduced as an explicit capability and emit
 the stable Mentat schema. Mentat does not parse CLI help/output to discover
@@ -1102,5 +1142,8 @@ Deferred until separately approved:
 - skill content editing, hub installation, or arbitrary MCP configuration;
 - non-loopback Mentat serving or browser-to-Hermes access.
 
-Mentat retains one active dashboard run globally for the first version. This
-can be revisited after profile-scoped execution and cancellation are proven.
+The target Agent Console permits concurrent Conversations and Agents while
+allowing at most one active Run per Conversation. Runtime adapters declare and
+enforce their own capacity, and the orchestration layer must isolate execution,
+steering, cancellation, reconciliation, and configuration snapshots by exact
+Conversation and Run identity.

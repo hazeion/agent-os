@@ -1970,66 +1970,116 @@ def _fsync_publication_parent(parent_descriptor: int | None) -> None:
 def _schema5_private_unit(unit):
     from private_console_unit import (
         PrivateConsoleUnit,
+        _initialize_database,
         _history_run_ids,
         standalone_agent_registry_raw,
         validate_private_console_unit,
     )
 
     registry_database_raw = standalone_agent_registry_raw(unit)
+    retained_run_ids = _history_run_ids(unit.history_raw)
     with TemporaryDirectory(prefix="mentat-schema5-export-") as temporary:
-        path = Path(temporary) / "mentat.sqlite3"
-        path.write_bytes(unit.database_raw)
+        source_path = Path(temporary) / "source.sqlite3"
+        source_path.write_bytes(unit.database_raw)
         if os.name != "nt":
-            path.chmod(0o600)
+            source_path.chmod(0o600)
+        source = sqlite3.connect(source_path)
+        source.row_factory = sqlite3.Row
+        path = Path(temporary) / "mentat.sqlite3"
+        _initialize_database(path, schema_version=5)
         connection = sqlite3.connect(path)
+        connection.row_factory = sqlite3.Row
+        retained_storage_keys: set[str] = set()
         try:
             with transaction(connection, immediate=True):
-                version = int(
-                    connection.execute(
-                        "SELECT MAX(version) FROM schema_migrations"
-                    ).fetchone()[0]
-                    or 0
-                )
-                if version != DATABASE_SCHEMA_VERSION:
-                    raise TaskRepositoryError("task_export.schema_unsupported")
-                retained_run_ids = _history_run_ids(unit.history_raw)
                 if retained_run_ids:
                     placeholders = ",".join("?" for _ in retained_run_ids)
-                    connection.execute(
-                        f"DELETE FROM run_attachments WHERE run_id NOT IN ({placeholders})",
+                    run_attachments = source.execute(
+                        "SELECT run_id, attachment_id, direction, ordinal, created_at "
+                        f"FROM run_attachments WHERE run_id IN ({placeholders}) "
+                        "ORDER BY run_id, attachment_id, direction",
                         retained_run_ids,
-                    )
+                    ).fetchall()
                 else:
-                    connection.execute("DELETE FROM run_attachments")
-                connection.execute(
-                    "DELETE FROM attachments WHERE id NOT IN "
-                    "(SELECT attachment_id FROM run_attachments)"
+                    run_attachments = []
+                attachment_ids = tuple(
+                    sorted({str(row["attachment_id"]) for row in run_attachments})
                 )
-                connection.execute(
-                    "DELETE FROM blobs WHERE id NOT IN "
-                    "(SELECT blob_id FROM attachments WHERE blob_id IS NOT NULL)"
-                )
-                retained_storage_keys = {
-                    str(row[0])
-                    for row in connection.execute(
-                        "SELECT storage_key FROM blobs"
+                if attachment_ids:
+                    attachment_placeholders = ",".join("?" for _ in attachment_ids)
+                    attachments = source.execute(
+                        "SELECT id, blob_id, original_name, mime_type, kind, state, "
+                        "byte_size, created_at, updated_at, expires_at, delete_after "
+                        f"FROM attachments WHERE id IN ({attachment_placeholders}) "
+                        "ORDER BY id",
+                        attachment_ids,
+                    ).fetchall()
+                else:
+                    attachments = []
+                blob_ids = tuple(
+                    sorted(
+                        {
+                            str(row["blob_id"])
+                            for row in attachments
+                            if row["blob_id"] is not None
+                        }
                     )
-                }
-                connection.execute("DROP TABLE mentat_agent_registry_state")
-                connection.execute("DROP TABLE mentat_agents")
-                connection.execute("DROP TABLE agent_runtime_configs")
-                connection.execute("DROP TABLE provider_connections")
-                connection.execute("DROP TABLE mentat_agent_events")
-                connection.execute("DROP TABLE mentat_dispatch_reservations")
-                connection.execute("DROP TABLE mentat_task_dispatch_heads")
-                connection.execute("DROP TABLE mentat_runs")
-                connection.execute("DROP TABLE mentat_run_store_state")
-                connection.execute("DELETE FROM mentat_task_dependencies")
-                connection.execute("DELETE FROM mentat_task_tags")
-                connection.execute("DELETE FROM mentat_tasks")
-                connection.execute("DROP TABLE mentat_task_store_state")
-                connection.execute(
-                    "DELETE FROM schema_migrations WHERE version >= 6"
+                )
+                if blob_ids:
+                    blob_placeholders = ",".join("?" for _ in blob_ids)
+                    blobs = source.execute(
+                        "SELECT id, sha256, storage_key, byte_size, state, created_at, "
+                        "updated_at, delete_attempts FROM blobs "
+                        f"WHERE id IN ({blob_placeholders}) ORDER BY id",
+                        blob_ids,
+                    ).fetchall()
+                else:
+                    blobs = []
+                retained_storage_keys = {str(row["storage_key"]) for row in blobs}
+                connection.executemany(
+                    "INSERT INTO blobs (id, sha256, storage_key, byte_size, state, "
+                    "created_at, updated_at, delete_attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [tuple(row) for row in blobs],
+                )
+                connection.executemany(
+                    "INSERT INTO attachments (id, blob_id, original_name, mime_type, kind, "
+                    "state, byte_size, created_at, updated_at, expires_at, delete_after) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [tuple(row) for row in attachments],
+                )
+                connection.executemany(
+                    "INSERT INTO run_attachments (run_id, attachment_id, direction, "
+                    "ordinal, created_at) VALUES (?, ?, ?, ?, ?)",
+                    [tuple(row) for row in run_attachments],
+                )
+                if attachment_ids:
+                    attachment_placeholders = ",".join("?" for _ in attachment_ids)
+                    task_artifacts = source.execute(
+                        "SELECT mentat_task_id, connection_binding_id, board_id, "
+                        "remote_task_id, remote_artifact_id, attachment_id, binding_id, "
+                        "ordinal, created_at FROM task_artifacts "
+                        f"WHERE attachment_id IN ({attachment_placeholders}) "
+                        "ORDER BY mentat_task_id, connection_binding_id, board_id, "
+                        "remote_task_id, remote_artifact_id",
+                        attachment_ids,
+                    ).fetchall()
+                    connection.executemany(
+                        "INSERT INTO task_artifacts (mentat_task_id, connection_binding_id, "
+                        "board_id, remote_task_id, remote_artifact_id, attachment_id, "
+                        "binding_id, ordinal, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [tuple(row) for row in task_artifacts],
+                    )
+                connection.executemany(
+                    "INSERT INTO hermes_webhook_deliveries (binding_id, delivery_digest, "
+                    "event_name, received_at, expires_at, outcome) VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        tuple(row)
+                        for row in source.execute(
+                            "SELECT binding_id, delivery_digest, event_name, received_at, "
+                            "expires_at, outcome FROM hermes_webhook_deliveries "
+                            "ORDER BY binding_id, delivery_digest"
+                        ).fetchall()
+                    ],
                 )
             connection.execute("VACUUM")
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -2039,6 +2089,7 @@ def _schema5_private_unit(unit):
             raise TaskRepositoryUnavailable("task_export.schema5_unavailable") from exc
         finally:
             connection.close()
+            source.close()
         database_raw = path.read_bytes()
     return validate_private_console_unit(
         PrivateConsoleUnit(
