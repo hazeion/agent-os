@@ -644,8 +644,8 @@ into generic subsystem health was also rejected because it would blur the
 receiver-specific state and setup contract.
 
 Version-control strategy: branch `codex/hermes-webhook-health-setup`, stacked
-on `codex/hermes-webhook-refresh-coordinator`; persistent evidence lives in
-`reviews/2026-08-14-hermes-webhook-health-setup.md`.
+on `codex/hermes-webhook-refresh-coordinator`; historical implementation
+evidence is retained in the related GitHub pull requests.
 
 ### 9E — Busy-input steer capability
 
@@ -722,9 +722,8 @@ Exit gate:
 
 Estimated effort: 1–2 focused engineering days plus review time.
 
-Verification evidence is retained in
-`reviews/2026-08-14-hermes-020-live-validation.md` and its sanitized JSON
-companion. The live harness proved real CLI and Gateway lifecycle registration,
+Verification evidence is retained in the related GitHub pull request and its
+sanitized artifacts. The live harness proved real CLI and Gateway lifecycle registration,
 all four stock dispatcher events, exact-body retries, process-restart replay,
 safe mode, disabled binding, rollback, dropped-hint reconciliation,
 out-of-order notification semantics, privacy canaries, and a 1,000-request
@@ -755,8 +754,8 @@ becomes a new Mentat authority without its own approved contract.
 
 ### 9H — Native event migration
 
-Status: **Implemented and reviewed.** The approved 9H contract and evidence matrix are in
-`reviews/2026-08-14-hermes-native-event-migration.md`.
+Status: **Implemented and reviewed.** The approved 9H contract and evidence
+matrix are retained in the related GitHub pull request.
 
 The qualified expansion is `on_session_finalize`, `on_session_reset`,
 `post_api_request`, `api_request_error`, `post_tool_call`,

@@ -51,7 +51,10 @@ class AgentRuntimeArchitectureTests(unittest.TestCase):
         self.assertIn("| 2B-B | Complete |", PIVOT_PLAN)
         self.assertIn("three desktop and three mobile Lighthouse runs", PIVOT_PLAN)
         self.assertIn("The legacy interface may be retired only after", PIVOT_PLAN)
-        self.assertIn("reviews/2026-08-18-mentat-sqlite-task-cutover.md", PIVOT_PLAN)
+        self.assertIn(
+            "Historical implementation detail belongs in GitHub issues and pull requests",
+            PIVOT_PLAN,
+        )
         self.assertIn("Build on the existing `web/` app", PIVOT_PLAN)
         self.assertIn("MENTAT_PIVOT_IMPLEMENTATION_PLAN.md", AGENT_GUIDE)
         self.assertIn("/api/orchestration/agents", ARCHITECTURE)

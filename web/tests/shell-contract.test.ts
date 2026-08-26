@@ -43,8 +43,25 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
     ["/runs", source("src/app/runs/page.tsx")],
   ]);
   for (const [href, page] of routeSources) {
-    assert.match(page, new RegExp(`<AppShell route=["']${href}["']>`));
+    if (href === "/") {
+      assert.match(page, /<AppShell homeConsole route=["']\/["']>/);
+      assert.match(page, /export const dynamic = ["']force-dynamic["']/);
+      assert.match(page, /<HomeConsole \/>/);
+    } else {
+      assert.match(page, new RegExp(`<AppShell route=["']${href}["']>`));
+    }
   }
+  const home = routeSources.get("/") ?? "";
+  assert.match(home, /HomeConsole/);
+  assert.match(source("src/app/home-console.tsx"), /["']use client["']/);
+  assert.match(source("src/app/home-console.tsx"), /Dispatch available in Slice 2/);
+  assert.match(source("src/app/home-console.tsx"), /disabled type="submit"/);
+  assert.match(source("src/app/home-console.tsx"), /rows=\{1\}/);
+  assert.match(source("src/app/home-console.tsx"), /data-right-collapsed/);
+  assert.match(source("src/app/app-shell.tsx"), /data-sidebar-toggle/);
+  const css = source("src/app/globals.css");
+  assert.match(css, /\.sidebar-toggle \{[\s\S]*top: 50%;[\s\S]*transform: translateY\(-50%\)/);
+  assert.match(css, /\.activity-toggle \{[\s\S]*top: 50%;[\s\S]*transform: translateY\(-50%\)/);
   assert.match(routeSources.get("/agents") ?? "", /data-agents-root/);
   assert.match(routeSources.get("/agents") ?? "", /Loading canonical Agents/);
   assert.match(routeSources.get("/agents") ?? "", /data-provider-connections-root/);
@@ -155,6 +172,9 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.doesNotMatch(runtime, /MENTAT_BRIDGE_TOKEN|X-Mentat-Bridge-Token|local path/);
   assert.match(runtime, /AbortSignal\.timeout\(3500\)/);
   assert.match(runtime, /mobileNavigation = window\.matchMedia\("\(max-width: 900px\)"\)/);
+  assert.match(runtime, /const nextCollapsed = !collapsed/);
+  assert.match(runtime, /setAttribute\("aria-expanded", nextCollapsed \? "false" : "true"\)/);
+  assert.match(runtime, /nextCollapsed \? "Expand workspace navigation" : "Collapse workspace navigation"/);
   assert.match(runtime, /workspace\.inert = true/);
   assert.match(runtime, /event\.key === "Escape"/);
   assert.match(runtime, /full: "Python unavailable", compact: "Offline"/);
@@ -179,11 +199,10 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.match(source("src/app/shell-runtime-signal.tsx"), /mentat:shell-hydrated/);
 });
 
-test("production emits four script-light static routes", () => {
+test("production emits three script-light static routes and hydrates Home", () => {
   const config = source("next.config.ts");
   const compiler = source("scripts/prepare-standalone.mjs");
   for (const destination of [
-    "/shell/home.html",
     "/shell/agents.html",
     "/shell/tasks.html",
     "/shell/runs.html",
@@ -194,8 +213,11 @@ test("production emits four script-light static routes", () => {
   assert.match(compiler, /"\/preference-preload\.js", "\/shell-runtime\.js"/);
   assert.match(compiler, /shell\.includes\("self\.__next_f"\)/);
   assert.match(compiler, /failed its no-hydration contract/);
-  assert.match(config, /developmentRuntime = process\.env\.NODE_ENV === "development"/);
+  assert.doesNotMatch(config, /shell\/home\.html/);
+  assert.doesNotMatch(compiler, /home\.html/);
   assert.match(config, /agentRules: false/);
-  assert.match(config, /developmentRuntime[\s\S]*script-src 'self' 'unsafe-inline' 'unsafe-eval'/);
-  assert.match(config, /staticShell[\s\S]*\? "script-src 'self'"/);
+  assert.doesNotMatch(config, /unsafe-eval/);
+  assert.doesNotMatch(config, /Content-Security-Policy/);
+  assert.match(source("src/proxy.ts"), /script-src 'self' 'nonce-\$\{nonce\}'/);
+  assert.doesNotMatch(source("src/proxy.ts"), /unsafe-eval/);
 });

@@ -23,7 +23,10 @@ import server
 
 
 ROOT = Path(__file__).resolve().parents[1]
-THREAD_TIMEOUT_SECONDS = 15
+# Windows runners can spend tens of seconds creating and validating the
+# private SQLite consistency unit before the test's synchronization hook is
+# reached. Keep the assertion timeout aligned with the production lock bound.
+THREAD_TIMEOUT_SECONDS = data_layout.INITIALIZATION_LOCK_TIMEOUT_SECONDS
 
 
 class DataBackupRestoreTests(unittest.TestCase):

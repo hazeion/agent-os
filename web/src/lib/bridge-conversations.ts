@@ -1,0 +1,508 @@
+export const PUBLIC_CONVERSATIONS_PATH = "/api/conversations";
+export const PUBLIC_ACTIVITY_PATH = "/api/agent-activity";
+
+const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
+const PRIVATE_ACTIVITY_PATH = "/bridge/v1/agent-activity";
+const MAXIMUM_RESPONSE_BYTES = 3_000_000;
+const MAXIMUM_CONVERSATIONS = 50;
+const MAXIMUM_AGENTS = 128;
+const MAXIMUM_MESSAGES = 100;
+
+type Environment = Readonly<Record<string, string | undefined>>;
+type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export type PublicConversationAgent = {
+  id: string;
+  name: string;
+  runtime_type: string;
+  system_role: "direct" | null;
+  capabilities: string[];
+};
+
+export type PublicConversation = {
+  id: string;
+  agent_id: string;
+  title: string;
+  title_source: "default" | "first_prompt";
+  state: "active" | "archived";
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+};
+
+export type PublicConversationMessage = {
+  id: string;
+  conversation_id: string;
+  sequence: number;
+  role: "user" | "assistant";
+  state: "accepted" | "cancelled";
+  content: { schema_version: 1; parts: [{ type: "text"; text: string }] };
+  run_id: string | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PublicCurrentRun = {
+  id: string;
+  status: string;
+  partial: boolean;
+  updated_at: string;
+};
+
+export type PublicConversationList = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  conversations: PublicConversation[];
+  agents: PublicConversationAgent[];
+  direct_agent_id: string | null;
+  count: number;
+  next_cursor: string | null;
+};
+
+export type PublicConversationDetail = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  conversation: PublicConversation;
+  agent: PublicConversationAgent;
+  messages: PublicConversationMessage[];
+  next_message_cursor: string | null;
+  current_run: PublicCurrentRun | null;
+};
+
+export type PublicAgentActivity = {
+  agent: PublicConversationAgent;
+  state: "working" | "waiting" | "failed" | "stopped" | "interrupted" | "idle";
+  summary: string;
+  attention: boolean;
+  updated_at: string | null;
+  conversations: Array<{
+    id: string;
+    title: string;
+    run_id: string;
+    run_status: string;
+    attention: boolean;
+    updated_at: string;
+  }>;
+};
+
+export type PublicActivityPayload = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  activity: PublicAgentActivity[];
+  direct_agent_id: string | null;
+};
+
+export class BridgeConversationsError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.code = code;
+    this.name = "BridgeConversationsError";
+  }
+}
+
+function configuration(environment: Environment) {
+  const token = environment.MENTAT_BRIDGE_TOKEN ?? "";
+  let origin: URL;
+  try {
+    origin = new URL(environment.MENTAT_BRIDGE_ORIGIN?.trim() ?? "");
+  } catch {
+    throw new BridgeConversationsError("bridge_configuration_invalid");
+  }
+  const hostname = origin.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
+  if (
+    origin.protocol !== "http:"
+    || !new Set(["127.0.0.1", "::1"]).has(hostname)
+    || !origin.port
+    || origin.username
+    || origin.password
+    || origin.pathname !== "/"
+    || origin.search
+    || origin.hash
+    || !/^[A-Za-z0-9_-]{43,256}$/u.test(token)
+  ) throw new BridgeConversationsError("bridge_configuration_invalid");
+  return { origin: origin.origin, token };
+}
+
+function opaqueId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
+}
+
+function conversationId(value: unknown): value is string {
+  return typeof value === "string" && /^conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u.test(value);
+}
+
+function messageId(value: unknown): value is string {
+  return typeof value === "string" && /^msg_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u.test(value);
+}
+
+function runId(value: unknown): value is string {
+  return typeof value === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(value);
+}
+
+function timestamp(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length <= 40
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value)
+    && !Number.isNaN(Date.parse(value));
+}
+
+function text(value: unknown, maximum: number): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && [...value].length <= maximum
+    && value.trim() === value
+    && !value.includes("\0");
+}
+
+function validAgent(value: unknown): value is PublicConversationAgent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const agent = value as Record<string, unknown>;
+  return Object.keys(agent).sort().join(",") === "capabilities,id,name,runtime_type,system_role"
+    && opaqueId(agent.id)
+    && text(agent.name, 120)
+    && typeof agent.runtime_type === "string"
+    && /^[a-z][a-z0-9_-]{0,31}$/u.test(agent.runtime_type)
+    && (agent.system_role === null || agent.system_role === "direct")
+    && Array.isArray(agent.capabilities)
+    && agent.capabilities.length <= 64
+    && agent.capabilities.every((capability) => (
+      typeof capability === "string" && /^[a-z][a-z0-9_.-]{0,63}$/u.test(capability)
+    ))
+    && agent.capabilities.every((capability, index, capabilities) => (
+      index === 0 || capabilities[index - 1] < capability
+    ));
+}
+
+function validConversation(value: unknown): value is PublicConversation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const conversation = value as Record<string, unknown>;
+  return Object.keys(conversation).sort().join(",") === "agent_id,archived_at,created_at,id,revision,state,title,title_source,updated_at"
+    && conversationId(conversation.id)
+    && opaqueId(conversation.agent_id)
+    && text(conversation.title, 160)
+    && (conversation.title_source === "default" || conversation.title_source === "first_prompt")
+    && (conversation.state === "active" || conversation.state === "archived")
+    && Number.isInteger(conversation.revision)
+    && (conversation.revision as number) >= 1
+    && timestamp(conversation.created_at)
+    && timestamp(conversation.updated_at)
+    && (conversation.archived_at === null || timestamp(conversation.archived_at))
+    && (conversation.state === "active" ? conversation.archived_at === null : conversation.archived_at !== null);
+}
+
+function validContent(value: unknown, role: unknown): value is PublicConversationMessage["content"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const content = value as Record<string, unknown>;
+  const parts = content.parts;
+  return Object.keys(content).sort().join(",") === "parts,schema_version"
+    && content.schema_version === 1
+    && Array.isArray(parts)
+    && parts.length === 1
+    && !!parts[0]
+    && typeof parts[0] === "object"
+    && !Array.isArray(parts[0])
+    && Object.keys(parts[0] as object).sort().join(",") === "text,type"
+    && (parts[0] as Record<string, unknown>).type === "text"
+    && text((parts[0] as Record<string, unknown>).text, role === "user" ? 6_000 : 20_000);
+}
+
+function validMessage(value: unknown): value is PublicConversationMessage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const message = value as Record<string, unknown>;
+  return Object.keys(message).sort().join(",") === "content,conversation_id,created_at,id,revision,role,run_id,sequence,state,updated_at"
+    && messageId(message.id)
+    && conversationId(message.conversation_id)
+    && Number.isInteger(message.sequence)
+    && (message.sequence as number) >= 1
+    && (message.role === "user" || message.role === "assistant")
+    && (message.state === "accepted" || message.state === "cancelled")
+    && validContent(message.content, message.role)
+    && (message.run_id === null || runId(message.run_id))
+    && Number.isInteger(message.revision)
+    && (message.revision as number) >= 1
+    && timestamp(message.created_at)
+    && timestamp(message.updated_at);
+}
+
+function validCurrentRun(value: unknown): value is PublicCurrentRun | null {
+  if (value === null) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const run = value as Record<string, unknown>;
+  return Object.keys(run).sort().join(",") === "id,partial,status,updated_at"
+    && runId(run.id)
+    && typeof run.status === "string"
+    && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(run.status)
+    && typeof run.partial === "boolean"
+    && timestamp(run.updated_at);
+}
+
+function validList(value: unknown): value is PublicConversationList {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  const conversations = payload.conversations;
+  const agents = payload.agents;
+  const directAgentId = payload.direct_agent_id;
+  if (
+    Object.keys(payload).sort().join(",") !== "agents,conversations,count,direct_agent_id,next_cursor,runtime,schema_version,service,status"
+    || payload.schema_version !== 1
+    || payload.service !== "mentat-local-bridge"
+    || payload.runtime !== "python"
+    || payload.status !== "ready"
+    || !Array.isArray(conversations)
+    || conversations.length > MAXIMUM_CONVERSATIONS
+    || !Array.isArray(agents)
+    || agents.length > MAXIMUM_AGENTS
+    || !Number.isInteger(payload.count)
+    || payload.count !== conversations.length
+    || (payload.next_cursor !== null && !/^[A-Za-z0-9_-]{1,256}$/u.test(String(payload.next_cursor)))
+    || (directAgentId !== null && !opaqueId(directAgentId))
+    || !agents.every(validAgent)
+    || !conversations.every(validConversation)
+  ) return false;
+  const agentIds = new Set(agents.map((agent) => (agent as PublicConversationAgent).id));
+  return new Set(conversations.map((conversation) => (conversation as PublicConversation).id)).size === conversations.length
+    && agentIds.size === agents.length
+    && conversations.every((conversation) => agentIds.has((conversation as PublicConversation).agent_id))
+    && (directAgentId === null || agents.some((agent) => (
+      (agent as PublicConversationAgent).id === directAgentId
+      && (agent as PublicConversationAgent).system_role === "direct"
+    )));
+}
+
+function validDetail(value: unknown): value is PublicConversationDetail {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  const messages = payload.messages;
+  return Object.keys(payload).sort().join(",") === "agent,conversation,current_run,messages,next_message_cursor,runtime,schema_version,service,status"
+    && payload.schema_version === 1
+    && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python"
+    && payload.status === "ready"
+    && validConversation(payload.conversation)
+    && validAgent(payload.agent)
+    && (payload.conversation as PublicConversation).agent_id === (payload.agent as PublicConversationAgent).id
+    && Array.isArray(messages)
+    && messages.length <= MAXIMUM_MESSAGES
+    && messages.every(validMessage)
+    && messages.every((message) => (message as PublicConversationMessage).conversation_id === (payload.conversation as PublicConversation).id)
+    && messages.every((message, index) => index === 0 || (messages[index - 1] as PublicConversationMessage).sequence < (message as PublicConversationMessage).sequence)
+    && (payload.next_message_cursor === null || /^[1-9][0-9]{0,9}$/u.test(String(payload.next_message_cursor)))
+    && validCurrentRun(payload.current_run);
+}
+
+function validActivityItem(value: unknown): value is PublicAgentActivity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  const conversations = item.conversations;
+  return Object.keys(item).sort().join(",") === "agent,attention,conversations,state,summary,updated_at"
+    && validAgent(item.agent)
+    && ["working", "waiting", "failed", "stopped", "interrupted", "idle"].includes(item.state as string)
+    && text(item.summary, 160)
+    && typeof item.attention === "boolean"
+    && (item.updated_at === null || timestamp(item.updated_at))
+    && Array.isArray(conversations)
+    && conversations.length <= 8
+    && conversations.every((conversation) => {
+      if (!conversation || typeof conversation !== "object" || Array.isArray(conversation)) return false;
+      const value = conversation as Record<string, unknown>;
+      return Object.keys(value).sort().join(",") === "attention,id,run_id,run_status,title,updated_at"
+        && conversationId(value.id)
+        && text(value.title, 160)
+        && runId(value.run_id)
+        && typeof value.run_status === "string"
+        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.run_status)
+        && typeof value.attention === "boolean"
+        && timestamp(value.updated_at);
+    });
+}
+
+function validActivity(value: unknown): value is PublicActivityPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  const activity = payload.activity;
+  return Object.keys(payload).sort().join(",") === "activity,direct_agent_id,runtime,schema_version,service,status"
+    && payload.schema_version === 1
+    && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python"
+    && payload.status === "ready"
+    && Array.isArray(activity)
+    && activity.length <= MAXIMUM_AGENTS
+    && activity.every(validActivityItem)
+    && new Set(activity.map((item) => (item as PublicAgentActivity).agent.id)).size === activity.length
+    && (payload.direct_agent_id === null || opaqueId(payload.direct_agent_id));
+}
+
+async function boundedJson(response: Response): Promise<unknown> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength && (!/^\d{1,10}$/u.test(declaredLength) || Number(declaredLength) > MAXIMUM_RESPONSE_BYTES)) {
+    throw new BridgeConversationsError("bridge_response_invalid");
+  }
+  if (!response.body) throw new BridgeConversationsError("bridge_response_invalid");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MAXIMUM_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new BridgeConversationsError("bridge_response_invalid");
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    throw new BridgeConversationsError("bridge_response_invalid");
+  }
+}
+
+async function requestBridge(
+  path: string,
+  fetcher: FetchLike,
+  environment: Environment,
+  init: RequestInit,
+): Promise<{ response: Response; payload: unknown }> {
+  const bridge = configuration(environment);
+  try {
+    const response = await fetcher(new URL(path, bridge.origin), {
+      ...init,
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "X-Mentat-Bridge-Token": bridge.token,
+        ...init.headers,
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+      throw new BridgeConversationsError("bridge_response_invalid");
+    }
+    return { payload: await boundedJson(response), response };
+  } catch (error) {
+    if (error instanceof BridgeConversationsError) throw error;
+    throw new BridgeConversationsError("bridge_unavailable");
+  }
+}
+
+function handleFixedState(response: Response, payload: unknown): never {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new BridgeConversationsError("bridge_response_invalid");
+  }
+  const value = payload as Record<string, unknown>;
+  if (Object.keys(value).sort().join(",") !== "runtime,schema_version,service,status" || value.schema_version !== 1 || value.service !== "mentat-local-bridge" || value.runtime !== "python") {
+    throw new BridgeConversationsError("bridge_response_invalid");
+  }
+  if (response.status === 501 && value.status === "unsupported") throw new BridgeConversationsError("bridge_unsupported");
+  if (response.status === 503 && value.status === "unavailable") throw new BridgeConversationsError("bridge_unavailable");
+  throw new BridgeConversationsError("bridge_response_invalid");
+}
+
+export async function fetchBridgeConversations(
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+  cursor: string | null = null,
+): Promise<PublicConversationList> {
+  if (cursor !== null && !/^[A-Za-z0-9_-]{1,256}$/u.test(cursor)) {
+    throw new BridgeConversationsError("conversation_cursor_invalid");
+  }
+  const path = `${PRIVATE_CONVERSATIONS_PATH}${cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`}`;
+  const { response, payload } = await requestBridge(path, fetcher, environment, { method: "GET" });
+  if (response.status === 200 && validList(payload)) {
+    return {
+      ...payload,
+      conversations: payload.conversations.map((conversation) => ({ ...conversation })),
+      agents: payload.agents.map((agent) => ({ ...agent, capabilities: [...agent.capabilities] })),
+    };
+  }
+  handleFixedState(response, payload);
+}
+
+export async function fetchBridgeConversation(
+  id: string,
+  before: string | null = null,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+): Promise<PublicConversationDetail> {
+  if (!conversationId(id) || (before !== null && !/^[1-9][0-9]{0,9}$/u.test(before))) {
+    throw new BridgeConversationsError("conversation_id_invalid");
+  }
+  const path = `${PRIVATE_CONVERSATIONS_PATH}/${encodeURIComponent(id)}${before === null ? "" : `?before=${before}`}`;
+  const { response, payload } = await requestBridge(path, fetcher, environment, { method: "GET" });
+  if (response.status === 200 && validDetail(payload)) {
+    return {
+      ...payload,
+      conversation: { ...payload.conversation },
+      agent: { ...payload.agent, capabilities: [...payload.agent.capabilities] },
+      messages: payload.messages.map((message) => ({
+        ...message,
+        content: { schema_version: 1, parts: [{ type: "text", text: message.content.parts[0].text }] },
+      })),
+    };
+  }
+  if (response.status === 404 && payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).sort().join(",") === "runtime,schema_version,service,status" && (payload as Record<string, unknown>).status === "not_found") {
+    throw new BridgeConversationsError("conversation_not_found");
+  }
+  handleFixedState(response, payload);
+}
+
+export async function createBridgeConversation(
+  agentId: string | null,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+): Promise<PublicConversationDetail> {
+  if (agentId !== null && !opaqueId(agentId)) throw new BridgeConversationsError("agent_id_invalid");
+  const { response, payload } = await requestBridge(PRIVATE_CONVERSATIONS_PATH, fetcher, environment, {
+    body: JSON.stringify(agentId === null ? {} : { agent_id: agentId }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (response.status === 201 && validDetail(payload)) return payload;
+  if (response.status === 404 && payload && typeof payload === "object" && !Array.isArray(payload) && (payload as Record<string, unknown>).status === "not_found") {
+    throw new BridgeConversationsError("conversation_not_found");
+  }
+  handleFixedState(response, payload);
+}
+
+export async function fetchBridgeActivity(
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+): Promise<PublicActivityPayload> {
+  const { response, payload } = await requestBridge(PRIVATE_ACTIVITY_PATH, fetcher, environment, { method: "GET" });
+  if (response.status === 200 && validActivity(payload)) {
+    return {
+      ...payload,
+      activity: payload.activity.map((item) => ({
+        ...item,
+        agent: { ...item.agent, capabilities: [...item.agent.capabilities] },
+        conversations: item.conversations.map((conversation) => ({ ...conversation })),
+      })),
+    };
+  }
+  handleFixedState(response, payload);
+}

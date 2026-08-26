@@ -89,6 +89,11 @@ Add source-owned shadcn/ui components, Radix primitives, and Lucide icons only
 when the interface needs them. Add TanStack Query with the first real server
 state consumer.
 
+The current prompt-first visual direction is documented in
+[MENTAT_WEB_DESIGN.md](MENTAT_WEB_DESIGN.md). It pivots the Next.js Home screen
+toward an Agent Console while retaining the Emerald Operations foundation and
+the architecture and safety boundaries described here.
+
 Use SSE for server-to-browser run events. Use WebSocket only if a later feature
 needs two-way realtime traffic that SSE cannot handle cleanly.
 

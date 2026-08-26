@@ -53,6 +53,13 @@ from agent_runtime import (
     RuntimeContext,
 )
 from orchestration_service import OrchestrationService, OrchestrationServiceError
+from conversation_repository import (
+    ConversationRepository,
+    ConversationRepositoryError,
+    activity_public,
+    conversation_public,
+    conversations_public,
+)
 from run_repository import (
     RunRecord,
     RunRepository,
@@ -1591,6 +1598,66 @@ def mentat_agents_payload():
         "agents": [public_agent_record(agent) for agent in agents],
         "count": len(agents),
     }
+
+
+def _conversation_repository() -> ConversationRepository:
+    return ConversationRepository(
+        DATA_DIR,
+        supported_runtime_types=AGENT_RUNTIME_REGISTRY.runtime_types,
+    )
+
+
+def mentat_conversations_payload(cursor: str | None = None) -> dict:
+    """Return safe durable Conversation summaries and canonical Agent choices."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationRepositoryError("conversation.unavailable")
+        return conversations_public(_conversation_repository(), cursor=cursor)
+
+
+def mentat_conversation_payload(
+    conversation_id: str,
+    before_sequence: int | None = None,
+) -> dict:
+    """Return one bounded Conversation page without runtime-owned detail."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationRepositoryError("conversation.unavailable")
+        return conversation_public(
+            _conversation_repository().read(
+                conversation_id,
+                before_sequence=before_sequence,
+            )
+        )
+
+
+def create_mentat_conversation(payload: object) -> tuple[dict, int]:
+    """Create an empty durable Conversation; this never creates a Run."""
+
+    if not isinstance(payload, dict) or set(payload) - {"agent_id"}:
+        return {"error": "Conversation payload contains unsupported fields."}, 400
+    agent_id = payload.get("agent_id")
+    if agent_id is not None and not isinstance(agent_id, str):
+        return {"error": "Conversation Agent selection is invalid."}, 400
+    try:
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise ConversationRepositoryError("conversation.unavailable")
+            record = _conversation_repository().create(agent_id=agent_id)
+            return conversation_public(record), 201
+    except ConversationRepositoryError:
+        raise
+
+
+def mentat_agent_activity_payload() -> dict:
+    """Return bounded Agent activity from canonical Agents and Runs only."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationRepositoryError("conversation.unavailable")
+        return activity_public(_conversation_repository())
 
 
 def mentat_provider_connections_payload():

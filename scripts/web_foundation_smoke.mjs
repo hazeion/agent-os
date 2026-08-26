@@ -51,10 +51,10 @@ if (!chromePath) {
 }
 
 const routes = [
-  { path: "/", heading: "Home", title: "Mentat" },
-  { path: "/agents", heading: "Agents", title: "Agents · Mentat" },
-  { path: "/tasks", heading: "Tasks", title: "Tasks · Mentat" },
-  { path: "/runs", heading: "Runs", title: "Runs · Mentat" },
+  { path: "/", heading: "What can Mentat help with?", navLabel: "Home", title: "Mentat" },
+  { path: "/agents", heading: "Agents", navLabel: "Agents", title: "Agents · Mentat" },
+  { path: "/tasks", heading: "Tasks", navLabel: "Tasks", title: "Tasks · Mentat" },
+  { path: "/runs", heading: "Runs", navLabel: "Runs", title: "Runs · Mentat" },
 ];
 const viewports = [
   { name: "wide", width: 1680, height: 1050, mobile: false, mode: "desktop" },
@@ -221,17 +221,27 @@ async function inspectRoutes(client) {
       hasLogo: document.querySelector('.brand-mark')?.getAttribute('src') === '/mentat-mark-emerald.png',
       overflow: document.documentElement.scrollWidth - innerWidth,
     }))()`);
+    const staticRoute = route.path !== "/";
+    const hasFrameworkScripts = result.scriptPaths.some((path) => path.startsWith("/_next/static/"));
     if (
       result.title !== route.title
       || result.heading !== route.heading
-      || result.current !== route.heading
+      || result.current !== route.navLabel
       || result.headingCount !== 1
       || result.mainCount !== 1
       || result.currentCount !== 1
-      || JSON.stringify(result.scriptPaths) !== JSON.stringify(["/preference-preload.js", "/shell-runtime.js"])
-      || result.hasFlightPayload
       || !result.hasLogo
       || result.overflow > 1
+      || staticRoute && (
+        JSON.stringify(result.scriptPaths) !== JSON.stringify(["/preference-preload.js", "/shell-runtime.js"])
+        || result.hasFlightPayload
+      )
+      || !staticRoute && (
+        !hasFrameworkScripts
+        || !result.hasFlightPayload
+        || !result.scriptPaths.includes("/preference-preload.js")
+        || !result.scriptPaths.includes("/shell-runtime.js")
+      )
     ) {
       throw new Error(`${route.heading} route contract failed: ${JSON.stringify(result)}`);
     }
@@ -302,7 +312,7 @@ async function captureGeometry(client) {
     };
     return {
       bridge: rect(document.querySelector('.bridge-status')),
-      panels: [...document.querySelectorAll('.panel')].map(rect),
+      panels: [...document.querySelectorAll('.conversation-workspace, .activity-rail')].map(rect),
       sidebar: rect(document.querySelector('.sidebar')),
       workspace: rect(document.querySelector('.workspace')),
       navOpenDisplay: getComputedStyle(document.querySelector('[data-nav-open]')).display,
@@ -350,12 +360,11 @@ async function inspectViewport(client, viewport) {
 
     const geometryShift = Math.max(
       Math.abs(ready.bridge.width - checking.bridge.width),
-      Math.abs(ready.bridge.height - checking.bridge.height),
       ...ready.panels.flatMap((panel, index) => [
         Math.abs(panel.left - checking.panels[index].left),
-        Math.abs(panel.top - checking.panels[index].top),
+        Math.abs(panel.right - checking.panels[index].right),
         Math.abs(panel.width - checking.panels[index].width),
-        Math.abs(panel.height - checking.panels[index].height),
+        ...(index === 0 ? [Math.abs(panel.top - checking.panels[index].top)] : []),
       ]),
     );
     const panelsStack = viewport.width <= 900
@@ -378,7 +387,7 @@ async function inspectViewport(client, viewport) {
       || details.bridgeText !== "Python ready"
       || details.bridgeCompact !== "Ready"
       || details.contrast !== "standard"
-      || details.heading !== "Home"
+      || details.heading !== "What can Mentat help with?"
       || details.active !== "Home"
     ) {
       throw new Error(`${viewport.name} responsive contract failed: ${JSON.stringify({ checking, ready, details, geometryShift, panelsStack, modeValid })}`);

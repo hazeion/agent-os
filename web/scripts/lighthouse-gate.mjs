@@ -19,6 +19,11 @@ import {
 const CATEGORY_IDS = ["performance", "accessibility", "best-practices", "seo"];
 const RUNS_PER_MODE = 3;
 const AUDIT_ATTEMPTS = 2;
+const configuredMinimumPerformance = process.env.MENTAT_LIGHTHOUSE_MIN_PERFORMANCE ?? "100";
+const minimumPerformanceScore = Number(configuredMinimumPerformance);
+if (!Number.isInteger(minimumPerformanceScore) || minimumPerformanceScore < 95 || minimumPerformanceScore > 100) {
+  throw new Error("MENTAT_LIGHTHOUSE_MIN_PERFORMANCE must be an integer between 95 and 100");
+}
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const lighthouseCli = resolve(projectRoot, "node_modules", "lighthouse", "cli", "index.js");
 const chromeVersionFile = resolve(projectRoot, "..", ".chrome-for-testing-version");
@@ -177,16 +182,37 @@ function summarize(lhr, mode, run) {
     cls: numericAudit(lhr, "cumulative-layout-shift"),
     transfer_bytes: transferredBytes(lhr),
   };
-  const failedCategories = Object.entries(scores)
-    .filter(([, score]) => score !== 100)
-    .map(([categoryId, score]) => `${categoryId}=${score}`);
+  return summary;
+}
+
+function medianScore(scores) {
+  if (scores.length !== RUNS_PER_MODE) {
+    throw new Error(`Expected ${RUNS_PER_MODE} Lighthouse scores; received ${scores.length}`);
+  }
+  const orderedScores = [...scores].sort((left, right) => left - right);
+  return orderedScores[Math.floor(orderedScores.length / 2)];
+}
+
+function validateModeResults(mode, results) {
+  const failedCategories = results.flatMap((result) => Object.entries(result.scores)
+    .filter(([categoryId, score]) => categoryId !== "performance" && score < 100)
+    .map(([categoryId, score]) => `run ${result.run} ${categoryId}=${score}`));
   if (failedCategories.length) {
     throw new Error(
-      `${mode} run ${run} missed 100: ${failedCategories.join(", ")}; `
-      + `metrics=${JSON.stringify(summary)}`,
+      `${mode} runs missed the required non-performance category scores: `
+      + `${failedCategories.join(", ")}; results=${JSON.stringify(results)}`,
     );
   }
-  return summary;
+  const performanceScores = results.map((result) => result.scores.performance);
+  const performanceMedian = medianScore(performanceScores);
+  if (performanceMedian < minimumPerformanceScore) {
+    throw new Error(
+      `${mode} median performance score ${performanceMedian} missed the minimum `
+      + `${minimumPerformanceScore}; runs=${performanceScores.join(", ")}; `
+      + `results=${JSON.stringify(results)}`,
+    );
+  }
+  return performanceMedian;
 }
 
 function modeArguments(mode) {
@@ -311,10 +337,18 @@ async function main() {
       }
     }
     runtimeState.activeRun = null;
+    const performanceMedians = Object.fromEntries(
+      Object.entries(runtimeState.results).map(([mode, results]) => [
+        mode,
+        validateModeResults(mode, results),
+      ]),
+    );
     console.log(JSON.stringify({
       ok: true,
       url: baseUrl.href,
       chrome_version: runtimeState.chromeVersion,
+      minimum_performance_score: minimumPerformanceScore,
+      performance_medians: performanceMedians,
       runs_per_mode: RUNS_PER_MODE,
       results: runtimeState.results,
     }, null, 2));

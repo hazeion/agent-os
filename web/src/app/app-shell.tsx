@@ -8,10 +8,11 @@ import { ShellIcon } from "./shell-icon";
 
 type AppShellProps = Readonly<{
   children: React.ReactNode;
+  homeConsole?: boolean;
   route: ShellRouteHref;
 }>;
 
-export function AppShell({ children, route: routeHref }: AppShellProps) {
+export function AppShell({ children, homeConsole = false, route: routeHref }: AppShellProps) {
   const route = getShellRoute(routeHref);
 
   return (
@@ -75,6 +76,17 @@ export function AppShell({ children, route: routeHref }: AppShellProps) {
         </div>
       </aside>
 
+      <button
+        aria-controls="primary-navigation"
+        aria-expanded="true"
+        aria-label="Collapse workspace navigation"
+        className="rail-toggle sidebar-toggle"
+        data-sidebar-toggle
+        type="button"
+      >
+        <span aria-hidden="true">‹</span>
+      </button>
+
       <div aria-hidden="true" className="nav-tooltip" data-nav-tooltip hidden />
 
       <button aria-label="Close navigation" className="nav-backdrop" data-nav-backdrop hidden type="button" />
@@ -109,12 +121,14 @@ export function AppShell({ children, route: routeHref }: AppShellProps) {
           </div>
         </header>
 
-        <main className="main-content" id="main-content" tabIndex={-1}>
-          <header className="route-heading">
-            <p className="route-eyebrow">Mentat workspace</p>
-            <h1>{route.label}</h1>
-            <p>{route.description}</p>
-          </header>
+        <main className={`main-content${homeConsole ? " main-content-console" : ""}`} id="main-content" tabIndex={-1}>
+          {!homeConsole ? (
+            <header className="route-heading">
+              <p className="route-eyebrow">Mentat workspace</p>
+              <h1>{route.label}</h1>
+              <p>{route.description}</p>
+            </header>
+          ) : null}
           {children}
         </main>
       </div>

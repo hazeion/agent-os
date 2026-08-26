@@ -27,7 +27,13 @@ web/.browser-cache/
 *.log
 logs/
 artifacts/
-docs/
+docs/*
+!docs/agents/
+!docs/agents/**
+!docs/adr/
+!docs/adr/**
+!docs/research/
+!docs/research/**
 sketches/
 .hermes-tmp.*/
 data/runtime/

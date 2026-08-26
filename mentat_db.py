@@ -22,7 +22,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -571,6 +571,226 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
 
         CREATE UNIQUE INDEX idx_provider_connections_provider
             ON provider_connections(provider);
+        """,
+    ),
+    (
+        10,
+        """
+        ALTER TABLE mentat_agents
+            ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1);
+
+        ALTER TABLE mentat_agents
+            ADD COLUMN system_role TEXT CHECK (
+                system_role IS NULL OR system_role = 'direct'
+            );
+
+        CREATE UNIQUE INDEX idx_mentat_agents_system_role
+            ON mentat_agents(system_role)
+            WHERE system_role IS NOT NULL;
+
+        CREATE TABLE mentat_conversations (
+            id TEXT PRIMARY KEY CHECK (
+                length(id) BETWEEN 1 AND 128
+            ),
+            agent_id TEXT NOT NULL CHECK (
+                length(agent_id) BETWEEN 1 AND 128
+            ) REFERENCES mentat_agents(id) ON DELETE RESTRICT,
+            title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 160),
+            title_source TEXT NOT NULL CHECK (
+                title_source IN ('default', 'first_prompt')
+            ),
+            state TEXT NOT NULL CHECK (state IN ('active', 'archived')),
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            next_message_sequence INTEGER NOT NULL DEFAULT 1 CHECK (
+                next_message_sequence >= 1
+            ),
+            next_turn_ordinal INTEGER NOT NULL DEFAULT 1 CHECK (
+                next_turn_ordinal >= 1
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            archived_at TEXT CHECK (
+                archived_at IS NULL OR length(archived_at) BETWEEN 1 AND 64
+            )
+        );
+
+        CREATE TABLE mentat_conversation_messages (
+            id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
+            conversation_id TEXT NOT NULL REFERENCES mentat_conversations(id)
+                ON DELETE CASCADE,
+            sequence INTEGER NOT NULL CHECK (sequence >= 1),
+            role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+            state TEXT NOT NULL CHECK (state IN ('accepted', 'cancelled')),
+            content_json TEXT NOT NULL CHECK (length(content_json) <= 65536),
+            content_bytes INTEGER NOT NULL CHECK (
+                content_bytes BETWEEN 0 AND 65536
+            ),
+            run_id TEXT REFERENCES mentat_runs(id) ON DELETE SET NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            source_key TEXT NOT NULL CHECK (
+                length(source_key) BETWEEN 1 AND 160
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            UNIQUE (conversation_id, sequence),
+            UNIQUE (conversation_id, source_key)
+        );
+
+        CREATE TABLE mentat_conversation_turns (
+            id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
+            conversation_id TEXT NOT NULL REFERENCES mentat_conversations(id)
+                ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL UNIQUE
+                REFERENCES mentat_conversation_messages(id) ON DELETE RESTRICT,
+            queue_ordinal INTEGER NOT NULL CHECK (queue_ordinal >= 1),
+            state TEXT NOT NULL CHECK (
+                state IN ('pending', 'dispatching', 'consumed', 'blocked', 'cancelled')
+            ),
+            blocked_reason TEXT CHECK (
+                blocked_reason IS NULL OR blocked_reason IN (
+                    'capacity', 'failed', 'stopped', 'interrupted', 'unknown', 'partial'
+                )
+            ),
+            latest_run_id TEXT REFERENCES mentat_runs(id) ON DELETE SET NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+            idempotency_key_digest TEXT NOT NULL CHECK (
+                length(idempotency_key_digest) = 64
+            ),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            UNIQUE (conversation_id, queue_ordinal)
+        );
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN conversation_id TEXT CHECK (
+                conversation_id IS NULL OR length(conversation_id) BETWEEN 1 AND 128
+            ) REFERENCES mentat_conversations(id) ON DELETE SET NULL;
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN turn_id TEXT CHECK (
+                turn_id IS NULL OR length(turn_id) BETWEEN 1 AND 128
+            ) REFERENCES mentat_conversation_turns(id) ON DELETE SET NULL;
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN retry_of_run_id TEXT CHECK (
+                retry_of_run_id IS NULL OR length(retry_of_run_id) BETWEEN 1 AND 128
+            ) REFERENCES mentat_runs(id) ON DELETE SET NULL;
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN resume_of_run_id TEXT CHECK (
+                resume_of_run_id IS NULL OR length(resume_of_run_id) BETWEEN 1 AND 128
+            ) REFERENCES mentat_runs(id) ON DELETE SET NULL;
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN agent_revision INTEGER CHECK (
+                agent_revision IS NULL OR agent_revision >= 1
+            );
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN runtime_config_revision INTEGER CHECK (
+                runtime_config_revision IS NULL OR runtime_config_revision >= 1
+            );
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN execution_config_json TEXT CHECK (
+                execution_config_json IS NULL OR length(execution_config_json) <= 16384
+            );
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN execution_config_digest TEXT CHECK (
+                execution_config_digest IS NULL OR length(execution_config_digest) = 64
+            );
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN capacity_scope_digest TEXT CHECK (
+                capacity_scope_digest IS NULL OR length(capacity_scope_digest) = 64
+            );
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN admitted_capacity_limit INTEGER CHECK (
+                admitted_capacity_limit IS NULL OR admitted_capacity_limit BETWEEN 1 AND 32
+            );
+
+        CREATE INDEX idx_mentat_conversations_activity
+            ON mentat_conversations(state, updated_at DESC, id);
+        CREATE INDEX idx_mentat_conversations_agent_activity
+            ON mentat_conversations(agent_id, state, updated_at DESC, id);
+        CREATE INDEX idx_mentat_conversation_messages_page
+            ON mentat_conversation_messages(conversation_id, sequence DESC, id);
+        CREATE INDEX idx_mentat_conversation_messages_run
+            ON mentat_conversation_messages(run_id, conversation_id, sequence);
+        CREATE INDEX idx_mentat_conversation_turns_state
+            ON mentat_conversation_turns(conversation_id, state, queue_ordinal);
+        CREATE UNIQUE INDEX idx_mentat_runs_one_active_conversation
+            ON mentat_runs(conversation_id)
+            WHERE conversation_id IS NOT NULL AND status IN (
+                'reserved', 'queued', 'submitting', 'starting', 'running',
+                'cancelling', 'waiting', 'waiting_for_approval',
+                'waiting_for_clarification', 'unknown'
+            );
+
+        CREATE TRIGGER mentat_conversations_agent_immutable
+        BEFORE UPDATE OF agent_id ON mentat_conversations
+        WHEN OLD.agent_id IS NOT NEW.agent_id
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_agent_immutable');
+        END;
+
+        CREATE TRIGGER mentat_conversation_turns_queue_capacity_insert
+        BEFORE INSERT ON mentat_conversation_turns
+        WHEN NEW.state IN ('pending', 'blocked', 'dispatching')
+            AND (
+                SELECT COUNT(*) FROM mentat_conversation_turns
+                WHERE conversation_id = NEW.conversation_id
+                  AND state IN ('pending', 'blocked', 'dispatching')
+            ) >= 8
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_turn_capacity');
+        END;
+
+        CREATE TRIGGER mentat_conversation_turns_queue_capacity_update
+        BEFORE UPDATE OF conversation_id, state ON mentat_conversation_turns
+        WHEN NEW.state IN ('pending', 'blocked', 'dispatching')
+            AND (
+                SELECT COUNT(*) FROM mentat_conversation_turns
+                WHERE conversation_id = NEW.conversation_id
+                  AND state IN ('pending', 'blocked', 'dispatching')
+                  AND id IS NOT OLD.id
+            ) >= 8
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_turn_capacity');
+        END;
+
+        CREATE TRIGGER mentat_conversation_turns_conversation_immutable
+        BEFORE UPDATE OF conversation_id, user_message_id, queue_ordinal
+            ON mentat_conversation_turns
+        WHEN OLD.conversation_id IS NOT NEW.conversation_id
+            OR OLD.user_message_id IS NOT NEW.user_message_id
+            OR OLD.queue_ordinal IS NOT NEW.queue_ordinal
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_turn_identity_immutable');
+        END;
+
+        CREATE TRIGGER mentat_runs_conversation_identity_immutable
+        BEFORE UPDATE OF conversation_id, turn_id, retry_of_run_id,
+            resume_of_run_id, agent_revision, runtime_config_revision,
+            execution_config_json, execution_config_digest,
+            capacity_scope_digest, admitted_capacity_limit ON mentat_runs
+        WHEN OLD.conversation_id IS NOT NEW.conversation_id
+            OR OLD.turn_id IS NOT NEW.turn_id
+            OR OLD.retry_of_run_id IS NOT NEW.retry_of_run_id
+            OR OLD.resume_of_run_id IS NOT NEW.resume_of_run_id
+            OR OLD.agent_revision IS NOT NEW.agent_revision
+            OR OLD.runtime_config_revision IS NOT NEW.runtime_config_revision
+            OR OLD.execution_config_json IS NOT NEW.execution_config_json
+            OR OLD.execution_config_digest IS NOT NEW.execution_config_digest
+            OR OLD.capacity_scope_digest IS NOT NEW.capacity_scope_digest
+            OR OLD.admitted_capacity_limit IS NOT NEW.admitted_capacity_limit
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_run_identity_immutable');
+        END;
         """,
     ),
 )

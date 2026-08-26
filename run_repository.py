@@ -234,12 +234,22 @@ def _run_schema_fingerprint(connection: sqlite3.Connection) -> str:
     ).hexdigest()
 
 
-@lru_cache(maxsize=1)
-def _expected_run_schema_fingerprint() -> str:
+@lru_cache(maxsize=None)
+def _expected_run_schema_fingerprint(schema_version: int) -> str:
     connection = sqlite3.connect(":memory:")
     try:
-        script = next(script for version, script in MIGRATIONS if version == 7)
-        connection.executescript(script)
+        connection.execute(
+            "CREATE TABLE schema_migrations "
+            "(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)"
+        )
+        for version, script in MIGRATIONS:
+            if version > schema_version:
+                break
+            connection.executescript(script)
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                (version,),
+            )
         return _run_schema_fingerprint(connection)
     finally:
         connection.close()
@@ -935,10 +945,10 @@ class RunRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise RunRepositoryError("run_repository.schema_unsupported") from exc
         if (
-            version not in {RUN_SCHEMA_VERSION, DATABASE_SCHEMA_VERSION}
+            version not in {RUN_SCHEMA_VERSION, 8, 9, DATABASE_SCHEMA_VERSION}
             or not _RUN_SCHEMA_OBJECTS.issubset(names)
             or _run_schema_fingerprint(self.connection)
-            != _expected_run_schema_fingerprint()
+            != _expected_run_schema_fingerprint(version)
         ):
             raise RunRepositoryError("run_repository.schema_unsupported")
 

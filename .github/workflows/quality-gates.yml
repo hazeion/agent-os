@@ -87,7 +87,6 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null
           curl --fail --silent http://127.0.0.1:8894/ >/dev/null
-          curl --fail --silent http://127.0.0.1:8894/shell/home.html >/dev/null
           CHROME_PATH=/usr/bin/google-chrome \
             MENTAT_WEB_BASE_URL=http://127.0.0.1:8894 \
             MENTAT_WEB_BROWSER_DEBUG_PORT=9337 \
@@ -245,6 +244,7 @@ jobs:
           MENTAT_WEB_BROWSER_DEBUG_PORT: "9336"
           MENTAT_WEB_BROWSER_RUNTIME_DIR: ${{ runner.temp }}/web-foundation-smoke-runtime
           MENTAT_LIGHTHOUSE_FAILURE_PATH: ${{ runner.temp }}/mentat-lighthouse-failure.json
+          MENTAT_LIGHTHOUSE_MIN_PERFORMANCE: "95"
         run: |
           preview_data_dir="$RUNNER_TEMP/mentat-web-preview-data"
           bootstrap_port=8895

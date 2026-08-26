@@ -47,6 +47,22 @@ async function readBoundedJson(request: Request, maximumBytes: number): Promise<
   try { return JSON.parse(new TextDecoder().decode(value)); } catch { return null; }
 }
 
+const CONVERSATION_AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
+
+export async function readConversationCreateBody(
+  request: Request,
+): Promise<{ agentId: string | null } | null> {
+  const body = await readBoundedJson(request, 512);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const keys = Object.keys(body);
+  if (keys.length === 0) return { agentId: null };
+  if (keys.length !== 1 || keys[0] !== "agent_id") return null;
+  const agentId = (body as Record<string, unknown>).agent_id;
+  return agentId === null || typeof agentId === "string" && CONVERSATION_AGENT_ID.test(agentId)
+    ? { agentId }
+    : null;
+}
+
 const RUN_MESSAGE_TEXT_LIMIT = 6_000;
 const withinRunMessageTextLimit = (text: string) => Array.from(text).length <= RUN_MESSAGE_TEXT_LIMIT;
 const RUN_RESPONSE_TEXT_LIMIT = 2_000;

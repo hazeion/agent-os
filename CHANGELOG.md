@@ -2,6 +2,30 @@
 
 All notable changes to Mentat.
 
+## 2026-08-26
+
+### Added
+- Added the Agent Console Slice 1 conversation foundation: schema-10
+  Conversation, Message, Turn, and Conversation-Run identity; a canonical
+  Direct Agent; bounded list/detail/create/activity bridge capabilities; and
+  a hydrated prompt-first Home surface with durable reopen behavior.
+- Added compact conversation tabs, empty-state suggestions, a presentation-only
+  composer, and a read-only Agent activity rail. Dispatch remains unavailable
+  until the next Console slice.
+
+### Changed
+- Centered the Home rail seams against the app viewport so both collapse
+  handles remain aligned with the full page in expanded and collapsed states.
+- Corrected the left rail's collapse/expand state, accessible label, and arrow
+  direction, and tightened prompt, button, tab, heading, and suggestion sizing
+  to match the approved composition.
+
+### Safety
+- Kept Conversation and Message authority in private SQLite and exposed only
+  bounded, validated Mentat-owned projections through same-origin BFF routes.
+  Runtime references, credentials, local paths, and raw provider payloads do
+  not cross the browser boundary.
+
 ## 2026-08-23
 
 ### Added
@@ -939,8 +963,8 @@ All notable changes to Mentat.
   Hermes profiles canonical for executable agent identity and Hermes Kanban
   canonical for delegated execution state.
 - Kept Agent Messages as a safe project-owned communication queue and Agent
-  Console as an interactive single-run surface; neither is presented as durable
-  task execution.
+  Console as an interactive surface; neither is presented as durable task
+  execution.
 - Kept Google Calendar and Hermes session/database access read-only. Calendar
   links, reminders, note attachments, and review state write only to Mentat's
   allowlisted project-owned task data.
@@ -1051,8 +1075,8 @@ All notable changes to Mentat.
   rather than a strictly read-only dashboard.
 - Preserved direct read-only boundaries for Hermes databases, credentials,
   configuration files, skills, and persona files.
-- Kept Agent Console execution globally single-run while recording the selected
-  profile identity and preventing cross-profile session resume.
+- Preserved the then-current Console run-admission behavior while recording the
+  selected profile identity and preventing cross-profile session resume.
 - Recovered queued, running, or cancelling console runs as interrupted after
   restart using locked atomic writes and corruption-safe fallback.
 - Switched active Agent Console refreshes from complete dashboard polling to

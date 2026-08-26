@@ -58,7 +58,25 @@ function shellElements() {
     openButton: shell?.querySelector("[data-nav-open]"),
     closeButton: shell?.querySelector("[data-nav-close]"),
     backdrop: shell?.querySelector("[data-nav-backdrop]"),
+    sidebarToggle: shell?.querySelector("[data-sidebar-toggle]"),
   };
+}
+
+function toggleSidebarRail() {
+  if (mobileNavigation.matches) return;
+  const { sidebarToggle } = shellElements();
+  const collapsed = root.dataset.sidebarCollapsed === "true";
+  const nextCollapsed = !collapsed;
+  root.dataset.sidebarCollapsed = nextCollapsed ? "true" : "false";
+  if (sidebarToggle instanceof HTMLButtonElement) {
+    sidebarToggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+    sidebarToggle.setAttribute(
+      "aria-label",
+      nextCollapsed ? "Expand workspace navigation" : "Collapse workspace navigation",
+    );
+    const label = sidebarToggle.querySelector("span");
+    if (label instanceof HTMLElement) label.textContent = nextCollapsed ? "›" : "‹";
+  }
 }
 
 function setSidebarAvailability(isOpen) {
@@ -888,7 +906,7 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
   const target = event.target instanceof Element
-    ? event.target.closest("[data-agents-refresh], [data-provider-connections-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-run-message-open], [data-run-message-cancel], [data-run-message-review], [data-run-message-confirm], [data-run-response-open], [data-run-response-cancel], [data-run-response-review], [data-run-response-confirm], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
+    ? event.target.closest("[data-agents-refresh], [data-provider-connections-refresh], [data-tasks-refresh], [data-runs-refresh], [data-run-timeline-open], [data-run-timeline-close], [data-run-stop-open], [data-run-stop-cancel], [data-run-stop-confirm], [data-run-stop-review], [data-run-message-open], [data-run-message-cancel], [data-run-message-review], [data-run-message-confirm], [data-run-response-open], [data-run-response-cancel], [data-run-response-review], [data-run-response-confirm], [data-sidebar-toggle], [data-nav-open], [data-nav-close], [data-nav-backdrop], [data-nav-link]")
     : null;
   if (!target) return;
   if (target.matches("[data-agents-refresh]")) {
@@ -911,6 +929,7 @@ document.addEventListener("click", (event) => {
   if (target.matches("[data-run-response-cancel]")) { closeActiveRunResponse(); return; }
   if (target.matches("[data-run-response-review]")) { reviewRunResponse(); return; }
   if (target.matches("[data-run-response-confirm]")) { confirmRunResponse(); return; }
+  if (target.matches("[data-sidebar-toggle]")) { toggleSidebarRail(); return; }
   if (target.matches("[data-run-timeline-open]")) {
     const run = renderedRuns.get(target.dataset.runId); const card = target.closest(".run-card");
     if (run && card instanceof HTMLElement && target instanceof HTMLButtonElement) openRunTimeline(run, card, target);
