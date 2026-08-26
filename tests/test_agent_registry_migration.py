@@ -723,7 +723,9 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 worker.start()
             start.wait()
             for worker in workers:
-                worker.join(timeout=15)
+                # The second confirmation may wait on the same bounded
+                # initialization lock on slower Windows runners.
+                worker.join(timeout=data_layout.INITIALIZATION_LOCK_TIMEOUT_SECONDS + 5)
                 self.assertFalse(worker.is_alive())
 
             self.assertEqual(sorted(results), ["migrated", "rejected"])
