@@ -27,6 +27,22 @@ import server
 
 
 class ConversationRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._codex_command = patch(
+            "codex_runtime.find_codex_command",
+            return_value="/usr/bin/codex",
+        )
+        self._codex_binding = patch(
+            "codex_runtime.codex_binding_is_valid",
+            return_value=True,
+        )
+        self._codex_command.start()
+        self._codex_binding.start()
+
+    def tearDown(self) -> None:
+        self._codex_binding.stop()
+        self._codex_command.stop()
+
     def test_create_seeds_one_fixed_direct_agent_without_creating_a_run(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -21,7 +21,14 @@ import task_repository
 from agent_registry import AgentRegistry, capture_legacy_registry_snapshot
 from agent_console_attachments import bind_run_attachment, create_attachment
 from mentat.cli import main as mentat_cli_main
-from mentat_db import SCHEMA_VERSION, MentatDatabaseError, connect, database_path, transaction
+from mentat_db import (
+    MIGRATIONS,
+    SCHEMA_VERSION,
+    MentatDatabaseError,
+    connect,
+    database_path,
+    transaction,
+)
 from private_console_unit import (
     PrivateConsoleUnitError,
     capture_private_console_unit,
@@ -291,35 +298,21 @@ class TaskRepositoryTests(unittest.TestCase):
     def test_schema_four_preview_is_read_only_and_normal_open_migrates_once(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            connection = connect(root)
+            path = database_path(root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(path)
             try:
-                with transaction(connection, immediate=True):
-                    for name in (
-                        "idx_mentat_task_dependencies_target",
-                        "idx_mentat_tasks_assigned_agent",
-                        "idx_mentat_tasks_project_order",
-                        "idx_mentat_tasks_status_order",
-                    ):
-                        connection.execute(f"DROP INDEX {name}")
-                    connection.execute("DROP TABLE mentat_task_dependencies")
-                    connection.execute("DROP TABLE mentat_task_tags")
-                    connection.execute("DROP TABLE mentat_agent_events")
-                    connection.execute("DROP TABLE mentat_dispatch_reservations")
-                    connection.execute("DROP TABLE mentat_task_dispatch_heads")
-                    connection.execute("DROP TABLE mentat_runs")
-                    connection.execute("DROP TABLE mentat_run_store_state")
-                    connection.execute("DROP TABLE mentat_tasks")
-                    connection.execute("DROP TABLE mentat_task_store_state")
-                    connection.execute("DROP TABLE mentat_agent_registry_state")
-                    connection.execute("DROP TABLE mentat_agents")
-                    connection.execute("DROP TABLE agent_runtime_configs")
-                    connection.execute("DROP TABLE provider_connections")
+                for version, script in MIGRATIONS[:4]:
+                    connection.executescript(script)
                     connection.execute(
-                        "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9)"
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 1)",
+                        (version,),
                     )
+                connection.commit()
             finally:
                 connection.close()
-            path = database_path(root)
+            if os.name != "nt":
+                path.chmod(0o600)
             before = path.read_bytes()
             write_tasks(root, [task("task_a")])
             sidecars_before = {
@@ -2075,7 +2068,7 @@ class TaskRepositoryTests(unittest.TestCase):
                     connection.execute("DROP TABLE agent_runtime_configs")
                     connection.execute("DROP TABLE provider_connections")
                     connection.execute(
-                        "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9)"
+                        "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10)"
                     )
             finally:
                 connection.close()

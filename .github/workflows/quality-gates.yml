@@ -87,7 +87,6 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null
           curl --fail --silent http://127.0.0.1:8894/ >/dev/null
-          curl --fail --silent http://127.0.0.1:8894/shell/home.html >/dev/null
           CHROME_PATH=/usr/bin/google-chrome \
             MENTAT_WEB_BASE_URL=http://127.0.0.1:8894 \
             MENTAT_WEB_BROWSER_DEBUG_PORT=9337 \

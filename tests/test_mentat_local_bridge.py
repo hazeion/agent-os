@@ -226,7 +226,11 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual(payload["status"], state)
                 self.assertNotIn("private", json.dumps(payload))
 
-    def test_conversation_routes_create_read_and_list_without_creating_a_run(self):
+    @patch("codex_runtime.codex_binding_is_valid", return_value=True)
+    @patch("codex_runtime.find_codex_command", return_value="/usr/bin/codex")
+    def test_conversation_routes_create_read_and_list_without_creating_a_run(
+        self, _find_codex_command, _codex_binding_is_valid
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with patch.object(server, "DATA_DIR", root):
