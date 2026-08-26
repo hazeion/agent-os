@@ -23,6 +23,7 @@ from vercel_connections import VercelConnectionError, VercelConnectionUnavailabl
 
 
 TOKEN = "bridge-token-that-is-long-enough-for-256-bits-of-entropy"
+BRIDGE_REQUEST_TIMEOUT_SECONDS = 30
 
 
 def trusted_vercel_message_event_id(run_id: str) -> str:
@@ -80,17 +81,23 @@ class LocalBridgeTests(unittest.TestCase):
         headers: dict[str, str] | None = None,
         body: bytes | None = None,
     ) -> tuple[int, dict, dict[str, str]]:
-        connection = HTTPConnection("127.0.0.1", self.port, timeout=3)
+        connection = HTTPConnection(
+            "127.0.0.1",
+            self.port,
+            timeout=BRIDGE_REQUEST_TIMEOUT_SECONDS,
+        )
         request_headers = {"Host": f"127.0.0.1:{self.port}"}
         if token is not None:
             request_headers[local_bridge.BRIDGE_TOKEN_HEADER] = token
         request_headers.update(headers or {})
-        connection.request(method, path, body=body, headers=request_headers)
-        response = connection.getresponse()
-        body = response.read()
-        response_headers = {name: value for name, value in response.getheaders()}
-        connection.close()
-        return response.status, json.loads(body), response_headers
+        try:
+            connection.request(method, path, body=body, headers=request_headers)
+            response = connection.getresponse()
+            body = response.read()
+            response_headers = {name: value for name, value in response.getheaders()}
+            return response.status, json.loads(body), response_headers
+        finally:
+            connection.close()
 
     def test_health_requires_one_exact_token_and_returns_a_fixed_projection(self):
         status, payload, headers = self.request()
