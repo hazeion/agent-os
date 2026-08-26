@@ -797,14 +797,19 @@ class ConversationRepository:
         )
 
     def _connection(self) -> sqlite3.Connection:
+        connection: sqlite3.Connection | None = None
         try:
             connection = connect_database(self.data_dir)
             connection.row_factory = sqlite3.Row
             validate_repository_connection(connection)
             return connection
         except ConversationRepositoryError:
+            if connection is not None:
+                connection.close()
             raise
         except (OSError, sqlite3.Error) as exc:
+            if connection is not None:
+                connection.close()
             raise ConversationRepositoryUnavailable("conversation.unavailable") from exc
 
     def create(self, *, agent_id: str | None = None) -> ConversationRead:
