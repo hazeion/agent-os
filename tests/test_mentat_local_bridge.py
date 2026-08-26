@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import closing
 from http.client import HTTPConnection
 import json
 from pathlib import Path
@@ -275,7 +276,7 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual(status, 404)
                 self.assertEqual(listed, {"error": "bridge_route_not_found"})
 
-                with sqlite3.connect(mentat_database_path(root)) as connection:
+                with closing(sqlite3.connect(mentat_database_path(root))) as connection:
                     self.assertEqual(
                         connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0],
                         0,

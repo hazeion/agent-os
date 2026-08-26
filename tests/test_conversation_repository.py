@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -75,7 +76,7 @@ class ConversationRepositoryTests(unittest.TestCase):
                 DIRECT_AGENT_ROLE,
             )
 
-            with sqlite3.connect(database_path(root)) as connection:
+            with closing(sqlite3.connect(database_path(root))) as connection:
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0],
                     0,
@@ -142,7 +143,7 @@ class ConversationRepositoryTests(unittest.TestCase):
             root = Path(temporary)
             connection = connect(root)
             connection.close()
-            with sqlite3.connect(database_path(root)) as connection:
+            with closing(sqlite3.connect(database_path(root))) as connection:
                 connection.execute("DROP TRIGGER mentat_conversations_agent_immutable")
                 connection.execute(
                     """
@@ -189,7 +190,7 @@ class ConversationRepositoryTests(unittest.TestCase):
                 self.assertEqual(listed["count"], 1)
                 self.assertEqual(listed["conversations"][0]["id"], conversation_id)
 
-                with sqlite3.connect(database_path(root)) as connection:
+                with closing(sqlite3.connect(database_path(root))) as connection:
                     self.assertEqual(
                         connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0],
                         0,

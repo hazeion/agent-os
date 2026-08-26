@@ -16,6 +16,9 @@ import runtime_config
 import server
 
 
+THREAD_TIMEOUT_SECONDS = data_layout.INITIALIZATION_LOCK_TIMEOUT_SECONDS
+
+
 class RuntimeConfigTests(unittest.TestCase):
     def test_ipv6_loopback_uses_ipv6_server_and_bracketed_browser_url(self):
         self.assertIs(server.server_class_for_host("::1"), server.IPv6ThreadingHTTPServer)
@@ -511,7 +514,7 @@ greeting_prefix = "Hi"
             def pause_after_unlocked_check(data_root):
                 status = real_startup_status(data_root)
                 checked.set()
-                self.assertTrue(migration_finished.wait(10))
+                self.assertTrue(migration_finished.wait(THREAD_TIMEOUT_SECONDS))
                 return status
 
             config = server.AppConfig(
@@ -535,7 +538,7 @@ greeting_prefix = "Hi"
 
             startup_thread = Thread(target=run_startup)
             startup_thread.start()
-            self.assertTrue(checked.wait(10))
+            self.assertTrue(checked.wait(THREAD_TIMEOUT_SECONDS))
             original_publish = data_migration._publish_destination
             calls = 0
 
@@ -562,7 +565,7 @@ greeting_prefix = "Hi"
                 self.assertEqual(migrated.status, "partial_failure")
             finally:
                 migration_finished.set()
-                startup_thread.join(10)
+                startup_thread.join(THREAD_TIMEOUT_SECONDS)
 
             self.assertFalse(startup_thread.is_alive())
             self.assertEqual(len(startup_result), 1)
