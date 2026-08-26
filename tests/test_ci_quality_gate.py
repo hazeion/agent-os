@@ -101,6 +101,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("npm --prefix web run lighthouse:gate", workflow)
         self.assertIn("Install pinned Chrome for Testing", workflow)
         self.assertIn("CHROME_FOR_TESTING_VERSION: 152.0.7923.0", workflow)
+        self.assertIn('MENTAT_LIGHTHOUSE_MIN_PERFORMANCE: "95"', workflow)
         self.assertIn(
             'CHROME_PATH="$MENTAT_LIGHTHOUSE_CHROME_PATH" npm --prefix web run lighthouse:gate',
             workflow,
