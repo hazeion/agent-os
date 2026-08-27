@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console live queue, steering, and concurrency
 
-Status: Implementation and review complete; publication approved
+Status: Published for review; CI tracked on ready PR #145
 Slice: `agent-console-live-queue-steering-concurrency`
 Date: `2026-08-27`
 Review log: `reviews/2026-08-27-agent-console-live-queue-steering-concurrency.md`
@@ -376,13 +376,13 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
   recovery UI.
 - User authorization and scope: user approved the exact 43-file
   stage/commit/push/ready-PR packet in the current conversation on 2026-08-27.
-- Commit hash: None.
-- Ready PR URL: None.
+- Implementation commit: `17b93561bf5fb43449b00dcdbac77173d14d8935`.
+- Ready PR URL: <https://github.com/hazeion/agent-os/pull/145>.
 
 ## Outcome review
 
-- Classification: Paused only for exact publication approval; implementation
-  outcome is successful against all ten criteria.
+- Classification: Published for review; implementation outcome is successful
+  against all ten criteria and GitHub checks are tracked on ready PR #145.
 - Acceptance criteria summary: AC-1 through AC-10 pass focused, production,
   rendered, real-runtime, independent-review, and final full-suite gates.
 - Potential bugs or untested paths: no material missing-test gap identified by
@@ -392,6 +392,6 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
   backup formats, Task dispatch, legacy Console, and explicit legacy-UI
   rollback remain covered. Unknown/partial admission and continuity fail closed
   and do not retry automatically.
-- User decision: exact commit/push/ready-PR publication approved; outcome
-  acceptance remains after publication and CI.
+- User decision: exact commit/push/ready-PR publication approved and completed;
+  outcome acceptance remains after CI.
 - Next slice authorized: No

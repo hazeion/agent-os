@@ -31,8 +31,9 @@ Agent Console Slices 1 and 2 are also complete. The current Wayfinder frontier
 is Agent Console Slice 3: live transcript, active composer, queue, steering,
 and concurrency (GitHub issue #135). Its scope and test strategy were approved
 on 2026-08-27. Implementation, final verification, and both adversarial review
-rounds are complete on the focused Slice 3 branch; exact publication approval
-is the remaining gate, so the slice stays In progress until tracker close-out.
+rounds are complete on the focused Slice 3 branch. The approved packet is
+published as ready PR #145 with GitHub checks in progress, so the slice stays
+In progress until merge and tracker close-out.
 
 ## Slice order
 
