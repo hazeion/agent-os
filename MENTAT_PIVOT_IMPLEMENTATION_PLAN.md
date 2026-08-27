@@ -27,10 +27,10 @@ production packaging, Codex adapter, runtime coexistence, Agent registry
 convergence, and optional Vercel capability adapters are complete through Slice
 4A.
 
-The current work is Agent Console Slice 1: Conversation foundation and visual
-composition (GitHub issue #133). Its active review log is:
+The current work is Agent Console Slice 2: one text Turn and canonical Run
+creation (GitHub issue #134). Its active review log is:
 
-`reviews/2026-08-25-agent-console-conversation-foundation.md`
+`reviews/2026-08-26-agent-console-text-turn-run-creation.md`
 
 ## Slice order
 
@@ -49,8 +49,9 @@ composition (GitHub issue #133). Its active review log is:
 | 2D | Complete | Production packaging, launch, rollback, and legacy interface cutover. |
 | 3A–3C | Complete | Codex runtime, coexistence, and Agent registry convergence. |
 | 4A | Complete | Optional Vercel Gateway, Sandbox, and Connect adapters. |
-| Console 1 | In progress | Conversation/message read foundation, Direct Agent identity, and three-column Home. |
-| Console 2+ | Proposed | Dispatch, queued turns, steering, rich rendering, attachments, and deeper operations. |
+| Console 1 | Complete | Conversation/message read foundation, Direct Agent identity, and three-column Home. |
+| Console 2 | In progress | One bounded text Turn, atomic Run reservation, exact replay, and safe Codex readiness. |
+| Console 3+ | Proposed | Queued turns, steering, rich rendering, attachments, and deeper operations. |
 
 ## Working rules
 

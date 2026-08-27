@@ -455,36 +455,64 @@ export separately filters attachments and blobs to the Runs its legacy
 projection retains. Startup performs one bounded reconciliation pass for native
 Runs that have a durable runtime reference.
 
-### Target Conversation authority (accepted, not yet implemented)
+### Conversation authority and first text Turn
 
 [ADR 0001](docs/adr/0001-conversation-owned-agent-console.md) fixes the target
-Next.js Agent Console persistence and concurrency contract. Planned schema 10
-adds durable Conversation-owned Messages and Turns to the same owner-private
-SQLite authority and extends Console-source Runs with Conversation/Turn
-identity, Agent and RuntimeConfig revisions, immutable execution-configuration
-evidence, and private adapter-capacity evidence. The ADR is implementation
-planning until its approved slices change production schema and runtime code.
+Next.js Agent Console persistence and concurrency contract. Schema 10 owns
+durable Conversation Messages and Turns in the owner-private SQLite authority
+and extends Console-source Runs with Conversation/Turn identity, Agent and
+RuntimeConfig revisions, immutable execution-configuration evidence, and
+private adapter-capacity evidence. Schema 11 retains each Turn's bounded
+submission result after full Run-detail retention expires, preserving exact
+idempotent replay without keeping unbounded Run history. Legacy Console Runs
+remain unbound compatibility evidence.
 
-The target invariant is one nonterminal Run per Conversation, not one Run for
-the product. Runtime adapters declare a private capacity scope and bounded limit;
-admission counts matching nonterminal Runs transactionally and projects
-unavailable capacity without exposing scopes or digests. Existing
-Task-dispatch Runs retain their current Task, reservation, dispatch-head, and
-idempotency authority. Legacy Console Runs remain unbound compatibility evidence
-and are not inferred into Conversations.
+The first write slice accepts one bounded text Turn only while its Conversation
+is idle. Under one immediate transaction it appends the user Message and Turn,
+reserves the canonical Run, records the opaque Send-key digest and immutable
+request/configuration evidence, and admits the conservative private runtime
+capacity before any adapter call. The runtime-neutral service claims exactly
+one attempt, releases all SQLite/private-state locks, invokes the adapter once,
+then durably records accepted, rejected, or unknown. Exact replay returns the
+same authority; changed input with the same key fails closed. Restart marks an
+unattempted reservation interrupted and a claimed uncertain attempt unknown.
+An accepted Run without a durable runtime reference also becomes unknown; an
+accepted Run with an exact durable reference is eligible only for status
+readback. After binding but before publishing health readiness or serving any
+request, the Next.js private bridge synchronously classifies pre-start crash
+states under the private-state lock and fails startup if that classification
+cannot complete. Only the slower exact-reference readback runs in the
+background afterward. Neither phase repeats a submission.
 
-Accepted user Turns and safe transcript Messages persist independently of
-bounded Run/Event detail. Send and normalized event-to-message projection are
-idempotent transactions. At most eight queue-active Turns belong to one
-Conversation, in FIFO order. A verified success may reserve only that
-Conversation's next Turn; Stop, failure, interruption, unknown/partial results,
-or capacity blockage pause it for explicit operator action. This has no timers,
-automatic retry, cross-Conversation routing, Task mutation, or Agent Message
-consumption and is not a scheduler.
+The pre-submission execution document records immutable Mentat selection policy
+and its digest. After a runtime accepts, the repository may add exactly one
+separate runtime-execution identity and digest from the verified adapter
+response (for Codex, the safe model, provider, and reasoning-effort selection).
+SQLite and repository guards reject replacement or partial writes, and neither
+document is projected to the browser.
+
+The implemented invariant is one nonterminal Run per Conversation, not one Run
+for the product. Current adapters have no trusted capacity declaration, so
+admission uses the ADR's conservative private limit of one per binding-derived
+scope. Browser drafts, optimistic Messages, in-flight state, local admission
+blocks, unresolved exact retry keys, and Turn announcements are scoped per
+Conversation so navigation cannot replace another Conversation's idempotency
+evidence or mislabel background results. One monotonic notice order still lets
+newer global setup/navigation failures supersede stale Turn feedback. The
+browser sees only fixed availability/failure states and never a
+scope, digest, runtime reference, configuration ID, credential, or raw provider
+payload. Existing Task-dispatch Runs retain their Task, reservation,
+dispatch-head, and idempotency authority.
+
+Queued/blocked Turns, automatic continuation after verified success, Retry,
+Resume, active-Run composing, normalized assistant event-to-Message projection,
+and richer Console operations remain later slices. Their accepted ADR contract
+is not authority to approximate them in this first Send path.
 
 Format-4 backup remains the recovery container because it embeds the private
 database, but capture, restore, fingerprint, and semantic validation must become
-schema-10 aware. Compatible-root export intentionally omits Conversation
+schema-11 aware while retaining released schema-10 restore support.
+Compatible-root export intentionally omits Conversation
 authority and leaves the source unchanged. Lossless rollback uses a validated
 pre-migration backup; in-place schema downgrade is unsupported.
 
@@ -594,6 +622,21 @@ messages, and exact-turn interruption. Approvals and attachments are not
 advertised. Capability and binding checks use a bounded read-only App Server
 account probe. Ordinary registry reads use the static registered runtime names
 and never start or wait for Codex.
+
+The Agent Console exposes a separate explicit Codex readiness check with only
+`cli_missing`, `sign_in_required`, `ready`, or `unavailable`. Setup directs the
+operator to the Codex-owned `codex login` browser flow and requires an explicit
+Recheck. Mentat never accepts a password, browser cookie, API key, access or
+refresh token, account identifier, or Codex auth-cache contents; routine Agent
+and Conversation reads never launch Codex.
+
+Readiness and submission use nested end-to-end deadlines: each Codex operation
+shares one budget across App Server startup and its request, and the private
+bridge and browser-facing route retain longer outer response margins. A timeout
+therefore cannot leave an inner operation running beyond the public caller's
+certainty window. Private mutation bodies reject transfer encoding, require one
+exact JSON content type and decimal content length, read exactly the declared
+bounded bytes, and stop on one total wall-clock body deadline.
 
 Codex thread and turn IDs remain private runtime references. Public records use
 Mentat Run and event IDs. App Server text, commands, paths, and tool payloads

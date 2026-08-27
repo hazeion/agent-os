@@ -5,9 +5,11 @@ from contextlib import closing
 from http.client import HTTPConnection
 import json
 from pathlib import Path
+import socket
 import sqlite3
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -304,6 +306,205 @@ class LocalBridgeTests(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         self.assertEqual(payload["next_cursor"], "cursor_133")
+
+    def test_conversation_turn_route_is_fixed_authenticated_and_body_bounded(self):
+        response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "duplicate": False,
+            "disposition": "accepted",
+            "conversation": {},
+            "message": {},
+            "turn": {},
+            "run": {},
+        }
+        body = b'{"idempotency_key":"conversation-route-key","text":"Start work"}'
+        with patch.object(
+            local_bridge,
+            "bridge_submit_conversation_turn_payload",
+            return_value=(response, 202),
+        ) as capability:
+            status, payload, _headers = self.request(
+                method="POST",
+                path="/bridge/v1/conversations/conv_current/turns",
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+        self.assertEqual((status, payload), (202, response))
+        capability.assert_called_once_with(
+            "conv_current",
+            {"idempotency_key": "conversation-route-key", "text": "Start work"},
+        )
+
+        for path, invalid_body in (
+            (
+                "/bridge/v1/conversations/conv_current/turns?retry=1",
+                body,
+            ),
+            (
+                "/bridge/v1/conversations/conv_current/turns",
+                b'{"text":"Start work"}',
+            ),
+            (
+                "/bridge/v1/conversations/bad%2Fid/turns",
+                body,
+            ),
+        ):
+            with self.subTest(path=path):
+                status, payload, _headers = self.request(
+                    method="POST",
+                    path=path,
+                    headers={"Content-Type": "application/json"},
+                    body=invalid_body,
+                )
+                self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
+
+    def test_conversation_turn_route_accepts_worst_case_json_escaped_text(self):
+        response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "duplicate": False,
+            "disposition": "accepted",
+            "conversation": {},
+            "message": {},
+            "turn": {},
+            "run": {},
+        }
+        text = "\x01" * 6_000
+        body = json.dumps(
+            {
+                "idempotency_key": "conversation-control-character-key",
+                "text": text,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        self.assertGreater(len(body), local_bridge.MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES)
+        self.assertLessEqual(
+            len(body),
+            local_bridge.MAXIMUM_BRIDGE_CONVERSATION_TURN_BODY_BYTES,
+        )
+        with patch.object(
+            local_bridge,
+            "bridge_submit_conversation_turn_payload",
+            return_value=(response, 202),
+        ) as capability:
+            status, payload, _headers = self.request(
+                method="POST",
+                path="/bridge/v1/conversations/conv_current/turns",
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+        self.assertEqual((status, payload), (202, response))
+        capability.assert_called_once_with(
+            "conv_current",
+            {
+                "idempotency_key": "conversation-control-character-key",
+                "text": text,
+            },
+        )
+
+    def test_conversation_turn_rejects_transfer_encoding_and_short_bodies(self):
+        body = b'{"idempotency_key":"conversation-route-key","text":"Start work"}'
+        base_headers = (
+            "POST /bridge/v1/conversations/conv_current/turns HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"{local_bridge.BRIDGE_TOKEN_HEADER}: {TOKEN}\r\n"
+            "Content-Type: application/json\r\n"
+        ).encode("ascii")
+        requests = (
+            base_headers
+            + b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            + f"{len(body):x}\r\n".encode("ascii")
+            + body
+            + b"\r\n0\r\n\r\n",
+            base_headers
+            + f"Content-Length: {len(body) + 5}\r\nConnection: close\r\n\r\n".encode("ascii")
+            + body,
+        )
+        with patch.object(
+            local_bridge,
+            "bridge_submit_conversation_turn_payload",
+        ) as capability:
+            for index, request in enumerate(requests):
+                with self.subTest(index=index), socket.create_connection(
+                    ("127.0.0.1", self.port), timeout=2
+                ) as client:
+                    client.sendall(request)
+                    if index == 1:
+                        client.shutdown(socket.SHUT_WR)
+                    response = b""
+                    while True:
+                        chunk = client.recv(4096)
+                        if not chunk:
+                            break
+                        response += chunk
+                    self.assertIn(b" 404 ", response.split(b"\r\n", 1)[0])
+
+        capability.assert_not_called()
+
+    def test_conversation_turn_body_read_has_a_total_deadline(self):
+        body = b'{"idempotency_key":"conversation-route-key","text":"Start work"}'
+        headers = (
+            "POST /bridge/v1/conversations/conv_current/turns HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"{local_bridge.BRIDGE_TOKEN_HEADER}: {TOKEN}\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with patch.object(
+            local_bridge,
+            "BRIDGE_BODY_READ_TIMEOUT_SECONDS",
+            0.1,
+        ), patch.object(
+            local_bridge,
+            "bridge_submit_conversation_turn_payload",
+        ) as capability, socket.create_connection(
+            ("127.0.0.1", self.port), timeout=2
+        ) as client:
+            started = time.monotonic()
+            client.sendall(headers + body[:1])
+            response = b""
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 1.0)
+        self.assertIn(b" 404 ", response.split(b"\r\n", 1)[0])
+        capability.assert_not_called()
+
+    def test_codex_readiness_route_has_no_request_body_or_secret_fields(self):
+        response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "state": "sign_in_required",
+            "setup_command": "codex login",
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_codex_readiness_payload",
+            return_value=(response, 200),
+        ):
+            status, payload, _headers = self.request(
+                path=local_bridge.BRIDGE_CODEX_READINESS_PATH,
+            )
+        self.assertEqual((status, payload), (200, response))
+        self.assertNotIn("account", json.dumps(payload))
+        self.assertNotIn("token", json.dumps(payload))
+        status, payload, _headers = self.request(
+            path=f"{local_bridge.BRIDGE_CODEX_READINESS_PATH}?refresh=1",
+        )
+        self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
 
     def test_provider_connections_is_a_fixed_secret_free_projection(self):
         canonical = {
@@ -929,6 +1130,73 @@ class LocalBridgeTests(unittest.TestCase):
 
 
 class LocalBridgeMainTests(unittest.TestCase):
+    def test_startup_crash_recovery_finishes_before_any_request_is_served(self):
+        bridge = SimpleNamespace(
+            server_address=("127.0.0.1", 43210),
+            timeout=None,
+            handle_request=Mock(),
+            server_close=Mock(),
+        )
+        recovery_started = threading.Event()
+        release_recovery = threading.Event()
+
+        def recover() -> None:
+            recovery_started.set()
+            release_recovery.wait(timeout=2)
+
+        with patch.object(
+            local_bridge, "build_bridge_server", return_value=bridge
+        ), patch.object(
+            local_bridge, "_recover_bridge_runs_before_ready", side_effect=recover
+        ), patch.object(
+            local_bridge, "configured_launcher_pid", return_value=123
+        ), patch.object(
+            local_bridge, "launcher_is_running", side_effect=(True, False)
+        ), patch.object(
+            local_bridge, "start_bridge_startup_reconciliation"
+        ), patch.object(
+            server, "shutdown_agent_runtimes"
+        ):
+            result: list[int] = []
+            worker = threading.Thread(
+                target=lambda: result.append(
+                    local_bridge.main(["--host", "127.0.0.1", "--port", "0"])
+                )
+            )
+            worker.start()
+            self.assertTrue(recovery_started.wait(timeout=1))
+            self.assertFalse(bridge.handle_request.called)
+            release_recovery.set()
+            worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [0])
+        bridge.handle_request.assert_called_once_with()
+
+    def test_startup_reconciliation_uses_the_runtime_neutral_service(self):
+        with patch.object(
+            server, "reconcile_orchestration_runtime_references_at_startup"
+        ) as reconcile:
+            local_bridge._reconcile_bridge_runs_at_startup()
+
+        reconcile.assert_called_once_with()
+
+        with patch.object(
+            server,
+            "reconcile_orchestration_runtime_references_at_startup",
+            side_effect=RuntimeError("private detail"),
+        ):
+            local_bridge._reconcile_bridge_runs_at_startup()
+
+        with patch.object(
+            server, "recover_orchestration_crash_states_at_startup"
+        ) as recover, patch.object(
+            server, "load_agent_console_runs_after_startup_recovery"
+        ) as load_history:
+            local_bridge._recover_bridge_runs_before_ready()
+        recover.assert_called_once_with(recover_legacy_console_runs=True)
+        load_history.assert_called_once_with()
+
     def test_main_closes_loaded_process_owning_runtimes(self):
         bridge = SimpleNamespace(
             server_address=("127.0.0.1", 43210),
@@ -939,16 +1207,21 @@ class LocalBridgeMainTests(unittest.TestCase):
         with patch.object(
             local_bridge, "build_bridge_server", return_value=bridge
         ), patch.object(
+            local_bridge, "_recover_bridge_runs_before_ready"
+        ), patch.object(
             local_bridge, "configured_launcher_pid", return_value=None
         ), patch.object(
             local_bridge, "launcher_is_running", return_value=False
         ), patch.object(
+            local_bridge, "start_bridge_startup_reconciliation"
+        ) as reconcile, patch.object(
             server, "shutdown_agent_runtimes"
         ) as shutdown:
             result = local_bridge.main(["--host", "127.0.0.1", "--port", "0"])
 
         self.assertEqual(result, 0)
         bridge.server_close.assert_called_once_with()
+        reconcile.assert_called_once_with()
         shutdown.assert_called_once_with()
 
 

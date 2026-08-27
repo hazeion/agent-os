@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -151,9 +152,11 @@ class HermesRuntime:
         *,
         transport_factory: Callable[[], Any],
         compatibility_handlers: HermesCompatibilityHandlers | None = None,
+        submission_lock: Any | None = None,
     ):
         self._transport_factory = transport_factory
         self._compatibility_handlers = compatibility_handlers
+        self._submission_lock = submission_lock
 
     @property
     def capabilities(self) -> frozenset[str]:
@@ -169,6 +172,11 @@ class HermesRuntime:
 
     def console_transport(self) -> Any:
         return self._transport_factory()
+
+    def submission_guard(self):
+        """Serialize reservation-through-launch with Hermes configuration changes."""
+
+        return self._submission_lock if self._submission_lock is not None else nullcontext()
 
     def _handlers(self) -> HermesCompatibilityHandlers:
         if self._compatibility_handlers is None:
@@ -205,8 +213,9 @@ class HermesRuntime:
                 SubmissionDisposition.UNKNOWN,
                 failure_code="runtime.start_unverified",
             )
+        snapshot = body["run"]
         run = normalize_hermes_run(
-            body["run"],
+            snapshot,
             agent_id=context.agent_id,
             task_id=task.id,
         )
@@ -215,7 +224,32 @@ class HermesRuntime:
                 SubmissionDisposition.UNKNOWN,
                 failure_code="runtime.identity_mismatch",
             )
-        return SubmissionOutcome(SubmissionDisposition.ACCEPTED, run=run)
+        provider = snapshot.get("provider")
+        model = snapshot.get("model")
+        execution_identity = None
+        if (
+            isinstance(provider, str)
+            and provider
+            and provider.strip() == provider
+            and len(provider) <= 160
+            and "\x00" not in provider
+            and isinstance(model, str)
+            and model
+            and model.strip() == model
+            and len(model) <= 160
+            and "\x00" not in model
+        ):
+            execution_identity = {
+                "model": model,
+                "provider": provider,
+                "reasoning_effort": None,
+                "verification": "runtime_launch_snapshot",
+            }
+        return SubmissionOutcome(
+            SubmissionDisposition.ACCEPTED,
+            run=run,
+            execution_identity=execution_identity,
+        )
 
     def start_task(self, task: MentatTask, context: RuntimeContext) -> AgentRun:
         """Compatibility helper; new orchestration callers use ``submit_task``."""

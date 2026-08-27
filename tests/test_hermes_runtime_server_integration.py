@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import server
+from agent_registry import AgentRegistry
 from agent_runtime import (
     AgentRuntimeRegistry,
     MentatTask,
@@ -12,8 +13,15 @@ from agent_runtime import (
 )
 from hermes_runtime import HermesCompatibilityHandlers, HermesRuntime
 from hermes_transport import HermesConsoleTransport, TransportBinding
+from mentat import local_bridge
 from mentat_db import connect
-from run_repository import RunRepository, runtime_binding_digest
+from conversation_repository import ConversationRepository
+from orchestration_service import OrchestrationService
+from run_repository import (
+    RunRepository,
+    ensure_run_sqlite_authority,
+    runtime_binding_digest,
+)
 from task_repository import TaskRepository, ensure_task_sqlite_authority
 
 
@@ -184,6 +192,123 @@ class HermesRuntimeServerIntegrationTests(unittest.TestCase):
         self.assertNotIn("dispatch_id", public)
         self.assertNotIn("_dispatch_id", public)
         self.assertNotIn("dispatch_private", repr(public))
+        server.AGENT_CONSOLE_RUNS.clear()
+
+    def test_nextjs_conversation_submit_reuses_canonical_run_without_legacy_collision(self):
+        class ImmediateThread:
+            def __init__(self, *, target, args, **_kwargs):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                self.target(*self.args)
+
+        def complete_immediately(run_id, _transport):
+            with server.AGENT_CONSOLE_LOCK:
+                run = server.AGENT_CONSOLE_RUNS[run_id]
+                run["status"] = "completed"
+                run["started_at"] = server.now_iso()
+                run["completed_at"] = server.now_iso()
+                run["response"] = "Immediate Hermes result"
+                server.agent_console_event(
+                    run,
+                    "Response complete",
+                    "complete",
+                    {"duration_seconds": 0},
+                )
+                self.assertTrue(server.persist_agent_console_runs())
+            server.finalize_agent_console_runtime_event(run_id)
+
+        with TemporaryDirectory() as tmpdir, patch.object(
+            server, "DATA_DIR", Path(tmpdir)
+        ), patch.object(
+            server, "CONFIGURED_DATA_DIR", Path(tmpdir)
+        ), patch.object(
+            server, "AGENT_CONSOLE_HISTORY_LOADED", False
+        ), patch.object(
+            server,
+            "hermes_profiles_payload",
+            return_value={
+                "status": "available",
+                "profiles": [{
+                    "id": "researcher-main",
+                    "model": "research-model",
+                    "name": "Researcher",
+                    "provider": "research-provider",
+                }],
+            },
+        ), patch.object(
+            server, "hermes_command_path", return_value="/tmp/hermes"
+        ), patch.object(
+            server, "agent_console_model", return_value="test/model"
+        ), patch.object(
+            server, "run_hermes_agent", side_effect=complete_immediately
+        ), patch.object(server.threading, "Thread", ImmediateThread):
+            root = Path(tmpdir)
+            server.AGENT_CONSOLE_RUNS.clear()
+            task_source = root / "tasks.json"
+            task_source.write_text("[]\n", encoding="utf-8")
+            task_source.chmod(0o600)
+            ensure_task_sqlite_authority(root, required_source_mode=None)
+            registry = AgentRegistry(root, supported_runtime_types=("hermes",))
+            registry.create_agent(
+                agent_id="agent_researcher",
+                name="Researcher",
+                runtime_config_id="config-researcher",
+                runtime_type="hermes",
+                runtime_agent_ref="researcher-main",
+                capabilities=("run.start",),
+            )
+            conversation = ConversationRepository(
+                root,
+                supported_runtime_types=("hermes",),
+            ).create(agent_id="agent_researcher")
+            ensure_run_sqlite_authority(root, server.agent_console_history_path())
+            local_bridge._recover_bridge_runs_before_ready()
+            identifiers = iter(
+                ("msg_nextjs", "turn_nextjs", "run_nextjs_conversation")
+            )
+            service = OrchestrationService(
+                root,
+                runtime_registry=AgentRuntimeRegistry((server.HERMES_RUNTIME,)),
+                agent_registry=registry,
+                id_factory=lambda _prefix: next(identifiers),
+            )
+
+            with patch.object(
+                server,
+                "load_agent_console_runs",
+                side_effect=AssertionError(
+                    "live Hermes submission must not rerun startup recovery"
+                ),
+            ):
+                result = service.submit_conversation_turn(
+                    conversation_id=conversation.conversation.id,
+                    text="Research the primary sources",
+                    idempotency_key="nextjs-hermes-conversation-key",
+                )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                stored_run = repository.get_run("run_nextjs_conversation")
+                repository.validate()
+            finally:
+                connection.close()
+            compatibility_run = server.AGENT_CONSOLE_RUNS["run_nextjs_conversation"]
+
+        self.assertEqual(result.disposition, "accepted")
+        self.assertEqual(result.run.id, "run_nextjs_conversation")
+        self.assertEqual(result.run.status, "completed")
+        self.assertEqual(stored_run.source, "console")
+        self.assertEqual(stored_run.conversation_id, conversation.conversation.id)
+        self.assertEqual(stored_run.turn_id, "turn_nextjs")
+        self.assertEqual(stored_run.dispatch_state, "accepted")
+        self.assertEqual(stored_run.status, "completed")
+        self.assertEqual(len(stored_run.runtime_execution_digest), 64)
+        self.assertEqual(compatibility_run["mentat_agent_id"], "agent_researcher")
+        self.assertEqual(compatibility_run["task_id"], "turn_nextjs")
+        self.assertEqual(compatibility_run["_dispatch_id"], "turn_nextjs")
+        self.assertEqual(compatibility_run["status"], "completed")
         server.AGENT_CONSOLE_RUNS.clear()
 
 

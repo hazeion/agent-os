@@ -4,12 +4,16 @@ import type {
   PublicConversationAgent,
   PublicConversationDetail,
   PublicConversationList,
+  PublicConversationTurn,
+  PublicConversationTurnSubmission,
+  PublicCodexReadiness,
 } from "./bridge-conversations";
 
 const MAXIMUM_RESPONSE_BYTES = 3_000_000;
 const MAXIMUM_MESSAGES = 100;
 const MAXIMUM_CONVERSATIONS = 50;
 const MAXIMUM_AGENTS = 128;
+const READ_TIMEOUT_MILLISECONDS = 5_000;
 
 export class PublicConversationError extends Error {
   readonly code: string;
@@ -20,6 +24,9 @@ export class PublicConversationError extends Error {
     this.name = "PublicConversationError";
   }
 }
+
+export const CONVERSATION_TURN_PUBLIC_TIMEOUT_MILLISECONDS = 40_000;
+export const CODEX_READINESS_PUBLIC_TIMEOUT_MILLISECONDS = 10_000;
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -44,6 +51,7 @@ function id(value: unknown, pattern: RegExp): value is string {
 const CONVERSATION_ID = /^conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
 const MESSAGE_ID = /^msg_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
 const RUN_ID = /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u;
+const TURN_ID = /^turn_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
 const OPAQUE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/u;
 
@@ -104,6 +112,20 @@ function validCurrentRun(value: unknown): boolean {
     && timestamp(value.updated_at);
 }
 
+function validTurn(value: unknown): value is PublicConversationTurn {
+  if (!record(value) || !keys(value, "attempt_count,blocked_reason,conversation_id,created_at,id,latest_run_id,queue_ordinal,revision,state,updated_at,user_message_id")) return false;
+  return id(value.id, TURN_ID)
+    && id(value.conversation_id, CONVERSATION_ID)
+    && id(value.user_message_id, MESSAGE_ID)
+    && Number.isInteger(value.queue_ordinal) && (value.queue_ordinal as number) >= 1
+    && (value.state === "dispatching" || value.state === "consumed")
+    && value.blocked_reason === null
+    && (value.latest_run_id === null || id(value.latest_run_id, RUN_ID))
+    && Number.isInteger(value.revision) && (value.revision as number) >= 1
+    && (value.attempt_count === 0 || value.attempt_count === 1)
+    && timestamp(value.created_at) && timestamp(value.updated_at);
+}
+
 function validActivityItem(value: unknown): boolean {
   if (!record(value) || !keys(value, "agent,attention,conversations,state,summary,updated_at")) return false;
   const conversations = value.conversations;
@@ -151,6 +173,22 @@ function parseActivity(value: unknown): PublicActivityPayload {
   return value as PublicActivityPayload;
 }
 
+function parseTurnSubmission(value: unknown): PublicConversationTurnSubmission {
+  if (!record(value) || !keys(value, "conversation,disposition,duplicate,message,run,runtime,schema_version,service,status,turn") || value.schema_version !== 1 || value.service !== "mentat-local-bridge" || value.runtime !== "python" || value.status !== "ready" || typeof value.duplicate !== "boolean" || !["reserved", "submitting", "accepted", "rejected", "unknown"].includes(String(value.disposition))) throw new PublicConversationError("response_invalid");
+  if (!validConversation(value.conversation) || !validMessage(value.message) || !validTurn(value.turn) || !validCurrentRun(value.run)) throw new PublicConversationError("response_invalid");
+  const conversation = value.conversation as PublicConversation;
+  const message = value.message as Record<string, unknown>;
+  const turn = value.turn as PublicConversationTurn;
+  const run = value.run as Record<string, unknown> | null;
+  if (message.conversation_id !== conversation.id || turn.conversation_id !== conversation.id || turn.user_message_id !== message.id || message.run_id !== turn.latest_run_id || run !== null && run.id !== turn.latest_run_id) throw new PublicConversationError("response_invalid");
+  return value as PublicConversationTurnSubmission;
+}
+
+function parseCodexReadiness(value: unknown): PublicCodexReadiness {
+  if (!record(value) || !keys(value, "runtime,schema_version,service,setup_command,state,status") || value.schema_version !== 1 || value.service !== "mentat-local-bridge" || value.runtime !== "python" || value.status !== "ready" || !["cli_missing", "sign_in_required", "ready", "unavailable"].includes(String(value.state)) || value.setup_command !== null && value.setup_command !== "codex login" || (value.state === "sign_in_required") !== (value.setup_command === "codex login")) throw new PublicConversationError("response_invalid");
+  return value as PublicCodexReadiness;
+}
+
 async function boundedJson(response: Response): Promise<unknown> {
   const declared = response.headers.get("content-length");
   if (declared && (!/^\d{1,10}$/u.test(declared) || Number(declared) > MAXIMUM_RESPONSE_BYTES)) throw new PublicConversationError("response_invalid");
@@ -185,9 +223,9 @@ async function boundedJson(response: Response): Promise<unknown> {
   }
 }
 
-async function request(path: string, init: RequestInit = {}): Promise<{ response: Response; payload: unknown }> {
+async function request(path: string, init: RequestInit = {}, timeoutMilliseconds = READ_TIMEOUT_MILLISECONDS): Promise<{ response: Response; payload: unknown }> {
   try {
-    const response = await fetch(path, { ...init, cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", ...init.headers }, redirect: "error", signal: AbortSignal.timeout(1500) });
+    const response = await fetch(path, { ...init, cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeoutMilliseconds) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new PublicConversationError("response_invalid");
     return { response, payload: await boundedJson(response) };
   } catch (error) {
@@ -198,9 +236,15 @@ async function request(path: string, init: RequestInit = {}): Promise<{ response
 
 function fixed(response: Response, payload: unknown): never {
   const status = record(payload) ? payload.status : undefined;
+  if (response.status === 400 && status === "invalid") throw new PublicConversationError("invalid");
   if (response.status === 501 && status === "unsupported") throw new PublicConversationError("unsupported");
   if (response.status === 503 && status === "unavailable") throw new PublicConversationError("unavailable");
   if (response.status === 404 && status === "not_found") throw new PublicConversationError("not_found");
+  if (response.status === 409 && status === "active_run") throw new PublicConversationError("active_run");
+  if (response.status === 409 && status === "capacity_unavailable") throw new PublicConversationError("capacity_unavailable");
+  if (response.status === 409 && status === "idempotency_conflict") throw new PublicConversationError("idempotency_conflict");
+  if (response.status === 409 && status === "cli_missing") throw new PublicConversationError("cli_missing");
+  if (response.status === 409 && status === "sign_in_required") throw new PublicConversationError("sign_in_required");
   throw new PublicConversationError("response_invalid");
 }
 
@@ -222,6 +266,32 @@ export async function createConversation(agentId: string | null): Promise<Public
   if (agentId !== null && !OPAQUE_ID.test(agentId)) throw new PublicConversationError("agent_id_invalid");
   const { response, payload } = await request("/api/conversations", { body: JSON.stringify(agentId === null ? {} : { agent_id: agentId }), headers: { "Content-Type": "application/json" }, method: "POST" });
   if (response.status === 201) return parseDetail(payload);
+  fixed(response, payload);
+}
+
+export async function submitConversationTurn(
+  conversationId: string,
+  text: string,
+  idempotencyKey: string,
+): Promise<PublicConversationTurnSubmission> {
+  const keyBytes = new TextEncoder().encode(idempotencyKey).byteLength;
+  if (!CONVERSATION_ID.test(conversationId) || !text.trim() || text.trim() !== text || Array.from(text).length > 6_000 || text.includes("\0") || keyBytes < 16 || keyBytes > 256 || idempotencyKey.includes("\0")) throw new PublicConversationError("invalid");
+  const { response, payload } = await request(`/api/conversations/${encodeURIComponent(conversationId)}/turns`, {
+    body: JSON.stringify({ idempotency_key: idempotencyKey, text }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  }, CONVERSATION_TURN_PUBLIC_TIMEOUT_MILLISECONDS);
+  if (response.status === 200 || response.status === 202) return parseTurnSubmission(payload);
+  fixed(response, payload);
+}
+
+export async function fetchCodexReadiness(): Promise<PublicCodexReadiness> {
+  const { response, payload } = await request(
+    "/api/codex-readiness",
+    {},
+    CODEX_READINESS_PUBLIC_TIMEOUT_MILLISECONDS,
+  );
+  if (response.status === 200) return parseCodexReadiness(payload);
   fixed(response, payload);
 }
 

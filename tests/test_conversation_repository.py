@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent_registry import (
     DIRECT_AGENT_CAPABILITIES,
@@ -195,6 +195,28 @@ class ConversationRepositoryTests(unittest.TestCase):
                         connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0],
                         0,
                     )
+
+    def test_codex_readiness_projection_contains_no_account_or_credential_material(self):
+        runtime = Mock()
+        runtime.command = ("/trusted/codex", "app-server", "--stdio")
+        runtime.readiness_status.return_value = "sign_in_required"
+        with patch.object(server, "CODEX_RUNTIME", runtime):
+            source = server.mentat_codex_readiness_payload()
+        self.assertEqual(
+            source,
+            {
+                "schema_version": 1,
+                "state": "sign_in_required",
+                "setup_command": "codex login",
+            },
+        )
+        with patch.object(server, "mentat_codex_readiness_payload", return_value=source):
+            payload, status = local_bridge.bridge_codex_readiness_payload()
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["state"], "sign_in_required")
+        serialized = json.dumps(payload, sort_keys=True)
+        for private in ("account", "credential", "access_token", "refresh_token"):
+            self.assertNotIn(private, serialized)
 
 
 if __name__ == "__main__":

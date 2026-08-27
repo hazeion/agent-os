@@ -157,6 +157,73 @@ _REQUIRED_SCHEMA_OBJECTS = {
             SELECT RAISE(ABORT, 'conversation_run_identity_immutable');
         END
     """,
+    ("table", "mentat_conversation_submission_results"): """
+        CREATE TABLE mentat_conversation_submission_results (
+            turn_id TEXT PRIMARY KEY CHECK (
+                length(turn_id) BETWEEN 1 AND 128
+            ) REFERENCES mentat_conversation_turns(id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL UNIQUE CHECK (
+                length(run_id) BETWEEN 1 AND 128
+            ),
+            runtime_binding_digest TEXT NOT NULL CHECK (
+                length(runtime_binding_digest) = 64
+            ),
+            dispatch_state TEXT NOT NULL CHECK (
+                dispatch_state IN (
+                    'reserved', 'submitting', 'accepted', 'rejected', 'unknown'
+                )
+            ),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'reserved', 'queued', 'submitting', 'starting', 'running',
+                    'cancelling', 'waiting', 'waiting_for_approval',
+                    'waiting_for_clarification', 'unknown', 'completed',
+                    'failed', 'cancelled', 'stopped', 'interrupted'
+                )
+            ),
+            partial INTEGER NOT NULL CHECK (partial IN (0, 1)),
+            updated_at TEXT NOT NULL CHECK (
+                length(updated_at) BETWEEN 1 AND 64
+            )
+        )
+    """,
+    ("trigger", "mentat_conversation_submission_result_insert"): """
+        CREATE TRIGGER mentat_conversation_submission_result_insert
+        AFTER INSERT ON mentat_runs
+        WHEN NEW.source = 'console'
+          AND NEW.conversation_id IS NOT NULL
+          AND NEW.turn_id IS NOT NULL
+        BEGIN
+            INSERT INTO mentat_conversation_submission_results (
+                turn_id, run_id, runtime_binding_digest, dispatch_state,
+                status, partial, updated_at
+            ) VALUES (
+                NEW.turn_id, NEW.id, NEW.runtime_binding_digest,
+                NEW.dispatch_state, NEW.status, NEW.partial, NEW.updated_at
+            );
+        END
+    """,
+    ("trigger", "mentat_conversation_submission_result_update"): """
+        CREATE TRIGGER mentat_conversation_submission_result_update
+        AFTER UPDATE OF status, dispatch_state, partial,
+            runtime_binding_digest, updated_at ON mentat_runs
+        WHEN NEW.source = 'console'
+          AND NEW.conversation_id IS NOT NULL
+          AND NEW.turn_id IS NOT NULL
+        BEGIN
+            UPDATE mentat_conversation_submission_results
+            SET dispatch_state = NEW.dispatch_state,
+                status = NEW.status,
+                partial = NEW.partial,
+                updated_at = NEW.updated_at
+            WHERE turn_id = NEW.turn_id
+              AND run_id = NEW.id
+              AND runtime_binding_digest = NEW.runtime_binding_digest;
+            SELECT CASE WHEN changes() != 1
+                THEN RAISE(ABORT, 'conversation_submission_result_missing')
+            END;
+        END
+    """,
 }
 
 
@@ -212,6 +279,21 @@ class ConversationMessageRecord:
     content_bytes: int
     run_id: str | None
     revision: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ConversationTurnRecord:
+    id: str
+    conversation_id: str
+    user_message_id: str
+    queue_ordinal: int
+    state: str
+    blocked_reason: str | None
+    latest_run_id: str | None
+    revision: int
+    attempt_count: int
     created_at: str
     updated_at: str
 
@@ -274,15 +356,39 @@ def _content(text: object, *, role: str) -> tuple[dict[str, Any], int]:
         "schema_version": CONVERSATION_SCHEMA_VERSION,
         "parts": [{"type": "text", "text": clean}],
     }
-    encoded = json.dumps(
-        value,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ConversationRepositoryValidationError(
+            "conversation.message_invalid"
+        ) from exc
     if len(encoded) > MAX_MESSAGE_CONTENT_BYTES:
         raise ConversationRepositoryValidationError("conversation.message_too_large")
     return value, len(encoded)
+
+
+def canonical_message_content(
+    text: object,
+    *,
+    role: str,
+) -> tuple[dict[str, Any], str, int]:
+    """Return validated content, canonical JSON, and its exact storage size."""
+
+    if role not in {"user", "assistant"}:
+        raise ConversationRepositoryValidationError("conversation.role_invalid")
+    content, content_bytes = _content(text, role=role)
+    encoded = json.dumps(
+        content,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return content, encoded, content_bytes
 
 
 def _encode_conversation_cursor(row: Mapping[str, object]) -> str:
@@ -344,15 +450,32 @@ def _decode_content(value: object, *, role: str, content_bytes: object) -> dict[
             else MAX_ASSISTANT_MESSAGE_LENGTH
         ),
     )
-    canonical, encoded_size = _content(clean, role=role)
-    if type(content_bytes) is not int or content_bytes != encoded_size:
+    canonical, _encoded_size = _content(clean, role=role)
+    try:
+        stored_size = len(value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise ConversationRepositoryValidationError(
+            "conversation.content_invalid"
+        ) from exc
+    if type(content_bytes) is not int or content_bytes != stored_size:
         raise ConversationRepositoryValidationError("conversation.content_invalid")
-    if value != json.dumps(
-        canonical,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ):
+    canonical_values = {
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        # Schema-10 rows used ASCII escaping. Keep those exact rows readable
+        # while all new writes use compact UTF-8 canonical JSON.
+        json.dumps(
+            canonical,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+    if value not in canonical_values:
         raise ConversationRepositoryValidationError("conversation.content_invalid")
     return canonical
 
@@ -433,6 +556,58 @@ def _message_row(row: Mapping[str, object]) -> ConversationMessageRecord:
         content_bytes=int(row["content_bytes"]),
         run_id=str(run_id) if run_id is not None else None,
         revision=revision,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+
+def _turn_row(row: Mapping[str, object]) -> ConversationTurnRecord:
+    identifier = _identifier(row["id"], _TURN_ID, "turn_id_invalid")
+    conversation_id = _identifier(
+        row["conversation_id"], _CONVERSATION_ID, "conversation_id_invalid"
+    )
+    user_message_id = _identifier(
+        row["user_message_id"], _MESSAGE_ID, "message_id_invalid"
+    )
+    queue_ordinal = row["queue_ordinal"]
+    state = row["state"]
+    blocked_reason = row["blocked_reason"]
+    latest_run_id = row["latest_run_id"]
+    revision = row["revision"]
+    attempt_count = row["attempt_count"]
+    if (
+        type(queue_ordinal) is not int
+        or queue_ordinal < 1
+        or state not in {"pending", "dispatching", "consumed", "blocked", "cancelled"}
+        or (state == "blocked") != (blocked_reason is not None)
+        or blocked_reason is not None
+        and blocked_reason not in _BLOCKED_REASONS
+        or type(revision) is not int
+        or revision < 1
+        or type(attempt_count) is not int
+        or attempt_count < 0
+    ):
+        raise ConversationRepositoryValidationError("conversation.turn_invalid")
+    if latest_run_id is not None and (
+        not isinstance(latest_run_id, str)
+        or re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z", latest_run_id)
+        is None
+    ):
+        raise ConversationRepositoryValidationError("conversation.turn_invalid")
+    created_at = _timestamp(row["created_at"])
+    updated_at = _timestamp(row["updated_at"])
+    if created_at is None or updated_at is None:
+        raise ConversationRepositoryValidationError("conversation.turn_invalid")
+    return ConversationTurnRecord(
+        id=identifier,
+        conversation_id=conversation_id,
+        user_message_id=user_message_id,
+        queue_ordinal=queue_ordinal,
+        state=str(state),
+        blocked_reason=str(blocked_reason) if blocked_reason is not None else None,
+        latest_run_id=str(latest_run_id) if latest_run_id is not None else None,
+        revision=revision,
+        attempt_count=attempt_count,
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -585,10 +760,17 @@ def _agent_activity(
     }
 
 
-def validate_repository_connection(connection: sqlite3.Connection) -> int:
-    """Validate schema-10 Conversation rows and cross-row content bounds."""
+def validate_repository_connection(
+    connection: sqlite3.Connection,
+    *,
+    schema_version: int | None = None,
+) -> int:
+    """Validate current rows, or a released schema-10 backup when requested."""
 
     try:
+        expected_version = 11 if schema_version is None else schema_version
+        if expected_version not in {10, 11}:
+            raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         tables = {
             str(row[0])
             for row in connection.execute(
@@ -600,6 +782,8 @@ def validate_repository_connection(connection: sqlite3.Connection) -> int:
             "mentat_conversation_messages",
             "mentat_conversation_turns",
         }
+        if expected_version >= 11:
+            required.add("mentat_conversation_submission_results")
         if not required.issubset(tables):
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         version = int(
@@ -608,9 +792,15 @@ def validate_repository_connection(connection: sqlite3.Connection) -> int:
             ).fetchone()[0]
             or 0
         )
-        if version != 10:
+        if version != expected_version:
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         for (object_type, object_name), expected_sql in _REQUIRED_SCHEMA_OBJECTS.items():
+            if expected_version < 11 and object_name in {
+                "mentat_conversation_submission_results",
+                "mentat_conversation_submission_result_insert",
+                "mentat_conversation_submission_result_update",
+            }:
+                continue
             object_row = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
                 (object_type, object_name),
@@ -638,6 +828,12 @@ def validate_repository_connection(connection: sqlite3.Connection) -> int:
             or turn_count > MAX_TURNS
         ):
             raise ConversationRepositoryLimitError("conversation.capacity_exceeded")
+        duplicate_idempotency = connection.execute(
+            "SELECT idempotency_key_digest FROM mentat_conversation_turns "
+            "GROUP BY idempotency_key_digest HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if duplicate_idempotency is not None:
+            raise ConversationRepositoryError("conversation.turn_invalid")
         total_bytes = 0
         for row in connection.execute(
             "SELECT * FROM mentat_conversations ORDER BY id"
@@ -729,21 +925,63 @@ def validate_repository_connection(connection: sqlite3.Connection) -> int:
                 ):
                     raise ConversationRepositoryError("conversation.turn_invalid")
                 latest_run_id = turn["latest_run_id"]
+                result = None
+                if expected_version >= 11:
+                    result = connection.execute(
+                        "SELECT * FROM mentat_conversation_submission_results "
+                        "WHERE turn_id = ?",
+                        (turn_id,),
+                    ).fetchone()
+                    if (
+                        result is None
+                        or not isinstance(result["run_id"], str)
+                        or not re.fullmatch(
+                            r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z",
+                            result["run_id"],
+                        )
+                        or not _SHA256.fullmatch(str(result["runtime_binding_digest"]))
+                        or result["dispatch_state"] not in {
+                            "reserved", "submitting", "accepted", "rejected", "unknown"
+                        }
+                        or result["status"] not in _ACTIVE_RUN_STATUSES
+                        | {"completed", "failed", "cancelled", "stopped", "interrupted"}
+                        or type(result["partial"]) is not int
+                        or result["partial"] not in {0, 1}
+                        or _timestamp(result["updated_at"]) is None
+                    ):
+                        raise ConversationRepositoryError("conversation.turn_invalid")
                 if latest_run_id is not None:
                     if not isinstance(latest_run_id, str) or not re.fullmatch(
                         r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z", latest_run_id
                     ):
                         raise ConversationRepositoryError("conversation.turn_invalid")
                     latest_run = connection.execute(
-                        "SELECT conversation_id, turn_id FROM mentat_runs WHERE id = ?",
+                        "SELECT conversation_id, turn_id, runtime_binding_digest, "
+                        "dispatch_state, status, partial, updated_at "
+                        "FROM mentat_runs WHERE id = ?",
                         (latest_run_id,),
                     ).fetchone()
                     if (
                         latest_run is None
                         or latest_run["conversation_id"] != conversation.id
                         or latest_run["turn_id"] != turn_id
+                        or (
+                            result is not None
+                            and (
+                                result["run_id"] != latest_run_id
+                                or result["runtime_binding_digest"]
+                                != latest_run["runtime_binding_digest"]
+                                or result["dispatch_state"]
+                                != latest_run["dispatch_state"]
+                                or result["status"] != latest_run["status"]
+                                or result["partial"] != latest_run["partial"]
+                                or result["updated_at"] != latest_run["updated_at"]
+                            )
+                        )
                     ):
                         raise ConversationRepositoryError("conversation.turn_invalid")
+                elif result is not None and result["status"] in _ACTIVE_RUN_STATUSES:
+                    raise ConversationRepositoryError("conversation.turn_invalid")
                 if not turn_id:
                     raise ConversationRepositoryError("conversation.turn_invalid")
             maximum_turn_ordinal = int(
@@ -966,10 +1204,19 @@ class ConversationRepository:
             )
             current = connection.execute(
                 """
-                SELECT id, status, partial, updated_at
-                FROM mentat_runs
-                WHERE conversation_id = ? AND agent_id = ?
-                ORDER BY updated_at DESC, id DESC
+                SELECT r.id, r.status, r.partial, r.updated_at
+                FROM mentat_runs AS r
+                LEFT JOIN mentat_conversation_turns AS t ON t.id = r.turn_id
+                WHERE r.conversation_id = ? AND r.agent_id = ?
+                ORDER BY
+                    CASE WHEN r.status IN (
+                        'reserved', 'submitting', 'queued', 'starting', 'running',
+                        'cancelling', 'waiting', 'waiting_for_approval',
+                        'waiting_for_clarification', 'unknown'
+                    ) THEN 0 ELSE 1 END,
+                    COALESCE(t.queue_ordinal, 0) DESC,
+                    r.updated_at DESC,
+                    r.id DESC
                 LIMIT 1
                 """,
                 (identifier, conversation.agent_id),
@@ -982,6 +1229,34 @@ class ConversationRepository:
                 next_cursor,
                 current_run,
             )
+        finally:
+            connection.close()
+
+    def read_message(self, message_id: str) -> ConversationMessageRecord:
+        identifier = _identifier(message_id, _MESSAGE_ID, "message_id_invalid")
+        connection = self._connection()
+        try:
+            row = connection.execute(
+                "SELECT * FROM mentat_conversation_messages WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                raise ConversationRepositoryConflict("conversation.message_not_found")
+            return _message_row(row)
+        finally:
+            connection.close()
+
+    def read_turn(self, turn_id: str) -> ConversationTurnRecord:
+        identifier = _identifier(turn_id, _TURN_ID, "turn_id_invalid")
+        connection = self._connection()
+        try:
+            row = connection.execute(
+                "SELECT * FROM mentat_conversation_turns WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                raise ConversationRepositoryConflict("conversation.turn_not_found")
+            return _turn_row(row)
         finally:
             connection.close()
 
@@ -1142,6 +1417,26 @@ def conversation_public(record: ConversationRead) -> dict[str, Any]:
         "messages": [_message_public(message) for message in record.messages],
         "next_message_cursor": record.next_message_cursor,
         "current_run": record.current_run,
+    }
+
+
+def conversation_message_public(record: ConversationMessageRecord) -> dict[str, Any]:
+    return _message_public(record)
+
+
+def conversation_turn_public(record: ConversationTurnRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "conversation_id": record.conversation_id,
+        "user_message_id": record.user_message_id,
+        "queue_ordinal": record.queue_ordinal,
+        "state": record.state,
+        "blocked_reason": record.blocked_reason,
+        "latest_run_id": record.latest_run_id,
+        "revision": record.revision,
+        "attempt_count": record.attempt_count,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
     }
 
 

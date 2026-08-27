@@ -102,6 +102,7 @@ class RuntimeBinding:
     id: str
     runtime_type: str
     runtime_agent_ref: str
+    revision: int
 
 
 @dataclass(frozen=True)
@@ -415,6 +416,7 @@ def _legacy_records(
                     id=str(row["runtime_config_id"]),
                     runtime_type=str(row["runtime_type"]),
                     runtime_agent_ref=str(row["runtime_agent_ref"]),
+                    revision=1,
                 ),
                 agent_created_at=float(row["agent_created_at"]),
                 agent_updated_at=float(row["agent_updated_at"]),
@@ -784,7 +786,7 @@ def validate_registry_connection(
                 )
             except (sqlite3.Error, TypeError, ValueError) as exc:
                 raise AgentRegistryError("agent_registry.corrupt") from exc
-            if schema_version not in {8, 9, DATABASE_SCHEMA_VERSION}:
+            if schema_version not in {8, 9, 10, DATABASE_SCHEMA_VERSION}:
                 raise AgentRegistryError("agent_registry.unsupported")
             if (
                 _embedded_schema_signature(connection)
@@ -1193,6 +1195,7 @@ class AgentRegistry:
                 id=str(row["id"]),
                 runtime_type=str(row["runtime_type"]),
                 runtime_agent_ref=str(row["runtime_agent_ref"]),
+                revision=1,
             )
             if binding.runtime_type not in self.supported_runtime_types:
                 raise ValueError("unsupported runtime")

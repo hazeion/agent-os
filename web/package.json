@@ -13,7 +13,7 @@
     "lighthouse:gate": "node scripts/lighthouse-gate.mjs",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.ts",
+    "test": "node --import ./scripts/register-test-typescript.mjs --test tests/*.test.ts*",
     "check": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {
@@ -25,12 +25,16 @@
   },
   "devDependencies": {
     "@puppeteer/browsers": "3.2.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.6",
+    "@types/jsdom": "30.0.0",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "chrome-launcher": "1.2.1",
     "eslint": "9.39.5",
     "eslint-config-next": "16.3.2",
+    "jsdom": "30.0.1",
     "lighthouse": "13.4.1",
     "typescript": "6.0.3"
   }

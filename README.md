@@ -45,8 +45,22 @@ You need:
 - [Git](https://git-scm.com/downloads)
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) for Hermes features
 
-Codex execution needs an installed Codex CLI that is already signed in. Hermes
-is still required for Hermes chat, delegation, sessions, and profile features.
+Codex execution needs an installed Codex CLI. Sign in with the ChatGPT account
+that owns your Codex subscription, then verify the local CLI:
+
+```bash
+codex login
+codex login status
+```
+
+Complete the browser sign-in opened by `codex login`, then start Mentat and use
+**Recheck** in the Agent Console. If you install the CLI while Mentat is already
+running, restart Mentat so readiness and dispatch use the same fixed CLI
+process. Mentat asks the Codex CLI only for a bounded readiness
+state; never paste a password, token, API key, cookie, or Codex auth file into
+Mentat. See the [official Codex authentication guide](https://developers.openai.com/codex/auth/)
+for CLI setup. Hermes is still required for Hermes chat, delegation, sessions,
+and profile features.
 
 macOS and Windows are the main beta platforms. Linux is available as a preview.
 See [supported platforms and known limitations](SUPPORT.md) before installing.
@@ -83,7 +97,8 @@ Open [http://localhost:8888](http://localhost:8888) if your browser does not
 open on its own.
 
 Mentat works as a project planner without an agent runtime. Install Hermes for
-Hermes features, or sign in through the Codex CLI for Codex task execution.
+Hermes features, or sign in through the Codex CLI for Codex task and Agent
+Console execution.
 
 The setup helper stores settings on your computer. Hermes continues to manage
 provider credentials. To connect Mentat to Hermes on another computer, follow

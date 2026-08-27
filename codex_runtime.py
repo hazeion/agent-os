@@ -46,9 +46,29 @@ MAXIMUM_PROTOCOL_LINE_BYTES = 8 * 1024 * 1024
 MAXIMUM_PROTOCOL_REQUEST_BYTES = 256 * 1024
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 READINESS_REQUEST_TIMEOUT_SECONDS = 5.0
+START_TASK_OPERATION_TIMEOUT_SECONDS = 20.0
 READINESS_CACHE_SECONDS = 5.0
 MAXIMUM_TURN_ITEMS = 4096
 MAXIMUM_TASK_PROMPT_BYTES = 40_000
+
+_ACCOUNT_TYPES = frozenset({"apiKey", "chatgpt", "amazonBedrock"})
+_CHATGPT_PLAN_TYPES = frozenset(
+    {
+        "free",
+        "go",
+        "plus",
+        "pro",
+        "prolite",
+        "team",
+        "self_serve_business_usage_based",
+        "business",
+        "enterprise_cbp_usage_based",
+        "enterprise",
+        "edu",
+        "unknown",
+    }
+)
+_APPROVAL_REVIEWERS = frozenset({"user", "auto_review", "guardian_subagent"})
 
 _RUNTIME_ID_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _ITEM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
@@ -491,8 +511,14 @@ class CodexAppServerClient:
                 )
                 self._reader = reader
                 reader.start()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CodexAppServerClientError(
+                    "codex.request_timeout",
+                    uncertain=False,
+                )
             initialized = self._request_started(
-                "initialize", self._initialize_params(), timeout=startup_timeout
+                "initialize", self._initialize_params(), timeout=remaining
             )
             if not isinstance(initialized, Mapping):
                 raise CodexAppServerClientError("codex.protocol_invalid", uncertain=False)
@@ -599,8 +625,15 @@ class CodexAppServerClient:
             request_timeout
         ) <= 120:
             raise CodexAppServerClientError("codex.request_invalid", uncertain=False)
+        deadline = time.monotonic() + float(request_timeout)
         self._ensure_ready(timeout=float(request_timeout))
-        return self._request_started(method, params, timeout=float(request_timeout))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CodexAppServerClientError(
+                "codex.request_timeout",
+                uncertain=False,
+            )
+        return self._request_started(method, params, timeout=remaining)
 
     def _deliver_response(self, message: Mapping[str, Any], generation: int) -> bool:
         request_id = message.get("id")
@@ -798,6 +831,7 @@ class CodexRuntime:
         self._readiness_lock = threading.Lock()
         self._readiness_checked_at = 0.0
         self._readiness_available = False
+        self._readiness_state = "unavailable"
         self._closed = False
 
     @staticmethod
@@ -810,47 +844,72 @@ class CodexRuntime:
             return False
         if account is None:
             return not requires_openai_auth
-        account_type = account.get("type") if isinstance(account, Mapping) else None
-        return (
-            isinstance(account_type, str)
-            and 0 < len(account_type) <= 80
-            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", account_type) is not None
-        )
+        if not isinstance(account, Mapping):
+            return False
+        account_type = account.get("type")
+        if account_type not in _ACCOUNT_TYPES:
+            return False
+        if account_type == "chatgpt":
+            email = account.get("email")
+            return (
+                (email is None or isinstance(email, str))
+                and account.get("planType") in _CHATGPT_PLAN_TYPES
+            )
+        if account_type == "amazonBedrock":
+            return account.get("credentialSource", "awsManaged") in {
+                "codexManaged",
+                "awsManaged",
+            }
+        return True
 
-    def _readiness_capabilities(self, *, force: bool) -> frozenset[str]:
+    @classmethod
+    def _account_readiness_state(cls, response: object) -> str:
+        if not isinstance(response, Mapping):
+            return "unavailable"
+        requires_openai_auth = response.get("requiresOpenaiAuth")
+        account = response.get("account")
+        if type(requires_openai_auth) is not bool:
+            return "unavailable"
+        if account is None:
+            return "sign_in_required" if requires_openai_auth else "ready"
+        return "ready" if cls._account_is_ready(response) else "unavailable"
+
+    def readiness_status(self, *, force: bool = True) -> str:
+        """Return one bounded state without exposing Codex account metadata."""
+
         now = time.monotonic()
         with self._client_lock:
-            if self._closed or (self.command is None and self._client is None):
-                return frozenset()
+            if self._closed:
+                return "unavailable"
+            if self.command is None and self._client is None:
+                return "cli_missing"
             if (
                 not force
                 and self._readiness_checked_at > 0
                 and now - self._readiness_checked_at <= READINESS_CACHE_SECONDS
             ):
-                return _ACTIVE_CAPABILITIES if self._readiness_available else frozenset()
+                return self._readiness_state
 
         with self._readiness_lock:
             now = time.monotonic()
             with self._client_lock:
-                if self._closed or (self.command is None and self._client is None):
-                    return frozenset()
+                if self._closed:
+                    return "unavailable"
+                if self.command is None and self._client is None:
+                    return "cli_missing"
                 if (
                     not force
                     and self._readiness_checked_at > 0
                     and now - self._readiness_checked_at <= READINESS_CACHE_SECONDS
                 ):
-                    return (
-                        _ACTIVE_CAPABILITIES
-                        if self._readiness_available
-                        else frozenset()
-                    )
+                    return self._readiness_state
             try:
                 response = self._require_client().request(
                     "account/read",
                     {"refreshToken": False},
                     timeout=READINESS_REQUEST_TIMEOUT_SECONDS,
                 )
-                available = self._account_is_ready(response)
+                state = self._account_readiness_state(response)
             except (
                 AttributeError,
                 CodexAppServerClientError,
@@ -858,13 +917,21 @@ class CodexRuntime:
                 TypeError,
                 ValueError,
             ):
-                available = False
+                state = "unavailable"
             with self._client_lock:
                 if self._closed:
-                    return frozenset()
+                    return "unavailable"
                 self._readiness_checked_at = time.monotonic()
-                self._readiness_available = available
-            return _ACTIVE_CAPABILITIES if available else frozenset()
+                self._readiness_state = state
+                self._readiness_available = state == "ready"
+            return state
+
+    def _readiness_capabilities(self, *, force: bool) -> frozenset[str]:
+        return (
+            _ACTIVE_CAPABILITIES
+            if self.readiness_status(force=force) == "ready"
+            else frozenset()
+        )
 
     @property
     def capabilities(self) -> frozenset[str]:
@@ -880,7 +947,7 @@ class CodexRuntime:
         if not codex_binding_is_valid(runtime_agent_ref, capabilities):
             raise AgentRuntimeError("runtime.binding_invalid")
         requested = frozenset(capabilities)
-        available = self._readiness_capabilities(force=True)
+        available = self._readiness_capabilities(force=False)
         if (
             RuntimeCapability.START_TASK.value not in available
             or not requested.issubset(available)
@@ -905,6 +972,7 @@ class CodexRuntime:
                 return
             self._closed = True
             self._readiness_available = False
+            self._readiness_state = "unavailable"
             client = self._client
             self._client = None
         if client is not None:
@@ -918,11 +986,17 @@ class CodexRuntime:
         )
 
     @staticmethod
-    def _unknown(code: str, *, runtime_run_ref: str | None = None) -> SubmissionOutcome:
+    def _unknown(
+        code: str,
+        *,
+        runtime_run_ref: str | None = None,
+        execution_identity: Mapping[str, str | None] | None = None,
+    ) -> SubmissionOutcome:
         return SubmissionOutcome(
             SubmissionDisposition.UNKNOWN,
             runtime_run_ref=runtime_run_ref,
             failure_code=code,
+            execution_identity=execution_identity,
         )
 
     @staticmethod
@@ -946,27 +1020,75 @@ class CodexRuntime:
             and (task.assigned_agent_id is None or task.assigned_agent_id == context.agent_id)
         )
 
-    def _verified_thread_id(self, response: object) -> str:
+    def _verified_thread(
+        self,
+        response: object,
+    ) -> tuple[str, Mapping[str, str | None]]:
         if not isinstance(response, Mapping):
             raise ValueError("Codex thread response is invalid")
+        required = {
+            "approvalPolicy",
+            "approvalsReviewer",
+            "cwd",
+            "model",
+            "modelProvider",
+            "sandbox",
+            "thread",
+        }
+        if not required.issubset(response):
+            raise ValueError("Codex thread boundary is incomplete")
         thread = response.get("thread")
         if not isinstance(thread, Mapping):
             raise ValueError("Codex thread boundary is invalid")
-        if "approvalPolicy" in response and response.get("approvalPolicy") != "never":
+        if response.get("approvalPolicy") != "never":
             raise ValueError("Codex thread boundary is invalid")
-        if "cwd" in response:
-            cwd = response.get("cwd")
-            if not isinstance(cwd, str) or Path(cwd).resolve() != self.workspace_root:
+        if response.get("approvalsReviewer") not in _APPROVAL_REVIEWERS:
+            raise ValueError("Codex thread boundary is invalid")
+        cwd = response.get("cwd")
+        if not isinstance(cwd, str) or Path(cwd).resolve() != self.workspace_root:
+            raise ValueError("Codex thread boundary is invalid")
+        for key in ("model", "modelProvider"):
+            value = response.get(key)
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 160
+                or "\x00" in value
+            ):
                 raise ValueError("Codex thread boundary is invalid")
-        if "sandbox" in response:
-            sandbox = response.get("sandbox")
-            sandbox_type = sandbox.get("type") if isinstance(sandbox, Mapping) else sandbox
-            if sandbox_type != "workspaceWrite":
-                raise ValueError("Codex thread boundary is invalid")
+        reasoning_effort = response.get("reasoningEffort")
+        if reasoning_effort is not None and (
+            not isinstance(reasoning_effort, str)
+            or not reasoning_effort
+            or len(reasoning_effort) > 64
+            or "\x00" in reasoning_effort
+        ):
+            raise ValueError("Codex thread boundary is invalid")
+        sandbox = response.get("sandbox")
+        if not isinstance(sandbox, Mapping):
+            raise ValueError("Codex thread boundary is invalid")
+        writable_roots = sandbox.get("writableRoots")
+        if (
+            sandbox.get("type") != "workspaceWrite"
+            or sandbox.get("networkAccess") is not False
+            or not isinstance(writable_roots, list)
+            or len(writable_roots) > 1
+            or any(
+                not isinstance(root, str)
+                or Path(root).resolve() != self.workspace_root
+                for root in writable_roots
+            )
+        ):
+            raise ValueError("Codex thread boundary is invalid")
         thread_id = thread.get("id")
         if not isinstance(thread_id, str) or _RUNTIME_ID_PART.fullmatch(thread_id) is None:
             raise ValueError("Codex thread identity is invalid")
-        return thread_id
+        return thread_id, {
+            "model": str(response["model"]),
+            "provider": str(response["modelProvider"]),
+            "reasoning_effort": reasoning_effort,
+            "verification": "runtime_response",
+        }
 
     @staticmethod
     def _verified_turn(response: object) -> Mapping[str, Any]:
@@ -986,12 +1108,23 @@ class CodexRuntime:
     def submit_task(self, task: MentatTask, context: RuntimeContext) -> SubmissionOutcome:
         if not self._submission_binding_valid(task, context):
             return self._rejected("runtime.binding_invalid")
-        if RuntimeCapability.START_TASK.value not in self._readiness_capabilities(force=True):
+        if RuntimeCapability.START_TASK.value not in self._readiness_capabilities(force=False):
             return self._rejected("runtime.start_rejected")
         try:
             prompt = self._task_prompt(task)
         except (TypeError, ValueError, UnicodeError):
             return self._rejected("runtime.task_invalid")
+        deadline = time.monotonic() + START_TASK_OPERATION_TIMEOUT_SECONDS
+
+        def remaining_timeout() -> float:
+            remaining = deadline - time.monotonic()
+            if remaining < 0.1:
+                raise CodexAppServerClientError(
+                    "codex.request_timeout",
+                    uncertain=False,
+                )
+            return remaining
+
         try:
             client = self._require_client()
             thread_response = client.request(
@@ -1000,16 +1133,17 @@ class CodexRuntime:
                     "approvalPolicy": "never",
                     "cwd": str(self.workspace_root),
                     "ephemeral": False,
-                    "sandbox": "workspaceWrite",
+                    "sandbox": "workspace-write",
                     "serviceName": "mentat",
                 },
+                timeout=remaining_timeout(),
             )
         except CodexAppServerClientError as exc:
             if exc.uncertain:
                 return self._unknown("runtime.submission_unknown")
             return self._rejected("runtime.start_rejected")
         try:
-            thread_id = self._verified_thread_id(thread_response)
+            thread_id, execution_identity = self._verified_thread(thread_response)
         except (OSError, ValueError):
             return self._unknown("runtime.start_unverified")
         try:
@@ -1026,14 +1160,21 @@ class CodexRuntime:
                         "networkAccess": False,
                     },
                 },
+                timeout=remaining_timeout(),
             )
         except CodexAppServerClientError:
-            return self._unknown("runtime.submission_unknown")
+            return self._unknown(
+                "runtime.submission_unknown",
+                execution_identity=execution_identity,
+            )
         try:
             turn = self._verified_turn(turn_response)
             runtime_ref = _runtime_reference(thread_id, turn["id"])
         except (TypeError, ValueError):
-            return self._unknown("runtime.start_unverified")
+            return self._unknown(
+                "runtime.start_unverified",
+                execution_identity=execution_identity,
+            )
         run = AgentRun(
             id=context.mentat_run_id or "",
             task_id=task.id,
@@ -1045,6 +1186,7 @@ class CodexRuntime:
             SubmissionDisposition.ACCEPTED,
             run=run,
             runtime_run_ref=runtime_ref,
+            execution_identity=execution_identity,
         )
 
     @staticmethod

@@ -1,12 +1,17 @@
 export const PUBLIC_CONVERSATIONS_PATH = "/api/conversations";
 export const PUBLIC_ACTIVITY_PATH = "/api/agent-activity";
+export const PUBLIC_CODEX_READINESS_PATH = "/api/codex-readiness";
 
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
 const PRIVATE_ACTIVITY_PATH = "/bridge/v1/agent-activity";
+const PRIVATE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness";
 const MAXIMUM_RESPONSE_BYTES = 3_000_000;
+const READ_TIMEOUT_MILLISECONDS = 3_500;
 const MAXIMUM_CONVERSATIONS = 50;
 const MAXIMUM_AGENTS = 128;
 const MAXIMUM_MESSAGES = 100;
+export const CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS = 32_000;
+export const CODEX_READINESS_BRIDGE_TIMEOUT_MILLISECONDS = 8_000;
 
 type Environment = Readonly<Record<string, string | undefined>>;
 type FetchLike = (
@@ -52,6 +57,42 @@ export type PublicCurrentRun = {
   status: string;
   partial: boolean;
   updated_at: string;
+};
+
+export type PublicConversationTurn = {
+  id: string;
+  conversation_id: string;
+  user_message_id: string;
+  queue_ordinal: number;
+  state: "dispatching" | "consumed";
+  blocked_reason: null;
+  latest_run_id: string | null;
+  revision: number;
+  attempt_count: 0 | 1;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PublicConversationTurnSubmission = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  duplicate: boolean;
+  disposition: "reserved" | "submitting" | "accepted" | "rejected" | "unknown";
+  conversation: PublicConversation;
+  message: PublicConversationMessage;
+  turn: PublicConversationTurn;
+  run: PublicCurrentRun | null;
+};
+
+export type PublicCodexReadiness = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  state: "cli_missing" | "sign_in_required" | "ready" | "unavailable";
+  setup_command: "codex login" | null;
 };
 
 export type PublicConversationList = {
@@ -152,6 +193,10 @@ function runId(value: unknown): value is string {
   return typeof value === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(value);
 }
 
+function turnId(value: unknown): value is string {
+  return typeof value === "string" && /^turn_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u.test(value);
+}
+
 function timestamp(value: unknown): value is string {
   return typeof value === "string"
     && value.length <= 40
@@ -247,6 +292,65 @@ function validCurrentRun(value: unknown): value is PublicCurrentRun | null {
     && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(run.status)
     && typeof run.partial === "boolean"
     && timestamp(run.updated_at);
+}
+
+function validTurn(value: unknown): value is PublicConversationTurn {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const turn = value as Record<string, unknown>;
+  return Object.keys(turn).sort().join(",") === "attempt_count,blocked_reason,conversation_id,created_at,id,latest_run_id,queue_ordinal,revision,state,updated_at,user_message_id"
+    && turnId(turn.id)
+    && conversationId(turn.conversation_id)
+    && messageId(turn.user_message_id)
+    && Number.isInteger(turn.queue_ordinal)
+    && (turn.queue_ordinal as number) >= 1
+    && (turn.state === "dispatching" || turn.state === "consumed")
+    && turn.blocked_reason === null
+    && (turn.latest_run_id === null || runId(turn.latest_run_id))
+    && Number.isInteger(turn.revision)
+    && (turn.revision as number) >= 1
+    && (turn.attempt_count === 0 || turn.attempt_count === 1)
+    && timestamp(turn.created_at)
+    && timestamp(turn.updated_at);
+}
+
+function validTurnSubmission(value: unknown): value is PublicConversationTurnSubmission {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  if (
+    Object.keys(payload).sort().join(",") !== "conversation,disposition,duplicate,message,run,runtime,schema_version,service,status,turn"
+    || payload.schema_version !== 1
+    || payload.service !== "mentat-local-bridge"
+    || payload.runtime !== "python"
+    || payload.status !== "ready"
+    || typeof payload.duplicate !== "boolean"
+    || !["reserved", "submitting", "accepted", "rejected", "unknown"].includes(String(payload.disposition))
+    || !validConversation(payload.conversation)
+    || !validMessage(payload.message)
+    || !validTurn(payload.turn)
+    || !validCurrentRun(payload.run)
+  ) return false;
+  const conversation = payload.conversation as PublicConversation;
+  const message = payload.message as PublicConversationMessage;
+  const turn = payload.turn as PublicConversationTurn;
+  const run = payload.run as PublicCurrentRun | null;
+  return message.conversation_id === conversation.id
+    && turn.conversation_id === conversation.id
+    && turn.user_message_id === message.id
+    && message.run_id === turn.latest_run_id
+    && (run === null || run.id === turn.latest_run_id);
+}
+
+function validCodexReadiness(value: unknown): value is PublicCodexReadiness {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  return Object.keys(payload).sort().join(",") === "runtime,schema_version,service,setup_command,state,status"
+    && payload.schema_version === 1
+    && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python"
+    && payload.status === "ready"
+    && ["cli_missing", "sign_in_required", "ready", "unavailable"].includes(String(payload.state))
+    && (payload.setup_command === null || payload.setup_command === "codex login")
+    && ((payload.state === "sign_in_required") === (payload.setup_command === "codex login"));
 }
 
 function validList(value: unknown): value is PublicConversationList {
@@ -386,6 +490,7 @@ async function requestBridge(
   fetcher: FetchLike,
   environment: Environment,
   init: RequestInit,
+  timeoutMilliseconds = READ_TIMEOUT_MILLISECONDS,
 ): Promise<{ response: Response; payload: unknown }> {
   const bridge = configuration(environment);
   try {
@@ -398,7 +503,7 @@ async function requestBridge(
         ...init.headers,
       },
       redirect: "error",
-      signal: AbortSignal.timeout(1500),
+      signal: AbortSignal.timeout(timeoutMilliseconds),
     });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
       throw new BridgeConversationsError("bridge_response_invalid");
@@ -418,6 +523,13 @@ function handleFixedState(response: Response, payload: unknown): never {
   if (Object.keys(value).sort().join(",") !== "runtime,schema_version,service,status" || value.schema_version !== 1 || value.service !== "mentat-local-bridge" || value.runtime !== "python") {
     throw new BridgeConversationsError("bridge_response_invalid");
   }
+  if (response.status === 400 && value.status === "invalid") throw new BridgeConversationsError("conversation_request_invalid");
+  if (response.status === 404 && value.status === "not_found") throw new BridgeConversationsError("conversation_not_found");
+  if (response.status === 409 && value.status === "active_run") throw new BridgeConversationsError("conversation_active_run");
+  if (response.status === 409 && value.status === "capacity_unavailable") throw new BridgeConversationsError("conversation_capacity_unavailable");
+  if (response.status === 409 && value.status === "idempotency_conflict") throw new BridgeConversationsError("conversation_idempotency_conflict");
+  if (response.status === 409 && value.status === "cli_missing") throw new BridgeConversationsError("codex_cli_missing");
+  if (response.status === 409 && value.status === "sign_in_required") throw new BridgeConversationsError("codex_sign_in_required");
   if (response.status === 501 && value.status === "unsupported") throw new BridgeConversationsError("bridge_unsupported");
   if (response.status === 503 && value.status === "unavailable") throw new BridgeConversationsError("bridge_unavailable");
   throw new BridgeConversationsError("bridge_response_invalid");
@@ -486,6 +598,73 @@ export async function createBridgeConversation(
   if (response.status === 404 && payload && typeof payload === "object" && !Array.isArray(payload) && (payload as Record<string, unknown>).status === "not_found") {
     throw new BridgeConversationsError("conversation_not_found");
   }
+  handleFixedState(response, payload);
+}
+
+export async function submitBridgeConversationTurn(
+  id: string,
+  text: string,
+  idempotencyKey: string,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+  timeoutMilliseconds = CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS,
+): Promise<PublicConversationTurnSubmission> {
+  const keyBytes = typeof idempotencyKey === "string"
+    ? new TextEncoder().encode(idempotencyKey).byteLength
+    : 0;
+  if (
+    !conversationId(id)
+    || typeof text !== "string"
+    || !text.trim()
+    || text.trim() !== text
+    || [...text].length > 6_000
+    || text.includes("\0")
+    || keyBytes < 16
+    || keyBytes > 256
+    || idempotencyKey.includes("\0")
+  ) throw new BridgeConversationsError("conversation_request_invalid");
+  const { response, payload } = await requestBridge(
+    `${PRIVATE_CONVERSATIONS_PATH}/${encodeURIComponent(id)}/turns`,
+    fetcher,
+    environment,
+    {
+      body: JSON.stringify({ idempotency_key: idempotencyKey, text }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+    timeoutMilliseconds,
+  );
+  if ((response.status === 200 || response.status === 202) && validTurnSubmission(payload)) {
+    return {
+      ...payload,
+      conversation: { ...payload.conversation },
+      message: {
+        ...payload.message,
+        content: {
+          schema_version: 1,
+          parts: [{ type: "text", text: payload.message.content.parts[0].text }],
+        },
+      },
+      turn: { ...payload.turn },
+      run: payload.run === null ? null : { ...payload.run },
+    };
+  }
+  handleFixedState(response, payload);
+}
+
+export async function fetchBridgeCodexReadiness(
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+  timeoutMilliseconds = CODEX_READINESS_BRIDGE_TIMEOUT_MILLISECONDS,
+): Promise<PublicCodexReadiness> {
+  const { response, payload } = await requestBridge(
+    PRIVATE_CODEX_READINESS_PATH,
+    fetcher,
+    environment,
+    { method: "GET" },
+    timeoutMilliseconds,
+  );
+  if (response.status === 200 && validCodexReadiness(payload)) return { ...payload };
   handleFixedState(response, payload);
 }
 

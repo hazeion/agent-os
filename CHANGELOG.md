@@ -5,6 +5,15 @@ All notable changes to Mentat.
 ## 2026-08-26
 
 ### Added
+- Added Agent Console text Turn submission through one fixed Next.js/Python
+  capability, with atomic Message, Turn, Run, idempotency, immutable execution
+  configuration, and bounded capacity evidence before one unlocked runtime call.
+- Added write-once verified runtime-execution identity plus synchronous
+  pre-readiness crash classification and asynchronous exact-reference readback
+  for the Next.js bridge.
+- Added explicit Codex CLI readiness states and `codex login` guidance so each
+  operator can reuse their own ChatGPT subscription sign-in without giving
+  Mentat credential material.
 - Added the Agent Console Slice 1 conversation foundation: schema-10
   Conversation, Message, Turn, and Conversation-Run identity; a canonical
   Direct Agent; bounded list/detail/create/activity bridge capabilities; and
@@ -14,6 +23,12 @@ All notable changes to Mentat.
   until the next Console slice.
 
 ### Changed
+- Enabled the Next.js prompt composer for idle Conversations with optimistic
+  display, Enter-to-send, Shift+Enter newline, exact replay handling, honest
+  active-Run gating, one-time pre-Conversation drafts, and Conversation-scoped
+  drafts, unresolved retry keys, and Turn announcements.
+- Hardened private mutation bodies with exact framing, transfer-encoding
+  rejection, and a total wall-clock read deadline.
 - Centered the Home rail seams against the app viewport so both collapse
   handles remain aligned with the full page in expanded and collapsed states.
 - Corrected the left rail's collapse/expand state, accessible label, and arrow
@@ -21,6 +36,9 @@ All notable changes to Mentat.
   to match the approved composition.
 
 ### Safety
+- Kept Codex thread and turn references, runtime configuration, capacity scope,
+  account data, and authentication material behind the private SQLite/runtime
+  boundary; ambiguous submissions remain durable and are never auto-retried.
 - Kept Conversation and Message authority in private SQLite and exposed only
   bounded, validated Mentat-owned projections through same-origin BFF routes.
   Runtime references, credentials, local paths, and raw provider payloads do

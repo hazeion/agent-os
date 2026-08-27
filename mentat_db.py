@@ -22,7 +22,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -790,6 +790,109 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             OR OLD.admitted_capacity_limit IS NOT NEW.admitted_capacity_limit
         BEGIN
             SELECT RAISE(ABORT, 'conversation_run_identity_immutable');
+        END;
+        """,
+    ),
+    (
+        11,
+        """
+        ALTER TABLE mentat_runs
+            ADD COLUMN runtime_execution_json TEXT CHECK (
+                runtime_execution_json IS NULL
+                OR length(runtime_execution_json) <= 2048
+            );
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN runtime_execution_digest TEXT CHECK (
+                runtime_execution_digest IS NULL
+                OR length(runtime_execution_digest) = 64
+            );
+
+        CREATE TRIGGER mentat_runs_runtime_execution_immutable
+        BEFORE UPDATE OF runtime_execution_json, runtime_execution_digest
+            ON mentat_runs
+        WHEN OLD.runtime_execution_json IS NOT NULL
+            OR OLD.runtime_execution_digest IS NOT NULL
+            OR (NEW.runtime_execution_json IS NULL)
+                IS NOT (NEW.runtime_execution_digest IS NULL)
+        BEGIN
+            SELECT RAISE(ABORT, 'runtime_execution_immutable');
+        END;
+
+        CREATE TABLE mentat_conversation_submission_results (
+            turn_id TEXT PRIMARY KEY CHECK (
+                length(turn_id) BETWEEN 1 AND 128
+            ) REFERENCES mentat_conversation_turns(id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL UNIQUE CHECK (
+                length(run_id) BETWEEN 1 AND 128
+            ),
+            runtime_binding_digest TEXT NOT NULL CHECK (
+                length(runtime_binding_digest) = 64
+            ),
+            dispatch_state TEXT NOT NULL CHECK (
+                dispatch_state IN (
+                    'reserved', 'submitting', 'accepted', 'rejected', 'unknown'
+                )
+            ),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'reserved', 'queued', 'submitting', 'starting', 'running',
+                    'cancelling', 'waiting', 'waiting_for_approval',
+                    'waiting_for_clarification', 'unknown', 'completed',
+                    'failed', 'cancelled', 'stopped', 'interrupted'
+                )
+            ),
+            partial INTEGER NOT NULL CHECK (partial IN (0, 1)),
+            updated_at TEXT NOT NULL CHECK (
+                length(updated_at) BETWEEN 1 AND 64
+            )
+        );
+
+        INSERT INTO mentat_conversation_submission_results (
+            turn_id, run_id, runtime_binding_digest, dispatch_state,
+            status, partial, updated_at
+        )
+        SELECT t.id, r.id, r.runtime_binding_digest, r.dispatch_state,
+               r.status, r.partial, r.updated_at
+        FROM mentat_conversation_turns AS t
+        JOIN mentat_runs AS r ON r.id = t.latest_run_id
+        WHERE r.source = 'console'
+          AND r.conversation_id = t.conversation_id
+          AND r.turn_id = t.id;
+
+        CREATE TRIGGER mentat_conversation_submission_result_insert
+        AFTER INSERT ON mentat_runs
+        WHEN NEW.source = 'console'
+          AND NEW.conversation_id IS NOT NULL
+          AND NEW.turn_id IS NOT NULL
+        BEGIN
+            INSERT INTO mentat_conversation_submission_results (
+                turn_id, run_id, runtime_binding_digest, dispatch_state,
+                status, partial, updated_at
+            ) VALUES (
+                NEW.turn_id, NEW.id, NEW.runtime_binding_digest,
+                NEW.dispatch_state, NEW.status, NEW.partial, NEW.updated_at
+            );
+        END;
+
+        CREATE TRIGGER mentat_conversation_submission_result_update
+        AFTER UPDATE OF status, dispatch_state, partial,
+            runtime_binding_digest, updated_at ON mentat_runs
+        WHEN NEW.source = 'console'
+          AND NEW.conversation_id IS NOT NULL
+          AND NEW.turn_id IS NOT NULL
+        BEGIN
+            UPDATE mentat_conversation_submission_results
+            SET dispatch_state = NEW.dispatch_state,
+                status = NEW.status,
+                partial = NEW.partial,
+                updated_at = NEW.updated_at
+            WHERE turn_id = NEW.turn_id
+              AND run_id = NEW.id
+              AND runtime_binding_digest = NEW.runtime_binding_digest;
+            SELECT CASE WHEN changes() != 1
+                THEN RAISE(ABORT, 'conversation_submission_result_missing')
+            END;
         END;
         """,
     ),

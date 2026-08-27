@@ -57,7 +57,9 @@ from conversation_repository import (
     ConversationRepository,
     ConversationRepositoryError,
     activity_public,
+    conversation_message_public,
     conversation_public,
+    conversation_turn_public,
     conversations_public,
 )
 from run_repository import (
@@ -166,6 +168,7 @@ from mentat_db import (
     MentatDatabaseError,
     connect as connect_mentat_database,
     connect_existing_readonly as connect_existing_mentat_database,
+    database_path as mentat_database_path,
 )
 from hermes_skills import apply_builtin_skill_selection, discover_builtin_skills
 from hermes_kanban import HermesKanbanAdapter, RemoteHermesKanbanAdapter, sanitize_public_text
@@ -456,6 +459,18 @@ REMOTE_CONSOLE_POLL_INTERVAL_SECONDS = 1.0
 REMOTE_CONSOLE_SHUTDOWN_WAIT_SECONDS = 6.0
 MAX_JSON_BODY_BYTES = 256_000
 AGENT_CONSOLE_ACTIVE_STATUSES = {"queued", "running", "cancelling", "waiting_for_approval", "waiting_for_clarification"}
+MENTAT_PROVIDER_ACTIVE_RUN_STATUSES = (
+    "reserved",
+    "queued",
+    "submitting",
+    "starting",
+    "running",
+    "cancelling",
+    "waiting",
+    "waiting_for_approval",
+    "waiting_for_clarification",
+    "unknown",
+)
 HERMES_KANBAN_LOCK = threading.RLock()
 AGENT_MODEL_CATALOG_TTL_SECONDS = 120
 AGENT_MODEL_CATALOG_CACHE = {"key": None, "payload": None, "fetched_at": 0.0}
@@ -553,24 +568,19 @@ def persist_agent_console_runs() -> bool:
         return False
 
 
-def load_agent_console_runs() -> None:
-    """Cut over legacy history once, then restore only authoritative SQLite Runs."""
+def _load_agent_console_runs(*, recover_crash_states: bool) -> None:
+    """Load authoritative Console history, optionally classifying crash state."""
+
     global AGENT_CONSOLE_HISTORY_DATA_DIR, AGENT_CONSOLE_HISTORY_LOADED
     global AGENT_CONSOLE_PERSISTENCE_DEGRADED
     global AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR
     with AGENT_CONSOLE_LOCK:
         try:
             ensure_run_sqlite_authority(DATA_DIR, agent_console_history_path())
-            with private_state_lock(DATA_DIR):
-                connection = connect_mentat_database(DATA_DIR)
-                try:
-                    repository = RunRepository(connection)
-                    repository.recover_reserved_as_interrupted(now=now_iso())
-                    repository.recover_submitting_as_unknown(now=now_iso())
-                    repository.recover_unattached_dispatches_as_unknown(now=now_iso())
-                    repository.recover_console_runs_as_interrupted(now=now_iso())
-                finally:
-                    connection.close()
+            if recover_crash_states:
+                recover_orchestration_crash_states_at_startup(
+                    recover_legacy_console_runs=True,
+                )
             runs = load_authoritative_run_summaries(
                 DATA_DIR,
                 limit=AGENT_CONSOLE_RUN_LIMIT,
@@ -590,6 +600,18 @@ def load_agent_console_runs() -> None:
         AGENT_CONSOLE_HISTORY_DATA_DIR = Path(os.path.abspath(os.fspath(DATA_DIR)))
         AGENT_CONSOLE_PERSISTENCE_DEGRADED = False
         AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = None
+
+
+def load_agent_console_runs() -> None:
+    """Cut over legacy history once, recover, and load authoritative Runs."""
+
+    _load_agent_console_runs(recover_crash_states=True)
+
+
+def load_agent_console_runs_after_startup_recovery() -> None:
+    """Load history after the pre-readiness crash classification already ran."""
+
+    _load_agent_console_runs(recover_crash_states=False)
 
 
 def public_console_attachment(metadata: dict | None) -> dict | None:
@@ -1651,6 +1673,95 @@ def create_mentat_conversation(payload: object) -> tuple[dict, int]:
         raise
 
 
+def submit_mentat_conversation_turn(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Submit one bounded text Turn through runtime-neutral orchestration."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "idempotency_key",
+        "text",
+    }:
+        return {"error_code": "conversation.request_invalid"}, 400
+    text = payload.get("text")
+    key = payload.get("idempotency_key")
+    try:
+        key_size = len(key.encode("utf-8")) if isinstance(key, str) else 0
+    except UnicodeEncodeError:
+        key_size = 0
+    if (
+        not isinstance(text, str)
+        or not text.strip()
+        or text.strip() != text
+        or "\x00" in text
+        or len(text) > 6_000
+        or not isinstance(key, str)
+        or not 16 <= key_size <= 256
+        or "\x00" in key
+    ):
+        return {"error_code": "conversation.request_invalid"}, 400
+    try:
+        result = OrchestrationService(
+            DATA_DIR,
+            runtime_registry=AGENT_RUNTIME_REGISTRY,
+            agent_registry=_mentat_agent_registry(),
+        ).submit_conversation_turn(
+            conversation_id=conversation_id,
+            text=text,
+            idempotency_key=key,
+        )
+    except (MentatDatabaseError, sqlite3.Error) as exc:
+        raise OrchestrationServiceError("conversation.unavailable") from exc
+    run = (
+        {
+            "id": result.run.id,
+            "status": result.run.status,
+            "partial": result.run.partial,
+            "updated_at": result.run.updated_at,
+        }
+        if result.run is not None
+        else None
+    )
+    turn = conversation_turn_public(result.turn)
+    return {
+        "schema_version": 1,
+        "duplicate": result.duplicate,
+        "disposition": result.disposition,
+        "conversation": {
+            "id": result.conversation.id,
+            "agent_id": result.conversation.agent_id,
+            "title": result.conversation.title,
+            "title_source": result.conversation.title_source,
+            "state": result.conversation.state,
+            "revision": result.conversation.revision,
+            "created_at": result.conversation.created_at,
+            "updated_at": result.conversation.updated_at,
+            "archived_at": result.conversation.archived_at,
+        },
+        "message": conversation_message_public(result.message),
+        "turn": turn,
+        "run": run,
+    }, 200 if result.duplicate else 202
+
+
+def mentat_codex_readiness_payload() -> dict:
+    """Run one explicit, secret-free Codex CLI authentication check."""
+
+    # Readiness and dispatch must use the same long-lived adapter selected at
+    # startup. If the CLI is installed later, Mentat continues to report
+    # cli_missing until restart instead of claiming a readiness state that the
+    # registered dispatch runtime cannot honor.
+    state = CODEX_RUNTIME.readiness_status(force=True)
+    if state not in {"cli_missing", "sign_in_required", "ready", "unavailable"}:
+        state = "unavailable"
+    return {
+        "schema_version": 1,
+        "state": state,
+        "setup_command": "codex login" if state == "sign_in_required" else None,
+    }
+
+
 def mentat_agent_activity_payload() -> dict:
     """Return bounded Agent activity from canonical Agents and Runs only."""
 
@@ -1864,8 +1975,32 @@ def reconcile_orchestration_runs(payload=None):
     }, 200
 
 
-def reconcile_orchestration_runs_at_startup() -> None:
-    """Run one bounded best-effort readback without delaying the listener."""
+def recover_orchestration_crash_states_at_startup(
+    *,
+    recover_legacy_console_runs: bool = False,
+) -> None:
+    """Classify pre-start crash states before any new admission is served."""
+
+    occurred_at = now_iso()
+    with private_state_lock(DATA_DIR):
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            repository = RunRepository(connection)
+            repository.authority_receipt(required=True)
+            repository.recover_reserved_as_interrupted(now=occurred_at)
+            repository.recover_submitting_as_unknown(now=occurred_at)
+            repository.recover_unattached_dispatches_as_unknown(
+                now=occurred_at
+            )
+            repository.recover_conversation_submissions(now=occurred_at)
+            if recover_legacy_console_runs:
+                repository.recover_console_runs_as_interrupted(now=occurred_at)
+        finally:
+            connection.close()
+
+
+def reconcile_orchestration_runtime_references_at_startup() -> None:
+    """Run one bounded best-effort readback after crash classification."""
 
     try:
         OrchestrationService(
@@ -1873,10 +2008,31 @@ def reconcile_orchestration_runs_at_startup() -> None:
             runtime_registry=AGENT_RUNTIME_REGISTRY,
             agent_registry=_mentat_agent_registry(),
         ).reconcile_runs(owner=f"startup_reconciler_{uuid4().hex}", limit=20)
-    except (OrchestrationServiceError, RunRepositoryError, OSError, sqlite3.Error):
+    except (
+        MentatDatabaseError,
+        OrchestrationServiceError,
+        RunRepositoryError,
+        OSError,
+        sqlite3.Error,
+    ):
         # Durable leases expire and a later webhook/manual pass can retry.
         # Missing evidence never changes Run state or resubmits work.
         return
+
+
+def reconcile_orchestration_runs_at_startup() -> None:
+    """Recover crash states, then run one bounded best-effort readback."""
+
+    try:
+        recover_orchestration_crash_states_at_startup()
+    except (
+        MentatDatabaseError,
+        RunRepositoryError,
+        OSError,
+        sqlite3.Error,
+    ):
+        return
+    reconcile_orchestration_runtime_references_at_startup()
 
 
 def orchestration_runs_payload(query: str = ""):
@@ -6865,6 +7021,7 @@ def _select_legacy_hermes_console_transport() -> HermesConsoleTransport:
 
 HERMES_RUNTIME = HermesRuntime(
     transport_factory=_select_legacy_hermes_console_transport,
+    submission_lock=HERMES_CONNECTION_OPERATION_LOCK,
 )
 _CODEX_COMMAND_PATH = find_codex_command()
 CODEX_RUNTIME = CodexRuntime(
@@ -9665,6 +9822,7 @@ def _start_agent_console_run_locked(
             "runtime_type": "hermes",
             "agent_id": agent_id,
             "agent_name": profile.get("name") or agent_id,
+            "provider": profile.get("provider") or "",
             "model": profile.get("model") or agent_console_model(agent_id, discovery),
             "transport_mode": transport.mode,
             "connection_binding_id": transport.binding.binding_id,
@@ -9764,6 +9922,56 @@ def _active_provider_run(profile_id: str, *, target_only: bool) -> dict | None:
     return None
 
 
+def _active_canonical_provider_run(
+    profile_id: str,
+    *,
+    target_only: bool,
+) -> dict | None:
+    """Read the safe identity of a canonical Hermes Run blocking mutation."""
+
+    placeholders = ",".join("?" for _ in MENTAT_PROVIDER_ACTIVE_RUN_STATUSES)
+    query = (
+        "SELECT r.id FROM mentat_runs AS r "
+        "JOIN agent_runtime_configs AS c ON c.id = r.runtime_config_id "
+        "WHERE r.runtime_type = 'hermes' AND c.runtime_type = 'hermes' "
+        f"AND r.status IN ({placeholders})"
+    )
+    parameters: list[object] = list(MENTAT_PROVIDER_ACTIVE_RUN_STATUSES)
+    if target_only:
+        query += " AND c.runtime_agent_ref = ?"
+        parameters.append(profile_id)
+    query += " ORDER BY r.created_at, r.id LIMIT 1"
+    with private_state_lock(DATA_DIR):
+        # A pre-canonical legacy-only installation cannot contain a canonical
+        # Run. Once the database exists, every validation failure is closed.
+        if not mentat_database_path(DATA_DIR).exists():
+            return None
+        with connect_existing_mentat_database(DATA_DIR) as connection:
+            row = connection.execute(query, tuple(parameters)).fetchone()
+    return {"id": str(row["id"])} if row is not None else None
+
+
+def _provider_mutation_active_run(
+    profile_id: str,
+    *,
+    target_only: bool,
+) -> tuple[dict | None, tuple[dict, int] | None]:
+    try:
+        canonical = _active_canonical_provider_run(
+            profile_id,
+            target_only=target_only,
+        )
+    except (MentatDatabaseError, OSError, sqlite3.Error):
+        return None, ({
+            "error": "Mentat could not verify that Hermes has no active run.",
+            "error_code": "run_repository_unavailable",
+        }, 503)
+    if canonical is not None:
+        return canonical, None
+    with AGENT_CONSOLE_LOCK:
+        return _active_provider_run(profile_id, target_only=target_only), None
+
+
 def _remote_provider_error(exc: HermesTransportError) -> tuple[dict, int]:
     status = {
         "remote_profile_runtime_not_served": 404,
@@ -9815,13 +10023,14 @@ def _preview_agent_console_provider_switch_locked(payload):
     model = compact_text(payload.get("model"), max_length=160)
     if not provider or not model:
         return {"error": "Provider and model are required"}, 400
-    with AGENT_CONSOLE_LOCK:
-        active = _active_provider_run(
-            requested,
-            target_only=transport.mode == "remote",
-        )
-        if active:
-            return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
+    active, active_error = _provider_mutation_active_run(
+        requested,
+        target_only=transport.mode == "remote",
+    )
+    if active_error is not None:
+        return active_error
+    if active:
+        return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
     if transport.mode == "remote":
         try:
             inventory = transport.read_profile_runtime(requested)
@@ -9879,13 +10088,14 @@ def _switch_agent_console_provider_locked(payload):
                 return _remote_provider_error(exc)
         elif agent_console_profile(requested) is None:
             return {"error": f"Unknown or unavailable Hermes profile: {requested}"}, 400
-        with AGENT_CONSOLE_LOCK:
-            active = _active_provider_run(
-                requested,
-                target_only=transport.mode == "remote",
-            )
-            if active:
-                return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
+        active, active_error = _provider_mutation_active_run(
+            requested,
+            target_only=transport.mode == "remote",
+        )
+        if active_error is not None:
+            return active_error
+        if active:
+            return {"error": "Stop the active Hermes run before changing provider configuration", "active_run_id": active["id"]}, 409
         if transport.mode == "remote":
             try:
                 before = transport.read_profile_runtime(requested)
@@ -11623,7 +11833,7 @@ def serve_dashboard() -> None:
         PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
         load_agent_console_runs()
         threading.Thread(
-            target=reconcile_orchestration_runs_at_startup,
+            target=reconcile_orchestration_runtime_references_at_startup,
             daemon=True,
             name="mentat-startup-reconciler",
         ).start()

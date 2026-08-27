@@ -288,6 +288,7 @@ class SubmissionOutcome:
     runtime_run_ref: str | None = None
     failure_code: str | None = None
     initial_events: tuple[AgentEvent, ...] = ()
+    execution_identity: Mapping[str, str | None] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "disposition", SubmissionDisposition(self.disposition))
@@ -306,6 +307,46 @@ class SubmissionOutcome:
                 raise ValueError("submission failure code is invalid")
         if self.disposition == SubmissionDisposition.ACCEPTED and self.failure_code is not None:
             raise ValueError("accepted submission cannot include a failure code")
+        identity = self.execution_identity
+        if identity is not None:
+            if self.disposition == SubmissionDisposition.REJECTED:
+                raise ValueError("rejected submission cannot include execution identity")
+            if not isinstance(identity, Mapping) or set(identity) != {
+                "model",
+                "provider",
+                "reasoning_effort",
+                "verification",
+            }:
+                raise ValueError("submission execution identity is invalid")
+            normalized_identity: dict[str, str | None] = {}
+            for name, maximum in (("model", 160), ("provider", 160)):
+                value = identity[name]
+                if not isinstance(value, str):
+                    raise ValueError("submission execution identity is invalid")
+                normalized_identity[name] = _bounded_text(
+                    value,
+                    f"execution {name}",
+                    maximum=maximum,
+                )
+            effort = identity["reasoning_effort"]
+            if effort is not None:
+                if not isinstance(effort, str):
+                    raise ValueError("submission execution identity is invalid")
+                effort = _bounded_text(
+                    effort,
+                    "execution reasoning effort",
+                    maximum=64,
+                )
+            verification = identity["verification"]
+            if verification not in {"runtime_response", "runtime_launch_snapshot"}:
+                raise ValueError("submission execution identity is invalid")
+            normalized_identity["reasoning_effort"] = effort
+            normalized_identity["verification"] = str(verification)
+            object.__setattr__(
+                self,
+                "execution_identity",
+                MappingProxyType(normalized_identity),
+            )
         events = tuple(self.initial_events)
         if events and self.disposition != SubmissionDisposition.ACCEPTED:
             raise ValueError("only accepted submissions can include initial events")
