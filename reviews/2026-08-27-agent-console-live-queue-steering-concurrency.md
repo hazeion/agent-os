@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console live queue, steering, and concurrency
 
-Status: Published for review; CI tracked on ready PR #145
+Status: Published for review; all required checks pass on ready PR #145
 Slice: `agent-console-live-queue-steering-concurrency`
 Date: `2026-08-27`
 Review log: `reviews/2026-08-27-agent-console-live-queue-steering-concurrency.md`
@@ -381,8 +381,9 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
 
 ## Outcome review
 
-- Classification: Published for review; implementation outcome is successful
-  against all ten criteria and GitHub checks are tracked on ready PR #145.
+- Classification: Successful; all ten criteria, independent reviews,
+  publication-integrity checks, and required GitHub checks pass on ready PR
+  #145.
 - Acceptance criteria summary: AC-1 through AC-10 pass focused, production,
   rendered, real-runtime, independent-review, and final full-suite gates.
 - Potential bugs or untested paths: no material missing-test gap identified by
@@ -393,5 +394,5 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
   rollback remain covered. Unknown/partial admission and continuity fail closed
   and do not retry automatically.
 - User decision: exact commit/push/ready-PR publication approved and completed;
-  outcome acceptance remains after CI.
+  final outcome acceptance remains pending.
 - Next slice authorized: No
