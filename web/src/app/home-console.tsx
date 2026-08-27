@@ -7,12 +7,15 @@ import type {
   PublicConversation,
   PublicConversationAgent,
   PublicConversationDetail,
+  PublicCodexReadiness,
 } from "@/lib/bridge-conversations";
 import {
   createConversation,
   fetchActivity,
+  fetchCodexReadiness,
   fetchConversation,
   fetchConversations,
+  submitConversationTurn,
   type PublicConversationError,
 } from "@/lib/public-conversations";
 
@@ -23,6 +26,14 @@ const SUGGESTIONS = [
 ];
 
 type LoadingState = "loading" | "ready" | "empty" | "unavailable" | "unsupported" | "error";
+type OptimisticMessage = { conversationId: string; key: string; text: string };
+type NoticeEntry = { message: string; sequence: number };
+const UNBOUND_DRAFT_KEY = "new-conversation";
+
+const ACTIVE_RUN_STATUSES = new Set([
+  "reserved", "queued", "submitting", "starting", "running", "cancelling",
+  "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown",
+]);
 
 function readable(value: string): string {
   return value.split(/[._-]/u).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
@@ -48,6 +59,7 @@ const Transcript = memo(function Transcript({
   draftSuggestion,
   loadOlder,
   loadingOlder,
+  optimisticMessage,
   selectedConversationId,
 }: Readonly<{
   detail: PublicConversationDetail | null;
@@ -56,16 +68,18 @@ const Transcript = memo(function Transcript({
   draftSuggestion: (suggestion: string) => void;
   loadOlder: () => void;
   loadingOlder: boolean;
+  optimisticMessage: OptimisticMessage | null;
   selectedConversationId: string | null;
 }>) {
-  const isEmpty = detailState === "empty" || detailState === "ready" && detail?.messages.length === 0;
+  const optimistic = optimisticMessage?.conversationId === selectedConversationId ? optimisticMessage : null;
+  const isEmpty = detailState === "empty" || detailState === "ready" && detail?.messages.length === 0 && optimistic === null;
   return (
     <div className="conversation-transcript" id="conversation-panel" role="tabpanel" aria-labelledby={selectedConversationId ? `conversation-tab-${selectedConversationId}` : undefined} tabIndex={-1}>
       {detailState === "loading" ? <StatusMessage state="loading">Loading the selected Conversation…</StatusMessage> : null}
       {detailState === "unavailable" ? <StatusMessage state="unavailable">Conversation data is temporarily unavailable.</StatusMessage> : null}
       {detailState === "error" ? <StatusMessage state="error">Mentat could not safely read this Conversation.</StatusMessage> : null}
-      {isEmpty ? <div className="conversation-empty-state"><span className="empty-state-mark" aria-hidden="true">✦</span><h2>{detail?.conversation.title ?? "A clear place to begin"}</h2><p>Choose a suggestion or write a prompt below. Sending remains unavailable until the next Console slice.</p><div className="suggestion-list">{SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => draftSuggestion(suggestion)} type="button">{suggestion}</button>)}</div></div> : null}
-      {detailState === "ready" && detail?.messages.length ? <>{detail.next_message_cursor ? <button className="load-older" disabled={loadingOlder} onClick={loadOlder} type="button">{loadingOlder ? "Loading older messages…" : "Load older messages"}</button> : null}<ol className="message-list">{detail.messages.slice(-200).map((message) => <li className={`message-row message-${message.role}`} key={message.id}><span className="message-role">{message.role === "user" ? "You" : selectedAgentName ?? "Agent"}</span><p>{message.content.parts[0].text}</p></li>)}</ol></> : null}
+      {isEmpty ? <div className="conversation-empty-state"><span className="empty-state-mark" aria-hidden="true">✦</span><h2>{detail?.conversation.title ?? "A clear place to begin"}</h2><p>Choose a suggestion or write a prompt below. Mentat will keep the accepted Turn and its Run visible here.</p><div className="suggestion-list">{SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => draftSuggestion(suggestion)} type="button">{suggestion}</button>)}</div></div> : null}
+      {detailState === "ready" && detail && (detail.messages.length > 0 || optimistic) ? <>{detail.next_message_cursor ? <button className="load-older" disabled={loadingOlder} onClick={loadOlder} type="button">{loadingOlder ? "Loading older messages…" : "Load older messages"}</button> : null}<ol className="message-list">{detail.messages.slice(-200).map((message) => <li className={`message-row message-${message.role}`} key={message.id}><span className="message-role">{message.role === "user" ? "You" : selectedAgentName ?? "Agent"}</span><p>{message.content.parts[0].text}</p></li>)}{optimistic ? <li aria-label="Sending message" className="message-row message-user message-optimistic"><span className="message-role">You · Sending…</span><p>{optimistic.text}</p></li> : null}</ol></> : null}
     </div>
   );
 });
@@ -124,22 +138,71 @@ export function HomeConsole() {
   const [detailState, setDetailState] = useState<LoadingState>("loading");
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<ReadonlySet<string>>(new Set());
-  const [draft, setDraft] = useState("");
-  const [notice, setNotice] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [optimisticMessages, setOptimisticMessages] = useState<Record<string, OptimisticMessage>>({});
+  const [sendingConversationIds, setSendingConversationIds] = useState<ReadonlySet<string>>(new Set());
+  const [admissionBlockedConversationIds, setAdmissionBlockedConversationIds] = useState<ReadonlySet<string>>(new Set());
+  const [codexReadiness, setCodexReadiness] = useState<PublicCodexReadiness["state"] | null>(null);
+  const [checkingCodex, setCheckingCodex] = useState(false);
+  const [notice, setNoticeState] = useState<NoticeEntry>({ message: "", sequence: 0 });
+  const [conversationNotices, setConversationNotices] = useState<Record<string, NoticeEntry>>({});
   const [creating, setCreating] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const noticeSequence = useRef(0);
+  const setNotice = (message: string) => {
+    if (!message) {
+      setNoticeState({ message: "", sequence: 0 });
+      return;
+    }
+    noticeSequence.current += 1;
+    setNoticeState({ message, sequence: noticeSequence.current });
+  };
+  const setConversationNotice = (conversationId: string, message: string) => {
+    noticeSequence.current += 1;
+    const entry = { message, sequence: noticeSequence.current };
+    setConversationNotices((current) => ({ ...current, [conversationId]: entry }));
+  };
+  const draftKey = selectedConversationId ?? UNBOUND_DRAFT_KEY;
+  const draft = drafts[draftKey] ?? "";
+  const optimisticMessage = selectedConversationId ? optimisticMessages[selectedConversationId] ?? null : null;
+  const sending = selectedConversationId ? sendingConversationIds.has(selectedConversationId) : false;
+  const selectedConversationNotice = selectedConversationId
+    ? conversationNotices[selectedConversationId]
+    : undefined;
+  const visibleNotice = selectedConversationNotice
+    && selectedConversationNotice.sequence > notice.sequence
+    ? selectedConversationNotice.message
+    : notice.message;
   const detail = selectedConversationId ? details[selectedConversationId] ?? null : null;
   const selectedAgent = detail?.agent ?? agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const setupRequired = directAgentId === null;
   const selectedIsDirect = selectedAgent?.id === directAgentId && directAgentId !== null;
+  const selectedNeedsCodexReadiness = selectedAgent?.runtime_type === "codex";
+  const codexSendReady = !selectedNeedsCodexReadiness || codexReadiness === "ready";
+  const activeRun = detail?.current_run && ACTIVE_RUN_STATUSES.has(detail.current_run.status)
+    ? detail.current_run
+    : null;
+  const admissionBlocked = selectedConversationId !== null
+    && admissionBlockedConversationIds.has(selectedConversationId);
+  const initialWorkspaceLoading = selectedConversationId === null && conversationState === "loading";
+  const draftIsValid = !!draft.trim() && draft.trim() === draft && Array.from(draft).length <= 6_000 && !draft.includes("\0");
+  const canSend = !!selectedConversationId && detail?.conversation.state === "active" && draftIsValid && !sending && !admissionBlocked && activeRun === null && codexSendReady;
   const loadedConversationIds = useMemo(() => new Set(conversations.map((item) => item.id)), [conversations]);
   const mounted = useRef(true);
+  const compositionActive = useRef(false);
+  const retryByConversationRef = useRef(new Map<string, OptimisticMessage>());
   const displayedDetailState = selectedConversationId === null
     ? conversationState === "empty" ? "empty" : conversationState
     : detail?.conversation.id === selectedConversationId ? detailState : "loading";
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  const setSelectedDraft = useCallback((value: string) => {
+    setDrafts((current) => current[draftKey] === value
+      ? current
+      : { ...current, [draftKey]: value });
+  }, [draftKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,7 +223,7 @@ export function HomeConsole() {
   useEffect(() => {
     if (!selectedConversationId) return;
     let cancelled = false;
-    void fetchConversation(selectedConversationId).then((value) => { if (!cancelled) { setDetails((current) => ({ ...current, [value.conversation.id]: value })); setDetailState("ready"); } }).catch((error: unknown) => { if (!cancelled) setDetailState(statusFrom(error)); });
+    void fetchConversation(selectedConversationId).then((value) => { if (!cancelled) { setDetails((current) => ({ ...current, [value.conversation.id]: value })); if (!value.current_run || !ACTIVE_RUN_STATUSES.has(value.current_run.status)) setAdmissionBlockedConversationIds((current) => { if (!current.has(value.conversation.id)) return current; const next = new Set(current); next.delete(value.conversation.id); return next; }); setDetailState("ready"); } }).catch((error: unknown) => { if (!cancelled) setDetailState(statusFrom(error)); });
     return () => { cancelled = true; };
   }, [selectedConversationId]);
 
@@ -189,8 +252,92 @@ export function HomeConsole() {
 
   async function createNewConversation() {
     if (creating || !selectedAgentId) return;
-    setCreating(true); setNotice("");
-    try { const created = await createConversation(selectedAgentId); setDetails((current) => ({ ...current, [created.conversation.id]: created })); setDetailState("ready"); setSelectedConversationId(created.conversation.id); setConversations((current) => [created.conversation, ...current.filter((item) => item.id !== created.conversation.id)]); setConversationState("ready"); setNotice("Conversation created and ready for a prompt."); } catch { setNotice("Mentat could not create that Conversation. Try again."); } finally { setCreating(false); }
+    setCreating(true); setNotice("Creating a new Conversation…");
+    try { const created = await createConversation(selectedAgentId); setDetails((current) => ({ ...current, [created.conversation.id]: created })); setDrafts((current) => { const next = { ...current }; const carriedDraft = next[UNBOUND_DRAFT_KEY] ?? ""; delete next[UNBOUND_DRAFT_KEY]; if (carriedDraft) next[created.conversation.id] = carriedDraft; return next; }); setDetailState("ready"); setSelectedConversationId(created.conversation.id); setConversations((current) => [created.conversation, ...current.filter((item) => item.id !== created.conversation.id)]); setConversationState("ready"); setNotice("Conversation created and ready for a prompt."); } catch { setNotice("Mentat could not create that Conversation. Try again."); } finally { setCreating(false); }
+  }
+
+  async function recheckCodex() {
+    if (checkingCodex) return;
+    if (selectedConversationId) setConversationNotices((current) => { const next = { ...current }; delete next[selectedConversationId]; return next; });
+    setCheckingCodex(true); setNotice("Checking Codex readiness…");
+    try {
+      const readiness = await fetchCodexReadiness();
+      setCodexReadiness(readiness.state);
+      if (readiness.state === "ready") {
+        const refreshed = await fetchConversations();
+        setConversations(refreshed.conversations); setConversationCursor(refreshed.next_cursor); setAgents(refreshed.agents); setDirectAgentId(refreshed.direct_agent_id);
+        setSelectedAgentId((current) => current ?? refreshed.direct_agent_id);
+        setNotice("Codex is signed in and ready.");
+      } else if (readiness.state === "sign_in_required") setNotice("Run codex login in a terminal, complete the browser sign-in, then Recheck.");
+      else if (readiness.state === "cli_missing") setNotice("Install the Codex CLI, run codex login, then restart Mentat.");
+      else setNotice("Codex readiness could not be confirmed. Recheck when the local CLI is available.");
+    } catch { setCodexReadiness("unavailable"); setNotice("Codex readiness could not be checked safely."); }
+    finally { setCheckingCodex(false); }
+  }
+
+  async function sendTurn() {
+    if (!canSend || !selectedConversationId) return;
+    const conversationId = selectedConversationId;
+    const text = draft;
+    const reusable = retryByConversationRef.current.get(conversationId);
+    const request: OptimisticMessage = reusable?.text === text
+      ? reusable
+      : { conversationId, key: crypto.randomUUID(), text };
+    retryByConversationRef.current.set(conversationId, request);
+    setOptimisticMessages((current) => ({ ...current, [conversationId]: request }));
+    setSendingConversationIds((current) => new Set(current).add(conversationId));
+    setConversationNotice(conversationId, "Submitting the exact Turn…");
+    try {
+      const submitted = await submitConversationTurn(conversationId, text, request.key);
+      setOptimisticMessages((current) => { const next = { ...current }; delete next[conversationId]; return next; });
+      setAdmissionBlockedConversationIds((current) => { if (!current.has(conversationId)) return current; const next = new Set(current); next.delete(conversationId); return next; });
+      setDetails((current) => {
+        const existing = current[conversationId];
+        if (!existing) return current;
+        const messages = [...existing.messages.filter((message) => message.id !== submitted.message.id), submitted.message]
+          .sort((left, right) => left.sequence - right.sequence)
+          .slice(-200);
+        return { ...current, [conversationId]: { ...existing, conversation: submitted.conversation, messages, current_run: submitted.run } };
+      });
+      setConversations((current) => [submitted.conversation, ...current.filter((item) => item.id !== submitted.conversation.id)]);
+      if (submitted.disposition === "accepted") {
+        setDrafts((current) => current[conversationId] === text
+          ? { ...current, [conversationId]: "" }
+          : current);
+        retryByConversationRef.current.delete(conversationId);
+        setConversationNotice(conversationId, submitted.duplicate ? "This Turn was already accepted; no duplicate Run was started." : "Turn accepted. The Run is now visible in this Conversation.");
+      } else if (submitted.disposition === "rejected") {
+        retryByConversationRef.current.delete(conversationId);
+        setConversationNotice(conversationId, "The Turn is saved, but the runtime rejected this Run.");
+      } else if (submitted.disposition === "unknown") {
+        setConversationNotice(conversationId, "The Turn is saved, but runtime acceptance is unknown. Mentat will not retry it automatically.");
+      } else {
+        setConversationNotice(conversationId, "The exact Turn is already being submitted.");
+      }
+    } catch (error) {
+      setOptimisticMessages((current) => { const next = { ...current }; delete next[conversationId]; return next; });
+      setDrafts((current) => ({ ...current, [conversationId]: text }));
+      const code = error && typeof error === "object" && "code" in error ? String((error as PublicConversationError).code) : "";
+      if (code === "sign_in_required" || code === "cli_missing") {
+        setCodexReadiness(code);
+        setConversationNotice(conversationId, code === "sign_in_required" ? "Codex sign-in is required. Run codex login, then Recheck." : "The Codex CLI is not available yet.");
+      } else if (code === "active_run") {
+        setAdmissionBlockedConversationIds((current) => new Set(current).add(conversationId));
+        setConversationNotice(conversationId, "This Conversation already has an active Run. The draft was kept.");
+        try {
+          const refreshed = await fetchConversation(conversationId);
+          if (mounted.current) {
+            setDetails((current) => ({ ...current, [conversationId]: refreshed }));
+            if (!refreshed.current_run || !ACTIVE_RUN_STATUSES.has(refreshed.current_run.status)) setAdmissionBlockedConversationIds((current) => { const next = new Set(current); next.delete(conversationId); return next; });
+          }
+        } catch {
+          // Keep the local admission block until a canonical refresh succeeds.
+        }
+      }
+      else if (code === "capacity_unavailable") setConversationNotice(conversationId, "Runtime capacity is unavailable. The draft was kept.");
+      else if (code === "idempotency_conflict") { retryByConversationRef.current.delete(conversationId); setConversationNotice(conversationId, "This Send key no longer matches the draft. Please send again."); }
+      else setConversationNotice(conversationId, "Mentat could not confirm admission. The draft and exact retry key were kept; Send again to retry safely.");
+    } finally { setSendingConversationIds((current) => { const next = new Set(current); next.delete(conversationId); return next; }); }
   }
 
   return (
@@ -200,9 +347,10 @@ export function HomeConsole() {
         <section aria-label="Conversation workspace" className="conversation-workspace">
           <div className="conversation-tabs-heading"><div><p className="console-kicker">Conversations</p><h2>Workspace</h2></div><label className="agent-picker"><span>Agent</span><select aria-label="Agent for new conversations" onChange={(event) => setSelectedAgentId(event.target.value || null)} value={selectedAgentId ?? ""}><option value="">{setupRequired ? "Direct Agent setup required" : "Choose an Agent"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label></div>
           <div aria-label="Conversation tabs" aria-orientation="horizontal" className="conversation-tabs" role="tablist">{conversations.map((conversation, index) => <button aria-controls="conversation-panel" aria-selected={conversation.id === selectedConversationId} className="conversation-tab" data-conversation-tab-index={index} id={`conversation-tab-${conversation.id}`} key={conversation.id} onClick={() => selectConversation(conversation.id)} onKeyDown={(event) => tabKeyDown(event, index, conversations.length, (next) => selectConversation(conversations[next].id))} role="tab" tabIndex={conversation.id === selectedConversationId ? 0 : -1} type="button"><span>{conversationLabel(conversation)}</span><small>{readable(conversation.state)}</small></button>)}{conversationState === "loading" ? <StatusMessage state="loading">Loading Conversations…</StatusMessage> : null}{conversationCursor ? <button className="load-more-conversations" disabled={loadingConversations} onClick={loadMoreConversations} type="button">{loadingConversations ? "Loading…" : "Load older"}</button> : null}</div>
-          <Transcript detail={detail} detailState={displayedDetailState} draftSuggestion={setDraft} loadOlder={loadOlder} loadingOlder={loadingOlder} selectedAgentName={selectedAgent?.name ?? null} selectedConversationId={selectedConversationId} />
-          <form className="console-composer" onSubmit={(event) => event.preventDefault()}><label htmlFor="console-prompt">Prompt</label><textarea id="console-prompt" onChange={(event) => setDraft(event.target.value)} placeholder="Write a prompt for your Agent…" rows={1} value={draft} /><div className="composer-footer"><span className="composer-context">{selectedAgent ? `${selectedAgent.name} · ${selectedIsDirect ? "Direct mode" : "Selected Agent"}` : setupRequired ? "Direct Agent setup required" : "Select an Agent to continue"}</span><span className="composer-boundary">Dispatch available in Slice 2</span><button aria-disabled="true" className="composer-send" disabled type="submit">Send</button></div></form>
-          {notice ? <p aria-live="polite" className="console-notice">{notice}</p> : null}
+          <Transcript detail={detail} detailState={displayedDetailState} draftSuggestion={setSelectedDraft} loadOlder={loadOlder} loadingOlder={loadingOlder} optimisticMessage={optimisticMessage} selectedAgentName={selectedAgent?.name ?? null} selectedConversationId={selectedConversationId} />
+          {setupRequired || selectedNeedsCodexReadiness ? <div className="codex-setup" data-state={codexReadiness ?? "unchecked"}><div><strong>{codexReadiness === "ready" ? "Codex ready" : "Codex subscription sign-in"}</strong><p>{codexReadiness === "sign_in_required" ? <>Run <code>codex login</code> in a terminal, finish the browser sign-in, then Recheck.</> : codexReadiness === "cli_missing" ? <>Install the Codex CLI, run <code>codex login</code>, then restart Mentat.</> : codexReadiness === "unavailable" ? "Mentat could not confirm local Codex readiness." : codexReadiness === "ready" ? "The local Codex CLI is signed in. Mentat never receives your credentials." : "Mentat uses the Codex CLI's existing ChatGPT subscription sign-in; credentials stay with Codex."}</p></div><button disabled={checkingCodex} onClick={() => void recheckCodex()} type="button">{checkingCodex ? "Checking…" : codexReadiness === null ? "Check readiness" : "Recheck"}</button></div> : null}
+          <form className="console-composer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}><label htmlFor="console-prompt">Prompt</label><textarea disabled={initialWorkspaceLoading || sending || admissionBlocked || activeRun !== null} id="console-prompt" onChange={(event) => setSelectedDraft(event.target.value)} onCompositionEnd={() => { compositionActive.current = false; }} onCompositionStart={() => { compositionActive.current = true; }} onKeyDown={(event) => { const native = event.nativeEvent; const composing = compositionActive.current || native.isComposing || native.keyCode === 229; if (event.key === "Enter" && !event.shiftKey && !composing) { event.preventDefault(); void sendTurn(); } }} placeholder={initialWorkspaceLoading ? "Loading Conversations" : sending ? "Submitting this Turn" : admissionBlocked || activeRun ? "This Conversation has an active Run" : "Write a prompt for your Agent…"} rows={1} value={draft} /><div className="composer-footer"><span className="composer-context">{selectedAgent ? `${selectedAgent.name} · ${selectedIsDirect ? "Direct mode" : "Selected Agent"}` : setupRequired ? "Direct Agent setup required" : "Select an Agent to continue"}</span><span className="composer-boundary">{sending ? "Submitting exact Turn…" : admissionBlocked ? "Refreshing the active Run" : activeRun ? `Run ${readable(activeRun.status)}` : selectedNeedsCodexReadiness && codexReadiness !== "ready" ? "Check Codex readiness before sending" : "Enter to send · Shift+Enter for a new line"}</span><button aria-disabled={!canSend} className="composer-send" disabled={!canSend} type="submit">{sending ? "Sending…" : "Send"}</button></div></form>
+          <p aria-atomic="true" aria-live="polite" className="console-notice" role="status">{visibleNotice}</p>
         </section>
         <ActivityRail activity={activity} activityState={activityState} collapsed={rightCollapsed} expandedAgents={expandedAgents} onSelectConversation={selectActivityConversation} onToggle={() => setRightCollapsed((current) => !current)} onToggleAgent={(agentId) => setExpandedAgents((current) => { const next = new Set(current); if (next.has(agentId)) next.delete(agentId); else next.add(agentId); return next; })} />
       </div>

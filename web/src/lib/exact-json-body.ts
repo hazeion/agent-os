@@ -1,50 +1,80 @@
-/** Read at most two bytes and accept only the fixed preview body. */
-export async function hasExactEmptyJsonBody(request: Request): Promise<boolean> {
-  if (request.headers.get("content-type")?.toLowerCase() !== "application/json" || !request.body) return false;
-  const reader = request.body.getReader(); const parts: Uint8Array[] = []; let size = 0;
+const BODY_READ_TIMEOUT_MILLISECONDS = 2_000;
+const CONVERSATION_TURN_BODY_BYTES = 96 * 1024;
+
+async function readBoundedBytes(
+  request: Request,
+  maximumBytes: number,
+  timeoutMilliseconds = BODY_READ_TIMEOUT_MILLISECONDS,
+): Promise<Uint8Array | null> {
+  if (
+    request.headers.get("content-type")?.toLowerCase() !== "application/json"
+    || !request.body
+    || !Number.isInteger(timeoutMilliseconds)
+    || timeoutMilliseconds < 1
+  ) return null;
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("body_read_timeout")), timeoutMilliseconds);
+  });
   try {
     for (;;) {
-      const next = await reader.read();
+      const next = await Promise.race([reader.read(), deadline]);
       if (next.done) break;
       size += next.value.byteLength;
-      if (size > 2) { await reader.cancel(); return false; }
+      if (size > maximumBytes) {
+        void reader.cancel().catch(() => undefined);
+        return null;
+      }
       parts.push(next.value);
     }
-  } catch { return false; }
-  const value = new Uint8Array(size); let offset = 0;
+  } catch {
+    void reader.cancel().catch(() => undefined);
+    return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  const value = new Uint8Array(size);
+  let offset = 0;
   for (const part of parts) { value.set(part, offset); offset += part.byteLength; }
-  return new TextDecoder().decode(value) === "{}";
+  return value;
+}
+
+function strictUtf8(value: Uint8Array): string | null {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(value); } catch { return null; }
+}
+
+/** Read at most two bytes and accept only the fixed preview body. */
+export async function hasExactEmptyJsonBody(request: Request): Promise<boolean> {
+  const value = await readBoundedBytes(request, 2);
+  return value !== null && strictUtf8(value) === "{}";
 }
 
 /** Return one fixed confirmation value without buffering an arbitrary body. */
 export async function readConfirmationId(request: Request): Promise<string | null> {
-  if (request.headers.get("content-type")?.toLowerCase() !== "application/json" || !request.body) return null;
-  const reader = request.body.getReader(); const parts: Uint8Array[] = []; let size = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      size += next.value.byteLength;
-      if (size > 128) { await reader.cancel(); return null; }
-      parts.push(next.value);
-    }
-  } catch { return null; }
-  const value = new Uint8Array(size); let offset = 0;
-  for (const part of parts) { value.set(part, offset); offset += part.byteLength; }
+  const value = await readBoundedBytes(request, 128);
+  if (value === null) return null;
+  const decoded = strictUtf8(value);
+  if (decoded === null) return null;
   let body: unknown;
-  try { body = JSON.parse(new TextDecoder().decode(value)); } catch { return null; }
+  try { body = JSON.parse(decoded); } catch { return null; }
   if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join(",") !== "confirmation_id") return null;
   const confirmationId = (body as Record<string, unknown>).confirmation_id;
   return typeof confirmationId === "string" && /^[0-9a-f]{64}$/u.test(confirmationId) ? confirmationId : null;
 }
 
-async function readBoundedJson(request: Request, maximumBytes: number): Promise<unknown | null> {
-  if (request.headers.get("content-type")?.toLowerCase() !== "application/json" || !request.body) return null;
-  const reader = request.body.getReader(); const parts: Uint8Array[] = []; let size = 0;
-  try { for (;;) { const next = await reader.read(); if (next.done) break; size += next.value.byteLength; if (size > maximumBytes) { await reader.cancel(); return null; } parts.push(next.value); } } catch { return null; }
-  const value = new Uint8Array(size); let offset = 0;
-  for (const part of parts) { value.set(part, offset); offset += part.byteLength; }
-  try { return JSON.parse(new TextDecoder().decode(value)); } catch { return null; }
+async function readBoundedJson(
+  request: Request,
+  maximumBytes: number,
+  timeoutMilliseconds = BODY_READ_TIMEOUT_MILLISECONDS,
+): Promise<unknown | null> {
+  const value = await readBoundedBytes(request, maximumBytes, timeoutMilliseconds);
+  if (value === null) return null;
+  const decoded = strictUtf8(value);
+  if (decoded === null) return null;
+  try { return JSON.parse(decoded); } catch { return null; }
 }
 
 const CONVERSATION_AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
@@ -61,6 +91,37 @@ export async function readConversationCreateBody(
   return agentId === null || typeof agentId === "string" && CONVERSATION_AGENT_ID.test(agentId)
     ? { agentId }
     : null;
+}
+
+export async function readConversationTurnBody(
+  request: Request,
+  timeoutMilliseconds = BODY_READ_TIMEOUT_MILLISECONDS,
+): Promise<{ idempotencyKey: string; text: string } | null> {
+  const body = await readBoundedJson(
+    request,
+    CONVERSATION_TURN_BODY_BYTES,
+    timeoutMilliseconds,
+  );
+  if (
+    !body
+    || typeof body !== "object"
+    || Array.isArray(body)
+    || Object.keys(body).sort().join(",") !== "idempotency_key,text"
+  ) return null;
+  const value = body as Record<string, unknown>;
+  const text = value.text;
+  const idempotencyKey = value.idempotency_key;
+  if (
+    typeof text !== "string"
+    || !text.trim()
+    || text.trim() !== text
+    || Array.from(text).length > 6_000
+    || text.includes("\0")
+    || typeof idempotencyKey !== "string"
+    || idempotencyKey.includes("\0")
+  ) return null;
+  const keyBytes = new TextEncoder().encode(idempotencyKey).byteLength;
+  return 16 <= keyBytes && keyBytes <= 256 ? { idempotencyKey, text } : null;
 }
 
 const RUN_MESSAGE_TEXT_LIMIT = 6_000;

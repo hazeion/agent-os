@@ -20,8 +20,11 @@ import socket
 from socketserver import TCPServer
 import sys
 import threading
+import time
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from conversation_repository import ConversationRepositoryError
+from orchestration_service import OrchestrationServiceError
 from .version import DISPLAY_VERSION
 
 
@@ -34,6 +37,7 @@ BRIDGE_TASKS_PATH = "/bridge/v1/tasks"
 BRIDGE_RUNS_PATH = "/bridge/v1/runs"
 BRIDGE_CONVERSATIONS_PATH = "/bridge/v1/conversations"
 BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
+BRIDGE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness"
 MINIMUM_TOKEN_LENGTH = 43
 MAXIMUM_TOKEN_LENGTH = 256
 SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
@@ -47,7 +51,10 @@ MAXIMUM_BRIDGE_CONVERSATION_MESSAGES = 100
 MAXIMUM_BRIDGE_CONVERSATION_RESPONSE_BYTES = 3_000_000
 MAXIMUM_BRIDGE_ACTION_BODY_BYTES = 512
 MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES = 24_576
+MAXIMUM_BRIDGE_CONVERSATION_TURN_BODY_BYTES = 96 * 1024
 MAXIMUM_BRIDGE_RESPONSE_BODY_BYTES = 24_576
+BRIDGE_BODY_READ_TIMEOUT_SECONDS = 5.0
+BRIDGE_BODY_READ_CHUNK_BYTES = 8_192
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
@@ -56,6 +63,7 @@ _RUN_ID = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
 _RUN_SOURCE = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _CONVERSATION_ID = re.compile(r"conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _MESSAGE_ID = re.compile(r"msg_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
+_TURN_ID = re.compile(r"turn_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 
 
 class BridgeConfigurationError(ValueError):
@@ -589,7 +597,13 @@ def _ready_conversation_detail(value: object) -> dict[str, object]:
 
 def _conversation_failure(status: str) -> tuple[dict[str, object], int]:
     codes = {
+        "active_run": 409,
+        "capacity_unavailable": 409,
+        "cli_missing": 409,
+        "idempotency_conflict": 409,
+        "invalid": 400,
         "not_found": 404,
+        "sign_in_required": 409,
         "unavailable": 503,
         "unsupported": 501,
         "error": 500,
@@ -704,6 +718,180 @@ def bridge_create_conversation_payload(payload: object) -> tuple[dict[str, objec
             return _conversation_failure("unavailable")
         except (BridgeConversationProjectionError, OSError, ValueError):
             return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def _public_conversation_turn(value: object) -> dict[str, object]:
+    required = {
+        "id", "conversation_id", "user_message_id", "queue_ordinal", "state",
+        "blocked_reason", "latest_run_id", "revision", "attempt_count",
+        "created_at", "updated_at",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeConversationProjectionError("conversation_turn_invalid")
+    latest_run_id = value.get("latest_run_id")
+    if (
+        not isinstance(value.get("id"), str)
+        or _TURN_ID.fullmatch(value["id"]) is None
+        or not isinstance(value.get("conversation_id"), str)
+        or _CONVERSATION_ID.fullmatch(value["conversation_id"]) is None
+        or not isinstance(value.get("user_message_id"), str)
+        or _MESSAGE_ID.fullmatch(value["user_message_id"]) is None
+        or type(value.get("queue_ordinal")) is not int
+        or value["queue_ordinal"] < 1
+        or value.get("state") not in {"dispatching", "consumed"}
+        or value.get("blocked_reason") is not None
+        or latest_run_id is not None
+        and (
+            not isinstance(latest_run_id, str)
+            or _RUN_ID.fullmatch(latest_run_id) is None
+        )
+        or type(value.get("revision")) is not int
+        or value["revision"] < 1
+        or type(value.get("attempt_count")) is not int
+        or value["attempt_count"] not in {0, 1}
+        or not _conversation_timestamp(value.get("created_at"))
+        or not _conversation_timestamp(value.get("updated_at"))
+    ):
+        raise BridgeConversationProjectionError("conversation_turn_invalid")
+    return dict(value)
+
+
+def _ready_conversation_turn_submission(value: object) -> dict[str, object]:
+    required = {
+        "schema_version", "duplicate", "disposition", "conversation",
+        "message", "turn", "run",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeConversationProjectionError("conversation_submission_invalid")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(value.get("duplicate"), bool)
+        or value.get("disposition")
+        not in {"reserved", "submitting", "accepted", "rejected", "unknown"}
+    ):
+        raise BridgeConversationProjectionError("conversation_submission_invalid")
+    conversation = _public_conversation_summary(value.get("conversation"))
+    message = _public_conversation_message(value.get("message"))
+    turn = _public_conversation_turn(value.get("turn"))
+    run = _public_current_run(value.get("run"))
+    if (
+        message["conversation_id"] != conversation["id"]
+        or turn["conversation_id"] != conversation["id"]
+        or turn["user_message_id"] != message["id"]
+        or message["run_id"] != turn["latest_run_id"]
+        or run is not None and run["id"] != turn["latest_run_id"]
+    ):
+        raise BridgeConversationProjectionError("conversation_submission_invalid")
+    return {
+        "schema_version": 1,
+        "duplicate": value["duplicate"],
+        "disposition": value["disposition"],
+        "conversation": conversation,
+        "message": message,
+        "turn": turn,
+        "run": run,
+    }
+
+
+def _conversation_submission_error(code: str) -> tuple[dict[str, object], int]:
+    if code in {"conversation.not_found", "conversation.agent_not_found"}:
+        return _conversation_failure("not_found")
+    if code == "conversation.active_run":
+        return _conversation_failure("active_run")
+    if code == "conversation.capacity_unavailable":
+        return _conversation_failure("capacity_unavailable")
+    if code == "conversation.idempotency_conflict":
+        return _conversation_failure("idempotency_conflict")
+    if code == "codex.cli_missing":
+        return _conversation_failure("cli_missing")
+    if code == "codex.sign_in_required":
+        return _conversation_failure("sign_in_required")
+    if code in {
+        "conversation.agent_capability_missing",
+        "conversation.runtime_capability_missing",
+        "runtime.binding_invalid",
+    }:
+        return _conversation_failure("unsupported")
+    if code.endswith("invalid"):
+        return _conversation_failure("invalid")
+    if code in {
+        "codex.unavailable",
+        "conversation.unavailable",
+        "run_repository.unavailable",
+    }:
+        return _conversation_failure("unavailable")
+    return _conversation_failure("error")
+
+
+def bridge_submit_conversation_turn_payload(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    """Submit one text Turn through the fixed private capability."""
+
+    try:
+        from server import submit_mentat_conversation_turn
+
+        source, status = submit_mentat_conversation_turn(conversation_id, payload)
+        if status not in {200, 202}:
+            return _conversation_submission_error(
+                str(source.get("error_code") or "conversation.request_invalid")
+            )
+        ready = _ready_conversation_turn_submission(source)
+        return _bounded_conversation_response(
+            {
+                **ready,
+                "service": "mentat-local-bridge",
+                "runtime": "python",
+                "status": "ready",
+            },
+            status,
+        )
+    except OrchestrationServiceError as exc:
+        return _conversation_submission_error(exc.code)
+    except (BridgeConversationProjectionError, ConversationRepositoryError):
+        return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def bridge_codex_readiness_payload() -> tuple[dict[str, object], int]:
+    """Project only the four approved Codex readiness states."""
+
+    try:
+        from server import mentat_codex_readiness_payload
+
+        source = mentat_codex_readiness_payload()
+        if not isinstance(source, dict) or set(source) != {
+            "schema_version",
+            "setup_command",
+            "state",
+        }:
+            raise BridgeConversationProjectionError("codex_readiness_invalid")
+        state = source.get("state")
+        setup_command = source.get("setup_command")
+        if (
+            source.get("schema_version") != 1
+            or state not in {
+                "cli_missing",
+                "sign_in_required",
+                "ready",
+                "unavailable",
+            }
+            or setup_command not in {None, "codex login"}
+            or (state == "sign_in_required") != (setup_command == "codex login")
+        ):
+            raise BridgeConversationProjectionError("codex_readiness_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "state": state,
+            "setup_command": setup_command,
+        }, 200
     except Exception:
         return _conversation_failure("error")
 
@@ -1550,9 +1738,15 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "method_not_allowed"}, 405)
 
     def _action_json_body(self, maximum_bytes: int = MAXIMUM_BRIDGE_ACTION_BODY_BYTES) -> dict[str, object] | None:
-        content_type = self.headers.get("Content-Type", "")
+        content_types = self.headers.get_all("Content-Type", failobj=[]) or []
         lengths = self.headers.get_all("Content-Length", failobj=[]) or []
-        if len(lengths) != 1 or content_type.lower() != "application/json":
+        transfer_encodings = self.headers.get_all("Transfer-Encoding", failobj=[]) or []
+        if (
+            len(content_types) != 1
+            or content_types[0].lower() != "application/json"
+            or len(lengths) != 1
+            or transfer_encodings
+        ):
             return None
         maximum_digits = len(str(maximum_bytes))
         if not re.fullmatch(rf"[1-9][0-9]{{0,{maximum_digits - 1}}}", lengths[0]):
@@ -1561,10 +1755,37 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if size > maximum_bytes:
             return None
         try:
-            value = json.loads(self.rfile.read(size).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            body = self._read_exact_body(size)
+            if body is None:
+                return None
+            value = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError, TimeoutError):
             return None
         return value if isinstance(value, dict) else None
+
+    def _read_exact_body(self, size: int) -> bytes | None:
+        """Read one declared body exactly within a total wall-clock deadline."""
+
+        deadline = time.monotonic() + BRIDGE_BODY_READ_TIMEOUT_SECONDS
+        previous_timeout = self.connection.gettimeout()
+        chunks: list[bytes] = []
+        remaining = size
+        try:
+            while remaining:
+                timeout = deadline - time.monotonic()
+                if timeout <= 0:
+                    return None
+                self.connection.settimeout(timeout)
+                chunk = self.rfile.read1(
+                    min(remaining, BRIDGE_BODY_READ_CHUNK_BYTES)
+                )
+                if not chunk:
+                    return None
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            self.connection.settimeout(previous_timeout)
+        return b"".join(chunks)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if not self._request_is_private():
@@ -1621,6 +1842,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == BRIDGE_AGENT_ACTIVITY_PATH and not parsed.query:
             payload, status = bridge_agent_activity_payload()
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_CODEX_READINESS_PATH and not parsed.query:
+            payload, status = bridge_codex_readiness_payload()
             self._send_json(payload, status)
             return
         conversation_match = re.fullmatch(
@@ -1680,6 +1905,30 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bridge_route_not_found"}, 404)
                 return
             payload, status = bridge_create_conversation_payload(body)
+            self._send_json(payload, status)
+            return
+        conversation_turn_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/turns",
+            parsed.path,
+        )
+        if conversation_turn_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_turn_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(
+                MAXIMUM_BRIDGE_CONVERSATION_TURN_BODY_BYTES
+            )
+            if body is None or set(body) != {"idempotency_key", "text"}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_submit_conversation_turn_payload(
+                conversation_id,
+                body,
+            )
             self._send_json(payload, status)
             return
         match = re.fullmatch(r"/bridge/v1/runs/([^/]+)/(stop|message|response)(?:/(preview))?", parsed.path)
@@ -1743,6 +1992,46 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _recover_bridge_runs_before_ready() -> None:
+    """Classify pre-start crash states before the bridge serves admission."""
+
+    from server import (
+        load_agent_console_runs_after_startup_recovery,
+        recover_orchestration_crash_states_at_startup,
+    )
+
+    recover_orchestration_crash_states_at_startup(
+        recover_legacy_console_runs=True,
+    )
+    load_agent_console_runs_after_startup_recovery()
+
+
+def _reconcile_bridge_runs_at_startup() -> None:
+    """Best-effort readback for durable Runs owned by the Node gateway."""
+
+    try:
+        from server import reconcile_orchestration_runtime_references_at_startup
+
+        reconcile_orchestration_runtime_references_at_startup()
+    except Exception:
+        # The listener remains available when a runtime or its evidence cannot
+        # be read. Durable leases expire and a later reconciliation can retry;
+        # startup must never resubmit a Run.
+        return
+
+
+def start_bridge_startup_reconciliation() -> threading.Thread:
+    """Start reconciliation after bridge bind without delaying readiness."""
+
+    worker = threading.Thread(
+        target=_reconcile_bridge_runs_at_startup,
+        daemon=True,
+        name="mentat-bridge-startup-reconciler",
+    )
+    worker.start()
+    return worker
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     token = os.environ.pop(BRIDGE_TOKEN_ENV, "")
@@ -1751,6 +2040,16 @@ def main(argv: list[str] | None = None) -> int:
     except (BridgeConfigurationError, OSError) as exc:
         code = str(exc) if isinstance(exc, BridgeConfigurationError) else "bridge_bind_failed"
         print(f"Mentat Local Bridge refused startup: {code}", flush=True)
+        return 2
+
+    try:
+        _recover_bridge_runs_before_ready()
+    except Exception:
+        bridge.server_close()
+        print(
+            "Mentat Local Bridge refused startup: startup_recovery_unavailable",
+            flush=True,
+        )
         return 2
 
     stopped = threading.Event()
@@ -1770,6 +2069,7 @@ def main(argv: list[str] | None = None) -> int:
     bound_host, bound_port = bridge.server_address[:2]
     display_host = f"[{bound_host}]" if ":" in str(bound_host) else str(bound_host)
     print(f"Mentat Python Local Bridge ready on http://{display_host}:{bound_port}", flush=True)
+    start_bridge_startup_reconciliation()
     try:
         while not stopped.is_set() and launcher_is_running(launcher_pid):
             bridge.handle_request()

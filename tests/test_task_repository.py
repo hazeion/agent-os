@@ -249,7 +249,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 10)
+            self.assertEqual(SCHEMA_VERSION, 11)
             self.assertTrue(
                 {
                     "mentat_tasks",
@@ -2057,6 +2057,12 @@ class TaskRepositoryTests(unittest.TestCase):
             try:
                 TaskRepository(connection).insert_collection([task("occupied")])
                 with transaction(connection, immediate=True):
+                    connection.execute(
+                        "DROP TABLE mentat_conversation_submission_results"
+                    )
+                    connection.execute("DROP TABLE mentat_conversation_messages")
+                    connection.execute("DROP TABLE mentat_conversation_turns")
+                    connection.execute("DROP TABLE mentat_conversations")
                     connection.execute("DROP TABLE mentat_agent_events")
                     connection.execute("DROP TABLE mentat_dispatch_reservations")
                     connection.execute("DROP TABLE mentat_task_dispatch_heads")
@@ -2068,7 +2074,7 @@ class TaskRepositoryTests(unittest.TestCase):
                     connection.execute("DROP TABLE agent_runtime_configs")
                     connection.execute("DROP TABLE provider_connections")
                     connection.execute(
-                        "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10)"
+                        "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11)"
                     )
             finally:
                 connection.close()

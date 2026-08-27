@@ -9,6 +9,7 @@ import textwrap
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from agent_runtime import (
     AgentEventType,
@@ -21,6 +22,7 @@ from agent_runtime import (
 )
 from codex_runtime import (
     CODEX_DEFAULT_BINDING,
+    START_TASK_OPERATION_TIMEOUT_SECONDS,
     CodexAppServerClient,
     CodexAppServerClientError,
     CodexRuntime,
@@ -34,7 +36,7 @@ THREAD_ID = "0199a213-81c0-7800-8aa1-bbab2a035a53"
 TURN_ID = "0199a213-81c0-7800-8aa1-bbab2a035a54"
 RUNTIME_REF = f"{THREAD_ID}:{TURN_ID}"
 READY_ACCOUNT = {
-    "account": {"type": "chatgpt"},
+    "account": {"type": "chatgpt", "email": None, "planType": "plus"},
     "requiresOpenaiAuth": True,
 }
 
@@ -82,8 +84,23 @@ def context(*, runtime_run_ref=None) -> RuntimeContext:
     )
 
 
-def thread_start(_root: Path) -> dict:
-    return {"thread": {"id": THREAD_ID}}
+def thread_start(root: Path) -> dict:
+    return {
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "cwd": str(root.resolve()),
+        "model": "gpt-5.6",
+        "modelProvider": "openai",
+        "reasoningEffort": "high",
+        "sandbox": {
+            "type": "workspaceWrite",
+            # App Server reports cwd as the implicit workspace and reserves
+            # writableRoots for additional roots.
+            "writableRoots": [],
+            "networkAccess": False,
+        },
+        "thread": {"id": THREAD_ID},
+    }
 
 
 def turn_start(status="inProgress") -> dict:
@@ -188,6 +205,7 @@ class CodexRuntimeTests(unittest.TestCase):
     def test_available_runtime_advertises_only_implemented_capabilities(self):
         with TemporaryDirectory() as temporary:
             runtime = self.runtime(Path(temporary), FakeClient())
+        self.assertEqual(runtime.readiness_status(force=True), "ready")
         self.assertEqual(
             runtime.capabilities,
             frozenset(
@@ -215,6 +233,10 @@ class CodexRuntimeTests(unittest.TestCase):
         failures = (
             {"account": None, "requiresOpenaiAuth": True},
             {"account": {"type": "chatgpt"}},
+            {
+                "account": {"type": "unsupported-account"},
+                "requiresOpenaiAuth": True,
+            },
             CodexAppServerClientError("codex.protocol_invalid", uncertain=False),
         )
         for failure in failures:
@@ -222,6 +244,12 @@ class CodexRuntimeTests(unittest.TestCase):
                 runtime = self.runtime(
                     Path(temporary), FakeClient(account_response=failure)
                 )
+                expected = (
+                    "sign_in_required"
+                    if failure == {"account": None, "requiresOpenaiAuth": True}
+                    else "unavailable"
+                )
+                self.assertEqual(runtime.readiness_status(force=True), expected)
                 self.assertEqual(runtime.capabilities, frozenset())
                 with self.assertRaisesRegex(
                     AgentRuntimeError, "runtime.binding_invalid"
@@ -231,6 +259,7 @@ class CodexRuntimeTests(unittest.TestCase):
     def test_unavailable_runtime_advertises_no_capabilities(self):
         with TemporaryDirectory() as temporary:
             runtime = CodexRuntime(workspace_root=Path(temporary), command=None)
+        self.assertEqual(runtime.readiness_status(force=True), "cli_missing")
         self.assertEqual(runtime.capabilities, frozenset())
         with self.assertRaisesRegex(AgentRuntimeError, "runtime.binding_invalid"):
             runtime.validate_agent_binding(CODEX_DEFAULT_BINDING, [])
@@ -249,6 +278,15 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(outcome.run.runtime_type, "codex")
         self.assertEqual(outcome.run.status, RunStatus.RUNNING)
         self.assertEqual(
+            dict(outcome.execution_identity),
+            {
+                "model": "gpt-5.6",
+                "provider": "openai",
+                "reasoning_effort": "high",
+                "verification": "runtime_response",
+            },
+        )
+        self.assertEqual(
             [call[0] for call in client.calls],
             ["account/read", "thread/start", "turn/start"],
         )
@@ -258,7 +296,7 @@ class CodexRuntimeTests(unittest.TestCase):
                 "approvalPolicy": "never",
                 "cwd": str(root),
                 "ephemeral": False,
-                "sandbox": "workspaceWrite",
+                "sandbox": "workspace-write",
                 "serviceName": "mentat",
             },
         )
@@ -272,6 +310,10 @@ class CodexRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(client.calls[2][1]["cwd"], str(root))
         self.assertEqual(client.calls[2][1]["approvalPolicy"], "never")
+        self.assertGreater(client.calls[1][2], 0)
+        self.assertLessEqual(client.calls[1][2], START_TASK_OPERATION_TIMEOUT_SECONDS)
+        self.assertGreater(client.calls[2][2], 0)
+        self.assertLessEqual(client.calls[2][2], client.calls[1][2])
         prompt = client.calls[2][1]["input"][0]
         self.assertEqual(prompt["type"], "text")
         self.assertIn(task().objective, prompt["text"])
@@ -325,6 +367,37 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(outcome.disposition, SubmissionDisposition.UNKNOWN)
         self.assertEqual(outcome.failure_code, "runtime.start_unverified")
 
+    def test_submit_requires_every_official_thread_safety_field(self):
+        required = {
+            "approvalPolicy",
+            "approvalsReviewer",
+            "cwd",
+            "model",
+            "modelProvider",
+            "sandbox",
+            "thread",
+        }
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for missing in sorted(required):
+                with self.subTest(missing=missing):
+                    incomplete = thread_start(root)
+                    incomplete.pop(missing)
+                    client = FakeClient(incomplete)
+                    outcome = self.runtime(root, client).submit_task(task(), context())
+                    self.assertEqual(
+                        outcome.disposition,
+                        SubmissionDisposition.UNKNOWN,
+                    )
+                    self.assertEqual(
+                        outcome.failure_code,
+                        "runtime.start_unverified",
+                    )
+                    self.assertEqual(
+                        [call[0] for call in client.calls],
+                        ["account/read", "thread/start"],
+                    )
+
     def test_submit_rejects_an_optional_read_only_thread_echo(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -335,6 +408,25 @@ class CodexRuntimeTests(unittest.TestCase):
             )
         self.assertEqual(outcome.disposition, SubmissionDisposition.UNKNOWN)
         self.assertEqual(outcome.failure_code, "runtime.start_unverified")
+
+    def test_submit_accepts_only_empty_or_exact_cwd_additional_writable_roots(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            exact = thread_start(root)
+            exact["sandbox"]["writableRoots"] = [str(root)]
+            accepted = self.runtime(root, FakeClient(exact, turn_start())).submit_task(
+                task(), context()
+            )
+
+            foreign = thread_start(root)
+            foreign["sandbox"]["writableRoots"] = [str(root.parent)]
+            rejected = self.runtime(root, FakeClient(foreign)).submit_task(
+                task(), context()
+            )
+
+        self.assertEqual(accepted.disposition, SubmissionDisposition.ACCEPTED)
+        self.assertEqual(rejected.disposition, SubmissionDisposition.UNKNOWN)
+        self.assertEqual(rejected.failure_code, "runtime.start_unverified")
 
     def test_close_is_permanent_and_cannot_respawn_a_client(self):
         factory_started = threading.Event()
@@ -634,6 +726,34 @@ class CodexAppServerClientTests(unittest.TestCase):
                 client.close()
         self.assertEqual(raised.exception.code, "codex.request_timeout")
         self.assertTrue(raised.exception.uncertain)
+
+    def test_request_timeout_is_one_end_to_end_startup_and_method_budget(self):
+        with TemporaryDirectory() as temporary:
+            client = CodexAppServerClient(
+                command=("codex",),
+                cwd=Path(temporary),
+                request_timeout=1,
+            )
+            clock = [100.0]
+            observed = []
+            startup_timeouts = []
+
+            def ensure_ready(*, timeout):
+                startup_timeouts.append(timeout)
+                clock[0] += 0.05
+
+            client._ensure_ready = ensure_ready
+            client._request_started = (
+                lambda method, params, *, timeout: observed.append(timeout) or {}
+            )
+            with patch("codex_runtime.time", wraps=time) as codex_time:
+                codex_time.monotonic.side_effect = lambda: clock[0]
+                result = client.request("account/read", {}, timeout=0.25)
+
+        self.assertEqual(result, {})
+        self.assertEqual(startup_timeouts, [0.25])
+        self.assertEqual(len(observed), 1)
+        self.assertAlmostEqual(observed[0], 0.2)
 
     @unittest.skipIf(os.name == "nt", "POSIX process-group lifecycle check")
     def test_close_terminates_the_owned_app_server_process_tree(self):

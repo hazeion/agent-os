@@ -1349,6 +1349,10 @@ button {
   background: var(--accent-soft);
 }
 
+.message-optimistic {
+  opacity: 0.68;
+}
+
 .message-role {
   color: var(--accent);
   font-size: 0.67rem;
@@ -1402,6 +1406,57 @@ button {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
+.console-composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.codex-setup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 9px clamp(12px, 4vw, 58px) 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--row);
+}
+
+.codex-setup strong {
+  color: var(--text-primary);
+  font-size: 0.74rem;
+}
+
+.codex-setup p {
+  margin: 2px 0 0;
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+}
+
+.codex-setup code {
+  color: var(--accent);
+  font-family: var(--font-mono), monospace;
+}
+
+.codex-setup button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 7px;
+  background: var(--panel-raised);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+.codex-setup button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
 .composer-footer {
   justify-content: flex-end;
   flex-wrap: wrap;
@@ -1437,6 +1492,11 @@ button {
   margin: 8px clamp(12px, 4vw, 58px) 14px;
   color: var(--accent);
   font-size: 0.74rem;
+}
+
+.console-notice:empty {
+  min-height: 0;
+  margin-block: 0;
 }
 
 .activity-rail {
@@ -1738,5 +1798,10 @@ button {
   .composer-boundary {
     width: 100%;
     margin-right: 0;
+  }
+
+  .codex-setup {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

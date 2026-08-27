@@ -87,6 +87,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     RUN_DATABASE_SCHEMA_VERSION,
     AGENT_DATABASE_SCHEMA_VERSION,
     PROVIDER_DATABASE_SCHEMA_VERSION,
+    CONVERSATION_DATABASE_SCHEMA_VERSION,
     DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
@@ -495,7 +496,10 @@ def _validate_conversation_repository(
     if schema_version < CONVERSATION_DATABASE_SCHEMA_VERSION:
         return
     try:
-        validate_conversation_repository_connection(connection)
+        validate_conversation_repository_connection(
+            connection,
+            schema_version=schema_version,
+        )
     except ConversationRepositoryError as exc:
         raise PrivateConsoleUnitError("private_conversation_repository_invalid") from exc
 

@@ -118,12 +118,18 @@ class PrivateConsoleStateTests(unittest.TestCase):
     ) -> private_console_unit.PrivateConsoleUnit:
         return self.rebuild_schema_unit(unit, 8)
 
+    def schema_ten_unit(
+        self,
+        unit: private_console_unit.PrivateConsoleUnit,
+    ) -> private_console_unit.PrivateConsoleUnit:
+        return self.rebuild_schema_unit(unit, 10)
+
     def rebuild_schema_unit(
         self,
         unit: private_console_unit.PrivateConsoleUnit,
         schema_version: int,
     ) -> private_console_unit.PrivateConsoleUnit:
-        """Build a genuine historical schema instead of mutating schema 10."""
+        """Build a genuine historical schema instead of relabeling the current one."""
 
         registry_raw = (
             standalone_agent_registry_raw(unit) if schema_version < 8 else None
@@ -156,6 +162,14 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 "agent_runtime_configs",
                 "mentat_agents",
                 "mentat_agent_registry_state",
+            )
+        if schema_version >= 9:
+            tables += ("provider_connections",)
+        if schema_version >= 10:
+            tables += (
+                "mentat_conversations",
+                "mentat_conversation_messages",
+                "mentat_conversation_turns",
             )
 
         with TemporaryDirectory() as temporary:
@@ -373,6 +387,35 @@ class PrivateConsoleStateTests(unittest.TestCase):
             self.assertEqual(resolve_blob_path(root, attachment["id"]).read_bytes(), b"legacy")
             self.assertTrue((root / "runtime" / "agent-console-runs.json").is_file())
             self.assertEqual(preview_private_console_migration(root).status, "already_migrated")
+
+    def test_bridge_recovery_does_not_create_destination_before_private_migration(self):
+        from mentat import local_bridge
+        import server
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            self.add_retained_attachment(root, "run_legacy", b"legacy")
+            self.move_console_to_legacy_runtime(root)
+            before = {
+                path.relative_to(root / "runtime").as_posix(): path.read_bytes()
+                for path in (root / "runtime").rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(preview_private_console_migration(root).status, "ready")
+
+            with patch.object(server, "DATA_DIR", root), self.assertRaises(
+                (MentatDatabaseError, run_repository.RunRepositoryError)
+            ):
+                local_bridge._recover_bridge_runs_before_ready()
+
+            self.assertFalse((root / "private" / "console").exists())
+            after = {
+                path.relative_to(root / "runtime").as_posix(): path.read_bytes()
+                for path in (root / "runtime").rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+            self.assertEqual(preview_private_console_migration(root).status, "ready")
 
     def test_changed_legacy_source_invalidates_migration_confirmation(self):
         with TemporaryDirectory() as temporary:
@@ -790,6 +833,55 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 supported_runtime_types=("codex", "hermes", "vercel"),
             ).list_agents()
             self.assertEqual([agent.id for agent in agents], ["agent_schema_eight"])
+
+    def test_released_schema_ten_format_four_backup_restores_and_upgrades(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source-ten", "source")
+            documents = data_backup_restore._load_live_documents(source, None)
+            schema_ten = self.schema_ten_unit(
+                capture_private_console_unit(source)
+            )
+            private_console_unit.validate_private_console_unit(schema_ten)
+            raw = data_backup_restore._build_backup(
+                documents,
+                schema_ten,
+                format_version=4,
+            )
+            path = base / data_backup_restore._backup_name(
+                documents,
+                schema_ten,
+                format_version=4,
+            )
+            path.write_bytes(raw)
+            if os.name == "posix":
+                path.chmod(0o600)
+
+            target = self.make_current(base, "target-ten", "target")
+            preview = data_backup_restore.preview_durable_restore(target, path)
+            restored = data_backup_restore.restore_durable_backup(
+                target,
+                path,
+                confirmation_token=preview.confirmation_token or "",
+            )
+
+            self.assertEqual(restored.status, "restored")
+            database = connect(target)
+            try:
+                self.assertEqual(
+                    database.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0],
+                    DATABASE_SCHEMA_VERSION,
+                )
+                self.assertEqual(
+                    database.execute(
+                        "SELECT COUNT(*) FROM mentat_conversation_submission_results"
+                    ).fetchone()[0],
+                    0,
+                )
+            finally:
+                database.close()
 
     def test_missing_referenced_blob_blocks_backup(self):
         with TemporaryDirectory() as temporary:

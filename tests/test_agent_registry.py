@@ -360,7 +360,11 @@ class AgentRegistryTests(unittest.TestCase):
                 client=Mock(
                     request=Mock(
                         return_value={
-                            "account": {"type": "chatgpt"},
+                            "account": {
+                                "type": "chatgpt",
+                                "email": None,
+                                "planType": "plus",
+                            },
                             "requiresOpenaiAuth": True,
                         }
                     ),

@@ -146,7 +146,10 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         )
         self.assertIn('test -f "$preview_data_dir/private/console/mentat.sqlite3"', quality)
         self.assertIn("python scripts/mentat_web_preview.py --port 8896", quality)
-        self.assertIn("python scripts/verify_web_preview_lifecycle.py", quality)
+        self.assertIn(
+            'MENTAT_DATA_DIR="$preview_data_dir" python scripts/verify_web_preview_lifecycle.py',
+            quality,
+        )
         self.assertIn("WEB_RESULT: ${{ needs.web-foundation.result }}", quality)
         self.assertIn('test "$WEB_RESULT" = success', quality)
 

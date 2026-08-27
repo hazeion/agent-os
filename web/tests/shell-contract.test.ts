@@ -53,11 +53,16 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
   }
   const home = routeSources.get("/") ?? "";
   assert.match(home, /HomeConsole/);
-  assert.match(source("src/app/home-console.tsx"), /["']use client["']/);
-  assert.match(source("src/app/home-console.tsx"), /Dispatch available in Slice 2/);
-  assert.match(source("src/app/home-console.tsx"), /disabled type="submit"/);
-  assert.match(source("src/app/home-console.tsx"), /rows=\{1\}/);
-  assert.match(source("src/app/home-console.tsx"), /data-right-collapsed/);
+  const consoleSource = source("src/app/home-console.tsx");
+  assert.match(consoleSource, /["']use client["']/);
+  assert.match(consoleSource, /submitConversationTurn/);
+  assert.match(consoleSource, /event\.key === "Enter" && !event\.shiftKey/);
+  assert.match(consoleSource, /disabled=\{!canSend\}/);
+  assert.match(consoleSource, /rows=\{1\}/);
+  assert.match(consoleSource, /codex login/);
+  assert.match(consoleSource, /Recheck/);
+  assert.match(consoleSource, /message-optimistic/);
+  assert.match(consoleSource, /data-right-collapsed/);
   assert.match(source("src/app/app-shell.tsx"), /data-sidebar-toggle/);
   const css = source("src/app/globals.css");
   assert.match(css, /\.sidebar-toggle \{[\s\S]*top: 50%;[\s\S]*transform: translateY\(-50%\)/);
