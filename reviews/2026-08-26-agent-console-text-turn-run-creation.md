@@ -384,6 +384,30 @@ Status: Approved after the original contract and test strategy.
   death cases on a fresh normally prepared root. The final clean tree passes
   1,545 tests with 5 skips, and both independent follow-up reviewers returned
   **CLEAN**.
+- Follow-up commit `8042dc2930f88a28d66b421eeb06bc361cb4155f` was
+  published to PR #144. Its rerun made the previously failing Node runtime
+  foundation check pass, together with browser smoke, installed lifecycle,
+  dependency/secret scan, and native-artifact gates.
+- Two Intel macOS shards then exposed a separate timing flaw in this slice's
+  Codex budget test: a real `sleep(0.05)` overslept under runner load, leaving
+  `0.0913` or `0.0569` seconds and violating an unrelated `>= 0.1` assertion.
+  The test now advances a deterministic fake monotonic clock by `0.05` inside
+  startup, asserts startup received `0.25`, and asserts the exact `0.20`
+  seconds left for the method. This still catches deadline creation after
+  startup while removing runner timing from the contract. The patch replaces
+  only `codex_runtime`'s `time` binding, so it cannot alter the process-global
+  clock seen by another module or thread. Runtime behavior is unchanged.
+- Exact final verification: `python3 -m unittest tests.test_codex_runtime -q`
+  ran 29 tests with 1 platform skip and passed; Python compilation and
+  `git diff --check` pass. A fresh issue-only tree built from published HEAD
+  plus exactly this review log and `tests/test_codex_runtime.py` passed
+  `python3 -m unittest discover -s tests -q`: 1,545 tests in 456.131 seconds
+  with 5 skips.
+- Final correction review: Reviewer A's P2 fake-clock ordering finding was
+  fixed by advancing time inside startup. Reviewer B's P2 process-global clock
+  finding was fixed with the module-local binding, and its verification/count
+  findings were resolved with the fresh full suite and exact result wording.
+  Both reviewers returned **CLEAN** on the final two-file diff.
 
 ## Documentation updates
 
@@ -461,41 +485,43 @@ Status: Approved after the original contract and test strategy.
 - PR summary: Add atomic, idempotent runtime-neutral text Turn submission and
   recovery; explicit credential-safe Codex readiness; and the Next.js
   optimistic composer with Conversation-scoped retry state.
-- Unresolved risks: Initial PR CI exposed the clean-root startup-ordering gap.
-  Its local fix is verified but has not yet been committed or pushed; the
-  required matrix must rerun on the amended PR. The live production smoke
-  exercised signed-in Codex; Hermes uses the production integration contract
-  test. Lighthouse has documented host variance, although local and PR gates
-  passed unchanged thresholds.
+- Unresolved risks: The authority/lifecycle correction is published and its
+  formerly failing Node check is green. The deterministic Codex timeout-test
+  correction remains local and needs exact publication approval plus a fresh
+  required-matrix rerun. The live production smoke exercised signed-in Codex;
+  Hermes uses the production integration contract test. Lighthouse has
+  documented host variance, although local and PR gates passed unchanged
+  thresholds.
 - Explicit exclusions: user-owned `data/projects.json`, `data/tasks.json`,
   `design/mockups/`, `tmp/`, `uv.lock`, `videos/`, and `web/.npmrc`.
-- User authorization and scope: The exact 46-file packet was approved, committed,
-  pushed, and opened as a PR. The follow-up packet is limited to
-  `.github/workflows/quality-gates.yml`, `server.py`,
-  `tests/test_node_runtime_foundation.py`, `tests/test_private_console_state.py`,
-  and this review log; it requires refreshed publication approval after re-review.
-- Commit hash: `a6894ae80658f98d29b729b1f9103b203fdaebd8`.
-- Proposed follow-up commit: `fix: guard bridge startup recovery authority`.
+- User authorization and scope: The exact 46-file packet and exact five-file
+  authority/lifecycle follow-up were approved, committed, and pushed. The new
+  test-only packet is limited to `tests/test_codex_runtime.py` and this review
+  log; it requires refreshed publication approval after re-review.
+- Published commits: `a6894ae80658f98d29b729b1f9103b203fdaebd8` and
+  `8042dc2930f88a28d66b421eeb06bc361cb4155f`.
+- Proposed test-only follow-up commit: `test: stabilize Codex timeout budget contract`.
 - Ready PR URL: https://github.com/hazeion/agent-os/pull/144
 
 ## Outcome review
 
-- Classification: Initial publication complete; the clean-root CI and migration-
-  safety follow-up is locally verified and awaits publication authorization.
+- Classification: Initial publication and the clean-root migration-safety
+  follow-up are published; the test-only macOS timing correction is locally
+  verified and awaits publication authorization.
 - Acceptance criteria summary: AC-1 through AC-9 pass locally; AC-8's required
-  publication CI remains pending on the amended PR rerun.
-- Potential bugs or untested paths: The known clean-root startup failure is fixed
-  locally but remains blocking until the amended PR passes required CI. Only one
-  local Codex installation was used for the real runtime smoke; Hermes and
-  failure paths are covered by production integration/fault tests rather than
-  a second live provider account.
-- Remaining reviewer dissent: None. Both independent follow-up reviewers returned
-  **CLEAN** after the unsafe first approach was reverted and writable recovery
-  gained the read-only receipt preflight plus real legacy-root regression.
+  publication CI remains pending on the test-only amended PR rerun.
+- Potential bugs or untested paths: The authority/lifecycle failure is fixed and
+  its exact CI check passes. The remaining failure is confined to a PR-added
+  wall-clock test assertion; the deterministic correction still requires its
+  publication rerun. Only one local Codex installation was used for the real
+  runtime smoke; Hermes and failure paths are covered by production integration/
+  fault tests rather than a second live provider account.
+- Remaining reviewer dissent: None. Both authority/lifecycle reviewers and both
+  final test-correction reviewers returned **CLEAN**.
 - Compatibility/migration/rollback concerns: Schema-10 roots and released
   backup formats remain covered; schema-11 restore/export and clean full-suite
   checks pass. Rollback remains branch/commit based until publication.
 - User decision: Original contract, test strategy, Codex authentication/setup
-  amendment, and initial exact publication packet approved. Follow-up CI-fix
-  publication approval pending.
+  amendment, initial exact publication packet, and authority/lifecycle follow-up
+  approved. Test-only timeout correction publication approval pending.
 - Next slice authorized: No

@@ -9,6 +9,7 @@ import textwrap
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from agent_runtime import (
     AgentEventType,
@@ -733,17 +734,26 @@ class CodexAppServerClientTests(unittest.TestCase):
                 cwd=Path(temporary),
                 request_timeout=1,
             )
+            clock = [100.0]
             observed = []
-            client._ensure_ready = lambda *, timeout: time.sleep(0.05)
+            startup_timeouts = []
+
+            def ensure_ready(*, timeout):
+                startup_timeouts.append(timeout)
+                clock[0] += 0.05
+
+            client._ensure_ready = ensure_ready
             client._request_started = (
                 lambda method, params, *, timeout: observed.append(timeout) or {}
             )
-            result = client.request("account/read", {}, timeout=0.25)
+            with patch("codex_runtime.time", wraps=time) as codex_time:
+                codex_time.monotonic.side_effect = lambda: clock[0]
+                result = client.request("account/read", {}, timeout=0.25)
 
         self.assertEqual(result, {})
+        self.assertEqual(startup_timeouts, [0.25])
         self.assertEqual(len(observed), 1)
-        self.assertGreaterEqual(observed[0], 0.1)
-        self.assertLess(observed[0], 0.23)
+        self.assertAlmostEqual(observed[0], 0.2)
 
     @unittest.skipIf(os.name == "nt", "POSIX process-group lifecycle check")
     def test_close_terminates_the_owned_app_server_process_tree(self):
