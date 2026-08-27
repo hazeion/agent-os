@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console text turn and Run creation
 
-Status: In progress
+Status: PR open; CI follow-up verified, awaiting publication approval
 Slice: `agent-console-text-turn-run-creation`
 Date: `2026-08-26`
 Review log: `reviews/2026-08-26-agent-console-text-turn-run-creation.md`
@@ -254,6 +254,10 @@ Status: Approved after the original contract and test strategy.
 | `python3 -m py_compile` over all changed Python production modules | macOS, Python 3.13 | Exit 0 | Pass | Repository, adapters, bridge, server, schema, and authority modules compile. |
 | `python3 -m unittest tests.test_codex_runtime tests.test_orchestration_service tests.test_hermes_runtime_server_integration tests.test_run_repository tests.test_agent_registry tests.test_private_console_state -q` | macOS, Python 3.13 | Exit 0 | 215 pass, 1 skip | End-to-end deadlines, immutable runtime identity, acceptance races, restart readback, registry, schema-10 restore, and schema-11 backup semantics. |
 | `python3 -m unittest tests.test_mentat_local_bridge -q` | Host loopback execution | Exit 0 | 39 pass | Authenticated fixed capabilities, 96 KiB Turn boundary, exact framing/deadline sockets, safe projections, and pre-readiness recovery gating. |
+| `python3 -m unittest tests.test_node_runtime_foundation tests.test_mentat_web_preview -v` | macOS, Python 3.13 | Exit 0 | 8 pass | Pins the lifecycle verifier to the preflighted CI data root and preserves fixed preview commands, version gates, and sibling cleanup. |
+| Targeted legacy-root, bridge-startup, Node-foundation, and source-preview tests | macOS, Python 3.13 | Exit 0 | 12 pass | Proves recovery performs no destination write before a required private migration and preserves synchronous classification plus preview lifecycle contracts. |
+| `python3 -m unittest tests.test_private_console_state tests.test_orchestration_service tests.test_mentat_local_bridge tests.test_hermes_runtime_server_integration -q` | Host loopback execution | Exit 0 | 142 pass | Private migration/state, orchestration recovery, authenticated bridge, and production Hermes integration after the read-only authority preflight. |
+| `MENTAT_DATA_DIR=<preflighted-root> python3 scripts/verify_web_preview_lifecycle.py` | Host process execution with a fresh isolated root prepared through the normal startup and Task/Run authority contracts | Exit 0 | 2 sibling-death scenarios pass | Reproduces the amended PR CI lifecycle path; both bridge-death and Node-death cleanup stop the sibling and gateway without initializing authority inside the bridge. |
 | Five targeted startup/reconciliation tests | macOS, Python 3.13 | Exit 0 | 5 pass | Production startup entrypoint recovers unattempted/uncertain Conversation Runs and reconciles durable references without another submit call. |
 | `npm --prefix web run check` | macOS, Node 24 | Exit 0 | 63 pass | ESLint, TypeScript, exact routes, keyboard/IME/readiness/rollback, initial draft gating/one-time movement, cross-Conversation draft/retry isolation, activity return, and notice recency. |
 | `npm --prefix web run build` | Host execution, Node 24 | Exit 0 | Production build pass | Next 16.3.2 Turbopack compiled all named routes and prepared the standalone artifact. Repeated successfully after the rendered empty-state fix. |
@@ -267,6 +271,7 @@ Status: Approved after the original contract and test strategy.
 | `python3 -m unittest discover -s tests -q` | Host execution from clean `/private/tmp` issue-only tree | Exit 0 | 1,541 pass, 5 skip | 482.239 seconds; excluded user-owned tracked fixtures and unrelated untracked files. Run immediately before the final startup-entrypoint integration. |
 | `python3 -m unittest discover -s tests -q` | Host execution from final clean `/private/tmp` issue-only tree | Exit 0 | 1,541 pass, 5 skip | 517.773 seconds; includes the final startup recovery/reconciliation entrypoint and excludes user-owned tracked fixtures and unrelated untracked files. |
 | `python3 -m unittest discover -s tests -q` | Host execution from final post-review clean `/private/tmp` issue-only tree | Exit 0 | 1,544 pass, 5 skip | 464.232 seconds; includes every adversarial fix and excludes user-owned tracked fixtures and unrelated untracked files. |
+| `python3 -m unittest discover -s tests -q` | Host execution from clean `/private/tmp` PR-plus-follow-up tree | Exit 0 | 1,545 pass, 5 skip | 533.956 seconds; includes the non-mutating recovery preflight, legacy-root regression, workflow correction, and no user-owned workspace changes. |
 
 ### Rendered or manual behavior
 
@@ -341,6 +346,44 @@ Status: Approved after the original contract and test strategy.
   skips in 464.232 seconds.
 - Final independent gate: Reviewer A **CLEAN** and Reviewer B **CLEAN** after
   all findings and focused regression tests.
+
+### Publication CI follow-up — PR #144
+
+- Initial commit `a6894ae80658f98d29b729b1f9103b203fdaebd8` opened
+  [PR #144](https://github.com/hazeion/agent-os/pull/144). The production
+  build, browser smoke, dependency/secret scan, and Lighthouse gate passed;
+  Lighthouse reported desktop 100 and mobile 97 medians at the unchanged 95
+  threshold.
+- The final Node preview lifecycle check failed before readiness with
+  `startup_recovery_unavailable`. A fresh isolated data root reproduced the
+  same failure locally.
+- Root cause: the new synchronous bridge crash-classification path correctly
+  requires the Run authority established by the owning production supervisor.
+  The CI job established that authority in `preview_data_dir` for browser smoke
+  but dropped `MENTAT_DATA_DIR` when it invoked the final lifecycle verifier, so
+  the verifier accidentally started against the checkout's unprepared default
+  root. Existing development roots masked that test-fixture gap.
+- The first local correction initialized Run authority inside the bridge. The
+  compatibility reviewer reproduced a P1 upgrade regression: doing so could
+  claim an empty destination before an operator completed the required private
+  Console migration. That correction was fully reverted before publication.
+- Follow-up review then found the underlying feature commit still opened the
+  writable SQLite boundary before checking the required receipt. A direct
+  bridge invocation on an unmigrated root could therefore create the private
+  destination even though recovery failed. Recovery now verifies the existing
+  receipt through the non-mutating read-only database boundary while holding
+  the private-state lock, and only then opens the writable recovery connection.
+  A real legacy-root regression proves the source bytes and `ready` migration
+  status remain unchanged and no destination directory appears.
+- Final CI fix: the workflow passes its already preflighted `preview_data_dir`
+  to the lifecycle verifier, matching the production parent/child authority
+  contract. A workflow contract test pins the exact environment assignment.
+- Reverification: 12 focused tests and the broader 142-test private-state,
+  orchestration, bridge, and Hermes set pass; Python compile and
+  `git diff --check` pass; and the exact lifecycle script passes both process-
+  death cases on a fresh normally prepared root. The final clean tree passes
+  1,545 tests with 5 skips, and both independent follow-up reviewers returned
+  **CLEAN**.
 
 ## Documentation updates
 
@@ -418,32 +461,41 @@ Status: Approved after the original contract and test strategy.
 - PR summary: Add atomic, idempotent runtime-neutral text Turn submission and
   recovery; explicit credential-safe Codex readiness; and the Next.js
   optimistic composer with Conversation-scoped retry state.
-- Unresolved risks: GitHub's platform/required CI has not run because no commit
-  or PR exists yet. The live production smoke exercised signed-in Codex; Hermes
-  uses the production integration contract test. Lighthouse has documented
-  host variance, although the final unchanged gate passed at 100/98 medians.
+- Unresolved risks: Initial PR CI exposed the clean-root startup-ordering gap.
+  Its local fix is verified but has not yet been committed or pushed; the
+  required matrix must rerun on the amended PR. The live production smoke
+  exercised signed-in Codex; Hermes uses the production integration contract
+  test. Lighthouse has documented host variance, although local and PR gates
+  passed unchanged thresholds.
 - Explicit exclusions: user-owned `data/projects.json`, `data/tasks.json`,
   `design/mockups/`, `tmp/`, `uv.lock`, `videos/`, and `web/.npmrc`.
-- User authorization and scope: Exact packet approval not yet requested. Earlier
-  implementation approval is intentionally not reused for publication.
-- Commit hash: Pending.
-- Ready PR URL: Pending.
+- User authorization and scope: The exact 46-file packet was approved, committed,
+  pushed, and opened as a PR. The follow-up packet is limited to
+  `.github/workflows/quality-gates.yml`, `server.py`,
+  `tests/test_node_runtime_foundation.py`, `tests/test_private_console_state.py`,
+  and this review log; it requires refreshed publication approval after re-review.
+- Commit hash: `a6894ae80658f98d29b729b1f9103b203fdaebd8`.
+- Proposed follow-up commit: `fix: guard bridge startup recovery authority`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/144
 
 ## Outcome review
 
-- Classification: Implementation and local verification complete; publication
-  awaits exact user authorization.
+- Classification: Initial publication complete; the clean-root CI and migration-
+  safety follow-up is locally verified and awaits publication authorization.
 - Acceptance criteria summary: AC-1 through AC-9 pass locally; AC-8's required
-  publication CI remains pending until a PR exists.
-- Potential bugs or untested paths: No known blocking bug. Only one local Codex
-  installation was used for the real runtime smoke; Hermes and failure paths
-  are covered by production integration/fault tests rather than a second live
-  provider account.
-- Remaining reviewer dissent: None; both independent final reviewers returned
-  **CLEAN**.
+  publication CI remains pending on the amended PR rerun.
+- Potential bugs or untested paths: The known clean-root startup failure is fixed
+  locally but remains blocking until the amended PR passes required CI. Only one
+  local Codex installation was used for the real runtime smoke; Hermes and
+  failure paths are covered by production integration/fault tests rather than
+  a second live provider account.
+- Remaining reviewer dissent: None. Both independent follow-up reviewers returned
+  **CLEAN** after the unsafe first approach was reverted and writable recovery
+  gained the read-only receipt preflight plus real legacy-root regression.
 - Compatibility/migration/rollback concerns: Schema-10 roots and released
   backup formats remain covered; schema-11 restore/export and clean full-suite
   checks pass. Rollback remains branch/commit based until publication.
-- User decision: Original contract, test strategy, and Codex
-  authentication/setup amendment approved; exact publication packet pending.
+- User decision: Original contract, test strategy, Codex authentication/setup
+  amendment, and initial exact publication packet approved. Follow-up CI-fix
+  publication approval pending.
 - Next slice authorized: No

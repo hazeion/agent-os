@@ -1983,6 +1983,13 @@ def recover_orchestration_crash_states_at_startup(
 
     occurred_at = now_iso()
     with private_state_lock(DATA_DIR):
+        # The owning startup path establishes Run authority before launching
+        # this process. Verify that precondition through the non-mutating reader
+        # before opening the writable connection: an unmigrated legacy root
+        # must not gain a private Console destination merely because bridge
+        # recovery was invoked directly.
+        with connect_existing_mentat_database(DATA_DIR) as existing_connection:
+            RunRepository(existing_connection).authority_receipt(required=True)
         connection = connect_mentat_database(DATA_DIR)
         try:
             repository = RunRepository(connection)

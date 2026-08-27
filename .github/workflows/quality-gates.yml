@@ -284,7 +284,7 @@ jobs:
             exit 1
           fi
           trap - EXIT
-          python scripts/verify_web_preview_lifecycle.py
+          MENTAT_DATA_DIR="$preview_data_dir" python scripts/verify_web_preview_lifecycle.py
 
       - name: Upload bounded Lighthouse failure evidence
         if: failure()

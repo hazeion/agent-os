@@ -388,6 +388,35 @@ class PrivateConsoleStateTests(unittest.TestCase):
             self.assertTrue((root / "runtime" / "agent-console-runs.json").is_file())
             self.assertEqual(preview_private_console_migration(root).status, "already_migrated")
 
+    def test_bridge_recovery_does_not_create_destination_before_private_migration(self):
+        from mentat import local_bridge
+        import server
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            self.add_retained_attachment(root, "run_legacy", b"legacy")
+            self.move_console_to_legacy_runtime(root)
+            before = {
+                path.relative_to(root / "runtime").as_posix(): path.read_bytes()
+                for path in (root / "runtime").rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(preview_private_console_migration(root).status, "ready")
+
+            with patch.object(server, "DATA_DIR", root), self.assertRaises(
+                (MentatDatabaseError, run_repository.RunRepositoryError)
+            ):
+                local_bridge._recover_bridge_runs_before_ready()
+
+            self.assertFalse((root / "private" / "console").exists())
+            after = {
+                path.relative_to(root / "runtime").as_posix(): path.read_bytes()
+                for path in (root / "runtime").rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+            self.assertEqual(preview_private_console_migration(root).status, "ready")
+
     def test_changed_legacy_source_invalidates_migration_confirmation(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"
