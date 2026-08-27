@@ -43,6 +43,10 @@ _SECRET_PATTERNS = (
     ),
 )
 _SECRET_KEY_PATTERN = re.compile(r"(?i)(api[_-]?key|token|password|secret|credential|authorization|auth)")
+_PRIVATE_PATH_PATTERNS = (
+    re.compile(r"(?<!:)\/(?:Users|home|root|private|tmp|var|opt|etc)\/[^\s\"'<>]+"),
+    re.compile(r"\b[A-Za-z]:\\[^\r\n\"'<>]+"),
+)
 _ORCHESTRATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _TASK_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}")
 
@@ -97,6 +101,17 @@ def _redact(value: Any) -> str:
 
 def bounded_excerpt(value: Any, limit: int) -> tuple[str, bool]:
     text = _redact(value).strip()
+    truncated = len(text) > limit
+    return (text[:limit].rstrip(), truncated)
+
+
+def bounded_public_excerpt(value: Any, limit: int) -> tuple[str, bool]:
+    """Return bounded text with credentials and private local paths removed."""
+
+    text = redact_sensitive_text(value)
+    for pattern in _PRIVATE_PATH_PATTERNS:
+        text = pattern.sub("[redacted-path]", text)
+    text = text.strip()
     truncated = len(text) > limit
     return (text[:limit].rstrip(), truncated)
 

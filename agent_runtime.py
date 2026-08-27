@@ -524,6 +524,27 @@ def _validate_initial_event_storage(run: AgentRun, event: AgentEvent) -> None:
 
 
 @dataclass(frozen=True)
+class RuntimeCapacity:
+    """One private adapter-owned admission scope and its bounded ceiling."""
+
+    scope: str
+    limit: int
+
+    def __post_init__(self) -> None:
+        scope = self.scope
+        if (
+            not isinstance(scope, str)
+            or not scope
+            or scope.strip() != scope
+            or "\x00" in scope
+            or len(scope.encode("utf-8")) > 512
+        ):
+            raise ValueError("runtime capacity scope is invalid")
+        if type(self.limit) is not int or not 1 <= self.limit <= 32:
+            raise ValueError("runtime capacity limit is invalid")
+
+
+@dataclass(frozen=True)
 class RuntimeContext:
     """Private adapter context; runtime references are never domain IDs."""
 
@@ -533,6 +554,7 @@ class RuntimeContext:
     mentat_run_id: str | None = None
     dispatch_id: str | None = None
     runtime_run_ref: str | None = None
+    continuation_runtime_run_ref: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "agent_id", _require_id(self.agent_id, "agent id"))
@@ -561,12 +583,23 @@ class RuntimeContext:
                 "runtime_run_ref",
                 _require_id(self.runtime_run_ref, "runtime run reference"),
             )
+        if self.continuation_runtime_run_ref is not None:
+            object.__setattr__(
+                self,
+                "continuation_runtime_run_ref",
+                _require_id(
+                    self.continuation_runtime_run_ref,
+                    "runtime continuation reference",
+                ),
+            )
 
 
 @runtime_checkable
 class AgentRuntime(Protocol):
     runtime_type: str
     capabilities: frozenset[str]
+
+    def capacity_for_binding(self, runtime_agent_ref: str) -> RuntimeCapacity: ...
 
     def submit_task(
         self, task: MentatTask, context: RuntimeContext
@@ -672,6 +705,7 @@ __all__ = [
     "SubmissionDisposition",
     "SubmissionOutcome",
     "RuntimeCapability",
+    "RuntimeCapacity",
     "RuntimeContext",
     "TaskStatus",
 ]

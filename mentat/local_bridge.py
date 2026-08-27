@@ -48,6 +48,7 @@ MAXIMUM_BRIDGE_RUNS = 50
 MAXIMUM_BRIDGE_RUN_EVENTS = 100
 MAXIMUM_BRIDGE_CONVERSATIONS = 50
 MAXIMUM_BRIDGE_CONVERSATION_MESSAGES = 100
+MAXIMUM_BRIDGE_QUEUED_TURNS = 8
 MAXIMUM_BRIDGE_CONVERSATION_RESPONSE_BYTES = 3_000_000
 MAXIMUM_BRIDGE_ACTION_BODY_BYTES = 512
 MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES = 24_576
@@ -497,6 +498,41 @@ def _public_current_run(value: object) -> dict[str, object] | None:
     return dict(value)
 
 
+def _public_queued_conversation_turn(value: object) -> dict[str, object]:
+    required = {
+        "id", "conversation_id", "user_message_id", "queue_ordinal", "state",
+        "blocked_reason", "revision", "message_revision", "text",
+        "created_at", "updated_at",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeConversationProjectionError("conversation_turn_invalid")
+    blocked_reason = value.get("blocked_reason")
+    if (
+        not isinstance(value.get("id"), str)
+        or _TURN_ID.fullmatch(value["id"]) is None
+        or not isinstance(value.get("conversation_id"), str)
+        or _CONVERSATION_ID.fullmatch(value["conversation_id"]) is None
+        or not isinstance(value.get("user_message_id"), str)
+        or _MESSAGE_ID.fullmatch(value["user_message_id"]) is None
+        or type(value.get("queue_ordinal")) is not int
+        or value["queue_ordinal"] < 1
+        or value.get("state") not in {"pending", "blocked"}
+        or (value.get("state") == "blocked") != (blocked_reason is not None)
+        or blocked_reason is not None
+        and blocked_reason
+        not in {"capacity", "failed", "stopped", "interrupted", "unknown", "partial"}
+        or type(value.get("revision")) is not int
+        or value["revision"] < 1
+        or type(value.get("message_revision")) is not int
+        or value["message_revision"] < 1
+        or not _conversation_text(value.get("text"), 6_000)
+        or not _conversation_timestamp(value.get("created_at"))
+        or not _conversation_timestamp(value.get("updated_at"))
+    ):
+        raise BridgeConversationProjectionError("conversation_turn_invalid")
+    return dict(value)
+
+
 def _ready_conversation_list(value: object) -> dict[str, object]:
     required = {
         "schema_version", "conversations", "agents", "direct_agent_id",
@@ -559,15 +595,18 @@ def _ready_conversation_list(value: object) -> dict[str, object]:
 def _ready_conversation_detail(value: object) -> dict[str, object]:
     required = {
         "schema_version", "conversation", "agent", "messages",
-        "next_message_cursor", "current_run",
+        "next_message_cursor", "current_run", "queued_turns",
     }
     if not isinstance(value, dict) or set(value) != required:
         raise BridgeConversationProjectionError("conversation_projection_invalid")
     messages = value.get("messages")
+    queued_turns = value.get("queued_turns")
     if (
         value.get("schema_version") != 1
         or not isinstance(messages, list)
         or len(messages) > MAXIMUM_BRIDGE_CONVERSATION_MESSAGES
+        or not isinstance(queued_turns, list)
+        or len(queued_turns) > MAXIMUM_BRIDGE_QUEUED_TURNS
         or value.get("next_message_cursor") is not None
         and not re.fullmatch(r"[1-9][0-9]{0,9}", str(value["next_message_cursor"]))
     ):
@@ -575,6 +614,9 @@ def _ready_conversation_detail(value: object) -> dict[str, object]:
     conversation = _public_conversation_summary(value.get("conversation"))
     agent = _public_conversation_agent(value.get("agent"))
     public_messages = [_public_conversation_message(message) for message in messages]
+    public_queued_turns = [
+        _public_queued_conversation_turn(turn) for turn in queued_turns
+    ]
     if (
         conversation["agent_id"] != agent["id"]
         or any(
@@ -583,6 +625,16 @@ def _ready_conversation_detail(value: object) -> dict[str, object]:
         )
         or [message["sequence"] for message in public_messages]
         != sorted(message["sequence"] for message in public_messages)
+        or any(
+            turn["conversation_id"] != conversation["id"]
+            for turn in public_queued_turns
+        )
+        or [turn["queue_ordinal"] for turn in public_queued_turns]
+        != sorted(turn["queue_ordinal"] for turn in public_queued_turns)
+        or len({turn["id"] for turn in public_queued_turns})
+        != len(public_queued_turns)
+        or len({turn["user_message_id"] for turn in public_queued_turns})
+        != len(public_queued_turns)
     ):
         raise BridgeConversationProjectionError("conversation_projection_invalid")
     return {
@@ -592,6 +644,7 @@ def _ready_conversation_detail(value: object) -> dict[str, object]:
         "messages": public_messages,
         "next_message_cursor": value["next_message_cursor"],
         "current_run": _public_current_run(value.get("current_run")),
+        "queued_turns": public_queued_turns,
     }
 
 
@@ -600,10 +653,12 @@ def _conversation_failure(status: str) -> tuple[dict[str, object], int]:
         "active_run": 409,
         "capacity_unavailable": 409,
         "cli_missing": 409,
+        "conflict": 409,
         "idempotency_conflict": 409,
         "invalid": 400,
         "not_found": 404,
         "sign_in_required": 409,
+        "partial": 500,
         "unavailable": 503,
         "unsupported": 501,
         "error": 500,
@@ -667,6 +722,10 @@ def bridge_conversation_payload(
             source = _ready_conversation_detail(
                 mentat_conversation_payload(conversation_id, before_sequence)
             )
+            if source["conversation"]["id"] != conversation_id:
+                raise BridgeConversationProjectionError(
+                    "conversation_target_invalid"
+                )
             return _bounded_conversation_response(
                 {
                     **source,
@@ -701,6 +760,16 @@ def bridge_create_conversation_payload(payload: object) -> tuple[dict[str, objec
             if status != 201:
                 return _conversation_failure("error")
             detail = _ready_conversation_detail(source)
+            requested_agent_id = (
+                payload.get("agent_id") if isinstance(payload, dict) else None
+            )
+            if (
+                requested_agent_id is not None
+                and detail["conversation"]["agent_id"] != requested_agent_id
+            ):
+                raise BridgeConversationProjectionError(
+                    "conversation_agent_target_invalid"
+                )
             return _bounded_conversation_response(
                 {
                     **detail,
@@ -740,8 +809,13 @@ def _public_conversation_turn(value: object) -> dict[str, object]:
         or _MESSAGE_ID.fullmatch(value["user_message_id"]) is None
         or type(value.get("queue_ordinal")) is not int
         or value["queue_ordinal"] < 1
-        or value.get("state") not in {"dispatching", "consumed"}
+        or value.get("state")
+        not in {"pending", "dispatching", "consumed", "blocked", "cancelled"}
+        or (value.get("state") == "blocked")
+        != (value.get("blocked_reason") is not None)
         or value.get("blocked_reason") is not None
+        and value["blocked_reason"]
+        not in {"capacity", "failed", "stopped", "interrupted", "unknown", "partial"}
         or latest_run_id is not None
         and (
             not isinstance(latest_run_id, str)
@@ -769,7 +843,10 @@ def _ready_conversation_turn_submission(value: object) -> dict[str, object]:
         value.get("schema_version") != 1
         or not isinstance(value.get("duplicate"), bool)
         or value.get("disposition")
-        not in {"reserved", "submitting", "accepted", "rejected", "unknown"}
+        not in {
+            "pending", "blocked", "reserved", "submitting", "accepted",
+            "rejected", "unknown",
+        }
     ):
         raise BridgeConversationProjectionError("conversation_submission_invalid")
     conversation = _public_conversation_summary(value.get("conversation"))
@@ -800,10 +877,22 @@ def _conversation_submission_error(code: str) -> tuple[dict[str, object], int]:
         return _conversation_failure("not_found")
     if code == "conversation.active_run":
         return _conversation_failure("active_run")
-    if code == "conversation.capacity_unavailable":
+    if code in {"conversation.capacity_unavailable", "conversation.turn_capacity"}:
         return _conversation_failure("capacity_unavailable")
     if code == "conversation.idempotency_conflict":
         return _conversation_failure("idempotency_conflict")
+    if code in {
+        "conversation.active_run",
+        "conversation.agent_changed",
+        "conversation.binding_changed",
+        "conversation.state_changed",
+        "conversation.turn_changed",
+        "conversation.turn_not_cancellable",
+        "conversation.turn_not_continuable",
+        "conversation.turn_not_editable",
+        "conversation.turn_not_found",
+    }:
+        return _conversation_failure("conflict")
     if code == "codex.cli_missing":
         return _conversation_failure("cli_missing")
     if code == "codex.sign_in_required":
@@ -840,6 +929,15 @@ def bridge_submit_conversation_turn_payload(
                 str(source.get("error_code") or "conversation.request_invalid")
             )
         ready = _ready_conversation_turn_submission(source)
+        requested_text = payload.get("text") if isinstance(payload, dict) else None
+        if (
+            ready["conversation"]["id"] != conversation_id
+            or ready["message"]["content"]["parts"][0]["text"]
+            != requested_text
+        ):
+            raise BridgeConversationProjectionError(
+                "conversation_submission_target_invalid"
+            )
         return _bounded_conversation_response(
             {
                 **ready,
@@ -853,6 +951,157 @@ def bridge_submit_conversation_turn_payload(
         return _conversation_submission_error(exc.code)
     except (BridgeConversationProjectionError, ConversationRepositoryError):
         return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def _ready_conversation_queue_mutation(value: object) -> dict[str, object]:
+    required = {
+        "schema_version", "disposition", "conversation", "message", "turn",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value.get("schema_version") != 1
+        or value.get("disposition") not in {"edited", "cancelled"}
+    ):
+        raise BridgeConversationProjectionError("conversation_mutation_invalid")
+    conversation = _public_conversation_summary(value.get("conversation"))
+    message = _public_conversation_message(value.get("message"))
+    turn = _public_conversation_turn(value.get("turn"))
+    if (
+        message["conversation_id"] != conversation["id"]
+        or turn["conversation_id"] != conversation["id"]
+        or turn["user_message_id"] != message["id"]
+        or message["run_id"] != turn["latest_run_id"]
+        or value["disposition"] == "edited"
+        and (turn["state"] not in {"pending", "blocked"} or message["state"] != "accepted")
+        or value["disposition"] == "cancelled"
+        and (turn["state"] != "cancelled" or message["state"] != "cancelled")
+    ):
+        raise BridgeConversationProjectionError("conversation_mutation_invalid")
+    return {
+        "schema_version": 1,
+        "disposition": value["disposition"],
+        "conversation": conversation,
+        "message": message,
+        "turn": turn,
+    }
+
+
+def bridge_mutate_conversation_turn_payload(
+    conversation_id: str,
+    turn_id: str,
+    action: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    """Apply one fixed queue mutation through the private bridge."""
+
+    try:
+        from server import mutate_mentat_conversation_turn
+
+        source, status = mutate_mentat_conversation_turn(
+            conversation_id,
+            turn_id,
+            action,
+            payload,
+        )
+        if status not in {200, 202}:
+            return _conversation_submission_error(
+                str(source.get("error_code") or "conversation.request_invalid")
+            )
+        ready = (
+            _ready_conversation_turn_submission(source)
+            if action == "continue"
+            else _ready_conversation_queue_mutation(source)
+        )
+        if (
+            ready["conversation"]["id"] != conversation_id
+            or ready["turn"]["id"] != turn_id
+            or action == "edit"
+            and (
+                not isinstance(payload, dict)
+                or ready["message"]["content"]["parts"][0]["text"]
+                != payload.get("text")
+            )
+        ):
+            raise BridgeConversationProjectionError(
+                "conversation_mutation_target_invalid"
+            )
+        return _bounded_conversation_response(
+            {
+                **ready,
+                "service": "mentat-local-bridge",
+                "runtime": "python",
+                "status": "ready",
+            },
+            status,
+        )
+    except OrchestrationServiceError as exc:
+        return _conversation_submission_error(exc.code)
+    except (BridgeConversationProjectionError, ConversationRepositoryError):
+        return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def bridge_steer_conversation_payload(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    """Steer one exact active Conversation Run without queue writes."""
+
+    try:
+        from server import OrchestrationRunActionError, steer_mentat_conversation
+
+        try:
+            source, status = steer_mentat_conversation(conversation_id, payload)
+            if status != 200:
+                return _conversation_failure("invalid")
+            if (
+                not isinstance(source, dict)
+                or set(source)
+                != {
+                    "schema_version", "action", "conversation_id", "run_id",
+                    "disposition",
+                }
+                or source.get("schema_version") != 1
+                or source.get("action") != "steer"
+                or source.get("conversation_id") != conversation_id
+                or not isinstance(source.get("run_id"), str)
+                or _RUN_ID.fullmatch(source["run_id"]) is None
+                or not isinstance(payload, dict)
+                or source.get("run_id") != payload.get("run_id")
+                or source.get("disposition") != "accepted"
+            ):
+                raise BridgeConversationProjectionError(
+                    "conversation_steer_invalid"
+                )
+            return {
+                **source,
+                "service": "mentat-local-bridge",
+                "runtime": "python",
+                "status": "ready",
+            }, 200
+        except OrchestrationRunActionError as exc:
+            if exc.code in {"run.not_found", "conversation.not_found"}:
+                return _conversation_failure("not_found")
+            if exc.code in {
+                "conversation.steer_invalid",
+            }:
+                return _conversation_failure("invalid")
+            if exc.code in {
+                "conversation.steer_stale",
+                "run.binding_changed",
+            }:
+                return _conversation_failure("conflict")
+            if exc.code == "conversation.steer_unsupported":
+                return _conversation_failure("unsupported")
+            if exc.code == "conversation.steer_partial":
+                return _conversation_failure("partial")
+            if exc.code in {"conversation.steer_unavailable", "run.unavailable"}:
+                return _conversation_failure("unavailable")
+            return _conversation_failure("error")
     except Exception:
         return _conversation_failure("error")
 
@@ -1368,6 +1617,51 @@ def bridge_run_events_payload(run_id: str, after_sequence: int) -> tuple[dict[st
     except Exception:
         state, code = "error", 500
     return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": state}, code
+
+
+def bridge_refresh_run_payload(run_id: str) -> tuple[dict[str, object], int]:
+    """Reconcile only the exact Run selected by the browser stream."""
+
+    try:
+        from run_repository import RunRepositoryConflict
+        from server import refresh_mentat_run_payload
+
+        source = refresh_mentat_run_payload(run_id)
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"schema_version", "run_id", "disposition"}
+            or source.get("schema_version") != 1
+            or source.get("run_id") != run_id
+            or source.get("disposition") not in {"reconciled", "idle"}
+        ):
+            raise BridgeRunEventProjectionError("run_refresh_invalid")
+        return {
+            **source,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+        }, 200
+    except OrchestrationServiceError:
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "unavailable",
+        }, 503
+    except RunRepositoryConflict:
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "not_found",
+        }, 404
+    except Exception:
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "error",
+        }, 500
 
 
 def _run_action_failure(status: str) -> tuple[dict[str, object], int]:
@@ -1907,6 +2201,66 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_create_conversation_payload(body)
             self._send_json(payload, status)
             return
+        conversation_queue_action_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/turns/([^/]+)/(edit|cancel|continue)",
+            parsed.path,
+        )
+        if conversation_queue_action_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_queue_action_match.group(1))
+            turn_id = unquote(conversation_queue_action_match.group(2))
+            action = conversation_queue_action_match.group(3)
+            if (
+                _CONVERSATION_ID.fullmatch(conversation_id) is None
+                or _TURN_ID.fullmatch(turn_id) is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(
+                MAXIMUM_BRIDGE_CONVERSATION_TURN_BODY_BYTES
+            )
+            required = {
+                "edit": {"expected_revision", "expected_message_revision", "text"},
+                "cancel": {"expected_revision", "expected_message_revision"},
+                "continue": {"expected_revision", "expected_message_revision"},
+            }[action]
+            if body is None or set(body) != required:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_mutate_conversation_turn_payload(
+                conversation_id,
+                turn_id,
+                action,
+                body,
+            )
+            self._send_json(payload, status)
+            return
+        conversation_steer_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/steer",
+            parsed.path,
+        )
+        if conversation_steer_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_steer_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(
+                MAXIMUM_BRIDGE_CONVERSATION_TURN_BODY_BYTES
+            )
+            if body is None or set(body) != {"run_id", "text"}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_steer_conversation_payload(
+                conversation_id,
+                body,
+            )
+            self._send_json(payload, status)
+            return
         conversation_turn_match = re.fullmatch(
             r"/bridge/v1/conversations/([^/]+)/turns",
             parsed.path,
@@ -1929,6 +2283,25 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 conversation_id,
                 body,
             )
+            self._send_json(payload, status)
+            return
+        run_refresh_match = re.fullmatch(
+            r"/bridge/v1/runs/([^/]+)/refresh",
+            parsed.path,
+        )
+        if run_refresh_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            run_id = unquote(run_refresh_match.group(1))
+            if _RUN_ID.fullmatch(run_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
+            if body is None or set(body):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_refresh_run_payload(run_id)
             self._send_json(payload, status)
             return
         match = re.fullmatch(r"/bridge/v1/runs/([^/]+)/(stop|message|response)(?:/(preview))?", parsed.path)

@@ -477,6 +477,58 @@ class AgentRuntimeContractTests(unittest.TestCase):
         )
         self.assertEqual(third, ())
 
+    def test_hermes_two_read_identity_change_cannot_cross_project_a_response(self):
+        reads = 0
+
+        def status(run_id, cursor=None):
+            nonlocal reads
+            reads += 1
+            snapshot = {
+                "id": "run_current" if reads == 1 else "run_other",
+                "status": "running" if reads == 1 else "completed",
+                "mentat_agent_id": "agent_current" if reads == 1 else "agent_other",
+                "task_id": "task_current" if reads == 1 else "task_other",
+                "response": "Answer belonging to another Conversation",
+            }
+            return {
+                "run": snapshot,
+                "events": [] if reads == 1 else [{
+                    "id": "event_current_finalized",
+                    "run_id": "run_current",
+                    "sequence": 1,
+                    "type": "runtime.finalized",
+                    "timestamp": "2026-08-17T12:00:00+00:00",
+                    "display_text": "Run finalized",
+                }],
+            }, 200
+
+        runtime = HermesRuntime(
+            transport_factory=lambda: object(),
+            compatibility_handlers=HermesCompatibilityHandlers(
+                start=lambda payload: ({"error": "unused"}, 409),
+                start_task=lambda task, context: ({"error": "unused"}, 409),
+                message=lambda run_id, payload: ({"error": "unused"}, 409),
+                response=lambda run_id, payload: ({"error": "unused"}, 409),
+                stop=lambda run_id: ({"error": "unused"}, 409),
+                status=status,
+            ),
+        )
+        context = RuntimeContext(
+            agent_id="agent_current",
+            runtime_agent_ref="profile_current",
+            task_id="task_current",
+            mentat_run_id="run_current",
+        )
+
+        observed = runtime.get_status("run_current", context=context)
+        self.assertEqual(observed.id, "run_current")
+        with self.assertRaisesRegex(
+            AgentRuntimeError,
+            "runtime.identity_context_invalid",
+        ):
+            tuple(runtime.stream_events("run_current", context=context))
+        self.assertEqual(reads, 2)
+
     def test_unbound_legacy_runs_cannot_use_runtime_neutral_controls(self):
         runtime = HermesRuntime(
             transport_factory=lambda: object(),

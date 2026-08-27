@@ -124,6 +124,65 @@ export async function readConversationTurnBody(
   return 16 <= keyBytes && keyBytes <= 256 ? { idempotencyKey, text } : null;
 }
 
+export async function readConversationQueueActionBody(
+  request: Request,
+  action: "edit" | "cancel" | "continue",
+): Promise<{
+  expectedRevision: number;
+  expectedMessageRevision: number;
+  text: string | null;
+} | null> {
+  const body = await readBoundedJson(request, CONVERSATION_TURN_BODY_BYTES);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const expectedKeys = action === "edit"
+    ? "expected_message_revision,expected_revision,text"
+    : "expected_message_revision,expected_revision";
+  if (Object.keys(body).sort().join(",") !== expectedKeys) return null;
+  const value = body as Record<string, unknown>;
+  if (
+    !Number.isInteger(value.expected_revision)
+    || (value.expected_revision as number) < 1
+    || !Number.isInteger(value.expected_message_revision)
+    || (value.expected_message_revision as number) < 1
+  ) return null;
+  if (action === "edit") {
+    if (
+      typeof value.text !== "string"
+      || !value.text
+      || value.text.trim() !== value.text
+      || Array.from(value.text).length > 6_000
+      || value.text.includes("\0")
+    ) return null;
+  }
+  return {
+    expectedMessageRevision: value.expected_message_revision as number,
+    expectedRevision: value.expected_revision as number,
+    text: action === "edit" ? value.text as string : null,
+  };
+}
+
+export async function readConversationSteerBody(
+  request: Request,
+): Promise<{ runId: string; text: string } | null> {
+  const body = await readBoundedJson(request, CONVERSATION_TURN_BODY_BYTES);
+  if (
+    !body
+    || typeof body !== "object"
+    || Array.isArray(body)
+    || Object.keys(body).sort().join(",") !== "run_id,text"
+  ) return null;
+  const value = body as Record<string, unknown>;
+  return typeof value.run_id === "string"
+    && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(value.run_id)
+    && typeof value.text === "string"
+    && !!value.text
+    && value.text.trim() === value.text
+    && Array.from(value.text).length <= 6_000
+    && !value.text.includes("\0")
+    ? { runId: value.run_id, text: value.text }
+    : null;
+}
+
 const RUN_MESSAGE_TEXT_LIMIT = 6_000;
 const withinRunMessageTextLimit = (text: string) => Array.from(text).length <= RUN_MESSAGE_TEXT_LIMIT;
 const RUN_RESPONSE_TEXT_LIMIT = 2_000;

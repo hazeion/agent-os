@@ -261,6 +261,7 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual(status, 201)
                 self.assertEqual(created["messages"], [])
                 self.assertIsNone(created["current_run"])
+                self.assertEqual(created["queued_turns"], [])
                 conversation_id = created["conversation"]["id"]
                 self.assertNotIn("runtime_agent_ref", json.dumps(created))
                 self.assertNotIn("runtime_config_id", json.dumps(created))
@@ -360,6 +361,237 @@ class LocalBridgeTests(unittest.TestCase):
                     body=invalid_body,
                 )
                 self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
+
+    def test_conversation_queue_steer_and_selected_refresh_routes_are_exact(self):
+        queue_response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "disposition": "edited",
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_mutate_conversation_turn_payload",
+            return_value=(queue_response, 200),
+        ) as mutate:
+            for action, body in (
+                (
+                    "edit",
+                    b'{"expected_message_revision":2,"expected_revision":3,"text":"Edited"}',
+                ),
+                (
+                    "cancel",
+                    b'{"expected_message_revision":2,"expected_revision":3}',
+                ),
+                (
+                    "continue",
+                    b'{"expected_message_revision":2,"expected_revision":3}',
+                ),
+            ):
+                status, payload, _headers = self.request(
+                    method="POST",
+                    path=(
+                        "/bridge/v1/conversations/conv_current/turns/"
+                        f"turn_current/{action}"
+                    ),
+                    headers={"Content-Type": "application/json"},
+                    body=body,
+                )
+                self.assertEqual((status, payload), (200, queue_response))
+        self.assertEqual(
+            [call.args[:3] for call in mutate.call_args_list],
+            [
+                ("conv_current", "turn_current", "edit"),
+                ("conv_current", "turn_current", "cancel"),
+                ("conv_current", "turn_current", "continue"),
+            ],
+        )
+        self.assertEqual(
+            mutate.call_args_list[0].args[3],
+            {
+                "expected_message_revision": 2,
+                "expected_revision": 3,
+                "text": "Edited",
+            },
+        )
+
+        steer_response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "action": "steer",
+            "conversation_id": "conv_current",
+            "run_id": "run_current",
+            "disposition": "accepted",
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_steer_conversation_payload",
+            return_value=(steer_response, 200),
+        ) as steer:
+            status, payload, _headers = self.request(
+                method="POST",
+                path="/bridge/v1/conversations/conv_current/steer",
+                headers={"Content-Type": "application/json"},
+                body=b'{"run_id":"run_current","text":"Use this guidance"}',
+            )
+        self.assertEqual((status, payload), (200, steer_response))
+        steer.assert_called_once_with(
+            "conv_current",
+            {"run_id": "run_current", "text": "Use this guidance"},
+        )
+
+        refresh_response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "run_id": "run_current",
+            "disposition": "reconciled",
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_refresh_run_payload",
+            return_value=(refresh_response, 200),
+        ) as refresh:
+            status, payload, _headers = self.request(
+                method="POST",
+                path="/bridge/v1/runs/run_current/refresh",
+                headers={"Content-Type": "application/json"},
+                body=b"{}",
+            )
+        self.assertEqual((status, payload), (200, refresh_response))
+        refresh.assert_called_once_with("run_current")
+
+        for path, body in (
+            (
+                "/bridge/v1/conversations/conv_current/turns/turn_current/edit",
+                b'{"expected_message_revision":2,"expected_revision":3}',
+            ),
+            (
+                "/bridge/v1/conversations/conv_current/steer?retry=1",
+                b'{"run_id":"run_current","text":"No"}',
+            ),
+            ("/bridge/v1/runs/run_current/refresh", b'{"extra":true}'),
+        ):
+            status, payload, _headers = self.request(
+                method="POST",
+                path=path,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
+
+    def test_conversation_private_projections_reject_cross_target_successes(self):
+        wrong_submission = {
+            "conversation": {"id": "conv_other"},
+            "message": {
+                "content": {"parts": [{"text": "Exact text"}]},
+            },
+            "turn": {"id": "turn_other"},
+        }
+        with (
+            patch.object(
+                server,
+                "submit_mentat_conversation_turn",
+                return_value=({}, 202),
+            ),
+            patch.object(
+                local_bridge,
+                "_ready_conversation_turn_submission",
+                return_value=wrong_submission,
+            ),
+        ):
+            payload, status = local_bridge.bridge_submit_conversation_turn_payload(
+                "conv_current",
+                {"idempotency_key": "cross-target-key-1", "text": "Exact text"},
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["status"], "error")
+
+        wrong_mutation = {
+            "conversation": {"id": "conv_current"},
+            "message": {
+                "content": {"parts": [{"text": "Edited text"}]},
+            },
+            "turn": {"id": "turn_other"},
+        }
+        with (
+            patch.object(
+                server,
+                "mutate_mentat_conversation_turn",
+                return_value=({}, 200),
+            ),
+            patch.object(
+                local_bridge,
+                "_ready_conversation_queue_mutation",
+                return_value=wrong_mutation,
+            ),
+        ):
+            payload, status = local_bridge.bridge_mutate_conversation_turn_payload(
+                "conv_current",
+                "turn_current",
+                "edit",
+                {
+                    "expected_message_revision": 2,
+                    "expected_revision": 3,
+                    "text": "Edited text",
+                },
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["status"], "error")
+
+        with patch.object(
+            server,
+            "steer_mentat_conversation",
+            return_value=(
+                {
+                    "schema_version": 1,
+                    "action": "steer",
+                    "conversation_id": "conv_current",
+                    "run_id": "run_other",
+                    "disposition": "accepted",
+                },
+                200,
+            ),
+        ):
+            payload, status = local_bridge.bridge_steer_conversation_payload(
+                "conv_current",
+                {"run_id": "run_current", "text": "Stay exact"},
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["status"], "error")
+
+    def test_conversation_steer_unavailability_remains_retryable(self):
+        with patch.object(
+            server,
+            "steer_mentat_conversation",
+            side_effect=server.OrchestrationRunActionError(
+                "conversation.steer_unavailable"
+            ),
+        ):
+            payload, status = local_bridge.bridge_steer_conversation_payload(
+                "conv_current",
+                {"run_id": "run_current", "text": "Stay exact"},
+            )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["status"], "unavailable")
+
+        with patch.object(
+            server,
+            "steer_mentat_conversation",
+            side_effect=server.OrchestrationRunActionError(
+                "conversation.steer_unsupported"
+            ),
+        ):
+            payload, status = local_bridge.bridge_steer_conversation_payload(
+                "conv_current",
+                {"run_id": "run_current", "text": "Stay exact"},
+            )
+        self.assertEqual(status, 501)
+        self.assertEqual(payload["status"], "unsupported")
 
     def test_conversation_turn_route_accepts_worst_case_json_escaped_text(self):
         response = {

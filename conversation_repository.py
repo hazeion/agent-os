@@ -299,12 +299,28 @@ class ConversationTurnRecord:
 
 
 @dataclass(frozen=True)
+class ConversationQueuedTurnRecord:
+    id: str
+    conversation_id: str
+    user_message_id: str
+    queue_ordinal: int
+    state: str
+    blocked_reason: str | None
+    revision: int
+    message_revision: int
+    text: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class ConversationRead:
     conversation: ConversationRecord
     agent: CanonicalAgentRecord
     messages: tuple[ConversationMessageRecord, ...]
     next_message_cursor: str | None
     current_run: dict[str, Any] | None
+    queued_turns: tuple[ConversationQueuedTurnRecord, ...]
 
 
 def _now() -> str:
@@ -610,6 +626,50 @@ def _turn_row(row: Mapping[str, object]) -> ConversationTurnRecord:
         attempt_count=attempt_count,
         created_at=created_at,
         updated_at=updated_at,
+    )
+
+
+def conversation_message_record(
+    row: Mapping[str, object],
+) -> ConversationMessageRecord:
+    """Hydrate one validated canonical Message row for sibling repositories."""
+
+    return _message_row(row)
+
+
+def conversation_turn_record(
+    row: Mapping[str, object],
+) -> ConversationTurnRecord:
+    """Hydrate one validated canonical Turn row for sibling repositories."""
+
+    return _turn_row(row)
+
+
+def _queued_turn_row(row: Mapping[str, object]) -> ConversationQueuedTurnRecord:
+    turn = _turn_row(row)
+    if turn.state not in {"pending", "blocked"} or turn.latest_run_id is not None:
+        raise ConversationRepositoryValidationError("conversation.turn_invalid")
+    message_revision = row["message_revision"]
+    if type(message_revision) is not int or message_revision < 1:
+        raise ConversationRepositoryValidationError("conversation.message_invalid")
+    content = _decode_content(
+        row["message_content_json"],
+        role="user",
+        content_bytes=row["message_content_bytes"],
+    )
+    text = content["parts"][0]["text"]
+    return ConversationQueuedTurnRecord(
+        id=turn.id,
+        conversation_id=turn.conversation_id,
+        user_message_id=turn.user_message_id,
+        queue_ordinal=turn.queue_ordinal,
+        state=turn.state,
+        blocked_reason=turn.blocked_reason,
+        revision=turn.revision,
+        message_revision=message_revision,
+        text=text,
+        created_at=turn.created_at,
+        updated_at=turn.updated_at,
     )
 
 
@@ -932,9 +992,8 @@ def validate_repository_connection(
                         "WHERE turn_id = ?",
                         (turn_id,),
                     ).fetchone()
-                    if (
-                        result is None
-                        or not isinstance(result["run_id"], str)
+                    if result is not None and (
+                        not isinstance(result["run_id"], str)
                         or not re.fullmatch(
                             r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z",
                             result["run_id"],
@@ -948,6 +1007,14 @@ def validate_repository_connection(
                         or type(result["partial"]) is not int
                         or result["partial"] not in {0, 1}
                         or _timestamp(result["updated_at"]) is None
+                    ):
+                        raise ConversationRepositoryError("conversation.turn_invalid")
+                    if (
+                        result is None
+                        and (
+                            latest_run_id is not None
+                            or turn["state"] not in {"pending", "blocked", "cancelled"}
+                        )
                     ):
                         raise ConversationRepositoryError("conversation.turn_invalid")
                 if latest_run_id is not None:
@@ -1104,7 +1171,7 @@ class ConversationRepository:
                 updated_at=now,
                 archived_at=None,
             )
-            return ConversationRead(record, agent, (), None, None)
+            return ConversationRead(record, agent, (), None, None, ())
         except ConversationRepositoryError:
             connection.rollback()
             raise
@@ -1222,12 +1289,32 @@ class ConversationRepository:
                 (identifier, conversation.agent_id),
             ).fetchone()
             current_run = _run_public(current) if current is not None else None
+            queued_rows = connection.execute(
+                """
+                SELECT t.*, m.revision AS message_revision,
+                       m.content_json AS message_content_json,
+                       m.content_bytes AS message_content_bytes
+                FROM mentat_conversation_turns AS t
+                JOIN mentat_conversation_messages AS m
+                  ON m.id = t.user_message_id
+                 AND m.conversation_id = t.conversation_id
+                WHERE t.conversation_id = ?
+                  AND t.state IN ('pending', 'blocked')
+                  AND t.latest_run_id IS NULL
+                  AND m.role = 'user'
+                  AND m.state = 'accepted'
+                ORDER BY t.queue_ordinal, t.id
+                """,
+                (identifier,),
+            ).fetchall()
+            queued_turns = tuple(_queued_turn_row(item) for item in queued_rows)
             return ConversationRead(
                 conversation,
                 agent,
                 messages,
                 next_cursor,
                 current_run,
+                queued_turns,
             )
         finally:
             connection.close()
@@ -1417,6 +1504,22 @@ def conversation_public(record: ConversationRead) -> dict[str, Any]:
         "messages": [_message_public(message) for message in record.messages],
         "next_message_cursor": record.next_message_cursor,
         "current_run": record.current_run,
+        "queued_turns": [
+            {
+                "id": turn.id,
+                "conversation_id": turn.conversation_id,
+                "user_message_id": turn.user_message_id,
+                "queue_ordinal": turn.queue_ordinal,
+                "state": turn.state,
+                "blocked_reason": turn.blocked_reason,
+                "revision": turn.revision,
+                "message_revision": turn.message_revision,
+                "text": turn.text,
+                "created_at": turn.created_at,
+                "updated_at": turn.updated_at,
+            }
+            for turn in record.queued_turns
+        ],
     }
 
 
@@ -1488,6 +1591,7 @@ def activity_public(repository: ConversationRepository) -> dict[str, Any]:
 __all__ = [
     "CONVERSATION_SCHEMA_VERSION",
     "ConversationMessageRecord",
+    "ConversationQueuedTurnRecord",
     "ConversationRead",
     "ConversationRecord",
     "ConversationRepository",
@@ -1504,6 +1608,8 @@ __all__ = [
     "MAX_USER_MESSAGE_LENGTH",
     "activity_public",
     "conversation_public",
+    "conversation_message_record",
+    "conversation_turn_record",
     "conversations_public",
     "validate_repository_connection",
 ]

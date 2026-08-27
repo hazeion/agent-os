@@ -2,6 +2,33 @@
 
 All notable changes to Mentat.
 
+## 2026-08-27
+
+### Added
+- Added durable eight-Turn FIFO Conversation queues with exact-revision edit,
+  cancel, and explicit Continue operations.
+- Added selected-Run live progress, exactly-once durable assistant Message
+  projection, and bounded global Agent activity hints.
+- Added exact active-Run `/steer`, private Codex thread continuity, and typed
+  adapter capacity with a qualified two-Conversation Codex ceiling.
+
+### Changed
+- Kept the Home composer writable during active Runs: ordinary text queues,
+  while `/steer` is sent only to the exact selected compatible Run.
+- Made verified success claim at most one oldest pending Turn. Stop, failure,
+  interruption, unknown or partial evidence, and capacity pressure now pause
+  the queue until explicit revalidation.
+- Reconciled only the selected detailed Run from its live stream while keeping
+  background Conversations on bounded summary hints.
+
+### Safety
+- Bound queue mutations to both Turn and Message revisions and rechecked exact
+  Conversation, Turn, Run, Agent, and configuration identity at every bridge
+  layer.
+- Kept runtime references, capacity scopes, raw provider events, partial token
+  text, credentials, and local paths behind the private Python/SQLite boundary;
+  ambiguous submissions and steering are never retried automatically.
+
 ## 2026-08-26
 
 ### Added

@@ -1745,6 +1745,113 @@ def submit_mentat_conversation_turn(
     }, 200 if result.duplicate else 202
 
 
+def _public_conversation_record(record) -> dict:
+    return {
+        "id": record.id,
+        "agent_id": record.agent_id,
+        "title": record.title,
+        "title_source": record.title_source,
+        "state": record.state,
+        "revision": record.revision,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+        "archived_at": record.archived_at,
+    }
+
+
+def mutate_mentat_conversation_turn(
+    conversation_id: str,
+    turn_id: str,
+    action: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Apply one exact queued edit, cancel, or Continue capability."""
+
+    required = {
+        "edit": {"expected_revision", "expected_message_revision", "text"},
+        "cancel": {"expected_revision", "expected_message_revision"},
+        "continue": {"expected_revision", "expected_message_revision"},
+    }.get(action)
+    if required is None or not isinstance(payload, dict) or set(payload) != required:
+        return {"error_code": "conversation.request_invalid"}, 400
+    expected_revision = payload.get("expected_revision")
+    expected_message_revision = payload.get("expected_message_revision")
+    if (
+        type(expected_revision) is not int
+        or expected_revision < 1
+        or type(expected_message_revision) is not int
+        or expected_message_revision < 1
+    ):
+        return {"error_code": "conversation.request_invalid"}, 400
+    service = OrchestrationService(
+        DATA_DIR,
+        runtime_registry=AGENT_RUNTIME_REGISTRY,
+        agent_registry=_mentat_agent_registry(),
+    )
+    try:
+        if action == "edit":
+            text = payload.get("text")
+            if (
+                not isinstance(text, str)
+                or not text
+                or text.strip() != text
+                or "\x00" in text
+                or len(text) > 6_000
+            ):
+                return {"error_code": "conversation.request_invalid"}, 400
+            result = service.edit_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                expected_revision=expected_revision,
+                expected_message_revision=expected_message_revision,
+                text=text,
+            )
+        elif action == "cancel":
+            result = service.cancel_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                expected_revision=expected_revision,
+                expected_message_revision=expected_message_revision,
+            )
+        else:
+            continued = service.continue_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                expected_revision=expected_revision,
+                expected_message_revision=expected_message_revision,
+            )
+            run = (
+                {
+                    "id": continued.run.id,
+                    "status": continued.run.status,
+                    "partial": continued.run.partial,
+                    "updated_at": continued.run.updated_at,
+                }
+                if continued.run is not None
+                else None
+            )
+            return {
+                "schema_version": 1,
+                "duplicate": continued.duplicate,
+                "disposition": continued.disposition,
+                "conversation": _public_conversation_record(
+                    continued.conversation
+                ),
+                "message": conversation_message_public(continued.message),
+                "turn": conversation_turn_public(continued.turn),
+                "run": run,
+            }, 202 if run is not None else 200
+    except (MentatDatabaseError, sqlite3.Error) as exc:
+        raise OrchestrationServiceError("conversation.unavailable") from exc
+    return {
+        "schema_version": 1,
+        "disposition": result.disposition,
+        "conversation": _public_conversation_record(result.conversation),
+        "message": conversation_message_public(result.message),
+        "turn": conversation_turn_public(result.turn),
+    }, 200
+
+
 def mentat_codex_readiness_payload() -> dict:
     """Run one explicit, secret-free Codex CLI authentication check."""
 
@@ -1975,6 +2082,28 @@ def reconcile_orchestration_runs(payload=None):
     }, 200
 
 
+def refresh_mentat_run_payload(run_id: str) -> dict:
+    """Reconcile one exact selected Run for the private live-view capability."""
+
+    if re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}", run_id) is None:
+        raise RunRepositoryValidationError("run.identifier_invalid")
+    report = OrchestrationService(
+        DATA_DIR,
+        runtime_registry=AGENT_RUNTIME_REGISTRY,
+        agent_registry=_mentat_agent_registry(),
+    ).reconcile_run(
+        run_id=run_id,
+        owner=f"selected_run_{uuid4().hex}",
+    )
+    if report.unavailable:
+        raise OrchestrationServiceError("reconcile.unavailable")
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "disposition": "reconciled" if report.reconciled else "idle",
+    }
+
+
 def recover_orchestration_crash_states_at_startup(
     *,
     recover_legacy_console_runs: bool = False,
@@ -2163,9 +2292,10 @@ def _run_stop_confirmation(run: RunRecord) -> str:
 
 
 def _run_stop_context(run: RunRecord):
+    task_identity = run.task_id or run.turn_id
     if (
         run.agent_id is None
-        or run.task_id is None
+        or task_identity is None
         or run.runtime_config_id is None
         or run.runtime_binding_digest is None
     ):
@@ -2197,7 +2327,7 @@ def _run_stop_context(run: RunRecord):
     return runtime, RuntimeContext(
         agent_id=agent.id,
         runtime_agent_ref=binding.runtime_agent_ref,
-        task_id=run.task_id,
+        task_id=task_identity,
         mentat_run_id=run.id,
         runtime_run_ref=run.runtime_run_ref,
     )
@@ -2227,7 +2357,7 @@ def _verified_runtime_run(
     if (
         not isinstance(observed, AgentRun)
         or observed.id != run.id
-        or observed.task_id != run.task_id
+        or observed.task_id != (run.task_id or run.turn_id)
         or observed.agent_id != run.agent_id
         or observed.runtime_type != run.runtime_type
     ):
@@ -2435,6 +2565,75 @@ def mentat_confirm_run_message(
         "run_id": run.id,
         "disposition": "accepted",
     }
+
+
+def steer_mentat_conversation(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Steer only the exact active compatible Run; never append queue state."""
+
+    if not isinstance(payload, dict) or set(payload) != {"run_id", "text"}:
+        return {"error_code": "conversation.steer_invalid"}, 400
+    run_id = payload.get("run_id")
+    text = payload.get("text")
+    if (
+        not isinstance(run_id, str)
+        or re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}", run_id)
+        is None
+        or not isinstance(text, str)
+        or not text
+        or text.strip() != text
+        or "\x00" in text
+        or len(text) > 6_000
+    ):
+        return {"error_code": "conversation.steer_invalid"}, 400
+    run = _load_run_for_action(run_id)
+    if run.conversation_id != conversation_id or run.status != "running":
+        raise OrchestrationRunActionError("conversation.steer_stale")
+    runtime, context = _run_stop_context(run)
+    try:
+        capabilities = runtime.capabilities_for_run(
+            run.runtime_run_ref or run.id,
+            context=context,
+        )
+    except AgentRuntimeError:
+        raise OrchestrationRunActionError(
+            "conversation.steer_unavailable"
+        ) from None
+    if RuntimeCapability.SEND_MESSAGE.value not in capabilities:
+        raise OrchestrationRunActionError("conversation.steer_unsupported")
+    try:
+        runtime.send_message(
+            run.runtime_run_ref or run.id,
+            text,
+            context=context,
+        )
+    except AgentRuntimeError:
+        raise OrchestrationRunActionError("conversation.steer_failed") from None
+    try:
+        verified = runtime.get_status(
+            run.runtime_run_ref or run.id,
+            context=context,
+        )
+    except AgentRuntimeError:
+        raise OrchestrationRunActionError("conversation.steer_partial") from None
+    verified = _verified_runtime_run(
+        run,
+        verified,
+        partial_code="conversation.steer_partial",
+    )
+    if verified.status.value not in {
+        "running", "waiting", "completed", "failed", "stopped", "interrupted"
+    }:
+        raise OrchestrationRunActionError("conversation.steer_partial")
+    return {
+        "schema_version": 1,
+        "action": "steer",
+        "conversation_id": conversation_id,
+        "run_id": run.id,
+        "disposition": "accepted",
+    }, 200
 
 
 def _current_run_for_response(run_id: str) -> RunRecord:

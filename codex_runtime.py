@@ -34,6 +34,7 @@ from agent_runtime import (
     RunActionResponse,
     RunStatus,
     RuntimeCapability,
+    RuntimeCapacity,
     RuntimeContext,
     SubmissionDisposition,
     SubmissionOutcome,
@@ -50,6 +51,7 @@ START_TASK_OPERATION_TIMEOUT_SECONDS = 20.0
 READINESS_CACHE_SECONDS = 5.0
 MAXIMUM_TURN_ITEMS = 4096
 MAXIMUM_TASK_PROMPT_BYTES = 40_000
+CODEX_ADMISSION_LIMIT = 2
 
 _ACCOUNT_TYPES = frozenset({"apiKey", "chatgpt", "amazonBedrock"})
 _CHATGPT_PLAN_TYPES = frozenset(
@@ -937,6 +939,19 @@ class CodexRuntime:
     def capabilities(self) -> frozenset[str]:
         return self._readiness_capabilities(force=False)
 
+    def capacity_for_binding(self, runtime_agent_ref: str) -> RuntimeCapacity:
+        """Declare Mentat's tested ceiling for this owned App Server process."""
+
+        if runtime_agent_ref != CODEX_DEFAULT_BINDING:
+            raise AgentRuntimeError("runtime.binding_invalid")
+        workspace_digest = hashlib.sha256(
+            str(self.workspace_root).encode("utf-8")
+        ).hexdigest()
+        return RuntimeCapacity(
+            scope=f"codex-app-server:{workspace_digest}",
+            limit=CODEX_ADMISSION_LIMIT,
+        )
+
     def validate_agent_binding(
         self,
         runtime_agent_ref: object,
@@ -1091,6 +1106,34 @@ class CodexRuntime:
         }
 
     @staticmethod
+    def _verified_continuation_thread(
+        response: object,
+        *,
+        expected_thread_id: str,
+        expected_turn_id: str,
+    ) -> str:
+        if not isinstance(response, Mapping) or not isinstance(
+            response.get("thread"), Mapping
+        ):
+            raise ValueError("Codex continuation thread is invalid")
+        thread = response["thread"]
+        turns = thread.get("turns")
+        if (
+            thread.get("id") != expected_thread_id
+            or not isinstance(turns, list)
+            or len(turns) > 1_024
+        ):
+            raise ValueError("Codex continuation thread is invalid")
+        matches = [
+            turn
+            for turn in turns
+            if isinstance(turn, Mapping) and turn.get("id") == expected_turn_id
+        ]
+        if len(matches) != 1 or matches[0].get("status") != "completed":
+            raise ValueError("Codex continuation turn is not complete")
+        return expected_thread_id
+
+    @staticmethod
     def _verified_turn(response: object) -> Mapping[str, Any]:
         if not isinstance(response, Mapping) or not isinstance(response.get("turn"), Mapping):
             raise ValueError("Codex turn response is invalid")
@@ -1125,27 +1168,60 @@ class CodexRuntime:
                 )
             return remaining
 
+        continuation = context.continuation_runtime_run_ref
         try:
             client = self._require_client()
-            thread_response = client.request(
-                "thread/start",
-                {
-                    "approvalPolicy": "never",
-                    "cwd": str(self.workspace_root),
-                    "ephemeral": False,
-                    "sandbox": "workspace-write",
-                    "serviceName": "mentat",
-                },
-                timeout=remaining_timeout(),
-            )
         except CodexAppServerClientError as exc:
             if exc.uncertain:
                 return self._unknown("runtime.submission_unknown")
             return self._rejected("runtime.start_rejected")
-        try:
-            thread_id, execution_identity = self._verified_thread(thread_response)
-        except (OSError, ValueError):
-            return self._unknown("runtime.start_unverified")
+        execution_identity = None
+        if continuation is None:
+            try:
+                thread_response = client.request(
+                    "thread/start",
+                    {
+                        "approvalPolicy": "never",
+                        "cwd": str(self.workspace_root),
+                        "ephemeral": False,
+                        "sandbox": "workspace-write",
+                        "serviceName": "mentat",
+                    },
+                    timeout=remaining_timeout(),
+                )
+            except CodexAppServerClientError as exc:
+                if exc.uncertain:
+                    return self._unknown("runtime.submission_unknown")
+                return self._rejected("runtime.start_rejected")
+            try:
+                thread_id, execution_identity = self._verified_thread(
+                    thread_response
+                )
+            except (OSError, TypeError, ValueError):
+                # App Server may already have created this thread. Treat an
+                # unsafe or incomplete echo as ambiguous, never as retryable.
+                return self._unknown("runtime.start_unverified")
+        else:
+            try:
+                prior_thread_id, prior_turn_id = _split_runtime_reference(
+                    continuation
+                )
+                thread_response = client.request(
+                    "thread/read",
+                    {"threadId": prior_thread_id, "includeTurns": True},
+                    timeout=remaining_timeout(),
+                )
+                thread_id = self._verified_continuation_thread(
+                    thread_response,
+                    expected_thread_id=prior_thread_id,
+                    expected_turn_id=prior_turn_id,
+                )
+            except AgentRuntimeError:
+                return self._rejected("runtime.continuation_invalid")
+            except CodexAppServerClientError:
+                return self._rejected("runtime.continuation_unavailable")
+            except (OSError, TypeError, ValueError):
+                return self._rejected("runtime.continuation_invalid")
         try:
             turn_response = client.request(
                 "turn/start",
@@ -1260,7 +1336,7 @@ class CodexRuntime:
             )
         except CodexAppServerClientError as exc:
             raise AgentRuntimeError("runtime.message_failed") from exc
-        if not isinstance(response, Mapping) or response.get("turnId", turn_id) != turn_id:
+        if not isinstance(response, Mapping) or response.get("turnId") != turn_id:
             raise AgentRuntimeError("runtime.message_failed")
 
     def stop(self, run_id: str, *, context: RuntimeContext | None = None) -> None:
@@ -1356,6 +1432,13 @@ class CodexRuntime:
                 break
             seen_ids.add(item_id)
             event_type, summary = self._item_event_type(item_type)
+            content = None
+            if item_type == "agentMessage":
+                from agent_run_history import bounded_public_excerpt
+
+                content = bounded_public_excerpt(item.get("text"), 20_000)[0]
+                if not content:
+                    raise AgentRuntimeError("runtime.events_invalid")
             events.append(
                 AgentEvent(
                     id=self._event_id(run_id, item_id, event_type),
@@ -1364,6 +1447,7 @@ class CodexRuntime:
                     type=event_type,
                     occurred_at=started_at,
                     summary=summary,
+                    content=content,
                 )
             )
         status = _TURN_STATUSES[str(turn["status"])]

@@ -11,6 +11,7 @@
     "dev": "node scripts/run-next.mjs dev --hostname 127.0.0.1",
     "build": "node scripts/run-next.mjs build && node scripts/prepare-standalone.mjs",
     "lighthouse:gate": "node scripts/lighthouse-gate.mjs",
+    "performance:agent-console": "node scripts/agent-console-performance.mjs",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "node --import ./scripts/register-test-typescript.mjs --test tests/*.test.ts*",

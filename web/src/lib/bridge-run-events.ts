@@ -13,6 +13,7 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 
 export type PublicRunEvent = { id: string; run_id: string; sequence: number; type: string; occurred_at: string; summary: string; message: string | null; metrics: Record<string, number> };
 export type PublicBridgeRunEvents = { schema_version: 1; service: "mentat-local-bridge"; runtime: "python"; status: "ready"; run_id: string; after: number; next_cursor: number; cursor_reset_required: boolean; events: PublicRunEvent[] };
+export type PublicBridgeRunRefresh = { schema_version: 1; service: "mentat-local-bridge"; runtime: "python"; status: "ready"; run_id: string; disposition: "reconciled" | "idle" };
 
 export class BridgeRunEventsError extends Error {
   readonly code: string;
@@ -87,4 +88,33 @@ export async function fetchBridgeRunEvents(runId: string, after: number, fetcher
   if (response.status === 501 && fixed(payload, "unsupported")) throw new BridgeRunEventsError("bridge_unsupported");
   if (response.status === 503 && fixed(payload, "unavailable")) throw new BridgeRunEventsError("bridge_unavailable");
   throw new BridgeRunEventsError("bridge_response_invalid");
+}
+
+export async function refreshBridgeRun(runId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicBridgeRunRefresh> {
+  if (!validRunId(runId)) throw new BridgeRunEventsError("request_invalid");
+  const bridge = config(environment); let response: Response;
+  try {
+    response = await fetcher(new URL(`${PRIVATE_PATH_PREFIX}${encodeURIComponent(runId)}/refresh`, bridge.origin), {
+      method: "POST",
+      body: "{}",
+      cache: "no-store",
+      redirect: "error",
+      headers: { Accept: "application/json", "Content-Type": "application/json", "X-Mentat-Bridge-Token": bridge.token },
+      signal: AbortSignal.timeout(8_000),
+    });
+  } catch { throw new BridgeRunEventsError("bridge_unavailable"); }
+  if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new BridgeRunEventsError("bridge_response_invalid");
+  const payload = await bounded(response);
+  if (response.status === 200 && payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const item = payload as Record<string, unknown>;
+    if (Object.keys(item).sort().join(",") === "disposition,run_id,runtime,schema_version,service,status" && item.schema_version === 1 && item.service === "mentat-local-bridge" && item.runtime === "python" && item.status === "ready" && item.run_id === runId && (item.disposition === "reconciled" || item.disposition === "idle")) return item as PublicBridgeRunRefresh;
+  }
+  if (response.status === 404 && fixed(payload, "not_found")) throw new BridgeRunEventsError("run_not_found");
+  if (response.status === 503 && fixed(payload, "unavailable")) throw new BridgeRunEventsError("bridge_unavailable");
+  throw new BridgeRunEventsError("bridge_response_invalid");
+}
+
+export async function refreshAndFetchBridgeRunEvents(runId: string, after: number): Promise<PublicBridgeRunEvents> {
+  await refreshBridgeRun(runId);
+  return fetchBridgeRunEvents(runId, after);
 }

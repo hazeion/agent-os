@@ -17,6 +17,7 @@ from agent_runtime import (
     MentatTask,
     RunStatus,
     RuntimeCapability,
+    RuntimeCapacity,
     RuntimeContext,
     SubmissionDisposition,
 )
@@ -34,6 +35,7 @@ from codex_runtime import (
 
 THREAD_ID = "0199a213-81c0-7800-8aa1-bbab2a035a53"
 TURN_ID = "0199a213-81c0-7800-8aa1-bbab2a035a54"
+NEXT_TURN_ID = "0199a213-81c0-7800-8aa1-bbab2a035a55"
 RUNTIME_REF = f"{THREAD_ID}:{TURN_ID}"
 READY_ACCOUNT = {
     "account": {"type": "chatgpt", "email": None, "planType": "plus"},
@@ -73,7 +75,7 @@ def task() -> MentatTask:
     )
 
 
-def context(*, runtime_run_ref=None) -> RuntimeContext:
+def context(*, runtime_run_ref=None, continuation_runtime_run_ref=None) -> RuntimeContext:
     return RuntimeContext(
         agent_id="agent_codex",
         runtime_agent_ref=CODEX_DEFAULT_BINDING,
@@ -81,6 +83,7 @@ def context(*, runtime_run_ref=None) -> RuntimeContext:
         mentat_run_id="run_codex",
         dispatch_id="dispatch_codex",
         runtime_run_ref=runtime_run_ref,
+        continuation_runtime_run_ref=continuation_runtime_run_ref,
     )
 
 
@@ -228,6 +231,15 @@ class CodexRuntimeTests(unittest.TestCase):
             runtime.validate_agent_binding("other", [])
         with self.assertRaisesRegex(AgentRuntimeError, "runtime.binding_invalid"):
             runtime.validate_agent_binding(CODEX_DEFAULT_BINDING, ["provider.login"])
+        self.assertEqual(
+            runtime.capacity_for_binding(CODEX_DEFAULT_BINDING),
+            RuntimeCapacity(
+                scope=runtime.capacity_for_binding(CODEX_DEFAULT_BINDING).scope,
+                limit=2,
+            ),
+        )
+        with self.assertRaisesRegex(AgentRuntimeError, "runtime.binding_invalid"):
+            runtime.capacity_for_binding("other")
 
     def test_runtime_fails_closed_when_protocol_or_account_is_not_ready(self):
         failures = (
@@ -319,6 +331,46 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn(task().objective, prompt["text"])
         self.assertIn("Keep tests green.", prompt["text"])
         self.assertNotIn(str(root), prompt["text"])
+
+    def test_submit_continues_only_an_exact_completed_private_thread(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            next_turn = turn_start()
+            next_turn["turn"]["id"] = NEXT_TURN_ID
+            client = FakeClient(thread_read(status="completed"), next_turn)
+            outcome = self.runtime(root, client).submit_task(
+                task(),
+                context(continuation_runtime_run_ref=RUNTIME_REF),
+            )
+
+        self.assertEqual(outcome.disposition, SubmissionDisposition.ACCEPTED)
+        self.assertEqual(outcome.runtime_run_ref, f"{THREAD_ID}:{NEXT_TURN_ID}")
+        self.assertIsNone(outcome.execution_identity)
+        self.assertEqual(
+            [call[0] for call in client.calls],
+            ["account/read", "thread/read", "turn/start"],
+        )
+        self.assertEqual(
+            client.calls[1][1],
+            {"threadId": THREAD_ID, "includeTurns": True},
+        )
+        self.assertEqual(client.calls[2][1]["threadId"], THREAD_ID)
+
+    def test_submit_rejects_stale_continuation_without_starting_a_turn(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            client = FakeClient(thread_read(status="inProgress"))
+            outcome = self.runtime(root, client).submit_task(
+                task(),
+                context(continuation_runtime_run_ref=RUNTIME_REF),
+            )
+
+        self.assertEqual(outcome.disposition, SubmissionDisposition.REJECTED)
+        self.assertEqual(outcome.failure_code, "runtime.continuation_invalid")
+        self.assertEqual(
+            [call[0] for call in client.calls],
+            ["account/read", "thread/read"],
+        )
 
     def test_submit_rejects_wrong_binding_before_protocol_io(self):
         client = FakeClient()
@@ -531,7 +583,8 @@ class CodexRuntimeTests(unittest.TestCase):
         public_text = repr(first)
         for private in ("provider-secret", "/Users/alice", "token=private"):
             self.assertNotIn(private, public_text)
-        self.assertTrue(all(event.content is None for event in first))
+        self.assertEqual(first[1].content, "token=[REDACTED] [redacted-path]")
+        self.assertTrue(all(event.content is None for event in first[2:]))
 
     def test_events_stop_at_first_unstable_item_to_remain_append_only(self):
         active_items = [
@@ -581,6 +634,20 @@ class CodexRuntimeTests(unittest.TestCase):
                 )
             ],
         )
+
+    def test_message_requires_an_exact_steer_receipt(self):
+        for response in ({}, {"turnId": NEXT_TURN_ID}):
+            with self.subTest(response=response), TemporaryDirectory() as temporary:
+                runtime = self.runtime(Path(temporary), FakeClient(response))
+                with self.assertRaisesRegex(
+                    AgentRuntimeError,
+                    "runtime.message_failed",
+                ):
+                    runtime.send_message(
+                        RUNTIME_REF,
+                        "Keep this exact Run focused.",
+                        context=context(runtime_run_ref=RUNTIME_REF),
+                    )
 
     def test_stop_interrupts_only_the_exact_turn_and_verifies_terminal_state(self):
         with TemporaryDirectory() as temporary:

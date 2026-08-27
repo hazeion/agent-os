@@ -5,10 +5,14 @@ import {
   BridgeConversationsError,
   CODEX_READINESS_BRIDGE_TIMEOUT_MILLISECONDS,
   CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS,
+  cancelBridgeConversationTurn,
+  continueBridgeConversationTurn,
   createBridgeConversation,
+  editBridgeConversationTurn,
   fetchBridgeCodexReadiness,
   fetchBridgeConversation,
   fetchBridgeConversations,
+  steerBridgeConversation,
   submitBridgeConversationTurn,
 } from "../src/lib/bridge-conversations.ts";
 import {
@@ -44,6 +48,7 @@ const detail = {
   current_run: null,
   messages: [],
   next_message_cursor: null,
+  queued_turns: [],
   runtime: "python" as const,
   schema_version: 1 as const,
   service: "mentat-local-bridge" as const,
@@ -217,6 +222,134 @@ test("Conversation Turn bridge maps admission and Codex setup states", async () 
       environment,
     ),
     (error: unknown) => error instanceof BridgeConversationsError && error.code === "bridge_response_invalid",
+  );
+});
+
+test("Conversation queue and steer bridges use exact named mutations", async () => {
+  const queuedMessage = { ...message, revision: 2, run_id: null };
+  const queuedTurn = {
+    ...turnSubmission.turn,
+    attempt_count: 0 as const,
+    id: "turn_queue",
+    latest_run_id: null,
+    revision: 2,
+    state: "pending" as const,
+    user_message_id: queuedMessage.id,
+  };
+  const edited = {
+    conversation: turnSubmission.conversation,
+    disposition: "edited" as const,
+    message: { ...queuedMessage, content: { parts: [{ text: "Edited follow-up", type: "text" as const }], schema_version: 1 as const } },
+    runtime: "python" as const,
+    schema_version: 1 as const,
+    service: "mentat-local-bridge" as const,
+    status: "ready" as const,
+    turn: queuedTurn,
+  };
+  const cancelled = {
+    ...edited,
+    disposition: "cancelled" as const,
+    message: { ...edited.message, state: "cancelled" as const },
+    turn: { ...queuedTurn, state: "cancelled" as const },
+  };
+  const continued = {
+    ...turnSubmission,
+    message: { ...queuedMessage, run_id: "run_continue" },
+    run: { id: "run_continue", partial: false, status: "starting", updated_at: "2026-08-25T12:01:00Z" },
+    turn: {
+      ...queuedTurn,
+      attempt_count: 1 as const,
+      latest_run_id: "run_continue",
+      state: "consumed" as const,
+    },
+  };
+  const steerResult = {
+    action: "steer" as const,
+    conversation_id: conversation.id,
+    disposition: "accepted" as const,
+    run_id: "run_abc123",
+    runtime: "python" as const,
+    schema_version: 1 as const,
+    service: "mentat-local-bridge" as const,
+    status: "ready" as const,
+  };
+  const calls: Array<{ body: string | undefined; url: string }> = [];
+  const responses = [edited, cancelled, continued, steerResult];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ body: init?.body?.toString(), url: input.toString() });
+    const response = responses.shift()!;
+    return Response.json(response, { status: response === continued ? 202 : 200 });
+  };
+
+  await editBridgeConversationTurn(conversation.id, "turn_queue", 1, 2, "Edited follow-up", fetcher, environment);
+  await cancelBridgeConversationTurn(conversation.id, "turn_queue", 2, 3, fetcher, environment);
+  await continueBridgeConversationTurn(conversation.id, "turn_queue", 4, 5, fetcher, environment);
+  await steerBridgeConversation(conversation.id, "run_abc123", "Use this guidance", fetcher, environment);
+
+  assert.deepEqual(calls, [
+    {
+      body: '{"expected_message_revision":2,"expected_revision":1,"text":"Edited follow-up"}',
+      url: "http://127.0.0.1:49152/bridge/v1/conversations/conv_abc123/turns/turn_queue/edit",
+    },
+    {
+      body: '{"expected_message_revision":3,"expected_revision":2}',
+      url: "http://127.0.0.1:49152/bridge/v1/conversations/conv_abc123/turns/turn_queue/cancel",
+    },
+    {
+      body: '{"expected_message_revision":5,"expected_revision":4}',
+      url: "http://127.0.0.1:49152/bridge/v1/conversations/conv_abc123/turns/turn_queue/continue",
+    },
+    {
+      body: '{"run_id":"run_abc123","text":"Use this guidance"}',
+      url: "http://127.0.0.1:49152/bridge/v1/conversations/conv_abc123/steer",
+    },
+  ]);
+
+  await assert.rejects(
+    editBridgeConversationTurn(
+      conversation.id,
+      "turn_queue",
+      1,
+      2,
+      "Edited follow-up",
+      async () => Response.json({ ...edited, runtime_run_ref: "private-canary" }),
+      environment,
+    ),
+    (error: unknown) => error instanceof BridgeConversationsError && error.code === "bridge_response_invalid",
+  );
+  await assert.rejects(
+    cancelBridgeConversationTurn(
+      conversation.id,
+      "turn_queue",
+      2,
+      3,
+      async () => Response.json({
+        ...cancelled,
+        turn: { ...cancelled.turn, id: "turn_cross_target" },
+      }),
+      environment,
+    ),
+    (error: unknown) => error instanceof BridgeConversationsError && error.code === "bridge_response_invalid",
+  );
+  await assert.rejects(
+    steerBridgeConversation(
+      conversation.id,
+      "run_abc123",
+      "Use this guidance",
+      async () => Response.json({ ...steerResult, run_id: "run_cross_target" }),
+      environment,
+    ),
+    (error: unknown) => error instanceof BridgeConversationsError && error.code === "bridge_response_invalid",
+  );
+  await assert.rejects(
+    steerBridgeConversation(
+      conversation.id,
+      "run_abc123",
+      "Use this guidance",
+      async () => Response.json({ runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "partial" }, { status: 500 }),
+      environment,
+    ),
+    (error: unknown) => error instanceof BridgeConversationsError && error.code === "conversation_partial",
   );
 });
 
