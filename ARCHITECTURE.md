@@ -455,7 +455,7 @@ export separately filters attachments and blobs to the Runs its legacy
 projection retains. Startup performs one bounded reconciliation pass for native
 Runs that have a durable runtime reference.
 
-### Conversation authority and first text Turn
+### Conversation authority, live Turns, and bounded concurrency
 
 [ADR 0001](docs/adr/0001-conversation-owned-agent-console.md) fixes the target
 Next.js Agent Console persistence and concurrency contract. Schema 10 owns
@@ -492,22 +492,67 @@ SQLite and repository guards reject replacement or partial writes, and neither
 document is projected to the browser.
 
 The implemented invariant is one nonterminal Run per Conversation, not one Run
-for the product. Current adapters have no trusted capacity declaration, so
-admission uses the ADR's conservative private limit of one per binding-derived
-scope. Browser drafts, optimistic Messages, in-flight state, local admission
-blocks, unresolved exact retry keys, and Turn announcements are scoped per
-Conversation so navigation cannot replace another Conversation's idempotency
-evidence or mislabel background results. One monotonic notice order still lets
-newer global setup/navigation failures supersede stale Turn feedback. The
-browser sees only fixed availability/failure states and never a
-scope, digest, runtime reference, configuration ID, credential, or raw provider
-payload. Existing Task-dispatch Runs retain their Task, reservation,
-dispatch-head, and idempotency authority.
+for the product. Runtime adapters may declare a typed private capacity scope and
+a bounded limit. Missing, invalid, or unavailable declarations collapse to one
+binding-derived slot. The qualified Codex adapter declares two slots for its
+one owned App Server and workspace; all nonterminal Task and Conversation Runs
+using that scope consume the same transactional capacity. Capacity scope,
+digest, limit, and runtime references remain private.
 
-Queued/blocked Turns, automatic continuation after verified success, Retry,
-Resume, active-Run composing, normalized assistant event-to-Message projection,
-and richer Console operations remain later slices. Their accepted ADR contract
-is not authority to approximate them in this first Send path.
+An ordinary Send during an active Run appends a durable user Message and Turn
+without starting another Run. Each Conversation admits at most eight
+`pending`, `blocked`, or transient `dispatching` Turns. FIFO ordinals are never
+reused. Pending and blocked Turns may be edited or cancelled only with both the
+exact Turn revision and exact user-Message revision; cancellation retires the
+ordinal and keeps the cancelled Message visible. A verified successful Run
+completion may claim only the oldest pending Turn, in the same SQLite authority
+transaction, and competing reconcilers can claim it only once. Failure, Stop,
+interruption, unknown or partial evidence, and capacity pressure block the head.
+Only an explicit Continue revalidates the current Agent, runtime configuration,
+capabilities, and capacity before attempting that exact blocked Turn. Continue
+is not a scheduler and no unsafe outcome is retried automatically. Cancelling a
+blocked head atomically leaves the next queue-active Turn blocked: a pending
+successor inherits the pause reason, while an already-blocked successor is
+preserved exactly. Cancelling a blocked non-head does not alter the current
+head, so the queue always retains an explicit recoverable head.
+
+Normalized, completed runtime message items may project one safe assistant
+Message into their owning Conversation under a deterministic source key. Event
+replay, retention, reconnect, and competing reconciliation therefore cannot
+duplicate or cross-project the Message. Partial token text is neither durable
+authority nor a browser stream. The selected Run alone has a detailed SSE
+subscription; each poll asks Python to reconcile that exact Run, publishes only
+bounded event summaries, and refreshes the canonical Conversation for durable
+Messages and terminal state. This mutating readback route requires the exact
+same-origin request boundary and accepts no query parameters. Browser event
+bursts collapse to one in-flight canonical Conversation read and at most one
+trailing read; revision-monotonic merging rejects stale queue/Run state while
+preserving at most 200 paginated Messages. The global activity rail remains a
+bounded hint surface and opens no background detailed streams.
+
+The Home composer remains writable during active work. `/steer` is recognized
+only at the beginning after leading whitespace, strips its prefix, and targets
+the exact selected running Run only when `run.message` is currently supported.
+Steering creates no Message or Turn, never queues, and is never retried. A
+stale, late, unsupported, rejected, or accepted-but-unverified result keeps the
+draft and reports no-send. Temporary adapter unavailability remains distinct
+from unsupported steering, and the composer keeps its ordinary Send action
+rather than exposing a separate Steer button. The existing exact previewed Stop
+capability remains the control path; its targeted reconciliation blocks only
+that Conversation's queue.
+
+Codex Conversation continuity is adapter-private. A later Turn may reuse only
+the same App Server thread after `thread/read` proves the immediately preceding
+executed Turn completed. A failed, partial, missing-reference, or non-adjacent
+Run cannot be replaced with an older thread or a fresh thread. The browser
+cannot supply or observe a thread or Turn ID, and missing or unsafe continuity
+evidence fails closed. Browser drafts, optimistic Messages,
+in-flight state, queue edits, unresolved exact retry keys, Turn announcements,
+streams, and live summaries remain scoped by Conversation and Run so navigation
+cannot replace another Conversation's evidence or mislabel a background result.
+One monotonic notice order still lets newer global setup/navigation failures
+supersede stale Turn feedback. Existing Task-dispatch Runs retain their Task,
+reservation, dispatch-head, and idempotency authority.
 
 Format-4 backup remains the recovery container because it embeds the private
 database, but capture, restore, fingerprint, and semantic validation must become
@@ -618,10 +663,12 @@ credential source, App Server method, thread, or turn. The child receives an
 allowlisted environment; commands run with Codex's trimmed core environment,
 the `workspaceWrite` sandbox, approval policy `never`, and the default credential-name
 exclusions. This slice supports start, status, bounded events, active-turn
-messages, and exact-turn interruption. Approvals and attachments are not
-advertised. Capability and binding checks use a bounded read-only App Server
-account probe. Ordinary registry reads use the static registered runtime names
-and never start or wait for Codex.
+messages, exact completed-thread continuation, and exact-turn interruption. Its
+private, qualified admission ceiling is two concurrent Runs on the owned App
+Server; it is not a provider-wide capacity claim. Approvals and attachments are
+not advertised. Capability and binding checks use a bounded read-only App
+Server account probe. Ordinary registry reads use the static registered runtime
+names and never start or wait for Codex.
 
 The Agent Console exposes a separate explicit Codex readiness check with only
 `cli_missing`, `sign_in_required`, `ready`, or `unavailable`. Setup directs the

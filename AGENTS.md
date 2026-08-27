@@ -179,6 +179,26 @@ close the App Server's owned process tree. Routine Agent registry reads must
 not launch or wait for Codex; live readiness probes belong only on explicit
 Codex capability, binding, or dispatch paths.
 
+Agent Console follow-ups are durable Conversation Turns in SQLite, not an
+in-memory execution queue. Keep at most eight pending, blocked, or dispatching
+Turns per Conversation, preserve FIFO ordinals, and require exact Turn plus
+Message revisions for edit, cancel, and Continue. Verified success may claim
+only one oldest pending Turn; Stop, failure, interruption, unknown/partial
+evidence, or capacity pressure pauses the head. Cancelling a blocked head must
+leave its next queue-active successor explicitly blocked rather than silently
+stranded: transition a pending successor with the inherited reason, or preserve
+an already-blocked successor exactly. Cancelling a blocked non-head must not
+change the current head.
+`/steer` targets only the exact selected compatible running Run, never queues
+or retries, and preserves the draft whenever delivery cannot be verified; keep
+the composer action labeled Send rather than adding a separate Steer button.
+Detailed live events are selected-Run-only, same-origin bounded, and coalesced
+to one in-flight canonical refresh plus at most one trailing refresh. Assistant
+transcript text becomes authoritative only through the exactly-once durable
+Message projection. Adapter capacity is private and scope-specific: every
+unqualified adapter remains at one, while only the fixed qualified Codex
+`default` binding may use the ceiling of two concurrent compatible Runs.
+
 Hermes mutations are allowed only when an approved adapter operation uses a
 fixed Hermes CLI/API call with validation, capability checks, confirmation,
 locking, verification, and secret-free audit behavior. Browser text must never

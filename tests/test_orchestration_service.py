@@ -20,6 +20,7 @@ from agent_runtime import (
     AgentRun,
     AgentRuntimeRegistry,
     RunStatus,
+    RuntimeCapacity,
     SubmissionDisposition,
     SubmissionOutcome,
 )
@@ -27,7 +28,7 @@ from mentat_db import MentatDatabaseError, connect
 from mentat import local_bridge
 from orchestration_service import OrchestrationService, OrchestrationServiceError
 from conversation_repository import ConversationRepository
-from private_state import history_path
+from private_state import history_path, private_state_lock
 from private_console_unit import capture_private_console_unit
 from run_repository import (
     RunRepository,
@@ -61,13 +62,14 @@ def task_fixture() -> dict:
 
 class FakeRuntime:
     runtime_type = "hermes"
-    capabilities = frozenset({"run.start"})
 
     def __init__(self, root: Path, *, raises: bool = False):
         self.root = root
         self.raises = raises
         self.calls = []
         self.status_queries = []
+        self.status_entered = None
+        self.status_release = None
         self.event_queries = []
         self.observed_status = RunStatus.RUNNING
         self.events = None
@@ -79,6 +81,37 @@ class FakeRuntime:
         self.rejects = False
         self.submission_lock = None
         self.guard_observed = False
+        self.capacity_limit = 1
+        self.capacity_scope = None
+        self.runtime_agent_ref = "profile-service"
+        self.capacity_entered = None
+        self.capacity_release = None
+        self.capabilities_entered = None
+        self.capabilities_release = None
+        self.steer_calls = []
+        self.return_completed = False
+        self.return_runtime_run_ref = "runtime-service-ref"
+
+    @property
+    def capabilities(self):
+        if self.capabilities_entered is not None:
+            self.capabilities_entered.set()
+        if (
+            self.capabilities_release is not None
+            and not self.capabilities_release.wait(timeout=5)
+        ):
+            raise TimeoutError("test capability gate timed out")
+        return frozenset({"run.start"})
+
+    def capacity_for_binding(self, runtime_agent_ref):
+        if self.capacity_entered is not None:
+            self.capacity_entered.set()
+        if self.capacity_release is not None and not self.capacity_release.wait(timeout=5):
+            raise TimeoutError("test capacity gate timed out")
+        return RuntimeCapacity(
+            scope=self.capacity_scope or f"fake-runtime:{runtime_agent_ref}",
+            limit=self.capacity_limit,
+        )
 
     def submission_guard(self):
         return self.submission_lock or nullcontext()
@@ -151,6 +184,20 @@ class FakeRuntime:
                 raise TimeoutError("test worker did not finish")
             if failure:
                 raise failure[0]
+        run_status = RunStatus.COMPLETED if self.return_completed else RunStatus.STARTING
+        initial_events = ()
+        if self.return_completed:
+            initial_events = (
+                AgentEvent(
+                    id=f"runtime_answer_{context.mentat_run_id}",
+                    run_id=context.mentat_run_id,
+                    sequence=1,
+                    type=AgentEventType.MESSAGE,
+                    occurred_at="2026-08-18T13:00:00+00:00",
+                    summary="Assistant answer completed",
+                    content=f"Completed {task.objective}",
+                ),
+            )
         return SubmissionOutcome(
             SubmissionDisposition.ACCEPTED,
             run=AgentRun(
@@ -158,9 +205,10 @@ class FakeRuntime:
                 task_id=task.id,
                 agent_id="agent-mismatch" if self.return_identity_mismatch else context.agent_id,
                 runtime_type=self.runtime_type,
-                status=RunStatus.STARTING,
+                status=run_status,
             ),
-            runtime_run_ref="runtime-service-ref",
+            runtime_run_ref=self.return_runtime_run_ref,
+            initial_events=initial_events,
             execution_identity={
                 "model": "test-model",
                 "provider": "test-provider",
@@ -170,11 +218,22 @@ class FakeRuntime:
         )
 
     def get_status(self, run_id, *, context=None):
-        task, submission_context, _state, _attempts = self.calls[-1]
+        matching_calls = [
+            call
+            for call in self.calls
+            if call[1].mentat_run_id == context.mentat_run_id
+        ]
+        if len(matching_calls) != 1:
+            raise AssertionError("runtime status target was not unique")
+        task, submission_context, _state, _attempts = matching_calls[0]
         expected = context.runtime_run_ref or context.mentat_run_id
         if run_id != expected:
             raise AssertionError("runtime-owned Run reference was not used")
         self.status_queries.append(run_id)
+        if self.status_entered is not None:
+            self.status_entered.set()
+        if self.status_release is not None and not self.status_release.wait(timeout=5):
+            raise TimeoutError("test status gate timed out")
         return AgentRun(
             id=context.mentat_run_id,
             task_id=task.id,
@@ -205,8 +264,26 @@ class FakeRuntime:
             ),
         )
 
+    def capabilities_for_run(self, run_id, *, context=None):
+        expected = context.runtime_run_ref or context.mentat_run_id
+        if run_id != expected:
+            raise AssertionError("runtime-owned Run reference was not used")
+        return frozenset({"run.message", "run.status"})
+
+    def send_message(self, run_id, message, *, context=None):
+        expected = context.runtime_run_ref or context.mentat_run_id
+        if run_id != expected:
+            raise AssertionError("runtime-owned Run reference was not used")
+        self.steer_calls.append((run_id, message, context))
+
 
 class OrchestrationServiceTests(unittest.TestCase):
+    @staticmethod
+    def qualify_codex_capacity(runtime: FakeRuntime) -> None:
+        runtime.runtime_type = "codex"
+        runtime.runtime_agent_ref = "default"
+        runtime.capacity_scope = "codex-app-server:" + "a" * 64
+
     def prepare(
         self, root: Path, runtime: FakeRuntime, *, task_id: str = "task-service"
     ) -> OrchestrationService:
@@ -216,13 +293,13 @@ class OrchestrationServiceTests(unittest.TestCase):
         source.write_text(json.dumps([task], sort_keys=True) + "\n", encoding="utf-8")
         source.chmod(0o600)
         ensure_run_sqlite_authority(root, history_path(root))
-        registry = AgentRegistry(root, supported_runtime_types=("hermes",))
+        registry = AgentRegistry(root, supported_runtime_types=(runtime.runtime_type,))
         registry.create_agent(
             agent_id="agent-service",
             name="Service Agent",
             runtime_config_id="config-service",
-            runtime_type="hermes",
-            runtime_agent_ref="profile-service",
+            runtime_type=runtime.runtime_type,
+            runtime_agent_ref=runtime.runtime_agent_ref,
             capabilities=("run.start",),
         )
         identifiers = iter(
@@ -252,7 +329,7 @@ class OrchestrationServiceTests(unittest.TestCase):
         task_service = self.prepare(root, runtime)
         conversation = ConversationRepository(
             root,
-            supported_runtime_types=("hermes",),
+            supported_runtime_types=(runtime.runtime_type,),
         ).create(agent_id="agent-service")
         identifiers = iter(
             (
@@ -291,6 +368,88 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(runtime.calls[0][2:], ("submitting", 1))
         self.assertEqual(runtime.calls[0][1].mentat_run_id, "run_service_1")
         self.assertEqual(runtime.calls[0][1].dispatch_id, "dispatch_service_1")
+
+    def test_task_capacity_discovery_never_holds_the_private_state_lock(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.capacity_entered = threading.Event()
+            runtime.capacity_release = threading.Event()
+            service = self.prepare(root, runtime)
+            failures = []
+
+            def dispatch():
+                try:
+                    service.dispatch_task(
+                        task_id="task-service",
+                        expected_revision=1,
+                        idempotency_key="capacity-lock-probe-key-1",
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    failures.append(exc)
+
+            worker = threading.Thread(target=dispatch)
+            worker.start()
+            self.assertTrue(runtime.capacity_entered.wait(timeout=2))
+            acquired = threading.Event()
+
+            def probe_lock():
+                with private_state_lock(root):
+                    acquired.set()
+
+            probe = threading.Thread(target=probe_lock)
+            probe.start()
+            try:
+                self.assertTrue(acquired.wait(timeout=1))
+            finally:
+                runtime.capacity_release.set()
+            worker.join(timeout=5)
+            probe.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(probe.is_alive())
+        self.assertEqual(failures, [])
+
+    def test_task_capability_discovery_never_holds_the_private_state_lock(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service = self.prepare(root, runtime)
+            runtime.capabilities_entered = threading.Event()
+            runtime.capabilities_release = threading.Event()
+            failures = []
+
+            def dispatch():
+                try:
+                    service.dispatch_task(
+                        task_id="task-service",
+                        expected_revision=1,
+                        idempotency_key="capability-lock-probe-key-1",
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    failures.append(exc)
+
+            worker = threading.Thread(target=dispatch)
+            worker.start()
+            self.assertTrue(runtime.capabilities_entered.wait(timeout=2))
+            acquired = threading.Event()
+
+            def probe_lock():
+                with private_state_lock(root):
+                    acquired.set()
+
+            probe = threading.Thread(target=probe_lock)
+            probe.start()
+            try:
+                self.assertTrue(acquired.wait(timeout=1))
+            finally:
+                runtime.capabilities_release.set()
+            worker.join(timeout=5)
+            probe.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(probe.is_alive())
+        self.assertEqual(failures, [])
 
     def test_conversation_turn_commits_authority_before_one_unlocked_runtime_call(self):
         with TemporaryDirectory() as tmpdir:
@@ -564,7 +723,7 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(duplicate.turn.latest_run_id, first.run.id)
         self.assertEqual(len(runtime.calls), 1)
 
-    def test_conversation_unknown_blocks_a_second_turn_without_partial_rows(self):
+    def test_conversation_unknown_accepts_a_blocked_followup_without_another_run(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             runtime = FakeRuntime(root, raises=True)
@@ -574,15 +733,11 @@ class OrchestrationServiceTests(unittest.TestCase):
                 text="Ambiguous request",
                 idempotency_key="conversation-request-key-3",
             )
-            with self.assertRaisesRegex(
-                OrchestrationServiceError,
-                "conversation.active_run",
-            ):
-                service.submit_conversation_turn(
-                    conversation_id=conversation_id,
-                    text="Competing request",
-                    idempotency_key="conversation-request-key-4",
-                )
+            blocked = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Competing request",
+                idempotency_key="conversation-request-key-4",
+            )
             connection = connect(root)
             try:
                 counts = connection.execute(
@@ -595,8 +750,940 @@ class OrchestrationServiceTests(unittest.TestCase):
                 connection.close()
 
         self.assertEqual(first.run.status, "unknown")
-        self.assertEqual(tuple(counts), (1, 1, 1))
+        self.assertEqual(blocked.disposition, "blocked")
+        self.assertEqual(blocked.turn.state, "blocked")
+        self.assertEqual(blocked.turn.blocked_reason, "unknown")
+        self.assertIsNone(blocked.run)
+        self.assertEqual(tuple(counts), (2, 2, 1))
         self.assertEqual(len(runtime.calls), 1)
+
+    def test_active_conversation_accepts_ordinary_followup_as_pending(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this Run active",
+                idempotency_key="conversation-active-queue-key-1",
+            )
+            pending = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Queue this exact follow-up",
+                idempotency_key="conversation-active-queue-key-2",
+            )
+            connection = connect(root)
+            try:
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(first.disposition, "accepted")
+        self.assertEqual(pending.disposition, "pending")
+        self.assertEqual(pending.turn.state, "pending")
+        self.assertIsNone(pending.turn.latest_run_id)
+        self.assertIsNone(pending.message.run_id)
+        self.assertIsNone(pending.run)
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_conversation_queue_caps_at_eight_without_partial_ninth_rows(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            counters = {"msg": 0, "turn": 0, "run": 0}
+
+            def next_identifier(prefix):
+                counters[prefix] += 1
+                return f"{prefix}_queue_cap_{counters[prefix]}"
+
+            service.id_factory = next_identifier
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep one Run active for the queue cap",
+                idempotency_key="conversation-queue-cap-active-key",
+            )
+            queued = [
+                service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text=f"Queued request {index}",
+                    idempotency_key=f"conversation-queue-cap-key-{index:02d}",
+                )
+                for index in range(1, 9)
+            ]
+            with self.assertRaisesRegex(
+                OrchestrationServiceError,
+                "conversation.turn_capacity",
+            ):
+                service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="This ninth queued request must not persist",
+                    idempotency_key="conversation-queue-cap-key-09",
+                )
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=("hermes",),
+            ).read(conversation_id)
+            connection = connect(root)
+            try:
+                counts = connection.execute(
+                    "SELECT (SELECT COUNT(*) FROM mentat_conversation_messages), "
+                    "(SELECT COUNT(*) FROM mentat_conversation_turns), "
+                    "(SELECT COUNT(*) FROM mentat_runs WHERE conversation_id = ?)",
+                    (conversation_id,),
+                ).fetchone()
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual([item.disposition for item in queued], ["pending"] * 8)
+        self.assertEqual(len(detail.queued_turns), 8)
+        self.assertEqual([item.queue_ordinal for item in detail.queued_turns], list(range(2, 10)))
+        self.assertEqual(tuple(counts), (9, 9, 1))
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_blocked_fifo_head_prevents_a_new_send_from_bypassing_it(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.rejects = True
+            runtime.submit_entered = threading.Event()
+            runtime.submit_release = threading.Event()
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            counters = {"msg": 0, "turn": 0, "run": 0}
+
+            def next_identifier(prefix):
+                counters[prefix] += 1
+                return f"{prefix}_blocked_fifo_{counters[prefix]}"
+
+            service.id_factory = next_identifier
+            failures = []
+
+            def submit_rejected():
+                try:
+                    service.submit_conversation_turn(
+                        conversation_id=conversation_id,
+                        text="Reject after a follow-up becomes pending",
+                        idempotency_key="conversation-blocked-fifo-key-1",
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    failures.append(exc)
+
+            worker = threading.Thread(target=submit_rejected)
+            worker.start()
+            self.assertTrue(runtime.submit_entered.wait(timeout=5))
+            blocked = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="This exact head must stay first",
+                idempotency_key="conversation-blocked-fifo-key-2",
+            )
+            runtime.submit_release.set()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            if failures:
+                raise failures[0]
+            appended = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Append without bypassing the blocked head",
+                idempotency_key="conversation-blocked-fifo-key-3",
+            )
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=("hermes",),
+            ).read(conversation_id)
+
+        self.assertEqual(blocked.turn.id, detail.queued_turns[0].id)
+        self.assertEqual(detail.queued_turns[0].state, "blocked")
+        self.assertEqual(detail.queued_turns[0].blocked_reason, "failed")
+        self.assertEqual(appended.disposition, "pending")
+        self.assertIsNone(appended.run)
+        self.assertEqual([item.id for item in detail.queued_turns], [blocked.turn.id, appended.turn.id])
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_immediate_verified_completion_claims_one_concurrent_pending_head(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_completed = True
+            runtime.submit_entered = threading.Event()
+            runtime.submit_release = threading.Event()
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            results = []
+            failures = []
+
+            def submit_first():
+                try:
+                    results.append(service.submit_conversation_turn(
+                        conversation_id=conversation_id,
+                        text="Complete immediately after a follow-up arrives",
+                        idempotency_key="conversation-immediate-complete-key-1",
+                    ))
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    failures.append(exc)
+
+            worker = threading.Thread(target=submit_first)
+            worker.start()
+            self.assertTrue(runtime.submit_entered.wait(timeout=5))
+            pending = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Claim this concurrent follow-up exactly once",
+                idempotency_key="conversation-immediate-complete-key-2",
+            )
+            runtime.submit_release.set()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            if failures:
+                raise failures[0]
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=("hermes",),
+            ).read(conversation_id)
+            connection = connect(root)
+            try:
+                turn = connection.execute(
+                    "SELECT state, attempt_count, latest_run_id "
+                    "FROM mentat_conversation_turns WHERE id = ?",
+                    (pending.turn.id,),
+                ).fetchone()
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(failures, [])
+        self.assertEqual(results[0].run.status, "completed")
+        self.assertEqual(pending.disposition, "pending")
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(runtime.calls[-1][0].objective, "Claim this concurrent follow-up exactly once")
+        self.assertEqual(tuple(turn)[:2], ("consumed", 1))
+        self.assertTrue(str(turn["latest_run_id"]).startswith("run_auto_"))
+        self.assertEqual(detail.queued_turns, ())
+        self.assertEqual([message.role for message in detail.messages], ["user", "user", "assistant", "assistant"])
+
+    def test_queued_turn_edit_and_cancel_require_both_exact_revisions(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this request active",
+                idempotency_key="conversation-queue-cas-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Edit this queued request",
+                idempotency_key="conversation-queue-cas-key-2",
+            )
+
+            edited = service.edit_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=queued.turn.id,
+                expected_revision=queued.turn.revision,
+                expected_message_revision=queued.message.revision,
+                text="Use this exact edited request",
+            )
+            with self.assertRaisesRegex(
+                OrchestrationServiceError,
+                "conversation.turn_changed",
+            ):
+                service.cancel_conversation_turn(
+                    conversation_id=conversation_id,
+                    turn_id=queued.turn.id,
+                    expected_revision=queued.turn.revision,
+                    expected_message_revision=queued.message.revision,
+                )
+            cancelled = service.cancel_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=queued.turn.id,
+                expected_revision=edited.turn.revision,
+                expected_message_revision=edited.message.revision,
+            )
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=("hermes",),
+            ).read(conversation_id)
+
+        self.assertEqual(edited.disposition, "edited")
+        self.assertEqual(
+            edited.message.content["parts"][0]["text"],
+            "Use this exact edited request",
+        )
+        self.assertEqual(edited.turn.revision, queued.turn.revision + 1)
+        self.assertEqual(edited.message.revision, queued.message.revision + 1)
+        self.assertEqual(cancelled.disposition, "cancelled")
+        self.assertEqual(cancelled.turn.state, "cancelled")
+        self.assertEqual(cancelled.message.state, "cancelled")
+        self.assertEqual(detail.queued_turns, ())
+
+    def test_reconciliation_projects_one_exact_assistant_message(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Return one durable answer",
+                idempotency_key="conversation-assistant-projection-key",
+            )
+            runtime.observed_status = RunStatus.COMPLETED
+            runtime.events = (
+                AgentEvent(
+                    id="runtime_assistant_answer",
+                    run_id=submitted.run.id,
+                    sequence=1,
+                    type=AgentEventType.MESSAGE,
+                    occurred_at="2026-08-18T13:00:00+00:00",
+                    summary="Assistant answer completed",
+                    content="The durable answer is ready.",
+                ),
+            )
+
+            first = service.reconcile_run(
+                run_id=submitted.run.id,
+                owner="assistant_projection_owner",
+            )
+            second = service.reconcile_run(
+                run_id=submitted.run.id,
+                owner="assistant_projection_replay_owner",
+            )
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=("hermes",),
+            ).read(conversation_id)
+            connection = connect(root)
+            try:
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(first.reconciled, (submitted.run.id,))
+        self.assertEqual(second.leased, 0)
+        self.assertEqual([message.role for message in detail.messages], ["user", "assistant"])
+        self.assertEqual(
+            detail.messages[-1].content["parts"][0]["text"],
+            "The durable answer is ready.",
+        )
+        self.assertEqual(detail.messages[-1].run_id, submitted.run.id)
+
+    def test_verified_success_claims_and_submits_only_the_oldest_pending_turn(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Run the first request",
+                idempotency_key="conversation-fifo-success-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Run this follow-up next",
+                idempotency_key="conversation-fifo-success-key-2",
+            )
+            runtime.observed_status = RunStatus.COMPLETED
+
+            report = service.reconcile_run(
+                run_id=first.run.id,
+                owner="conversation_fifo_success_owner",
+            )
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=("hermes",),
+            ).read(conversation_id)
+            connection = connect(root)
+            try:
+                queue_row = connection.execute(
+                    "SELECT state, attempt_count, latest_run_id "
+                    "FROM mentat_conversation_turns WHERE id = ?",
+                    (queued.turn.id,),
+                ).fetchone()
+                run_count = connection.execute(
+                    "SELECT COUNT(*) FROM mentat_runs WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()[0]
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(report.reconciled, (first.run.id,))
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(runtime.calls[-1][0].objective, "Run this follow-up next")
+        self.assertEqual(tuple(queue_row)[:2], ("consumed", 1))
+        self.assertTrue(str(queue_row["latest_run_id"]).startswith("run_auto_"))
+        self.assertEqual(run_count, 2)
+        self.assertEqual(detail.queued_turns, ())
+
+    def test_competing_reconcilers_claim_one_pending_head_once(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Complete under a reconciliation race",
+                idempotency_key="conversation-reconcile-race-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Claim this head once under the race",
+                idempotency_key="conversation-reconcile-race-key-2",
+            )
+            runtime.observed_status = RunStatus.COMPLETED
+            runtime.status_entered = threading.Event()
+            runtime.status_release = threading.Event()
+            barrier = threading.Barrier(3)
+            reports = []
+            failures = []
+
+            def reconcile(owner):
+                try:
+                    barrier.wait(timeout=5)
+                    reports.append(service.reconcile_run(run_id=first.run.id, owner=owner))
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    failures.append(exc)
+
+            workers = [
+                threading.Thread(target=reconcile, args=(f"queue_race_owner_{index}",))
+                for index in range(2)
+            ]
+            for worker in workers:
+                worker.start()
+            barrier.wait(timeout=5)
+            status_read_started = runtime.status_entered.wait(timeout=10)
+            runtime.status_release.set()
+            for worker in workers:
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+            if failures:
+                raise failures[0]
+            connection = connect(root)
+            try:
+                row = connection.execute(
+                    "SELECT state, attempt_count, latest_run_id "
+                    "FROM mentat_conversation_turns WHERE id = ?",
+                    (queued.turn.id,),
+                ).fetchone()
+                run_count = connection.execute(
+                    "SELECT COUNT(*) FROM mentat_runs WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()[0]
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(failures, [])
+        self.assertTrue(
+            status_read_started,
+            (
+                f"status read did not start; reports={reports!r}, "
+                f"failures={failures!r}, status_queries={runtime.status_queries!r}"
+            ),
+        )
+        self.assertEqual(sum(report.leased for report in reports), 1)
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(tuple(row)[:2], ("consumed", 1))
+        self.assertTrue(str(row["latest_run_id"]).startswith("run_auto_"))
+        self.assertEqual(run_count, 2)
+
+    def test_non_successful_terminal_reconciliation_blocks_the_queue_head(self):
+        for status, reason in (
+            (RunStatus.FAILED, "failed"),
+            (RunStatus.STOPPED, "stopped"),
+            (RunStatus.INTERRUPTED, "interrupted"),
+        ):
+            with self.subTest(status=status.value), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                runtime = FakeRuntime(root)
+                service, conversation_id = self.prepare_conversation(root, runtime)
+                first = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Run the active request",
+                    idempotency_key=f"conversation-block-{reason}-key-1",
+                )
+                queued = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Pause this queued request",
+                    idempotency_key=f"conversation-block-{reason}-key-2",
+                )
+                runtime.observed_status = status
+
+                report = service.reconcile_run(
+                    run_id=first.run.id,
+                    owner=f"conversation_block_{reason}_owner",
+                )
+                detail = ConversationRepository(
+                    root,
+                    supported_runtime_types=("hermes",),
+                ).read(conversation_id)
+
+            self.assertEqual(report.reconciled, (first.run.id,))
+            self.assertEqual(len(runtime.calls), 1)
+            self.assertEqual(len(detail.queued_turns), 1)
+            self.assertEqual(detail.queued_turns[0].id, queued.turn.id)
+            self.assertEqual(detail.queued_turns[0].state, "blocked")
+            self.assertEqual(detail.queued_turns[0].blocked_reason, reason)
+
+    def test_stopped_run_pauses_only_its_exact_conversation_queue(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            self.qualify_codex_capacity(runtime)
+            runtime.capacity_limit = 2
+            service, first_id = self.prepare_conversation(root, runtime)
+            second_id = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).create(agent_id="agent-service").conversation.id
+            counters = {"msg": 20, "turn": 20, "run": 20}
+
+            def identifier(prefix):
+                counters[prefix] += 1
+                return f"{prefix}_stop_isolation_{counters[prefix]}"
+
+            service.id_factory = identifier
+            first = service.submit_conversation_turn(
+                conversation_id=first_id,
+                text="Run work in the first Conversation",
+                idempotency_key="conversation-stop-isolation-key-1",
+            )
+            first_queued = service.submit_conversation_turn(
+                conversation_id=first_id,
+                text="Pause only this first queue",
+                idempotency_key="conversation-stop-isolation-key-2",
+            )
+            second = service.submit_conversation_turn(
+                conversation_id=second_id,
+                text="Run work in the second Conversation",
+                idempotency_key="conversation-stop-isolation-key-3",
+            )
+            second_queued = service.submit_conversation_turn(
+                conversation_id=second_id,
+                text="Keep this second queue pending",
+                idempotency_key="conversation-stop-isolation-key-4",
+            )
+            runtime.observed_status = RunStatus.STOPPED
+
+            report = service.reconcile_run(
+                run_id=first.run.id,
+                owner="conversation_stop_isolation_owner",
+            )
+            first_detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(first_id)
+            second_detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(second_id)
+
+        self.assertEqual(report.reconciled, (first.run.id,))
+        self.assertEqual(first_detail.queued_turns[0].id, first_queued.turn.id)
+        self.assertEqual(first_detail.queued_turns[0].state, "blocked")
+        self.assertEqual(first_detail.queued_turns[0].blocked_reason, "stopped")
+        self.assertEqual(second_detail.current_run["id"], second.run.id)
+        self.assertEqual(second_detail.queued_turns[0].id, second_queued.turn.id)
+        self.assertEqual(second_detail.queued_turns[0].state, "pending")
+        self.assertIsNone(second_detail.queued_turns[0].blocked_reason)
+
+    def test_explicit_continue_revalidates_and_dispatches_one_blocked_head(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Fail this active request",
+                idempotency_key="conversation-explicit-continue-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Continue this request explicitly",
+                idempotency_key="conversation-explicit-continue-key-2",
+            )
+            runtime.observed_status = RunStatus.FAILED
+            service.reconcile_run(
+                run_id=first.run.id,
+                owner="conversation_explicit_continue_block_owner",
+            )
+            blocked = ConversationRepository(
+                root,
+                supported_runtime_types=("hermes",),
+            ).read(conversation_id).queued_turns[0]
+            service.id_factory = lambda prefix: f"{prefix}_explicit_continue_1"
+
+            continued = service.continue_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=blocked.id,
+                expected_revision=blocked.revision,
+                expected_message_revision=blocked.message_revision,
+            )
+            with self.assertRaisesRegex(
+                OrchestrationServiceError,
+                "conversation.turn_changed",
+            ):
+                service.continue_conversation_turn(
+                    conversation_id=conversation_id,
+                    turn_id=blocked.id,
+                    expected_revision=blocked.revision,
+                    expected_message_revision=blocked.message_revision,
+                )
+
+        self.assertEqual(queued.turn.id, blocked.id)
+        self.assertEqual(continued.disposition, "accepted")
+        self.assertEqual(continued.turn.state, "consumed")
+        self.assertEqual(continued.run.id, "run_explicit_continue_1")
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(
+            runtime.calls[-1][0].objective,
+            "Continue this request explicitly",
+        )
+
+    def test_cancelling_a_blocked_head_leaves_its_successor_continuable(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            counters = {"msg": 30, "turn": 30, "run": 30}
+
+            def identifier(prefix):
+                counters[prefix] += 1
+                return f"{prefix}_cancelled_head_{counters[prefix]}"
+
+            service.id_factory = identifier
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Fail the active Turn",
+                idempotency_key="cancelled-blocked-head-key-1",
+            )
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Cancel this blocked head",
+                idempotency_key="cancelled-blocked-head-key-2",
+            )
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this successor continuable",
+                idempotency_key="cancelled-blocked-head-key-3",
+            )
+            runtime.observed_status = RunStatus.FAILED
+            service.reconcile_run(
+                run_id=first.run.id,
+                owner="cancelled_blocked_head_owner",
+            )
+            repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            before = repository.read(conversation_id).queued_turns
+            service.cancel_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=before[0].id,
+                expected_revision=before[0].revision,
+                expected_message_revision=before[0].message_revision,
+            )
+            successor = repository.read(conversation_id).queued_turns[0]
+            continued = service.continue_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=successor.id,
+                expected_revision=successor.revision,
+                expected_message_revision=successor.message_revision,
+            )
+
+        self.assertEqual(before[0].state, "blocked")
+        self.assertEqual(before[1].state, "pending")
+        self.assertEqual(successor.id, before[1].id)
+        self.assertEqual(successor.state, "blocked")
+        self.assertEqual(successor.blocked_reason, "failed")
+        self.assertGreater(successor.revision, before[1].revision)
+        self.assertEqual(continued.disposition, "accepted")
+        self.assertEqual(len(runtime.calls), 2)
+
+    def test_cancelling_a_non_head_blocked_turn_preserves_the_blocked_head(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root, raises=True)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            counters = {"msg": 40, "turn": 40, "run": 40}
+
+            def identifier(prefix):
+                counters[prefix] += 1
+                return f"{prefix}_cancelled_blocked_tail_{counters[prefix]}"
+
+            service.id_factory = identifier
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Leave runtime acceptance unknown",
+                idempotency_key="cancelled-blocked-tail-key-1",
+            )
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this blocked head",
+                idempotency_key="cancelled-blocked-tail-key-2",
+            )
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Cancel this blocked tail",
+                idempotency_key="cancelled-blocked-tail-key-3",
+            )
+            repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            before = repository.read(conversation_id).queued_turns
+            cancelled = service.cancel_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=before[1].id,
+                expected_revision=before[1].revision,
+                expected_message_revision=before[1].message_revision,
+            )
+            after = repository.read(conversation_id).queued_turns
+            connection = connect(root)
+            try:
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(first.disposition, "unknown")
+        self.assertEqual([turn.state for turn in before], ["blocked", "blocked"])
+        self.assertEqual(cancelled.disposition, "cancelled")
+        self.assertEqual(cancelled.turn.id, before[1].id)
+        self.assertEqual(len(after), 1)
+        self.assertEqual(after[0].id, before[0].id)
+        self.assertEqual(after[0].state, "blocked")
+        self.assertEqual(after[0].blocked_reason, "unknown")
+        self.assertEqual(after[0].revision, before[0].revision)
+
+    def test_cancelling_a_blocked_head_preserves_an_already_blocked_successor(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root, raises=True)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            counters = {"msg": 50, "turn": 50, "run": 50}
+
+            def identifier(prefix):
+                counters[prefix] += 1
+                return f"{prefix}_cancelled_blocked_head_{counters[prefix]}"
+
+            service.id_factory = identifier
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Leave this acceptance unknown too",
+                idempotency_key="cancelled-already-blocked-head-key-1",
+            )
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Cancel this blocked head",
+                idempotency_key="cancelled-already-blocked-head-key-2",
+            )
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Preserve this blocked successor exactly",
+                idempotency_key="cancelled-already-blocked-head-key-3",
+            )
+            repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            before = repository.read(conversation_id).queued_turns
+            cancelled = service.cancel_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=before[0].id,
+                expected_revision=before[0].revision,
+                expected_message_revision=before[0].message_revision,
+            )
+            after = repository.read(conversation_id).queued_turns
+            connection = connect(root)
+            try:
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(first.disposition, "unknown")
+        self.assertEqual([turn.state for turn in before], ["blocked", "blocked"])
+        self.assertEqual(cancelled.disposition, "cancelled")
+        self.assertEqual(cancelled.turn.id, before[0].id)
+        self.assertEqual(len(after), 1)
+        self.assertEqual(after[0].id, before[1].id)
+        self.assertEqual(after[0].state, "blocked")
+        self.assertEqual(after[0].blocked_reason, before[1].blocked_reason)
+        self.assertEqual(after[0].revision, before[1].revision)
+
+    def test_codex_continue_requires_the_exact_prior_thread(self):
+        for observed_status, runtime_reference, expected_reason, reconcile in (
+            (RunStatus.FAILED, "runtime-service-ref", "failed", True),
+            (RunStatus.COMPLETED, None, "unknown", False),
+        ):
+            with self.subTest(
+                status=observed_status.value,
+                runtime_reference=runtime_reference,
+            ), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                runtime = FakeRuntime(root)
+                self.qualify_codex_capacity(runtime)
+                runtime.return_runtime_run_ref = runtime_reference
+                service, conversation_id = self.prepare_conversation(root, runtime)
+                first = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Run the first Codex Turn",
+                    idempotency_key=(
+                        f"codex-continuity-{observed_status.value}-key-1"
+                    ),
+                )
+                service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Do not start a fresh Codex thread",
+                    idempotency_key=(
+                        f"codex-continuity-{observed_status.value}-key-2"
+                    ),
+                )
+                if reconcile:
+                    runtime.observed_status = observed_status
+                    report = service.reconcile_run(
+                        run_id=first.run.id,
+                        owner=f"codex_continuity_{observed_status.value}_owner",
+                    )
+                    self.assertEqual(report.unavailable, ())
+                    self.assertEqual(report.reconciled, (first.run.id,))
+                else:
+                    self.assertEqual(first.disposition, "unknown")
+                repository = ConversationRepository(
+                    root,
+                    supported_runtime_types=(runtime.runtime_type,),
+                )
+                blocked = repository.read(conversation_id).queued_turns[0]
+                self.assertEqual(blocked.state, "blocked")
+                self.assertEqual(blocked.blocked_reason, expected_reason)
+                service.id_factory = lambda prefix: f"{prefix}_continuity_guard"
+
+                continued = service.continue_conversation_turn(
+                    conversation_id=conversation_id,
+                    turn_id=blocked.id,
+                    expected_revision=blocked.revision,
+                    expected_message_revision=blocked.message_revision,
+                )
+                after = repository.read(conversation_id).queued_turns[0]
+
+                self.assertEqual(continued.disposition, "blocked")
+                self.assertIsNone(continued.run)
+                self.assertEqual(after.id, blocked.id)
+                self.assertEqual(after.revision, blocked.revision)
+                self.assertEqual(len(runtime.calls), 1)
+
+    def test_conversation_steer_targets_exact_run_without_message_or_turn_writes(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this Run steerable",
+                idempotency_key="conversation-steer-key-1",
+            )
+            runtime.observed_status = RunStatus.RUNNING
+            service.reconcile_run(
+                run_id=submitted.run.id,
+                owner="conversation_steer_running_owner",
+            )
+            connection = connect(root)
+            try:
+                before = connection.execute(
+                    "SELECT (SELECT COUNT(*) FROM mentat_conversation_messages), "
+                    "(SELECT COUNT(*) FROM mentat_conversation_turns)"
+                ).fetchone()
+            finally:
+                connection.close()
+
+            with (
+                patch.object(server, "DATA_DIR", root),
+                patch.object(
+                    server,
+                    "AGENT_RUNTIME_REGISTRY",
+                    service.runtime_registry,
+                ),
+            ):
+                payload, status = server.steer_mentat_conversation(
+                    conversation_id,
+                    {
+                        "run_id": submitted.run.id,
+                        "text": "Use the revised priority now",
+                    },
+                )
+                with self.assertRaisesRegex(
+                    server.OrchestrationRunActionError,
+                    "conversation.steer_stale",
+                ):
+                    server.steer_mentat_conversation(
+                        "conv_another_conversation",
+                        {
+                            "run_id": submitted.run.id,
+                            "text": "Cross the Conversation boundary",
+                        },
+                    )
+            connection = connect(root)
+            try:
+                after = connection.execute(
+                    "SELECT (SELECT COUNT(*) FROM mentat_conversation_messages), "
+                    "(SELECT COUNT(*) FROM mentat_conversation_turns)"
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["disposition"], "accepted")
+        self.assertEqual(len(runtime.steer_calls), 1)
+        self.assertEqual(runtime.steer_calls[0][1], "Use the revised priority now")
+        self.assertEqual(tuple(before), tuple(after))
+
+    def test_success_blocks_the_head_when_current_declared_capacity_is_full(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            self.qualify_codex_capacity(runtime)
+            runtime.capacity_limit = 2
+            service, first_conversation_id = self.prepare_conversation(root, runtime)
+            second_conversation_id = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).create(agent_id="agent-service").conversation.id
+            counters = {"msg": 0, "turn": 0, "run": 0}
+
+            def next_identifier(prefix):
+                counters[prefix] += 1
+                return f"{prefix}_continuation_capacity_{counters[prefix]}"
+
+            service.id_factory = next_identifier
+            first = service.submit_conversation_turn(
+                conversation_id=first_conversation_id,
+                text="Complete this first Conversation",
+                idempotency_key="conversation-continuation-capacity-key-1",
+            )
+            service.submit_conversation_turn(
+                conversation_id=second_conversation_id,
+                text="Keep the second capacity slot active",
+                idempotency_key="conversation-continuation-capacity-key-2",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=first_conversation_id,
+                text="Wait after the limit changes",
+                idempotency_key="conversation-continuation-capacity-key-3",
+            )
+            runtime.capacity_limit = 1
+            runtime.observed_status = RunStatus.COMPLETED
+
+            report = service.reconcile_run(
+                run_id=first.run.id,
+                owner="conversation_capacity_change_owner",
+            )
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(first_conversation_id)
+
+        self.assertEqual(report.reconciled, (first.run.id,))
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(len(detail.queued_turns), 1)
+        self.assertEqual(detail.queued_turns[0].id, queued.turn.id)
+        self.assertEqual(detail.queued_turns[0].blocked_reason, "capacity")
 
     def test_conversation_runtime_rejection_is_durable_and_not_presented_as_accepted(self):
         with TemporaryDirectory() as tmpdir:
@@ -622,7 +1709,7 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(duplicate.disposition, "rejected")
         self.assertEqual(len(runtime.calls), 1)
 
-    def test_conservative_runtime_capacity_rejects_another_conversation_before_writes(self):
+    def test_conservative_runtime_capacity_accepts_blocked_turn_without_a_run(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             runtime = FakeRuntime(root, raises=True)
@@ -636,15 +1723,11 @@ class OrchestrationServiceTests(unittest.TestCase):
                 text="Consume conservative capacity",
                 idempotency_key="conversation-capacity-key-1",
             )
-            with self.assertRaisesRegex(
-                OrchestrationServiceError,
-                "conversation.capacity_unavailable",
-            ):
-                service.submit_conversation_turn(
-                    conversation_id=second_conversation_id,
-                    text="Wait for capacity",
-                    idempotency_key="conversation-capacity-key-2",
-                )
+            blocked = service.submit_conversation_turn(
+                conversation_id=second_conversation_id,
+                text="Wait for capacity",
+                idempotency_key="conversation-capacity-key-2",
+            )
             connection = connect(root)
             try:
                 counts = connection.execute(
@@ -656,8 +1739,80 @@ class OrchestrationServiceTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(tuple(counts), (0, 0, 0))
+        self.assertEqual(blocked.disposition, "blocked")
+        self.assertEqual(blocked.turn.blocked_reason, "capacity")
+        self.assertIsNone(blocked.run)
+        self.assertEqual(tuple(counts), (1, 1, 0))
         self.assertEqual(len(runtime.calls), 1)
+
+    def test_unqualified_adapter_capacity_above_two_remains_one(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.capacity_limit = 3
+            service, first_id = self.prepare_conversation(root, runtime)
+            repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            second_id = repository.create(agent_id="agent-service").conversation.id
+            first = service.submit_conversation_turn(
+                conversation_id=first_id,
+                text="Consume the only unqualified slot",
+                idempotency_key="unqualified-capacity-key-1",
+            )
+            second = service.submit_conversation_turn(
+                conversation_id=second_id,
+                text="Do not trust an unqualified higher claim",
+                idempotency_key="unqualified-capacity-key-2",
+            )
+
+        self.assertEqual(first.disposition, "accepted")
+        self.assertEqual(second.disposition, "blocked")
+        self.assertEqual(second.turn.blocked_reason, "capacity")
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_qualified_codex_limit_two_admits_two_and_blocks_the_third(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            self.qualify_codex_capacity(runtime)
+            runtime.capacity_limit = 2
+            service, first_id = self.prepare_conversation(root, runtime)
+            repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            second_id = repository.create(agent_id="agent-service").conversation.id
+            third_id = repository.create(agent_id="agent-service").conversation.id
+            counter = {"msg": 10, "turn": 10, "run": 10}
+
+            def identifier(prefix):
+                counter[prefix] += 1
+                return f"{prefix}_capacity_{counter[prefix]}"
+
+            service.id_factory = identifier
+            first = service.submit_conversation_turn(
+                conversation_id=first_id,
+                text="Run in the first Conversation",
+                idempotency_key="adapter-capacity-two-key-1",
+            )
+            second = service.submit_conversation_turn(
+                conversation_id=second_id,
+                text="Run in the second Conversation",
+                idempotency_key="adapter-capacity-two-key-2",
+            )
+            third = service.submit_conversation_turn(
+                conversation_id=third_id,
+                text="Wait in the third Conversation",
+                idempotency_key="adapter-capacity-two-key-3",
+            )
+
+        self.assertEqual(first.disposition, "accepted")
+        self.assertEqual(second.disposition, "accepted")
+        self.assertEqual(third.disposition, "blocked")
+        self.assertEqual(third.turn.blocked_reason, "capacity")
+        self.assertEqual(len(runtime.calls), 2)
 
     def test_current_conversation_run_prefers_active_status_on_timestamp_tie(self):
         with TemporaryDirectory() as tmpdir:
@@ -723,17 +1878,15 @@ class OrchestrationServiceTests(unittest.TestCase):
                     "run": "run_cross_capacity",
                 }[prefix],
             )
-            with self.assertRaisesRegex(
-                OrchestrationServiceError,
-                "conversation.capacity_unavailable",
-            ):
-                conversation_service.submit_conversation_turn(
-                    conversation_id=conversation_id,
-                    text="This Turn must wait for the Task Run",
-                    idempotency_key="cross-capacity-conversation-second",
-                )
+            blocked = conversation_service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="This Turn must wait for the Task Run",
+                idempotency_key="cross-capacity-conversation-second",
+            )
 
         self.assertEqual(task_result.run.status, "unknown")
+        self.assertEqual(blocked.disposition, "blocked")
+        self.assertEqual(blocked.turn.blocked_reason, "capacity")
         self.assertEqual(len(runtime.calls), 1)
 
     def test_active_conversation_blocks_task_dispatch_on_the_same_runtime_binding(self):
@@ -902,15 +2055,11 @@ class OrchestrationServiceTests(unittest.TestCase):
                 text="Concurrent Turn",
                 idempotency_key="conversation-concurrent-key-1",
             )
-            with self.assertRaisesRegex(
-                OrchestrationServiceError,
-                "conversation.active_run",
-            ):
-                service.submit_conversation_turn(
-                    conversation_id=conversation_id,
-                    text="Competing Turn",
-                    idempotency_key="conversation-concurrent-key-2",
-                )
+            competing = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Competing Turn",
+                idempotency_key="conversation-concurrent-key-2",
+            )
             runtime.submit_release.set()
             worker.join(timeout=5)
 
@@ -919,6 +2068,8 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(len(first_result), 1)
         self.assertTrue(duplicate.duplicate)
         self.assertEqual(duplicate.disposition, "submitting")
+        self.assertEqual(competing.disposition, "pending")
+        self.assertIsNone(competing.run)
         self.assertEqual(len(runtime.calls), 1)
 
     def test_conversation_restart_recovery_distinguishes_unattempted_and_uncertain(self):
@@ -1574,12 +2725,12 @@ class OrchestrationServiceTests(unittest.TestCase):
             runtime = FakeRuntime(root)
             service = self.prepare(root, runtime)
             real_connect = orchestration_service.connect
-            calls = 0
+            outcome_failure_injected = False
 
             def fail_outcome_connection(data_dir):
-                nonlocal calls
-                calls += 1
-                if calls == 4:
+                nonlocal outcome_failure_injected
+                if runtime.calls and not outcome_failure_injected:
+                    outcome_failure_injected = True
                     raise MentatDatabaseError("outcome database unavailable")
                 return real_connect(data_dir)
 

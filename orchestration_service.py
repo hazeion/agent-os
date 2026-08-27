@@ -25,7 +25,9 @@ from agent_runtime import (
     MentatAgent,
     MentatTask,
     RuntimeCapability,
+    RuntimeCapacity,
     RuntimeContext,
+    RunStatus,
     SubmissionDisposition,
     SubmissionOutcome,
     TaskStatus,
@@ -41,12 +43,15 @@ from conversation_repository import (
 )
 from run_repository import (
     ConversationDispatchReservation,
+    ConversationRunAdmission,
     ConversationSubmissionResult,
     DispatchReservation,
     RunRecord,
     RunRepository,
     RunRepositoryConflict,
     RunRepositoryError,
+    declared_runtime_capacity_evidence,
+    default_runtime_capacity_evidence,
     runtime_binding_digest,
 )
 from task_repository import TaskRepository, TaskRepositoryError
@@ -75,6 +80,14 @@ class ConversationTurnDispatchResult:
     turn: ConversationTurnRecord
     run: RunRecord | ConversationSubmissionResult | None
     duplicate: bool
+    disposition: str
+
+
+@dataclass(frozen=True)
+class ConversationQueueMutationResult:
+    conversation: ConversationRecord
+    message: ConversationMessageRecord
+    turn: ConversationTurnRecord
     disposition: str
 
 
@@ -195,12 +208,77 @@ class OrchestrationService:
         )
 
     @staticmethod
+    def _capacity_evidence(
+        runtime: AgentRuntime,
+        binding: RuntimeBinding,
+        binding_digest: str,
+    ) -> tuple[str, int]:
+        """Reduce an optional adapter declaration to private durable evidence."""
+
+        declaration_method = getattr(runtime, "capacity_for_binding", None)
+        if callable(declaration_method):
+            try:
+                declaration = declaration_method(binding.runtime_agent_ref)
+                if not isinstance(declaration, RuntimeCapacity):
+                    raise ValueError("runtime capacity declaration is invalid")
+                if (
+                    binding.runtime_type != "codex"
+                    or binding.runtime_agent_ref != "default"
+                    or declaration.limit > 2
+                    or re.fullmatch(
+                        r"codex-app-server:[0-9a-f]{64}", declaration.scope
+                    )
+                    is None
+                ):
+                    raise ValueError("runtime capacity declaration is unqualified")
+                return declared_runtime_capacity_evidence(
+                    runtime_type=binding.runtime_type,
+                    private_scope=declaration.scope,
+                    limit=declaration.limit,
+                )
+            except Exception:
+                # Missing, invalid, or unavailable declarations deliberately
+                # collapse to one private binding-scoped slot.
+                pass
+        return default_runtime_capacity_evidence(
+            runtime_type=binding.runtime_type,
+            binding_digest=binding_digest,
+        )
+
+    def _conversation_admission(
+        self,
+        *,
+        record: CanonicalAgentRecord,
+        binding: RuntimeBinding,
+        runtime: AgentRuntime,
+        binding_digest: str,
+        run_id: str,
+    ) -> ConversationRunAdmission:
+        capacity_scope_digest, capacity_limit = self._capacity_evidence(
+            runtime,
+            binding,
+            binding_digest,
+        )
+        return ConversationRunAdmission(
+            run_id=run_id,
+            agent_id=record.agent.id,
+            agent_name=record.agent.name,
+            agent_revision=record.revision,
+            runtime_type=binding.runtime_type,
+            runtime_config_id=binding.id,
+            runtime_config_revision=binding.revision,
+            runtime_binding_digest=binding_digest,
+            capabilities=tuple(sorted(record.agent.capabilities)),
+            capacity_scope_digest=capacity_scope_digest,
+            capacity_limit=capacity_limit,
+        )
+
+    @staticmethod
     def _require_capabilities(
         task: MentatTask,
         agent: MentatAgent,
-        runtime: AgentRuntime,
+        runtime_capabilities: frozenset[str],
     ) -> None:
-        runtime_capabilities = frozenset(runtime.capabilities)
         if RuntimeCapability.START_TASK.value not in runtime_capabilities:
             raise OrchestrationServiceError("dispatch.runtime_capability_missing")
         if not frozenset(task.required_capabilities).issubset(agent.capabilities):
@@ -221,50 +299,119 @@ class OrchestrationService:
         RuntimeBinding | None,
         AgentRuntime | None,
     ]:
-        with private_state_lock(self.data_dir):
-            connection = self._connect()
-            try:
-                repository = RunRepository(connection)
-                retry = repository.lookup_dispatch_retry(
-                    idempotency_key=idempotency_key,
-                    task_id=task_id,
-                    task_revision=expected_revision,
-                )
-                if retry is not None:
-                    return retry, None, None, None, None
-                snapshot = TaskRepository(connection).get(task_id)
-                if snapshot.revision != expected_revision:
-                    raise OrchestrationServiceError("dispatch.task_changed")
-                task = self._task_contract(snapshot.document, snapshot.revision)
-                agent, binding = self._agent_and_binding(task.assigned_agent_id or "")
+        try:
+            with private_state_lock(self.data_dir):
+                connection = self._connect()
                 try:
-                    runtime = self.runtime_registry.require(binding.runtime_type)
-                except AgentRuntimeError as exc:
-                    raise OrchestrationServiceError(exc.code) from exc
-                self._require_capabilities(task, agent, runtime)
-                digest = self._binding_digest(agent, binding)
-                reservation = repository.reserve_dispatch(
-                    idempotency_key=idempotency_key,
-                    dispatch_id=self.id_factory("dispatch"),
-                    run_id=self.id_factory("run"),
-                    task=snapshot.document,
-                    task_revision=snapshot.revision,
-                    agent_id=agent.id,
-                    runtime_type=binding.runtime_type,
-                    runtime_config_id=binding.id,
-                    binding_digest=digest,
-                    capabilities=agent.capabilities,
-                )
-                return reservation, task, agent, binding, runtime
-            except OrchestrationServiceError:
-                raise
-            except (TaskRepositoryError, AgentRegistryError, RunRepositoryError) as exc:
-                code = self._dispatch_error_code(
-                    getattr(exc, "code", "dispatch.unavailable")
-                )
-                raise OrchestrationServiceError(code) from exc
-            finally:
-                connection.close()
+                    repository = RunRepository(connection)
+                    retry = repository.lookup_dispatch_retry(
+                        idempotency_key=idempotency_key,
+                        task_id=task_id,
+                        task_revision=expected_revision,
+                    )
+                    if retry is not None:
+                        return retry, None, None, None, None
+                    snapshot = TaskRepository(connection).get(task_id)
+                    if snapshot.revision != expected_revision:
+                        raise OrchestrationServiceError("dispatch.task_changed")
+                    task = self._task_contract(snapshot.document, snapshot.revision)
+                    agent, binding = self._agent_and_binding(
+                        task.assigned_agent_id or ""
+                    )
+                    try:
+                        runtime = self.runtime_registry.require(binding.runtime_type)
+                    except AgentRuntimeError as exc:
+                        raise OrchestrationServiceError(exc.code) from exc
+                    digest = self._binding_digest(agent, binding)
+                finally:
+                    connection.close()
+
+            # Adapter-owned capability and capacity discovery are external to
+            # SQLite and the process-wide private-state lock. Their evidence
+            # is accepted only after the exact Task and binding snapshots are
+            # revalidated below.
+            runtime_capabilities = frozenset(runtime.capabilities)
+            self._require_capabilities(task, agent, runtime_capabilities)
+            capacity_scope_digest, capacity_limit = self._capacity_evidence(
+                runtime, binding, digest
+            )
+
+            with private_state_lock(self.data_dir):
+                connection = self._connect()
+                try:
+                    repository = RunRepository(connection)
+                    retry = repository.lookup_dispatch_retry(
+                        idempotency_key=idempotency_key,
+                        task_id=task_id,
+                        task_revision=expected_revision,
+                    )
+                    if retry is not None:
+                        return retry, None, None, None, None
+                    current_snapshot = TaskRepository(connection).get(task_id)
+                    if (
+                        current_snapshot.revision != snapshot.revision
+                        or current_snapshot.document != snapshot.document
+                    ):
+                        raise OrchestrationServiceError("dispatch.task_changed")
+                    current_task = self._task_contract(
+                        current_snapshot.document,
+                        current_snapshot.revision,
+                    )
+                    current_agent, current_binding = self._agent_and_binding(
+                        current_task.assigned_agent_id or ""
+                    )
+                    try:
+                        current_runtime = self.runtime_registry.require(
+                            current_binding.runtime_type
+                        )
+                    except AgentRuntimeError as exc:
+                        raise OrchestrationServiceError(exc.code) from exc
+                    current_digest = self._binding_digest(
+                        current_agent, current_binding
+                    )
+                    if (
+                        current_task != task
+                        or current_agent != agent
+                        or current_binding != binding
+                        or current_runtime is not runtime
+                        or current_digest != digest
+                    ):
+                        raise OrchestrationServiceError("dispatch.binding_changed")
+                    self._require_capabilities(
+                        current_task,
+                        current_agent,
+                        runtime_capabilities,
+                    )
+                    reservation = repository.reserve_dispatch(
+                        idempotency_key=idempotency_key,
+                        dispatch_id=self.id_factory("dispatch"),
+                        run_id=self.id_factory("run"),
+                        task=current_snapshot.document,
+                        task_revision=current_snapshot.revision,
+                        agent_id=current_agent.id,
+                        runtime_type=current_binding.runtime_type,
+                        runtime_config_id=current_binding.id,
+                        binding_digest=current_digest,
+                        capabilities=current_agent.capabilities,
+                        capacity_scope_digest=capacity_scope_digest,
+                        capacity_limit=capacity_limit,
+                    )
+                    return (
+                        reservation,
+                        current_task,
+                        current_agent,
+                        current_binding,
+                        current_runtime,
+                    )
+                finally:
+                    connection.close()
+        except OrchestrationServiceError:
+            raise
+        except (TaskRepositoryError, AgentRegistryError, RunRepositoryError) as exc:
+            code = self._dispatch_error_code(
+                getattr(exc, "code", "dispatch.unavailable")
+            )
+            raise OrchestrationServiceError(code) from exc
 
     def _claim_after_binding_revalidation(
         self,
@@ -591,7 +738,10 @@ class OrchestrationService:
             SubmissionDisposition.REJECTED,
             failure_code=failure_code,
         )
-        _run, recorded = self._record_conversation_outcome(reservation, outcome)
+        _run, recorded, _continuation = self._record_conversation_outcome(
+            reservation,
+            outcome,
+        )
         return self._conversation_result(
             reservation,
             duplicate=False,
@@ -659,7 +809,14 @@ class OrchestrationService:
         self,
         reservation: ConversationDispatchReservation,
         outcome: SubmissionOutcome,
-    ) -> tuple[RunRecord, SubmissionOutcome]:
+        *,
+        continuation: ConversationRunAdmission | None = None,
+        require_continuation_for_completed: bool = False,
+    ) -> tuple[
+        RunRecord,
+        SubmissionOutcome,
+        ConversationDispatchReservation | None,
+    ]:
         with private_state_lock(self.data_dir):
             connection = self._connect()
             try:
@@ -668,8 +825,25 @@ class OrchestrationService:
                     recorded = repository.record_conversation_submission_outcome(
                         turn_id=reservation.turn_id,
                         outcome=outcome,
+                        continuation=continuation,
+                        require_continuation_for_completed=(
+                            require_continuation_for_completed
+                        ),
                     )
-                    return recorded, outcome
+                    continued = None
+                    if continuation is not None:
+                        try:
+                            next_run = repository.get_run(continuation.run_id)
+                        except RunRepositoryConflict as exc:
+                            if exc.code != "run.not_found":
+                                raise
+                        else:
+                            if next_run.turn_id is None:
+                                raise RunRepositoryError("run_repository.corrupt")
+                            continued = repository.conversation_turn_reservation(
+                                next_run.turn_id
+                            )
+                    return recorded, outcome, continued
                 except Exception as first_error:
                     if outcome.disposition != SubmissionDisposition.ACCEPTED:
                         raise OrchestrationServiceError(
@@ -683,12 +857,15 @@ class OrchestrationService:
                         recorded = repository.record_conversation_submission_outcome(
                             turn_id=reservation.turn_id,
                             outcome=fallback,
+                            require_continuation_for_completed=(
+                                require_continuation_for_completed
+                            ),
                         )
                     except Exception as exc:
                         raise OrchestrationServiceError(
                             "conversation.outcome_persistence_failed"
                         ) from exc
-                    return recorded, fallback
+                    return recorded, fallback, None
             finally:
                 connection.close()
 
@@ -719,6 +896,9 @@ class OrchestrationService:
         if RuntimeCapability.START_TASK.value not in record.agent.capabilities:
             raise OrchestrationServiceError("conversation.agent_capability_missing")
         binding_digest = self._binding_digest(record.agent, binding)
+        capacity_scope_digest, capacity_limit = self._capacity_evidence(
+            runtime, binding, binding_digest
+        )
 
         guard_factory = getattr(runtime, "submission_guard", None)
         guard = guard_factory() if callable(guard_factory) else nullcontext()
@@ -730,48 +910,25 @@ class OrchestrationService:
                 record=record,
                 binding=binding,
                 binding_digest=binding_digest,
+                capacity_scope_digest=capacity_scope_digest,
+                capacity_limit=capacity_limit,
                 runtime=runtime,
             )
 
-    def _submit_new_conversation_turn(
+    def _execute_reserved_conversation_turn(
         self,
         *,
-        conversation_id: str,
+        reservation: ConversationDispatchReservation,
         text: str,
-        idempotency_key: str,
         record: CanonicalAgentRecord,
         binding: RuntimeBinding,
-        binding_digest: str,
         runtime: AgentRuntime,
+        continuation_runtime_run_ref: str | None = None,
     ) -> ConversationTurnDispatchResult:
-        """Reserve, submit once, and persist while holding an adapter guard."""
+        """Claim and invoke one already-reserved Turn exactly once."""
 
-        with private_state_lock(self.data_dir):
-            connection = self._connect()
-            try:
-                reservation = RunRepository(connection).reserve_conversation_turn(
-                    idempotency_key=idempotency_key,
-                    conversation_id=conversation_id,
-                    message_id=self.id_factory("msg"),
-                    turn_id=self.id_factory("turn"),
-                    run_id=self.id_factory("run"),
-                    text=text,
-                    agent_id=record.agent.id,
-                    agent_name=record.agent.name,
-                    agent_revision=record.revision,
-                    runtime_type=binding.runtime_type,
-                    runtime_config_id=binding.id,
-                    runtime_config_revision=binding.revision,
-                    binding_digest=binding_digest,
-                    capabilities=record.agent.capabilities,
-                )
-            except RunRepositoryError as exc:
-                raise OrchestrationServiceError(exc.code) from exc
-            finally:
-                connection.close()
-        if reservation.duplicate:
-            return self._conversation_result(reservation, duplicate=True)
-
+        if reservation.run_id is None:
+            raise OrchestrationServiceError("conversation.run_required")
         try:
             current_binding = self._claim_conversation_after_binding_revalidation(
                 reservation,
@@ -788,8 +945,8 @@ class OrchestrationService:
             )
 
         # The claim is durable before any adapter-owned readiness or binding
-        # operation. A failure from this point forward is therefore a canonical
-        # rejected submission, never an admission rollback.
+        # operation. A failure from this point forward is canonical and is
+        # never converted into an admission rollback or automatic retry.
         try:
             self._conversation_runtime_ready(runtime)
             validator = getattr(runtime, "validate_agent_binding", None)
@@ -817,7 +974,7 @@ class OrchestrationService:
                 status=TaskStatus.QUEUED,
                 assigned_agent_id=record.agent.id,
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             outcome = SubmissionOutcome(
                 SubmissionDisposition.REJECTED,
                 failure_code="runtime.task_invalid",
@@ -829,9 +986,10 @@ class OrchestrationService:
                 task_id=reservation.turn_id,
                 mentat_run_id=reservation.run_id,
                 dispatch_id=reservation.turn_id,
+                continuation_runtime_run_ref=continuation_runtime_run_ref,
             )
             try:
-                # No SQLite or private-state lock crosses this one external call.
+                # No SQLite or private-state lock crosses this external call.
                 outcome = runtime.submit_task(turn_task, context)
                 if not isinstance(outcome, SubmissionOutcome):
                     outcome = SubmissionOutcome(
@@ -843,9 +1001,45 @@ class OrchestrationService:
                     SubmissionDisposition.UNKNOWN,
                     failure_code="runtime.submission_unknown",
                 )
-        recorded_run, recorded_outcome = self._record_conversation_outcome(
+        if (
+            binding.runtime_type == "codex"
+            and outcome.disposition == SubmissionDisposition.ACCEPTED
+            and outcome.runtime_run_ref is None
+        ):
+            outcome = SubmissionOutcome(
+                SubmissionDisposition.UNKNOWN,
+                failure_code="runtime.continuation_reference_missing",
+            )
+        continuation = None
+        continuation_required = False
+        if (
+            outcome.disposition == SubmissionDisposition.ACCEPTED
+            and outcome.run is not None
+            and outcome.run.status == RunStatus.COMPLETED
+            and reservation.run_id is not None
+        ):
+            continuation_required = (
+                binding.runtime_type == "codex"
+                and outcome.runtime_run_ref is None
+            )
+            if not continuation_required:
+                continuation = self._conversation_admission(
+                    record=record,
+                    binding=binding,
+                    runtime=runtime,
+                    binding_digest=self._binding_digest(record.agent, binding),
+                    run_id=(
+                        "run_auto_"
+                        + hashlib.sha256(
+                            (reservation.run_id + ":accepted-continuation").encode("utf-8")
+                        ).hexdigest()[:32]
+                    ),
+                )
+        recorded_run, recorded_outcome, continued = self._record_conversation_outcome(
             reservation,
             outcome,
+            continuation=continuation,
+            require_continuation_for_completed=continuation_required,
         )
         if (
             recorded_outcome.disposition == SubmissionDisposition.ACCEPTED
@@ -901,9 +1095,6 @@ class OrchestrationService:
                         finally:
                             connection.close()
             except Exception:
-                # The accepted outcome is already durable. This bounded
-                # readback closes fast-completion races but never changes
-                # acceptance or causes another submission.
                 try:
                     if leased is not None:
                         with private_state_lock(self.data_dir):
@@ -920,11 +1111,264 @@ class OrchestrationService:
                                 connection.close()
                 except Exception:
                     pass
-        return self._conversation_result(
+        result = self._conversation_result(
             reservation,
             duplicate=False,
             disposition=recorded_outcome.disposition.value,
         )
+        if continued is not None:
+            queued = self._conversation_result(continued, duplicate=False)
+            try:
+                self._execute_reserved_conversation_turn(
+                    reservation=continued,
+                    text=queued.message.content["parts"][0]["text"],
+                    record=record,
+                    binding=binding,
+                    runtime=runtime,
+                    continuation_runtime_run_ref=recorded_run.runtime_run_ref,
+                )
+            except OrchestrationServiceError:
+                # The next Turn is already durably claimed. Never turn the
+                # preceding verified result into a retryable browser failure.
+                pass
+        return result
+
+    def _submit_new_conversation_turn(
+        self,
+        *,
+        conversation_id: str,
+        text: str,
+        idempotency_key: str,
+        record: CanonicalAgentRecord,
+        binding: RuntimeBinding,
+        binding_digest: str,
+        capacity_scope_digest: str,
+        capacity_limit: int,
+        runtime: AgentRuntime,
+    ) -> ConversationTurnDispatchResult:
+        """Reserve, submit once, and persist while holding an adapter guard."""
+
+        with private_state_lock(self.data_dir):
+            connection = self._connect()
+            try:
+                reservation = RunRepository(connection).reserve_conversation_turn(
+                    idempotency_key=idempotency_key,
+                    conversation_id=conversation_id,
+                    message_id=self.id_factory("msg"),
+                    turn_id=self.id_factory("turn"),
+                    run_id=self.id_factory("run"),
+                    text=text,
+                    agent_id=record.agent.id,
+                    agent_name=record.agent.name,
+                    agent_revision=record.revision,
+                    runtime_type=binding.runtime_type,
+                    runtime_config_id=binding.id,
+                    runtime_config_revision=binding.revision,
+                    binding_digest=binding_digest,
+                    capabilities=record.agent.capabilities,
+                    capacity_scope_digest=capacity_scope_digest,
+                    capacity_limit=capacity_limit,
+                )
+            except RunRepositoryError as exc:
+                raise OrchestrationServiceError(exc.code) from exc
+            finally:
+                connection.close()
+        if reservation.duplicate:
+            return self._conversation_result(reservation, duplicate=True)
+        if reservation.run_id is None:
+            return self._conversation_result(
+                reservation,
+                duplicate=False,
+                disposition=reservation.state,
+            )
+
+        return self._execute_reserved_conversation_turn(
+            reservation=reservation,
+            text=text,
+            record=record,
+            binding=binding,
+            runtime=runtime,
+        )
+
+    def _queue_mutation_result(
+        self,
+        *,
+        conversation_id: str,
+        message: ConversationMessageRecord,
+        turn: ConversationTurnRecord,
+        disposition: str,
+    ) -> ConversationQueueMutationResult:
+        try:
+            conversation = ConversationRepository(
+                self.data_dir,
+                supported_runtime_types=self.runtime_registry.runtime_types,
+            ).read(conversation_id).conversation
+        except ConversationRepositoryError as exc:
+            raise OrchestrationServiceError("conversation.unavailable") from exc
+        return ConversationQueueMutationResult(
+            conversation=conversation,
+            message=message,
+            turn=turn,
+            disposition=disposition,
+        )
+
+    def edit_conversation_turn(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        expected_revision: int,
+        expected_message_revision: int,
+        text: str,
+    ) -> ConversationQueueMutationResult:
+        """Edit one exact undispatched queue item under Turn and Message CAS."""
+
+        with private_state_lock(self.data_dir):
+            connection = self._connect()
+            try:
+                turn, message = RunRepository(
+                    connection
+                ).edit_queued_conversation_turn(
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    expected_revision=expected_revision,
+                    expected_message_revision=expected_message_revision,
+                    text=text,
+                )
+            except RunRepositoryError as exc:
+                raise OrchestrationServiceError(exc.code) from exc
+            finally:
+                connection.close()
+        return self._queue_mutation_result(
+            conversation_id=conversation_id,
+            message=message,
+            turn=turn,
+            disposition="edited",
+        )
+
+    def cancel_conversation_turn(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        expected_revision: int,
+        expected_message_revision: int,
+    ) -> ConversationQueueMutationResult:
+        """Cancel one exact undispatched queue item under Turn and Message CAS."""
+
+        with private_state_lock(self.data_dir):
+            connection = self._connect()
+            try:
+                turn, message = RunRepository(
+                    connection
+                ).cancel_queued_conversation_turn(
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    expected_revision=expected_revision,
+                    expected_message_revision=expected_message_revision,
+                )
+            except RunRepositoryError as exc:
+                raise OrchestrationServiceError(exc.code) from exc
+            finally:
+                connection.close()
+        return self._queue_mutation_result(
+            conversation_id=conversation_id,
+            message=message,
+            turn=turn,
+            disposition="cancelled",
+        )
+
+    def continue_conversation_turn(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        expected_revision: int,
+        expected_message_revision: int,
+    ) -> ConversationTurnDispatchResult:
+        """Explicitly revalidate and invoke the exact blocked FIFO head."""
+
+        try:
+            detail = ConversationRepository(
+                self.data_dir,
+                supported_runtime_types=self.runtime_registry.runtime_types,
+            ).read(conversation_id)
+        except ConversationRepositoryError as exc:
+            raise OrchestrationServiceError(exc.code) from exc
+        try:
+            record, binding = self._agent_record_and_binding(
+                detail.conversation.agent_id
+            )
+            runtime = self.runtime_registry.require(binding.runtime_type)
+        except AgentRegistryError as exc:
+            raise OrchestrationServiceError(
+                "conversation.binding_unavailable"
+            ) from exc
+        except AgentRuntimeError as exc:
+            raise OrchestrationServiceError(exc.code) from exc
+        if RuntimeCapability.START_TASK.value not in record.agent.capabilities:
+            raise OrchestrationServiceError(
+                "conversation.agent_capability_missing"
+            )
+        binding_digest = self._binding_digest(record.agent, binding)
+        admission = self._conversation_admission(
+            record=record,
+            binding=binding,
+            runtime=runtime,
+            binding_digest=binding_digest,
+            run_id=self.id_factory("run"),
+        )
+        guard_factory = getattr(runtime, "submission_guard", None)
+        guard = guard_factory() if callable(guard_factory) else nullcontext()
+        with guard:
+            continuation_reference = None
+            continuity_blocked = False
+            with private_state_lock(self.data_dir):
+                connection = self._connect()
+                try:
+                    repository = RunRepository(connection)
+                    if binding.runtime_type == "codex":
+                        (
+                            blocked_reservation,
+                            continuity_allowed,
+                            continuation_reference,
+                        ) = repository.codex_continuation_for_blocked_turn(
+                            conversation_id=conversation_id,
+                            turn_id=turn_id,
+                            expected_revision=expected_revision,
+                            expected_message_revision=expected_message_revision,
+                            binding_digest=binding_digest,
+                        )
+                        if not continuity_allowed:
+                            reservation = blocked_reservation
+                            continuity_blocked = True
+                    if not continuity_blocked:
+                        reservation = repository.continue_blocked_conversation_turn(
+                            conversation_id=conversation_id,
+                            turn_id=turn_id,
+                            expected_revision=expected_revision,
+                            expected_message_revision=expected_message_revision,
+                            admission=admission,
+                        )
+                except RunRepositoryError as exc:
+                    raise OrchestrationServiceError(exc.code) from exc
+                finally:
+                    connection.close()
+            if continuity_blocked or reservation.run_id is None:
+                return self._conversation_result(
+                    reservation,
+                    duplicate=False,
+                    disposition="blocked",
+                )
+            queued = self._conversation_result(reservation, duplicate=False)
+            return self._execute_reserved_conversation_turn(
+                reservation=reservation,
+                text=queued.message.content["parts"][0]["text"],
+                record=record,
+                binding=binding,
+                runtime=runtime,
+                continuation_runtime_run_ref=continuation_reference,
+            )
 
     def reconcile_runs(
         self,
@@ -971,13 +1415,21 @@ class OrchestrationService:
         reconciled: list[str] = []
         unavailable: list[str] = []
         for run in leased:
+            applied = False
             try:
                 if run.agent_id is None or run.runtime_binding_digest is None:
                     raise OrchestrationServiceError("reconcile.binding_unavailable")
-                agent, binding = self._agent_and_binding(run.agent_id)
-                if self._binding_digest(agent, binding) != run.runtime_binding_digest:
-                    raise OrchestrationServiceError("reconcile.binding_changed")
-                runtime = self.runtime_registry.require(run.runtime_type)
+                # The canonical Agent registry shares the private SQLite
+                # authority. Keep its short snapshot read serialized with
+                # competing lease writers, but release the lock before any
+                # adapter operation.
+                with private_state_lock(self.data_dir):
+                    record, binding = self._agent_record_and_binding(run.agent_id)
+                    agent = record.agent
+                    binding_digest = self._binding_digest(agent, binding)
+                    if binding_digest != run.runtime_binding_digest:
+                        raise OrchestrationServiceError("reconcile.binding_changed")
+                    runtime = self.runtime_registry.require(run.runtime_type)
 
                 runtime_run_id = run.runtime_run_ref or run.id
                 context = RuntimeContext(
@@ -1001,6 +1453,42 @@ class OrchestrationService:
                 )
                 has_more_events = len(observed_batch) > 1_000
                 observed_events = observed_batch[:1_000]
+                continuation = None
+                continuation_reference = None
+                continuation_required = False
+                if (
+                    run.conversation_id is not None
+                    and not has_more_events
+                    and observed.status == RunStatus.COMPLETED
+                ):
+                    codex_continuable = (
+                        run.runtime_type == "codex"
+                        and run.status != "unknown"
+                        and not run.partial
+                    )
+                    continuation_required = (
+                        codex_continuable and run.runtime_run_ref is None
+                    )
+                    if not continuation_required:
+                        continuation = self._conversation_admission(
+                            record=record,
+                            binding=binding,
+                            runtime=runtime,
+                            binding_digest=binding_digest,
+                            run_id=(
+                                "run_auto_"
+                                + hashlib.sha256(
+                                    (
+                                        run.id
+                                        + ":"
+                                        + str(run.state_revision)
+                                        + ":continuation"
+                                    ).encode("utf-8")
+                                ).hexdigest()[:32]
+                            ),
+                        )
+                    if codex_continuable:
+                        continuation_reference = run.runtime_run_ref
                 with private_state_lock(self.data_dir):
                     connection = self._connect()
                     try:
@@ -1011,24 +1499,76 @@ class OrchestrationService:
                             observed=observed,
                             events=observed_events,
                             defer_terminal=has_more_events,
+                            continuation=continuation,
+                            require_continuation_for_completed=(
+                                continuation_required
+                            ),
                         )
                     finally:
                         connection.close()
+                applied = True
                 reconciled.append(run.id)
+                if continuation is not None:
+                    reservation = None
+                    with private_state_lock(self.data_dir):
+                        connection = self._connect()
+                        try:
+                            repository = RunRepository(connection)
+                            try:
+                                continued_run = repository.get_run(
+                                    continuation.run_id
+                                )
+                            except RunRepositoryConflict as exc:
+                                if exc.code != "run.not_found":
+                                    raise
+                            else:
+                                if continued_run.turn_id is None:
+                                    raise RunRepositoryError(
+                                        "run_repository.corrupt"
+                                    )
+                                reservation = (
+                                    repository.conversation_turn_reservation(
+                                        continued_run.turn_id
+                                    )
+                                )
+                        finally:
+                            connection.close()
+                    if reservation is not None:
+                        queued = self._conversation_result(
+                            reservation,
+                            duplicate=False,
+                        )
+                        queued_text = queued.message.content["parts"][0]["text"]
+                        guard_factory = getattr(runtime, "submission_guard", None)
+                        guard = (
+                            guard_factory()
+                            if callable(guard_factory)
+                            else nullcontext()
+                        )
+                        with guard:
+                            self._execute_reserved_conversation_turn(
+                                reservation=reservation,
+                                text=queued_text,
+                                record=record,
+                                binding=binding,
+                                runtime=runtime,
+                                continuation_runtime_run_ref=continuation_reference,
+                            )
             except Exception:
                 # Missing or conflicting evidence never proves progress and
                 # never causes submission retry. Release only our exact lease.
-                with private_state_lock(self.data_dir):
-                    connection = self._connect()
-                    try:
-                        RunRepository(connection).release_reconciliation_lease(
-                            run_id=run.id,
-                            owner=owner,
-                            expected_revision=run.state_revision,
-                        )
-                    finally:
-                        connection.close()
-                unavailable.append(run.id)
+                if not applied:
+                    with private_state_lock(self.data_dir):
+                        connection = self._connect()
+                        try:
+                            RunRepository(connection).release_reconciliation_lease(
+                                run_id=run.id,
+                                owner=owner,
+                                expected_revision=run.state_revision,
+                            )
+                        finally:
+                            connection.close()
+                    unavailable.append(run.id)
         return ReconciliationReport(
             leased=len(leased),
             reconciled=tuple(reconciled),
@@ -1037,6 +1577,8 @@ class OrchestrationService:
 
 
 __all__ = [
+    "ConversationQueueMutationResult",
+    "ConversationTurnDispatchResult",
     "DispatchResult",
     "OrchestrationService",
     "OrchestrationServiceError",

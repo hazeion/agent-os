@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { hasExactEmptyJsonBody, readConfirmationId, readConversationCreateBody, readConversationTurnBody, readMessageConfirmation, readMessagePreview, readRunResponsePreview, readRunResponseRouteBody } from "../src/lib/exact-json-body.ts";
+import { hasExactEmptyJsonBody, readConfirmationId, readConversationCreateBody, readConversationQueueActionBody, readConversationSteerBody, readConversationTurnBody, readMessageConfirmation, readMessagePreview, readRunResponsePreview, readRunResponseRouteBody } from "../src/lib/exact-json-body.ts";
 
 test("Run Stop preview accepts only its exact bounded JSON body", async () => {
   const request = (body: string, contentType = "application/json") => new Request("http://127.0.0.1:8890/api/runs/run_current/stop/preview", { method: "POST", headers: { "Content-Type": contentType }, body });
@@ -63,6 +63,28 @@ test("Conversation Turn body parsing rejects malformed UTF-8 and times out stall
   const startedAt = Date.now();
   assert.equal(await readConversationTurnBody(stalled, 25), null);
   assert.ok(Date.now() - startedAt < 500);
+});
+
+test("Conversation queue and steer bodies bind exact revisions and targets", async () => {
+  const request = (body: string) => new Request("http://127.0.0.1:8890/api/conversations/conv_current/action", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  assert.deepEqual(
+    await readConversationQueueActionBody(request('{"expected_message_revision":2,"expected_revision":3,"text":"Edited"}'), "edit"),
+    { expectedMessageRevision: 2, expectedRevision: 3, text: "Edited" },
+  );
+  assert.deepEqual(
+    await readConversationQueueActionBody(request('{"expected_message_revision":2,"expected_revision":3}'), "continue"),
+    { expectedMessageRevision: 2, expectedRevision: 3, text: null },
+  );
+  assert.equal(await readConversationQueueActionBody(request('{"expected_revision":3,"text":"Edited"}'), "edit"), null);
+  assert.equal(await readConversationQueueActionBody(request('{"expected_message_revision":2,"expected_revision":3,"text":" Edited"}'), "edit"), null);
+  assert.equal(await readConversationQueueActionBody(request('{"expected_message_revision":2,"expected_revision":3,"extra":true}'), "cancel"), null);
+  assert.deepEqual(
+    await readConversationSteerBody(request('{"run_id":"run_current","text":"Use this guidance"}')),
+    { runId: "run_current", text: "Use this guidance" },
+  );
+  assert.equal(await readConversationSteerBody(request('{"run_id":"run_other","text":" Use this guidance"}')), null);
+  assert.equal(await readConversationSteerBody(request('{"run_id":"bad id","text":"Use this guidance"}')), null);
+  assert.equal(await readConversationSteerBody(request('{"run_id":"run_current","text":"Use this guidance","retry":true}')), null);
 });
 
 test("Run Stop confirmation has one bounded JSON field", async () => {

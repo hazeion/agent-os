@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { BridgeRunEventsError, fetchBridgeRunEvents, lastEventCursor } from "../src/lib/bridge-run-events.ts";
+import { BridgeRunEventsError, fetchBridgeRunEvents, lastEventCursor, refreshBridgeRun } from "../src/lib/bridge-run-events.ts";
 
 const environment = { MENTAT_BRIDGE_ORIGIN: "http://127.0.0.1:49152", MENTAT_BRIDGE_TOKEN: "A_very_long_urlsafe_bridge_token_with_more_than_43_chars" };
 const event = { id: "event_current", run_id: "run_current", sequence: 4, type: "run.started", occurred_at: "2026-08-22T00:01:00Z", summary: "Runtime accepted dispatch", message: null, metrics: { total_tokens: 12 } };
@@ -103,6 +103,38 @@ test("Run event bridge encodes a valid colon-containing Run ID once", async () =
   }, environment);
   assert.equal(url, "http://127.0.0.1:49152/bridge/v1/runs/run_current%3Achild/events?after=3");
   assert.equal(result.run_id, runId);
+});
+
+test("selected Run refresh is one exact private mutation", async () => {
+  let call: { body: string | undefined; method: string | undefined; url: string } | null = null;
+  const refreshed = await refreshBridgeRun("run_current", async (input, init) => {
+    call = { body: init?.body?.toString(), method: init?.method, url: input.toString() };
+    return Response.json({
+      disposition: "reconciled",
+      run_id: "run_current",
+      runtime: "python",
+      schema_version: 1,
+      service: "mentat-local-bridge",
+      status: "ready",
+    });
+  }, environment);
+  assert.equal(refreshed.disposition, "reconciled");
+  assert.deepEqual(call, {
+    body: "{}",
+    method: "POST",
+    url: "http://127.0.0.1:49152/bridge/v1/runs/run_current/refresh",
+  });
+  await assert.rejects(
+    refreshBridgeRun("run_current", async () => Response.json({
+      disposition: "reconciled",
+      run_id: "run_other",
+      runtime: "python",
+      schema_version: 1,
+      service: "mentat-local-bridge",
+      status: "ready",
+    }), environment),
+    BridgeRunEventsError,
+  );
 });
 
 test("SSE reconnect headers accept only an exact bounded cursor", () => {

@@ -177,6 +177,7 @@ class ConversationRepositoryTests(unittest.TestCase):
                 self.assertEqual(created["conversation"]["state"], "active")
                 self.assertEqual(created["messages"], [])
                 self.assertEqual(created["current_run"], None)
+                self.assertEqual(created["queued_turns"], [])
                 self.assertNotIn("runtime_agent_ref", json.dumps(created))
                 self.assertNotIn("runtime_config_id", json.dumps(created))
 

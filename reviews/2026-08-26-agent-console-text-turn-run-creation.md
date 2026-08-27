@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console text turn and Run creation
 
-Status: PR open; CI follow-up verified, awaiting publication approval
+Status: Complete; merged in PR #144 on 2026-08-27
 Slice: `agent-console-text-turn-run-creation`
 Date: `2026-08-26`
 Review log: `reviews/2026-08-26-agent-console-text-turn-run-creation.md`
@@ -64,7 +64,7 @@ confirmation dialog.
 | AC-5 | Pre-admission rejection writes no Message, Turn, or Run and restores the optimistic draft; a post-reservation rejection or unknown outcome remains durable and is never represented as accepted runtime execution or retried automatically. | Negative-path service and UI rollback tests. | Pass |
 | AC-6 | A real local supported runtime starts from the production Next.js Console path, and canonical accepted input plus Run evidence remain after process restart. | Host-side production build/browser smoke using local Codex plus SQLite inspection/reopen. | Pass |
 | AC-7 | Browser projections remain bounded and omit runtime references, configuration IDs/digests, capacity scope/digest, credentials, paths, and raw provider data; Node adds only named capabilities. | Exact-schema, canary, malformed-body, oversized-body, and route tests. | Pass |
-| AC-8 | Existing schema migration, backup/restore, Agent/Task/Run routes, lifecycle, rollback UI, accessibility, performance, and supported platform gates do not regress. | Focused compatibility checks, full Python/web suites, production build, browser smoke, and CI matrix. | Pass locally; publication CI pending |
+| AC-8 | Existing schema migration, backup/restore, Agent/Task/Run routes, lifecycle, rollback UI, accessibility, performance, and supported platform gates do not regress. | Focused compatibility checks, full Python/web suites, production build, browser smoke, and CI matrix. | Pass; required publication CI completed |
 | AC-9 | An explicit Codex readiness check reports only CLI missing, sign-in required, ready, or unavailable; setup guidance uses the official `codex login` flow, Recheck becomes ready after local ChatGPT sign-in, and no credential material crosses the browser, bridge, SQLite, backup, log, or tracked-file boundary. | Safe-projection tests, readiness failure tests, setup UI tests, and a host-side ChatGPT-subscription readiness/dispatch smoke. | Pass |
 
 ### Constraints and recovery
@@ -427,7 +427,7 @@ Status: Approved after the original contract and test strategy.
   route tests, the real signed-in Codex smoke, restart reconciliation, and the
   final clean-tree suite.
 
-## Publication gate
+## Publication gate (historical pre-merge record)
 
 - Proposed files (exact 46-file packet):
 
@@ -485,43 +485,36 @@ Status: Approved after the original contract and test strategy.
 - PR summary: Add atomic, idempotent runtime-neutral text Turn submission and
   recovery; explicit credential-safe Codex readiness; and the Next.js
   optimistic composer with Conversation-scoped retry state.
-- Unresolved risks: The authority/lifecycle correction is published and its
-  formerly failing Node check is green. The deterministic Codex timeout-test
-  correction remains local and needs exact publication approval plus a fresh
-  required-matrix rerun. The live production smoke exercised signed-in Codex;
-  Hermes uses the production integration contract test. Lighthouse has
-  documented host variance, although local and PR gates passed unchanged
-  thresholds.
+- Unresolved risks at merge: The authority/lifecycle and deterministic Codex
+  timeout-test corrections were published and the required matrix passed. The
+  live production smoke exercised signed-in Codex; Hermes uses the production
+  integration contract test. Lighthouse retains documented host variance,
+  although local and PR gates passed unchanged thresholds.
 - Explicit exclusions: user-owned `data/projects.json`, `data/tasks.json`,
   `design/mockups/`, `tmp/`, `uv.lock`, `videos/`, and `web/.npmrc`.
-- User authorization and scope: The exact 46-file packet and exact five-file
-  authority/lifecycle follow-up were approved, committed, and pushed. The new
-  test-only packet is limited to `tests/test_codex_runtime.py` and this review
-  log; it requires refreshed publication approval after re-review.
+- User authorization and scope: The exact 46-file packet, exact five-file
+  authority/lifecycle follow-up, and final test-only correction were approved,
+  committed, and pushed.
 - Published commits: `a6894ae80658f98d29b729b1f9103b203fdaebd8` and
   `8042dc2930f88a28d66b421eeb06bc361cb4155f`.
-- Proposed test-only follow-up commit: `test: stabilize Codex timeout budget contract`.
-- Ready PR URL: https://github.com/hazeion/agent-os/pull/144
+- Final test-only follow-up: `test: stabilize Codex timeout budget contract`.
+- Merged PR URL: https://github.com/hazeion/agent-os/pull/144
+- Merge commit: `24aea6687814e76bc96c7815a5c92243a3a21b55`.
 
 ## Outcome review
 
-- Classification: Initial publication and the clean-root migration-safety
-  follow-up are published; the test-only macOS timing correction is locally
-  verified and awaits publication authorization.
-- Acceptance criteria summary: AC-1 through AC-9 pass locally; AC-8's required
-  publication CI remains pending on the test-only amended PR rerun.
-- Potential bugs or untested paths: The authority/lifecycle failure is fixed and
-  its exact CI check passes. The remaining failure is confined to a PR-added
-  wall-clock test assertion; the deterministic correction still requires its
-  publication rerun. Only one local Codex installation was used for the real
-  runtime smoke; Hermes and failure paths are covered by production integration/
-  fault tests rather than a second live provider account.
+- Classification: Complete and merged through PR #144 on 2026-08-27.
+- Acceptance criteria summary: AC-1 through AC-9 pass, including the required
+  publication CI after the deterministic macOS timing correction.
+- Potential bugs or untested paths: Only one local Codex installation was used
+  for the real runtime smoke; Hermes and failure paths are covered by production
+  integration/fault tests rather than a second live provider account.
 - Remaining reviewer dissent: None. Both authority/lifecycle reviewers and both
   final test-correction reviewers returned **CLEAN**.
 - Compatibility/migration/rollback concerns: Schema-10 roots and released
   backup formats remain covered; schema-11 restore/export and clean full-suite
-  checks pass. Rollback remains branch/commit based until publication.
+  checks pass. The merged change can be rolled back through normal version
+  control if required.
 - User decision: Original contract, test strategy, Codex authentication/setup
-  amendment, initial exact publication packet, and authority/lifecycle follow-up
-  approved. Test-only timeout correction publication approval pending.
+  amendment, and all publication follow-ups were approved and completed.
 - Next slice authorized: No

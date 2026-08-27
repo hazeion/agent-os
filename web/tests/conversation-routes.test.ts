@@ -4,10 +4,14 @@ import test from "node:test";
 import {
   BridgeConversationsError,
   type PublicCodexReadiness,
+  type PublicConversationQueueMutation,
+  type PublicConversationSteerResult,
   type PublicConversationTurnSubmission,
 } from "../src/lib/bridge-conversations.ts";
 import { createCodexReadinessGetHandler } from "../src/lib/codex-readiness-route.ts";
 import { createConversationTurnPostHandler } from "../src/lib/conversation-turn-route.ts";
+import { createConversationQueueActionHandler } from "../src/lib/conversation-queue-route.ts";
+import { createConversationSteerHandler } from "../src/lib/conversation-steer-route.ts";
 
 const origin = "http://127.0.0.1:8890";
 const requestHeaders = {
@@ -139,6 +143,122 @@ test("Conversation Turn route rejects foreign origins, malformed bodies, and map
     );
     assert.equal(response.status, status, code);
     assert.deepEqual(await response.json(), { schema_version: 1, status: state });
+  }
+});
+
+test("Conversation queue routes bind both revisions and map stale conflicts", async () => {
+  const mutation: PublicConversationQueueMutation = {
+    conversation: submitted.conversation,
+    disposition: "edited",
+    message: { ...submitted.message, content: { parts: [{ text: "Edited route proof", type: "text" }], schema_version: 1 }, run_id: null, revision: 2 },
+    runtime: "python",
+    schema_version: 1,
+    service: "mentat-local-bridge",
+    status: "ready",
+    turn: { ...submitted.turn, attempt_count: 0, id: "turn_queue", latest_run_id: null, state: "pending", user_message_id: submitted.message.id },
+  };
+  const calls: unknown[][] = [];
+  const handler = createConversationQueueActionHandler("edit", {
+    gatewayPort: "8890",
+    mutate: async (...values) => { calls.push(values); return mutation; },
+  });
+  const response = await handler(
+    new Request(`${origin}/api/conversations/conv_route/turns/turn_queue/edit`, {
+      body: '{"expected_message_revision":2,"expected_revision":3,"text":"Edited route proof"}',
+      headers: requestHeaders,
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route", turnId: "turn_queue" }) },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [["conv_route", "turn_queue", 3, 2, "Edited route proof"]]);
+  assert.deepEqual(await response.json(), mutation);
+
+  const malformed = await handler(
+    new Request(`${origin}/api/conversations/conv_route/turns/turn_queue/edit`, {
+      body: '{"expected_revision":3,"text":"Edited route proof"}',
+      headers: requestHeaders,
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route", turnId: "turn_queue" }) },
+  );
+  assert.equal(malformed.status, 400);
+  assert.equal(calls.length, 1);
+
+  const stale = await createConversationQueueActionHandler("cancel", {
+    gatewayPort: "8890",
+    mutate: async () => { throw new BridgeConversationsError("conversation_conflict"); },
+  })(
+    new Request(`${origin}/api/conversations/conv_route/turns/turn_queue/cancel`, {
+      body: '{"expected_message_revision":2,"expected_revision":3}',
+      headers: requestHeaders,
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route", turnId: "turn_queue" }) },
+  );
+  assert.equal(stale.status, 409);
+  assert.deepEqual(await stale.json(), { schema_version: 1, status: "conflict" });
+});
+
+test("Conversation steer route is exact and preserves partial as an explicit failure", async () => {
+  const steered: PublicConversationSteerResult = {
+    action: "steer",
+    conversation_id: "conv_route",
+    disposition: "accepted",
+    run_id: "run_route",
+    runtime: "python",
+    schema_version: 1,
+    service: "mentat-local-bridge",
+    status: "ready",
+  };
+  const calls: unknown[][] = [];
+  const response = await createConversationSteerHandler({
+    gatewayPort: "8890",
+    steer: async (...values) => { calls.push(values); return steered; },
+  })(
+    new Request(`${origin}/api/conversations/conv_route/steer`, {
+      body: '{"run_id":"run_route","text":"Use the exact route"}',
+      headers: requestHeaders,
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route" }) },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [["conv_route", "run_route", "Use the exact route"]]);
+
+  const partial = await createConversationSteerHandler({
+    gatewayPort: "8890",
+    steer: async () => { throw new BridgeConversationsError("conversation_partial"); },
+  })(
+    new Request(`${origin}/api/conversations/conv_route/steer`, {
+      body: '{"run_id":"run_route","text":"Use the exact route"}',
+      headers: requestHeaders,
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route" }) },
+  );
+  assert.equal(partial.status, 500);
+  assert.deepEqual(await partial.json(), { schema_version: 1, status: "partial" });
+
+  for (const [code, expectedStatus, expectedState] of [
+    ["bridge_unavailable", 503, "unavailable"],
+    ["bridge_unsupported", 501, "unsupported"],
+    ["conversation_conflict", 409, "conflict"],
+    ["conversation_not_found", 404, "not_found"],
+  ] as const) {
+    const failed = await createConversationSteerHandler({
+      gatewayPort: "8890",
+      steer: async () => { throw new BridgeConversationsError(code); },
+    })(
+      new Request(`${origin}/api/conversations/conv_route/steer`, {
+        body: '{"run_id":"run_route","text":"Use the exact route"}',
+        headers: requestHeaders,
+        method: "POST",
+      }),
+      { params: Promise.resolve({ conversationId: "conv_route" }) },
+    );
+    assert.equal(failed.status, expectedStatus, code);
+    assert.deepEqual(await failed.json(), { schema_version: 1, status: expectedState });
   }
 });
 

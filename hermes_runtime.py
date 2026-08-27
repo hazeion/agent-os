@@ -21,7 +21,7 @@ from agent_runtime import (
     SubmissionDisposition,
     SubmissionOutcome,
 )
-from agent_run_history import bounded_excerpt, normalize_usage
+from agent_run_history import bounded_excerpt, bounded_public_excerpt, normalize_usage
 
 
 LegacyResponse = tuple[dict[str, Any], int]
@@ -479,13 +479,27 @@ class HermesRuntime:
         snapshot = body.get("run")
         if not isinstance(snapshot, Mapping):
             raise AgentRuntimeError("runtime.status_failed")
-        if not isinstance(snapshot.get("mentat_agent_id"), str) or not isinstance(
-            snapshot.get("task_id"), str
+        snapshot_id = snapshot.get("id")
+        snapshot_agent_id = snapshot.get("mentat_agent_id")
+        snapshot_task_id = snapshot.get("task_id")
+        expected_snapshot_id = context.mentat_run_id if context is not None else run_id
+        if (
+            not isinstance(snapshot_agent_id, str)
+            or not isinstance(snapshot_task_id, str)
         ):
             raise AgentRuntimeError("runtime.identity_context_required")
+        if snapshot_id != expected_snapshot_id:
+            raise AgentRuntimeError("runtime.identity_context_invalid")
+        if context is not None and (
+            snapshot_agent_id != context.agent_id
+            or snapshot_task_id != context.task_id
+        ):
+            raise AgentRuntimeError("runtime.identity_context_invalid")
         normalized_status = None
         normalized_status = _RUN_STATUS.get(str(snapshot.get("status") or ""))
         retained = [item for item in events if isinstance(item, Mapping)]
+        if any(item.get("run_id") != expected_snapshot_id for item in retained):
+            raise AgentRuntimeError("runtime.identity_context_invalid")
         terminal_index = None
         terminal_kinds = {"runtime.finalized"}
         for index, item in enumerate(retained):
@@ -501,7 +515,7 @@ class HermesRuntime:
             if index == terminal_index and normalized_status == RunStatus.COMPLETED:
                 response = snapshot.get("response") if isinstance(snapshot, Mapping) else None
                 if isinstance(response, str) and response.strip():
-                    content = bounded_excerpt(response, 20_000)[0]
+                    content = bounded_public_excerpt(response, 20_000)[0]
                     if content:
                         projected.append(
                             AgentEvent(

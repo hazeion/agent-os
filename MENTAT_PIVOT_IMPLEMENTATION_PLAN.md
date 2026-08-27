@@ -27,10 +27,13 @@ production packaging, Codex adapter, runtime coexistence, Agent registry
 convergence, and optional Vercel capability adapters are complete through Slice
 4A.
 
-The current work is Agent Console Slice 2: one text Turn and canonical Run
-creation (GitHub issue #134). Its active review log is:
-
-`reviews/2026-08-26-agent-console-text-turn-run-creation.md`
+Agent Console Slices 1 and 2 are also complete. The current Wayfinder frontier
+is Agent Console Slice 3: live transcript, active composer, queue, steering,
+and concurrency (GitHub issue #135). Its scope and test strategy were approved
+on 2026-08-27. Implementation, final verification, and both adversarial review
+rounds are complete on the focused Slice 3 branch. The approved packet is
+published as ready PR #145 and all required checks pass, so the slice stays In
+progress until merge and tracker close-out.
 
 ## Slice order
 
@@ -50,8 +53,9 @@ creation (GitHub issue #134). Its active review log is:
 | 3A–3C | Complete | Codex runtime, coexistence, and Agent registry convergence. |
 | 4A | Complete | Optional Vercel Gateway, Sandbox, and Connect adapters. |
 | Console 1 | Complete | Conversation/message read foundation, Direct Agent identity, and three-column Home. |
-| Console 2 | In progress | One bounded text Turn, atomic Run reservation, exact replay, and safe Codex readiness. |
-| Console 3+ | Proposed | Queued turns, steering, rich rendering, attachments, and deeper operations. |
+| Console 2 | Complete | One bounded text Turn, atomic Run reservation, exact replay, and safe Codex readiness. |
+| Console 3 | In progress | Live transcript, active composer, durable queued turns, steering, and adapter-scoped concurrency. |
+| Console 4+ | Proposed | Operator control, recovery, rich rendering, attachments, and deeper operations. |
 
 ## Working rules
 
@@ -68,6 +72,9 @@ creation (GitHub issue #134). Its active review log is:
 - The legacy interface may be retired only after required workflows have parity,
   offline packaging works, lifecycle and recovery checks pass, and rollback is
   tested.
+- Treat tracker reconciliation as part of slice close-out: add the child
+  ticket's resolution, close it, update the parent Wayfinder decisions and
+  checklist, and advance this resume map before calling the slice complete.
 - Update this roadmap only when slice status or sequence changes. Keep detailed
   evidence in the active review log.
 
