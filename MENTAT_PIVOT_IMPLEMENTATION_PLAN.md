@@ -27,22 +27,11 @@ production packaging, Codex adapter, runtime coexistence, Agent registry
 convergence, and optional Vercel capability adapters are complete through Slice
 4A.
 
-Agent Console Slices 1 and 2 are also complete. The current Wayfinder frontier
-is Agent Console Slice 3: live transcript, active composer, queue, steering,
-and concurrency (GitHub issue #135). Its scope and test strategy were approved
-on 2026-08-27. PR #145 merged after implementation, final verification, both
-adversarial review rounds, and the required matrix passed. Post-merge validation
-against the existing owner-private data root then exposed one exact pre-release
-schema-11 drift and stale legacy attachment projections. The schema-12 repair
-and local Hermes steering path are implemented. Final adversarial review then
-identified terminal-finalization and queued-continuity races; schema-13
-hardening is implemented and the uncontaminated two-runtime browser acceptance
-now passes: fresh Hermes and Codex Conversations ran concurrently, both exact
-`/steer` operations were accepted without queueing, both final responses stayed
-in their owning tabs with separate BigFry assessments, and both right-rail
-statuses returned to Idle. The slice remains In progress only until the exact
-remediation packet is published, required CI passes, the remediation merges,
-and tracker close-out is complete.
+Agent Console Slices 1 through 3 are complete. Slice 3 shipped through PR #145
+and remediation PR #146 after schema-13 hardening, two clean adversarial
+reviews, the complete required matrix, and uncontaminated concurrent Hermes and
+Codex browser acceptance. The current Wayfinder frontier is Agent Console Slice
+4: operator control, recovery, and durable continuation (GitHub issue #136).
 
 ## Slice order
 
@@ -63,8 +52,14 @@ and tracker close-out is complete.
 | 4A | Complete | Optional Vercel Gateway, Sandbox, and Connect adapters. |
 | Console 1 | Complete | Conversation/message read foundation, Direct Agent identity, and three-column Home. |
 | Console 2 | Complete | One bounded text Turn, atomic Run reservation, exact replay, and safe Codex readiness. |
-| Console 3 | In progress | Live transcript, active composer, durable queued turns, steering, and adapter-scoped concurrency. |
-| Console 4+ | Proposed | Operator control, recovery, rich rendering, attachments, and deeper operations. |
+| Console 3 | Complete | Live transcript, active composer, durable queued turns, steering, and adapter-scoped concurrency. |
+| Console 4 | Approved | Operator control, recovery, and durable continuation. |
+| Console 5 | Approved | Composer Agent configuration. |
+| Console 6 | Approved | Polished transcript and reasoning summaries. |
+| Console 7 | Approved | Safe rich-link previews. |
+| Console 8 | Approved | Attachments, Context Packs, images, and artifacts. |
+| Console 9 | Approved | History depth and command ergonomics. |
+| Console 10 | Approved | Project and planning context. |
 
 ## Working rules
 

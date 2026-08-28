@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console live queue, steering, and concurrency
 
-Status: PR #145 merged; schema-13 hardening and final live acceptance in progress
+Status: Successful
 Slice: `agent-console-live-queue-steering-concurrency`
 Date: `2026-08-27`
 Review log: `reviews/2026-08-27-agent-console-live-queue-steering-concurrency.md`
@@ -632,8 +632,7 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
   warnings or errors.
 - Remaining blocking or nonblocking reviewer findings: none. Reviewer dissent:
   none.
-- The exact remediation publication packet, required CI, merge, and tracker
-  close-out remain pending.
+- The exact remediation packet was published through ready PR #146.
 - PR #146's first matrix run exposed a Windows-only test-harness defect in
   `tests.test_local_hermes_control`. Protocol tests that inject a fake process
   still called the real Windows Job Object attachment, and the POSIX process
@@ -648,5 +647,14 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
   tests, the nested Windows cleanup assertion still observes one close, and
   the POSIX signal assertions match the production platform branch. The
   product reviewer independently confirmed the same platform boundaries and
-  that the fix changes no production behavior. The corrected Windows matrix
-  rerun remains pending publication.
+  that the fix changes no production behavior.
+- The corrected matrix passed all 52 checks, including every Windows shard,
+  three macOS and three Linux Python jobs, browser smoke, package lifecycle,
+  dependency and secret scanning, and native artifact smoke.
+- PR #146 merged to `main` as
+  `f6e9dbbcc4e21938a5d5212bb81964c858b12d7c` on 2026-08-28. GitHub issue
+  #135 contains the final resolution and is closed; parent Wayfinder map #128
+  records the completed decision and checklist item.
+- Final classification: **Successful**. AC-1 through AC-10 pass, no blocking
+  or nonblocking reviewer finding remains, and the user's standing approval
+  authorizes continuation to Slice 4 without another outcome pause.
