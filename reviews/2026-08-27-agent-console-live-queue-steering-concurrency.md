@@ -634,3 +634,19 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
   none.
 - The exact remediation publication packet, required CI, merge, and tracker
   close-out remain pending.
+- PR #146's first matrix run exposed a Windows-only test-harness defect in
+  `tests.test_local_hermes_control`. Protocol tests that inject a fake process
+  still called the real Windows Job Object attachment, and the POSIX process
+  group cleanup test lacked a platform guard. The test class now replaces the
+  Windows attach/close calls while its fake process is active, and the process
+  group test runs only on POSIX. The production Job Object path remains
+  unchanged. The focused local-control and CI-quality gates pass 26/26 on
+  macOS. A detached clean-worktree aggregate passes 1,632/1,632 with five
+  platform skips in 502.026 seconds, and `git diff --check` passes.
+- Both independent CI-fix rechecks returned **CLEAN**. The safety reviewer
+  confirmed the Windows mocks activate and restore around the fake-process
+  tests, the nested Windows cleanup assertion still observes one close, and
+  the POSIX signal assertions match the production platform branch. The
+  product reviewer independently confirmed the same platform boundaries and
+  that the fix changes no production behavior. The corrected Windows matrix
+  rerun remains pending publication.

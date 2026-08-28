@@ -174,6 +174,24 @@ class _ScriptedConnection:
 
 
 class LocalHermesControlProtocolTests(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        if os.name != "nt":
+            return
+        attach_job = patch.object(
+            hermes_local_control,
+            "_attach_windows_kill_job",
+            return_value=object(),
+        )
+        close_job = patch.object(
+            hermes_local_control,
+            "_close_windows_job",
+        )
+        attach_job.start()
+        close_job.start()
+        self.addCleanup(close_job.stop)
+        self.addCleanup(attach_job.stop)
+
     def client(self, root: Path, connection: _ScriptedConnection):
         command_path = root / "hermes"
         command_path.write_text("placeholder", encoding="utf-8")
@@ -402,6 +420,7 @@ class LocalHermesControlProtocolTests(unittest.TestCase):
 
             self.assertEqual(victim.stat().st_mode & 0o777, 0o755)
 
+    @unittest.skipUnless(os.name == "posix", "process groups are POSIX-specific")
     def test_process_tree_cleanup_always_escalates_owned_posix_group(self):
         process = _FakeProcess()
         process._mentat_process_group = process.pid
