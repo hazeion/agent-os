@@ -2,6 +2,33 @@
 
 All notable changes to Mentat.
 
+## 2026-08-28
+
+### Added
+- Added exact Home Stop and approval/clarification controls through the existing
+  preview-confirm runtime boundary.
+- Added recent Conversation history, presentation-only tab close/reopen, and
+  exact-revision reversible archive and restore.
+- Added schema-14 durable Retry and capability-gated Resume attempts for one
+  Conversation Turn, with bounded idempotency receipts and preserved prior Run
+  evidence.
+
+### Changed
+- Treat initial nonterminal Conversation state as reconciling until the exact
+  selected Run completes authoritative runtime readback.
+- Keep ordinary composer text separate from approval and clarification cards.
+- Allow up to seven explicit later attempts for one Turn while retaining one
+  active Run per Conversation and existing adapter-scoped capacity.
+
+### Safety
+- Kept recovery action keys, binding digests, runtime references, and Resume
+  continuity private; browser responses contain only safe Mentat IDs, status,
+  and duplicate evidence.
+- Made schema 14 accept only the exact schema-13 fingerprint under the same
+  SQLite write lock and recover interrupted attempts without resubmission.
+- Kept tab close and archive independent from Stop, deletion, queue authority,
+  and runtime execution.
+
 ## 2026-08-27
 
 ### Added

@@ -2,6 +2,8 @@ import type {
   PublicActivityPayload,
   PublicConversation,
   PublicConversationAgent,
+  PublicConversationArchiveResult,
+  PublicConversationRunAttemptResult,
   PublicConversationDetail,
   PublicConversationList,
   PublicConversationQueueMutation,
@@ -10,6 +12,7 @@ import type {
   PublicConversationTurn,
   PublicConversationTurnSubmission,
   PublicCodexReadiness,
+  PublicCurrentRun,
 } from "./bridge-conversations";
 
 const MAXIMUM_RESPONSE_BYTES = 3_000_000;
@@ -127,7 +130,9 @@ function validTurn(value: unknown): value is PublicConversationTurn {
     && (value.blocked_reason === null || ["capacity", "failed", "stopped", "interrupted", "unknown", "partial"].includes(String(value.blocked_reason)))
     && (value.latest_run_id === null || id(value.latest_run_id, RUN_ID))
     && Number.isInteger(value.revision) && (value.revision as number) >= 1
-    && (value.attempt_count === 0 || value.attempt_count === 1)
+    && Number.isInteger(value.attempt_count)
+    && (value.attempt_count as number) >= 0
+    && (value.attempt_count as number) <= 8
     && timestamp(value.created_at) && timestamp(value.updated_at);
 }
 
@@ -150,7 +155,7 @@ function validActivityItem(value: unknown): boolean {
   if (!record(value) || !keys(value, "agent,attention,conversations,state,summary,updated_at")) return false;
   const conversations = value.conversations;
   return validAgent(value.agent)
-    && ["working", "waiting", "failed", "stopped", "interrupted", "idle"].includes(value.state as string)
+    && ["checking", "working", "waiting", "failed", "stopped", "interrupted", "idle"].includes(value.state as string)
     && boundedText(value.summary, 160)
     && typeof value.attention === "boolean"
     && (value.updated_at === null || timestamp(value.updated_at))
@@ -162,7 +167,7 @@ function validActivityItem(value: unknown): boolean {
         && boundedText(conversation.title, 160)
         && id(conversation.run_id, RUN_ID)
         && typeof conversation.run_status === "string"
-        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(conversation.run_status)
+        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "reconciling", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(conversation.run_status)
         && typeof conversation.attention === "boolean"
         && timestamp(conversation.updated_at);
     });
@@ -214,6 +219,41 @@ function parseQueueMutation(value: unknown): PublicConversationQueueMutation {
   const turn = value.turn as PublicConversationTurn;
   if (message.conversation_id !== conversation.id || turn.conversation_id !== conversation.id || turn.user_message_id !== message.id || message.run_id !== turn.latest_run_id || value.disposition === "edited" && (!(turn.state === "pending" || turn.state === "blocked") || message.state !== "accepted") || value.disposition === "cancelled" && (turn.state !== "cancelled" || message.state !== "cancelled")) throw new PublicConversationError("response_invalid");
   return value as PublicConversationQueueMutation;
+}
+
+function parseArchiveResult(value: unknown): PublicConversationArchiveResult {
+  if (!record(value) || !keys(value, "action,conversation,runtime,schema_version,service,status")) throw new PublicConversationError("response_invalid");
+  if (
+    (value.action !== "archive" && value.action !== "restore")
+    || !validConversation(value.conversation)
+    || value.runtime !== "python"
+    || value.schema_version !== 1
+    || value.service !== "mentat-local-bridge"
+    || value.status !== "ready"
+  ) throw new PublicConversationError("response_invalid");
+  const conversation = value.conversation as PublicConversation;
+  if (
+    value.action === "archive" && conversation.state !== "archived"
+    || value.action === "restore" && conversation.state !== "active"
+  ) throw new PublicConversationError("response_invalid");
+  return structuredClone(value) as PublicConversationArchiveResult;
+}
+
+function parseRunAttemptResult(value: unknown): PublicConversationRunAttemptResult {
+  if (!record(value) || !keys(value, "action,conversation_id,duplicate,run,runtime,schema_version,service,source_run_id,status")) throw new PublicConversationError("response_invalid");
+  if (
+    value.schema_version !== 1
+    || value.service !== "mentat-local-bridge"
+    || value.runtime !== "python"
+    || value.status !== "ready"
+    || (value.action !== "retry" && value.action !== "resume")
+    || !CONVERSATION_ID.test(String(value.conversation_id))
+    || !RUN_ID.test(String(value.source_run_id))
+    || typeof value.duplicate !== "boolean"
+    || !validCurrentRun(value.run)
+    || (value.run as PublicCurrentRun).id === value.source_run_id
+  ) throw new PublicConversationError("response_invalid");
+  return structuredClone(value) as PublicConversationRunAttemptResult;
 }
 
 function parseSteer(value: unknown): PublicConversationSteerResult {
@@ -314,6 +354,70 @@ export async function createConversation(agentId: string | null): Promise<Public
     return parsed;
   }
   fixed(response, payload);
+}
+
+export async function archiveConversation(
+  conversationId: string,
+  expectedRevision: number,
+  archived: boolean,
+): Promise<PublicConversationArchiveResult> {
+  if (!CONVERSATION_ID.test(conversationId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new PublicConversationError("invalid");
+  const action = archived ? "archive" : "restore";
+  const { response, payload } = await request(
+    `/api/conversations/${encodeURIComponent(conversationId)}/${action}`,
+    {
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (response.status === 200) {
+    const parsed = parseArchiveResult(payload);
+    if (parsed.conversation.id !== conversationId || parsed.action !== action) throw new PublicConversationError("response_invalid");
+    return parsed;
+  }
+  fixed(response, payload);
+}
+
+async function conversationRunAttempt(
+  action: "retry" | "resume",
+  conversationId: string,
+  sourceRunId: string,
+  idempotencyKey: string,
+): Promise<PublicConversationRunAttemptResult> {
+  const keyBytes = new TextEncoder().encode(idempotencyKey).byteLength;
+  if (!CONVERSATION_ID.test(conversationId) || !RUN_ID.test(sourceRunId) || keyBytes < 16 || keyBytes > 256 || idempotencyKey.includes("\0")) throw new PublicConversationError("invalid");
+  const { response, payload } = await request(
+    `/api/conversations/${encodeURIComponent(conversationId)}/${action}`,
+    {
+      body: JSON.stringify({ idempotency_key: idempotencyKey, source_run_id: sourceRunId }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+    CONVERSATION_TURN_PUBLIC_TIMEOUT_MILLISECONDS,
+  );
+  if (response.status === 200 || response.status === 202) {
+    const parsed = parseRunAttemptResult(payload);
+    if (parsed.conversation_id !== conversationId || parsed.source_run_id !== sourceRunId || parsed.action !== action) throw new PublicConversationError("response_invalid");
+    return parsed;
+  }
+  fixed(response, payload);
+}
+
+export function retryConversationRun(
+  conversationId: string,
+  sourceRunId: string,
+  idempotencyKey: string,
+): Promise<PublicConversationRunAttemptResult> {
+  return conversationRunAttempt("retry", conversationId, sourceRunId, idempotencyKey);
+}
+
+export function resumeConversationRun(
+  conversationId: string,
+  sourceRunId: string,
+  idempotencyKey: string,
+): Promise<PublicConversationRunAttemptResult> {
+  return conversationRunAttempt("resume", conversationId, sourceRunId, idempotencyKey);
 }
 
 export async function submitConversationTurn(

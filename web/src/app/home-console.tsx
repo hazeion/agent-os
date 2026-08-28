@@ -19,6 +19,7 @@ import {
 } from "@/lib/conversation-composer";
 import {
   cancelConversationTurn,
+  archiveConversation,
   continueConversationTurn,
   createConversation,
   editConversationTurn,
@@ -26,10 +27,21 @@ import {
   fetchCodexReadiness,
   fetchConversation,
   fetchConversations,
+  retryConversationRun,
+  resumeConversationRun,
   steerConversation,
   submitConversationTurn,
   PublicConversationError,
 } from "@/lib/public-conversations";
+import type { PendingRunRequest, RunActionResponse } from "@/lib/bridge-run-response";
+import {
+  confirmRunResponse,
+  confirmRunStop,
+  fetchPendingRunRequest,
+  previewRunResponse,
+  previewRunStop,
+  PublicRunActionError,
+} from "@/lib/public-run-actions";
 
 const SUGGESTIONS = [
   "Help me plan the work I need to finish today",
@@ -49,6 +61,7 @@ const ACTIVE_RUN_STATUSES = new Set([
   "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown",
   "finalizing",
 ]);
+const RETRYABLE_RUN_STATUSES = new Set(["failed", "cancelled", "stopped", "interrupted"]);
 
 function readable(value: string): string {
   return value.split(/[._-]/u).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
@@ -306,6 +319,34 @@ const QueuedTurns = memo(function QueuedTurns({
   );
 });
 
+const PendingActionCard = memo(function PendingActionCard({
+  busy,
+  clarificationText,
+  confirmationPending,
+  onCancelConfirmation,
+  onClarificationText,
+  onConfirm,
+  onPrepare,
+  request,
+}: Readonly<{
+  busy: boolean;
+  clarificationText: string;
+  confirmationPending: boolean;
+  onCancelConfirmation: () => void;
+  onClarificationText: (text: string) => void;
+  onConfirm: () => void;
+  onPrepare: (response: RunActionResponse) => void;
+  request: PendingRunRequest;
+}>) {
+  return (
+    <section aria-label={request.kind === "approval" ? "Approval required" : "Clarification required"} className="pending-action-card">
+      <div><p className="console-kicker">Operator input</p><h3>{request.kind === "approval" ? request.title || "Approval required" : "Clarification required"}</h3><p>{request.kind === "approval" ? request.summary : request.question}</p></div>
+      {confirmationPending ? <div className="pending-action-confirm"><p>Confirm this exact response to the current Run.</p><div><button disabled={busy} onClick={onCancelConfirmation} type="button">Back</button><button className="console-primary-action" disabled={busy} onClick={onConfirm} type="button">{busy ? "Confirming…" : "Confirm response"}</button></div></div> : request.kind === "approval" || request.prompt_type === "choice" ? <div className="pending-action-choices">{request.choices.map((choice) => <button disabled={busy} key={choice.id} onClick={() => onPrepare({ kind: request.kind, choice: choice.id } as RunActionResponse)} type="button">{choice.label}</button>)}</div> : <div className="pending-action-text"><label htmlFor="clarification-response">Response</label><textarea id="clarification-response" maxLength={2_000} onChange={(event) => onClarificationText(event.target.value)} rows={3} value={clarificationText} /><button disabled={busy || !clarificationText.trim()} onClick={() => onPrepare({ kind: "clarification", text: clarificationText.trim() })} type="button">Review response</button></div>}
+      <p className="pending-action-note">The prompt composer cannot answer this request.</p>
+    </section>
+  );
+});
+
 const ActivityRail = memo(function ActivityRail({
   activity,
   activityState,
@@ -353,6 +394,7 @@ export function HomeConsole() {
   const [directAgentId, setDirectAgentId] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [openConversationIds, setOpenConversationIds] = useState<ReadonlySet<string>>(new Set());
   const [details, setDetails] = useState<Record<string, PublicConversationDetail>>({});
   const [activity, setActivity] = useState<PublicActivityPayload | null>(null);
   const [conversationState, setConversationState] = useState<LoadingState>("loading");
@@ -375,7 +417,17 @@ export function HomeConsole() {
   const [creating, setCreating] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [archiveBusyIds, setArchiveBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const [pendingAction, setPendingAction] = useState<{ request: PendingRunRequest; runId: string } | null>(null);
+  const [pendingActionState, setPendingActionState] = useState<{ runId: string; state: "ready" | "unavailable" } | null>(null);
+  const [pendingResponse, setPendingResponse] = useState<{ confirmationId: string; response: RunActionResponse; runId: string } | null>(null);
+  const [clarificationText, setClarificationText] = useState("");
+  const [runActionBusy, setRunActionBusy] = useState(false);
+  const [stopConfirmation, setStopConfirmation] = useState<{ confirmationId: string; runId: string } | null>(null);
+  const [verifiedLiveRunIds, setVerifiedLiveRunIds] = useState<ReadonlySet<string>>(new Set());
+  const [retryBusyRunIds, setRetryBusyRunIds] = useState<ReadonlySet<string>>(new Set());
   const noticeSequence = useRef(0);
+  const pendingTabFocus = useRef<string | null>(null);
   const setNotice = (message: string) => {
     if (!message) {
       setNoticeState({ message: "", sequence: 0 });
@@ -409,6 +461,14 @@ export function HomeConsole() {
     ? detail.current_run
     : null;
   const activeRunId = activeRun?.id ?? null;
+  const retryableRun = detail?.current_run
+    && (RETRYABLE_RUN_STATUSES.has(detail.current_run.status)
+      || (detail.current_run.status === "completed" && detail.current_run.partial))
+    ? detail.current_run
+    : null;
+  const activeRunNeedsResponse = activeRun?.status === "waiting_for_approval"
+    || activeRun?.status === "waiting_for_clarification";
+  const activeRunVerified = activeRunId !== null && verifiedLiveRunIds.has(activeRunId);
   const initialWorkspaceLoading = selectedConversationId === null && conversationState === "loading";
   const composerIntent = conversationComposerIntent(draft);
   const draftIsValid = validConversationComposerText(composerIntent.text);
@@ -421,11 +481,17 @@ export function HomeConsole() {
     && detail?.conversation.state === "active"
     && draftIsValid
     && !sending
+    && (composerIntent.kind !== "steer" || activeRunVerified)
     && (composerIntent.kind === "steer" || !queueAtCapacity && codexSendReady);
   const loadedConversationIds = useMemo(() => new Set(conversations.map((item) => item.id)), [conversations]);
+  const openConversations = useMemo(
+    () => conversations.filter((item) => openConversationIds.has(item.id)),
+    [conversations, openConversationIds],
+  );
   const mounted = useRef(true);
   const compositionActive = useRef(false);
   const retryByConversationRef = useRef(new Map<string, OptimisticMessage>());
+  const retryRunKeysRef = useRef(new Map<string, string>());
   const detailRefreshes = useRef(new Map<string, Promise<PublicConversationDetail>>());
   const pendingDetailRefreshes = useRef(new Set<string>());
   const editingTurnIdsRef = useRef<Record<string, string>>({});
@@ -549,7 +615,10 @@ export function HomeConsole() {
         const payload = conversationResult.value;
         setConversations(payload.conversations); setConversationCursor(payload.next_cursor); setAgents(payload.agents); setDirectAgentId(payload.direct_agent_id);
         setSelectedAgentId((current) => current ?? payload.direct_agent_id);
-        setSelectedConversationId((current) => current && payload.conversations.some((item) => item.id === current) ? current : payload.conversations[0]?.id ?? null);
+        const activeConversationIds = payload.conversations.filter((item) => item.state === "active").map((item) => item.id);
+        const initialConversationId = activeConversationIds[0] ?? payload.conversations[0]?.id ?? null;
+        setOpenConversationIds(new Set(activeConversationIds.length ? activeConversationIds : initialConversationId ? [initialConversationId] : []));
+        setSelectedConversationId((current) => current && payload.conversations.some((item) => item.id === current) ? current : initialConversationId);
         setConversationState(payload.conversations.length ? "ready" : "empty");
       } else setConversationState(statusFrom(conversationResult.reason));
       if (activityResult.status === "fulfilled") { setActivity(activityResult.value); setActivityState("ready"); } else setActivityState(statusFrom(activityResult.reason));
@@ -581,24 +650,52 @@ export function HomeConsole() {
       if (typeof data !== "string") return;
       const summary = liveSummary(data, runId);
       if (summary) setLiveProgress({ runId, summary });
-      void refreshConversationDetail(conversationId).catch(() => {
-        if (!closed) setLiveProgress({ runId, summary: "Live updates are reconnecting…" });
+      void refreshConversationDetail(conversationId).then(() => {
+        if (!closed) setVerifiedLiveRunIds((current) => new Set(current).add(runId));
+      }).catch(() => {
+        if (!closed) {
+          setVerifiedLiveRunIds((current) => { const next = new Set(current); next.delete(runId); return next; });
+          setLiveProgress({ runId, summary: "Live updates are reconnecting…" });
+        }
       });
     };
     source.addEventListener("snapshot", receive);
     source.addEventListener("reset", receive);
     source.addEventListener("timeline", receive);
     source.onerror = () => {
-      if (!closed) setLiveProgress({ runId, summary: "Live updates are reconnecting…" });
+      if (!closed) {
+        setVerifiedLiveRunIds((current) => { const next = new Set(current); next.delete(runId); return next; });
+        setLiveProgress({ runId, summary: "Live updates are reconnecting…" });
+      }
     };
     return () => { closed = true; source.close(); };
   }, [activeRunId, refreshConversationDetail, selectedConversationId]);
 
-  const hasActiveActivity = activity?.activity.some((item) => item.conversations.some(
-    (conversation) => ACTIVE_RUN_STATUSES.has(conversation.run_status),
-  )) ?? false;
   useEffect(() => {
-    if (!hasActiveActivity) return;
+    if (!activeRunId || !activeRunNeedsResponse || !activeRunVerified) return;
+    const runId = activeRunId;
+    let cancelled = false;
+    void fetchPendingRunRequest(runId).then((request) => {
+      if (cancelled) return;
+      setPendingResponse(null);
+      setClarificationText("");
+      setPendingAction({ request, runId });
+      setPendingActionState({ runId, state: "ready" });
+    }).catch(() => {
+      if (cancelled) return;
+      setPendingAction(null);
+      setPendingActionState({ runId, state: "unavailable" });
+    });
+    return () => { cancelled = true; };
+  }, [activeRunId, activeRunNeedsResponse, activeRunVerified]);
+
+  const hasActiveActivity = activity?.activity.some((item) => item.conversations.some(
+    (conversation) => ACTIVE_RUN_STATUSES.has(conversation.run_status)
+      || conversation.run_status === "reconciling",
+  )) ?? false;
+  const shouldPollActivity = hasActiveActivity || activityState !== "ready";
+  useEffect(() => {
+    if (!shouldPollActivity) return;
     let cancelled = false;
     let inFlight = false;
     const timer = window.setInterval(() => {
@@ -609,7 +706,7 @@ export function HomeConsole() {
       }).finally(() => { inFlight = false; });
     }, 4_000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [hasActiveActivity, refreshActivityHints]);
+  }, [refreshActivityHints, shouldPollActivity]);
 
   const loadMoreConversations = useCallback(() => {
     if (!conversationCursor || loadingConversations) return;
@@ -624,20 +721,185 @@ export function HomeConsole() {
   }, [detail, loadingOlder, selectedConversationId]);
 
   const selectConversation = useCallback((conversationId: string) => {
+    setOpenConversationIds((current) => new Set(current).add(conversationId));
     setDetailState(details[conversationId] ? "ready" : "loading");
     setSelectedConversationId(conversationId);
   }, [details]);
 
+  const closeConversation = useCallback((conversationId: string) => {
+    setOpenConversationIds((current) => {
+      const next = new Set(current);
+      next.delete(conversationId);
+      return next;
+    });
+    if (selectedConversationId === conversationId) {
+      const successor = openConversations.find((item) => item.id !== conversationId);
+      pendingTabFocus.current = successor?.id ?? "recent";
+      setSelectedConversationId(successor?.id ?? null);
+      setDetailState(successor && details[successor.id] ? "ready" : successor ? "loading" : "empty");
+    }
+  }, [details, openConversations, selectedConversationId]);
+
+  useEffect(() => {
+    const target = pendingTabFocus.current;
+    if (target === null) return;
+    pendingTabFocus.current = null;
+    const element = target === "recent"
+      ? document.getElementById("recent-conversations-summary")
+      : document.getElementById(`conversation-tab-${target}`);
+    element?.focus();
+  }, [openConversationIds, selectedConversationId]);
+
   const selectActivityConversation = useCallback((conversationId: string) => {
     setNotice("");
     if (loadedConversationIds.has(conversationId)) { selectConversation(conversationId); return; }
-    void refreshConversationDetail(conversationId).then(() => { if (mounted.current) { setDetailState("ready"); setSelectedConversationId(conversationId); } }).catch(() => setNotice("Mentat could not reopen that Conversation safely."));
+    void refreshConversationDetail(conversationId).then(() => { if (mounted.current) selectConversation(conversationId); }).catch(() => setNotice("Mentat could not reopen that Conversation safely."));
   }, [loadedConversationIds, refreshConversationDetail, selectConversation]);
 
   async function createNewConversation() {
     if (creating || !selectedAgentId) return;
     setCreating(true); setNotice("Creating a new Conversation…");
-    try { const created = await createConversation(selectedAgentId); setDetails((current) => ({ ...current, [created.conversation.id]: created })); setDrafts((current) => { const next = { ...current }; const carriedDraft = next[UNBOUND_DRAFT_KEY] ?? ""; delete next[UNBOUND_DRAFT_KEY]; if (carriedDraft) next[created.conversation.id] = carriedDraft; return next; }); setDetailState("ready"); setSelectedConversationId(created.conversation.id); setConversations((current) => [created.conversation, ...current.filter((item) => item.id !== created.conversation.id)]); setConversationState("ready"); setNotice("Conversation created and ready for a prompt."); } catch { setNotice("Mentat could not create that Conversation. Try again."); } finally { setCreating(false); }
+    try { const created = await createConversation(selectedAgentId); setDetails((current) => ({ ...current, [created.conversation.id]: created })); setDrafts((current) => { const next = { ...current }; const carriedDraft = next[UNBOUND_DRAFT_KEY] ?? ""; delete next[UNBOUND_DRAFT_KEY]; if (carriedDraft) next[created.conversation.id] = carriedDraft; return next; }); setOpenConversationIds((current) => new Set(current).add(created.conversation.id)); setDetailState("ready"); setSelectedConversationId(created.conversation.id); setConversations((current) => [created.conversation, ...current.filter((item) => item.id !== created.conversation.id)]); setConversationState("ready"); setNotice("Conversation created and ready for a prompt."); } catch { setNotice("Mentat could not create that Conversation. Try again."); } finally { setCreating(false); }
+  }
+
+  async function setConversationArchived(conversation: PublicConversation, archived: boolean) {
+    if (archiveBusyIds.has(conversation.id)) return;
+    setArchiveBusyIds((current) => new Set(current).add(conversation.id));
+    setConversationNotice(conversation.id, archived ? "Archiving this Conversation…" : "Restoring this Conversation…");
+    try {
+      const result = await archiveConversation(conversation.id, conversation.revision, archived);
+      setConversations((current) => current.map((item) => item.id === conversation.id ? result.conversation : item));
+      setDetails((current) => current[conversation.id]
+        ? { ...current, [conversation.id]: { ...current[conversation.id], conversation: result.conversation } }
+        : current);
+      setConversationNotice(conversation.id, archived
+        ? "Conversation archived. Active work, Messages, and Runs were not changed."
+        : "Conversation restored and ready for work.");
+    } catch (error) {
+      setConversationNotice(conversation.id, errorCode(error) === "conflict"
+        ? "That Conversation changed before its archive state could be updated."
+        : "Mentat could not verify the Conversation archive change.");
+      void refreshConversationDetail(conversation.id).catch(() => undefined);
+    } finally {
+      setArchiveBusyIds((current) => { const next = new Set(current); next.delete(conversation.id); return next; });
+    }
+  }
+
+  async function preparePendingResponse(response: RunActionResponse) {
+    if (!pendingAction || !selectedConversationId || runActionBusy || pendingAction.runId !== activeRunId) return;
+    const runId = pendingAction.runId;
+    const conversationId = selectedConversationId;
+    setRunActionBusy(true);
+    setConversationNotice(conversationId, "Reviewing the exact pending request…");
+    try {
+      const preview = await previewRunResponse(runId, response);
+      if (preview.run_id !== activeRunId) throw new PublicRunActionError("conflict");
+      setPendingResponse({ confirmationId: preview.confirmation_id, response, runId });
+      setConversationNotice(conversationId, "Response preview is current. Confirm to send it.");
+    } catch (error) {
+      setConversationNotice(conversationId, error instanceof PublicRunActionError && error.code === "conflict" ? "The pending request changed before preview. Nothing was sent." : "Mentat could not verify that pending request. Nothing was sent.");
+      void refreshConversationDetail(conversationId).catch(() => undefined);
+    } finally {
+      setRunActionBusy(false);
+    }
+  }
+
+  async function submitPendingResponse() {
+    if (!pendingResponse || runActionBusy || pendingResponse.runId !== activeRunId || !selectedConversationId) return;
+    const conversationId = selectedConversationId;
+    setRunActionBusy(true);
+    setConversationNotice(conversationId, "Confirming the exact pending response…");
+    try {
+      await confirmRunResponse(pendingResponse.runId, pendingResponse.response, pendingResponse.confirmationId);
+      setPendingResponse(null);
+      setPendingAction(null);
+      setPendingActionState(null);
+      setClarificationText("");
+      setConversationNotice(conversationId, "Response accepted. Mentat is reconciling the exact Run.");
+      await refreshConversationDetail(conversationId);
+      void refreshActivityHints().catch(() => undefined);
+    } catch (error) {
+      const code = error instanceof PublicRunActionError ? error.code : "error";
+      setPendingResponse(null);
+      setConversationNotice(conversationId, code === "partial" ? "The runtime may have accepted this response, but Mentat could not verify it. Nothing will retry automatically." : code === "conflict" ? "The pending request changed. Nothing was sent." : "Mentat could not verify the response. Nothing was retried.");
+      void refreshConversationDetail(conversationId).catch(() => undefined);
+    } finally {
+      setRunActionBusy(false);
+    }
+  }
+
+  async function prepareStop() {
+    if (!activeRunId || !selectedConversationId || runActionBusy) return;
+    const runId = activeRunId;
+    const conversationId = selectedConversationId;
+    setRunActionBusy(true);
+    setConversationNotice(conversationId, "Reviewing the exact Stop target…");
+    try {
+      const preview = await previewRunStop(runId);
+      if (preview.run_id !== activeRunId) throw new PublicRunActionError("conflict");
+      setStopConfirmation({ confirmationId: preview.confirmation_id, runId });
+      setConversationNotice(conversationId, "Stop preview is current. Confirm to request Stop.");
+    } catch (error) {
+      const code = error instanceof PublicRunActionError ? error.code : "error";
+      setConversationNotice(conversationId, code === "unsupported" ? "This active Run does not support Stop." : code === "conflict" ? "The active Run changed before Stop could be previewed." : "Mentat could not verify the Stop target.");
+      void refreshConversationDetail(conversationId).catch(() => undefined);
+    } finally {
+      setRunActionBusy(false);
+    }
+  }
+
+  async function submitStop() {
+    if (!stopConfirmation || stopConfirmation.runId !== activeRunId || !selectedConversationId || runActionBusy) return;
+    const conversationId = selectedConversationId;
+    setRunActionBusy(true);
+    setConversationNotice(conversationId, "Requesting Stop for the exact active Run…");
+    try {
+      await confirmRunStop(stopConfirmation.runId, stopConfirmation.confirmationId);
+      setStopConfirmation(null);
+      setConversationNotice(conversationId, "Stop was requested. The Conversation remains open and its queue is paused.");
+      await refreshConversationDetail(conversationId);
+      void refreshActivityHints().catch(() => undefined);
+    } catch (error) {
+      const code = error instanceof PublicRunActionError ? error.code : "error";
+      setStopConfirmation(null);
+      setConversationNotice(conversationId, code === "conflict" ? "The Run changed before Stop confirmation. Nothing was retried." : "Mentat could not verify Stop. Nothing was retried automatically.");
+      void refreshConversationDetail(conversationId).catch(() => undefined);
+    } finally {
+      setRunActionBusy(false);
+    }
+  }
+
+  async function continueRun(action: "retry" | "resume") {
+    if (!retryableRun || !selectedConversationId || retryBusyRunIds.has(retryableRun.id)) return;
+    const conversationId = selectedConversationId;
+    const sourceRunId = retryableRun.id;
+    const keySlot = `${action}:${sourceRunId}`;
+    const key = retryRunKeysRef.current.get(keySlot) ?? crypto.randomUUID();
+    retryRunKeysRef.current.set(keySlot, key);
+    setRetryBusyRunIds((current) => new Set(current).add(sourceRunId));
+    setConversationNotice(conversationId, `Starting one exact ${readable(action)} Run…`);
+    try {
+      const operation = action === "retry" ? retryConversationRun : resumeConversationRun;
+      const result = await operation(conversationId, sourceRunId, key);
+      retryRunKeysRef.current.delete(keySlot);
+      if (!result.duplicate) setVerifiedLiveRunIds((current) => new Set(current).add(result.run.id));
+      setConversationNotice(conversationId, result.duplicate
+        ? `This ${readable(action)} was already accepted. No duplicate Run was started.`
+        : `${readable(action)} accepted as a new Run. The prior attempt remains in history.`);
+      await refreshConversationDetail(conversationId);
+      void refreshActivityHints().catch(() => undefined);
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === "idempotency_conflict") retryRunKeysRef.current.delete(keySlot);
+      setConversationNotice(conversationId, code === "capacity_unavailable"
+        ? `Runtime capacity is unavailable. No ${readable(action)} Run was created.`
+        : code === "conflict" || code === "active_run"
+          ? `The source Run changed before ${readable(action)} admission. Nothing was started.`
+          : `Mentat could not confirm ${readable(action)} admission. The exact action key was kept; try again to replay safely.`);
+      void refreshConversationDetail(conversationId).catch(() => undefined);
+    } finally {
+      setRetryBusyRunIds((current) => { const next = new Set(current); next.delete(sourceRunId); return next; });
+    }
   }
 
   async function recheckCodex() {
@@ -720,6 +982,7 @@ export function HomeConsole() {
         return { ...current, [conversationId]: mergeTurnSubmission(existing, submitted) };
       });
       setConversations((current) => [submitted.conversation, ...current.filter((item) => item.id !== submitted.conversation.id)]);
+      if (submitted.run && !submitted.duplicate) setVerifiedLiveRunIds((current) => new Set(current).add(submitted.run!.id));
       setDrafts((current) => current[conversationId] === draftAtSend
         ? { ...current, [conversationId]: "" }
         : current);
@@ -834,6 +1097,7 @@ export function HomeConsole() {
       const submitted = await continueConversationTurn(conversationId, turn.id, turn.revision, turn.message_revision);
       setDetails((current) => current[conversationId] ? { ...current, [conversationId]: mergeTurnSubmission(current[conversationId], submitted) } : current);
       setConversations((current) => [submitted.conversation, ...current.filter((item) => item.id !== submitted.conversation.id)]);
+      if (submitted.run && !submitted.duplicate) setVerifiedLiveRunIds((current) => new Set(current).add(submitted.run!.id));
       setConversationNotice(conversationId, submitted.disposition === "blocked"
         ? `Turn #${turn.queue_ordinal} remains blocked${submitted.turn.blocked_reason ? ` by ${readable(submitted.turn.blocked_reason)}` : ""}. No Run was started.`
         : submitted.disposition === "accepted"
@@ -861,9 +1125,36 @@ export function HomeConsole() {
       <div className="home-console-layout" data-right-collapsed={rightCollapsed ? "true" : "false"}>
         <section aria-label="Conversation workspace" className="conversation-workspace">
           <div className="conversation-tabs-heading"><div><p className="console-kicker">Conversations</p><h2>Workspace</h2></div><label className="agent-picker"><span>Agent</span><select aria-label="Agent for new conversations" onChange={(event) => setSelectedAgentId(event.target.value || null)} value={selectedAgentId ?? ""}><option value="">{setupRequired ? "Direct Agent setup required" : "Choose an Agent"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label></div>
-          <div aria-label="Conversation tabs" aria-orientation="horizontal" className="conversation-tabs" role="tablist">{conversations.map((conversation, index) => <button aria-controls="conversation-panel" aria-selected={conversation.id === selectedConversationId} className="conversation-tab" data-conversation-tab-index={index} id={`conversation-tab-${conversation.id}`} key={conversation.id} onClick={() => selectConversation(conversation.id)} onKeyDown={(event) => tabKeyDown(event, index, conversations.length, (next) => selectConversation(conversations[next].id))} role="tab" tabIndex={conversation.id === selectedConversationId ? 0 : -1} type="button"><span>{conversationLabel(conversation)}</span><small>{readable(conversation.state)}</small></button>)}{conversationState === "loading" ? <StatusMessage state="loading">Loading Conversations…</StatusMessage> : null}{conversationCursor ? <button className="load-more-conversations" disabled={loadingConversations} onClick={loadMoreConversations} type="button">{loadingConversations ? "Loading…" : "Load older"}</button> : null}</div>
+          <div aria-label="Conversation tabs" aria-orientation="horizontal" className="conversation-tabs" role="tablist">
+            {openConversations.map((conversation, index) => (
+              <div className="conversation-tab-group" key={conversation.id} role="presentation">
+                <button
+                  aria-controls="conversation-panel"
+                  aria-selected={conversation.id === selectedConversationId}
+                  className="conversation-tab"
+                  data-conversation-tab-index={index}
+                  id={`conversation-tab-${conversation.id}`}
+                  onClick={() => selectConversation(conversation.id)}
+                  onKeyDown={(event) => tabKeyDown(event, index, openConversations.length, (next) => selectConversation(openConversations[next].id))}
+                  role="tab"
+                  tabIndex={conversation.id === selectedConversationId ? 0 : -1}
+                  type="button"
+                ><span>{conversationLabel(conversation)}</span><small>{readable(conversation.state)}</small></button>
+                <button
+                  aria-label={`Close ${conversationLabel(conversation)} tab`}
+                  className="conversation-tab-close"
+                  onClick={() => closeConversation(conversation.id)}
+                  type="button"
+                >×</button>
+              </div>
+            ))}
+            {conversationState === "loading" ? <StatusMessage state="loading">Loading Conversations…</StatusMessage> : null}
+            {conversationCursor ? <button className="load-more-conversations" disabled={loadingConversations} onClick={loadMoreConversations} type="button">{loadingConversations ? "Loading…" : "Load older"}</button> : null}
+          </div>
+          {conversations.length ? <details className="conversation-history"><summary id="recent-conversations-summary" tabIndex={-1}>Recent Conversations</summary><ul>{conversations.map((conversation) => <li key={conversation.id}><button className="history-open" onClick={() => selectConversation(conversation.id)} type="button"><span>{conversationLabel(conversation)}</span><small>{readable(conversation.state)} · {new Date(conversation.updated_at).toLocaleDateString()}</small></button><button aria-label={`${conversation.state === "archived" ? "Restore" : "Archive"} ${conversationLabel(conversation)}`} disabled={archiveBusyIds.has(conversation.id)} onClick={() => void setConversationArchived(conversation, conversation.state !== "archived")} type="button">{archiveBusyIds.has(conversation.id) ? "Updating…" : conversation.state === "archived" ? "Restore" : "Archive"}</button></li>)}</ul></details> : null}
           <Transcript detail={detail} detailState={displayedDetailState} draftSuggestion={setSelectedDraft} loadOlder={loadOlder} loadingOlder={loadingOlder} optimisticMessage={optimisticMessage} selectedAgentName={selectedAgent?.name ?? null} selectedConversationId={selectedConversationId} />
-          {activeRun ? <div aria-live="polite" className="selected-run-progress"><span className="activity-state-dot" aria-hidden="true" /><div><strong>Run {readable(activeRun.status)}</strong><p>{liveProgress?.runId === activeRun.id ? liveProgress.summary : "Waiting for the next verified Run update…"}</p></div></div> : null}
+          {activeRun ? <><div aria-live="polite" className="selected-run-progress"><span className="activity-state-dot" aria-hidden="true" /><div><strong>Run {activeRunVerified ? readable(activeRun.status) : "Reconciling"}</strong><p>{liveProgress?.runId === activeRun.id ? liveProgress.summary : "Checking the exact runtime state before enabling controls…"}</p></div><div className="selected-run-actions">{activeRunVerified ? stopConfirmation?.runId === activeRun.id ? <><button disabled={runActionBusy} onClick={() => setStopConfirmation(null)} type="button">Keep running</button><button className="run-stop-confirm" disabled={runActionBusy} onClick={() => void submitStop()} type="button">{runActionBusy ? "Stopping…" : "Confirm Stop"}</button></> : selectedAgent?.capabilities.includes("run.stop") && activeRun.status !== "finalizing" ? <button className="run-stop" disabled={runActionBusy} onClick={() => void prepareStop()} type="button">Stop</button> : null : null}</div></div>{activeRunVerified && activeRunNeedsResponse && pendingActionState?.runId === activeRun.id && pendingActionState.state === "unavailable" ? <StatusMessage state="unavailable">The pending request could not be verified. Composer text will not answer it.</StatusMessage> : null}{activeRunVerified && pendingAction?.runId === activeRun.id ? <PendingActionCard busy={runActionBusy} clarificationText={clarificationText} confirmationPending={pendingResponse?.runId === activeRun.id} onCancelConfirmation={() => setPendingResponse(null)} onClarificationText={setClarificationText} onConfirm={() => void submitPendingResponse()} onPrepare={(response) => void preparePendingResponse(response)} request={pendingAction.request} /> : null}</> : null}
+          {retryableRun ? <section aria-label="Run recovery" className="run-recovery-card"><div><p className="console-kicker">Run recovery</p><h3>Run {readable(retryableRun.status)}{retryableRun.partial ? " · verification partial" : ""}</h3><p>The prior Run and its events remain in history. Retry creates a separate execution attempt with the current Agent configuration.</p></div><div className="run-recovery-actions"><button disabled={retryBusyRunIds.has(retryableRun.id) || detail?.conversation.state !== "active"} onClick={() => void continueRun("retry")} type="button">{retryBusyRunIds.has(retryableRun.id) ? "Working…" : "Retry"}</button></div></section> : null}
           <QueuedTurns busyTurnIds={queueBusyTurnIds} editDrafts={queueEditDrafts} editingTurnId={editingTurnId} onBeginEdit={(turn) => { if (!selectedConversationId) return; setConversationEditor(selectedConversationId, turn.id); setQueueEditDrafts((current) => ({ ...current, [turn.id]: turn.text })); }} onCancel={(turn) => void cancelQueuedTurn(turn)} onContinue={(turn) => void continueQueuedTurn(turn)} onDiscardEdit={(turn) => { if (!selectedConversationId) return; const conversationId = selectedConversationId; if (editingTurnIdsRef.current[conversationId] !== turn.id) return; setConversationEditor(conversationId, null); focusQueueTarget(conversationId, turn.id); }} onEditDraft={(turnId, text) => setQueueEditDrafts((current) => ({ ...current, [turnId]: text }))} onSaveEdit={(turn) => void editQueuedTurn(turn)} turns={detail?.queued_turns ?? []} />
           {setupRequired || selectedNeedsCodexReadiness ? <div className="codex-setup" data-state={codexReadiness ?? "unchecked"}><div><strong>{codexReadiness === "ready" ? "Codex ready" : "Codex subscription sign-in"}</strong><p>{codexReadiness === "sign_in_required" ? <>Run <code>codex login</code> in a terminal, finish the browser sign-in, then Recheck.</> : codexReadiness === "cli_missing" ? <>Install the Codex CLI, run <code>codex login</code>, then restart Mentat.</> : codexReadiness === "unavailable" ? "Mentat could not confirm local Codex readiness." : codexReadiness === "ready" ? "The local Codex CLI is signed in. Mentat never receives your credentials." : "Mentat uses the Codex CLI's existing ChatGPT subscription sign-in; credentials stay with Codex."}</p></div><button disabled={checkingCodex} onClick={() => void recheckCodex()} type="button">{checkingCodex ? "Checking…" : codexReadiness === null ? "Check readiness" : "Recheck"}</button></div> : null}
           <form className="console-composer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}><label htmlFor="console-prompt">Prompt</label><textarea disabled={initialWorkspaceLoading || sending} id="console-prompt" onChange={(event) => setSelectedDraft(event.target.value)} onCompositionEnd={() => { compositionActive.current = false; }} onCompositionStart={() => { compositionActive.current = true; }} onKeyDown={(event) => { const native = event.nativeEvent; const composing = compositionActive.current || native.isComposing || native.keyCode === 229; if (event.key === "Enter" && !event.shiftKey && !composing) { event.preventDefault(); void sendTurn(); } }} placeholder={initialWorkspaceLoading ? "Loading Conversations" : sending ? composerIntent.kind === "steer" ? "Steering this Run" : "Submitting this Turn" : activeRun ? "Write a follow-up to queue, or begin with /steer" : "Write a prompt for your Agent…"} rows={1} value={draft} /><div className="composer-footer"><span className="composer-context">{selectedAgent ? `${selectedAgent.name} · ${selectedIsDirect ? "Direct mode" : "Selected Agent"}` : setupRequired ? "Direct Agent setup required" : "Select an Agent to continue"}</span><span className="composer-boundary">{sending ? composerIntent.kind === "steer" ? "Steering exact active Run…" : "Submitting exact Turn…" : composerIntent.kind === "steer" ? draftIsValid ? "Steering is never queued" : "Add guidance after /steer" : queueAtCapacity ? "Queue full · edit, cancel, or continue existing work" : activeRun ? `Run ${readable(activeRun.status)} · ordinary Send queues` : selectedNeedsCodexReadiness && codexReadiness !== "ready" && !(detail?.queued_turns.length) ? "Check Codex readiness before starting a Run" : "Enter to send · Shift+Enter for a new line"}</span><button aria-disabled={!canSend} className="composer-send" disabled={!canSend} type="submit">{sending ? "Sending…" : composerIntent.kind === "turn" && activeRun ? "Queue" : "Send"}</button></div></form>

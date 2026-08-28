@@ -534,7 +534,13 @@ same-origin request boundary and accepts no query parameters. Browser event
 bursts collapse to one in-flight canonical Conversation read and at most one
 trailing read; revision-monotonic merging rejects stale queue/Run state while
 preserving at most 200 paginated Messages. The global activity rail remains a
-bounded hint surface and opens no background detailed streams.
+bounded hint surface and opens no background detailed streams. Process-local
+verification receipts are cleared at startup, then populated only by the
+bounded startup readback, an accepted submission, or an exact selected-Run
+readback. Any nonterminal Conversation Run without one of those current-process
+receipts is projected as `reconciling`, and its Agent as `checking`, rather than
+claiming stale work is live. Activity reads never call a runtime adapter or hold
+the continuation gate across runtime I/O.
 
 The Home composer remains writable during active work. `/steer` is recognized
 only at the beginning after leading whitespace, strips its prefix, and targets
@@ -604,7 +610,35 @@ submission receipts even if an older Run row is evicted. The schema trigger
 permits only those exact claim or no-attempt terminal clears; every other
 Conversation Run identity change remains immutable. Backup, restore,
 fingerprint, and semantic validation remain compatible with released schemas
-10 through 12.
+10 through 13.
+
+Schema 14 adds explicit Conversation Run attempts for operator recovery.
+Retry creates a new Run for the same Turn with a fresh immutable execution
+snapshot and `retry_of_run_id`. Resume uses `resume_of_run_id` only when the
+Agent and exact live adapter both advertise `run.resume`, the source retains a
+private runtime reference, and the adapter implements the fixed resume method.
+No current production adapter advertises Resume. Retry and Resume accept one
+bounded idempotency key, preserve a durable result receipt after full Run
+retention, and permit at most seven later attempts for one Turn. The latest
+submission projection advances to the new Run without deleting prior Runs or
+events. Concurrent keys cannot create two successors from one source, and a
+restart marks an unattempted recovery reservation interrupted or a claimed
+uncertain attempt unknown without another adapter call. Migration 14 requires
+the exact schema-13 fingerprint in the same write transaction, replaces only
+the latest-result insertion trigger, and adds the bounded attempt-receipt
+authority.
+
+The Next.js Home Console treats initial nonterminal SQLite state as
+`Reconciling` until the selected Run stream completes its fixed mutating
+readback. Stop, steering, and pending-action controls remain unavailable until
+that exact Run is verified. Approval and clarification use dedicated inline
+cards and the existing preview-confirm response boundary; composer text never
+answers them. Closing a tab changes browser presentation only. Recent history
+reopens the same durable Conversation, while exact-revision archive and restore
+change only the Conversation lifecycle and never stop a Run or delete evidence.
+If an archived Conversation's active Run completes, the terminal result still
+commits while its queued head remains paused until an explicit restore and
+Continue.
 
 Run `details_json` remains a bounded display snapshot, while `run_attachments`
 is the retention/access authority;

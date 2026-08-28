@@ -1234,6 +1234,38 @@ button {
   text-align: left;
 }
 
+.conversation-tab-group {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.conversation-tab-group .conversation-tab {
+  width: 100%;
+  padding-right: 30px;
+}
+
+.conversation-tab-close {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.conversation-tab-close:hover {
+  background: var(--row-hover);
+  color: var(--text-primary);
+}
+
 .conversation-tab:hover,
 .conversation-tab[aria-selected="true"] {
   border-color: var(--accent);
@@ -1252,6 +1284,66 @@ button {
 .conversation-tab small {
   color: var(--text-tertiary);
   font-size: 0.65rem;
+}
+
+.conversation-history {
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--panel) 92%, var(--canvas));
+}
+
+.conversation-history summary {
+  width: fit-content;
+  margin: 0 18px;
+  padding: 8px 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.conversation-history ul {
+  display: grid;
+  gap: 5px;
+  max-height: 220px;
+  margin: 0;
+  padding: 0 18px 10px;
+  overflow: auto;
+  list-style: none;
+}
+
+.conversation-history li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.conversation-history li > button {
+  min-height: 32px;
+}
+
+.history-open {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--row);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.history-open span,
+.history-open small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-open small {
+  color: var(--text-tertiary);
+  font-size: 0.66rem;
 }
 
 .conversation-transcript {
@@ -1426,6 +1518,123 @@ button {
   margin: 2px 0 0;
   color: var(--text-secondary);
   font-size: 0.7rem;
+}
+
+.selected-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.selected-run-actions button,
+.pending-action-card button {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--row);
+  color: var(--text-primary);
+  font-size: 0.7rem;
+}
+
+.selected-run-actions .run-stop,
+.selected-run-actions .run-stop-confirm {
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--border-default));
+  color: var(--danger);
+}
+
+.pending-action-card {
+  display: grid;
+  gap: 10px;
+  margin: 9px clamp(12px, 4vw, 58px) 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 58%, var(--border-default));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 7%, var(--row));
+}
+
+.pending-action-card h3,
+.pending-action-card p {
+  margin: 0;
+}
+
+.pending-action-card h3 {
+  color: var(--text-primary);
+  font-size: 0.84rem;
+}
+
+.pending-action-card p {
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+}
+
+.pending-action-choices,
+.pending-action-confirm > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.pending-action-confirm,
+.pending-action-text {
+  display: grid;
+  gap: 7px;
+}
+
+.pending-action-text textarea {
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--border-control);
+  border-radius: 6px;
+  background: var(--canvas);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.pending-action-note {
+  color: var(--text-tertiary) !important;
+}
+
+.run-recovery-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin: 9px clamp(12px, 4vw, 58px) 0;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 44%, var(--border-default));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 6%, var(--row));
+}
+
+.run-recovery-card h3,
+.run-recovery-card p {
+  margin: 0;
+}
+
+.run-recovery-card h3 {
+  font-size: 0.82rem;
+}
+
+.run-recovery-card p:not(.console-kicker) {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
+.run-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.run-recovery-actions button {
+  min-height: 34px;
+  padding: 6px 11px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--row);
+  color: var(--text-primary);
 }
 
 .conversation-queue {
@@ -1964,6 +2173,34 @@ button {
   }
 
   .queue-actions {
+    justify-content: flex-start;
+  }
+
+  .conversation-history li > button,
+  .conversation-tab-close,
+  .pending-action-card button,
+  .run-recovery-actions button,
+  .selected-run-actions button {
+    min-height: 44px;
+  }
+
+  .conversation-tab-group .conversation-tab {
+    padding-right: 48px;
+  }
+
+  .conversation-tab-close {
+    top: 0;
+    right: 0;
+    min-width: 44px;
+    width: 44px;
+    height: 44px;
+  }
+
+  .run-recovery-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .run-recovery-actions {
     justify-content: flex-start;
   }
 

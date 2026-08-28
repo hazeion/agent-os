@@ -11,6 +11,8 @@ import {
 import { createCodexReadinessGetHandler } from "../src/lib/codex-readiness-route.ts";
 import { createConversationTurnPostHandler } from "../src/lib/conversation-turn-route.ts";
 import { createConversationQueueActionHandler } from "../src/lib/conversation-queue-route.ts";
+import { createConversationArchiveHandler } from "../src/lib/conversation-archive-route.ts";
+import { createConversationResumeHandler, createConversationRetryHandler } from "../src/lib/conversation-retry-route.ts";
 import { createConversationSteerHandler } from "../src/lib/conversation-steer-route.ts";
 
 const origin = "http://127.0.0.1:8890";
@@ -198,6 +200,94 @@ test("Conversation queue routes bind both revisions and map stale conflicts", as
   );
   assert.equal(stale.status, 409);
   assert.deepEqual(await stale.json(), { schema_version: 1, status: "conflict" });
+});
+
+test("Conversation archive route binds the exact revision and same-origin request", async () => {
+  const archived = {
+    action: "archive" as const,
+    conversation: {
+      ...submitted.conversation,
+      archived_at: "2026-08-26T12:02:00Z",
+      revision: 3,
+      state: "archived" as const,
+      updated_at: "2026-08-26T12:02:00Z",
+    },
+    runtime: "python" as const,
+    schema_version: 1 as const,
+    service: "mentat-local-bridge" as const,
+    status: "ready" as const,
+  };
+  const calls: unknown[][] = [];
+  const handler = createConversationArchiveHandler(true, {
+    gatewayPort: "8890",
+    mutate: async (...values) => { calls.push(values); return archived; },
+  });
+  const response = await handler(
+    new Request(`${origin}/api/conversations/conv_route/archive`, {
+      body: '{"expected_revision":2}',
+      headers: requestHeaders,
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route" }) },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [["conv_route", 2, true]]);
+  assert.deepEqual(await response.json(), archived);
+
+  const forbidden = await handler(
+    new Request(`${origin}/api/conversations/conv_route/archive`, {
+      body: '{"expected_revision":2}',
+      headers: { ...requestHeaders, Origin: "https://attacker.example" },
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route" }) },
+  );
+  assert.equal(forbidden.status, 403);
+  assert.equal(calls.length, 1);
+});
+
+test("Conversation Retry route binds one exact source Run and action key", async () => {
+  const retried = {
+    action: "retry" as const,
+    conversation_id: "conv_route",
+    duplicate: false,
+    run: { id: "run_retry", partial: false, status: "starting", updated_at: "2026-08-26T12:02:00Z" },
+    runtime: "python" as const,
+    schema_version: 1 as const,
+    service: "mentat-local-bridge" as const,
+    source_run_id: "run_route",
+    status: "ready" as const,
+  };
+  const calls: unknown[][] = [];
+  const response = await createConversationRetryHandler({
+    gatewayPort: "8890",
+    retry: async (...values) => { calls.push(values); return retried; },
+  })(
+    new Request(`${origin}/api/conversations/conv_route/retry`, {
+      body: '{"idempotency_key":"conversation-route-retry-key","source_run_id":"run_route"}',
+      headers: requestHeaders,
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route" }) },
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(calls, [["conv_route", "run_route", "conversation-route-retry-key"]]);
+  assert.deepEqual(await response.json(), retried);
+
+  const resumed = { ...retried, action: "resume" as const, run: { ...retried.run, id: "run_resume" } };
+  const resumeResponse = await createConversationResumeHandler({
+    gatewayPort: "8890",
+    retry: async () => resumed,
+  })(
+    new Request(`${origin}/api/conversations/conv_route/resume`, {
+      body: '{"idempotency_key":"conversation-route-resume-key","source_run_id":"run_route"}',
+      headers: requestHeaders,
+      method: "POST",
+    }),
+    { params: Promise.resolve({ conversationId: "conv_route" }) },
+  );
+  assert.equal(resumeResponse.status, 202);
+  assert.equal((await resumeResponse.json()).action, "resume");
 });
 
 test("Conversation steer route is exact and preserves partial as an explicit failure", async () => {

@@ -6,6 +6,7 @@ import {
   CODEX_READINESS_BRIDGE_TIMEOUT_MILLISECONDS,
   CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS,
   cancelBridgeConversationTurn,
+  archiveBridgeConversation,
   continueBridgeConversationTurn,
   createBridgeConversation,
   editBridgeConversationTurn,
@@ -13,12 +14,15 @@ import {
   fetchBridgeCodexReadiness,
   fetchBridgeConversation,
   fetchBridgeConversations,
+  retryBridgeConversationRun,
+  resumeBridgeConversationRun,
   steerBridgeConversation,
   submitBridgeConversationTurn,
 } from "../src/lib/bridge-conversations.ts";
 import {
   CODEX_READINESS_PUBLIC_TIMEOUT_MILLISECONDS,
   CONVERSATION_TURN_PUBLIC_TIMEOUT_MILLISECONDS,
+  retryConversationRun,
 } from "../src/lib/public-conversations.ts";
 
 const environment = {
@@ -123,6 +127,119 @@ test("Conversation bridge uses fixed paths and exact create bodies", async () =>
     { url: "http://127.0.0.1:49152/bridge/v1/conversations", method: "POST", body: '{"agent_id":"agent_direct"}' },
     { url: "http://127.0.0.1:49152/bridge/v1/conversations/conv_abc123", method: "GET", body: undefined },
   ]);
+});
+
+test("Conversation archive bridge is exact, reversible, and rejects cross-target results", async () => {
+  const archived = {
+    action: "archive" as const,
+    conversation: {
+      ...conversation,
+      archived_at: "2026-08-25T12:02:00Z",
+      revision: 2,
+      state: "archived" as const,
+      updated_at: "2026-08-25T12:02:00Z",
+    },
+    runtime: "python" as const,
+    schema_version: 1 as const,
+    service: "mentat-local-bridge" as const,
+    status: "ready" as const,
+  };
+  const calls: Array<{ body: string | undefined; url: string }> = [];
+  const result = await archiveBridgeConversation(
+    conversation.id,
+    conversation.revision,
+    true,
+    async (input, init) => {
+      calls.push({ body: init?.body?.toString(), url: input.toString() });
+      return Response.json(archived);
+    },
+    environment,
+  );
+  assert.equal(result.conversation.state, "archived");
+  assert.deepEqual(calls, [{
+    body: '{"expected_revision":1}',
+    url: "http://127.0.0.1:49152/bridge/v1/conversations/conv_abc123/archive",
+  }]);
+  await assert.rejects(
+    archiveBridgeConversation(
+      conversation.id,
+      1,
+      true,
+      async () => Response.json({
+        ...archived,
+        conversation: { ...archived.conversation, id: "conv_cross_target" },
+      }),
+      environment,
+    ),
+    (error: unknown) => error instanceof BridgeConversationsError
+      && error.code === "bridge_response_invalid",
+  );
+});
+
+test("Conversation Retry bridge binds the exact source and idempotency key", async () => {
+  const result = {
+    action: "retry" as const,
+    conversation_id: conversation.id,
+    duplicate: false,
+    run: { id: "run_retry", partial: false, status: "starting", updated_at: "2026-08-25T12:02:00Z" },
+    runtime: "python" as const,
+    schema_version: 1 as const,
+    service: "mentat-local-bridge" as const,
+    source_run_id: "run_abc123",
+    status: "ready" as const,
+  };
+  const calls: Array<{ body: string | undefined; url: string }> = [];
+  const retried = await retryBridgeConversationRun(
+    conversation.id,
+    "run_abc123",
+    "conversation-retry-key",
+    async (input, init) => {
+      calls.push({ body: init?.body?.toString(), url: input.toString() });
+      return Response.json(result, { status: 202 });
+    },
+    environment,
+  );
+  assert.equal(retried.run.id, "run_retry");
+  assert.deepEqual(calls, [{
+    body: '{"idempotency_key":"conversation-retry-key","source_run_id":"run_abc123"}',
+    url: "http://127.0.0.1:49152/bridge/v1/conversations/conv_abc123/retry",
+  }]);
+  const resumed = await resumeBridgeConversationRun(
+    conversation.id,
+    "run_abc123",
+    "conversation-resume-key",
+    async () => Response.json({ ...result, action: "resume", run: { ...result.run, id: "run_resume" } }, { status: 202 }),
+    environment,
+  );
+  assert.equal(resumed.action, "resume");
+  assert.equal(resumed.run.id, "run_resume");
+
+  await assert.rejects(
+    retryBridgeConversationRun(
+      conversation.id,
+      "run_abc123",
+      "conversation-retry-key",
+      async () => Response.json({ ...result, run: { ...result.run, id: "run_abc123" } }, { status: 202 }),
+      environment,
+    ),
+    (error: unknown) => error instanceof BridgeConversationsError
+      && error.code === "bridge_response_invalid",
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json(
+    { ...result, run: { ...result.run, id: "run_abc123" } },
+    { status: 202 },
+  );
+  try {
+    await assert.rejects(retryConversationRun(
+      conversation.id,
+      "run_abc123",
+      "conversation-retry-key",
+    ));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("Conversation bridge returns detached safe data and rejects private fields", async () => {

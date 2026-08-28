@@ -90,6 +90,7 @@ class RuntimeCapability(StrEnum):
     EVENTS = "run.events"
     ATTACHMENTS = "run.attachments"
     APPROVAL_RESPONSE = "run.approval_response"
+    RESUME = "run.resume"
     MODEL_GENERATE = "model.generate"
 
 

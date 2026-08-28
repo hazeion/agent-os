@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1096,6 +1096,109 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
           );
         """,
     ),
+    (
+        14,
+        """
+        DROP TRIGGER mentat_conversation_submission_result_insert;
+
+        CREATE TRIGGER mentat_conversation_submission_result_insert
+        AFTER INSERT ON mentat_runs
+        WHEN NEW.source = 'console'
+          AND NEW.conversation_id IS NOT NULL
+          AND NEW.turn_id IS NOT NULL
+        BEGIN
+            INSERT INTO mentat_conversation_submission_results (
+                turn_id, run_id, runtime_binding_digest, dispatch_state,
+                status, partial, updated_at
+            ) VALUES (
+                NEW.turn_id, NEW.id, NEW.runtime_binding_digest,
+                NEW.dispatch_state, NEW.status, NEW.partial, NEW.updated_at
+            )
+            ON CONFLICT(turn_id) DO UPDATE SET
+                run_id = excluded.run_id,
+                runtime_binding_digest = excluded.runtime_binding_digest,
+                dispatch_state = excluded.dispatch_state,
+                status = excluded.status,
+                partial = excluded.partial,
+                updated_at = excluded.updated_at;
+        END;
+
+        CREATE TABLE mentat_conversation_run_attempts (
+            key_digest TEXT PRIMARY KEY CHECK (length(key_digest) = 64),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            action TEXT NOT NULL CHECK (action IN ('retry', 'resume')),
+            conversation_id TEXT NOT NULL
+                REFERENCES mentat_conversations(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL
+                REFERENCES mentat_conversation_turns(id) ON DELETE CASCADE,
+            source_run_id TEXT NOT NULL CHECK (
+                length(source_run_id) BETWEEN 1 AND 128
+            ),
+            run_id TEXT NOT NULL UNIQUE CHECK (
+                length(run_id) BETWEEN 1 AND 128
+            ),
+            runtime_binding_digest TEXT NOT NULL CHECK (
+                length(runtime_binding_digest) = 64
+            ),
+            dispatch_state TEXT NOT NULL CHECK (
+                dispatch_state IN (
+                    'reserved', 'submitting', 'accepted', 'rejected', 'unknown'
+                )
+            ),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'reserved', 'queued', 'submitting', 'starting', 'running',
+                    'cancelling', 'waiting', 'waiting_for_approval',
+                    'waiting_for_clarification', 'unknown', 'completed',
+                    'failed', 'cancelled', 'stopped', 'interrupted'
+                )
+            ),
+            partial INTEGER NOT NULL CHECK (partial IN (0, 1)),
+            created_at TEXT NOT NULL CHECK (
+                length(created_at) BETWEEN 1 AND 64
+            ),
+            updated_at TEXT NOT NULL CHECK (
+                length(updated_at) BETWEEN 1 AND 64
+            )
+        );
+
+        CREATE INDEX idx_mentat_conversation_run_attempts_turn
+            ON mentat_conversation_run_attempts(turn_id, created_at, run_id);
+
+        CREATE TRIGGER mentat_conversation_run_attempts_capacity
+        BEFORE INSERT ON mentat_conversation_run_attempts
+        WHEN (
+            SELECT COUNT(*) FROM mentat_conversation_run_attempts
+            WHERE turn_id = NEW.turn_id
+        ) >= 7
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_attempt_capacity');
+        END;
+
+        CREATE TRIGGER mentat_conversation_run_attempt_result_update
+        AFTER UPDATE OF status, dispatch_state, partial,
+            runtime_binding_digest, updated_at ON mentat_runs
+        WHEN NEW.source = 'console'
+          AND NEW.conversation_id IS NOT NULL
+          AND NEW.turn_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM mentat_conversation_run_attempts
+              WHERE run_id = NEW.id
+          )
+        BEGIN
+            UPDATE mentat_conversation_run_attempts
+            SET runtime_binding_digest = NEW.runtime_binding_digest,
+                dispatch_state = NEW.dispatch_state,
+                status = NEW.status,
+                partial = NEW.partial,
+                updated_at = NEW.updated_at
+            WHERE run_id = NEW.id;
+            SELECT CASE WHEN changes() != 1
+                THEN RAISE(ABORT, 'conversation_attempt_result_missing')
+            END;
+        END;
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12})
@@ -1392,7 +1495,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13}
+        requires_exact_source_gate = version in {12, 13, 14}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -1426,6 +1529,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 12 cannot be safely upgraded"
+                    )
+                if (
+                    version == 14
+                    and schema_signature_state(connection, 13) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 13 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

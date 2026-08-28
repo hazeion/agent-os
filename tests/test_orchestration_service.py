@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -152,6 +153,8 @@ class FakeRuntime:
         self.steer_calls = []
         self.return_completed = False
         self.return_runtime_run_ref = "runtime-service-ref"
+        self.resume_supported = False
+        self.resume_calls = []
 
     @property
     def capabilities(self):
@@ -162,7 +165,10 @@ class FakeRuntime:
             and not self.capabilities_release.wait(timeout=5)
         ):
             raise TimeoutError("test capability gate timed out")
-        return frozenset({"run.start"})
+        capabilities = {"run.start"}
+        if self.resume_supported:
+            capabilities.add("run.resume")
+        return frozenset(capabilities)
 
     def capacity_for_binding(self, runtime_agent_ref):
         if self.capacity_entered is not None:
@@ -347,7 +353,16 @@ class FakeRuntime:
         expected = context.runtime_run_ref or context.mentat_run_id
         if run_id != expected:
             raise AssertionError("runtime-owned Run reference was not used")
-        return frozenset({"run.message", "run.status"})
+        capabilities = {"run.message", "run.status"}
+        if self.resume_supported:
+            capabilities.add("run.resume")
+        return frozenset(capabilities)
+
+    def resume_task(self, task, source_run_ref, context):
+        if not self.resume_supported:
+            raise AssertionError("Resume was not advertised")
+        self.resume_calls.append((source_run_ref, context))
+        return self.submit_task(task, context)
 
     def send_message(self, run_id, message, *, context=None):
         expected = context.runtime_run_ref or context.mentat_run_id
@@ -862,6 +877,499 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(duplicate.message.id, first.message.id)
         self.assertEqual(duplicate.turn.id, first.turn.id)
         self.assertEqual(duplicate.run.id, first.run.id)
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_explicit_conversation_retry_creates_one_new_run_and_replays_exactly(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.rejects = True
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Retry this exact failed Turn",
+                idempotency_key="conversation-initial-retry-key",
+            )
+            self.assertEqual(first.run.status, "failed")
+            runtime.rejects = False
+
+            retried = service.retry_conversation_run(
+                conversation_id=conversation_id,
+                source_run_id=first.run.id,
+                idempotency_key="conversation-explicit-retry-key",
+            )
+            replay = service.retry_conversation_run(
+                conversation_id=conversation_id,
+                source_run_id=first.run.id,
+                idempotency_key="conversation-explicit-retry-key",
+            )
+            runtime.observed_status = RunStatus.FAILED
+            service.reconcile_run(
+                run_id=retried.attempt.run_id,
+                owner="retry_chain_reconciler",
+            )
+            second_retry = service.retry_conversation_run(
+                conversation_id=conversation_id,
+                source_run_id=retried.attempt.run_id,
+                idempotency_key="conversation-second-retry-key",
+            )
+            old_replay = service.retry_conversation_run(
+                conversation_id=conversation_id,
+                source_run_id=first.run.id,
+                idempotency_key="conversation-explicit-retry-key",
+            )
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                old_run = repository.get_run(first.run.id)
+                new_run = repository.get_run(retried.attempt.run_id)
+                turn = connection.execute(
+                    "SELECT latest_run_id, attempt_count FROM "
+                    "mentat_conversation_turns WHERE id = ?",
+                    (first.turn.id,),
+                ).fetchone()
+                run_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_runs WHERE turn_id = ?",
+                        (first.turn.id,),
+                    ).fetchone()[0]
+                )
+                old_event_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_agent_events WHERE run_id = ?",
+                        (first.run.id,),
+                    ).fetchone()[0]
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertFalse(retried.duplicate)
+        self.assertTrue(replay.duplicate)
+        self.assertEqual(replay.attempt.run_id, retried.attempt.run_id)
+        self.assertEqual(old_run.status, "failed")
+        self.assertEqual(new_run.retry_of_run_id, first.run.id)
+        self.assertEqual(new_run.turn_id, first.turn.id)
+        self.assertEqual(turn["latest_run_id"], second_retry.attempt.run_id)
+        self.assertEqual(int(turn["attempt_count"]), 3)
+        self.assertEqual(run_count, 3)
+        self.assertGreater(old_event_count, 0)
+        self.assertTrue(old_replay.duplicate)
+        self.assertEqual(old_replay.attempt.run_id, retried.attempt.run_id)
+        self.assertEqual(len(runtime.calls), 3)
+
+    def test_conversation_resume_requires_exact_advertised_private_continuity(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.resume_supported = True
+            service, conversation_id = self.prepare_conversation(
+                root,
+                runtime,
+                agent_capabilities=("run.start", "run.message", "run.resume"),
+            )
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Resume this exact stopped Turn",
+                idempotency_key="conversation-resume-source-key",
+            )
+            runtime.observed_status = RunStatus.STOPPED
+            reconciled = service.reconcile_run(
+                run_id=first.run.id,
+                owner="resume_source_reconciler",
+            )
+            self.assertEqual(reconciled.reconciled, (first.run.id,))
+
+            resumed = service.resume_conversation_run(
+                conversation_id=conversation_id,
+                source_run_id=first.run.id,
+                idempotency_key="conversation-explicit-resume-key",
+            )
+            replay = service.resume_conversation_run(
+                conversation_id=conversation_id,
+                source_run_id=first.run.id,
+                idempotency_key="conversation-explicit-resume-key",
+            )
+
+            connection = connect(root)
+            try:
+                stored = RunRepository(connection).get_run(
+                    resumed.attempt.run_id
+                )
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(stored.resume_of_run_id, first.run.id)
+        self.assertIsNone(stored.retry_of_run_id)
+        self.assertEqual(runtime.resume_calls[0][0], "runtime-service-ref")
+        self.assertTrue(replay.duplicate)
+        self.assertEqual(len(runtime.resume_calls), 1)
+
+    def test_conversation_resume_is_absent_without_declared_capability(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Do not fabricate Resume",
+                idempotency_key="conversation-no-resume-source-key",
+            )
+            runtime.observed_status = RunStatus.STOPPED
+            service.reconcile_run(
+                run_id=first.run.id,
+                owner="no_resume_source_reconciler",
+            )
+            with self.assertRaisesRegex(
+                OrchestrationServiceError,
+                "conversation.agent_capability_missing",
+            ):
+                service.resume_conversation_run(
+                    conversation_id=conversation_id,
+                    source_run_id=first.run.id,
+                    idempotency_key="conversation-no-resume-action-key",
+                )
+
+        self.assertEqual(runtime.resume_calls, [])
+
+    def test_archiving_an_active_conversation_never_stops_its_run(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep running while the tab is archived",
+                idempotency_key="conversation-active-archive-key",
+            )
+            repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            current = repository.read(conversation_id).conversation
+            archived = repository.set_archived(
+                conversation_id,
+                expected_revision=current.revision,
+                archived=True,
+            )
+            runtime.observed_status = RunStatus.COMPLETED
+            reconciled = service.reconcile_run(
+                run_id=submitted.run.id,
+                owner="archived_completion_reconciler",
+            )
+            connection = connect(root)
+            try:
+                run_after_archive = RunRepository(connection).get_run(
+                    submitted.run.id
+                )
+            finally:
+                connection.close()
+            restored = repository.set_archived(
+                conversation_id,
+                expected_revision=archived.revision,
+                archived=False,
+            )
+
+        self.assertEqual(archived.state, "archived")
+        self.assertEqual(restored.state, "active")
+        self.assertEqual(reconciled.reconciled, (submitted.run.id,))
+        self.assertEqual(run_after_archive.status, "completed")
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_activity_marks_unverified_restart_state_as_reconciling(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Do not present stale restart state as live",
+                idempotency_key="conversation-activity-reconcile-key",
+            )
+            runtime.status_entered = threading.Event()
+            runtime.status_release = threading.Event()
+            server._clear_agent_console_verified_runs()
+            started = time.monotonic()
+            with patch.object(server, "DATA_DIR", root):
+                payload, status = local_bridge.bridge_agent_activity_payload()
+            elapsed = time.monotonic() - started
+            server._clear_agent_console_verified_runs()
+
+        self.assertEqual(status, 200)
+        self.assertLess(elapsed, 1.0)
+        self.assertFalse(runtime.status_entered.is_set())
+        projected = next(
+            item for item in payload["activity"]
+            if item["agent"]["id"] == submitted.conversation.agent_id
+        )
+        exact = next(
+            item for item in projected["conversations"]
+            if item["id"] == conversation_id
+        )
+        self.assertEqual(projected["state"], "checking")
+        self.assertEqual(projected["summary"], "Checking exact runtime state")
+        self.assertFalse(projected["attention"])
+        self.assertEqual(exact["run_status"], "reconciling")
+        self.assertFalse(exact["attention"])
+
+    def test_activity_claims_working_only_after_exact_readback(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Verify this exact active Run",
+                idempotency_key="conversation-activity-verified-key",
+            )
+            server._clear_agent_console_verified_runs()
+            server._mark_agent_console_runs_verified(submitted.run.id)
+            with patch.object(server, "DATA_DIR", root):
+                payload = server.mentat_agent_activity_payload()
+            server._clear_agent_console_verified_runs()
+
+        projected = next(
+            item for item in payload["activity"]
+            if item["agent"]["id"] == submitted.conversation.agent_id
+        )
+        exact = next(
+            item for item in projected["conversations"]
+            if item["id"] == conversation_id
+        )
+        self.assertEqual(projected["state"], "working")
+        self.assertEqual(exact["run_status"], submitted.run.status)
+
+    def test_duplicate_turn_replay_cannot_recreate_a_liveness_receipt(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            key = "conversation-duplicate-liveness-key"
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Replay this exact accepted Turn after restart",
+                idempotency_key=key,
+            )
+            server._clear_agent_console_verified_runs()
+            with (
+                patch.object(server, "DATA_DIR", root),
+                patch.object(server, "AGENT_RUNTIME_REGISTRY", service.runtime_registry),
+                patch.object(server, "_mentat_agent_registry", return_value=service.agent_registry),
+                patch.object(server, "AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED", True),
+                patch.object(server, "agent_console_storage_degraded", return_value=False),
+            ):
+                replay, status = server.submit_mentat_conversation_turn(
+                    conversation_id,
+                    {"idempotency_key": key, "text": "Replay this exact accepted Turn after restart"},
+                )
+                activity = server.mentat_agent_activity_payload()
+            server._clear_agent_console_verified_runs()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(replay["duplicate"])
+        self.assertEqual(replay["run"]["id"], first.run.id)
+        self.assertEqual(len(runtime.calls), 1)
+        projected = next(
+            item for item in activity["activity"]
+            if item["agent"]["id"] == first.conversation.agent_id
+        )
+        self.assertEqual(projected["state"], "checking")
+        self.assertEqual(projected["conversations"][0]["run_status"], "reconciling")
+
+    def test_duplicate_retry_replay_cannot_recreate_a_liveness_receipt(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Fail before the exact Retry",
+                idempotency_key="conversation-duplicate-retry-source",
+            )
+            runtime.observed_status = RunStatus.FAILED
+            service.reconcile_run(
+                run_id=first.run.id,
+                owner="duplicate_retry_source_reconciler",
+            )
+            key = "conversation-duplicate-retry-action"
+            retried = service.retry_conversation_run(
+                conversation_id=conversation_id,
+                source_run_id=first.run.id,
+                idempotency_key=key,
+            )
+            server._clear_agent_console_verified_runs()
+            with (
+                patch.object(server, "DATA_DIR", root),
+                patch.object(server, "AGENT_RUNTIME_REGISTRY", service.runtime_registry),
+                patch.object(server, "_mentat_agent_registry", return_value=service.agent_registry),
+                patch.object(server, "AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED", True),
+                patch.object(server, "agent_console_storage_degraded", return_value=False),
+            ):
+                replay, status = server.retry_mentat_conversation_run(
+                    conversation_id,
+                    {"idempotency_key": key, "source_run_id": first.run.id},
+                )
+                activity = server.mentat_agent_activity_payload()
+            server._clear_agent_console_verified_runs()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(replay["duplicate"])
+        self.assertEqual(replay["run"]["id"], retried.attempt.run_id)
+        self.assertEqual(len(runtime.calls), 2)
+        projected = next(
+            item for item in activity["activity"]
+            if item["agent"]["id"] == first.conversation.agent_id
+        )
+        self.assertEqual(projected["state"], "checking")
+        self.assertEqual(projected["conversations"][0]["run_status"], "reconciling")
+
+    def test_archived_completion_preserves_a_queued_turn_without_dispatching_it(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Finish the active archived Run",
+                idempotency_key="conversation-archived-queue-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this queued until the Conversation is restored",
+                idempotency_key="conversation-archived-queue-key-2",
+            )
+            repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            current = repository.read(conversation_id).conversation
+            repository.set_archived(
+                conversation_id,
+                expected_revision=current.revision,
+                archived=True,
+            )
+            runtime.observed_status = RunStatus.COMPLETED
+            reconciled = service.reconcile_run(
+                run_id=submitted.run.id,
+                owner="archived_queued_completion_reconciler",
+            )
+            detail = repository.read(conversation_id)
+            restored = repository.set_archived(
+                conversation_id,
+                expected_revision=detail.conversation.revision,
+                archived=False,
+            )
+            service.id_factory = lambda prefix: f"{prefix}_archived_continued"
+            continued = service.continue_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=detail.queued_turns[0].id,
+                expected_revision=detail.queued_turns[0].revision,
+                expected_message_revision=detail.queued_turns[0].message_revision,
+            )
+
+        self.assertEqual(reconciled.reconciled, (submitted.run.id,))
+        self.assertEqual(detail.current_run["status"], "completed")
+        self.assertEqual(len(detail.queued_turns), 1)
+        self.assertEqual(detail.queued_turns[0].id, queued.turn.id)
+        self.assertEqual(detail.queued_turns[0].state, "blocked")
+        self.assertEqual(detail.queued_turns[0].blocked_reason, "partial")
+        self.assertEqual(restored.state, "active")
+        self.assertIsNotNone(continued.run)
+        self.assertEqual(continued.turn.id, queued.turn.id)
+        self.assertEqual(len(runtime.calls), 2)
+
+    def test_immediate_completion_commits_when_conversation_is_archived_in_flight(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_completed = True
+            runtime.submit_entered = threading.Event()
+            runtime.submit_release = threading.Event()
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            results = []
+            failures = []
+
+            def submit_first():
+                try:
+                    results.append(service.submit_conversation_turn(
+                        conversation_id=conversation_id,
+                        text="Complete after this Conversation is archived",
+                        idempotency_key="conversation-archive-immediate-key",
+                    ))
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    failures.append(exc)
+
+            worker = threading.Thread(target=submit_first)
+            worker.start()
+            self.assertTrue(runtime.submit_entered.wait(timeout=5))
+            repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            current = repository.read(conversation_id).conversation
+            repository.set_archived(
+                conversation_id,
+                expected_revision=current.revision,
+                archived=True,
+            )
+            runtime.submit_release.set()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            if failures:
+                raise failures[0]
+            detail = repository.read(conversation_id)
+
+        self.assertEqual(failures, [])
+        self.assertEqual(results[0].run.status, "completed")
+        self.assertEqual(detail.conversation.state, "archived")
+        self.assertEqual(detail.current_run["status"], "finalizing")
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_restart_interrupts_an_unattempted_retry_without_resubmission(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.rejects = True
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Do not resubmit this reserved Retry after restart",
+                idempotency_key="conversation-restart-retry-source",
+            )
+            runtime.rejects = False
+            record, binding = service._agent_record_and_binding(first.conversation.agent_id)
+            admission = service._conversation_admission(
+                record=record,
+                binding=binding,
+                runtime=runtime,
+                binding_digest=service._binding_digest(record.agent, binding),
+                run_id="run_retry_restart_reserved",
+            )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                reservation = repository.reserve_conversation_run_attempt(
+                    action="retry",
+                    idempotency_key="conversation-restart-retry-action",
+                    conversation_id=conversation_id,
+                    source_run_id=first.run.id,
+                    admission=admission,
+                )
+                recovered = repository.recover_conversation_submissions()
+                retry_run = repository.get_run(reservation.run_id)
+                receipt = repository.get_conversation_run_attempt_result(
+                    idempotency_key="conversation-restart-retry-action"
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(recovered, (reservation.run_id,))
+        self.assertEqual(retry_run.status, "interrupted")
+        self.assertTrue(retry_run.partial)
+        self.assertEqual(receipt.status, "interrupted")
         self.assertEqual(len(runtime.calls), 1)
 
     def test_conversation_turn_accepts_exactly_six_thousand_astral_code_points(self):

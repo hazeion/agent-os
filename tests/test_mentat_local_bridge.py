@@ -444,6 +444,60 @@ class LocalBridgeTests(unittest.TestCase):
             {"run_id": "run_current", "text": "Use this guidance"},
         )
 
+        archive_response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "action": "archive",
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_archive_conversation_payload",
+            return_value=(archive_response, 200),
+        ) as archive:
+            status, payload, _headers = self.request(
+                method="POST",
+                path="/bridge/v1/conversations/conv_current/archive",
+                headers={"Content-Type": "application/json"},
+                body=b'{"expected_revision":4}',
+            )
+        self.assertEqual((status, payload), (200, archive_response))
+        archive.assert_called_once_with(
+            "conv_current",
+            {"archived": True, "expected_revision": 4},
+        )
+
+        attempt_response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "action": "retry",
+        }
+        attempt_body = {
+            "idempotency_key": "conversation-attempt-key",
+            "source_run_id": "run_current",
+        }
+        for action, capability_name in (
+            ("retry", "bridge_retry_conversation_run_payload"),
+            ("resume", "bridge_resume_conversation_run_payload"),
+        ):
+            response = {**attempt_response, "action": action}
+            with patch.object(
+                local_bridge,
+                capability_name,
+                return_value=(response, 202),
+            ) as capability:
+                status, payload, _headers = self.request(
+                    method="POST",
+                    path=f"/bridge/v1/conversations/conv_current/{action}",
+                    headers={"Content-Type": "application/json"},
+                    body=json.dumps(attempt_body).encode("utf-8"),
+                )
+            self.assertEqual((status, payload), (202, response))
+            capability.assert_called_once_with("conv_current", attempt_body)
+
         refresh_response = {
             "schema_version": 1,
             "service": "mentat-local-bridge",

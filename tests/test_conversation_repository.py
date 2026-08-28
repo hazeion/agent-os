@@ -131,6 +131,43 @@ class ConversationRepositoryTests(unittest.TestCase):
             self.assertIsNone(next_cursor)
             self.assertEqual({item.id for item in first} | {item.id for item in second}, set(created))
 
+    def test_archive_is_exact_reversible_and_does_not_touch_runs(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = ConversationRepository(root)
+            created = repository.create()
+
+            archived = repository.set_archived(
+                created.conversation.id,
+                expected_revision=created.conversation.revision,
+                archived=True,
+            )
+            self.assertEqual(archived.state, "archived")
+            self.assertEqual(archived.revision, created.conversation.revision + 1)
+            self.assertIsNotNone(archived.archived_at)
+
+            with self.assertRaisesRegex(Exception, "conversation.changed"):
+                repository.set_archived(
+                    created.conversation.id,
+                    expected_revision=created.conversation.revision,
+                    archived=False,
+                )
+
+            restored = repository.set_archived(
+                created.conversation.id,
+                expected_revision=archived.revision,
+                archived=False,
+            )
+            self.assertEqual(restored.state, "active")
+            self.assertEqual(restored.revision, archived.revision + 1)
+            self.assertIsNone(restored.archived_at)
+
+            with closing(sqlite3.connect(database_path(root))) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM mentat_runs").fetchone()[0],
+                    0,
+                )
+
     def test_direct_agent_is_setup_required_when_codex_binding_is_unavailable(self):
         with TemporaryDirectory() as temporary:
             with patch("codex_runtime.find_codex_command", return_value=None):
@@ -190,6 +227,32 @@ class ConversationRepositoryTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(listed["count"], 1)
                 self.assertEqual(listed["conversations"][0]["id"], conversation_id)
+
+                archived, status = local_bridge.bridge_archive_conversation_payload(
+                    conversation_id,
+                    {"archived": True, "expected_revision": 1},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(archived["action"], "archive")
+                self.assertEqual(archived["conversation"]["state"], "archived")
+
+                conflict, status = local_bridge.bridge_archive_conversation_payload(
+                    conversation_id,
+                    {"archived": False, "expected_revision": 1},
+                )
+                self.assertEqual(status, 409)
+                self.assertEqual(conflict["status"], "conflict")
+
+                restored, status = local_bridge.bridge_archive_conversation_payload(
+                    conversation_id,
+                    {
+                        "archived": False,
+                        "expected_revision": archived["conversation"]["revision"],
+                    },
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(restored["action"], "restore")
+                self.assertEqual(restored["conversation"]["state"], "active")
 
                 with closing(sqlite3.connect(database_path(root))) as connection:
                     self.assertEqual(

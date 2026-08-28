@@ -23,7 +23,10 @@ import threading
 import time
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from conversation_repository import ConversationRepositoryError
+from conversation_repository import (
+    ConversationRepositoryConflict,
+    ConversationRepositoryError,
+)
 from orchestration_service import OrchestrationServiceError
 from .version import DISPLAY_VERSION
 
@@ -791,6 +794,155 @@ def bridge_create_conversation_payload(payload: object) -> tuple[dict[str, objec
         return _conversation_failure("error")
 
 
+def bridge_archive_conversation_payload(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    """Archive or restore one exact Conversation through the private bridge."""
+
+    try:
+        from server import archive_mentat_conversation
+
+        source, status = archive_mentat_conversation(conversation_id, payload)
+        if status != 200:
+            return _conversation_failure("invalid")
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"schema_version", "action", "conversation"}
+            or source.get("schema_version") != 1
+            or source.get("action") not in {"archive", "restore"}
+        ):
+            raise BridgeConversationProjectionError(
+                "conversation_archive_invalid"
+            )
+        conversation = _public_conversation_summary(source.get("conversation"))
+        requested_archived = (
+            payload.get("archived") if isinstance(payload, dict) else None
+        )
+        if (
+            conversation["id"] != conversation_id
+            or requested_archived is True
+            and (
+                source["action"] != "archive"
+                or conversation["state"] != "archived"
+            )
+            or requested_archived is False
+            and (
+                source["action"] != "restore"
+                or conversation["state"] != "active"
+            )
+        ):
+            raise BridgeConversationProjectionError(
+                "conversation_archive_invalid"
+            )
+        return _bounded_conversation_response(
+            {
+                "schema_version": 1,
+                "service": "mentat-local-bridge",
+                "runtime": "python",
+                "status": "ready",
+                "action": source["action"],
+                "conversation": conversation,
+            },
+            200,
+        )
+    except ConversationRepositoryConflict as exc:
+        if exc.code == "conversation.not_found":
+            return _conversation_failure("not_found")
+        return _conversation_failure("conflict")
+    except ConversationRepositoryError as exc:
+        if exc.code.endswith("invalid"):
+            return _conversation_failure("invalid")
+        return _conversation_failure("unavailable")
+    except (BridgeConversationProjectionError, OSError, ValueError):
+        return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def bridge_conversation_run_attempt_payload(
+    action: str,
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    """Create one exact same-Turn Retry or Resume through the bridge."""
+
+    try:
+        from server import (
+            resume_mentat_conversation_run,
+            retry_mentat_conversation_run,
+        )
+
+        operation = (
+            retry_mentat_conversation_run
+            if action == "retry"
+            else resume_mentat_conversation_run
+        )
+        source, status = operation(
+            conversation_id,
+            payload,
+        )
+        if status not in {200, 202}:
+            return _conversation_submission_error(
+                str(source.get("error_code") or "conversation.request_invalid")
+            )
+        if (
+            not isinstance(source, dict)
+            or set(source) != {
+                "schema_version", "action", "conversation_id",
+                "source_run_id", "duplicate", "run",
+            }
+            or source.get("schema_version") != 1
+            or source.get("action") != action
+            or source.get("conversation_id") != conversation_id
+            or not isinstance(source.get("duplicate"), bool)
+            or not isinstance(payload, dict)
+            or source.get("source_run_id") != payload.get("source_run_id")
+        ):
+            raise BridgeConversationProjectionError(
+                "conversation_retry_invalid"
+            )
+        run = _public_current_run(source.get("run"))
+        if run is None:
+            raise BridgeConversationProjectionError(
+                "conversation_retry_invalid"
+            )
+        return _bounded_conversation_response(
+            {
+                **source,
+                "run": run,
+                "service": "mentat-local-bridge",
+                "runtime": "python",
+                "status": "ready",
+            },
+            status,
+        )
+    except OrchestrationServiceError as exc:
+        return _conversation_submission_error(exc.code)
+    except (BridgeConversationProjectionError, ConversationRepositoryError):
+        return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def bridge_retry_conversation_run_payload(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    return bridge_conversation_run_attempt_payload(
+        "retry", conversation_id, payload
+    )
+
+
+def bridge_resume_conversation_run_payload(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    return bridge_conversation_run_attempt_payload(
+        "resume", conversation_id, payload
+    )
+
+
 def _public_conversation_turn(value: object) -> dict[str, object]:
     required = {
         "id", "conversation_id", "user_message_id", "queue_ordinal", "state",
@@ -824,7 +976,7 @@ def _public_conversation_turn(value: object) -> dict[str, object]:
         or type(value.get("revision")) is not int
         or value["revision"] < 1
         or type(value.get("attempt_count")) is not int
-        or value["attempt_count"] not in {0, 1}
+        or not 0 <= value["attempt_count"] <= 8
         or not _conversation_timestamp(value.get("created_at"))
         or not _conversation_timestamp(value.get("updated_at"))
     ):
@@ -877,9 +1029,16 @@ def _conversation_submission_error(code: str) -> tuple[dict[str, object], int]:
         return _conversation_failure("not_found")
     if code == "conversation.active_run":
         return _conversation_failure("active_run")
-    if code in {"conversation.capacity_unavailable", "conversation.turn_capacity"}:
+    if code in {
+        "conversation.capacity_unavailable",
+        "conversation.turn_capacity",
+        "conversation.attempt_capacity",
+    }:
         return _conversation_failure("capacity_unavailable")
-    if code == "conversation.idempotency_conflict":
+    if code in {
+        "conversation.idempotency_conflict",
+        "conversation.attempt_idempotency_conflict",
+    }:
         return _conversation_failure("idempotency_conflict")
     if code in {
         "conversation.active_run",
@@ -891,6 +1050,7 @@ def _conversation_submission_error(code: str) -> tuple[dict[str, object], int]:
         "conversation.turn_not_continuable",
         "conversation.turn_not_editable",
         "conversation.turn_not_found",
+        "conversation.attempt_stale",
     }:
         return _conversation_failure("conflict")
     if code == "codex.cli_missing":
@@ -900,6 +1060,7 @@ def _conversation_submission_error(code: str) -> tuple[dict[str, object], int]:
     if code in {
         "conversation.agent_capability_missing",
         "conversation.runtime_capability_missing",
+        "conversation.resume_unavailable",
         "runtime.binding_invalid",
     }:
         return _conversation_failure("unsupported")
@@ -1156,7 +1317,7 @@ def _public_activity_item(value: object) -> dict[str, object]:
     conversations = value.get("conversations")
     if (
         value.get("state") not in {
-            "working", "waiting", "failed", "stopped", "interrupted", "idle"
+            "checking", "working", "waiting", "failed", "stopped", "interrupted", "idle"
         }
         or not _conversation_text(value.get("summary"), 160)
         or not isinstance(value.get("attention"), bool)
@@ -1181,7 +1342,7 @@ def _public_activity_item(value: object) -> dict[str, object]:
             or conversation.get("run_status") not in {
                 "reserved", "queued", "submitting", "starting", "running",
                 "cancelling", "waiting", "waiting_for_approval",
-                "waiting_for_clarification", "unknown", "finalizing", "failed", "completed",
+                "waiting_for_clarification", "unknown", "finalizing", "reconciling", "failed", "completed",
                 "stopped", "interrupted",
             }
             or not isinstance(conversation.get("attention"), bool)
@@ -2199,6 +2360,62 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bridge_route_not_found"}, 404)
                 return
             payload, status = bridge_create_conversation_payload(body)
+            self._send_json(payload, status)
+            return
+        conversation_retry_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/(retry|resume)",
+            parsed.path,
+        )
+        if conversation_retry_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_retry_match.group(1))
+            action = conversation_retry_match.group(2)
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(
+                MAXIMUM_BRIDGE_CONVERSATION_TURN_BODY_BYTES
+            )
+            if body is None or set(body) != {
+                "idempotency_key",
+                "source_run_id",
+            }:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            operation = (
+                bridge_retry_conversation_run_payload
+                if action == "retry"
+                else bridge_resume_conversation_run_payload
+            )
+            payload, status = operation(conversation_id, body)
+            self._send_json(payload, status)
+            return
+        conversation_archive_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/(archive|restore)",
+            parsed.path,
+        )
+        if conversation_archive_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_archive_match.group(1))
+            action = conversation_archive_match.group(2)
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
+            if body is None or set(body) != {"expected_revision"}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_archive_conversation_payload(
+                conversation_id,
+                {
+                    "archived": action == "archive",
+                    "expected_revision": body["expected_revision"],
+                },
+            )
             self._send_json(payload, status)
             return
         conversation_queue_action_match = re.fullmatch(

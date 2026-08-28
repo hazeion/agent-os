@@ -45,6 +45,7 @@ from conversation_repository import (
 from run_repository import (
     ConversationDispatchReservation,
     ConversationRunAdmission,
+    ConversationRunAttemptResult,
     ConversationSubmissionResult,
     DispatchReservation,
     RunRecord,
@@ -90,6 +91,12 @@ class ConversationQueueMutationResult:
     message: ConversationMessageRecord
     turn: ConversationTurnRecord
     disposition: str
+
+
+@dataclass(frozen=True)
+class ConversationRunActionResult:
+    attempt: ConversationRunAttemptResult
+    duplicate: bool
 
 
 @dataclass(frozen=True)
@@ -961,6 +968,186 @@ class OrchestrationService:
                 runtime=runtime,
             )
 
+    def _conversation_run_action(
+        self,
+        *,
+        action: str,
+        conversation_id: str,
+        source_run_id: str,
+        idempotency_key: str,
+    ) -> ConversationRunActionResult:
+        """Create and submit one explicit same-Turn Retry or Resume Run."""
+
+        if (
+            action not in {"retry", "resume"}
+            or
+            re.fullmatch(
+                r"conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}",
+                str(conversation_id),
+            ) is None
+            or re.fullmatch(
+                r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}",
+                str(source_run_id),
+            ) is None
+        ):
+            raise OrchestrationServiceError("conversation.attempt_invalid")
+        with private_state_lock(self.data_dir):
+            connection = self._connect()
+            try:
+                repository = RunRepository(connection)
+                replay = repository.lookup_conversation_run_attempt(
+                    action=action,
+                    idempotency_key=idempotency_key,
+                    conversation_id=conversation_id,
+                    source_run_id=source_run_id,
+                )
+                if replay is not None:
+                    return ConversationRunActionResult(replay, True)
+                source = repository.get_run(source_run_id)
+                if (
+                    source.conversation_id != conversation_id
+                    or source.agent_id is None
+                ):
+                    raise OrchestrationServiceError(
+                        "conversation.attempt_stale"
+                    )
+                agent_id = source.agent_id
+                source_runtime_run_ref = source.runtime_run_ref
+            except RunRepositoryError as exc:
+                raise OrchestrationServiceError(exc.code) from exc
+            finally:
+                connection.close()
+        try:
+            record, binding = self._agent_record_and_binding(agent_id)
+            runtime = self.runtime_registry.require(binding.runtime_type)
+        except AgentRegistryError as exc:
+            raise OrchestrationServiceError(
+                "conversation.binding_unavailable"
+            ) from exc
+        except AgentRuntimeError as exc:
+            raise OrchestrationServiceError(exc.code) from exc
+        required_capability = (
+            RuntimeCapability.START_TASK.value
+            if action == "retry"
+            else RuntimeCapability.RESUME.value
+        )
+        if required_capability not in record.agent.capabilities:
+            raise OrchestrationServiceError(
+                "conversation.agent_capability_missing"
+            )
+        if action == "resume":
+            if source_runtime_run_ref is None:
+                raise OrchestrationServiceError(
+                    "conversation.resume_unavailable"
+                )
+            context = RuntimeContext(
+                agent_id=record.agent.id,
+                runtime_agent_ref=binding.runtime_agent_ref,
+                task_id=source_run_id,
+                mentat_run_id=source_run_id,
+                runtime_run_ref=source_runtime_run_ref,
+            )
+            try:
+                live_capabilities = runtime.capabilities_for_run(
+                    source_runtime_run_ref,
+                    context=context,
+                )
+            except Exception as exc:
+                raise OrchestrationServiceError(
+                    "conversation.resume_unavailable"
+                ) from exc
+            if (
+                RuntimeCapability.RESUME.value not in live_capabilities
+                or not callable(getattr(runtime, "resume_task", None))
+            ):
+                raise OrchestrationServiceError(
+                    "conversation.resume_unavailable"
+                )
+        binding_digest = self._binding_digest(record.agent, binding)
+        admission = self._conversation_admission(
+            record=record,
+            binding=binding,
+            runtime=runtime,
+            binding_digest=binding_digest,
+            run_id=f"run_{action}_{uuid4().hex}",
+        )
+        guard_factory = getattr(runtime, "submission_guard", None)
+        guard = guard_factory() if callable(guard_factory) else nullcontext()
+        with guard:
+            with private_state_lock(self.data_dir):
+                connection = self._connect()
+                try:
+                    reservation = RunRepository(
+                        connection
+                    ).reserve_conversation_run_attempt(
+                        action=action,
+                        idempotency_key=idempotency_key,
+                        conversation_id=conversation_id,
+                        source_run_id=source_run_id,
+                        admission=admission,
+                    )
+                except RunRepositoryError as exc:
+                    raise OrchestrationServiceError(exc.code) from exc
+                finally:
+                    connection.close()
+            if not reservation.duplicate:
+                result = self._conversation_result(
+                    reservation,
+                    duplicate=False,
+                )
+                self._execute_reserved_conversation_turn(
+                    reservation=reservation,
+                    text=result.message.content["parts"][0]["text"],
+                    record=record,
+                    binding=binding,
+                    runtime=runtime,
+                    resume_runtime_run_ref=(
+                        source_runtime_run_ref if action == "resume" else None
+                    ),
+                )
+            with private_state_lock(self.data_dir):
+                connection = self._connect()
+                try:
+                    attempt = RunRepository(
+                        connection
+                    ).get_conversation_run_attempt_result(
+                        idempotency_key=idempotency_key,
+                    )
+                finally:
+                    connection.close()
+        return ConversationRunActionResult(
+            attempt=attempt,
+            duplicate=reservation.duplicate,
+        )
+
+    def retry_conversation_run(
+        self,
+        *,
+        conversation_id: str,
+        source_run_id: str,
+        idempotency_key: str,
+    ) -> ConversationRunActionResult:
+        return self._conversation_run_action(
+            action="retry",
+            conversation_id=conversation_id,
+            source_run_id=source_run_id,
+            idempotency_key=idempotency_key,
+        )
+
+    def resume_conversation_run(
+        self,
+        *,
+        conversation_id: str,
+        source_run_id: str,
+        idempotency_key: str,
+    ) -> ConversationRunActionResult:
+        return self._conversation_run_action(
+            action="resume",
+            conversation_id=conversation_id,
+            source_run_id=source_run_id,
+            idempotency_key=idempotency_key,
+        )
+
     def _execute_reserved_conversation_turn(
         self,
         *,
@@ -970,6 +1157,7 @@ class OrchestrationService:
         binding: RuntimeBinding,
         runtime: AgentRuntime,
         continuation_runtime_run_ref: str | None = None,
+        resume_runtime_run_ref: str | None = None,
     ) -> ConversationTurnDispatchResult:
         """Claim and invoke one already-reserved Turn exactly once."""
 
@@ -1036,7 +1224,12 @@ class OrchestrationService:
             )
             try:
                 # No SQLite or private-state lock crosses this external call.
-                outcome = runtime.submit_task(turn_task, context)
+                resume_task = getattr(runtime, "resume_task", None)
+                outcome = (
+                    resume_task(turn_task, resume_runtime_run_ref, context)
+                    if resume_runtime_run_ref is not None
+                    else runtime.submit_task(turn_task, context)
+                )
                 if not isinstance(outcome, SubmissionOutcome):
                     outcome = SubmissionOutcome(
                         SubmissionDisposition.UNKNOWN,
@@ -1864,6 +2057,7 @@ class OrchestrationService:
 
 __all__ = [
     "ConversationQueueMutationResult",
+    "ConversationRunActionResult",
     "ConversationTurnDispatchResult",
     "DispatchResult",
     "OrchestrationService",
