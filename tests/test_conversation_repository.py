@@ -219,6 +219,21 @@ class ConversationRepositoryTests(unittest.TestCase):
         for private in ("account", "credential", "access_token", "refresh_token"):
             self.assertNotIn(private, serialized)
 
+    def test_local_bridge_allows_only_the_exact_finalizing_projection(self):
+        current = {
+            "id": "run_finalizing",
+            "status": "finalizing",
+            "partial": False,
+            "updated_at": "2026-08-27T12:00:00+00:00",
+        }
+        self.assertEqual(local_bridge._public_current_run(current), current)
+        for invalid in ("finalized", "artifact_pending"):
+            with self.assertRaisesRegex(
+                local_bridge.BridgeConversationProjectionError,
+                "conversation_run_invalid",
+            ):
+                local_bridge._public_current_run({**current, "status": invalid})
+
 
 if __name__ == "__main__":
     unittest.main()

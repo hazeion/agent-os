@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from types import SimpleNamespace
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -17,6 +18,7 @@ def run_fixture(*, revision: int = 4, status: str = "running") -> RunRecord:
         agent_id="agent_current", runtime_type="hermes", runtime_config_id="runtime_current",
         runtime_binding_digest="a" * 64, runtime_run_ref=None, runtime_event_cursor=0,
         status=status, dispatch_state="accepted", state_revision=revision, partial=False,
+        terminal_finalized=False,
         timeline_truncated=False, first_retained_sequence=1, last_removed_sequence=0,
         last_event_sequence=1, created_at="2026-08-22T00:00:00+00:00",
         updated_at="2026-08-22T00:00:00+00:00", started_at="2026-08-22T00:00:00+00:00",
@@ -204,6 +206,23 @@ class RunStopControlTests(unittest.TestCase):
             reconciled=(run.id,),
             unavailable=(),
         )
+        runtime_lock_available = []
+
+        def build_reconciler(*_args, **_kwargs):
+            def probe_runtime_lock():
+                acquired = server.HERMES_CONNECTION_OPERATION_LOCK.acquire(
+                    timeout=1
+                )
+                runtime_lock_available.append(acquired)
+                if acquired:
+                    server.HERMES_CONNECTION_OPERATION_LOCK.release()
+
+            probe = threading.Thread(target=probe_runtime_lock)
+            probe.start()
+            probe.join(timeout=2)
+            return reconciler
+
+        service_factory = Mock(side_effect=build_reconciler)
         with (
             patch.object(server, "_current_run_for_stop", return_value=run),
             patch.object(server, "_run_stop_context", return_value=(runtime, context)),
@@ -218,16 +237,32 @@ class RunStopControlTests(unittest.TestCase):
             ),
             patch.object(server, "_run_stop_context", return_value=(runtime, context)),
             patch.object(server, "_mentat_agent_registry", return_value=object()),
-            patch.object(server, "OrchestrationService", return_value=reconciler),
+            patch.object(
+                server,
+                "OrchestrationService",
+                service_factory,
+            ),
+            patch.object(
+                server,
+                "AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED",
+                True,
+            ),
         ):
             result = server.mentat_confirm_run_stop(
                 run.id, preview["confirmation_id"]
             )
 
         self.assertEqual(result["disposition"], "requested")
+        self.assertEqual(runtime_lock_available, [True])
         reconciler.reconcile_run.assert_called_once()
         self.assertEqual(
             reconciler.reconcile_run.call_args.kwargs["run_id"], run.id
+        )
+        self.assertIs(
+            service_factory.call_args.kwargs[
+                "conversation_continuation_handler"
+            ],
+            server._dispatch_reserved_agent_console_continuation,
         )
 
     def test_confirm_rejects_a_run_that_changed_after_preview_revalidation(self):

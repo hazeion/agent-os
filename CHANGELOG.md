@@ -11,6 +11,8 @@ All notable changes to Mentat.
   projection, and bounded global Agent activity hints.
 - Added exact active-Run `/steer`, private Codex thread continuity, and typed
   adapter capacity with a qualified two-Conversation Codex ceiling.
+- Added authenticated local Hermes live control so active local Runs can accept
+  exact `/steer` guidance through Hermes' supported redirect operation.
 
 ### Changed
 - Kept the Home composer writable during active Runs: ordinary text queues,
@@ -20,6 +22,28 @@ All notable changes to Mentat.
   the queue until explicit revalidation.
 - Reconciled only the selected detailed Run from its live stream while keeping
   background Conversations on bounded summary hints.
+- Made the full interactive capability set, including `run.message`, the
+  default for newly created Hermes and Codex Agents; live controls still depend
+  on the exact Run's verified adapter state.
+- Advanced the private Console database through schema 13: schema 12 converges
+  one exact pre-release schema-11 Conversation shape, and schema 13 records an
+  exact terminal-finalization barrier plus retention-safe Codex continuation.
+
+### Fixed
+- Repaired startup for an existing owner-private data root created by the
+  pre-release Slice 3 schema, while continuing to reject every unrecognized
+  schema difference.
+- Stopped stale legacy attachment and artifact display metadata from exposing
+  content routes after its canonical run binding and retained blob are gone.
+- Replaced the local Hermes one-shot execution path with the supported
+  profile-scoped headless session when available, retaining one-shot fallback
+  only before any prompt could have been submitted.
+- Prevented a split Hermes status/event read from consuming a newer terminal
+  event while leaving the canonical Run active and its FIFO successor stranded.
+- Finalized pre-launch Hermes cancellation and binding-loss exits before worker
+  cleanup, so each unsafe exit blocks rather than silently marooning the head.
+- Kept ambiguous steering partial after later runtime completion, preventing an
+  unverified control delivery from automatically advancing queued work.
 
 ### Safety
 - Bound queue mutations to both Turn and Message revisions and rechecked exact
@@ -28,6 +52,33 @@ All notable changes to Mentat.
 - Kept runtime references, capacity scopes, raw provider events, partial token
   text, credentials, and local paths behind the private Python/SQLite boundary;
   ambiguous submissions and steering are never retried automatically.
+- Made the schema-12 Turn rewrite and receipt atomic, verified the complete
+  foreign-key graph before commit, and restored connection enforcement after
+  both successful and rolled-back upgrades.
+- Bound the exact schema-11 source fingerprint to the same SQLite write
+  transaction as the rewrite, preserved quoted SQL contents and token
+  boundaries during layout normalization, and rejected caller-owned
+  transactions without committing them.
+- Kept the local Hermes control token, socket, session identifiers, redirect
+  text, and process private; steering is advertised only after `message.start`,
+  never queues, and ambiguous delivery is never retried.
+- Published each local control client before startup, closed it from both
+  server lifecycles, rejected redirected runtime directories, and owned the
+  complete POSIX or Windows process tree through shutdown.
+- Added the pinned WebSocket client to the hashed native dependency lock and
+  preserved ambiguous steering as a partial Conversation result through the
+  browser bridge.
+- Exposed terminal Hermes work as `finalizing` until exact final evidence is
+  durable, pinned it against retention, and limited the initial cursor gap to
+  the exact Agent-and-Turn binding marker.
+- Canonicalized schema-12 continuation pins that had already advanced beyond
+  reservation before installing schema 13's stricter identity trigger, keeping
+  claimed and accepted pre-upgrade successors restart-recoverable.
+- Persisted the exact Codex predecessor while a queued successor is reserved;
+  the dispatch claim reads its private thread reference and clears the pin only
+  in an authorized claim or no-attempt terminal transition, with the exact
+  synchronous result protected through its retention pass and bulk recovery
+  still bounded by the normal retention ceiling.
 
 ## 2026-08-26
 

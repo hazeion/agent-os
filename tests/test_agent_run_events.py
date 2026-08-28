@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import agent_run_history
 import server
+from run_repository import RetentionReport
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,8 @@ SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
 
 class AgentRunEventTests(unittest.TestCase):
     def tearDown(self):
+        server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
+        server.AGENT_CONSOLE_CONTINUATIONS_PENDING.clear()
         server.AGENT_CONSOLE_RUNS.clear()
 
     def make_run(self, run_id: str = "run_events") -> dict:
@@ -131,6 +134,105 @@ class AgentRunEventTests(unittest.TestCase):
 
         self.assertEqual(legacy["events"], [])
         self.assertEqual(bound["events"][-1]["type"], "runtime.finalized")
+
+    def test_finalizer_dispatches_one_persisted_worker_continuation_once(self):
+        run = self.make_run("run_worker_continuation")
+        run.update(
+            {
+                "status": "completed",
+                "mentat_agent_id": "agent_bound",
+                "task_id": "turn_worker_source",
+            }
+        )
+        server.AGENT_CONSOLE_RUNS[run["id"]] = run
+        server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = True
+        service = unittest.mock.Mock()
+
+        with patch.object(
+            server,
+            "agent_console_history_is_current",
+            return_value=True,
+        ), patch.object(
+            server,
+            "agent_console_storage_degraded",
+            return_value=False,
+        ), patch.object(
+            server,
+            "save_authoritative_run_summaries",
+            return_value=RetentionReport(
+                (),
+                (),
+                ((run["id"], "turn_worker_successor"),),
+            ),
+        ) as save, patch.object(
+            server,
+            "OrchestrationService",
+            return_value=service,
+        ):
+            server.finalize_agent_console_runtime_event(run["id"])
+            server.finalize_agent_console_runtime_event(run["id"])
+
+        save.assert_called_once()
+        service.execute_reserved_conversation_turn.assert_called_once_with(
+            "turn_worker_successor",
+            source_run_id=run["id"],
+        )
+        self.assertNotIn(
+            run["id"],
+            server.AGENT_CONSOLE_CONTINUATIONS_PENDING,
+        )
+
+    def test_shutdown_disables_persist_and_late_finalizer_continuation_drain(self):
+        run = self.make_run("run_shutdown_continuation")
+        run.update(
+            {
+                "status": "completed",
+                "mentat_agent_id": "agent_bound",
+                "task_id": "turn_shutdown_source",
+            }
+        )
+        server.AGENT_CONSOLE_RUNS[run["id"]] = run
+        server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = True
+        server.AGENT_CONSOLE_CONTINUATIONS_PENDING[run["id"]] = (
+            "turn_shutdown_successor"
+        )
+        service_factory = unittest.mock.Mock()
+
+        with patch.object(
+            server,
+            "agent_console_history_is_current",
+            return_value=True,
+        ), patch.object(
+            server,
+            "agent_console_storage_degraded",
+            return_value=False,
+        ), patch.object(
+            server,
+            "save_authoritative_run_summaries",
+            return_value=RetentionReport(
+                (),
+                (),
+                ((run["id"], "turn_shutdown_successor"),),
+            ),
+        ), patch.object(
+            server,
+            "OrchestrationService",
+            service_factory,
+        ), patch.dict(
+            server.AGENT_CONSOLE_PROCESSES,
+            {},
+            clear=True,
+        ), patch.dict(
+            server.AGENT_CONSOLE_REMOTE_WORKERS,
+            {},
+            clear=True,
+        ):
+            server.stop_agent_console_processes()
+            server.finalize_agent_console_runtime_event(run["id"])
+
+        self.assertFalse(server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED)
+        self.assertEqual(server.AGENT_CONSOLE_CONTINUATIONS_PENDING, {})
+        service_factory.assert_not_called()
 
     def test_legacy_history_migrates_and_v3_round_trip_preserves_events(self):
         legacy = {

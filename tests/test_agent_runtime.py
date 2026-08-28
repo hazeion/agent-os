@@ -283,6 +283,130 @@ class AgentRuntimeContractTests(unittest.TestCase):
             tuple(runtime.stream_events("run_generic"))
         self.assertEqual(raised.exception.code, "runtime.event_continuity_lost")
 
+    def test_initial_hermes_cursor_gap_requires_exact_bound_identity(self):
+        context = RuntimeContext(
+            agent_id="agent_researcher",
+            runtime_agent_ref="researcher-main",
+            task_id="task_research",
+            mentat_run_id="run_initial_gap",
+            runtime_run_ref="runtime_initial_gap",
+        )
+
+        def runtime_for(*, bound_task_id="task_research"):
+            snapshot = {
+                "id": "run_initial_gap",
+                "status": "running",
+                "mentat_agent_id": "agent_researcher",
+                "task_id": "task_research",
+                "events": [],
+            }
+            events = [
+                {
+                    "id": "event_bound",
+                    "run_id": "run_initial_gap",
+                    "sequence": 2,
+                    "type": "runtime.bound",
+                    "timestamp": "2026-08-17T12:00:00+00:00",
+                    "data": {
+                        "mentat_agent_id": "agent_researcher",
+                        "task_id": bound_task_id,
+                    },
+                    "display_text": "Runtime bound",
+                },
+                {
+                    "id": "event_progress",
+                    "run_id": "run_initial_gap",
+                    "sequence": 3,
+                    "type": "session.started",
+                    "timestamp": "2026-08-17T12:00:01+00:00",
+                    "display_text": "Run started",
+                },
+            ]
+            return HermesRuntime(
+                transport_factory=lambda: object(),
+                compatibility_handlers=HermesCompatibilityHandlers(
+                    start=lambda payload: ({"error": "unused"}, 409),
+                    start_task=lambda task, context: ({"error": "unused"}, 409),
+                    message=lambda run_id, payload: ({"error": "unused"}, 409),
+                    response=lambda run_id, payload: ({"error": "unused"}, 409),
+                    stop=lambda run_id: ({"error": "unused"}, 409),
+                    status=lambda run_id, cursor=None: (
+                        {
+                            "run": snapshot,
+                            "events": events,
+                            "cursor_reset_required": True,
+                        },
+                        200,
+                    ),
+                ),
+            )
+
+        accepted = tuple(
+            runtime_for().stream_events(
+                "runtime_initial_gap",
+                context=context,
+            )
+        )
+        self.assertEqual([event.sequence for event in accepted], [8, 12])
+
+        with self.assertRaises(AgentRuntimeError) as wrong_identity:
+            tuple(
+                runtime_for(bound_task_id="task_other").stream_events(
+                    "runtime_initial_gap",
+                    context=context,
+                )
+            )
+        self.assertEqual(
+            wrong_identity.exception.code,
+            "runtime.event_continuity_lost",
+        )
+
+        with self.assertRaises(AgentRuntimeError) as noninitial_cursor:
+            tuple(
+                runtime_for().stream_events(
+                    "runtime_initial_gap",
+                    after_sequence=4,
+                    context=context,
+                )
+            )
+        self.assertEqual(
+            noninitial_cursor.exception.code,
+            "runtime.event_continuity_lost",
+        )
+
+    def test_ambiguous_message_receipt_preserves_partial_classification(self):
+        snapshot = {
+            "id": "run_partial_message",
+            "status": "running",
+            "agent_id": "default",
+            "mentat_agent_id": "agent_researcher",
+            "task_id": "task_research",
+            "controls": {"steer": {"available": True, "revision": 3}},
+            "events": [],
+        }
+        runtime = HermesRuntime(
+            transport_factory=lambda: object(),
+            compatibility_handlers=HermesCompatibilityHandlers(
+                start=lambda payload: ({"error": "unused"}, 409),
+                start_task=lambda task, context: ({"error": "unused"}, 409),
+                message=lambda run_id, payload: (
+                    {"partial": True, "error_code": "local_steer_unverified"},
+                    502,
+                ),
+                response=lambda run_id, payload: ({"error": "unused"}, 409),
+                stop=lambda run_id: ({"error": "unused"}, 409),
+                status=lambda run_id, cursor=None: (
+                    {"run": snapshot, "events": []},
+                    200,
+                ),
+            ),
+        )
+
+        with self.assertRaises(AgentRuntimeError) as raised:
+            runtime.send_message("run_partial_message", "Check BigFry")
+
+        self.assertEqual(raised.exception.code, "runtime.message_partial")
+
     def test_start_rejects_mismatched_task_and_agent_before_side_effect(self):
         calls = []
         runtime = HermesRuntime(

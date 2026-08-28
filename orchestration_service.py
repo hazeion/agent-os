@@ -19,6 +19,7 @@ from agent_registry import (
     RuntimeBinding,
 )
 from agent_runtime import (
+    AgentEventType,
     AgentRuntime,
     AgentRuntimeError,
     AgentRuntimeRegistry,
@@ -106,6 +107,47 @@ _TASK_STATUS = {
     "completed": TaskStatus.COMPLETED,
 }
 
+_TERMINAL_EVENT_STATUS = {
+    AgentEventType.RUN_COMPLETED: RunStatus.COMPLETED,
+    AgentEventType.RUN_FAILED: RunStatus.FAILED,
+    AgentEventType.RUN_STOPPED: RunStatus.STOPPED,
+    AgentEventType.RUN_INTERRUPTED: RunStatus.INTERRUPTED,
+}
+_TERMINAL_RUN_STATUSES = frozenset(_TERMINAL_EVENT_STATUS.values())
+
+
+def _cohere_runtime_observation(
+    observed,
+    events,
+    *,
+    has_more_events: bool,
+):
+    """Bind a split status/event read to one exact terminal observation."""
+
+    terminal_events = tuple(
+        event for event in events if event.type in _TERMINAL_EVENT_STATUS
+    )
+    if not terminal_events:
+        return observed
+    if (
+        len(terminal_events) != 1
+        or has_more_events
+        or terminal_events[0].sequence
+        != max(event.sequence for event in events)
+    ):
+        raise OrchestrationServiceError("reconcile.terminal_event_conflict")
+    terminal_status = _TERMINAL_EVENT_STATUS[terminal_events[0].type]
+    if (
+        observed.status in _TERMINAL_RUN_STATUSES
+        and observed.status != terminal_status
+    ):
+        raise OrchestrationServiceError("reconcile.terminal_event_conflict")
+    return (
+        observed
+        if observed.status == terminal_status
+        else replace(observed, status=terminal_status)
+    )
+
 
 class OrchestrationService:
     """Commit durable intent, invoke one adapter once, then record its outcome."""
@@ -117,6 +159,7 @@ class OrchestrationService:
         runtime_registry: AgentRuntimeRegistry,
         agent_registry: AgentRegistry | None = None,
         id_factory: Callable[[str], str] | None = None,
+        conversation_continuation_handler: Callable[[str, str], None] | None = None,
     ):
         self.data_dir = Path(data_dir)
         self.runtime_registry = runtime_registry
@@ -127,6 +170,7 @@ class OrchestrationService:
         self.id_factory = id_factory or (
             lambda prefix: f"{prefix}_{uuid4().hex}"
         )
+        self.conversation_continuation_handler = conversation_continuation_handler
 
     def _connect(self):
         try:
@@ -253,6 +297,7 @@ class OrchestrationService:
         runtime: AgentRuntime,
         binding_digest: str,
         run_id: str,
+        predecessor_run_id: str | None = None,
     ) -> ConversationRunAdmission:
         capacity_scope_digest, capacity_limit = self._capacity_evidence(
             runtime,
@@ -271,6 +316,7 @@ class OrchestrationService:
             capabilities=tuple(sorted(record.agent.capabilities)),
             capacity_scope_digest=capacity_scope_digest,
             capacity_limit=capacity_limit,
+            predecessor_run_id=predecessor_run_id,
         )
 
     @staticmethod
@@ -1017,6 +1063,7 @@ class OrchestrationService:
             and outcome.run is not None
             and outcome.run.status == RunStatus.COMPLETED
             and reservation.run_id is not None
+            and binding.runtime_type != "hermes"
         ):
             continuation_required = (
                 binding.runtime_type == "codex"
@@ -1034,6 +1081,7 @@ class OrchestrationService:
                             (reservation.run_id + ":accepted-continuation").encode("utf-8")
                         ).hexdigest()[:32]
                     ),
+                    predecessor_run_id=reservation.run_id,
                 )
         recorded_run, recorded_outcome, continued = self._record_conversation_outcome(
             reservation,
@@ -1041,6 +1089,7 @@ class OrchestrationService:
             continuation=continuation,
             require_continuation_for_completed=continuation_required,
         )
+        post_acceptance_continued = None
         if (
             recorded_outcome.disposition == SubmissionDisposition.ACCEPTED
             and recorded_run.runtime_run_ref is None
@@ -1082,16 +1131,97 @@ class OrchestrationService:
                         recorded_run.id,
                         context=transient_context,
                     )
+                    observed_batch = tuple(
+                        islice(
+                            runtime.stream_events(
+                                recorded_run.id,
+                                after_sequence=leased.runtime_event_cursor,
+                                context=transient_context,
+                            ),
+                            1_001,
+                        )
+                    )
+                    has_more_events = len(observed_batch) > 1_000
+                    observed_events = observed_batch[:1_000]
+                    observed = _cohere_runtime_observation(
+                        observed,
+                        observed_events,
+                        has_more_events=has_more_events,
+                    )
+                    expected_terminal_event = {
+                        RunStatus.COMPLETED: AgentEventType.RUN_COMPLETED,
+                        RunStatus.FAILED: AgentEventType.RUN_FAILED,
+                        RunStatus.STOPPED: AgentEventType.RUN_STOPPED,
+                        RunStatus.INTERRUPTED: AgentEventType.RUN_INTERRUPTED,
+                    }.get(observed.status)
+                    finalized_terminal = bool(
+                        expected_terminal_event is not None
+                        and any(
+                            event.type == expected_terminal_event
+                            for event in observed_events
+                        )
+                    )
+                    post_acceptance_admission = None
+                    if (
+                        not has_more_events
+                        and observed.status == RunStatus.COMPLETED
+                        and finalized_terminal
+                        and not leased.partial
+                    ):
+                        post_acceptance_admission = self._conversation_admission(
+                            record=record,
+                            binding=binding,
+                            runtime=runtime,
+                            binding_digest=self._binding_digest(
+                                record.agent,
+                                binding,
+                            ),
+                            run_id=(
+                                "run_auto_"
+                                + hashlib.sha256(
+                                    (
+                                        recorded_run.id
+                                        + ":accepted-continuation"
+                                    ).encode("utf-8")
+                                ).hexdigest()[:32]
+                            ),
+                            predecessor_run_id=recorded_run.id,
+                        )
                     with private_state_lock(self.data_dir):
                         connection = self._connect()
                         try:
-                            RunRepository(connection).apply_reconciliation(
+                            repository = RunRepository(connection)
+                            repository.apply_reconciliation(
                                 run_id=recorded_run.id,
                                 owner=owner,
                                 expected_revision=leased.state_revision,
                                 observed=observed,
-                                events=(),
+                                events=observed_events,
+                                defer_terminal=(
+                                    has_more_events
+                                    or expected_terminal_event is not None
+                                    and not finalized_terminal
+                                ),
+                                continuation=post_acceptance_admission,
                             )
+                            if post_acceptance_admission is not None:
+                                try:
+                                    continued_run = repository.get_run(
+                                        post_acceptance_admission.run_id
+                                    )
+                                except RunRepositoryConflict as exc:
+                                    if exc.code != "run.not_found":
+                                        raise
+                                else:
+                                    if continued_run.turn_id is None:
+                                        raise RunRepositoryError(
+                                            "run_repository.corrupt"
+                                        )
+                                    post_acceptance_continued = (
+                                        repository.conversation_turn_reservation(
+                                            continued_run.turn_id
+                                        )
+                                    )
                         finally:
                             connection.close()
             except Exception:
@@ -1116,21 +1246,35 @@ class OrchestrationService:
             duplicate=False,
             disposition=recorded_outcome.disposition.value,
         )
+        if continued is None:
+            continued = post_acceptance_continued
         if continued is not None:
-            queued = self._conversation_result(continued, duplicate=False)
-            try:
-                self._execute_reserved_conversation_turn(
-                    reservation=continued,
-                    text=queued.message.content["parts"][0]["text"],
-                    record=record,
-                    binding=binding,
-                    runtime=runtime,
-                    continuation_runtime_run_ref=recorded_run.runtime_run_ref,
-                )
-            except OrchestrationServiceError:
-                # The next Turn is already durably claimed. Never turn the
-                # preceding verified result into a retryable browser failure.
-                pass
+            if self.conversation_continuation_handler is not None:
+                try:
+                    self.conversation_continuation_handler(
+                        recorded_run.id,
+                        continued.turn_id,
+                    )
+                except Exception:
+                    # The exact reservation remains durable and unattempted.
+                    # Never turn the preceding verified result into a retryable
+                    # browser failure.
+                    pass
+            else:
+                queued = self._conversation_result(continued, duplicate=False)
+                try:
+                    self._execute_reserved_conversation_turn(
+                        reservation=continued,
+                        text=queued.message.content["parts"][0]["text"],
+                        record=record,
+                        binding=binding,
+                        runtime=runtime,
+                        continuation_runtime_run_ref=recorded_run.runtime_run_ref,
+                    )
+                except OrchestrationServiceError:
+                    # The next Turn is already durably claimed. Never turn the
+                    # preceding verified result into a retryable browser failure.
+                    pass
         return result
 
     def _submit_new_conversation_turn(
@@ -1189,6 +1333,130 @@ class OrchestrationService:
             binding=binding,
             runtime=runtime,
         )
+
+    def _reject_reserved_conversation_continuation(
+        self,
+        reservation: ConversationDispatchReservation,
+        *,
+        failure_code: str,
+    ) -> ConversationTurnDispatchResult:
+        """Terminalize a continuation that cannot be safely submitted."""
+
+        with private_state_lock(self.data_dir):
+            connection = self._connect()
+            try:
+                RunRepository(connection).reject_reserved_conversation_turn(
+                    turn_id=reservation.turn_id,
+                    failure_code=failure_code,
+                )
+            except RunRepositoryError as exc:
+                raise OrchestrationServiceError(exc.code) from exc
+            finally:
+                connection.close()
+        return self._conversation_result(
+            reservation,
+            duplicate=False,
+            disposition="rejected",
+        )
+
+    def execute_reserved_conversation_turn(
+        self,
+        turn_id: str,
+        *,
+        source_run_id: str | None = None,
+    ) -> ConversationTurnDispatchResult:
+        """Execute one exact worker-reserved FIFO continuation at most once."""
+
+        continuation_reference = None
+        with private_state_lock(self.data_dir):
+            connection = self._connect()
+            try:
+                repository = RunRepository(connection)
+                reservation = repository.conversation_turn_reservation(turn_id)
+                if (
+                    reservation.run_id is None
+                    or reservation.state != "reserved"
+                    or reservation.attempt_count != 0
+                ):
+                    raise RunRepositoryConflict("conversation.state_changed")
+                run = repository.get_run(reservation.run_id)
+                if (
+                    run.source != "console"
+                    or run.conversation_id != reservation.conversation_id
+                    or run.turn_id != reservation.turn_id
+                    or run.status != "reserved"
+                    or run.dispatch_state != "reserved"
+                    or run.agent_id is None
+                    or run.runtime_binding_digest
+                    != reservation.runtime_binding_digest
+                ):
+                    raise RunRepositoryError("run_repository.corrupt")
+                predecessor = repository.conversation_continuation_predecessor(
+                    run_id=run.id,
+                    expected_source_run_id=source_run_id,
+                )
+                if predecessor is not None and run.runtime_type == "codex":
+                    if not predecessor.runtime_run_ref:
+                        raise RunRepositoryConflict(
+                            "conversation.continuation_changed"
+                        )
+                    continuation_reference = predecessor.runtime_run_ref
+            except RunRepositoryError as exc:
+                raise OrchestrationServiceError(exc.code) from exc
+            finally:
+                connection.close()
+
+        queued = self._conversation_result(reservation, duplicate=False)
+        try:
+            record, binding = self._agent_record_and_binding(run.agent_id)
+            runtime = self.runtime_registry.require(binding.runtime_type)
+        except (
+            AgentRegistryError,
+            AgentRuntimeError,
+            OrchestrationServiceError,
+        ):
+            return self._reject_reserved_conversation_continuation(
+                reservation,
+                failure_code="conversation.binding_unavailable",
+            )
+        if (
+            binding.runtime_type != run.runtime_type
+            or self._binding_digest(record.agent, binding)
+            != reservation.runtime_binding_digest
+        ):
+            return self._reject_reserved_conversation_continuation(
+                reservation,
+                failure_code="conversation.binding_changed",
+            )
+        guard_factory = getattr(runtime, "submission_guard", None)
+        try:
+            guard = guard_factory() if callable(guard_factory) else nullcontext()
+            with guard:
+                return self._execute_reserved_conversation_turn(
+                    reservation=reservation,
+                    text=queued.message.content["parts"][0]["text"],
+                    record=record,
+                    binding=binding,
+                    runtime=runtime,
+                    continuation_runtime_run_ref=continuation_reference,
+                )
+        except OrchestrationServiceError:
+            raise
+        except Exception:
+            # A guard failure before claim is known not to have reached the
+            # adapter. Once claimed, _execute_reserved_conversation_turn owns
+            # the durable accepted/rejected/unknown outcome instead.
+            refreshed = self._conversation_result(reservation, duplicate=False)
+            if (
+                refreshed.run is not None
+                and refreshed.run.status == "reserved"
+                and getattr(refreshed.run, "dispatch_state", None) == "reserved"
+            ):
+                return self._reject_reserved_conversation_continuation(
+                    reservation,
+                    failure_code="conversation.binding_unavailable",
+                )
+            raise OrchestrationServiceError("conversation.unavailable")
 
     def _queue_mutation_result(
         self,
@@ -1332,6 +1600,7 @@ class OrchestrationService:
                             blocked_reservation,
                             continuity_allowed,
                             continuation_reference,
+                            continuation_source_run_id,
                         ) = repository.codex_continuation_for_blocked_turn(
                             conversation_id=conversation_id,
                             turn_id=turn_id,
@@ -1342,6 +1611,11 @@ class OrchestrationService:
                         if not continuity_allowed:
                             reservation = blocked_reservation
                             continuity_blocked = True
+                        elif continuation_source_run_id is not None:
+                            admission = replace(
+                                admission,
+                                predecessor_run_id=continuation_source_run_id,
+                            )
                     if not continuity_blocked:
                         reservation = repository.continue_blocked_conversation_turn(
                             conversation_id=conversation_id,
@@ -1453,6 +1727,11 @@ class OrchestrationService:
                 )
                 has_more_events = len(observed_batch) > 1_000
                 observed_events = observed_batch[:1_000]
+                observed = _cohere_runtime_observation(
+                    observed,
+                    observed_events,
+                    has_more_events=has_more_events,
+                )
                 continuation = None
                 continuation_reference = None
                 continuation_required = False
@@ -1486,6 +1765,7 @@ class OrchestrationService:
                                     ).encode("utf-8")
                                 ).hexdigest()[:32]
                             ),
+                            predecessor_run_id=run.id,
                         )
                     if codex_continuable:
                         continuation_reference = run.runtime_run_ref
@@ -1534,26 +1814,32 @@ class OrchestrationService:
                         finally:
                             connection.close()
                     if reservation is not None:
-                        queued = self._conversation_result(
-                            reservation,
-                            duplicate=False,
-                        )
-                        queued_text = queued.message.content["parts"][0]["text"]
-                        guard_factory = getattr(runtime, "submission_guard", None)
-                        guard = (
-                            guard_factory()
-                            if callable(guard_factory)
-                            else nullcontext()
-                        )
-                        with guard:
-                            self._execute_reserved_conversation_turn(
-                                reservation=reservation,
-                                text=queued_text,
-                                record=record,
-                                binding=binding,
-                                runtime=runtime,
-                                continuation_runtime_run_ref=continuation_reference,
+                        if self.conversation_continuation_handler is not None:
+                            self.conversation_continuation_handler(
+                                run.id,
+                                reservation.turn_id,
                             )
+                        else:
+                            queued = self._conversation_result(
+                                reservation,
+                                duplicate=False,
+                            )
+                            queued_text = queued.message.content["parts"][0]["text"]
+                            guard_factory = getattr(runtime, "submission_guard", None)
+                            guard = (
+                                guard_factory()
+                                if callable(guard_factory)
+                                else nullcontext()
+                            )
+                            with guard:
+                                self._execute_reserved_conversation_turn(
+                                    reservation=reservation,
+                                    text=queued_text,
+                                    record=record,
+                                    binding=binding,
+                                    runtime=runtime,
+                                    continuation_runtime_run_ref=continuation_reference,
+                                )
             except Exception:
                 # Missing or conflicting evidence never proves progress and
                 # never causes submission retry. Release only our exact lease.

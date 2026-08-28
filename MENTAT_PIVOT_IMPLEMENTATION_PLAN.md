@@ -30,10 +30,19 @@ convergence, and optional Vercel capability adapters are complete through Slice
 Agent Console Slices 1 and 2 are also complete. The current Wayfinder frontier
 is Agent Console Slice 3: live transcript, active composer, queue, steering,
 and concurrency (GitHub issue #135). Its scope and test strategy were approved
-on 2026-08-27. Implementation, final verification, and both adversarial review
-rounds are complete on the focused Slice 3 branch. The approved packet is
-published as ready PR #145 and all required checks pass, so the slice stays In
-progress until merge and tracker close-out.
+on 2026-08-27. PR #145 merged after implementation, final verification, both
+adversarial review rounds, and the required matrix passed. Post-merge validation
+against the existing owner-private data root then exposed one exact pre-release
+schema-11 drift and stale legacy attachment projections. The schema-12 repair
+and local Hermes steering path are implemented. Final adversarial review then
+identified terminal-finalization and queued-continuity races; schema-13
+hardening is implemented and the uncontaminated two-runtime browser acceptance
+now passes: fresh Hermes and Codex Conversations ran concurrently, both exact
+`/steer` operations were accepted without queueing, both final responses stayed
+in their owning tabs with separate BigFry assessments, and both right-rail
+statuses returned to Idle. The slice remains In progress only until the exact
+remediation packet is published, required CI passes, the remediation merges,
+and tracker close-out is complete.
 
 ## Slice order
 

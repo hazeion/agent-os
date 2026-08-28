@@ -54,7 +54,7 @@ class VercelConnectionTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             record = self.configure(root)
-            self.assertEqual(SCHEMA_VERSION, 11)
+            self.assertEqual(SCHEMA_VERSION, 13)
             self.assertEqual(record.id, VERCEL_CONNECTION_ID)
             self.assertEqual(record.revision, 1)
 
@@ -62,7 +62,7 @@ class VercelConnectionTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")],
-                list(range(1, 12)),
+                    list(range(1, SCHEMA_VERSION + 1)),
                 )
                 self.assertEqual(validate_provider_connections(connection), (record,))
                 columns = {

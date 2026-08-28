@@ -111,7 +111,7 @@ function validCurrentRun(value: unknown): boolean {
   if (!record(value) || !keys(value, "id,partial,status,updated_at")) return false;
   return id(value.id, RUN_ID)
     && typeof value.status === "string"
-    && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.status)
+    && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.status)
     && typeof value.partial === "boolean"
     && timestamp(value.updated_at);
 }
@@ -162,7 +162,7 @@ function validActivityItem(value: unknown): boolean {
         && boundedText(conversation.title, 160)
         && id(conversation.run_id, RUN_ID)
         && typeof conversation.run_status === "string"
-        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(conversation.run_status)
+        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(conversation.run_status)
         && typeof conversation.attention === "boolean"
         && timestamp(conversation.updated_at);
     });

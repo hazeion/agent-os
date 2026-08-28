@@ -39,6 +39,7 @@ from agent_console_attachments import (
 )
 from agent_runtime import AgentEvent, AgentEventType
 from agent_run_history import save_run_summaries
+from conversation_repository import ConversationRepository
 from private_console_migration import migrate_private_console, preview_private_console_migration
 from private_console_unit import (
     capture_private_console_unit,
@@ -124,6 +125,12 @@ class PrivateConsoleStateTests(unittest.TestCase):
     ) -> private_console_unit.PrivateConsoleUnit:
         return self.rebuild_schema_unit(unit, 10)
 
+    def schema_twelve_unit(
+        self,
+        unit: private_console_unit.PrivateConsoleUnit,
+    ) -> private_console_unit.PrivateConsoleUnit:
+        return self.rebuild_schema_unit(unit, 12)
+
     def rebuild_schema_unit(
         self,
         unit: private_console_unit.PrivateConsoleUnit,
@@ -171,6 +178,8 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 "mentat_conversation_messages",
                 "mentat_conversation_turns",
             )
+        if schema_version >= 11:
+            tables += ("mentat_conversation_submission_results",)
 
         with TemporaryDirectory() as temporary:
             source_path = Path(temporary) / "source.sqlite3"
@@ -216,6 +225,12 @@ class PrivateConsoleStateTests(unittest.TestCase):
                         [tuple(row) for row in rows],
                     )
                 target.commit()
+                if schema_version == 12:
+                    # Released backup captures normalize the standalone SQLite
+                    # snapshot through the same filtered VACUUM boundary.
+                    # Keep this historical fixture storage-stable across its
+                    # materialize-and-recapture restore verification.
+                    target.execute("VACUUM")
             finally:
                 target.close()
                 source.close()
@@ -763,7 +778,11 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 confirmation_token=preview.confirmation_token or "",
             )
 
-            self.assertEqual(restored.status, "restored")
+            self.assertEqual(
+                restored.status,
+                "restored",
+                restored.public_summary(),
+            )
             provider = load_vercel_connection(target)
             self.assertIsNotNone(provider)
             self.assertEqual(provider.project_id, "prj_mentat")
@@ -879,6 +898,82 @@ class PrivateConsoleStateTests(unittest.TestCase):
                         "SELECT COUNT(*) FROM mentat_conversation_submission_results"
                     ).fetchone()[0],
                     0,
+                )
+            finally:
+                database.close()
+
+    def test_released_schema_twelve_format_four_backup_restores_and_upgrades(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source-twelve", "source")
+            AgentRegistry(
+                source,
+                supported_runtime_types=("hermes",),
+            ).create_agent(
+                agent_id="agent_schema_twelve",
+                name="Schema Twelve Agent",
+                runtime_config_id="config_schema_twelve",
+                runtime_type="hermes",
+                runtime_agent_ref="profile-schema-twelve",
+                capabilities=("run.start", "run.message"),
+            )
+            conversation = ConversationRepository(
+                source,
+                supported_runtime_types=("hermes",),
+            ).create(agent_id="agent_schema_twelve").conversation
+            documents = data_backup_restore._load_live_documents(source, None)
+            schema_twelve = self.schema_twelve_unit(
+                capture_private_console_unit(source)
+            )
+            private_console_unit.validate_private_console_unit(schema_twelve)
+            raw = data_backup_restore._build_backup(
+                documents,
+                schema_twelve,
+                format_version=4,
+            )
+            path = base / data_backup_restore._backup_name(
+                documents,
+                schema_twelve,
+                format_version=4,
+            )
+            path.write_bytes(raw)
+            if os.name == "posix":
+                path.chmod(0o600)
+
+            target = self.make_current(base, "target-twelve", "target")
+            preview = data_backup_restore.preview_durable_restore(target, path)
+            restored = data_backup_restore.restore_durable_backup(
+                target,
+                path,
+                confirmation_token=preview.confirmation_token or "",
+            )
+
+            self.assertEqual(
+                restored.status,
+                "restored",
+                restored.public_summary(),
+            )
+            database = connect(target)
+            try:
+                self.assertEqual(
+                    database.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0],
+                    DATABASE_SCHEMA_VERSION,
+                )
+                columns = {
+                    str(row[1])
+                    for row in database.execute("PRAGMA table_info(mentat_runs)")
+                }
+                self.assertIn("terminal_finalized", columns)
+                restored_conversation = database.execute(
+                    "SELECT agent_id FROM mentat_conversations WHERE id = ?",
+                    (conversation.id,),
+                ).fetchone()
+                self.assertIsNotNone(restored_conversation)
+                self.assertEqual(
+                    restored_conversation[0],
+                    "agent_schema_twelve",
                 )
             finally:
                 database.close()

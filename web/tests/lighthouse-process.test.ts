@@ -41,7 +41,10 @@ test("bounded process timeout terminates the child process tree", async () => {
       onSpawn: (child: { pid?: number }) => {
         if (child.pid) tracked.add(child.pid);
       },
-      timeoutMs: 300,
+      // The full Node suite runs test files concurrently. Give the fixture
+      // enough time to start and report its descendant before exercising the
+      // timeout path; otherwise an empty stdout string is coerced to PID 0.
+      timeoutMs: 2000,
     },
   );
 
@@ -50,6 +53,7 @@ test("bounded process timeout terminates the child process tree", async () => {
   assert.equal(typeof result.pid, "number");
   const descendantPid = Number(result.stdout.trim());
   assert.equal(Number.isSafeInteger(descendantPid), true);
+  assert.equal(descendantPid > 0, true);
   assert.deepEqual([...tracked], []);
   await waitForExit(result.pid);
   await waitForExit(descendantPid);

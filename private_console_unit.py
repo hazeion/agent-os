@@ -19,7 +19,6 @@ import re
 import sqlite3
 import stat
 import shutil
-from functools import lru_cache
 from tempfile import TemporaryDirectory
 from typing import Iterable
 
@@ -48,7 +47,10 @@ from mentat_db import (
     EMPTY_AGENT_REGISTRY_SOURCE_SHA256,
     MIGRATIONS,
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
+    expected_schema_signature as _expected_schema_signature,
     legacy_agent_registry_artifacts_present_at,
+    schema_signature as _schema_signature,
+    schema_signature_state as _schema_signature_state,
 )
 from private_state import (
     blobs_root,
@@ -80,6 +82,8 @@ RUN_DATABASE_SCHEMA_VERSION = 7
 AGENT_DATABASE_SCHEMA_VERSION = 8
 PROVIDER_DATABASE_SCHEMA_VERSION = 9
 CONVERSATION_DATABASE_SCHEMA_VERSION = 10
+SUBMISSION_DATABASE_SCHEMA_VERSION = 11
+CONVERSATION_REPAIR_DATABASE_SCHEMA_VERSION = 12
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -88,6 +92,8 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     AGENT_DATABASE_SCHEMA_VERSION,
     PROVIDER_DATABASE_SCHEMA_VERSION,
     CONVERSATION_DATABASE_SCHEMA_VERSION,
+    SUBMISSION_DATABASE_SCHEMA_VERSION,
+    CONVERSATION_REPAIR_DATABASE_SCHEMA_VERSION,
     DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
@@ -471,7 +477,8 @@ def _database_task_count(raw: bytes) -> int:
             version = max(versions, default=0)
             if version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
                 raise PrivateConsoleUnitError("private_database_unsupported")
-            if _schema_signature(connection) != _expected_schema_signature(version):
+            signature_state = _schema_signature_state(connection, version)
+            if signature_state == "invalid":
                 raise PrivateConsoleUnitError("private_database_schema_invalid")
             if version == LEGACY_DATABASE_SCHEMA_VERSION:
                 return 0
@@ -479,7 +486,13 @@ def _database_task_count(raw: bytes) -> int:
                 connection,
                 require_authority_consistency=version >= TASK_DATABASE_SCHEMA_VERSION,
             )
-            _validate_conversation_repository(connection, version)
+            _validate_conversation_repository(
+                connection,
+                version,
+                allow_known_legacy_drift=(
+                    signature_state == "known_legacy_conversation_drift"
+                ),
+            )
             return task_count
         except TaskRepositoryError as exc:
             raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
@@ -492,6 +505,8 @@ def _database_task_count(raw: bytes) -> int:
 def _validate_conversation_repository(
     connection: sqlite3.Connection,
     schema_version: int,
+    *,
+    allow_known_legacy_drift: bool = False,
 ) -> None:
     if schema_version < CONVERSATION_DATABASE_SCHEMA_VERSION:
         return
@@ -499,6 +514,7 @@ def _validate_conversation_repository(
         validate_conversation_repository_connection(
             connection,
             schema_version=schema_version,
+            allow_known_legacy_drift=allow_known_legacy_drift,
         )
     except ConversationRepositoryError as exc:
         raise PrivateConsoleUnitError("private_conversation_repository_invalid") from exc
@@ -740,35 +756,6 @@ def _sqlite_backup(
         destination.chmod(0o600)
 
 
-def _schema_signature(connection: sqlite3.Connection) -> tuple[tuple[str, str, str, str], ...]:
-    return tuple(
-        (
-            str(row[0]),
-            str(row[1]),
-            str(row[2]),
-            re.sub(r"\s+", "", str(row[3] or "")),
-        )
-        for row in connection.execute(
-            "SELECT type, name, tbl_name, sql FROM sqlite_master "
-            "WHERE name NOT LIKE 'sqlite_autoindex_%' ORDER BY type, name"
-        )
-    )
-
-
-@lru_cache(maxsize=None)
-def _expected_schema_signature(
-    schema_version: int = DATABASE_SCHEMA_VERSION,
-) -> tuple[tuple[str, str, str, str], ...]:
-    with TemporaryDirectory(prefix="mentat-schema-signature-") as temporary:
-        database = Path(temporary) / "mentat.sqlite3"
-        _initialize_database(database, schema_version=schema_version)
-        connection = sqlite3.connect(database)
-        try:
-            return _schema_signature(connection)
-        finally:
-            connection.close()
-
-
 def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[tuple[str, str, int], ...]:
     retained = tuple(run_ids)
     connection = sqlite3.connect(path)
@@ -781,7 +768,8 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         schema_version = max(versions, default=0)
         if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
-        if _schema_signature(connection) != _expected_schema_signature(schema_version):
+        signature_state = _schema_signature_state(connection, schema_version)
+        if signature_state == "invalid":
             raise PrivateConsoleUnitError("private_database_schema_invalid")
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
@@ -795,7 +783,13 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-            _validate_conversation_repository(connection, schema_version)
+            _validate_conversation_repository(
+                connection,
+                schema_version,
+                allow_known_legacy_drift=(
+                    signature_state == "known_legacy_conversation_drift"
+                ),
+            )
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _derived_history, derived_ids = _sqlite_run_history(path)
@@ -849,7 +843,13 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-            _validate_conversation_repository(connection, schema_version)
+            _validate_conversation_repository(
+                connection,
+                schema_version,
+                allow_known_legacy_drift=(
+                    signature_state == "known_legacy_conversation_drift"
+                ),
+            )
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
@@ -874,7 +874,8 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
         schema_version = max(versions, default=0)
         if schema_version not in SUPPORTED_DATABASE_SCHEMA_VERSIONS:
             raise PrivateConsoleUnitError("private_database_unsupported")
-        if _schema_signature(connection) != _expected_schema_signature(schema_version):
+        signature_state = _schema_signature_state(connection, schema_version)
+        if signature_state == "invalid":
             raise PrivateConsoleUnitError("private_database_schema_invalid")
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
@@ -888,7 +889,13 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                 )
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
-            _validate_conversation_repository(connection, schema_version)
+            _validate_conversation_repository(
+                connection,
+                schema_version,
+                allow_known_legacy_drift=(
+                    signature_state == "known_legacy_conversation_drift"
+                ),
+            )
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _derived_history, derived_ids = _sqlite_run_history(path)

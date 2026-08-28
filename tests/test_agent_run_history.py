@@ -451,6 +451,39 @@ super-private-material
         self.assertEqual(status, 503)
         self.assertEqual(payload["error_code"], "run_repository_unavailable")
 
+    def test_terminal_snapshot_racing_steer_is_partial_before_queue_reservation(self):
+        run = sample_run(
+            "run_terminal_steer_race",
+            "2026-08-18T12:00:00+00:00",
+            runtime_type="hermes",
+            partial=False,
+            _steer_inflight=True,
+        )
+        server.AGENT_CONSOLE_RUNS[run["id"]] = run
+        captured = []
+
+        def save(_root, runs):
+            captured.extend(runs)
+            return run_repository.RetentionReport((), ())
+
+        with patch.object(
+            server,
+            "agent_console_history_is_current",
+            return_value=True,
+        ), patch.object(
+            server,
+            "agent_console_storage_degraded",
+            return_value=False,
+        ), patch.object(
+            server,
+            "save_authoritative_run_summaries",
+            side_effect=save,
+        ):
+            self.assertTrue(server.persist_agent_console_runs())
+
+        self.assertTrue(run["partial"])
+        self.assertTrue(captured[0]["partial"])
+
     def test_database_setup_failure_enters_scoped_degraded_state(self):
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)

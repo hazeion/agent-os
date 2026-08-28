@@ -488,7 +488,7 @@ def _public_current_run(value: object) -> dict[str, object] | None:
         or value.get("status") not in {
             "reserved", "queued", "submitting", "starting", "running",
             "cancelling", "waiting", "waiting_for_approval",
-            "waiting_for_clarification", "unknown", "completed", "failed",
+            "waiting_for_clarification", "unknown", "finalizing", "completed", "failed",
             "cancelled", "stopped", "interrupted",
         }
         or not isinstance(value.get("partial"), bool)
@@ -1181,7 +1181,7 @@ def _public_activity_item(value: object) -> dict[str, object]:
             or conversation.get("run_status") not in {
                 "reserved", "queued", "submitting", "starting", "running",
                 "cancelling", "waiting", "waiting_for_approval",
-                "waiting_for_clarification", "unknown", "failed", "completed",
+                "waiting_for_clarification", "unknown", "finalizing", "failed", "completed",
                 "stopped", "interrupted",
             }
             or not isinstance(conversation.get("attention"), bool)

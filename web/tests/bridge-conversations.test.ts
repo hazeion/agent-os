@@ -9,6 +9,7 @@ import {
   continueBridgeConversationTurn,
   createBridgeConversation,
   editBridgeConversationTurn,
+  fetchBridgeActivity,
   fetchBridgeCodexReadiness,
   fetchBridgeConversation,
   fetchBridgeConversations,
@@ -140,6 +141,66 @@ test("Conversation bridge returns detached safe data and rejects private fields"
     ),
     (error: unknown) => error instanceof BridgeConversationsError && error.code === "bridge_response_invalid",
   );
+});
+
+test("Conversation bridges allow only the exact public finalizing state", async () => {
+  const currentRun = {
+    id: "run_finalizing",
+    partial: false,
+    status: "finalizing",
+    updated_at: "2026-08-25T12:02:00Z",
+  };
+  const projected = await fetchBridgeConversation(
+    conversation.id,
+    null,
+    async () => Response.json({ ...detail, current_run: currentRun }),
+    environment,
+  );
+  assert.equal(projected.current_run?.status, "finalizing");
+
+  const activity = {
+    activity: [{
+      agent,
+      attention: false,
+      conversations: [{
+        attention: false,
+        id: conversation.id,
+        run_id: currentRun.id,
+        run_status: "finalizing",
+        title: conversation.title,
+        updated_at: currentRun.updated_at,
+      }],
+      state: "working",
+      summary: "Run is finalizing",
+      updated_at: currentRun.updated_at,
+    }],
+    direct_agent_id: agent.id,
+    runtime: "python",
+    schema_version: 1,
+    service: "mentat-local-bridge",
+    status: "ready",
+  };
+  const projectedActivity = await fetchBridgeActivity(
+    async () => Response.json(activity),
+    environment,
+  );
+  assert.equal(projectedActivity.activity[0].conversations[0].run_status, "finalizing");
+
+  for (const invalidStatus of ["finalized", "artifact_pending"]) {
+    await assert.rejects(
+      fetchBridgeConversation(
+        conversation.id,
+        null,
+        async () => Response.json({
+          ...detail,
+          current_run: { ...currentRun, status: invalidStatus },
+        }),
+        environment,
+      ),
+      (error: unknown) => error instanceof BridgeConversationsError
+        && error.code === "bridge_response_invalid",
+    );
+  }
 });
 
 test("Conversation bridge maps fixed failures and bounds pagination", async () => {

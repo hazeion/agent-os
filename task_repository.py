@@ -644,9 +644,9 @@ class TaskRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise TaskRepositoryError("task_repository.schema_unsupported") from exc
         allowed_versions = (
-            {5, 6, 7, 8, 10, DATABASE_SCHEMA_VERSION}
+            {5, 6, 7, 8, 10, 11, 12, DATABASE_SCHEMA_VERSION}
             if self.allow_pre_authority_schema
-            else {6, 7, 8, 10, DATABASE_SCHEMA_VERSION}
+            else {6, 7, 8, 10, 11, 12, DATABASE_SCHEMA_VERSION}
         )
         if version not in allowed_versions:
             raise TaskRepositoryError("task_repository.schema_unsupported")

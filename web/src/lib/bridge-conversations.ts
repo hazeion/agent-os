@@ -327,7 +327,7 @@ function validCurrentRun(value: unknown): value is PublicCurrentRun | null {
   return Object.keys(run).sort().join(",") === "id,partial,status,updated_at"
     && runId(run.id)
     && typeof run.status === "string"
-    && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(run.status)
+    && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(run.status)
     && typeof run.partial === "boolean"
     && timestamp(run.updated_at);
 }
@@ -535,7 +535,7 @@ function validActivityItem(value: unknown): value is PublicAgentActivity {
         && text(value.title, 160)
         && runId(value.run_id)
         && typeof value.run_status === "string"
-        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.run_status)
+        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.run_status)
         && typeof value.attention === "boolean"
         && timestamp(value.updated_at);
     });

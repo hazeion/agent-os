@@ -24,6 +24,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from typing import NoReturn
 from uuid import uuid4
 from datetime import date, datetime, timedelta, timezone
 from calendar import monthrange
@@ -39,6 +40,7 @@ from agent_run_history import (
     EVENT_RETENTION,
     EVENT_SCHEMA_VERSION,
     normalize_transport_binding,
+    normalize_usage,
     retained_event_window,
 )
 from agent_runtime import (
@@ -81,6 +83,7 @@ from agent_registry import (
     AgentRegistryLimitError,
     AgentRegistryUnavailableError,
     AgentRegistryValidationError,
+    INTERACTIVE_AGENT_CAPABILITIES,
     public_agent_record,
 )
 from private_state import (
@@ -179,6 +182,10 @@ from hermes_transport import (
     RemoteHermesConsoleTransport,
     TransportBinding,
     select_hermes_console_transport,
+)
+from hermes_local_control import (
+    LocalHermesControlClient,
+    LocalHermesControlError,
 )
 from hermes_runtime import HermesCompatibilityHandlers, HermesRuntime
 from codex_runtime import (
@@ -478,6 +485,12 @@ AGENT_CONSOLE_RUNS: dict[str, dict] = {}
 AGENT_CONSOLE_PROCESSES: dict[str, subprocess.Popen] = {}
 AGENT_CONSOLE_REMOTE_WORKERS: dict[str, threading.Thread] = {}
 AGENT_CONSOLE_LOCK = threading.RLock()
+AGENT_CONSOLE_CONTINUATIONS_PENDING: dict[str, str] = {}
+# Serialize a finalizer's full continuation submission against shutdown. If a
+# finalizer wins, the new child is registered before shutdown snapshots it; if
+# shutdown wins, the durable reservation is left for startup recovery.
+AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK = threading.RLock()
+AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
 # Serialize connection-bound summary/start/selection work without blocking run
 # events or cancellation during slow Hermes discovery. When both are needed,
 # acquire this lock before AGENT_CONSOLE_LOCK.
@@ -542,10 +555,25 @@ def persist_agent_console_runs() -> bool:
         return False
     try:
         with AGENT_CONSOLE_LOCK:
-            save_authoritative_run_summaries(
+            for run in AGENT_CONSOLE_RUNS.values():
+                if (
+                    run.get("status")
+                    in {"completed", "failed", "cancelled", "interrupted", "stopped"}
+                    and run.get("_steer_inflight") is True
+                ):
+                    # A terminal boundary racing an unverified steering call
+                    # is partial before any FIFO successor can be reserved.
+                    run["partial"] = True
+            report = save_authoritative_run_summaries(
                 DATA_DIR,
                 list(AGENT_CONSOLE_RUNS.values()),
             )
+            if AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED:
+                for source_run_id, turn_id in report.conversation_continuations:
+                    prior = AGENT_CONSOLE_CONTINUATIONS_PENDING.get(source_run_id)
+                    if prior is not None and prior != turn_id:
+                        raise RunRepositoryError("run_repository.corrupt")
+                    AGENT_CONSOLE_CONTINUATIONS_PENDING[source_run_id] = turn_id
         return True
     except (OSError, ValueError, RunRepositoryError) as exc:
         AGENT_CONSOLE_PERSISTENCE_DEGRADED = True
@@ -560,6 +588,7 @@ def persist_agent_console_runs() -> bool:
         except (OSError, RunRepositoryError):
             authoritative = []
         with AGENT_CONSOLE_LOCK:
+            AGENT_CONSOLE_CONTINUATIONS_PENDING.clear()
             AGENT_CONSOLE_RUNS.clear()
             AGENT_CONSOLE_RUNS.update(
                 (run["id"], run) for run in authoritative
@@ -574,32 +603,38 @@ def _load_agent_console_runs(*, recover_crash_states: bool) -> None:
     global AGENT_CONSOLE_HISTORY_DATA_DIR, AGENT_CONSOLE_HISTORY_LOADED
     global AGENT_CONSOLE_PERSISTENCE_DEGRADED
     global AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR
-    with AGENT_CONSOLE_LOCK:
-        try:
-            ensure_run_sqlite_authority(DATA_DIR, agent_console_history_path())
-            if recover_crash_states:
-                recover_orchestration_crash_states_at_startup(
-                    recover_legacy_console_runs=True,
+    global AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        with AGENT_CONSOLE_LOCK:
+            AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
+            try:
+                ensure_run_sqlite_authority(DATA_DIR, agent_console_history_path())
+                if recover_crash_states:
+                    recover_orchestration_crash_states_at_startup(
+                        recover_legacy_console_runs=True,
+                    )
+                runs = load_authoritative_run_summaries(
+                    DATA_DIR,
+                    limit=AGENT_CONSOLE_RUN_LIMIT,
                 )
-            runs = load_authoritative_run_summaries(
-                DATA_DIR,
-                limit=AGENT_CONSOLE_RUN_LIMIT,
-            )
-        except (OSError, MentatDatabaseError, sqlite3.Error, RunRepositoryError) as exc:
+            except (OSError, MentatDatabaseError, sqlite3.Error, RunRepositoryError) as exc:
+                AGENT_CONSOLE_CONTINUATIONS_PENDING.clear()
+                AGENT_CONSOLE_RUNS.clear()
+                AGENT_CONSOLE_HISTORY_LOADED = False
+                AGENT_CONSOLE_HISTORY_DATA_DIR = None
+                AGENT_CONSOLE_PERSISTENCE_DEGRADED = True
+                AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = Path(
+                    os.path.abspath(os.fspath(DATA_DIR))
+                )
+                raise RunRepositoryUnavailable("run_repository.unavailable") from exc
+            AGENT_CONSOLE_CONTINUATIONS_PENDING.clear()
             AGENT_CONSOLE_RUNS.clear()
-            AGENT_CONSOLE_HISTORY_LOADED = False
-            AGENT_CONSOLE_HISTORY_DATA_DIR = None
-            AGENT_CONSOLE_PERSISTENCE_DEGRADED = True
-            AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = Path(
-                os.path.abspath(os.fspath(DATA_DIR))
-            )
-            raise RunRepositoryUnavailable("run_repository.unavailable") from exc
-        AGENT_CONSOLE_RUNS.clear()
-        AGENT_CONSOLE_RUNS.update((run["id"], run) for run in runs)
-        AGENT_CONSOLE_HISTORY_LOADED = True
-        AGENT_CONSOLE_HISTORY_DATA_DIR = Path(os.path.abspath(os.fspath(DATA_DIR)))
-        AGENT_CONSOLE_PERSISTENCE_DEGRADED = False
-        AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = None
+            AGENT_CONSOLE_RUNS.update((run["id"], run) for run in runs)
+            AGENT_CONSOLE_HISTORY_LOADED = True
+            AGENT_CONSOLE_HISTORY_DATA_DIR = Path(os.path.abspath(os.fspath(DATA_DIR)))
+            AGENT_CONSOLE_PERSISTENCE_DEGRADED = False
+            AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR = None
+            AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = True
 
 
 def load_agent_console_runs() -> None:
@@ -660,6 +695,17 @@ def trim_agent_console_runs_locked() -> None:
             item
             for item in AGENT_CONSOLE_RUNS.values()
             if item.get("status") not in AGENT_CONSOLE_ACTIVE_STATUSES
+            and not (
+                item.get("status")
+                in {"completed", "failed", "cancelled", "stopped", "interrupted"}
+                and isinstance(item.get("mentat_agent_id"), str)
+                and isinstance(item.get("task_id"), str)
+                and not any(
+                    isinstance(event, dict)
+                    and event.get("type") == "runtime.finalized"
+                    for event in item.get("events", [])
+                )
+            )
         ),
         key=lambda item: (item.get("created_at") or "", item.get("id") or ""),
     )
@@ -1673,6 +1719,44 @@ def create_mentat_conversation(payload: object) -> tuple[dict, int]:
         raise
 
 
+def _dispatch_reserved_agent_console_continuation(
+    source_run_id: str,
+    turn_id: str,
+) -> None:
+    """Submit one reserved FIFO successor only inside the shutdown gate."""
+
+    if (
+        re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}", source_run_id)
+        is None
+        or re.fullmatch(r"turn_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}", turn_id)
+        is None
+    ):
+        return
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        if (
+            not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+            or agent_console_storage_degraded()
+        ):
+            return
+        try:
+            OrchestrationService(
+                DATA_DIR,
+                runtime_registry=AGENT_RUNTIME_REGISTRY,
+                agent_registry=_mentat_agent_registry(),
+                conversation_continuation_handler=(
+                    _dispatch_reserved_agent_console_continuation
+                ),
+            ).execute_reserved_conversation_turn(
+                turn_id,
+                source_run_id=source_run_id,
+            )
+        except (OrchestrationServiceError, OSError, sqlite3.Error):
+            # The exact reservation remains durable. Expected pre-submission
+            # failures are terminalized by the service; crash recovery handles
+            # a process interruption before any external attempt.
+            return
+
+
 def submit_mentat_conversation_turn(
     conversation_id: str,
     payload: object,
@@ -1701,18 +1785,27 @@ def submit_mentat_conversation_turn(
         or "\x00" in key
     ):
         return {"error_code": "conversation.request_invalid"}, 400
-    try:
-        result = OrchestrationService(
-            DATA_DIR,
-            runtime_registry=AGENT_RUNTIME_REGISTRY,
-            agent_registry=_mentat_agent_registry(),
-        ).submit_conversation_turn(
-            conversation_id=conversation_id,
-            text=text,
-            idempotency_key=key,
-        )
-    except (MentatDatabaseError, sqlite3.Error) as exc:
-        raise OrchestrationServiceError("conversation.unavailable") from exc
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        if (
+            not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+            or agent_console_storage_degraded()
+        ):
+            return {"error_code": "conversation.unavailable"}, 503
+        try:
+            result = OrchestrationService(
+                DATA_DIR,
+                runtime_registry=AGENT_RUNTIME_REGISTRY,
+                agent_registry=_mentat_agent_registry(),
+                conversation_continuation_handler=(
+                    _dispatch_reserved_agent_console_continuation
+                ),
+            ).submit_conversation_turn(
+                conversation_id=conversation_id,
+                text=text,
+                idempotency_key=key,
+            )
+        except (MentatDatabaseError, sqlite3.Error) as exc:
+            raise OrchestrationServiceError("conversation.unavailable") from exc
     run = (
         {
             "id": result.run.id,
@@ -1787,6 +1880,9 @@ def mutate_mentat_conversation_turn(
         DATA_DIR,
         runtime_registry=AGENT_RUNTIME_REGISTRY,
         agent_registry=_mentat_agent_registry(),
+        conversation_continuation_handler=(
+            _dispatch_reserved_agent_console_continuation
+        ),
     )
     try:
         if action == "edit":
@@ -1814,12 +1910,18 @@ def mutate_mentat_conversation_turn(
                 expected_message_revision=expected_message_revision,
             )
         else:
-            continued = service.continue_conversation_turn(
-                conversation_id=conversation_id,
-                turn_id=turn_id,
-                expected_revision=expected_revision,
-                expected_message_revision=expected_message_revision,
-            )
+            with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+                if (
+                    not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+                    or agent_console_storage_degraded()
+                ):
+                    return {"error_code": "conversation.unavailable"}, 503
+                continued = service.continue_conversation_turn(
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    expected_revision=expected_revision,
+                    expected_message_revision=expected_message_revision,
+                )
             run = (
                 {
                     "id": continued.run.id,
@@ -1896,7 +1998,9 @@ def create_mentat_agent(payload):
     if not allowed - {"capabilities"} <= set(payload):
         return {"error": "Agent name and runtime binding are required."}, 400
     capabilities = payload.get("capabilities", [])
-    if not isinstance(capabilities, list):
+    if not isinstance(capabilities, list) or any(
+        not isinstance(capability, str) for capability in capabilities
+    ):
         return {"error": "Agent capabilities must be a list."}, 400
     runtime_type = payload.get("runtime_type")
     if not isinstance(runtime_type, str):
@@ -1905,6 +2009,14 @@ def create_mentat_agent(payload):
         return {
             "error": "Create a Vercel Agent with the confirmed `mentat vercel create-agent` command."
         }, 400
+    if runtime_type in {"hermes", "codex"}:
+        # Browser-creatable Console Agents are interactive by default.  The
+        # durable declaration says which actions Mentat may offer; individual
+        # live controls still fail closed until the exact Run proves that its
+        # adapter is ready (for example, after Hermes emits message.start).
+        capabilities = sorted(
+            set(capabilities).union(INTERACTIVE_AGENT_CAPABILITIES)
+        )
     try:
         runtime = AGENT_RUNTIME_REGISTRY.require(runtime_type)
         if isinstance(runtime, CodexRuntime):
@@ -2060,11 +2172,20 @@ def reconcile_orchestration_runs(payload=None):
     if payload not in (None, {}):
         return {"error": "Reconciliation does not accept request fields."}, 400
     try:
-        report = OrchestrationService(
-            DATA_DIR,
-            runtime_registry=AGENT_RUNTIME_REGISTRY,
-            agent_registry=_mentat_agent_registry(),
-        ).reconcile_runs(owner=f"reconciler_{uuid4().hex}", limit=20)
+        with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+            if (
+                not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+                or agent_console_storage_degraded()
+            ):
+                return {"error": "Run reconciliation is temporarily unavailable."}, 503
+            report = OrchestrationService(
+                DATA_DIR,
+                runtime_registry=AGENT_RUNTIME_REGISTRY,
+                agent_registry=_mentat_agent_registry(),
+                conversation_continuation_handler=(
+                    _dispatch_reserved_agent_console_continuation
+                ),
+            ).reconcile_runs(owner=f"reconciler_{uuid4().hex}", limit=20)
     except (
         MentatDatabaseError,
         OrchestrationServiceError,
@@ -2087,14 +2208,23 @@ def refresh_mentat_run_payload(run_id: str) -> dict:
 
     if re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}", run_id) is None:
         raise RunRepositoryValidationError("run.identifier_invalid")
-    report = OrchestrationService(
-        DATA_DIR,
-        runtime_registry=AGENT_RUNTIME_REGISTRY,
-        agent_registry=_mentat_agent_registry(),
-    ).reconcile_run(
-        run_id=run_id,
-        owner=f"selected_run_{uuid4().hex}",
-    )
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        if (
+            not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+            or agent_console_storage_degraded()
+        ):
+            raise OrchestrationServiceError("reconcile.unavailable")
+        report = OrchestrationService(
+            DATA_DIR,
+            runtime_registry=AGENT_RUNTIME_REGISTRY,
+            agent_registry=_mentat_agent_registry(),
+            conversation_continuation_handler=(
+                _dispatch_reserved_agent_console_continuation
+            ),
+        ).reconcile_run(
+            run_id=run_id,
+            owner=f"selected_run_{uuid4().hex}",
+        )
     if report.unavailable:
         raise OrchestrationServiceError("reconcile.unavailable")
     return {
@@ -2129,6 +2259,9 @@ def recover_orchestration_crash_states_at_startup(
                 now=occurred_at
             )
             repository.recover_conversation_submissions(now=occurred_at)
+            repository.recover_unfinalized_conversation_terminals(
+                now=occurred_at
+            )
             if recover_legacy_console_runs:
                 repository.recover_console_runs_as_interrupted(now=occurred_at)
         finally:
@@ -2139,11 +2272,23 @@ def reconcile_orchestration_runtime_references_at_startup() -> None:
     """Run one bounded best-effort readback after crash classification."""
 
     try:
-        OrchestrationService(
-            DATA_DIR,
-            runtime_registry=AGENT_RUNTIME_REGISTRY,
-            agent_registry=_mentat_agent_registry(),
-        ).reconcile_runs(owner=f"startup_reconciler_{uuid4().hex}", limit=20)
+        with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+            if (
+                agent_console_history_is_current()
+                and (
+                    not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+                    or agent_console_storage_degraded()
+                )
+            ):
+                return
+            OrchestrationService(
+                DATA_DIR,
+                runtime_registry=AGENT_RUNTIME_REGISTRY,
+                agent_registry=_mentat_agent_registry(),
+                conversation_continuation_handler=(
+                    _dispatch_reserved_agent_console_continuation
+                ),
+            ).reconcile_runs(owner=f"startup_reconciler_{uuid4().hex}", limit=20)
     except (
         MentatDatabaseError,
         OrchestrationServiceError,
@@ -2291,7 +2436,12 @@ def _run_stop_confirmation(run: RunRecord) -> str:
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 
-def _run_stop_context(run: RunRecord):
+def _run_stop_context(
+    run: RunRecord,
+    *,
+    required_capability: str | None = None,
+    capability_error: str = "run.stop_unavailable",
+):
     task_identity = run.task_id or run.turn_id
     if (
         run.agent_id is None
@@ -2299,7 +2449,7 @@ def _run_stop_context(run: RunRecord):
         or run.runtime_config_id is None
         or run.runtime_binding_digest is None
     ):
-        raise OrchestrationRunActionError("run.stop_unavailable")
+        raise OrchestrationRunActionError(capability_error)
     try:
         registry = _mentat_agent_registry()
         agent = next((item for item in registry.list_agents() if item.id == run.agent_id), None)
@@ -2324,6 +2474,11 @@ def _run_stop_context(run: RunRecord):
     )
     if digest != run.runtime_binding_digest:
         raise OrchestrationRunActionError("run.binding_changed")
+    if (
+        required_capability is not None
+        and required_capability not in agent.capabilities
+    ):
+        raise OrchestrationRunActionError(capability_error)
     return runtime, RuntimeContext(
         agent_id=agent.id,
         runtime_agent_ref=binding.runtime_agent_ref,
@@ -2365,6 +2520,28 @@ def _verified_runtime_run(
     return observed
 
 
+def _raise_ambiguous_run_control(run: RunRecord, *, partial_code: str) -> NoReturn:
+    """Persist post-attempt ambiguity before any FIFO continuation can run."""
+
+    global AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+    try:
+        with private_state_lock(DATA_DIR):
+            connection = connect_mentat_database(DATA_DIR)
+            try:
+                repository = RunRepository(connection)
+                repository.authority_receipt(required=True)
+                repository.mark_control_delivery_partial(run)
+            finally:
+                connection.close()
+    except (MentatDatabaseError, RunRepositoryError, OSError, sqlite3.Error):
+        # The caller holds the drain gate. If durable fail-closed evidence could
+        # not be recorded, keep automatic continuation disabled for this
+        # process; restart recovery must classify the exact Run before work can
+        # resume.
+        AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
+    raise OrchestrationRunActionError(partial_code)
+
+
 def _current_run_for_stop(run_id: str) -> RunRecord:
     run = _load_run_for_action(run_id)
     if run.status not in {
@@ -2384,7 +2561,11 @@ def mentat_run_stop_preview_payload(run_id: str) -> dict:
     """Return one exact confirmation for an available current Run Stop."""
 
     run = _current_run_for_stop(run_id)
-    runtime, context = _run_stop_context(run)
+    runtime, context = _run_stop_context(
+        run,
+        required_capability=RuntimeCapability.STOP.value,
+        capability_error="run.stop_unavailable",
+    )
     try:
         capabilities = runtime.capabilities_for_run(
             run.runtime_run_ref or run.id, context=context
@@ -2407,6 +2588,7 @@ def mentat_confirm_run_stop(run_id: str, confirmation_id: object) -> dict:
 
     if not isinstance(confirmation_id, str) or not re.fullmatch(r"[0-9a-f]{64}", confirmation_id):
         raise OrchestrationRunActionError("run.confirmation_invalid")
+    needs_reconciliation = False
     with HERMES_CONNECTION_OPERATION_LOCK:
         preview = mentat_run_stop_preview_payload(run_id)
         if not hmac.compare_digest(confirmation_id, preview["confirmation_id"]):
@@ -2414,7 +2596,11 @@ def mentat_confirm_run_stop(run_id: str, confirmation_id: object) -> dict:
         run = _current_run_for_stop(run_id)
         if not hmac.compare_digest(confirmation_id, _run_stop_confirmation(run)):
             raise OrchestrationRunActionError("run.confirmation_stale")
-        runtime, context = _run_stop_context(run)
+        runtime, context = _run_stop_context(
+            run,
+            required_capability=RuntimeCapability.STOP.value,
+            capability_error="run.stop_unavailable",
+        )
         try:
             runtime.stop(run.runtime_run_ref or run.id, context=context)
         except AgentRuntimeError:
@@ -2424,10 +2610,24 @@ def mentat_confirm_run_stop(run_id: str, confirmation_id: object) -> dict:
             updated.state_revision <= run.state_revision
             or updated.status not in {"cancelling", "cancelled", "stopped"}
         ):
+            needs_reconciliation = True
+    if needs_reconciliation:
+        # Stop validation/mutation owns the Hermes operation lock. Release it
+        # before taking the continuation drain gate so every path keeps the
+        # single global order: drain gate, then runtime submission guard.
+        with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+            if (
+                not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+                or agent_console_storage_degraded()
+            ):
+                raise OrchestrationRunActionError("run.stop_partial")
             service = OrchestrationService(
                 DATA_DIR,
                 runtime_registry=AGENT_RUNTIME_REGISTRY,
                 agent_registry=_mentat_agent_registry(),
+                conversation_continuation_handler=(
+                    _dispatch_reserved_agent_console_continuation
+                ),
             )
             owner = f"stop_reconciler_{uuid4().hex}"
             # One Codex turn can expose at most 4,098 normalized events. Page
@@ -2501,7 +2701,11 @@ def mentat_run_message_preview_payload(run_id: str, text: object) -> dict:
 
     normalized_text = _normalized_run_message_text(text)
     run = _current_run_for_message(run_id)
-    runtime, context = _run_stop_context(run)
+    runtime, context = _run_stop_context(
+        run,
+        required_capability=RuntimeCapability.SEND_MESSAGE.value,
+        capability_error="run.message_unavailable",
+    )
     try:
         capabilities = runtime.capabilities_for_run(
             run.runtime_run_ref or run.id, context=context
@@ -2527,38 +2731,65 @@ def mentat_confirm_run_message(
     normalized_text = _normalized_run_message_text(text)
     if not isinstance(confirmation_id, str) or not re.fullmatch(r"[0-9a-f]{64}", confirmation_id):
         raise OrchestrationRunActionError("run.confirmation_invalid")
-    with HERMES_CONNECTION_OPERATION_LOCK:
-        preview = mentat_run_message_preview_payload(run_id, normalized_text)
-        if not hmac.compare_digest(confirmation_id, preview["confirmation_id"]):
-            raise OrchestrationRunActionError("run.confirmation_stale")
-        run = _current_run_for_message(run_id)
-        if not hmac.compare_digest(
-            confirmation_id, _run_message_confirmation(run, normalized_text)
-        ):
-            raise OrchestrationRunActionError("run.confirmation_stale")
-        runtime, context = _run_stop_context(run)
-        try:
-            runtime.send_message(
-                run.runtime_run_ref or run.id, normalized_text, context=context
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        with HERMES_CONNECTION_OPERATION_LOCK:
+            preview = mentat_run_message_preview_payload(run_id, normalized_text)
+            if not hmac.compare_digest(confirmation_id, preview["confirmation_id"]):
+                raise OrchestrationRunActionError("run.confirmation_stale")
+            run = _current_run_for_message(run_id)
+            if not hmac.compare_digest(
+                confirmation_id, _run_message_confirmation(run, normalized_text)
+            ):
+                raise OrchestrationRunActionError("run.confirmation_stale")
+            runtime, context = _run_stop_context(
+                run,
+                required_capability=RuntimeCapability.SEND_MESSAGE.value,
+                capability_error="run.message_unavailable",
             )
-        except AgentRuntimeError:
-            raise OrchestrationRunActionError("run.message_failed") from None
-        try:
-            verified = runtime.get_status(run.runtime_run_ref or run.id, context=context)
-        except AgentRuntimeError:
-            raise OrchestrationRunActionError("run.message_partial") from None
-        verified = _verified_runtime_run(
-            run, verified, partial_code="run.message_partial"
-        )
-    if verified.status.value not in {
-        "running",
-        "waiting",
-        "completed",
-        "failed",
-        "stopped",
-        "interrupted",
-    }:
-        raise OrchestrationRunActionError("run.message_partial")
+            try:
+                runtime.send_message(
+                    run.runtime_run_ref or run.id, normalized_text, context=context
+                )
+            except AgentRuntimeError as exc:
+                if exc.code == "runtime.message_partial":
+                    _raise_ambiguous_run_control(
+                        run,
+                        partial_code="run.message_partial",
+                    )
+                raise OrchestrationRunActionError("run.message_failed") from None
+            try:
+                verified = runtime.get_status(
+                    run.runtime_run_ref or run.id,
+                    context=context,
+                )
+            except AgentRuntimeError:
+                _raise_ambiguous_run_control(
+                    run,
+                    partial_code="run.message_partial",
+                )
+            try:
+                verified = _verified_runtime_run(
+                    run,
+                    verified,
+                    partial_code="run.message_partial",
+                )
+            except OrchestrationRunActionError:
+                _raise_ambiguous_run_control(
+                    run,
+                    partial_code="run.message_partial",
+                )
+            if verified.status.value not in {
+                "running",
+                "waiting",
+                "completed",
+                "failed",
+                "stopped",
+                "interrupted",
+            }:
+                _raise_ambiguous_run_control(
+                    run,
+                    partial_code="run.message_partial",
+                )
     return {
         "schema_version": 1,
         "action": "message",
@@ -2588,45 +2819,73 @@ def steer_mentat_conversation(
         or len(text) > 6_000
     ):
         return {"error_code": "conversation.steer_invalid"}, 400
-    run = _load_run_for_action(run_id)
-    if run.conversation_id != conversation_id or run.status != "running":
-        raise OrchestrationRunActionError("conversation.steer_stale")
-    runtime, context = _run_stop_context(run)
-    try:
-        capabilities = runtime.capabilities_for_run(
-            run.runtime_run_ref or run.id,
-            context=context,
-        )
-    except AgentRuntimeError:
-        raise OrchestrationRunActionError(
-            "conversation.steer_unavailable"
-        ) from None
-    if RuntimeCapability.SEND_MESSAGE.value not in capabilities:
-        raise OrchestrationRunActionError("conversation.steer_unsupported")
-    try:
-        runtime.send_message(
-            run.runtime_run_ref or run.id,
-            text,
-            context=context,
-        )
-    except AgentRuntimeError:
-        raise OrchestrationRunActionError("conversation.steer_failed") from None
-    try:
-        verified = runtime.get_status(
-            run.runtime_run_ref or run.id,
-            context=context,
-        )
-    except AgentRuntimeError:
-        raise OrchestrationRunActionError("conversation.steer_partial") from None
-    verified = _verified_runtime_run(
-        run,
-        verified,
-        partial_code="conversation.steer_partial",
-    )
-    if verified.status.value not in {
-        "running", "waiting", "completed", "failed", "stopped", "interrupted"
-    }:
-        raise OrchestrationRunActionError("conversation.steer_partial")
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        with HERMES_CONNECTION_OPERATION_LOCK:
+            run = _load_run_for_action(run_id)
+            if run.conversation_id != conversation_id or run.status != "running":
+                raise OrchestrationRunActionError("conversation.steer_stale")
+            runtime, context = _run_stop_context(
+                run,
+                required_capability=RuntimeCapability.SEND_MESSAGE.value,
+                capability_error="conversation.steer_unsupported",
+            )
+            try:
+                capabilities = runtime.capabilities_for_run(
+                    run.runtime_run_ref or run.id,
+                    context=context,
+                )
+            except AgentRuntimeError:
+                raise OrchestrationRunActionError(
+                    "conversation.steer_unavailable"
+                ) from None
+            if RuntimeCapability.SEND_MESSAGE.value not in capabilities:
+                raise OrchestrationRunActionError("conversation.steer_unsupported")
+            try:
+                runtime.send_message(
+                    run.runtime_run_ref or run.id,
+                    text,
+                    context=context,
+                )
+            except AgentRuntimeError as exc:
+                if exc.code == "runtime.message_partial":
+                    _raise_ambiguous_run_control(
+                        run,
+                        partial_code="conversation.steer_partial",
+                    )
+                raise OrchestrationRunActionError("conversation.steer_failed") from None
+            try:
+                verified = runtime.get_status(
+                    run.runtime_run_ref or run.id,
+                    context=context,
+                )
+            except AgentRuntimeError:
+                _raise_ambiguous_run_control(
+                    run,
+                    partial_code="conversation.steer_partial",
+                )
+            try:
+                verified = _verified_runtime_run(
+                    run,
+                    verified,
+                    partial_code="conversation.steer_partial",
+                )
+            except OrchestrationRunActionError:
+                _raise_ambiguous_run_control(
+                    run,
+                    partial_code="conversation.steer_partial",
+                )
+            if verified.status.value not in {
+                "running",
+                "waiting",
+                "completed",
+                "failed",
+                "stopped",
+                "interrupted",
+            }:
+                _raise_ambiguous_run_control(
+                    run,
+                    partial_code="conversation.steer_partial",
+                )
     return {
         "schema_version": 1,
         "action": "steer",
@@ -2695,7 +2954,11 @@ def _run_action_response_payload(response: RunActionResponse) -> dict:
 
 
 def _current_pending_run_action(run: RunRecord) -> tuple[object, RuntimeContext, PendingRunAction]:
-    runtime, context = _run_stop_context(run)
+    runtime, context = _run_stop_context(
+        run,
+        required_capability=RuntimeCapability.APPROVAL_RESPONSE.value,
+        capability_error="run.response_unavailable",
+    )
     try:
         capabilities = runtime.capabilities_for_run(run.runtime_run_ref or run.id, context=context)
         action = runtime.pending_action(run.runtime_run_ref or run.id, context=context)
@@ -7247,7 +7510,10 @@ AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry(
 def shutdown_agent_runtimes() -> None:
     """Close process-owning runtime adapters during either server lifecycle."""
 
-    CODEX_RUNTIME.close()
+    try:
+        stop_agent_console_processes()
+    finally:
+        CODEX_RUNTIME.close()
 
 
 def hermes_console_transport() -> HermesConsoleTransport:
@@ -7993,37 +8259,55 @@ def _console_orchestration_identity(
 def finalize_agent_console_runtime_event(run_id: str) -> None:
     """Persist one stable post-artifact terminal boundary for orchestration."""
 
-    with AGENT_CONSOLE_LOCK:
-        run = AGENT_CONSOLE_RUNS.get(run_id)
-        if not run or run.get("status") not in {
-            "completed",
-            "failed",
-            "cancelled",
-            "interrupted",
-        }:
-            return
-        if (
-            not isinstance(run.get("mentat_agent_id"), str)
-            or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z",
-                run["mentat_agent_id"],
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        continuation_turn_id = None
+        with AGENT_CONSOLE_LOCK:
+            run = AGENT_CONSOLE_RUNS.get(run_id)
+            if not run or run.get("status") not in {
+                "completed",
+                "failed",
+                "cancelled",
+                "interrupted",
+            }:
+                return
+            if (
+                not isinstance(run.get("mentat_agent_id"), str)
+                or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z",
+                    run["mentat_agent_id"],
+                )
+                or not isinstance(run.get("task_id"), str)
+                or not TASK_ID_PATTERN.fullmatch(run["task_id"])
+            ):
+                return
+            already_finalized = any(
+                isinstance(event, dict) and event.get("type") == "runtime.finalized"
+                for event in run.get("events", [])
             )
-            or not isinstance(run.get("task_id"), str)
-            or not TASK_ID_PATTERN.fullmatch(run["task_id"])
-        ):
+            if not already_finalized:
+                agent_console_event(
+                    run,
+                    "Run finalized",
+                    "runtime.finalized",
+                    {"phase": "finalized"},
+                )
+                if not persist_agent_console_runs():
+                    return
+            if (
+                agent_console_storage_degraded()
+                or not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+            ):
+                return
+            continuation_turn_id = AGENT_CONSOLE_CONTINUATIONS_PENDING.pop(
+                run_id,
+                None,
+            )
+        if continuation_turn_id is None:
             return
-        if any(
-            isinstance(event, dict) and event.get("type") == "runtime.finalized"
-            for event in run.get("events", [])
-        ):
-            return
-        agent_console_event(
-            run,
-            "Run finalized",
-            "runtime.finalized",
-            {"phase": "finalized"},
+        _dispatch_reserved_agent_console_continuation(
+            run_id,
+            continuation_turn_id,
         )
-        persist_agent_console_runs()
 
 
 def agent_console_snapshot(run: dict) -> dict:
@@ -8054,10 +8338,12 @@ def agent_console_snapshot(run: dict) -> dict:
     }
     remote_transport = run.get("_remote_transport")
     remote_run_id = run.get("_remote_run_id")
+    local_client = run.get("_local_control_client")
+    local_session_id = run.get("_local_control_session_id")
     revision = run.get("_steer_revision", 0)
     if type(revision) is not int or revision < 0:
         revision = 0
-    steer_available = (
+    remote_steer_available = (
         run.get("transport_mode") == "remote"
         and run.get("status") == "running"
         and isinstance(remote_transport, RemoteHermesConsoleTransport)
@@ -8066,6 +8352,17 @@ def agent_console_snapshot(run: dict) -> dict:
         and run.get("_steer_inflight") is not True
         and not agent_console_storage_degraded()
     )
+    local_steer_available = (
+        run.get("transport_mode") == "local"
+        and run.get("status") == "running"
+        and run.get("_local_steer_ready") is True
+        and isinstance(local_client, LocalHermesControlClient)
+        and isinstance(local_session_id, str)
+        and local_client.can_steer(local_session_id)
+        and run.get("_steer_inflight") is not True
+        and not agent_console_storage_degraded()
+    )
+    steer_available = remote_steer_available or local_steer_available
     snapshot["controls"] = {
         "steer": {
             "available": steer_available,
@@ -8370,7 +8667,415 @@ def attachment_execution_prompt(user_prompt: str, prepared: list[dict]) -> str:
     )
 
 
+def _local_hermes_control_event(
+    run_id: str,
+    client: LocalHermesControlClient,
+    event: dict,
+) -> None:
+    """Project only bounded progress from the exact controlled Hermes session."""
+
+    event_type = event.get("type")
+    session_id = event.get("session_id")
+    payload = event.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    with AGENT_CONSOLE_LOCK:
+        run = AGENT_CONSOLE_RUNS.get(run_id)
+        if (
+            not run
+            or run.get("_local_control_client") is not client
+            or run.get("_local_control_session_id") != session_id
+        ):
+            return
+        changed = False
+        if event_type == "message.start" and run.get("status") == "running":
+            if run.get("_local_steer_ready") is not True:
+                run["_local_steer_ready"] = True
+                agent_console_event(
+                    run,
+                    "Model is working",
+                    "status",
+                    {"phase": "inference"},
+                )
+                changed = True
+        elif event_type in {"message.complete", "error"}:
+            if run.pop("_local_steer_ready", None) is not None:
+                changed = True
+        elif event_type in {"tool.start", "tool.complete"} and run.get("status") == "running":
+            tool_name = compact_text(payload.get("name"), max_length=80)
+            if tool_name:
+                completed = event_type == "tool.complete"
+                data: dict[str, object] = {"tool": tool_name}
+                duration = payload.get("duration_s")
+                if (
+                    completed
+                    and isinstance(duration, (int, float))
+                    and not isinstance(duration, bool)
+                    and 0 <= float(duration) <= 86_400
+                ):
+                    data["duration_ms"] = round(float(duration) * 1000)
+                agent_console_event(
+                    run,
+                    f"{tool_name} {'finished' if completed else 'started'}",
+                    "tool.completed" if completed else "tool.started",
+                    data,
+                )
+                changed = True
+        if changed:
+            persist_agent_console_runs()
+
+
+def _run_controlled_local_hermes_agent(
+    run_id: str,
+    transport: LocalHermesConsoleTransport,
+    *,
+    prompt: str,
+    session_id: str | None,
+    profile_id: str,
+    image_path: str | None,
+    started: float,
+) -> bool:
+    """Run through Hermes' live backend, or decline before prompt submission.
+
+    ``False`` is returned only when it is safe to use the established one-shot
+    CLI path because no prompt request began. Once the prompt request begins,
+    this function owns reconciliation and never retries.
+    """
+
+    client: LocalHermesControlClient | None = None
+    submitted = False
+    owned_run = True
+
+    def finish_cancelled(current: dict) -> None:
+        current["status"] = "cancelled"
+        current["completed_at"] = now_iso()
+        current["error"] = "Run stopped by operator."
+        if current.get("new_session_state") == "pending":
+            current["new_session_state"] = "failed"
+        agent_console_event(
+            current,
+            "Run stopped",
+            "cancelled",
+            {"reason": "operator_cancelled"},
+        )
+        persist_agent_console_runs()
+
+    def unbind_client() -> None:
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if current and (
+                current.get("_local_control_client") is client
+                or (
+                    current.get("_local_control_client") is None
+                    and current.get("_local_control_starting") is True
+                )
+            ):
+                current.pop("_local_control_client", None)
+                current.pop("_local_control_session_id", None)
+                current.pop("_local_control_starting", None)
+                current.pop("_local_steer_ready", None)
+                current.pop("_steer_inflight", None)
+                current.pop("_local_control_claim", None)
+                AGENT_CONSOLE_PROCESSES.pop(run_id, None)
+            elif client is not None and AGENT_CONSOLE_PROCESSES.get(run_id) is client.process:
+                AGENT_CONSOLE_PROCESSES.pop(run_id, None)
+
+    try:
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if not current:
+                return True
+            if current.get("status") == "cancelling":
+                finish_cancelled(current)
+                return True
+            if current.get("status") != "running":
+                return True
+            if normalize_transport_binding(
+                current.get("transport_mode"),
+                current.get("connection_binding_id"),
+                legacy_default=True,
+            ) != (transport.mode, transport.binding.binding_id):
+                raise HermesTransportError("transport_binding_changed")
+            current["_local_control_starting"] = True
+
+        transport.revalidate(DATA_DIR)
+        holder: dict[str, LocalHermesControlClient] = {}
+
+        def on_event(event: dict) -> None:
+            bound = holder.get("client")
+            if bound is not None:
+                _local_hermes_control_event(run_id, bound, event)
+
+        client = transport.open_control_client(
+            profile_id=profile_id,
+            runtime_root=private_console_root(DATA_DIR) / "hermes-control",
+            event_callback=on_event,
+        )
+        holder["client"] = client
+
+        # Publish ownership before any blocking startup work. Stop and either
+        # server lifecycle can now close the exact client even before a child
+        # process or live session identifier exists.
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if not current:
+                return True
+            if current.get("status") == "cancelling":
+                current.pop("_local_control_starting", None)
+                finish_cancelled(current)
+                return True
+            if current.get("status") != "running":
+                return True
+            if normalize_transport_binding(
+                current.get("transport_mode"),
+                current.get("connection_binding_id"),
+                legacy_default=True,
+            ) != (transport.mode, transport.binding.binding_id):
+                raise HermesTransportError("transport_binding_changed")
+            current["_local_control_client"] = client
+            current["_local_steer_ready"] = False
+
+        client.start()
+
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if (
+                not current
+                or current.get("_local_control_client") is not client
+            ):
+                return True
+            if current.get("status") == "cancelling":
+                finish_cancelled(current)
+                return True
+            if current.get("status") != "running":
+                return True
+            if client.process is not None:
+                AGENT_CONSOLE_PROCESSES[run_id] = client.process
+
+        live_session_id, durable_session_id = client.open_session(session_id)
+
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if (
+                not current
+                or current.get("_local_control_client") is not client
+                or current.get("status") != "running"
+            ):
+                if current and current.get("status") == "cancelling":
+                    finish_cancelled(current)
+                return True
+
+        if image_path:
+            client.attach_image(live_session_id, Path(image_path))
+
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if not current:
+                return True
+            if current.get("status") == "cancelling":
+                finish_cancelled(current)
+                return True
+            if current.get("status") != "running":
+                return True
+            if normalize_transport_binding(
+                current.get("transport_mode"),
+                current.get("connection_binding_id"),
+                legacy_default=True,
+            ) != (transport.mode, transport.binding.binding_id):
+                raise HermesTransportError("transport_binding_changed")
+            current["_local_control_client"] = client
+            current["_local_control_session_id"] = live_session_id
+            current.pop("_local_control_starting", None)
+            current["_local_steer_ready"] = False
+            if client.process is not None:
+                AGENT_CONSOLE_PROCESSES[run_id] = client.process
+            agent_console_event(
+                current,
+                "Hermes live controls connected",
+                "status",
+                {"phase": "launch"},
+            )
+            if not persist_agent_console_runs():
+                return True
+
+        # From this point forward, Mentat must never retry through the one-shot
+        # CLI: even a timeout may mean Hermes accepted the exact prompt.
+        submitted = True
+        client.submit_prompt(live_session_id, prompt)
+
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if (
+                not current
+                or current.get("_local_control_client") is not client
+                or current.get("_local_control_session_id") != live_session_id
+            ):
+                raise LocalHermesControlError(
+                    "local_control_binding_changed",
+                    uncertain=True,
+                )
+            current["session_id"] = durable_session_id
+            if current.get("new_session_state") == "pending":
+                current["new_session_state"] = "started"
+                current["starts_new_session"] = True
+                agent_console_event(
+                    current,
+                    "New Hermes session started",
+                    "session.started",
+                    {"phase": "session"},
+                )
+            if client.can_steer(live_session_id):
+                current["_local_steer_ready"] = True
+            if not persist_agent_console_runs():
+                return True
+
+        def should_abort() -> bool:
+            if agent_console_storage_degraded():
+                return True
+            with AGENT_CONSOLE_LOCK:
+                current = AGENT_CONSOLE_RUNS.get(run_id)
+                return (
+                    current is None
+                    or current.get("status") == "cancelling"
+                    or current.get("_local_control_client") is not client
+                )
+
+        terminal = client.wait_terminal(should_abort=should_abort)
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if not current:
+                return True
+            current.pop("_local_steer_ready", None)
+            current["completed_at"] = now_iso()
+            current["duration_seconds"] = round(time.monotonic() - started, 1)
+            current["usage"] = normalize_usage(
+                dict(terminal.usage) if terminal.usage is not None else None
+            )
+            response = clean_agent_output(terminal.text)
+            if current.get("status") == "cancelling":
+                current["status"] = "cancelled"
+                current["error"] = "Run stopped by operator."
+                agent_console_event(
+                    current,
+                    "Run stopped",
+                    "cancelled",
+                    {"reason": "operator_cancelled"},
+                )
+            elif terminal.status == "completed" and response:
+                current["status"] = "completed"
+                current["response"] = response
+                current["error"] = ""
+                agent_console_event(
+                    current,
+                    "Response complete",
+                    "complete",
+                    {"duration_seconds": current["duration_seconds"]},
+                )
+            elif terminal.status == "cancelled":
+                current["status"] = "cancelled"
+                current["error"] = "The Hermes run was interrupted."
+                agent_console_event(
+                    current,
+                    "Hermes run interrupted",
+                    "cancelled",
+                    {"reason": "runtime_interrupted"},
+                )
+            else:
+                current["status"] = "failed"
+                current["error"] = "Hermes could not complete this run."
+                agent_console_event(
+                    current,
+                    "Hermes run failed",
+                    "error",
+                    {"phase": "inference"},
+                )
+            persist_agent_console_runs()
+        collect_agent_console_artifacts(run_id)
+        return True
+    except Exception as exc:
+        uncertain = isinstance(exc, LocalHermesControlError) and exc.uncertain
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            safe_fallback = (
+                not submitted
+                and not agent_console_storage_degraded()
+                and current is not None
+                and current.get("status") == "running"
+                and (
+                    current.get("_local_control_client") is None
+                    or current.get("_local_control_client") is client
+                )
+                and normalize_transport_binding(
+                    current.get("transport_mode"),
+                    current.get("connection_binding_id"),
+                    legacy_default=True,
+                )
+                == (transport.mode, transport.binding.binding_id)
+            )
+        if safe_fallback:
+            unbind_client()
+            if client is not None:
+                client.close()
+            with AGENT_CONSOLE_LOCK:
+                current = AGENT_CONSOLE_RUNS.get(run_id)
+                if current and current.get("status") == "running":
+                    agent_console_event(
+                        current,
+                        "Starting Hermes compatibility transport",
+                        "status",
+                        {"phase": "launch", "steering": False},
+                    )
+                    persist_agent_console_runs()
+            owned_run = False
+            return False
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if current:
+                current.pop("_local_control_starting", None)
+                current.pop("_local_steer_ready", None)
+                if current.get("new_session_state") == "pending":
+                    current["new_session_state"] = "failed"
+                current["completed_at"] = now_iso()
+                current["duration_seconds"] = round(time.monotonic() - started, 1)
+                if current.get("status") == "cancelling":
+                    current["status"] = "cancelled"
+                    current["error"] = "Run stopped by operator."
+                    agent_console_event(
+                        current,
+                        "Run stopped",
+                        "cancelled",
+                        {"reason": "operator_cancelled"},
+                    )
+                else:
+                    current["status"] = "failed"
+                    current["error"] = "The local Hermes control session ended before completion."
+                    if uncertain:
+                        current["partial"] = True
+                    agent_console_event(
+                        current,
+                        "Hermes completion could not be verified"
+                        if uncertain
+                        else "Hermes run failed",
+                        "error",
+                        {"phase": "inference", "partial": uncertain},
+                    )
+                persist_agent_console_runs()
+        collect_agent_console_artifacts(run_id)
+        return True
+    finally:
+        if owned_run:
+            unbind_client()
+            if client is not None:
+                client.close()
+            try:
+                cleanup_run_input_directory(DATA_DIR, run_id)
+            except (ConsoleArtifactValidationError, OSError):
+                pass
+            finalize_agent_console_runtime_event(run_id)
+
+
 def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
+    terminal_before_launch = False
+    cleanup_before_launch = False
     with AGENT_CONSOLE_LOCK:
         run = AGENT_CONSOLE_RUNS.get(run_id)
         if not run:
@@ -8383,22 +9088,16 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
             run["error"] = "Run stopped by operator."
             agent_console_event(run, "Run stopped", "cancelled", {"reason": "operator_cancelled"})
             persist_agent_console_runs()
-            try:
-                cleanup_run_export_directory(DATA_DIR, run_id)
-            except (ConsoleArtifactValidationError, OSError):
-                pass
-            try:
-                cleanup_run_input_directory(DATA_DIR, run_id)
-            except (ConsoleArtifactValidationError, OSError):
-                pass
-            return
-        run_binding = normalize_transport_binding(
-            run.get("transport_mode"),
-            run.get("connection_binding_id"),
-            legacy_default=True,
-        )
-        selected_binding = (transport.mode, transport.binding.binding_id)
-        if run_binding != selected_binding:
+            terminal_before_launch = True
+            cleanup_before_launch = True
+        else:
+            run_binding = normalize_transport_binding(
+                run.get("transport_mode"),
+                run.get("connection_binding_id"),
+                legacy_default=True,
+            )
+            selected_binding = (transport.mode, transport.binding.binding_id)
+        if not terminal_before_launch and run_binding != selected_binding:
             run["status"] = "failed"
             run["completed_at"] = now_iso()
             run["error"] = "The Hermes connection changed before this run could start."
@@ -8409,38 +9108,70 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
                 {"phase": "launch", "reason": "transport_binding_changed"},
             )
             persist_agent_console_runs()
-            try:
-                cleanup_run_export_directory(DATA_DIR, run_id)
-            except (ConsoleArtifactValidationError, OSError):
-                pass
-            try:
-                cleanup_run_input_directory(DATA_DIR, run_id)
-            except (ConsoleArtifactValidationError, OSError):
-                pass
-            return
-        run["status"] = "running"
-        run["started_at"] = now_iso()
-        agent_console_event(run, "Starting Hermes CLI", "status", {"phase": "launch"})
-        if not persist_agent_console_runs():
-            try:
-                cleanup_run_export_directory(DATA_DIR, run_id)
-            except (ConsoleArtifactValidationError, OSError):
-                pass
-            try:
-                cleanup_run_input_directory(DATA_DIR, run_id)
-            except (ConsoleArtifactValidationError, OSError):
-                pass
-            return
-        prompt = run.get("_execution_prompt") or run["prompt"]
-        session_id = run.get("session_id")
-        profile_id = run.get("agent_id") or "default"
-        image_path = run.get("_image_path")
+            terminal_before_launch = True
+            cleanup_before_launch = True
+        if not terminal_before_launch:
+            run["status"] = "running"
+            run["started_at"] = now_iso()
+            agent_console_event(run, "Starting Hermes CLI", "status", {"phase": "launch"})
+            if not persist_agent_console_runs():
+                cleanup_before_launch = True
+            else:
+                prompt = run.get("_execution_prompt") or run["prompt"]
+                session_id = run.get("session_id")
+                profile_id = run.get("agent_id") or "default"
+                image_path = run.get("_image_path")
+
+    if cleanup_before_launch:
+        try:
+            cleanup_run_export_directory(DATA_DIR, run_id)
+        except (ConsoleArtifactValidationError, OSError):
+            pass
+        try:
+            cleanup_run_input_directory(DATA_DIR, run_id)
+        except (ConsoleArtifactValidationError, OSError):
+            pass
+        if terminal_before_launch:
+            finalize_agent_console_runtime_event(run_id)
+        return
 
     started = time.monotonic()
     next_update = 2
     telemetry_tail: ProgressTail | None = None
     usage_path: Path | None = None
+    if isinstance(transport, LocalHermesConsoleTransport) and transport.control_available:
+        handled = _run_controlled_local_hermes_agent(
+            run_id,
+            transport,
+            prompt=prompt,
+            session_id=session_id,
+            profile_id=profile_id,
+            image_path=image_path,
+            started=started,
+        )
+        if handled:
+            return
     try:
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if not current:
+                return
+            if current.get("status") == "cancelling":
+                current["status"] = "cancelled"
+                current["completed_at"] = now_iso()
+                current["error"] = "Run stopped by operator."
+                if current.get("new_session_state") == "pending":
+                    current["new_session_state"] = "failed"
+                agent_console_event(
+                    current,
+                    "Run stopped",
+                    "cancelled",
+                    {"reason": "operator_cancelled"},
+                )
+                persist_agent_console_runs()
+                return
+            if current.get("status") != "running":
+                return
         transport.revalidate(DATA_DIR)
         progress_path, usage_path = prepare_local_telemetry_paths(DATA_DIR, run_id)
         telemetry_tail = ProgressTail(progress_path)
@@ -8452,15 +9183,32 @@ def run_hermes_agent(run_id: str, transport: HermesConsoleTransport) -> None:
             usage_path=usage_path,
             progress_path=progress_path,
         )
-        process = transport.spawn_console(launch)
         with AGENT_CONSOLE_LOCK:
-            AGENT_CONSOLE_PROCESSES[run_id] = process
             current = AGENT_CONSOLE_RUNS.get(run_id)
-            if current:
-                agent_console_event(current, "Model is working", "status", {"phase": "inference"})
-                if not persist_agent_console_runs():
-                    process.terminate()
-                    return
+            if not current or current.get("status") != "running":
+                if current and current.get("status") == "cancelling":
+                    current["status"] = "cancelled"
+                    current["completed_at"] = now_iso()
+                    current["error"] = "Run stopped by operator."
+                    if current.get("new_session_state") == "pending":
+                        current["new_session_state"] = "failed"
+                    agent_console_event(
+                        current,
+                        "Run stopped",
+                        "cancelled",
+                        {"reason": "operator_cancelled"},
+                    )
+                    persist_agent_console_runs()
+                return
+            # Publish the compatibility child in the same critical section as
+            # its spawn so shutdown can never pass between creation and
+            # ownership registration.
+            process = transport.spawn_console(launch)
+            AGENT_CONSOLE_PROCESSES[run_id] = process
+            agent_console_event(current, "Model is working", "status", {"phase": "inference"})
+            if not persist_agent_console_runs():
+                process.terminate()
+                return
 
         while True:
             try:
@@ -9463,6 +10211,7 @@ def _start_remote_agent_console_run(
             "attachments": [item["metadata"] for item in bound_context],
             "artifacts": [],
             "status": "queued",
+            "partial": False,
             "session_id": remote_session_alias or None,
             "starts_new_session": False,
             "new_session_state": "pending" if start_new_session else None,
@@ -9676,6 +10425,181 @@ def respond_to_remote_console_action(run_id: str, payload):
     return {"error": "The remote response was accepted but Mentat could not update the run state.", "partial": True}, 502
 
 
+def _steer_local_console_run(
+    run_id: str,
+    text: str,
+    revision: int,
+    requested_agent_id: str,
+):
+    """Deliver one exact-revision steer through the bound local session."""
+
+    with AGENT_CONSOLE_LOCK:
+        run = AGENT_CONSOLE_RUNS.get(run_id)
+        if not run:
+            return {"error": "Agent run not found"}, 404
+        current_agent_id = compact_text(
+            run.get("agent_id"), max_length=64
+        ).lower() or "default"
+        if current_agent_id == "hermes":
+            current_agent_id = "default"
+        current_revision = run.get("_steer_revision", 0)
+        if type(current_revision) is not int or current_revision < 0:
+            current_revision = 0
+        if requested_agent_id != current_agent_id:
+            return {
+                "error": "The active Hermes profile changed. Refresh before steering."
+            }, 409
+        if run.get("status") != "running" or run.get("transport_mode") != "local":
+            return {
+                "error": "That Console run is not currently accepting steering."
+            }, 409
+        if revision != current_revision:
+            return {
+                "error": "The Console steer control changed. Refresh and try again."
+            }, 409
+        if run.get("_local_control_claim") or run.get("_steer_inflight") is True:
+            return {"error": "Steering guidance is already being verified."}, 409
+        client = run.get("_local_control_client")
+        live_session_id = run.get("_local_control_session_id")
+        if (
+            run.get("_local_steer_ready") is not True
+            or not isinstance(client, LocalHermesControlClient)
+            or not isinstance(live_session_id, str)
+            or not client.can_steer(live_session_id)
+        ):
+            return {
+                "error": "This Hermes run does not advertise verified steering."
+            }, 409
+        bound_agent_id = run.get("agent_id")
+        bound_connection_id = run.get("connection_binding_id")
+        claim_token = f"local-steer:{current_revision}:{uuid4().hex[:8]}"
+        run["_local_control_claim"] = claim_token
+        run["_steer_inflight"] = True
+
+    accepted = False
+    error: LocalHermesControlError | HermesTransportError | None = None
+    uncertain = False
+    try:
+        selected = hermes_console_transport()
+        if (
+            not isinstance(selected, LocalHermesConsoleTransport)
+            or selected.binding.binding_id != bound_connection_id
+        ):
+            raise HermesTransportError("transport_binding_changed")
+        selected.revalidate(DATA_DIR)
+        with AGENT_CONSOLE_LOCK:
+            current = AGENT_CONSOLE_RUNS.get(run_id)
+            if (
+                current is not run
+                or current.get("_local_control_claim") != claim_token
+                or current.get("_local_control_client") is not client
+                or current.get("_local_control_session_id") != live_session_id
+                or current.get("connection_binding_id") != bound_connection_id
+                or current.get("agent_id") != bound_agent_id
+                or current.get("_steer_revision", 0) != current_revision
+                or current.get("status") != "running"
+                or current.get("_local_steer_ready") is not True
+                or not client.can_steer(live_session_id)
+            ):
+                raise HermesTransportError("transport_binding_changed")
+        client.redirect(live_session_id, text.strip())
+        accepted = True
+    except Exception as exc:
+        error = (
+            exc
+            if isinstance(exc, (LocalHermesControlError, HermesTransportError))
+            else HermesTransportError("transport_unavailable")
+        )
+        uncertain = accepted or (
+            isinstance(exc, LocalHermesControlError) and exc.uncertain
+        )
+
+    with AGENT_CONSOLE_LOCK:
+        current = AGENT_CONSOLE_RUNS.get(run_id)
+        authority_changed = (
+            current is None
+            or current is not run
+            or current.get("_local_control_claim") != claim_token
+            or current.get("_local_control_client") is not client
+            or current.get("_local_control_session_id") != live_session_id
+            or current.get("connection_binding_id") != bound_connection_id
+            or current.get("agent_id") != bound_agent_id
+            or current.get("_steer_revision", 0) != current_revision
+            or current.get("status") != "running"
+            or agent_console_storage_degraded()
+        )
+        if current is run and current.get("_local_control_claim") == claim_token:
+            current.pop("_local_control_claim", None)
+            current.pop("_steer_inflight", None)
+        if accepted and authority_changed:
+            uncertain = True
+            error = LocalHermesControlError(
+                "local_control_steer_unverified",
+                uncertain=True,
+            )
+        if uncertain:
+            if current:
+                current["_steer_revision"] = current_revision + 1
+                current["partial"] = True
+                agent_console_event(
+                    current,
+                    "Hermes may have received steering guidance; verification was incomplete",
+                    "error",
+                    {"phase": "steer", "partial": True},
+                )
+                persist_agent_console_runs()
+                snapshot = agent_console_snapshot(current)
+            else:
+                snapshot = None
+            return {
+                "error": "Mentat could not verify whether Hermes accepted the steering guidance.",
+                "error_code": "local_steer_unverified",
+                "partial": True,
+                **({"run": snapshot} if snapshot is not None else {}),
+            }, 502
+        if error is not None:
+            if isinstance(error, HermesTransportError):
+                code = error.code
+                message = error.public_message
+            else:
+                code = error.code
+                message = (
+                    "Hermes did not accept steering for this active run."
+                    if code == "local_control_steer_rejected"
+                    else "This Hermes run is not currently accepting steering."
+                )
+            status = 409 if code in {
+                "transport_binding_changed",
+                "local_control_steer_rejected",
+                "local_control_steer_unavailable",
+            } else 503
+            return {"error": message, "error_code": code}, status
+        if not current:
+            return {
+                "error": "Mentat could not verify whether Hermes accepted the steering guidance.",
+                "error_code": "local_steer_unverified",
+                "partial": True,
+            }, 502
+        current["_steer_revision"] = current_revision + 1
+        agent_console_event(
+            current,
+            "Hermes received steering guidance",
+            "run.steered",
+            {"phase": "steer"},
+        )
+        if not persist_agent_console_runs():
+            authoritative = AGENT_CONSOLE_RUNS.get(run_id)
+            snapshot = agent_console_snapshot(authoritative or current)
+            return {
+                "error": "Hermes accepted steering, but Mentat could not durably verify the local control state.",
+                "error_code": "local_steer_unverified",
+                "partial": True,
+                "run": snapshot,
+            }, 502
+        snapshot = agent_console_snapshot(current)
+    return {"ok": True, "accepted": True, "run": snapshot}, 200
+
+
 def steer_remote_console_run(run_id: str, payload):
     """Send one revision-bound text-only steer to the exact active remote run."""
 
@@ -9701,6 +10625,19 @@ def steer_remote_console_run(run_id: str, payload):
         }, 400
     if type(revision) is not int or not (0 <= revision <= 10**9):
         return {"error": "The Console steer control changed. Refresh and try again."}, 409
+
+    with AGENT_CONSOLE_LOCK:
+        selected_run = AGENT_CONSOLE_RUNS.get(run_id)
+        if not selected_run:
+            return {"error": "Agent run not found"}, 404
+        local_run = selected_run.get("transport_mode") == "local"
+    if local_run:
+        return _steer_local_console_run(
+            run_id,
+            text,
+            revision,
+            requested_agent_id,
+        )
 
     with AGENT_CONSOLE_LOCK:
         run = AGENT_CONSOLE_RUNS.get(run_id)
@@ -10036,6 +10973,7 @@ def _start_agent_console_run_locked(
             "attachments": [item["metadata"] for item in bound_attachments],
             "artifacts": [],
             "status": "queued",
+            "partial": False,
             "session_id": session_id or None,
             "starts_new_session": False,
             "new_session_state": "pending" if start_new_session else None,
@@ -10488,6 +11426,7 @@ def _refresh_agent_console_models_locked(payload=None):
 
 def cancel_agent_console_run(run_id: str):
     remote_stop: tuple[RemoteHermesConsoleTransport, str, bool] | None = None
+    local_client_to_close: LocalHermesControlClient | None = None
     with AGENT_CONSOLE_LOCK:
         run = AGENT_CONSOLE_RUNS.get(run_id)
         if not run:
@@ -10499,10 +11438,18 @@ def cancel_agent_console_run(run_id: str):
                 "error": "Another remote control action is being verified. Try Stop again shortly.",
                 "run": agent_console_snapshot(run),
             }, 409
+        if run.get("_local_control_claim") is not None:
+            return {
+                "error": "Another local control action is being verified. Try Stop again shortly.",
+                "run": agent_console_snapshot(run),
+            }, 409
         run["status"] = "cancelling"
         agent_console_event(run, "Stopping Hermes", "status", {"phase": "cancelling"})
         process = AGENT_CONSOLE_PROCESSES.get(run_id)
-        if process and process.poll() is None:
+        local_client = run.get("_local_control_client")
+        if isinstance(local_client, LocalHermesControlClient):
+            local_client_to_close = local_client
+        elif process and process.poll() is None:
             process.terminate()
         remote_transport = run.get("_remote_transport")
         remote_run_id = run.get("_remote_run_id")
@@ -10515,6 +11462,8 @@ def cancel_agent_console_run(run_id: str):
             remote_stop = (remote_transport, remote_run_id, claimed)
         persist_agent_console_runs()
         snapshot = agent_console_snapshot(run)
+    if local_client_to_close is not None:
+        local_client_to_close.close()
     if remote_stop is not None:
         transport, remote_run_id, claimed = remote_stop
         try:
@@ -10590,34 +11539,64 @@ def cancel_agent_console_run(run_id: str):
 
 
 def stop_agent_console_processes() -> None:
+    global AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
     remote_active: list[tuple[str, RemoteHermesConsoleTransport, str, bool]] = []
     pending_remote_workers: list[threading.Thread] = []
-    with AGENT_CONSOLE_LOCK:
-        active = list(AGENT_CONSOLE_PROCESSES.items())
-        for run_id, run in AGENT_CONSOLE_RUNS.items():
-            remote_transport = run.get("_remote_transport")
-            remote_run_id = run.get("_remote_run_id")
-            if run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES and run.get("transport_mode") == "remote":
-                run["status"] = "cancelling"
-                agent_console_event(run, "Mentat is shutting down", "status", {"phase": "shutdown"})
-                if isinstance(remote_transport, RemoteHermesConsoleTransport) and isinstance(remote_run_id, str):
-                    claimed = _claim_remote_console_stop_locked(
-                        run_id,
-                        remote_transport,
-                        remote_run_id,
-                    )
-                    remote_active.append((run_id, remote_transport, remote_run_id, claimed))
-                else:
-                    worker = AGENT_CONSOLE_REMOTE_WORKERS.get(run_id)
-                    if isinstance(worker, threading.Thread):
-                        pending_remote_workers.append(worker)
-        for run_id, _process in active:
-            run = AGENT_CONSOLE_RUNS.get(run_id)
-            if run and run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES:
-                run["status"] = "cancelling"
-                agent_console_event(run, "Mentat is shutting down", "status", {"phase": "shutdown"})
-        persist_agent_console_runs()
-    for _run_id, process in active:
+    local_clients: dict[str, LocalHermesControlClient] = {}
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        with AGENT_CONSOLE_LOCK:
+            AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
+            AGENT_CONSOLE_CONTINUATIONS_PENDING.clear()
+            active = list(AGENT_CONSOLE_PROCESSES.items())
+            for run_id, run in AGENT_CONSOLE_RUNS.items():
+                remote_transport = run.get("_remote_transport")
+                remote_run_id = run.get("_remote_run_id")
+                if run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES and run.get("transport_mode") == "remote":
+                    run["status"] = "cancelling"
+                    agent_console_event(run, "Mentat is shutting down", "status", {"phase": "shutdown"})
+                    if isinstance(remote_transport, RemoteHermesConsoleTransport) and isinstance(remote_run_id, str):
+                        claimed = _claim_remote_console_stop_locked(
+                            run_id,
+                            remote_transport,
+                            remote_run_id,
+                        )
+                        remote_active.append((run_id, remote_transport, remote_run_id, claimed))
+                    else:
+                        worker = AGENT_CONSOLE_REMOTE_WORKERS.get(run_id)
+                        if isinstance(worker, threading.Thread):
+                            pending_remote_workers.append(worker)
+                local_client = run.get("_local_control_client")
+                if (
+                    run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES
+                    and run.get("transport_mode") == "local"
+                ):
+                    if run.get("status") != "cancelling":
+                        run["status"] = "cancelling"
+                        agent_console_event(
+                            run,
+                            "Mentat is shutting down",
+                            "status",
+                            {"phase": "shutdown"},
+                        )
+                    if isinstance(local_client, LocalHermesControlClient):
+                        local_clients[run_id] = local_client
+            for run_id, _process in active:
+                run = AGENT_CONSOLE_RUNS.get(run_id)
+                if run and run.get("status") in AGENT_CONSOLE_ACTIVE_STATUSES:
+                    if run.get("status") != "cancelling":
+                        run["status"] = "cancelling"
+                        agent_console_event(
+                            run,
+                            "Mentat is shutting down",
+                            "status",
+                            {"phase": "shutdown"},
+                        )
+            persist_agent_console_runs()
+    for local_client in local_clients.values():
+        local_client.close()
+    for active_run_id, process in active:
+        if active_run_id in local_clients:
+            continue
         try:
             if process.poll() is None:
                 process.terminate()
@@ -12080,7 +13059,6 @@ def serve_dashboard() -> None:
             AGENT_CONSOLE_ATTACHMENT_GC_STOP.set()
             try:
                 detach_and_stop_hermes_refresh(refresh_coordinator)
-                stop_agent_console_processes()
                 shutdown_agent_runtimes()
             finally:
                 try:

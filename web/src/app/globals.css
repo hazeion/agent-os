@@ -1049,6 +1049,8 @@ button {
   *,
   *::before,
   *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
@@ -1332,21 +1334,16 @@ button {
   display: grid;
   gap: 5px;
   max-width: 82%;
-  padding: 11px 13px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--row);
+  padding: 7px 0;
 }
 
 .message-assistant {
   justify-self: start;
-  background: var(--panel-raised);
 }
 
 .message-user {
   justify-self: end;
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-subtle));
-  background: var(--accent-soft);
+  text-align: right;
 }
 
 .message-optimistic {
@@ -1362,18 +1359,32 @@ button {
 }
 
 .message-role {
-  color: var(--accent);
   font-size: 0.67rem;
   font-weight: 700;
   text-transform: uppercase;
 }
 
+.message-assistant .message-role {
+  color: color-mix(in srgb, var(--info) 76%, var(--text-secondary));
+}
+
+.message-user .message-role {
+  color: color-mix(in srgb, var(--accent) 76%, var(--text-secondary));
+}
+
 .message-row p {
   margin: 0;
   overflow-wrap: anywhere;
-  color: var(--text-primary);
   font-size: 0.84rem;
   white-space: pre-wrap;
+}
+
+.message-assistant p {
+  color: color-mix(in srgb, var(--info) 22%, var(--text-primary));
+}
+
+.message-user p {
+  color: color-mix(in srgb, var(--accent) 24%, var(--text-primary));
 }
 
 .selected-run-progress {
@@ -1381,14 +1392,28 @@ button {
   align-items: flex-start;
   gap: 10px;
   margin: 9px clamp(12px, 4vw, 58px) 0;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border-subtle));
-  border-radius: 8px;
-  background: var(--accent-soft);
+  padding: 4px 0;
 }
 
 .selected-run-progress .activity-state-dot {
+  position: relative;
   margin-top: 5px;
+  animation: console-working-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes console-working-pulse {
+  0%,
+  100% {
+    opacity: 0.52;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+    transform: scale(0.86);
+  }
+
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 10%, transparent);
+    transform: scale(1);
+  }
 }
 
 .selected-run-progress strong,

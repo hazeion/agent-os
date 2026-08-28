@@ -1335,9 +1335,15 @@ class CodexRuntime:
                 },
             )
         except CodexAppServerClientError as exc:
-            raise AgentRuntimeError("runtime.message_failed") from exc
+            raise AgentRuntimeError(
+                "runtime.message_partial"
+                if exc.uncertain
+                else "runtime.message_failed"
+            ) from exc
         if not isinstance(response, Mapping) or response.get("turnId") != turn_id:
-            raise AgentRuntimeError("runtime.message_failed")
+            # The App Server returned after the side-effecting request, but the
+            # receipt does not prove which turn was steered.
+            raise AgentRuntimeError("runtime.message_partial")
 
     def stop(self, run_id: str, *, context: RuntimeContext | None = None) -> None:
         thread_id, turn_id, bound = self._bound_context(run_id, context)
