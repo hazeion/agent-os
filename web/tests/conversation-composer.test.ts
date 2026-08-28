@@ -12,6 +12,7 @@ test("composer recognizes only an exact leading steer command", () => {
   assert.deepEqual(conversationComposerIntent("/steer\nuse the safer path"), { kind: "steer", text: "use the safer path" });
   assert.deepEqual(conversationComposerIntent("/steering is ordinary"), { kind: "turn", text: "/steering is ordinary" });
   assert.deepEqual(conversationComposerIntent("Explain /steer here"), { kind: "turn", text: "Explain /steer here" });
+  assert.deepEqual(conversationComposerIntent("Send this prompt "), { kind: "turn", text: "Send this prompt" });
   assert.deepEqual(conversationComposerIntent(" /STEER no"), { kind: "turn", text: " /STEER no" });
 });
 

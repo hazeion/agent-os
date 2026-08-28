@@ -31,6 +31,7 @@ from private_state import console_root, ensure_console_root
 
 REGISTRY_DATABASE_NAME = LEGACY_AGENT_REGISTRY_DATABASE_NAME
 REGISTRY_SCHEMA_VERSION = 1
+CANONICAL_AGENT_RECORD_SCHEMA_VERSION = 11
 MAX_AGENTS = 128
 MAX_LEGACY_REGISTRY_BYTES = 4 * 1024 * 1024
 DIRECT_AGENT_ROLE = "direct"
@@ -38,13 +39,14 @@ DIRECT_AGENT_ID = "agent_direct"
 DIRECT_RUNTIME_CONFIG_ID = "runtime_config_direct"
 DIRECT_RUNTIME_TYPE = "codex"
 DIRECT_RUNTIME_AGENT_REF = "default"
-DIRECT_AGENT_CAPABILITIES = (
+INTERACTIVE_AGENT_CAPABILITIES = (
     "run.events",
     "run.message",
     "run.start",
     "run.status",
     "run.stop",
 )
+DIRECT_AGENT_CAPABILITIES = INTERACTIVE_AGENT_CAPABILITIES
 
 _SCHEMA = """
 CREATE TABLE registry_schema (
@@ -786,7 +788,7 @@ def validate_registry_connection(
                 )
             except (sqlite3.Error, TypeError, ValueError) as exc:
                 raise AgentRegistryError("agent_registry.corrupt") from exc
-            if schema_version not in {8, 9, 10, DATABASE_SCHEMA_VERSION}:
+            if schema_version not in {8, 9, 10, 11, 12, DATABASE_SCHEMA_VERSION}:
                 raise AgentRegistryError("agent_registry.unsupported")
             if (
                 _embedded_schema_signature(connection)
@@ -798,7 +800,7 @@ def validate_registry_connection(
         agent_count = int(connection.execute("SELECT COUNT(*) FROM mentat_agents").fetchone()[0])
         if config_count != agent_count or agent_count > MAX_AGENTS:
             raise AgentRegistryError("agent_registry.corrupt")
-        if not standalone and schema_version >= DATABASE_SCHEMA_VERSION:
+        if not standalone and schema_version >= CANONICAL_AGENT_RECORD_SCHEMA_VERSION:
             role_rows = connection.execute(
                 "SELECT system_role FROM mentat_agents ORDER BY id"
             ).fetchall()
@@ -812,7 +814,7 @@ def validate_registry_connection(
             "c.runtime_type, c.runtime_agent_ref, "
             "c.created_at AS config_created_at, c.updated_at AS config_updated_at"
         )
-        if not standalone and schema_version >= DATABASE_SCHEMA_VERSION:
+        if not standalone and schema_version >= CANONICAL_AGENT_RECORD_SCHEMA_VERSION:
             columns = (
                 "a.id, a.name, a.runtime_config_id, a.capabilities_json, "
                 "a.revision AS agent_revision, a.system_role, "
@@ -870,7 +872,7 @@ def _canonical_agent_records(
         for row in connection.execute("SELECT version FROM schema_migrations")
     ]
     schema_version = max(versions, default=0)
-    if schema_version >= DATABASE_SCHEMA_VERSION:
+    if schema_version >= CANONICAL_AGENT_RECORD_SCHEMA_VERSION:
         rows = connection.execute(
             "SELECT id, revision, system_role FROM mentat_agents ORDER BY name COLLATE NOCASE, id"
         ).fetchall()
@@ -1214,6 +1216,7 @@ __all__ = [
     "AgentRegistryValidationError",
     "CanonicalAgentRecord",
     "DIRECT_AGENT_CAPABILITIES",
+    "INTERACTIVE_AGENT_CAPABILITIES",
     "DIRECT_AGENT_ID",
     "DIRECT_AGENT_ROLE",
     "DIRECT_RUNTIME_AGENT_REF",

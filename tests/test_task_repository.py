@@ -249,7 +249,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 11)
+            self.assertEqual(SCHEMA_VERSION, 13)
             self.assertTrue(
                 {
                     "mentat_tasks",
@@ -2074,7 +2074,7 @@ class TaskRepositoryTests(unittest.TestCase):
                     connection.execute("DROP TABLE agent_runtime_configs")
                     connection.execute("DROP TABLE provider_connections")
                     connection.execute(
-                        "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11)"
+                        "DELETE FROM schema_migrations WHERE version > 5"
                     )
             finally:
                 connection.close()

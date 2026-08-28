@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sqlite3
 import stat
 import threading
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Callable, Iterator
@@ -22,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -896,7 +898,356 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         END;
         """,
     ),
+    (
+        12,
+        """
+        DROP TRIGGER IF EXISTS mentat_conversations_agent_immutable;
+        DROP TRIGGER IF EXISTS mentat_conversation_turns_queue_capacity_insert;
+        DROP TRIGGER IF EXISTS mentat_conversation_turns_queue_capacity_update;
+        DROP TRIGGER IF EXISTS mentat_conversation_turns_conversation_immutable;
+
+        CREATE TABLE mentat_conversation_turns_v12 (
+            id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
+            conversation_id TEXT NOT NULL REFERENCES mentat_conversations(id)
+                ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL UNIQUE
+                REFERENCES mentat_conversation_messages(id) ON DELETE RESTRICT,
+            queue_ordinal INTEGER NOT NULL CHECK (queue_ordinal >= 1),
+            state TEXT NOT NULL CHECK (
+                state IN ('pending', 'dispatching', 'consumed', 'blocked', 'cancelled')
+            ),
+            blocked_reason TEXT CHECK (
+                blocked_reason IS NULL OR blocked_reason IN (
+                    'capacity', 'failed', 'stopped', 'interrupted', 'unknown', 'partial'
+                )
+            ),
+            latest_run_id TEXT REFERENCES mentat_runs(id) ON DELETE SET NULL,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+            idempotency_key_digest TEXT NOT NULL CHECK (
+                length(idempotency_key_digest) = 64
+            ),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            UNIQUE (conversation_id, queue_ordinal)
+        );
+
+        INSERT INTO mentat_conversation_turns_v12 (
+            id, conversation_id, user_message_id, queue_ordinal, state,
+            blocked_reason, latest_run_id, revision, attempt_count,
+            idempotency_key_digest, request_digest, created_at, updated_at
+        )
+        SELECT id, conversation_id, user_message_id, queue_ordinal, state,
+               blocked_reason, latest_run_id, revision, attempt_count,
+               idempotency_key_digest, request_digest, created_at, updated_at
+        FROM mentat_conversation_turns;
+
+        DROP TABLE mentat_conversation_turns;
+        ALTER TABLE mentat_conversation_turns_v12
+            RENAME TO mentat_conversation_turns;
+
+        CREATE INDEX idx_mentat_conversation_turns_state
+            ON mentat_conversation_turns(conversation_id, state, queue_ordinal);
+
+        CREATE TRIGGER mentat_conversations_agent_immutable
+        BEFORE UPDATE OF agent_id ON mentat_conversations
+        WHEN OLD.agent_id IS NOT NEW.agent_id
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_agent_immutable');
+        END;
+
+        CREATE TRIGGER mentat_conversation_turns_queue_capacity_insert
+        BEFORE INSERT ON mentat_conversation_turns
+        WHEN NEW.state IN ('pending', 'blocked', 'dispatching')
+            AND (
+                SELECT COUNT(*) FROM mentat_conversation_turns
+                WHERE conversation_id = NEW.conversation_id
+                  AND state IN ('pending', 'blocked', 'dispatching')
+            ) >= 8
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_turn_capacity');
+        END;
+
+        CREATE TRIGGER mentat_conversation_turns_queue_capacity_update
+        BEFORE UPDATE OF conversation_id, state ON mentat_conversation_turns
+        WHEN NEW.state IN ('pending', 'blocked', 'dispatching')
+            AND (
+                SELECT COUNT(*) FROM mentat_conversation_turns
+                WHERE conversation_id = NEW.conversation_id
+                  AND state IN ('pending', 'blocked', 'dispatching')
+                  AND id IS NOT OLD.id
+            ) >= 8
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_turn_capacity');
+        END;
+
+        CREATE TRIGGER mentat_conversation_turns_conversation_immutable
+        BEFORE UPDATE OF conversation_id, user_message_id, queue_ordinal
+            ON mentat_conversation_turns
+        WHEN OLD.conversation_id IS NOT NEW.conversation_id
+            OR OLD.user_message_id IS NOT NEW.user_message_id
+            OR OLD.queue_ordinal IS NOT NEW.queue_ordinal
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_turn_identity_immutable');
+        END;
+        """,
+    ),
+    (
+        13,
+        """
+        DROP TRIGGER mentat_runs_conversation_identity_immutable;
+
+        UPDATE mentat_runs
+        SET resume_of_run_id = NULL
+        WHERE resume_of_run_id IS NOT NULL
+          AND NOT (
+              status = 'reserved'
+              AND dispatch_state = 'reserved'
+          );
+
+        CREATE TRIGGER mentat_runs_conversation_identity_immutable
+        BEFORE UPDATE OF conversation_id, turn_id, retry_of_run_id,
+            resume_of_run_id, agent_revision, runtime_config_revision,
+            execution_config_json, execution_config_digest,
+            capacity_scope_digest, admitted_capacity_limit ON mentat_runs
+        WHEN OLD.conversation_id IS NOT NEW.conversation_id
+            OR OLD.turn_id IS NOT NEW.turn_id
+            OR OLD.retry_of_run_id IS NOT NEW.retry_of_run_id
+            OR (
+                OLD.resume_of_run_id IS NOT NEW.resume_of_run_id
+                AND NOT (
+                    OLD.resume_of_run_id IS NOT NULL
+                    AND NEW.resume_of_run_id IS NULL
+                    AND OLD.status = 'reserved'
+                    AND OLD.dispatch_state = 'reserved'
+                    AND (
+                        (
+                            NEW.status = 'submitting'
+                            AND NEW.dispatch_state = 'submitting'
+                        )
+                        OR (
+                            NEW.dispatch_state = 'rejected'
+                            AND NEW.terminal_finalized = 1
+                            AND NEW.completed_at IS NOT NULL
+                            AND (
+                                (NEW.status = 'failed' AND NEW.partial = 0)
+                                OR (
+                                    NEW.status = 'interrupted'
+                                    AND NEW.partial = 1
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+            OR OLD.agent_revision IS NOT NEW.agent_revision
+            OR OLD.runtime_config_revision IS NOT NEW.runtime_config_revision
+            OR OLD.execution_config_json IS NOT NEW.execution_config_json
+            OR OLD.execution_config_digest IS NOT NEW.execution_config_digest
+            OR OLD.capacity_scope_digest IS NOT NEW.capacity_scope_digest
+            OR OLD.admitted_capacity_limit IS NOT NEW.admitted_capacity_limit
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_run_identity_immutable');
+        END;
+
+        ALTER TABLE mentat_runs
+            ADD COLUMN terminal_finalized INTEGER NOT NULL DEFAULT 0 CHECK (
+                terminal_finalized IN (0, 1)
+                AND (
+                    terminal_finalized = 0
+                    OR status IN (
+                        'completed', 'failed', 'cancelled', 'stopped', 'interrupted'
+                    )
+                )
+            );
+
+        UPDATE mentat_runs
+        SET terminal_finalized = 1
+        WHERE status IN (
+            'completed', 'failed', 'cancelled', 'stopped', 'interrupted'
+        )
+          AND (
+              runtime_type != 'hermes'
+              OR source != 'console'
+              OR conversation_id IS NULL
+              OR EXISTS (
+                  SELECT 1
+                  FROM mentat_agent_events AS e
+                  WHERE e.run_id = mentat_runs.id
+                    AND (
+                        e.source_type = 'runtime.finalized'
+                        OR (
+                            e.source_key LIKE 'runtime:%'
+                            AND e.source_type = e.event_type
+                            AND (
+                                (mentat_runs.status = 'completed'
+                                    AND e.event_type = 'run.completed')
+                                OR (mentat_runs.status = 'failed'
+                                    AND e.event_type = 'run.failed')
+                                OR (mentat_runs.status IN ('cancelled', 'stopped')
+                                    AND e.event_type = 'run.stopped')
+                                OR (mentat_runs.status = 'interrupted'
+                                    AND e.event_type = 'run.interrupted')
+                            )
+                        )
+                    )
+              )
+          );
+        """,
+    ),
 )
+
+MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12})
+
+_LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
+    {
+        ("trigger", "mentat_conversations_agent_immutable"),
+        ("trigger", "mentat_conversation_turns_queue_capacity_insert"),
+        ("trigger", "mentat_conversation_turns_queue_capacity_update"),
+        ("trigger", "mentat_conversation_turns_conversation_immutable"),
+    }
+)
+_CURRENT_BLOCKED_REASON_SQL = """blocked_reason TEXT CHECK (
+                blocked_reason IS NULL OR blocked_reason IN (
+                    'capacity', 'failed', 'stopped', 'interrupted', 'unknown', 'partial'
+                )
+            ),"""
+_LEGACY_BLOCKED_REASON_SQL = """blocked_reason TEXT CHECK (
+                blocked_reason IS NULL OR length(blocked_reason) BETWEEN 1 AND 64
+            ),"""
+
+_SQL_TOKEN = re.compile(
+    r"""
+    (?P<whitespace>\s+)
+    |(?P<line_comment>--[^\r\n]*)
+    |(?P<block_comment>/\*.*?\*/)
+    |(?P<blob>[xX]'(?:''|[^'])*')
+    |(?P<string>'(?:''|[^'])*')
+    |(?P<quoted_identifier>"(?:""|[^"])*"|`(?:``|[^`])*`|\[(?:\]\]|[^\]])*\])
+    |(?P<parameter>\?(?:\d+)?|[:@$][A-Za-z_][A-Za-z0-9_$]*)
+    |(?P<number>(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?)
+    |(?P<identifier>[A-Za-z_][A-Za-z0-9_$]*)
+    |(?P<operator>->>|->|==|!=|<>|<=|>=|<<|>>|\|\||.)
+    """,
+    re.DOTALL | re.VERBOSE,
+)
+
+
+def _sql_token_signature(sql: str) -> str:
+    """Canonicalize layout while preserving every meaningful SQL token."""
+
+    tokens: list[str] = []
+    for match in _SQL_TOKEN.finditer(sql.strip()):
+        kind = str(match.lastgroup)
+        if kind in {"whitespace", "line_comment", "block_comment"}:
+            continue
+        value = match.group(0)
+        tokens.append(f"{kind}:{len(value)}:{value}")
+    return "".join(f"{len(token)}:{token}" for token in tokens)
+
+
+@lru_cache(maxsize=1)
+def _known_legacy_schema_10_script() -> str:
+    """Recreate the sole pre-release Conversation schema drift exactly."""
+
+    script = dict(MIGRATIONS)[10]
+    if script.count(_CURRENT_BLOCKED_REASON_SQL) != 1:
+        raise RuntimeError("known schema-11 drift constraint is stale")
+    script = script.replace(
+        _CURRENT_BLOCKED_REASON_SQL,
+        _LEGACY_BLOCKED_REASON_SQL,
+    )
+    for _object_type, name in _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS:
+        script, count = re.subn(
+            rf"\n\s*CREATE TRIGGER {name}\b.*?\n\s*END;\n",
+            "\n",
+            script,
+            count=1,
+            flags=re.DOTALL,
+        )
+        if count != 1:
+            raise RuntimeError(f"known schema-11 drift trigger is stale: {name}")
+    return script
+
+
+def schema_signature(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Return the token-exact SQLite object graph for upgrade gating."""
+
+    return tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            _sql_token_signature(str(row[3] or "")),
+        )
+        for row in connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_autoindex_%' ORDER BY type, name"
+        )
+    )
+
+
+@lru_cache(maxsize=None)
+def expected_schema_signature(
+    schema_version: int,
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Build the exact schema emitted by this code through one version."""
+
+    connection = sqlite3.connect(":memory:")
+    try:
+        for version, script in MIGRATIONS:
+            if version > schema_version:
+                break
+            connection.executescript(script)
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                (version,),
+            )
+        return schema_signature(connection)
+    finally:
+        connection.close()
+
+
+@lru_cache(maxsize=1)
+def known_legacy_schema_11_signature(
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Return the sole pre-release schema-11 shape eligible for upgrade."""
+
+    connection = sqlite3.connect(":memory:")
+    try:
+        for version, script in MIGRATIONS:
+            if version > 11:
+                break
+            connection.executescript(
+                _known_legacy_schema_10_script() if version == 10 else script
+            )
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                (version,),
+            )
+        return schema_signature(connection)
+    finally:
+        connection.close()
+
+
+def schema_signature_state(
+    connection: sqlite3.Connection,
+    schema_version: int,
+) -> str:
+    """Classify an exact released schema or the one approved upgrade drift."""
+
+    actual = schema_signature(connection)
+    if actual == expected_schema_signature(schema_version):
+        return "expected"
+    if (
+        schema_version == 11
+        and actual == known_legacy_schema_11_signature()
+    ):
+        return "known_legacy_conversation_drift"
+    return "invalid"
 
 
 class MentatDatabaseError(RuntimeError):
@@ -990,6 +1341,26 @@ def _secure_database_files(path: Path) -> None:
             continue
 
 
+def _execute_script_in_active_transaction(
+    connection: sqlite3.Connection,
+    script: str,
+) -> None:
+    """Execute a fixed migration script without sqlite3's implicit commit."""
+
+    pending: list[str] = []
+    for character in script:
+        pending.append(character)
+        if character != ";":
+            continue
+        statement = "".join(pending)
+        if not sqlite3.complete_statement(statement):
+            continue
+        connection.execute(statement)
+        pending.clear()
+    if "".join(pending).strip():
+        raise MentatDatabaseError("Mentat database migration script is incomplete")
+
+
 def migrate(
     connection: sqlite3.Connection,
     *,
@@ -1018,11 +1389,50 @@ def migrate(
     for version, script in MIGRATIONS:
         if version in applied:
             continue
+        requires_disabled_foreign_keys = (
+            version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
+        )
+        requires_exact_source_gate = version in {12, 13}
+        if requires_exact_source_gate and connection.in_transaction:
+            raise MentatDatabaseError(
+                "Mentat database migration started inside a transaction"
+            )
+        foreign_keys_row = connection.execute("PRAGMA foreign_keys").fetchone()
+        foreign_keys_were_enabled = bool(
+            foreign_keys_row is not None and int(foreign_keys_row[0]) == 1
+        )
+        if requires_disabled_foreign_keys and foreign_keys_were_enabled:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            disabled_row = connection.execute("PRAGMA foreign_keys").fetchone()
+            if disabled_row is None or int(disabled_row[0]) != 0:
+                raise MentatDatabaseError(
+                    "Mentat database migration could not disable foreign keys"
+                )
         try:
-            # executescript otherwise commits before running its statements.
-            # Open the transaction inside the script and leave it active so
-            # the schema rewrite and its version receipt commit together.
-            connection.executescript("BEGIN IMMEDIATE;\n" + script)
+            if requires_exact_source_gate:
+                # The exact source gate, rewrite, and receipt share this write
+                # transaction so no competing schema writer can race the gate.
+                connection.execute("BEGIN IMMEDIATE")
+                if (
+                    version == 12
+                    and schema_signature_state(connection, 11) == "invalid"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 11 cannot be safely upgraded"
+                    )
+                if (
+                    version == 13
+                    and schema_signature_state(connection, 12) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 12 cannot be safely upgraded"
+                    )
+                _execute_script_in_active_transaction(connection, script)
+            else:
+                # executescript otherwise commits before running its statements.
+                # Open the transaction inside the script and leave it active so
+                # the schema rewrite and its version receipt commit together.
+                connection.executescript("BEGIN IMMEDIATE;\n" + script)
             connection.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (version, time.time()),
@@ -1057,10 +1467,26 @@ def migrate(
                         "Retired Agent registry state changed during authority claim"
                     )
                 fresh_agent_cutover_at = cutover_at
+            if requires_disabled_foreign_keys:
+                foreign_key_issue = connection.execute(
+                    "PRAGMA foreign_key_check"
+                ).fetchone()
+                if foreign_key_issue is not None:
+                    raise MentatDatabaseError(
+                        "Mentat database migration produced invalid foreign keys"
+                    )
             connection.commit()
         except Exception:
             connection.rollback()
             raise
+        finally:
+            if requires_disabled_foreign_keys and foreign_keys_were_enabled:
+                connection.execute("PRAGMA foreign_keys = ON")
+                restored_row = connection.execute("PRAGMA foreign_keys").fetchone()
+                if restored_row is None or int(restored_row[0]) != 1:
+                    raise MentatDatabaseError(
+                        "Mentat database migration could not restore foreign keys"
+                    )
     return fresh_agent_cutover_at
 
 

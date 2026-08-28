@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console live queue, steering, and concurrency
 
-Status: Published for review; all required checks pass on ready PR #145
+Status: PR #145 merged; schema-13 hardening and final live acceptance in progress
 Slice: `agent-console-live-queue-steering-concurrency`
 Date: `2026-08-27`
 Review log: `reviews/2026-08-27-agent-console-live-queue-steering-concurrency.md`
@@ -234,6 +234,8 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
 | Pre-Round1 `python3 -m unittest discover -s tests` | clean temporary worktree at base `24aea66`, then-current Slice 3 Python changes overlaid, tracked JSON owner-only | Exit 0 | 1,558 pass, 5 skip | Historical reference only; a final clean-root run is required after all Round 1 fixes. |
 | `npm run build` | `web/`, Next.js 16.3.2 production build | Exit 0 | Build pass | All static pages and fixed queue/steer/Run event routes compiled. |
 | Final `.venv/bin/python -m unittest discover -s tests` | clean temporary worktree at base `24aea66` with the final reviewed Slice 3 files overlaid; unrelated user files excluded; tracked JSON owner-only | Exit 0 | 1,568 pass, 5 skip; 1,573 total | Authoritative final repository-wide gate after both adversarial review rounds; 409.068 seconds. Temporary worktree removed afterward. |
+| Post-merge remediation `python3 -m unittest discover -s tests -q` | clean temporary worktree at merged base `b6b6a48` with only the schema-12 remediation packet overlaid; unrelated user files excluded; tracked JSON owner-only | Exit 0 | 1,577 pass, 5 skip; 1,582 total | Authoritative remediation gate after both clean re-reviews; 491.764 seconds. Temporary worktree removed afterward. |
+| Terminal/continuity remediation `.venv/bin/python -m unittest discover -s tests -q` | clean detached worktree at merged base `b6b6a48` with the exact current Slice 3 remediation files overlaid; unrelated user files excluded; tracked JSON owner-only | Exit 0 | 1,627 pass, 5 skip; 1,632 total | Authoritative current repository-wide gate after both adversarial re-reviews; 519.199 seconds. The first aggregate run exposed a running-server gate omitted only from the coexistence fixture; the scoped fixture correction passed both re-reviews before this clean rerun. Temporary worktree removed afterward. |
 | Initial `python3 -m unittest discover -s tests` | user's dirty primary worktree | Exit 1 | 1,512 pass, 15 fail, 31 error, 5 skip | Failures were dominated by deliberately preserved modified seed content and broad local fixture permissions; one timing assertion also missed its rendezvous under load. The clean-worktree rerun above is authoritative and green. |
 
 ### Rendered or manual behavior
@@ -381,18 +383,254 @@ and ordinary follow-up requests wait durably in a bounded FIFO queue.
 
 ## Outcome review
 
-- Classification: Successful; all ten criteria, independent reviews,
-  publication-integrity checks, and required GitHub checks pass on ready PR
-  #145.
-- Acceptance criteria summary: AC-1 through AC-10 pass focused, production,
-  rendered, real-runtime, independent-review, and final full-suite gates.
-- Potential bugs or untested paths: no material missing-test gap identified by
-  either reviewer; the explicit out-of-scope Slice 4+ controls remain deferred.
-- Remaining reviewer dissent: none.
-- Compatibility/migration/rollback concerns: no schema migration; existing
-  backup formats, Task dispatch, legacy Console, and explicit legacy-UI
-  rollback remain covered. Unknown/partial admission and continuity fail closed
-  and do not retry automatically.
+- Classification: Automated acceptance passed and PR #145 merged; final live
+  acceptance is pending the post-merge schema repair and requested two-runtime
+  browser exercise.
+- Acceptance criteria summary at the original merge: AC-1 through AC-10 passed
+  focused, production, rendered, real-runtime, independent-review, and final
+  full-suite gates. Post-merge operator acceptance subsequently exposed the
+  schema-forward and local-Hermes steering gaps recorded below.
+- Potential bugs or untested paths at the original merge: neither reviewer
+  identified a material gap. The later real-runtime exercise showed that this
+  conclusion did not cover the one-shot local-Hermes control path; the added
+  headless-control implementation and regressions below supersede it.
+- Remaining reviewer dissent at the original merge: none. Current remediation
+  reviewer dispositions are recorded separately below.
+- Compatibility/migration/rollback concerns: the Slice 3 feature itself needed
+  no new fields, but post-merge validation found an existing pre-release
+  schema-11 shape that the strict private-unit fingerprint correctly rejected.
+  Schema 12 is the approved forward repair; existing backup formats, Task
+  dispatch, legacy Console, and explicit legacy-UI rollback remain covered.
+  Unknown/partial admission and continuity fail closed and do not retry
+  automatically.
 - User decision: exact commit/push/ready-PR publication approved and completed;
   final outcome acceptance remains pending.
 - Next slice authorized: No
+
+## Post-merge live validation and remediation
+
+- PR #145 merged to `main` as `b6b6a48eb5c6cf7793bb6208efd752cc89ccdd60`
+  after every required CI and artifact matrix completed successfully.
+- A fresh production build passed, but startup against the operator's existing
+  private root failed closed before serving. Read-only inspection found one
+  exact pre-release schema-11 Conversation shape: a broad `blocked_reason`
+  constraint and four missing queue/identity triggers.
+- The same preflight exposed four legacy Run display references whose canonical
+  `run_attachments` rows and blobs no longer exist. The retained canonical
+  attachment graph itself is internally complete; only stale display metadata
+  was affected.
+- GitHub issue #135 was reopened and parent map #128 returned Slice 3 to active
+  remediation. The user approved the forward repair and requires the final live
+  acceptance to exercise separate Hermes and Codex Conversations, concurrent
+  Runs, exact `/steer`, transcript isolation, and right-rail status.
+- Schema 12 now acquires the SQLite write lock before exact source
+  classification, then rebuilds the Turn table and four triggers without an
+  implicit commit and checks the complete foreign-key graph before committing
+  the receipt. The shared SQL fingerprint ignores layout while preserving
+  quoted contents and token boundaries; released schema 11 and only the exact
+  known drift are eligible. Caller-owned transactions fail before any rewrite
+  and are never committed. Run projection emits media only when the matching
+  canonical direction-bound row still exists.
+- The remediation re-review found and closed three blocking fail-closed gaps:
+  missing exact source-shape gating, semantic whitespace hidden by broad SQL
+  normalization, and a competing-writer window between classification and
+  rewrite. A fourth active-caller-transaction guard prevents `executescript`
+  from committing caller work when foreign-key enforcement was already off.
+- Focused evidence so far: eight schema-forward tests pass, covering exact
+  pre-upgrade capture, full authoritative Task/Agent/Conversation/Run graph
+  preservation, invalid-row rollback, released/legacy convergence,
+  unrecognized object drift, literal-content drift, competing schema writers,
+  and caller transactions under both foreign-key modes. The attachment
+  projection/backup regression passes; an interim clean-worktree repository
+  run passed 1,578 tests with five skips before the final two reviewer fixes.
+- Read-only capture now explicitly reopens the source after snapshotting and
+  proves it remains at schema 11; only a later write-capable `connect()` applies
+  schema 12. The operator root is currently schema 12 after the earlier live
+  startup attempt, with `quick_check=ok`, no foreign-key violations, and the
+  expected 15 Tasks, one canonical Agent, and preserved Run history.
+- Remediation correctness/safety reviewer: **CLEAN** after independent late-DDL
+  rollback probes, foreign-key-on/off caller-transaction probes, full
+  authoritative graph comparison, and media-direction checks. Independent
+  evidence: 132 schema/Run/Task/Vercel tests, 78 private-unit backup/restore
+  tests, and 8/8 schema-forward tests pass.
+- Remediation compatibility/product reviewer: **CLEAN** on Python 3.11 and 3.13
+  with SQLite 3.53.1 and 3.50.4. The prior quoted-literal repro now rejects at
+  schema 11; released/legacy signatures, backup/restore, media filtering,
+  compilation, and diff checks pass. No blocking or nonblocking finding remains.
+- Schema-remediation baseline clean-worktree verification passes 1,582/1,582 with five skips in
+  491.764 seconds; focused Python passes 214/214 and web lint, TypeScript, and
+  88/88 tests pass. The user moved the fresh server and requested live browser
+  exercise ahead of publication/merge. That live acceptance, exact remediation
+  publication authorization, CI, and merge remain pending.
+
+## Local Hermes steering completion
+
+- The first two-runtime browser exercise proved that Codex steering worked but
+  local Hermes did not. The cause was architectural rather than a Hermes product
+  limitation: Mentat still launched local Hermes through the one-shot
+  `hermes chat -q` path, which exposes no addressable active-turn control
+  channel. Hermes 0.19.0 provides the supported authenticated headless backend,
+  active `message.start` evidence, and `session.redirect` receipt needed by the
+  exact-Run contract.
+- Mentat now owns one profile-scoped, isolated, ephemeral-loopback Hermes
+  backend and authenticated WebSocket for the Run. `/steer` uses
+  `session.redirect`, never the idle-capable `session.steer` queue. It becomes
+  available only after the exact live session emits `message.start`; success
+  requires `status=redirected` and the exact text echo. Queued, malformed,
+  disconnected, timed-out, or authority-racing outcomes remain partial, consume
+  the control revision, preserve the browser draft, and are never retried.
+- New browser-created Hermes and Codex Agents receive the full interactive
+  declaration, including `run.message`, by default. This declaration is
+  permission; `steer.available` remains an exact live-Run readiness signal.
+  The fixed Direct Agent uses the same declaration. Vercel remains excluded
+  because its adapter has no compatible live steering operation and is not
+  browser-created through this path.
+- The first live protocol exercise opened separate Hermes and Codex
+  Conversations, ran the requested Wardogs research concurrently, showed both
+  Agents as Working in the right rail, and received the exact non-queued steer
+  receipt for both. Codex projected its BigFry-separated result correctly.
+  Hermes also completed with a BigFry-separated result, but an automated test
+  process was mistakenly started against the live operator root and correctly
+  forced that Run to unknown/partial during startup recovery. That contaminated
+  projection is not counted as final acceptance; all subsequent automated tests
+  run with the server stopped and an isolated data root.
+- Initial local-control adversarial review found missing native dependency
+  locking, startup ownership and default-bridge teardown gaps, incomplete POSIX
+  and Windows descendant cleanup, ambiguous Conversation classification,
+  permissive session receipt coercion, a redirected runtime-directory path, and
+  missing lifecycle regressions. The fixes add the hashed native WebSocket lock,
+  publish the exact client before blocking startup, close it from both server
+  lifecycles, serialize legacy fallback spawn with shutdown, own POSIX groups
+  and a Windows kill-on-close Job Object, preserve `conversation.steer_partial`,
+  require exact string continuation receipts, and create the owner-private
+  runtime directory through the no-follow boundary.
+- Current post-fix evidence: 147/147 focused local-control, steering, runtime,
+  orchestration, and packaging tests pass; 150/150 lifecycle, local-bridge,
+  remote-run, architecture, and beta-contract tests pass; web lint, TypeScript,
+  and 88/88 component/route tests pass; the production Next.js build passes.
+  Added regressions cover exact create/resume receipt types, pre-submit fallback,
+  Stop and shutdown during startup, default bridge teardown, partial delivery
+  classification, redirected directories, native lock inclusion, unconditional
+  POSIX escalation, and Windows Job Object closure.
+- The first repository-wide command was invalidated as evidence because its
+  shell working directory remained the live checkout and a global data override
+  changed configuration-precedence tests. After module resolution was proved to
+  use the detached clean worktree and the override was removed, the corrected
+  run found one real artifact-verifier omission: `hermes_local_control` was in
+  `pyproject.toml` but absent from the verifier's exact public-module allowlist.
+  The allowlist and an explicit regression were added; the packaging/CI gate
+  then passed 42/42.
+- Local-control correctness/safety reviewer: **CLEAN** after 163 independent
+  focused tests, a real POSIX process-tree probe with a SIGTERM-ignoring child,
+  compilation, and diff validation. No private token/session/text leakage,
+  retry, queue-claim, lifecycle race, or storage-safety blocker remains.
+- Local-control compatibility/product reviewer: no code blocker found after
+  162 independent focused tests and compilation under Python 3.11 and 3.13;
+  final disposition is being re-requested against this current log and full-suite
+  evidence.
+- Final detached clean-worktree verification ran 1,601 tests in 511.383 seconds
+  with five skips and zero failures or errors. Current-source compilation and
+  `git diff --check` also pass. That checkpoint preceded the terminal and
+  continuity hardening recorded below; its current reviewer dispositions and
+  remaining gates are superseded by the following section.
+
+## Terminal finalization and queued continuity hardening
+
+- Schema 13 adds `terminal_finalized` to distinguish an observed terminal
+  status from a fully durable local-Hermes terminal boundary. Until the exact
+  normalized terminal event is committed, the browser receives `finalizing`,
+  retention pins the Run, the selected stream remains open, and FIFO work does
+  not advance. Startup converts incomplete terminal evidence to a sticky
+  partial result and blocks the queue head.
+- A split status/event regression now covers a stale `running` status followed
+  by the exact newer terminal event. The single trailing terminal event closes
+  the same reconciliation atomically and claims one oldest FIFO successor;
+  conflicting, multiple, non-trailing, or paginated terminal evidence rolls
+  back without advancing the runtime cursor.
+- The initial local-Hermes cursor exception is limited to the exact first
+  `runtime.bound` marker with the same Mentat Agent and Turn. Wrong identity,
+  later reset, retention loss, or any other discontinuity fails closed.
+- An accepted-but-unverified `/steer` remains canonical partial through later
+  completion and blocks automatic continuation. Pre-launch cancellation and
+  Agent-binding loss now pass through the same exact worker finalizer before
+  cleanup, preserving a recoverable blocked FIFO head.
+- Automatic and explicit Codex continuation persist the exact immediately prior
+  Run on the reserved successor. That link pins the source against aggressive
+  retention. The service loads and revalidates the source's private thread
+  reference before the exact claim atomically clears the link while moving the
+  successor from `reserved` to `submitting`; the schema trigger allows no other
+  identity mutation.
+- Safety re-review found that pre-attempt binding rejection and restart
+  interruption initially left the predecessor pin attached. Clearing it alone
+  also exposed same-second retention ordering that could evict the exact result
+  being returned. Both terminal transactions now clear the link under narrow
+  schema-13 transition guards. The synchronous rejection protects its one exact
+  result; bulk startup recovery stays within the configured retention limit and
+  preserves every classification in the durable submission receipts.
+  Independent low-retention regressions cover binding loss, one startup
+  recovery, and two simultaneous Codex successor recoveries, including source
+  eviction, no extra adapter call, the exact terminal count, and full repository
+  validation.
+- Schema-12 format-4 backup/restore is exercised against a real schema-12
+  fixture before upgrade to schema 13. Historical schema validation remains
+  version-aware, so read-only schema-11 capture does not require or apply a
+  newer trigger.
+- Safety re-review also reproduced exact schema-12 successors whose predecessor
+  pins survived an old claim or acceptance. Migration 13 now clears every
+  non-reserved legacy pin after dropping the old trigger and before installing
+  the stricter trigger. Exact-signature schema-12 `submitting/submitting` and
+  `running/accepted` fixtures both migrate, recover to durable unknown/partial,
+  repeat idempotently, and retain a clean foreign-key graph.
+- Current focused evidence: 102/102 Stop-control and orchestration tests pass,
+  including the split observation, pre-launch terminal, sticky-partial steer,
+  unfinalized-retention, and low-retention exact-Codex-predecessor regressions.
+  The combined orchestration, Run repository, Conversation repository, and
+  schema-forward gate passes 170/170. The current web gate is green at 91/91
+  tests with lint and TypeScript passing.
+- The product/compatibility reviewer returned **CLEAN** after independently
+  reproducing the split-read fix, running 294 focused tests with one platform
+  skip, the 91-test web gate, released schema-12 backup/restore, compilation,
+  diff validation, and documentation inspection.
+- The safety/correctness reviewer returned **CLEAN** after identifying and
+  re-reviewing pre-launch finalization, loss of exact Codex predecessor
+  continuity at the shutdown-gated handler, two no-attempt retention edges, and
+  the schema-12 claimed-pin upgrade shape. Independent evidence: 191 focused
+  tests, the five critical migration/retention/continuity regressions,
+  compilation, diff validation, and a clean foreign-key graph all pass.
+- After the first final aggregate run exposed that the coexistence fixture
+  invoked browser Stop without simulating the server-ready continuation-drain
+  gate, the fixture alone was corrected. Both reviewers independently returned
+  **CLEAN** again: the product reviewer passed the exact regression, the
+  preceding cross-module order, and 16 related lifecycle/Stop checks; the
+  safety reviewer passed 14 coexistence, Stop, shutdown, and late-finalizer
+  checks and confirmed the scoped patch restores the prior global state.
+- Final detached clean-worktree verification now passes 1,632/1,632 with five
+  platform skips in 519.199 seconds. The exact previously failing coexistence
+  module is green inside that aggregate run.
+- The current documentation/architecture contract gate passes 41/41, the
+  production Next.js 16.3.2 build completes successfully, and
+  `git diff --check` remains clean after recording the final evidence.
+- Before the final live run, the stopped operator consistency unit received an
+  owner-only raw safety copy. The previously contaminated Hermes completion was
+  restored from the independently dry-validated late-worker evidence, promoted
+  through the schema-13 terminal-finalization barrier, and revalidated with
+  `quick_check=ok`, no foreign-key violations, 15 Tasks, two Agents, and all 95
+  Runs preserved. Its one assistant response matches SHA-256
+  `8135fc7204665beb08fc2d00d9d232de1d91a3728dd6d51f8bbfe9c2d6918ec0`;
+  a format-4 restore preview reports every durable unit unchanged.
+- The uncontaminated production-browser acceptance now passes. A fresh Hermes
+  Conversation and a fresh Codex Conversation were opened as separate tabs
+  through the new-Agent picker and ran the exact Wardogs prompt concurrently.
+  The right rail showed both Agents Working at once. Each active composer showed
+  **Steering is never queued**, retained the **Send** action, accepted the exact
+  BigFry `/steer` against its own Run, and reported that it was not queued.
+- Codex completed with the general consensus and a separate BigFry assessment
+  in its own transcript while Hermes remained Working. Hermes then completed
+  with its own cited **WARDOGS Buzz Report** and separate **BigFry's opinion**
+  section. Cross-tab checks found neither response's identifying wording in the
+  other transcript; both Agents returned to Idle and the browser recorded zero
+  warnings or errors.
+- Remaining blocking or nonblocking reviewer findings: none. Reviewer dissent:
+  none.
+- The exact remediation publication packet, required CI, merge, and tracker
+  close-out remain pending.

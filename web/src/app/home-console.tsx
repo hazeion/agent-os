@@ -47,6 +47,7 @@ const MAX_TRANSCRIPT_MESSAGES = 200;
 const ACTIVE_RUN_STATUSES = new Set([
   "reserved", "queued", "submitting", "starting", "running", "cancelling",
   "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown",
+  "finalizing",
 ]);
 
 function readable(value: string): string {
@@ -719,7 +720,7 @@ export function HomeConsole() {
         return { ...current, [conversationId]: mergeTurnSubmission(existing, submitted) };
       });
       setConversations((current) => [submitted.conversation, ...current.filter((item) => item.id !== submitted.conversation.id)]);
-      setDrafts((current) => current[conversationId] === text
+      setDrafts((current) => current[conversationId] === draftAtSend
         ? { ...current, [conversationId]: "" }
         : current);
       retryByConversationRef.current.delete(conversationId);
@@ -739,7 +740,7 @@ export function HomeConsole() {
       void refreshActivityHints().catch(() => undefined);
     } catch (error) {
       setOptimisticMessages((current) => { const next = { ...current }; delete next[conversationId]; return next; });
-      setDrafts((current) => ({ ...current, [conversationId]: text }));
+      setDrafts((current) => ({ ...current, [conversationId]: draftAtSend }));
       const code = errorCode(error);
       if (code === "sign_in_required" || code === "cli_missing") {
         setCodexReadiness(code);

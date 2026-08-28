@@ -5,12 +5,13 @@ export type ConversationComposerIntent =
 /**
  * Recognize the one Home composer command without turning the composer into a
  * general command parser. Leading whitespace is ignored only for command
- * detection; ordinary Turn text remains byte-for-byte unchanged.
+ * detection. Trailing whitespace is discarded from ordinary Turns so an
+ * accidental space at the end of the composer does not block submission.
  */
 export function conversationComposerIntent(value: string): ConversationComposerIntent {
   const commandCandidate = value.replace(/^\s+/u, "");
   if (!/^\/steer(?:\s|$)/u.test(commandCandidate)) {
-    return { kind: "turn", text: value };
+    return { kind: "turn", text: value.trimEnd() };
   }
   return { kind: "steer", text: commandCandidate.slice("/steer".length).trim() };
 }

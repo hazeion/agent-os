@@ -3,12 +3,14 @@ from __future__ import annotations
 from contextlib import nullcontext
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 import threading
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import server
 import run_repository
@@ -18,6 +20,7 @@ from agent_runtime import (
     AgentEvent,
     AgentEventType,
     AgentRun,
+    AgentRuntimeError,
     AgentRuntimeRegistry,
     RunStatus,
     RuntimeCapacity,
@@ -34,6 +37,7 @@ from run_repository import (
     RunRepository,
     RunRepositoryConflict,
     RunRepositoryValidationError,
+    save_authoritative_run_summaries,
 )
 from tests.sqlite_authority_support import ensure_run_sqlite_authority
 from task_repository import TaskRepository
@@ -57,6 +61,63 @@ def task_fixture() -> dict:
         "created_at": "2026-08-18T12:00:00+00:00",
         "updated_at": "2026-08-18T12:00:00+00:00",
         "completed_at": None,
+    }
+
+
+def preacceptance_worker_snapshot(
+    root: Path,
+    task,
+    context,
+    *,
+    partial: bool,
+    finalized: bool,
+) -> dict:
+    connection = connect(root)
+    try:
+        run = RunRepository(connection).get_run(context.mentat_run_id)
+    finally:
+        connection.close()
+    events = []
+    if finalized:
+        events.append(
+            {
+                "schema_version": 1,
+                "id": f"event_finalized_{context.mentat_run_id}",
+                "run_id": context.mentat_run_id,
+                "sequence": 1,
+                "cursor": 1,
+                "type": "runtime.finalized",
+                "kind": "runtime.finalized",
+                "timestamp": run.updated_at,
+                "data": {},
+                "display_text": "Runtime finalized",
+                "message": "Runtime finalized",
+            }
+        )
+    return {
+        "id": context.mentat_run_id,
+        "runtime_type": "hermes",
+        "agent_id": "profile-service",
+        "agent_name": "Service Agent",
+        "model": "provider/model",
+        "provider": "provider",
+        "transport_mode": "local",
+        "connection_binding_id": "local-default",
+        "status": "completed",
+        "partial": partial,
+        "prompt": task.objective,
+        "response": f"Completed {task.objective}",
+        "error": "",
+        "events": events,
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
+        "started_at": run.started_at,
+        "completed_at": run.updated_at,
+        "attachments": [],
+        "artifacts": [],
+        "mentat_agent_id": context.agent_id,
+        "task_id": task.id,
+        "_dispatch_id": context.dispatch_id,
     }
 
 
@@ -247,13 +308,7 @@ class FakeRuntime:
         if run_id != expected:
             raise AssertionError("runtime-owned Run reference was not used")
         self.event_queries.append((run_id, after_sequence))
-        if self.events is not None:
-            return tuple(
-                event
-                for event in self.events
-                if not self.honor_after_sequence or event.sequence > after_sequence
-            )
-        return (
+        events = list(self.events) if self.events is not None else [
             AgentEvent(
                 id="runtime_event_progress",
                 run_id=context.mentat_run_id,
@@ -261,7 +316,31 @@ class FakeRuntime:
                 type=AgentEventType.MESSAGE,
                 occurred_at="2026-08-18T13:00:00+00:00",
                 summary="Runtime progress observed",
-            ),
+            )
+        ]
+        terminal_type = {
+            RunStatus.COMPLETED: AgentEventType.RUN_COMPLETED,
+            RunStatus.FAILED: AgentEventType.RUN_FAILED,
+            RunStatus.STOPPED: AgentEventType.RUN_STOPPED,
+            RunStatus.INTERRUPTED: AgentEventType.RUN_INTERRUPTED,
+        }.get(self.observed_status)
+        if terminal_type is not None and not any(
+            event.type == terminal_type for event in events
+        ):
+            events.append(
+                AgentEvent(
+                    id=f"runtime_finalized_{context.mentat_run_id}",
+                    run_id=context.mentat_run_id,
+                    sequence=max((event.sequence for event in events), default=0) + 1,
+                    type=terminal_type,
+                    occurred_at="2026-08-18T13:00:01+00:00",
+                    summary=f"Run {self.observed_status.value}",
+                )
+            )
+        return tuple(
+            event
+            for event in events
+            if not self.honor_after_sequence or event.sequence > after_sequence
         )
 
     def capabilities_for_run(self, run_id, *, context=None):
@@ -285,7 +364,12 @@ class OrchestrationServiceTests(unittest.TestCase):
         runtime.capacity_scope = "codex-app-server:" + "a" * 64
 
     def prepare(
-        self, root: Path, runtime: FakeRuntime, *, task_id: str = "task-service"
+        self,
+        root: Path,
+        runtime: FakeRuntime,
+        *,
+        task_id: str = "task-service",
+        agent_capabilities: tuple[str, ...] = ("run.start", "run.message"),
     ) -> OrchestrationService:
         task = task_fixture()
         task["id"] = task_id
@@ -300,7 +384,7 @@ class OrchestrationServiceTests(unittest.TestCase):
             runtime_config_id="config-service",
             runtime_type=runtime.runtime_type,
             runtime_agent_ref=runtime.runtime_agent_ref,
-            capabilities=("run.start",),
+            capabilities=agent_capabilities,
         )
         identifiers = iter(
             (
@@ -325,8 +409,14 @@ class OrchestrationServiceTests(unittest.TestCase):
         self,
         root: Path,
         runtime: FakeRuntime,
+        *,
+        agent_capabilities: tuple[str, ...] = ("run.start", "run.message"),
     ) -> tuple[OrchestrationService, str]:
-        task_service = self.prepare(root, runtime)
+        task_service = self.prepare(
+            root,
+            runtime,
+            agent_capabilities=agent_capabilities,
+        )
         conversation = ConversationRepository(
             root,
             supported_runtime_types=(runtime.runtime_type,),
@@ -348,6 +438,58 @@ class OrchestrationServiceTests(unittest.TestCase):
             id_factory=lambda _prefix: next(identifiers),
         )
         return service, conversation.conversation.id
+
+    @staticmethod
+    def worker_snapshot(
+        submitted: ConversationTurnDispatchResult,
+        *,
+        status: str,
+        partial: bool,
+        response: str = "",
+        finalized: bool = True,
+    ) -> dict:
+        events = []
+        if finalized:
+            events.append(
+                {
+                    "schema_version": 1,
+                    "id": f"event_finalized_{submitted.run.id}",
+                    "run_id": submitted.run.id,
+                    "sequence": 1,
+                    "cursor": 1,
+                    "type": "runtime.finalized",
+                    "kind": "runtime.finalized",
+                    "timestamp": submitted.run.updated_at,
+                    "data": {},
+                    "display_text": "Runtime finalized",
+                    "message": "Runtime finalized",
+                }
+            )
+        return {
+            "id": submitted.run.id,
+            "runtime_type": "hermes",
+            "agent_id": "profile-service",
+            "agent_name": "Service Agent",
+            "model": "provider/model",
+            "provider": "provider",
+            "transport_mode": "local",
+            "connection_binding_id": "local-default",
+            "status": status,
+            "partial": partial,
+            "prompt": submitted.message.content["parts"][0]["text"],
+            "response": response,
+            "error": "" if status == "completed" else "Runtime did not complete.",
+            "events": events,
+            "created_at": submitted.run.created_at,
+            "updated_at": submitted.run.updated_at,
+            "started_at": submitted.run.started_at,
+            "completed_at": submitted.run.updated_at,
+            "attachments": [],
+            "artifacts": [],
+            "mentat_agent_id": "agent-service",
+            "task_id": submitted.turn.id,
+            "_dispatch_id": submitted.turn.id,
+        }
 
     def test_dispatch_commits_attempt_before_one_unlocked_runtime_call(self):
         with TemporaryDirectory() as tmpdir:
@@ -562,6 +704,10 @@ class OrchestrationServiceTests(unittest.TestCase):
                 server,
                 "AGENT_RUNTIME_REGISTRY",
                 service.runtime_registry,
+            ), patch.object(
+                server,
+                "AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED",
+                True,
             ):
                 payload, status = local_bridge.bridge_submit_conversation_turn_payload(
                     conversation_id,
@@ -589,6 +735,103 @@ class OrchestrationServiceTests(unittest.TestCase):
         ):
             self.assertNotIn(private, serialized)
         self.assertEqual(len(runtime.calls), 1)
+
+    def test_browser_submission_takes_shutdown_gate_before_runtime_guard(self):
+        class ObservedRLock:
+            def __init__(self):
+                self.lock = threading.RLock()
+                self.waiting = threading.Event()
+
+            def acquire(self, *args, **kwargs):
+                self.waiting.set()
+                return self.lock.acquire(*args, **kwargs)
+
+            def release(self):
+                self.lock.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *_args):
+                self.release()
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.submission_lock = server.HERMES_CONNECTION_OPERATION_LOCK
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            drain = ObservedRLock()
+            responses = []
+            errors = []
+
+            def submit_from_browser():
+                try:
+                    responses.append(
+                        server.submit_mentat_conversation_turn(
+                            conversation_id,
+                            {
+                                "idempotency_key": "conversation-lock-order-key",
+                                "text": "Do not launch during shutdown",
+                            },
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    errors.append(exc)
+
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server,
+                "AGENT_RUNTIME_REGISTRY",
+                service.runtime_registry,
+            ), patch.object(
+                server,
+                "_mentat_agent_registry",
+                return_value=service.agent_registry,
+            ), patch.object(
+                server,
+                "AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK",
+                drain,
+            ), patch.object(
+                server,
+                "AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED",
+                True,
+            ):
+                drain.acquire()
+                drain.waiting.clear()
+                worker = threading.Thread(target=submit_from_browser)
+                worker.start()
+                self.assertTrue(drain.waiting.wait(timeout=5))
+                acquired_runtime = server.HERMES_CONNECTION_OPERATION_LOCK.acquire(
+                    timeout=1
+                )
+                self.assertTrue(acquired_runtime)
+                if acquired_runtime:
+                    server.HERMES_CONNECTION_OPERATION_LOCK.release()
+                server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
+                drain.release()
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+
+            connection = connect(root)
+            try:
+                turn_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_conversation_turns "
+                        "WHERE conversation_id = ?",
+                        (conversation_id,),
+                    ).fetchone()[0]
+                )
+                RunRepository(connection).validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            responses,
+            [({"error_code": "conversation.unavailable"}, 503)],
+        )
+        self.assertEqual(turn_count, 0)
+        self.assertEqual(runtime.calls, [])
 
     def test_conversation_turn_retry_is_exact_and_never_calls_runtime_twice(self):
         with TemporaryDirectory() as tmpdir:
@@ -900,10 +1143,11 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual([item.id for item in detail.queued_turns], [blocked.turn.id, appended.turn.id])
         self.assertEqual(len(runtime.calls), 1)
 
-    def test_immediate_verified_completion_claims_one_concurrent_pending_head(self):
+    def test_immediate_codex_completion_claims_one_concurrent_pending_head(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             runtime = FakeRuntime(root)
+            self.qualify_codex_capacity(runtime)
             runtime.return_completed = True
             runtime.submit_entered = threading.Event()
             runtime.submit_release = threading.Event()
@@ -936,7 +1180,7 @@ class OrchestrationServiceTests(unittest.TestCase):
                 raise failures[0]
             detail = ConversationRepository(
                 root,
-                supported_runtime_types=("hermes",),
+                supported_runtime_types=(runtime.runtime_type,),
             ).read(conversation_id)
             connection = connect(root)
             try:
@@ -1112,6 +1356,71 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertTrue(str(queue_row["latest_run_id"]).startswith("run_auto_"))
         self.assertEqual(run_count, 2)
         self.assertEqual(detail.queued_turns, ())
+
+    def test_terminal_event_closes_split_status_read_and_executes_fifo_successor(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.honor_after_sequence = True
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Finish while the status snapshot is stale",
+                idempotency_key="conversation-split-observation-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Run after the exact terminal event",
+                idempotency_key="conversation-split-observation-key-2",
+            )
+            runtime.observed_status = RunStatus.RUNNING
+            runtime.events = (
+                AgentEvent(
+                    id="runtime_split_terminal",
+                    run_id=first.run.id,
+                    sequence=1,
+                    type=AgentEventType.RUN_COMPLETED,
+                    occurred_at="2026-08-18T13:00:01+00:00",
+                    summary="Run completed after the status read",
+                ),
+            )
+
+            first_report = service.reconcile_run(
+                run_id=first.run.id,
+                owner="split_observation_owner",
+            )
+            # A later status read could now be terminal with no newer event.
+            # The exact terminal event already committed above must prevent
+            # that split snapshot from leaving the canonical Run active.
+            runtime.observed_status = RunStatus.COMPLETED
+            runtime.events = ()
+            replay_report = service.reconcile_run(
+                run_id=first.run.id,
+                owner="split_observation_replay_owner",
+            )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                source = repository.get_run(first.run.id)
+                successor = repository.conversation_turn_reservation(
+                    queued.turn.id
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(first_report.reconciled, (first.run.id,))
+        self.assertEqual(replay_report.leased, 0)
+        self.assertEqual(source.status, "completed")
+        self.assertTrue(source.terminal_finalized)
+        self.assertEqual(successor.state, "accepted")
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(
+            runtime.calls[-1][0].objective,
+            "Run after the exact terminal event",
+        )
+        self.assertEqual(runtime.status_queries, ["runtime-service-ref"])
+        self.assertEqual(runtime.event_queries, [("runtime-service-ref", 0)])
 
     def test_competing_reconcilers_claim_one_pending_head_once(self):
         with TemporaryDirectory() as tmpdir:
@@ -1634,6 +1943,183 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(runtime.steer_calls[0][1], "Use the revised priority now")
         self.assertEqual(tuple(before), tuple(after))
 
+    def test_conversation_steer_preserves_ambiguous_runtime_delivery(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this Run steerable",
+                idempotency_key="conversation-steer-partial-key-1",
+            )
+            runtime.observed_status = RunStatus.RUNNING
+            service.reconcile_run(
+                run_id=submitted.run.id,
+                owner="conversation_steer_partial_owner",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this successor blocked if delivery is ambiguous",
+                idempotency_key="conversation-steer-partial-key-2",
+            )
+
+            with (
+                patch.object(server, "DATA_DIR", root),
+                patch.object(
+                    server,
+                    "AGENT_RUNTIME_REGISTRY",
+                    service.runtime_registry,
+                ),
+                patch.object(
+                    runtime,
+                    "send_message",
+                    side_effect=AgentRuntimeError("runtime.message_partial"),
+                ),
+                self.assertRaisesRegex(
+                    server.OrchestrationRunActionError,
+                    "conversation.steer_partial",
+                ),
+            ):
+                server.steer_mentat_conversation(
+                    conversation_id,
+                    {
+                        "run_id": submitted.run.id,
+                        "text": "This guidance may already have landed",
+                    },
+                )
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                ambiguous = repository.get_run(submitted.run.id)
+                blocked = repository.conversation_turn_reservation(queued.turn.id)
+                blocked_reason = connection.execute(
+                    "SELECT blocked_reason FROM mentat_conversation_turns WHERE id = ?",
+                    (queued.turn.id,),
+                ).fetchone()[0]
+                repository.validate()
+            finally:
+                connection.close()
+
+            completed_snapshot = self.worker_snapshot(
+                submitted,
+                status="completed",
+                partial=False,
+                response="The runtime later reported a completed answer.",
+                finalized=True,
+            )
+            completed_snapshot["updated_at"] = ambiguous.updated_at
+            completed_snapshot["completed_at"] = ambiguous.updated_at
+            completed_report = save_authoritative_run_summaries(
+                root,
+                [completed_snapshot],
+            )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                completed = repository.get_run(submitted.run.id)
+                still_blocked = repository.conversation_turn_reservation(
+                    queued.turn.id
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertTrue(ambiguous.partial)
+        self.assertEqual(blocked.state, "blocked")
+        self.assertEqual(blocked_reason, "partial")
+        self.assertEqual(completed.status, "completed")
+        self.assertTrue(completed.partial)
+        self.assertTrue(completed.terminal_finalized)
+        self.assertEqual(completed_report.conversation_continuations, ())
+        self.assertEqual(still_blocked.state, "blocked")
+        self.assertIsNone(still_blocked.run_id)
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_conversation_steer_requires_declared_agent_permission(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(
+                root,
+                runtime,
+                agent_capabilities=("run.start",),
+            )
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Keep this Run active without steering permission",
+                idempotency_key="conversation-steer-permission-key-1",
+            )
+            runtime.observed_status = RunStatus.RUNNING
+            service.reconcile_run(
+                run_id=submitted.run.id,
+                owner="conversation_steer_permission_owner",
+            )
+
+            with (
+                patch.object(server, "DATA_DIR", root),
+                patch.object(
+                    server,
+                    "AGENT_RUNTIME_REGISTRY",
+                    service.runtime_registry,
+                ),
+                patch.object(
+                    runtime,
+                    "capabilities_for_run",
+                    return_value=frozenset(
+                        {
+                            "run.approval_response",
+                            "run.message",
+                            "run.status",
+                            "run.stop",
+                        }
+                    ),
+                ) as live_capabilities,
+            ):
+                with self.assertRaisesRegex(
+                    server.OrchestrationRunActionError,
+                    "conversation.steer_unsupported",
+                ):
+                    server.steer_mentat_conversation(
+                        conversation_id,
+                        {
+                            "run_id": submitted.run.id,
+                            "text": "Do not bypass declared permission",
+                        },
+                    )
+                with self.assertRaisesRegex(
+                    server.OrchestrationRunActionError,
+                    "run.message_unavailable",
+                ):
+                    server.mentat_run_message_preview_payload(
+                        submitted.run.id,
+                        "Do not preview an undeclared message action",
+                    )
+                with self.assertRaisesRegex(
+                    server.OrchestrationRunActionError,
+                    "run.stop_unavailable",
+                ):
+                    server.mentat_run_stop_preview_payload(submitted.run.id)
+                connection = connect(root)
+                try:
+                    connection.execute(
+                        "UPDATE mentat_runs SET status = 'waiting_for_approval' "
+                        "WHERE id = ?",
+                        (submitted.run.id,),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self.assertRaisesRegex(
+                    server.OrchestrationRunActionError,
+                    "run.response_unavailable",
+                ):
+                    server.mentat_run_response_request_payload(submitted.run.id)
+
+            live_capabilities.assert_not_called()
+            self.assertEqual(runtime.steer_calls, [])
+
     def test_success_blocks_the_head_when_current_declared_capacity_is_full(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1813,6 +2299,108 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(third.disposition, "blocked")
         self.assertEqual(third.turn.blocked_reason, "capacity")
         self.assertEqual(len(runtime.calls), 2)
+
+    def test_gated_codex_continuation_carries_exact_predecessor_through_retention(self):
+        with TemporaryDirectory() as tmpdir, patch.object(
+            run_repository,
+            "TERMINAL_RUN_RETENTION",
+            1,
+        ):
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            self.qualify_codex_capacity(runtime)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Complete this Codex thread before the gated handoff",
+                idempotency_key="conversation-codex-gated-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Continue on the exact prior Codex thread",
+                idempotency_key="conversation-codex-gated-key-2",
+            )
+            newer_terminal = {
+                "id": "run_codex_retention_pressure",
+                "runtime_type": "hermes",
+                "agent_id": "profile-service",
+                "agent_name": "Hermes",
+                "model": "provider/model",
+                "transport_mode": "local",
+                "connection_binding_id": "local-default",
+                "status": "completed",
+                "prompt": "Retention pressure fixture",
+                "response": "Done",
+                "error": "",
+                "events": [],
+                "created_at": "2027-01-01T00:00:00+00:00",
+                "updated_at": "2027-01-01T00:00:01+00:00",
+                "started_at": "2027-01-01T00:00:00+00:00",
+                "completed_at": "2027-01-01T00:00:01+00:00",
+                "attachments": [],
+                "artifacts": [],
+            }
+            connection = connect(root)
+            try:
+                RunRepository(connection).sync_summaries([newer_terminal])
+            finally:
+                connection.close()
+            runtime.observed_status = RunStatus.COMPLETED
+            service.conversation_continuation_handler = (
+                server._dispatch_reserved_agent_console_continuation
+            )
+            prior_gate = server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+            try:
+                with (
+                    patch.object(server, "DATA_DIR", root),
+                    patch.object(
+                        server,
+                        "AGENT_RUNTIME_REGISTRY",
+                        service.runtime_registry,
+                    ),
+                    patch.object(
+                        server,
+                        "_mentat_agent_registry",
+                        return_value=service.agent_registry,
+                    ),
+                    patch.object(
+                        server,
+                        "agent_console_storage_degraded",
+                        return_value=False,
+                    ),
+                ):
+                    server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = True
+                    report = service.reconcile_run(
+                        run_id=first.run.id,
+                        owner="codex_gated_retention_owner",
+                    )
+            finally:
+                server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = prior_gate
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                reservation = repository.conversation_turn_reservation(
+                    queued.turn.id
+                )
+                successor = repository.get_run(reservation.run_id)
+                retained_source_result = (
+                    repository.get_conversation_submission_result(first.turn.id)
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(report.reconciled, (first.run.id,))
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(
+            runtime.calls[1][1].continuation_runtime_run_ref,
+            "runtime-service-ref",
+        )
+        self.assertEqual(reservation.state, "accepted")
+        self.assertEqual(successor.dispatch_state, "accepted")
+        self.assertIsNone(successor.resume_of_run_id)
+        self.assertEqual(retained_source_result.id, first.run.id)
 
     def test_current_conversation_run_prefers_active_status_on_timestamp_tie(self):
         with TemporaryDirectory() as tmpdir:
@@ -2141,6 +2729,170 @@ class OrchestrationServiceTests(unittest.TestCase):
             self.assertEqual(turn["attempt_count"], 1 if claimed else 0)
             self.assertEqual(runtime.calls, [])
 
+    def test_restart_recovery_clears_reserved_predecessor_pin_under_retention(self):
+        with TemporaryDirectory() as tmpdir, patch.object(
+            run_repository,
+            "TERMINAL_RUN_RETENTION",
+            1,
+        ):
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Finish before restart recovery",
+                idempotency_key="conversation-restart-pin-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Classify this unattempted successor after restart",
+                idempotency_key="conversation-restart-pin-key-2",
+            )
+            report = save_authoritative_run_summaries(
+                root,
+                [
+                    self.worker_snapshot(
+                        first,
+                        status="completed",
+                        partial=False,
+                        response="Verified Hermes response before restart",
+                    )
+                ],
+            )
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                before = repository.conversation_turn_reservation(queued.turn.id)
+                pinned = repository.get_run(before.run_id)
+                recovered = repository.recover_conversation_submissions(
+                    now="2028-01-01T00:00:00+00:00",
+                )
+                after = repository.conversation_turn_reservation(queued.turn.id)
+                interrupted = repository.get_run(after.run_id)
+                source_result = repository.get_conversation_submission_result(
+                    first.turn.id
+                )
+                with self.assertRaisesRegex(RunRepositoryConflict, "run.not_found"):
+                    repository.get_run(first.run.id)
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(
+            report.conversation_continuations,
+            ((first.run.id, queued.turn.id),),
+        )
+        self.assertEqual(pinned.resume_of_run_id, first.run.id)
+        self.assertEqual(recovered, (before.run_id,))
+        self.assertEqual(after.state, "rejected")
+        self.assertEqual(after.attempt_count, 0)
+        self.assertEqual(interrupted.status, "interrupted")
+        self.assertEqual(interrupted.dispatch_state, "rejected")
+        self.assertTrue(interrupted.partial)
+        self.assertTrue(interrupted.terminal_finalized)
+        self.assertIsNone(interrupted.resume_of_run_id)
+        self.assertEqual(source_result.id, first.run.id)
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_restart_recovery_enforces_retention_across_multiple_successors(self):
+        with TemporaryDirectory() as tmpdir, patch.object(
+            run_repository,
+            "TERMINAL_RUN_RETENTION",
+            1,
+        ):
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            self.qualify_codex_capacity(runtime)
+            runtime.capacity_limit = 2
+            service, first_conversation_id = self.prepare_conversation(
+                root,
+                runtime,
+            )
+            second_conversation_id = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).create(agent_id="agent-service").conversation.id
+            counters = {"msg": 0, "turn": 0, "run": 0}
+
+            def identifier(prefix):
+                counters[prefix] += 1
+                return f"{prefix}_multi_recovery_{counters[prefix]}"
+
+            service.id_factory = identifier
+            service.conversation_continuation_handler = lambda _source, _turn: None
+            first_sources = (
+                service.submit_conversation_turn(
+                    conversation_id=first_conversation_id,
+                    text="Complete first source before restart",
+                    idempotency_key="conversation-multi-recovery-key-1",
+                ),
+                service.submit_conversation_turn(
+                    conversation_id=second_conversation_id,
+                    text="Complete second source before restart",
+                    idempotency_key="conversation-multi-recovery-key-2",
+                ),
+            )
+            queued = (
+                service.submit_conversation_turn(
+                    conversation_id=first_conversation_id,
+                    text="Recover first reserved successor",
+                    idempotency_key="conversation-multi-recovery-key-3",
+                ),
+                service.submit_conversation_turn(
+                    conversation_id=second_conversation_id,
+                    text="Recover second reserved successor",
+                    idempotency_key="conversation-multi-recovery-key-4",
+                ),
+            )
+            runtime.observed_status = RunStatus.COMPLETED
+            for index, source in enumerate(first_sources, start=1):
+                report = service.reconcile_run(
+                    run_id=source.run.id,
+                    owner=f"multi_recovery_owner_{index}",
+                )
+                self.assertEqual(report.reconciled, (source.run.id,))
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                before = tuple(
+                    repository.conversation_turn_reservation(item.turn.id)
+                    for item in queued
+                )
+                pinned = tuple(repository.get_run(item.run_id) for item in before)
+                recovered = repository.recover_conversation_submissions(
+                    now="2028-01-01T00:00:00+00:00",
+                )
+                retained_ids = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT id FROM mentat_runs WHERE status = 'interrupted'"
+                    )
+                }
+                results = tuple(
+                    repository.get_conversation_submission_result(item.turn.id)
+                    for item in queued
+                )
+                terminal_count = connection.execute(
+                    "SELECT COUNT(*) FROM mentat_runs WHERE status IN ("
+                    "'completed', 'failed', 'cancelled', 'stopped', 'interrupted')"
+                ).fetchone()[0]
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(
+            tuple(item.resume_of_run_id for item in pinned),
+            tuple(item.run.id for item in first_sources),
+        )
+        self.assertEqual(set(recovered), {item.run_id for item in before})
+        self.assertEqual(len(retained_ids), 1)
+        self.assertEqual(terminal_count, 1)
+        self.assertEqual(tuple(item.status for item in results), ("interrupted",) * 2)
+        self.assertEqual(tuple(item.partial for item in results), (True, True))
+        self.assertEqual(len(runtime.calls), 2)
+
     def test_conversation_restart_marks_accepted_run_without_runtime_reference_unknown(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -2200,6 +2952,1287 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(run.dispatch_state, "unknown")
         self.assertTrue(run.partial)
         self.assertEqual(retained.status, "unknown")
+
+    def test_still_owned_console_worker_atomically_reconciles_unknown_completion(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_runtime_run_ref = None
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Finish after a competing startup recovery",
+                idempotency_key="conversation-late-worker-completion-key",
+            )
+            worker_snapshot = {
+                "id": submitted.run.id,
+                "runtime_type": "hermes",
+                "agent_id": "profile-service",
+                "agent_name": "Service Agent",
+                "model": "provider/model",
+                "transport_mode": "local",
+                "connection_binding_id": "local-default",
+                "status": "completed",
+                "partial": False,
+                "prompt": "Finish after a competing startup recovery",
+                "response": (
+                    "Verified late response. Saved /Users/alice/secret.txt "
+                    "and /tmp/private-output.txt"
+                ),
+                "error": "",
+                "events": [],
+                "created_at": submitted.run.created_at,
+                "updated_at": submitted.run.updated_at,
+                "started_at": submitted.run.started_at,
+                "completed_at": submitted.run.updated_at,
+                "attachments": [],
+                "artifacts": [],
+                "mentat_agent_id": "agent-service",
+                "task_id": submitted.turn.id,
+                "_dispatch_id": submitted.turn.id,
+            }
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                recovered = repository.recover_conversation_submissions()
+                unknown = repository.get_run(submitted.run.id)
+                # Reproduce the exact pre-fix partial write observed in the
+                # operator database: terminal runtime status landed while the
+                # admission state remained unknown.
+                connection.execute(
+                    "UPDATE mentat_runs SET status = 'completed', "
+                    "completed_at = ?, updated_at = ? WHERE id = ?",
+                    (
+                        submitted.run.updated_at,
+                        submitted.run.updated_at,
+                        submitted.run.id,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            save_authoritative_run_summaries(root, [worker_snapshot])
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                completed = repository.get_run(submitted.run.id)
+                retained = repository.get_conversation_submission_result(
+                    submitted.turn.id
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+            worker_snapshot["events"] = [
+                {
+                    "schema_version": 1,
+                    "id": "event_runtime_finalized_late_worker",
+                    "run_id": submitted.run.id,
+                    "sequence": 1,
+                    "cursor": 1,
+                    "type": "runtime.finalized",
+                    "kind": "runtime.finalized",
+                    "timestamp": submitted.run.updated_at,
+                    "data": {},
+                    "display_text": "Runtime finalized",
+                    "message": "Runtime finalized",
+                }
+            ]
+            save_authoritative_run_summaries(root, [worker_snapshot])
+            save_authoritative_run_summaries(root, [worker_snapshot])
+            replayed_detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                replayed = repository.get_run(submitted.run.id)
+                assistant_event_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_agent_events "
+                        "WHERE run_id = ? AND event_type = 'message' AND content IS NOT NULL",
+                        (submitted.run.id,),
+                    ).fetchone()[0]
+                )
+                finalized_event_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_agent_events "
+                        "WHERE run_id = ? AND source_type = 'runtime.finalized'",
+                        (submitted.run.id,),
+                    ).fetchone()[0]
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+            worker_snapshot["partial"] = True
+            connection = connect(root)
+            try:
+                # Repeat the exact pre-fix terminal/unknown shape while the
+                # worker carries a separate partial condition.
+                connection.execute(
+                    "UPDATE mentat_runs SET dispatch_state = 'unknown', "
+                    "partial = 1 WHERE id = ?",
+                    (submitted.run.id,),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            save_authoritative_run_summaries(root, [worker_snapshot])
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                partial_completed = repository.get_run(submitted.run.id)
+                partial_retained = repository.get_conversation_submission_result(
+                    submitted.turn.id
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+            malformed_snapshot = {**worker_snapshot, "partial": 1}
+            with self.assertRaisesRegex(
+                RunRepositoryValidationError, "run.partial_invalid"
+            ):
+                save_authoritative_run_summaries(root, [malformed_snapshot])
+            missing_status = dict(worker_snapshot)
+            missing_status.pop("status")
+            with self.assertRaisesRegex(
+                RunRepositoryValidationError, "run.status_invalid"
+            ):
+                save_authoritative_run_summaries(root, [missing_status])
+            missing_runtime = dict(worker_snapshot)
+            missing_runtime.pop("runtime_type")
+            with self.assertRaisesRegex(
+                RunRepositoryConflict, "run.console_authority_conflict"
+            ):
+                save_authoritative_run_summaries(root, [missing_runtime])
+
+        self.assertEqual(recovered, (submitted.run.id,))
+        self.assertEqual(unknown.status, "unknown")
+        self.assertEqual(unknown.dispatch_state, "unknown")
+        self.assertTrue(unknown.partial)
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.dispatch_state, "accepted")
+        self.assertFalse(completed.partial)
+        self.assertFalse(completed.terminal_finalized)
+        self.assertEqual(detail.current_run["status"], "finalizing")
+        self.assertEqual(retained.status, "completed")
+        self.assertFalse(retained.partial)
+        self.assertEqual([message.role for message in detail.messages], ["user"])
+        self.assertTrue(replayed.terminal_finalized)
+        self.assertEqual(replayed_detail.current_run["status"], "completed")
+        self.assertEqual(
+            [message.role for message in replayed_detail.messages],
+            ["user", "assistant"],
+        )
+        self.assertEqual(
+            replayed_detail.messages[1].content["parts"][0]["text"],
+            "Verified late response. Saved [redacted-path] and [redacted-path]",
+        )
+        self.assertNotIn(
+            "/Users/alice",
+            replayed_detail.messages[1].content["parts"][0]["text"],
+        )
+        self.assertNotIn(
+            "/tmp/private-output.txt",
+            replayed_detail.messages[1].content["parts"][0]["text"],
+        )
+        self.assertEqual(replayed_detail.messages[1].run_id, submitted.run.id)
+        self.assertEqual(replayed.status, "completed")
+        self.assertEqual(replayed.dispatch_state, "accepted")
+        self.assertEqual(assistant_event_count, 1)
+        self.assertEqual(finalized_event_count, 1)
+        self.assertEqual(len(replayed_detail.messages), 2)
+        self.assertEqual(replayed_detail.messages[1].run_id, submitted.run.id)
+        self.assertEqual(partial_completed.dispatch_state, "accepted")
+        self.assertTrue(partial_completed.partial)
+        self.assertEqual(partial_retained.status, "completed")
+        self.assertTrue(partial_retained.partial)
+
+    def test_worker_completion_atomically_reserves_and_executes_one_fifo_successor(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Finish the active Hermes request",
+                idempotency_key="conversation-worker-continuation-key-1",
+            )
+            snapshot = self.worker_snapshot(
+                first,
+                status="completed",
+                partial=False,
+                response="Verified Hermes response",
+                finalized=False,
+            )
+
+            prefinal_report = save_authoritative_run_summaries(root, [snapshot])
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Run this exact FIFO successor",
+                idempotency_key="conversation-worker-continuation-key-2",
+            )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                prefinal_source = repository.get_run(first.run.id)
+                prefinal_turn = repository.conversation_turn_reservation(
+                    queued.turn.id
+                )
+                repository.validate()
+            finally:
+                connection.close()
+            prefinal_detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+            prefinal_activity = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).activity()
+
+            snapshot = self.worker_snapshot(
+                first,
+                status="completed",
+                partial=False,
+                response="Verified Hermes response",
+                finalized=True,
+            )
+            report = save_authoritative_run_summaries(root, [snapshot])
+            replay = save_authoritative_run_summaries(root, [snapshot])
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                reserved = repository.conversation_turn_reservation(queued.turn.id)
+                source = repository.get_run(first.run.id)
+                repository.validate()
+            finally:
+                connection.close()
+
+            continued = service.execute_reserved_conversation_turn(queued.turn.id)
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                successor = repository.get_run(reserved.run_id)
+                repository.validate()
+            finally:
+                connection.close()
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+
+        self.assertEqual(
+            report.conversation_continuations,
+            ((first.run.id, queued.turn.id),),
+        )
+        self.assertEqual(prefinal_report.conversation_continuations, ())
+        self.assertEqual(prefinal_source.status, "completed")
+        self.assertFalse(prefinal_source.terminal_finalized)
+        self.assertEqual(prefinal_turn.state, "pending")
+        self.assertIsNone(prefinal_turn.run_id)
+        self.assertEqual(prefinal_detail.current_run["status"], "finalizing")
+        self.assertEqual(len(prefinal_activity), 1)
+        self.assertEqual(prefinal_activity[0]["state"], "working")
+        self.assertEqual(
+            prefinal_activity[0]["conversations"][0]["run_status"],
+            "finalizing",
+        )
+        self.assertFalse(prefinal_activity[0]["attention"])
+        self.assertEqual(
+            [message.role for message in prefinal_detail.messages],
+            ["user", "user"],
+        )
+        self.assertEqual(replay.conversation_continuations, ())
+        self.assertEqual(source.status, "completed")
+        self.assertEqual(source.dispatch_state, "accepted")
+        self.assertEqual(reserved.state, "reserved")
+        self.assertEqual(reserved.attempt_count, 0)
+        self.assertTrue(str(reserved.run_id).startswith("run_auto_"))
+        self.assertEqual(continued.disposition, "accepted")
+        self.assertEqual(successor.dispatch_state, "accepted")
+        self.assertEqual(successor.turn_id, queued.turn.id)
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(detail.queued_turns, ())
+        self.assertEqual(
+            [message.role for message in detail.messages],
+            ["user", "user", "assistant"],
+        )
+
+    def test_prefinal_hermes_conversation_run_is_pinned_until_finalized(self):
+        with TemporaryDirectory() as tmpdir, patch.object(
+            run_repository,
+            "TERMINAL_RUN_RETENTION",
+            1,
+        ):
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Remain durable through the finalization boundary",
+                idempotency_key="conversation-prefinal-retention-key-1",
+            )
+            prefinal_snapshot = self.worker_snapshot(
+                submitted,
+                status="completed",
+                partial=False,
+                response="A response still awaiting runtime.finalized.",
+                finalized=False,
+            )
+            save_authoritative_run_summaries(root, [prefinal_snapshot])
+
+            newer_terminal = {
+                "id": "run_newer_terminal",
+                "runtime_type": "hermes",
+                "agent_id": "profile-service",
+                "agent_name": "Hermes",
+                "model": "provider/model",
+                "transport_mode": "local",
+                "connection_binding_id": "local-default",
+                "status": "completed",
+                "prompt": "Retention pressure fixture",
+                "response": "Done",
+                "error": "",
+                "events": [],
+                "created_at": "2027-01-01T00:00:00+00:00",
+                "updated_at": "2027-01-01T00:00:01+00:00",
+                "started_at": "2027-01-01T00:00:00+00:00",
+                "completed_at": "2027-01-01T00:00:01+00:00",
+                "attachments": [],
+                "artifacts": [],
+            }
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                repository.sync_summaries([newer_terminal])
+                pinned = repository.get_run(submitted.run.id)
+                repository.validate()
+            finally:
+                connection.close()
+
+            finalized_snapshot = self.worker_snapshot(
+                submitted,
+                status="completed",
+                partial=False,
+                response="The exact finalized response.",
+                finalized=True,
+            )
+            final_report = save_authoritative_run_summaries(
+                root,
+                [finalized_snapshot],
+            )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                with self.assertRaisesRegex(RunRepositoryConflict, "run.not_found"):
+                    repository.get_run(submitted.run.id)
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(pinned.status, "completed")
+        self.assertFalse(pinned.terminal_finalized)
+        self.assertIn(submitted.run.id, final_report.removed_run_ids)
+
+    def test_prelaunch_hermes_terminal_paths_finalize_and_block_fifo_head(self):
+        cases = (
+            ("cancelling", "local-default", "stopped", "stopped"),
+            ("queued", "changed-binding", "failed", "failed"),
+        )
+        for initial_status, selected_binding, expected_status, reason in cases:
+            with self.subTest(initial_status=initial_status), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                runtime = FakeRuntime(root)
+                service, conversation_id = self.prepare_conversation(root, runtime)
+                submitted = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Reach the exact pre-launch terminal path",
+                    idempotency_key=f"conversation-prelaunch-{reason}-key-1",
+                )
+                queued = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Block this FIFO successor at finalization",
+                    idempotency_key=f"conversation-prelaunch-{reason}-key-2",
+                )
+                worker_run = self.worker_snapshot(
+                    submitted,
+                    status="completed",
+                    partial=False,
+                    finalized=False,
+                )
+                worker_run.update(
+                    {
+                        "status": initial_status,
+                        "response": "",
+                        "error": "",
+                        "completed_at": None,
+                        "events": [],
+                        "event_cursor": 0,
+                        "new_session_state": "pending",
+                        "session_id": None,
+                    }
+                )
+                transport = SimpleNamespace(
+                    mode="local",
+                    binding=SimpleNamespace(binding_id=selected_binding),
+                )
+                with (
+                    patch.object(server, "DATA_DIR", root),
+                    patch.object(server, "AGENT_CONSOLE_HISTORY_LOADED", True),
+                    patch.object(
+                        server,
+                        "AGENT_CONSOLE_HISTORY_DATA_DIR",
+                        Path(os.path.abspath(os.fspath(root))),
+                    ),
+                    patch.object(
+                        server,
+                        "AGENT_CONSOLE_PERSISTENCE_DEGRADED",
+                        False,
+                    ),
+                    patch.object(
+                        server,
+                        "AGENT_CONSOLE_PERSISTENCE_DEGRADED_DATA_DIR",
+                        None,
+                    ),
+                    patch.object(
+                        server,
+                        "AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED",
+                        False,
+                    ),
+                    patch.object(server, "cleanup_run_export_directory"),
+                    patch.object(server, "cleanup_run_input_directory"),
+                    patch.dict(
+                        server.AGENT_CONSOLE_RUNS,
+                        {submitted.run.id: worker_run},
+                        clear=True,
+                    ),
+                ):
+                    server.run_hermes_agent(submitted.run.id, transport)
+
+                connection = connect(root)
+                try:
+                    repository = RunRepository(connection)
+                    source = repository.get_run(submitted.run.id)
+                    blocked = repository.conversation_turn_reservation(
+                        queued.turn.id
+                    )
+                    blocked_reason = connection.execute(
+                        "SELECT blocked_reason FROM mentat_conversation_turns "
+                        "WHERE id = ?",
+                        (queued.turn.id,),
+                    ).fetchone()[0]
+                    repository.validate()
+                finally:
+                    connection.close()
+
+                self.assertEqual(worker_run["events"][-1]["type"], "runtime.finalized")
+                self.assertEqual(source.status, expected_status)
+                self.assertTrue(source.terminal_finalized)
+                self.assertFalse(source.partial)
+                self.assertEqual(blocked.state, "blocked")
+                self.assertEqual(blocked_reason, reason)
+                self.assertIsNone(blocked.run_id)
+                self.assertEqual(len(runtime.calls), 1)
+
+    def test_worker_completion_before_acceptance_replays_and_executes_fifo_successor(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_runtime_run_ref = None
+            runtime.observed_status = RunStatus.COMPLETED
+            runtime.submit_entered = threading.Event()
+            runtime.submit_release = threading.Event()
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            original_submit = runtime.submit_task
+            suppressed_reports = []
+
+            def complete_before_acceptance(task, context):
+                outcome = original_submit(task, context)
+                snapshot = preacceptance_worker_snapshot(
+                    root,
+                    task,
+                    context,
+                    partial=False,
+                    finalized=True,
+                )
+                suppressed_reports.append(
+                    save_authoritative_run_summaries(root, [snapshot])
+                )
+                suppressed_reports.append(
+                    save_authoritative_run_summaries(root, [snapshot])
+                )
+                return outcome
+
+            def completed_events(run_id, after_sequence=0, *, context=None):
+                self.assertEqual(run_id, context.mentat_run_id)
+                events = (
+                    AgentEvent(
+                        id=f"runtime_answer_{run_id}",
+                        run_id=run_id,
+                        sequence=1,
+                        type=AgentEventType.MESSAGE,
+                        occurred_at="2026-08-18T13:00:00+00:00",
+                        summary="Assistant answer completed",
+                        content=f"Verified answer for {context.task_id}",
+                    ),
+                    AgentEvent(
+                        id=f"runtime_finalized_{run_id}",
+                        run_id=run_id,
+                        sequence=2,
+                        type=AgentEventType.RUN_COMPLETED,
+                        occurred_at="2026-08-18T13:00:01+00:00",
+                        summary="Run completed",
+                    ),
+                )
+                return tuple(
+                    event for event in events if event.sequence > after_sequence
+                )
+
+            runtime.submit_task = complete_before_acceptance
+            runtime.stream_events = completed_events
+            first_results = []
+            first_errors = []
+
+            def submit_first():
+                try:
+                    first_results.append(
+                        service.submit_conversation_turn(
+                            conversation_id=conversation_id,
+                            text="Finish before acceptance returns",
+                            idempotency_key="conversation-fast-worker-key-1",
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    first_errors.append(exc)
+
+            worker = threading.Thread(target=submit_first)
+            worker.start()
+            self.assertTrue(runtime.submit_entered.wait(timeout=5))
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Run the queued successor after the fast worker",
+                idempotency_key="conversation-fast-worker-key-2",
+            )
+            self.assertEqual(queued.turn.state, "pending")
+            self.assertEqual(len(runtime.calls), 1)
+            runtime.submit_release.set()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(first_errors, [])
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                first_run = repository.get_run(first_results[0].run.id)
+                successor_reservation = repository.conversation_turn_reservation(
+                    queued.turn.id
+                )
+                successor = repository.get_run(successor_reservation.run_id)
+                repository.validate()
+            finally:
+                connection.close()
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+
+        self.assertEqual(len(suppressed_reports), 4)
+        self.assertTrue(
+            all(report.conversation_continuations == () for report in suppressed_reports)
+        )
+        self.assertEqual(first_run.status, "completed")
+        self.assertEqual(first_run.dispatch_state, "accepted")
+        self.assertEqual(successor_reservation.state, "accepted")
+        self.assertEqual(successor_reservation.attempt_count, 1)
+        self.assertEqual(successor.status, "completed")
+        self.assertEqual(successor.dispatch_state, "accepted")
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(len(runtime.status_queries), 2)
+        self.assertEqual(detail.queued_turns, ())
+        self.assertEqual(
+            [message.role for message in detail.messages],
+            ["user", "user", "assistant", "assistant"],
+        )
+        self.assertEqual(
+            [message.run_id for message in detail.messages if message.role == "assistant"],
+            [first_run.id, successor.id],
+        )
+
+    def test_preacceptance_partial_completion_blocks_fifo_successor(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_runtime_run_ref = None
+            runtime.observed_status = RunStatus.COMPLETED
+            runtime.submit_entered = threading.Event()
+            runtime.submit_release = threading.Event()
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            original_submit = runtime.submit_task
+            suppressed_reports = []
+
+            def complete_partially_before_acceptance(task, context):
+                outcome = original_submit(task, context)
+                snapshot = preacceptance_worker_snapshot(
+                    root,
+                    task,
+                    context,
+                    partial=True,
+                    finalized=True,
+                )
+                suppressed_reports.append(
+                    save_authoritative_run_summaries(root, [snapshot])
+                )
+                suppressed_reports.append(
+                    save_authoritative_run_summaries(root, [snapshot])
+                )
+                return outcome
+
+            def completed_events(run_id, after_sequence=0, *, context=None):
+                event = AgentEvent(
+                    id=f"runtime_finalized_{run_id}",
+                    run_id=run_id,
+                    sequence=1,
+                    type=AgentEventType.RUN_COMPLETED,
+                    occurred_at="2026-08-18T13:00:00+00:00",
+                    summary="Run completed",
+                )
+                return (event,) if after_sequence < 1 else ()
+
+            runtime.submit_task = complete_partially_before_acceptance
+            runtime.stream_events = completed_events
+            first_results = []
+            first_errors = []
+
+            def submit_first():
+                try:
+                    first_results.append(
+                        service.submit_conversation_turn(
+                            conversation_id=conversation_id,
+                            text="Complete while steering is ambiguous",
+                            idempotency_key="conversation-fast-partial-key-1",
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    first_errors.append(exc)
+
+            worker = threading.Thread(target=submit_first)
+            worker.start()
+            self.assertTrue(runtime.submit_entered.wait(timeout=5))
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Do not auto-run after ambiguous steering",
+                idempotency_key="conversation-fast-partial-key-2",
+            )
+            runtime.submit_release.set()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(first_errors, [])
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                source = repository.get_run(first_results[0].run.id)
+                blocked = repository.conversation_turn_reservation(queued.turn.id)
+                blocked_reason = connection.execute(
+                    "SELECT blocked_reason FROM mentat_conversation_turns WHERE id = ?",
+                    (queued.turn.id,),
+                ).fetchone()[0]
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(len(suppressed_reports), 2)
+        self.assertTrue(
+            all(report.conversation_continuations == () for report in suppressed_reports)
+        )
+        self.assertEqual(source.status, "completed")
+        self.assertEqual(source.dispatch_state, "accepted")
+        self.assertTrue(source.partial)
+        self.assertEqual(blocked.state, "blocked")
+        self.assertEqual(blocked_reason, "partial")
+        self.assertIsNone(blocked.run_id)
+        self.assertEqual(blocked.attempt_count, 0)
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_preacceptance_completion_waits_for_finalized_event_before_fifo(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_runtime_run_ref = None
+            runtime.observed_status = RunStatus.COMPLETED
+            runtime.submit_entered = threading.Event()
+            runtime.submit_release = threading.Event()
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            original_submit = runtime.submit_task
+            prefinal_snapshots = []
+
+            def complete_before_finalization(task, context):
+                outcome = original_submit(task, context)
+                snapshot = preacceptance_worker_snapshot(
+                    root,
+                    task,
+                    context,
+                    partial=False,
+                    finalized=False,
+                )
+                prefinal_snapshots.append((task, context, snapshot))
+                save_authoritative_run_summaries(root, [snapshot])
+                return outcome
+
+            runtime.submit_task = complete_before_finalization
+            runtime.stream_events = lambda *_args, **_kwargs: ()
+            first_results = []
+            first_errors = []
+
+            def submit_first():
+                try:
+                    first_results.append(
+                        service.submit_conversation_turn(
+                            conversation_id=conversation_id,
+                            text="Finish response before artifact collection",
+                            idempotency_key="conversation-prefinal-key-1",
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    first_errors.append(exc)
+
+            worker = threading.Thread(target=submit_first)
+            worker.start()
+            self.assertTrue(runtime.submit_entered.wait(timeout=5))
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Wait until source finalization",
+                idempotency_key="conversation-prefinal-key-2",
+            )
+            runtime.submit_release.set()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(first_errors, [])
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                before_finalizer = repository.get_run(first_results[0].run.id)
+                still_queued = repository.conversation_turn_reservation(
+                    queued.turn.id
+                )
+                repository.validate()
+            finally:
+                connection.close()
+            before_detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+
+            first_task, first_context, _snapshot = prefinal_snapshots[0]
+            finalized_snapshot = preacceptance_worker_snapshot(
+                root,
+                first_task,
+                first_context,
+                partial=False,
+                finalized=True,
+            )
+            report = save_authoritative_run_summaries(root, [finalized_snapshot])
+            continued = service.execute_reserved_conversation_turn(queued.turn.id)
+
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                after_finalizer = repository.get_run(first_results[0].run.id)
+                successor = repository.get_run(continued.run.id)
+                repository.validate()
+            finally:
+                connection.close()
+            after_detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+
+        self.assertEqual(before_finalizer.status, "starting")
+        self.assertEqual(before_finalizer.dispatch_state, "accepted")
+        self.assertEqual(still_queued.state, "pending")
+        self.assertIsNone(still_queued.run_id)
+        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(
+            report.conversation_continuations,
+            ((after_finalizer.id, queued.turn.id),),
+        )
+        self.assertEqual(after_finalizer.status, "completed")
+        self.assertEqual(successor.dispatch_state, "accepted")
+        self.assertEqual(
+            [message.role for message in before_detail.messages],
+            ["user", "user"],
+        )
+        self.assertEqual(
+            [message.role for message in after_detail.messages],
+            ["user", "user", "assistant"],
+        )
+
+    def test_shutdown_gate_leaves_fast_worker_successor_durably_unattempted(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_runtime_run_ref = None
+            runtime.observed_status = RunStatus.COMPLETED
+            runtime.submit_entered = threading.Event()
+            runtime.submit_release = threading.Event()
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            original_submit = runtime.submit_task
+            handler_entered = threading.Event()
+
+            def complete_before_acceptance(task, context):
+                outcome = original_submit(task, context)
+                snapshot = preacceptance_worker_snapshot(
+                    root,
+                    task,
+                    context,
+                    partial=False,
+                    finalized=True,
+                )
+                save_authoritative_run_summaries(root, [snapshot])
+                save_authoritative_run_summaries(root, [snapshot])
+                return outcome
+
+            def finalized_events(run_id, after_sequence=0, *, context=None):
+                event = AgentEvent(
+                    id=f"runtime_finalized_{run_id}",
+                    run_id=run_id,
+                    sequence=1,
+                    type=AgentEventType.RUN_COMPLETED,
+                    occurred_at="2026-08-18T13:00:00+00:00",
+                    summary="Run completed",
+                )
+                return (event,) if after_sequence < 1 else ()
+
+            def gated_handoff(source_run_id, turn_id):
+                handler_entered.set()
+                server._dispatch_reserved_agent_console_continuation(
+                    source_run_id,
+                    turn_id,
+                )
+
+            runtime.submit_task = complete_before_acceptance
+            runtime.stream_events = finalized_events
+            service.conversation_continuation_handler = gated_handoff
+            first_results = []
+            first_errors = []
+
+            def submit_first():
+                try:
+                    first_results.append(
+                        service.submit_conversation_turn(
+                            conversation_id=conversation_id,
+                            text="Complete immediately before shutdown",
+                            idempotency_key="conversation-shutdown-gate-key-1",
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    first_errors.append(exc)
+
+            prior_gate = server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+            try:
+                with patch.object(server, "DATA_DIR", root), patch.object(
+                    server,
+                    "AGENT_RUNTIME_REGISTRY",
+                    service.runtime_registry,
+                ), patch.object(
+                    server,
+                    "_mentat_agent_registry",
+                    return_value=service.agent_registry,
+                ):
+                    server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = True
+                    worker = threading.Thread(target=submit_first)
+                    worker.start()
+                    self.assertTrue(runtime.submit_entered.wait(timeout=5))
+                    queued = service.submit_conversation_turn(
+                        conversation_id=conversation_id,
+                        text="Remain reserved if shutdown wins",
+                        idempotency_key="conversation-shutdown-gate-key-2",
+                    )
+                    with server.AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+                        runtime.submit_release.set()
+                        self.assertTrue(handler_entered.wait(timeout=5))
+                        # This is the exact state transition performed by
+                        # stop_agent_console_processes while it owns the gate.
+                        server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
+                    worker.join(timeout=5)
+                    self.assertFalse(worker.is_alive())
+            finally:
+                runtime.submit_release.set()
+                server.AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = prior_gate
+
+            self.assertEqual(first_errors, [])
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                source = repository.get_run(first_results[0].run.id)
+                reservation = repository.conversation_turn_reservation(
+                    queued.turn.id
+                )
+                successor = repository.get_run(reservation.run_id)
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(source.status, "completed")
+        self.assertEqual(source.dispatch_state, "accepted")
+        self.assertEqual(reservation.state, "reserved")
+        self.assertEqual(reservation.attempt_count, 0)
+        self.assertEqual(successor.status, "reserved")
+        self.assertEqual(successor.dispatch_state, "reserved")
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_worker_reserved_successor_terminalizes_when_agent_binding_disappears(self):
+        with TemporaryDirectory() as tmpdir, patch.object(
+            run_repository,
+            "TERMINAL_RUN_RETENTION",
+            1,
+        ):
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Finish before the binding disappears",
+                idempotency_key="conversation-worker-missing-binding-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Fail this reserved successor explicitly",
+                idempotency_key="conversation-worker-missing-binding-key-2",
+            )
+            report = save_authoritative_run_summaries(
+                root,
+                [
+                    self.worker_snapshot(
+                        first,
+                        status="completed",
+                        partial=False,
+                        response="Verified Hermes response",
+                    )
+                ],
+            )
+
+            with patch.object(
+                service,
+                "_agent_record_and_binding",
+                side_effect=OrchestrationServiceError(
+                    "conversation.agent_not_found"
+                ),
+            ):
+                rejected = service.execute_reserved_conversation_turn(
+                    queued.turn.id
+                )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                reservation = repository.conversation_turn_reservation(
+                    queued.turn.id
+                )
+                failed = repository.get_run(reservation.run_id)
+                with self.assertRaisesRegex(RunRepositoryConflict, "run.not_found"):
+                    repository.get_run(first.run.id)
+                turn_row = connection.execute(
+                    "SELECT state, attempt_count FROM mentat_conversation_turns "
+                    "WHERE id = ?",
+                    (queued.turn.id,),
+                ).fetchone()
+                repository.validate()
+            finally:
+                connection.close()
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+
+        self.assertEqual(
+            report.conversation_continuations,
+            ((first.run.id, queued.turn.id),),
+        )
+        self.assertEqual(rejected.disposition, "rejected")
+        self.assertEqual(reservation.state, "rejected")
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.dispatch_state, "rejected")
+        self.assertIsNone(failed.resume_of_run_id)
+        self.assertEqual(tuple(turn_row), ("consumed", 0))
+        self.assertEqual(detail.queued_turns, ())
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_worker_unsafe_terminal_snapshots_block_the_fifo_head(self):
+        for status, partial, expected_status, reason in (
+            ("failed", False, "failed", "failed"),
+            ("cancelled", False, "stopped", "stopped"),
+            ("completed", True, "completed", "partial"),
+        ):
+            with self.subTest(status=status, partial=partial), TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                runtime = FakeRuntime(root)
+                service, conversation_id = self.prepare_conversation(root, runtime)
+                first = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Run the active Hermes request",
+                    idempotency_key=f"conversation-worker-{reason}-key-1",
+                )
+                queued = service.submit_conversation_turn(
+                    conversation_id=conversation_id,
+                    text="Keep this exact FIFO head safe",
+                    idempotency_key=f"conversation-worker-{reason}-key-2",
+                )
+                report = save_authoritative_run_summaries(
+                    root,
+                    [
+                        self.worker_snapshot(
+                            first,
+                            status=status,
+                            partial=partial,
+                            response=(
+                                "A partial completion must pause the queue"
+                                if status == "completed"
+                                else ""
+                            ),
+                        )
+                    ],
+                )
+                detail = ConversationRepository(
+                    root,
+                    supported_runtime_types=(runtime.runtime_type,),
+                ).read(conversation_id)
+                connection = connect(root)
+                try:
+                    repository = RunRepository(connection)
+                    source = repository.get_run(first.run.id)
+                    repository.validate()
+                finally:
+                    connection.close()
+
+            self.assertEqual(report.conversation_continuations, ())
+            self.assertEqual(source.status, expected_status)
+            self.assertEqual(len(detail.queued_turns), 1)
+            self.assertEqual(detail.queued_turns[0].id, queued.turn.id)
+            self.assertEqual(detail.queued_turns[0].state, "blocked")
+            self.assertEqual(detail.queued_turns[0].blocked_reason, reason)
+            self.assertEqual(len(runtime.calls), 1)
+
+    def test_late_unknown_worker_completion_never_auto_submits_the_fifo_head(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_runtime_run_ref = None
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            first = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Recover this ambiguous Hermes request",
+                idempotency_key="conversation-worker-unknown-key-1",
+            )
+            queued = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Do not retry this FIFO head automatically",
+                idempotency_key="conversation-worker-unknown-key-2",
+            )
+            connection = connect(root)
+            try:
+                RunRepository(connection).recover_conversation_submissions()
+            finally:
+                connection.close()
+
+            report = save_authoritative_run_summaries(
+                root,
+                [
+                    self.worker_snapshot(
+                        first,
+                        status="completed",
+                        partial=False,
+                        response="Verified late Hermes response",
+                    )
+                ],
+            )
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                source = repository.get_run(first.run.id)
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(report.conversation_continuations, ())
+        self.assertEqual(source.status, "completed")
+        self.assertEqual(source.dispatch_state, "accepted")
+        self.assertEqual(len(detail.queued_turns), 1)
+        self.assertEqual(detail.queued_turns[0].id, queued.turn.id)
+        self.assertEqual(detail.queued_turns[0].state, "blocked")
+        self.assertEqual(detail.queued_turns[0].blocked_reason, "unknown")
+        self.assertEqual(len(runtime.calls), 1)
+
+    def test_still_owned_console_worker_reconciles_empty_completed_response(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_runtime_run_ref = None
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Complete without response text",
+                idempotency_key="conversation-empty-late-completion-key",
+            )
+            worker_snapshot = {
+                "id": submitted.run.id,
+                "runtime_type": "hermes",
+                "agent_id": "profile-service",
+                "agent_name": "Service Agent",
+                "model": "provider/model",
+                "transport_mode": "local",
+                "connection_binding_id": "local-default",
+                "status": "completed",
+                "partial": False,
+                "prompt": "Complete without response text",
+                "response": "",
+                "error": "",
+                "events": [],
+                "created_at": submitted.run.created_at,
+                "updated_at": submitted.run.updated_at,
+                "started_at": submitted.run.started_at,
+                "completed_at": submitted.run.updated_at,
+                "attachments": [],
+                "artifacts": [],
+                "mentat_agent_id": "agent-service",
+                "task_id": submitted.turn.id,
+                "_dispatch_id": submitted.turn.id,
+            }
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                repository.recover_conversation_submissions()
+                connection.execute(
+                    "UPDATE mentat_runs SET status = 'completed', "
+                    "completed_at = ?, updated_at = ? WHERE id = ?",
+                    (
+                        submitted.run.updated_at,
+                        submitted.run.updated_at,
+                        submitted.run.id,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            save_authoritative_run_summaries(root, [worker_snapshot])
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                completed = repository.get_run(submitted.run.id)
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.dispatch_state, "accepted")
+        self.assertFalse(completed.partial)
+        self.assertEqual([message.role for message in detail.messages], ["user"])
+
+    def test_unknown_console_worker_snapshot_preserves_fail_closed_authority(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            runtime.return_runtime_run_ref = None
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            submitted = service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="Remain unknown without stronger runtime evidence",
+                idempotency_key="conversation-unknown-worker-noop-key",
+            )
+            snapshot = {
+                "id": submitted.run.id,
+                "runtime_type": "hermes",
+                "agent_id": "profile-service",
+                "agent_name": "Service Agent",
+                "model": "provider/model",
+                "transport_mode": "local",
+                "connection_binding_id": "local-default",
+                "status": "unknown",
+                "partial": False,
+                "prompt": "Remain unknown without stronger runtime evidence",
+                "response": "",
+                "error": "",
+                "events": [],
+                "created_at": submitted.run.created_at,
+                "updated_at": submitted.run.updated_at,
+                "started_at": submitted.run.started_at,
+                "completed_at": None,
+                "attachments": [],
+                "artifacts": [],
+                "mentat_agent_id": "agent-service",
+                "task_id": submitted.turn.id,
+                "_dispatch_id": submitted.turn.id,
+            }
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                repository.recover_conversation_submissions()
+                before = tuple(
+                    connection.execute(
+                        "SELECT status, dispatch_state, partial, details_json, "
+                        "updated_at, last_event_sequence, state_revision "
+                        "FROM mentat_runs WHERE id = ?",
+                        (submitted.run.id,),
+                    ).fetchone()
+                )
+                before_event_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_agent_events WHERE run_id = ?",
+                        (submitted.run.id,),
+                    ).fetchone()[0]
+                )
+                before_result = repository.get_conversation_submission_result(
+                    submitted.turn.id
+                )
+            finally:
+                connection.close()
+
+            save_authoritative_run_summaries(root, [snapshot])
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                after = tuple(
+                    connection.execute(
+                        "SELECT status, dispatch_state, partial, details_json, "
+                        "updated_at, last_event_sequence, state_revision "
+                        "FROM mentat_runs WHERE id = ?",
+                        (submitted.run.id,),
+                    ).fetchone()
+                )
+                after_event_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM mentat_agent_events WHERE run_id = ?",
+                        (submitted.run.id,),
+                    ).fetchone()[0]
+                )
+                after_result = repository.get_conversation_submission_result(
+                    submitted.turn.id
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(before, after)
+        self.assertEqual(before_event_count, after_event_count)
+        self.assertEqual(before_result, after_result)
 
     def test_conversation_restart_reconciles_accepted_durable_runtime_reference(self):
         with TemporaryDirectory() as tmpdir:
@@ -2900,6 +4933,32 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(runtime.status_queries, ["runtime-service-ref"])
         self.assertEqual(len(runtime.calls), 1)
 
+    def test_startup_reconciliation_uses_shutdown_gated_continuation_handler(self):
+        reconciler = Mock()
+        reconciler.reconcile_runs.return_value = SimpleNamespace(
+            leased=0,
+            reconciled=(),
+            unavailable=(),
+        )
+        with patch.object(
+            server,
+            "_mentat_agent_registry",
+            return_value=object(),
+        ), patch.object(
+            server,
+            "OrchestrationService",
+            return_value=reconciler,
+        ) as service_factory:
+            server.reconcile_orchestration_runtime_references_at_startup()
+
+        reconciler.reconcile_runs.assert_called_once()
+        self.assertIs(
+            service_factory.call_args.kwargs[
+                "conversation_continuation_handler"
+            ],
+            server._dispatch_reserved_agent_console_continuation,
+        )
+
     def test_unknown_reconciliation_updates_reservation_and_remains_valid(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -3122,7 +5181,7 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(second.reconciled, (run.id,))
         self.assertNotIn(interim.status, {"completed", "failed", "stopped", "interrupted"})
         self.assertEqual(run.status, "completed")
-        self.assertEqual(run.runtime_event_cursor, 1001)
+        self.assertEqual(run.runtime_event_cursor, 1002)
         self.assertEqual(runtime.event_queries[-1], ("runtime-service-ref", 1000))
 
 

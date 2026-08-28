@@ -499,6 +499,12 @@ one owned App Server and workspace; all nonterminal Task and Conversation Runs
 using that scope consume the same transactional capacity. Capacity scope,
 digest, limit, and runtime references remain private.
 
+The Home Agent picker selects the immutable Agent binding for a new
+Conversation. Changing the picker does not retarget an existing Conversation;
+the operator creates another Conversation and switches between the resulting
+tabs. Each tab keeps its own draft, transcript, queue, selected Run, stream, and
+control target.
+
 An ordinary Send during an active Run appends a durable user Message and Turn
 without starting another Run. Each Conversation admits at most eight
 `pending`, `blocked`, or transient `dispatching` Turns. FIFO ordinals are never
@@ -541,6 +547,12 @@ rather than exposing a separate Steer button. The existing exact previewed Stop
 capability remains the control path; its targeted reconciliation blocks only
 that Conversation's queue.
 
+Browser-created Hermes and Codex Agents receive Mentat's complete interactive
+capability declaration by default, including `run.message`. That durable Agent
+declaration is permission, not a claim that an idle or incompatible runtime can
+currently accept a message: live `steer.available` still comes only from the
+exact selected Run's verified adapter state.
+
 Codex Conversation continuity is adapter-private. A later Turn may reuse only
 the same App Server thread after `thread/read` proves the immediately preceding
 executed Turn completed. A failed, partial, missing-reference, or non-adjacent
@@ -555,8 +567,49 @@ supersede stale Turn feedback. Existing Task-dispatch Runs retain their Task,
 reservation, dispatch-head, and idempotency authority.
 
 Format-4 backup remains the recovery container because it embeds the private
-database, but capture, restore, fingerprint, and semantic validation must become
-schema-11 aware while retaining released schema-10 restore support.
+database. Schema 12 is a forward-only repair for one exactly fingerprinted
+pre-release schema-11 Conversation shape: before upgrade, read-only capture may
+accept released fingerprints or that exact missing-trigger and broad
+blocked-reason variant. SQL fingerprints ignore layout only: token boundaries
+and quoted contents remain exact. The migration acquires its SQLite write lock
+before classifying the source, then rebuilds the Turn table with the released
+enum, restores all four queue/identity triggers, checks every foreign key, and
+commits the schema receipt with the rewrite. Released schema 11 and that exact
+legacy shape converge to one schema-12 fingerprint; every other drift and every
+active caller transaction fail closed.
+
+Schema 13 adds an exact terminal-finalization barrier. A terminal local Hermes
+Conversation remains publicly `finalizing` until its exact normalized terminal
+event is durable; it is still active for UI, retention, shutdown, and FIFO
+purposes. One trailing terminal event may close a stale nonterminal status read
+from the same reconciliation snapshot. Multiple, conflicting, non-trailing, or
+paginated terminal evidence rolls back without consuming the runtime cursor.
+An unfinalized terminal is retention-pinned, and startup recovery marks
+incomplete evidence partial and blocks the queue head rather than advancing it.
+The only accepted first-event cursor discontinuity is the exact initial Hermes
+binding marker for the same Agent and Turn; every other gap fails closed.
+During the same migration, schema-12 continuation pins that already advanced
+beyond `reserved` are cleared before the stricter identity trigger is installed;
+this keeps claimed or accepted pre-upgrade successors recoverable after restart.
+
+Queued Codex continuity stores the exact predecessor Run while the successor is
+reserved, which pins that predecessor against retention. Dispatch revalidates
+the immediately preceding executed Turn and loads its private runtime reference
+before one atomic `reserved` to `submitting` claim clears the temporary link. A
+verified pre-attempt rejection or restart interruption also clears the link in
+its terminal transaction. A single synchronous rejection protects the exact
+result it returns through that retention pass; bulk restart recovery enforces
+the normal retention ceiling and keeps every classification in the durable
+submission receipts even if an older Run row is evicted. The schema trigger
+permits only those exact claim or no-attempt terminal clears; every other
+Conversation Run identity change remains immutable. Backup, restore,
+fingerprint, and semantic validation remain compatible with released schemas
+10 through 12.
+
+Run `details_json` remains a bounded display snapshot, while `run_attachments`
+is the retention/access authority;
+legacy media metadata without an exact direction-bound row is omitted from
+browser and backup projections rather than minting a dead content route.
 Compatible-root export intentionally omits Conversation
 authority and leaves the source unchanged. Lossless rollback uses a validated
 pre-migration backup; in-place schema downgrade is unsupported.
@@ -1127,6 +1180,32 @@ back afterward. An accepted action whose read-back fails is reported as a
 partial failure and is never retried automatically. The steer text and remote
 run identifier remain private and are not persisted; only a bounded text-free
 status event enters Console history.
+
+Local Hermes uses the runtime's supported headless control backend rather than
+the one-shot `chat -q` child whenever that backend and Mentat's pinned WebSocket
+client are available. Mentat starts one profile-scoped backend with a fixed
+loopback host, ephemeral port, isolated mode, private caller-generated token,
+and owner-private readiness file. The authenticated socket, token, live session
+ID, and process remain server-only. Startup probes the fixed
+`session.redirect` method before any prompt submission; a definite pre-submit
+startup failure may fall back to the established one-shot Console launch.
+After a prompt request begins, an uncertain result is never retried. The
+control client is published to the exact Run before any blocking startup work,
+and both the default Python bridge and legacy server lifecycle close it before
+runtime teardown. Its owner-private runtime directory is created through a
+no-follow path boundary; POSIX owns the complete process group and Windows owns
+the complete process tree through a kill-on-close Job Object.
+
+The local steer control becomes available only after `message.start` proves
+that the exact bound live session has an active turn. Mentat then maps `/steer`
+to `session.redirect`, not the queue-capable `session.steer` operation. Success
+requires Hermes to return `status=redirected` with the exact guidance text; a
+rejection leaves the draft intact, while a queued, timed-out, disconnected, or
+authority-racing result is partial and consumes the control revision. Guidance
+text is never persisted. That partial classification remains intact through the
+runtime-neutral Conversation bridge so the browser preserves the draft and
+does not retry. Stop and shutdown close the authenticated backend and its owned
+process tree.
 
 The Python compatibility Console retains its implemented active-run control
 behavior during cutover. The target Next.js composer instead remains writable:

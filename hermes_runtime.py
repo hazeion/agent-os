@@ -288,6 +288,8 @@ class HermesRuntime:
                 "agent_id": runtime_agent_ref,
             },
         )
+        if response_status == 502 and response.get("partial") is True:
+            raise AgentRuntimeError("runtime.message_partial")
         if response_status != 200 or response.get("ok") is not True:
             raise AgentRuntimeError("runtime.message_failed")
 
@@ -474,8 +476,6 @@ class HermesRuntime:
         events = body.get("events")
         if not isinstance(events, list):
             raise AgentRuntimeError("runtime.events_invalid")
-        if body.get("cursor_reset_required") is True:
-            raise AgentRuntimeError("runtime.event_continuity_lost")
         snapshot = body.get("run")
         if not isinstance(snapshot, Mapping):
             raise AgentRuntimeError("runtime.status_failed")
@@ -500,6 +500,33 @@ class HermesRuntime:
         retained = [item for item in events if isinstance(item, Mapping)]
         if any(item.get("run_id") != expected_snapshot_id for item in retained):
             raise AgentRuntimeError("runtime.identity_context_invalid")
+        if body.get("cursor_reset_required") is True:
+            # A preallocated Console Run reserves source cursor 1 for its
+            # durable dispatch event.  The first compatibility event is the
+            # exact binding marker at cursor 2.  Accept only that one
+            # identity-bound, fully contiguous initial gap; retention or any
+            # other discontinuity remains fail closed.
+            sequences = [
+                item.get("sequence")
+                if type(item.get("sequence")) is int
+                else item.get("cursor")
+                for item in retained
+            ]
+            first = retained[0] if retained else None
+            first_data = first.get("data") if isinstance(first, Mapping) else None
+            expected_initial_gap = (
+                after_sequence == 0
+                and context is not None
+                and sequences == list(range(2, 2 + len(sequences)))
+                and isinstance(first, Mapping)
+                and str(first.get("type") or first.get("kind") or "")
+                == "runtime.bound"
+                and isinstance(first_data, Mapping)
+                and first_data.get("mentat_agent_id") == context.agent_id
+                and first_data.get("task_id") == context.task_id
+            )
+            if not expected_initial_gap:
+                raise AgentRuntimeError("runtime.event_continuity_lost")
         terminal_index = None
         terminal_kinds = {"runtime.finalized"}
         for index, item in enumerate(retained):

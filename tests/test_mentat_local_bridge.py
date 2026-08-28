@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from contextlib import closing
 from http.client import HTTPConnection
+import inspect
 import json
 from pathlib import Path
 import socket
@@ -1193,10 +1194,7 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual((status, payload), (404, {"error": "bridge_route_not_found"}))
 
     def test_run_events_authority_reader_never_initializes_sqlite(self):
-        source = Path(server.__file__).read_text(encoding="utf-8")
-        start = source.index("def mentat_run_events_payload")
-        end = source.index("\ndef orchestration_run_payload", start)
-        implementation = source[start:end]
+        implementation = inspect.getsource(server.mentat_run_events_payload)
         self.assertIn("connect_existing_mentat_database", implementation)
         self.assertNotIn("connect_mentat_database(", implementation)
 

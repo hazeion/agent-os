@@ -490,6 +490,11 @@ class RuntimeCoexistenceIntegrationTests(unittest.TestCase):
                 patch.object(
                     server, "_mentat_agent_registry", return_value=agent_registry
                 ),
+                patch.object(
+                    server,
+                    "AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED",
+                    True,
+                ),
             ):
                 message_preview = server.mentat_run_message_preview_payload(
                     hermes_run_id, message_text

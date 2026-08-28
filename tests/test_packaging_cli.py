@@ -188,6 +188,7 @@ class PackagingContractTests(unittest.TestCase):
         self.assertIn("colorama==0.4.6", lock)
         self.assertIn("pefile==2024.8.26", lock)
         self.assertIn("pywin32-ctypes==0.2.3", lock)
+        self.assertIn("websockets==15.0.1", lock)
         self.assertIn("--hash=sha256:", lock)
 
     def test_native_entry_honors_explicit_cli_arguments(self):

@@ -440,6 +440,27 @@ test("Home Console does not invent an active-Run block for an empty workspace", 
   assert.doesNotMatch(document.body.textContent ?? "", /Refreshing the active Run/u);
 });
 
+test("Home Console enables Send and normalizes an accidental trailing space", async () => {
+  const calls = installFetch({
+    turnResponse: async () => Response.json(acceptedSubmission("Ready to send"), { status: 202 }),
+  });
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+
+  const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
+  await user.click(screen.getByRole("button", { name: "Check readiness" }));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await user.type(prompt, "Ready to send ");
+
+  const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+  assert.equal(send.disabled, false);
+  await user.click(send);
+  await waitFor(() => assert.equal(prompt.value, ""));
+
+  const turnBody = JSON.parse(calls.find((call) => call.path.endsWith("/turns"))?.body ?? "{}");
+  assert.equal(turnBody.text, "Ready to send");
+});
+
 test("Home Console gates initial drafting and moves an unbound draft only once", async () => {
   let resolveList: ((response: Response) => void) | undefined;
   const listResponse = new Promise<Response>((resolve) => { resolveList = resolve; });
@@ -703,6 +724,35 @@ test("Home Console keeps composing writable for an active Run", async () => {
     assert.equal(prompt.placeholder, "Write a follow-up to queue, or begin with /steer");
   });
   assert.equal((screen.getByRole("button", { name: "Queue" }) as HTMLButtonElement).disabled, true);
+});
+
+test("Home Console keeps the exact stream and queue affordance while Hermes finalizes", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", {
+    configurable: true,
+    value: MockEventSource,
+  });
+  const finalizingRun = {
+    id: "run_finalizing",
+    partial: false,
+    status: "finalizing",
+    updated_at: timestamp,
+  };
+  installFetch({ currentRun: finalizingRun });
+
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+
+  assert.equal(
+    MockEventSource.instances[0].url,
+    `/api/runs/${finalizingRun.id}/events`,
+  );
+  assert.match(document.querySelector(".selected-run-progress")?.textContent ?? "", /Run Finalizing/u);
+  assert.equal(prompt.placeholder, "Write a follow-up to queue, or begin with /steer");
+  await user.type(prompt, "Queue after final artifacts are durable");
+  assert.equal((screen.getByRole("button", { name: "Queue" }) as HTMLButtonElement).disabled, false);
 });
 
 test("Home Console durably queues an ordinary Send behind the active Run", async () => {

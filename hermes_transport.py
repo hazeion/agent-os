@@ -9,6 +9,10 @@ import re
 import subprocess
 from typing import Any, Callable
 
+from hermes_local_control import (
+    LocalHermesControlClient,
+    local_control_dependencies_available,
+)
 from remote_hermes import RemoteHermesClient, RemoteHermesError, load_connection
 
 
@@ -406,6 +410,32 @@ class LocalHermesConsoleTransport(HermesConsoleTransport):
     @property
     def console_available(self) -> bool:
         return bool(self.command_path)
+
+    @property
+    def control_available(self) -> bool:
+        """Whether the fixed local Hermes backend control path can start."""
+
+        return local_control_dependencies_available(self.command_path)
+
+    def open_control_client(
+        self,
+        *,
+        profile_id: str,
+        runtime_root: Path,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> LocalHermesControlClient:
+        if not self.command_path or not self.control_available:
+            raise HermesTransportError("local_console_unavailable")
+        return LocalHermesControlClient(
+            command_path=self.command_path,
+            profile_id=profile_id,
+            hermes_home=self.hermes_home,
+            cwd=self.cwd,
+            runtime_root=runtime_root,
+            shared_bin=self.shared_bin,
+            event_callback=event_callback,
+            popen_factory=self._popen_factory,
+        )
 
     def build_console_launch(
         self,

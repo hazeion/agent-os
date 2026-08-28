@@ -15,6 +15,7 @@ def run_fixture(*, revision: int = 4, status: str = "waiting_for_approval") -> R
         agent_id="agent_current", runtime_type="hermes", runtime_config_id="runtime_current",
         runtime_binding_digest="a" * 64, runtime_run_ref=None, runtime_event_cursor=0,
         status=status, dispatch_state="accepted", state_revision=revision, partial=False,
+        terminal_finalized=False,
         timeline_truncated=False, first_retained_sequence=1, last_removed_sequence=0,
         last_event_sequence=1, created_at="2026-08-22T00:00:00+00:00",
         updated_at="2026-08-22T00:00:00+00:00", started_at="2026-08-22T00:00:00+00:00",

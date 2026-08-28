@@ -11,6 +11,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from agent_console_attachments import bind_run_attachment, create_attachment
 from agent_run_history import save_run_summaries
 from agent_runtime import (
     AgentEvent,
@@ -129,8 +130,8 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(SCHEMA_VERSION, 11)
-        self.assertEqual(version, 11)
+        self.assertEqual(SCHEMA_VERSION, 13)
+        self.assertEqual(version, 13)
         self.assertTrue(
             {
                 "mentat_run_store_state",
@@ -140,6 +141,78 @@ class RunRepositoryTests(unittest.TestCase):
                 "mentat_conversation_submission_results",
             }.issubset(tables)
         )
+
+    def test_projection_omits_unbound_legacy_media_but_keeps_bound_media(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_id = "run_legacy_media_projection"
+            retained_input = create_attachment(
+                root,
+                original_name="input.txt",
+                content=b"retained input",
+            )
+            retained_input = bind_run_attachment(
+                root,
+                retained_input["id"],
+                run_id,
+                direction="input",
+            )
+            retained_output = create_attachment(
+                root,
+                original_name="report.txt",
+                content=b"retained output",
+            )
+            retained_output = bind_run_attachment(
+                root,
+                retained_output["id"],
+                run_id,
+                direction="output",
+            )
+            stale_input = {
+                **retained_input,
+                "id": "attachment_" + ("a" * 32),
+                "content_url": "/api/agent-console/attachments/attachment_"
+                + ("a" * 32)
+                + "/content",
+            }
+            stale_output = {
+                **retained_output,
+                "id": "attachment_" + ("b" * 32),
+                "content_url": "/api/agent-console/attachments/attachment_"
+                + ("b" * 32)
+                + "/content",
+            }
+            run = run_fixture(run_id)
+            run["attachments"] = [retained_input, stale_input]
+            run["artifacts"] = [
+                {**retained_output, "kind": "code"},
+                {**stale_output, "kind": "code"},
+            ]
+            save_run_summaries(history_path(root), [run])
+
+            ensure_run_sqlite_authority(root, history_path(root))
+            loaded = load_authoritative_run_summaries(root)
+            unit = capture_private_console_unit(root)
+            projected = json.loads(unit.history_raw)["runs"]
+
+        self.assertEqual(
+            [item["id"] for item in loaded[0]["attachments"]],
+            [retained_input["id"]],
+        )
+        self.assertEqual(
+            [item["id"] for item in loaded[0]["artifacts"]],
+            [retained_output["id"]],
+        )
+        self.assertEqual(loaded[0]["artifacts"][0]["kind"], "code")
+        self.assertEqual(
+            [item["id"] for item in projected[0]["attachments"]],
+            [retained_input["id"]],
+        )
+        self.assertEqual(
+            [item["id"] for item in projected[0]["artifacts"]],
+            [retained_output["id"]],
+        )
+        self.assertEqual(len(unit.blobs), 2)
 
     def test_exact_schema_fingerprint_rejects_missing_active_run_index(self):
         with TemporaryDirectory() as tmpdir:

@@ -300,6 +300,11 @@ class AgentRegistryTests(unittest.TestCase):
 
             self.assertEqual(created_status, 201)
             self.assertTrue(created["ok"])
+            self.assertTrue(
+                set(server.INTERACTIVE_AGENT_CAPABILITIES).issubset(
+                    created["agent"]["capabilities"]
+                )
+            )
             self.assertEqual(listed["count"], 1)
             self.assertEqual(listed["agents"], [created["agent"]])
             self.assertNotIn("private-profile-canary", json.dumps(created))
@@ -386,6 +391,10 @@ class AgentRegistryTests(unittest.TestCase):
 
         self.assertEqual(status, 201)
         self.assertEqual(created["agent"]["runtime_type"], "codex")
+        self.assertEqual(
+            created["agent"]["capabilities"],
+            sorted(server.INTERACTIVE_AGENT_CAPABILITIES),
+        )
         self.assertEqual(listed["agents"], [created["agent"]])
         self.assertNotIn("runtime_agent_ref", json.dumps(created))
 

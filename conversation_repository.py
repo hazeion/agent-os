@@ -17,7 +17,10 @@ from agent_registry import (
     AgentRegistry,
     CanonicalAgentRecord,
 )
-from mentat_db import connect as connect_database
+from mentat_db import (
+    SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
+    connect as connect_database,
+)
 
 
 MAX_CONVERSATIONS = 1_024
@@ -58,6 +61,10 @@ _ACTIVE_RUN_STATUSES = frozenset(
         "unknown",
     }
 )
+_TERMINAL_RUN_STATUSES = frozenset(
+    {"completed", "failed", "cancelled", "stopped", "interrupted"}
+)
+_PUBLIC_ACTIVE_RUN_STATUSES = _ACTIVE_RUN_STATUSES | {"finalizing"}
 _WAITING_RUN_STATUSES = frozenset(
     {"waiting", "waiting_for_approval", "waiting_for_clarification", "unknown"}
 )
@@ -146,7 +153,33 @@ _REQUIRED_SCHEMA_OBJECTS = {
         WHEN OLD.conversation_id IS NOT NEW.conversation_id
             OR OLD.turn_id IS NOT NEW.turn_id
             OR OLD.retry_of_run_id IS NOT NEW.retry_of_run_id
-            OR OLD.resume_of_run_id IS NOT NEW.resume_of_run_id
+            OR (
+                OLD.resume_of_run_id IS NOT NEW.resume_of_run_id
+                AND NOT (
+                    OLD.resume_of_run_id IS NOT NULL
+                    AND NEW.resume_of_run_id IS NULL
+                    AND OLD.status = 'reserved'
+                    AND OLD.dispatch_state = 'reserved'
+                    AND (
+                        (
+                            NEW.status = 'submitting'
+                            AND NEW.dispatch_state = 'submitting'
+                        )
+                        OR (
+                            NEW.dispatch_state = 'rejected'
+                            AND NEW.terminal_finalized = 1
+                            AND NEW.completed_at IS NOT NULL
+                            AND (
+                                (NEW.status = 'failed' AND NEW.partial = 0)
+                                OR (
+                                    NEW.status = 'interrupted'
+                                    AND NEW.partial = 1
+                                )
+                            )
+                        )
+                    )
+                )
+            )
             OR OLD.agent_revision IS NOT NEW.agent_revision
             OR OLD.runtime_config_revision IS NOT NEW.runtime_config_revision
             OR OLD.execution_config_json IS NOT NEW.execution_config_json
@@ -225,6 +258,27 @@ _REQUIRED_SCHEMA_OBJECTS = {
         END
     """,
 }
+
+_PRE_SCHEMA_13_RUN_IDENTITY_TRIGGER = """
+    CREATE TRIGGER mentat_runs_conversation_identity_immutable
+    BEFORE UPDATE OF conversation_id, turn_id, retry_of_run_id,
+        resume_of_run_id, agent_revision, runtime_config_revision,
+        execution_config_json, execution_config_digest,
+        capacity_scope_digest, admitted_capacity_limit ON mentat_runs
+    WHEN OLD.conversation_id IS NOT NEW.conversation_id
+        OR OLD.turn_id IS NOT NEW.turn_id
+        OR OLD.retry_of_run_id IS NOT NEW.retry_of_run_id
+        OR OLD.resume_of_run_id IS NOT NEW.resume_of_run_id
+        OR OLD.agent_revision IS NOT NEW.agent_revision
+        OR OLD.runtime_config_revision IS NOT NEW.runtime_config_revision
+        OR OLD.execution_config_json IS NOT NEW.execution_config_json
+        OR OLD.execution_config_digest IS NOT NEW.execution_config_digest
+        OR OLD.capacity_scope_digest IS NOT NEW.capacity_scope_digest
+        OR OLD.admitted_capacity_limit IS NOT NEW.admitted_capacity_limit
+    BEGIN
+        SELECT RAISE(ABORT, 'conversation_run_identity_immutable');
+    END
+"""
 
 
 def _normalized_sql(value: object) -> str:
@@ -717,23 +771,40 @@ def _run_public(row: Mapping[str, object]) -> dict[str, Any]:
     status = row["status"]
     if not isinstance(run_id, str) or not re.fullmatch(
         r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z", run_id
-    ) or status not in _ACTIVE_RUN_STATUSES | {
-        "completed",
-        "failed",
-        "cancelled",
-        "stopped",
-        "interrupted",
-    }:
+    ) or status not in _ACTIVE_RUN_STATUSES | _TERMINAL_RUN_STATUSES:
         raise ConversationRepositoryValidationError("conversation.run_invalid")
     updated_at = _timestamp(row["updated_at"])
-    if updated_at is None or type(row["partial"]) is not int or row["partial"] not in {0, 1}:
+    terminal_finalized = row["terminal_finalized"]
+    if (
+        updated_at is None
+        or type(row["partial"]) is not int
+        or row["partial"] not in {0, 1}
+        or type(terminal_finalized) is not int
+        or terminal_finalized not in {0, 1}
+        or terminal_finalized == 1
+        and status not in _TERMINAL_RUN_STATUSES
+    ):
         raise ConversationRepositoryValidationError("conversation.run_invalid")
     return {
         "id": run_id,
-        "status": str(status),
+        "status": (
+            "finalizing"
+            if status in _TERMINAL_RUN_STATUSES and terminal_finalized == 0
+            else str(status)
+        ),
         "partial": bool(row["partial"]),
         "updated_at": updated_at,
     }
+
+
+def _activity_run_status(row: Mapping[str, object]) -> str:
+    status = str(row["status"])
+    terminal_finalized = row["terminal_finalized"]
+    if type(terminal_finalized) is not int or terminal_finalized not in {0, 1}:
+        raise ConversationRepositoryValidationError("conversation.activity_invalid")
+    if status in _TERMINAL_RUN_STATUSES and terminal_finalized == 0:
+        return "finalizing"
+    return status
 
 
 def _agent_activity(
@@ -742,13 +813,18 @@ def _agent_activity(
 ) -> dict[str, Any]:
     selected = list(rows)
     active = next(
-        (row for row in selected if row["status"] in _ACTIVE_RUN_STATUSES), None
+        (
+            row
+            for row in selected
+            if _activity_run_status(row) in _PUBLIC_ACTIVE_RUN_STATUSES
+        ),
+        None,
     )
     relevant = active or (selected[0] if selected else None)
-    status = relevant["status"] if relevant is not None else None
+    status = _activity_run_status(relevant) if relevant is not None else None
     if status in _WAITING_RUN_STATUSES:
         state = "waiting"
-    elif status in _ACTIVE_RUN_STATUSES:
+    elif status in _PUBLIC_ACTIVE_RUN_STATUSES:
         state = "working"
     elif status == "failed":
         state = "failed"
@@ -770,7 +846,7 @@ def _agent_activity(
         updated_at = _timestamp(row["updated_at"])
         if updated_at is None:
             raise ConversationRepositoryValidationError("conversation.activity_invalid")
-        run_status = str(row["status"])
+        run_status = _activity_run_status(row)
         conversations.append(
             {
                 "id": conversation_id,
@@ -802,8 +878,8 @@ def _agent_activity(
         summary = "Run is waiting"
         updated_at = _timestamp(relevant["updated_at"])
         attention = True
-    elif status in _ACTIVE_RUN_STATUSES:
-        summary = "Run in progress"
+    elif status in _PUBLIC_ACTIVE_RUN_STATUSES:
+        summary = "Run is finalizing" if status == "finalizing" else "Run in progress"
         updated_at = _timestamp(relevant["updated_at"])
         attention = False
     else:
@@ -824,12 +900,23 @@ def validate_repository_connection(
     connection: sqlite3.Connection,
     *,
     schema_version: int | None = None,
+    allow_known_legacy_drift: bool = False,
 ) -> int:
-    """Validate current rows, or a released schema-10 backup when requested."""
+    """Validate current rows or an explicitly selected legacy schema."""
 
     try:
-        expected_version = 11 if schema_version is None else schema_version
-        if expected_version not in {10, 11}:
+        expected_version = (
+            DATABASE_SCHEMA_VERSION if schema_version is None else schema_version
+        )
+        if expected_version not in {10, 11, 12, DATABASE_SCHEMA_VERSION}:
+            raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
+        legacy_missing_objects = {
+            ("trigger", "mentat_conversations_agent_immutable"),
+            ("trigger", "mentat_conversation_turns_queue_capacity_insert"),
+            ("trigger", "mentat_conversation_turns_queue_capacity_update"),
+            ("trigger", "mentat_conversation_turns_conversation_immutable"),
+        }
+        if allow_known_legacy_drift and expected_version != 11:
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         tables = {
             str(row[0])
@@ -861,10 +948,25 @@ def validate_repository_connection(
                 "mentat_conversation_submission_result_update",
             }:
                 continue
+            if (
+                expected_version < 13
+                and object_type == "trigger"
+                and object_name == "mentat_runs_conversation_identity_immutable"
+            ):
+                expected_sql = _PRE_SCHEMA_13_RUN_IDENTITY_TRIGGER
             object_row = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
                 (object_type, object_name),
             ).fetchone()
+            if (
+                allow_known_legacy_drift
+                and (object_type, object_name) in legacy_missing_objects
+            ):
+                if object_row is not None:
+                    raise ConversationRepositoryUnavailable(
+                        "conversation.schema_unsupported"
+                    )
+                continue
             if object_row is None or _normalized_sql(object_row["sql"]) != _normalized_sql(expected_sql):
                 raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -1271,7 +1373,7 @@ class ConversationRepository:
             )
             current = connection.execute(
                 """
-                SELECT r.id, r.status, r.partial, r.updated_at
+                SELECT r.id, r.status, r.partial, r.terminal_finalized, r.updated_at
                 FROM mentat_runs AS r
                 LEFT JOIN mentat_conversation_turns AS t ON t.id = r.turn_id
                 WHERE r.conversation_id = ? AND r.agent_id = ?
@@ -1355,7 +1457,8 @@ class ConversationRepository:
             for agent in agents:
                 rows = connection.execute(
                     """
-                    SELECT r.id, r.conversation_id, r.status, r.partial, r.updated_at,
+                    SELECT r.id, r.conversation_id, r.status, r.partial,
+                           r.terminal_finalized, r.updated_at,
                            c.title
                     FROM mentat_runs AS r
                     LEFT JOIN mentat_conversations AS c ON c.id = r.conversation_id

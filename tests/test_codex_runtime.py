@@ -641,8 +641,31 @@ class CodexRuntimeTests(unittest.TestCase):
                 runtime = self.runtime(Path(temporary), FakeClient(response))
                 with self.assertRaisesRegex(
                     AgentRuntimeError,
-                    "runtime.message_failed",
+                    "runtime.message_partial",
                 ):
+                    runtime.send_message(
+                        RUNTIME_REF,
+                        "Keep this exact Run focused.",
+                        context=context(runtime_run_ref=RUNTIME_REF),
+                    )
+
+    def test_message_preserves_client_delivery_certainty(self):
+        cases = (
+            (True, "runtime.message_partial"),
+            (False, "runtime.message_failed"),
+        )
+        for uncertain, expected in cases:
+            with self.subTest(uncertain=uncertain), TemporaryDirectory() as temporary:
+                runtime = self.runtime(
+                    Path(temporary),
+                    FakeClient(
+                        CodexAppServerClientError(
+                            "codex.request_failed",
+                            uncertain=uncertain,
+                        )
+                    ),
+                )
+                with self.assertRaisesRegex(AgentRuntimeError, expected):
                     runtime.send_message(
                         RUNTIME_REF,
                         "Keep this exact Run focused.",
