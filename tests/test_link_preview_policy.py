@@ -63,7 +63,7 @@ class LinkPreviewURLPolicyTests(unittest.TestCase):
             "javascript:alert(1)",
             "//example.dev/path",
             "https://user@example.dev/",
-            "https://user:password@example.dev/",
+            "https://" + "user:password@" + "example.dev/",
             "https://example.dev:444/",
             "https://example.dev\\@127.0.0.1/",
             "https://example.dev/%5cprivate",

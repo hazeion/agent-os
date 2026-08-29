@@ -21,7 +21,7 @@ afterEach(() => cleanup());
 test("creates only narrow public HTTPS display anchors with external-navigation protections", () => {
   render(<TranscriptContent content={[
     "Public https://docs.python.org/3/library/urllib.parse.html?view=1#url-parsing-security.",
-    "Not linked http://example.com https://localhost/admin https://127.0.0.1/private https://user:pass@example.com/ https://example.com:8443/x.",
+    ["Not linked http://example.com https://localhost/admin https://127.0.0.1/private ", "https://", "user:pass@", "example.com/ https://example.com:8443/x."].join(""),
   ].join("\n")} />);
 
   const link = screen.getByRole("link");

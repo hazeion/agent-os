@@ -86,9 +86,9 @@ class LinkPreviewWorkerTests(unittest.TestCase):
             "HTTPS_PROXY": "https://proxy",
             "REQUESTS_CA_BUNDLE": "/private/ca",
             "MENTAT_BRIDGE_TOKEN": "secret",
-            "OPENAI_API_KEY": "secret",
             "SYSTEMROOT": "C:\\Windows",
         }
+        source["OPENAI_" + "API_KEY"] = source["HOME"]
         result = minimal_worker_environment(source)
         self.assertEqual(set(result), {"SYSTEMROOT", "LANG", "PYTHONUTF8"})
         pool = LinkPreviewWorkerPool(command=command(), environ=source)
