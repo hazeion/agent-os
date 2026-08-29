@@ -46,6 +46,14 @@ class LinkPreviewCacheTests(unittest.TestCase):
             with self.assertRaises(LinkPreviewCacheError):
                 _owned_file(Path("cache-secret"), maximum_bytes=32)
 
+    def test_secret_bytes_are_written_without_platform_newline_translation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.root(temporary)
+            secret = b"\n" * 32
+            with mock.patch("link_preview_cache.secrets.token_bytes", return_value=secret):
+                LinkPreviewCache(root)
+            self.assertEqual((root / "cache" / "link-previews-v1" / "secret").read_bytes(), secret)
+
     def test_preference_defaults_enabled_and_updates_by_exact_revision(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.root(temporary)
@@ -194,7 +202,10 @@ class LinkPreviewCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.root(temporary)
             cache_root = root / "cache" / "link-previews-v1"
-            cache_root.mkdir(mode=0o755)
+            if os.name == "posix":
+                cache_root.mkdir(mode=0o755)
+            else:
+                cache_root.write_text("not a directory", encoding="utf-8")
             with self.assertRaises(LinkPreviewCacheError):
                 LinkPreviewCache(root)
         with tempfile.TemporaryDirectory() as temporary:

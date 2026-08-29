@@ -222,7 +222,7 @@ class LinkPreviewCache:
         secret_missing = not self._secret_path.exists()
         if secret_missing:
             self._discard_derived_files()
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(self._secret_path, flags, 0o600)
             secret = secrets.token_bytes(32)
             try:
@@ -600,7 +600,11 @@ class LinkPreviewCache:
     def _write_image(self, image_id: str, data: bytes) -> None:
         target = self._images / f"{image_id}.webp"
         temporary = self._images / f".{image_id}.{secrets.token_hex(8)}.tmp"
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
         committed = False
         try:
             if hasattr(os, "fchmod"):
