@@ -5,6 +5,14 @@ All notable changes to Mentat.
 ## 2026-08-29
 
 ### Added
+- Added schema-16 manual Conversation titles with exact-revision rename for
+  active or archived Conversations.
+- Added bounded title-only Conversation history search with active, archived,
+  and all filters, query-bound 50-row paging, and a compact Open, Rename,
+  Archive, and Restore manager.
+- Added strict Next.js support for the existing four-command Mentat manifest,
+  local keyboard completion, fixed command help, and safe `/new`, `/model`,
+  `/steer`, and `/help` handlers.
 - Added schema-15 Conversation-owned file and Context Pack staging with exact
   refresh recovery, idle-only local Hermes dispatch, retained Retry inputs, and
   explicit Agent-scoped file permission.
@@ -32,6 +40,10 @@ All notable changes to Mentat.
   Conversation projection.
 
 ### Safety
+- Kept history search navigation-only and free of Messages, Runs, snippets,
+  runtime references, and query echoes. Delete and bulk mutations remain absent.
+- Made unknown, malformed, unavailable, or failed slash commands preserve the
+  full draft with no ordinary-Send, CLI, shell, or generic-handler fallback.
 - Kept file bytes, paths, hashes, storage keys, runtime references, and arbitrary
   URLs outside Node and browser authority; Context Packs and every snapshot are
   revalidated before dispatch with no queued, remote, or text-only fallback.

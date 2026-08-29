@@ -62,6 +62,7 @@ from conversation_repository import (
     ConversationRepository,
     ConversationRepositoryError,
     activity_public,
+    conversation_history_public,
     conversation_message_public,
     conversation_public,
     conversation_turn_public,
@@ -1914,6 +1915,25 @@ def mentat_conversations_payload(cursor: str | None = None) -> dict:
         return conversations_public(_conversation_repository(), cursor=cursor)
 
 
+def mentat_conversation_history_payload(
+    *,
+    state: str,
+    query: str | None = None,
+    cursor: str | None = None,
+) -> dict:
+    """Return one safe, title-only Conversation history page."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationRepositoryError("conversation.unavailable")
+        return conversation_history_public(
+            _conversation_repository(),
+            state=state,
+            query=query,
+            cursor=cursor,
+        )
+
+
 def mentat_conversation_payload(
     conversation_id: str,
     before_sequence: int | None = None,
@@ -2430,6 +2450,36 @@ def archive_mentat_conversation(
     return {
         "schema_version": 1,
         "action": "archive" if archived else "restore",
+        "conversation": _public_conversation_record(record),
+    }, 200
+
+
+def rename_mentat_conversation(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Rename one exact Conversation without changing its lifecycle."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "expected_revision",
+        "title",
+    }:
+        return {"error_code": "conversation.request_invalid"}, 400
+    expected_revision = payload.get("expected_revision")
+    title = payload.get("title")
+    if type(expected_revision) is not int or expected_revision < 1 or not isinstance(title, str):
+        return {"error_code": "conversation.request_invalid"}, 400
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationRepositoryError("conversation.unavailable")
+        record = _conversation_repository().rename(
+            conversation_id,
+            expected_revision=expected_revision,
+            title=title,
+        )
+    return {
+        "schema_version": 1,
+        "action": "rename",
         "conversation": _public_conversation_record(record),
     }, 200
 

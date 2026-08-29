@@ -1171,7 +1171,7 @@ button {
 
 .conversation-workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(300px, 1fr) auto auto;
+  grid-template-rows: auto auto auto minmax(300px, 1fr) auto auto;
   overflow: hidden;
 }
 
@@ -1260,6 +1260,7 @@ button {
   display: flex;
   align-items: end;
   gap: 1px;
+  min-height: 41px;
   min-width: 0;
   overflow-x: auto;
   padding: 6px 14px 0;
@@ -1667,12 +1668,73 @@ button {
   font-weight: 650;
 }
 
+.conversation-history:not([open]) > .history-manager {
+  display: none;
+}
+
+.conversation-history[open] > .history-manager {
+  display: grid;
+}
+
+.history-manager {
+  gap: 8px;
+  padding: 0 18px 12px;
+}
+
+.history-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.history-toolbar label,
+.history-copy label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.history-toolbar label:first-child { flex: 1 1 auto; }
+.history-toolbar label:last-child { flex: 0 0 110px; }
+
+.history-toolbar input,
+.history-toolbar select,
+.history-copy input {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  outline: none;
+  background: var(--row);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.history-toolbar input:focus,
+.history-toolbar select:focus,
+.history-copy input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.history-status {
+  min-height: 1em;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 0.66rem;
+}
+
 .conversation-history ul {
   display: grid;
   gap: 5px;
   max-height: 220px;
   margin: 0;
-  padding: 0 18px 10px;
+  padding: 0;
   overflow: auto;
   list-style: none;
 }
@@ -1684,32 +1746,60 @@ button {
   align-items: center;
 }
 
-.conversation-history li > button {
-  min-height: 32px;
+.history-actions {
+  display: flex;
+  gap: 5px;
 }
 
-.history-open {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
+.history-actions button,
+.history-load-more {
+  min-height: 32px;
   padding: 5px 8px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   background: var(--row);
-  color: var(--text-primary);
-  text-align: left;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 650;
 }
 
-.history-open span,
-.history-open small {
+.history-actions button:hover:not(:disabled),
+.history-load-more:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.history-actions button:disabled,
+.history-load-more:disabled {
+  cursor: wait;
+  opacity: 0.56;
+}
+
+.history-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.history-copy strong,
+.history-copy small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.history-open small {
+.history-copy strong {
+  color: var(--text-primary);
+  font-size: 0.72rem;
+}
+
+.history-copy small {
   color: var(--text-tertiary);
-  font-size: 0.66rem;
+  font-size: 0.65rem;
+}
+
+.history-open {
+  color: var(--accent) !important;
 }
 
 .conversation-transcript {
@@ -2442,6 +2532,115 @@ button {
   opacity: 0.62;
 }
 
+.composer-input-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.composer-command-menu {
+  position: absolute;
+  z-index: 8;
+  right: 0;
+  bottom: calc(100% + 5px);
+  left: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 210px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--panel-raised);
+  box-shadow: var(--shadow-soft);
+}
+
+.composer-command-menu button {
+  display: grid;
+  grid-template-columns: minmax(70px, auto) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.composer-command-menu button[aria-selected="true"],
+.composer-command-menu button:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.composer-command-menu code {
+  color: var(--accent);
+  font-weight: 750;
+}
+
+.composer-command-menu span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+}
+
+.command-completion-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.command-help {
+  display: grid;
+  gap: 7px;
+  margin: 9px clamp(12px, 4vw, 58px) 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--row);
+}
+
+.command-help > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.command-help > div button {
+  width: 30px;
+  min-height: 30px;
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.command-help ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.command-help li {
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.command-help code { color: var(--accent); }
+
 .codex-setup {
   display: flex;
   align-items: center;
@@ -2880,6 +3079,10 @@ button {
 }
 
 @media (max-width: 520px) {
+  .conversation-tabs {
+    min-height: 51px;
+  }
+
   .conversation-tabs-heading {
     align-items: stretch;
     flex-direction: column;
@@ -2913,7 +3116,8 @@ button {
     justify-content: flex-start;
   }
 
-  .conversation-history li > button,
+  .history-actions button,
+  .history-load-more,
   .conversation-tab-close,
   .pending-action-card button,
   .run-recovery-actions button,
@@ -2994,4 +3198,25 @@ button {
     align-items: flex-start;
     flex-direction: column;
   }
+
+  .history-toolbar,
+  .conversation-history li {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+    flex-direction: column;
+  }
+
+  .history-toolbar label:last-child { flex-basis: auto; }
+  .history-toolbar input,
+  .history-toolbar select,
+  .history-copy input,
+  .history-actions button { min-height: 44px; }
+  .conversation-history summary { min-height: 44px; }
+  .command-help > div button {
+    width: 44px;
+    min-height: 44px;
+  }
+  .history-actions { flex-wrap: wrap; }
+  .command-help ul { grid-template-columns: minmax(0, 1fr); }
+  .composer-command-menu button { min-height: 44px; }
 }

@@ -19,6 +19,7 @@ from agent_registry import (
 )
 from conversation_repository import (
     ConversationRepository,
+    ConversationRepositoryValidationError,
     ConversationRepositoryUnavailable,
     conversations_public,
 )
@@ -130,6 +131,187 @@ class ConversationRepositoryTests(unittest.TestCase):
             self.assertEqual(len(second), 1)
             self.assertIsNone(next_cursor)
             self.assertEqual({item.id for item in first} | {item.id for item in second}, set(created))
+
+    def test_history_search_pages_all_1024_titles_and_binds_cursor(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = ConversationRepository(root)
+            first = repository.create().conversation
+            with closing(connect(root)) as connection:
+                for index in range(1, 1024):
+                    state = "archived" if index % 2 else "active"
+                    timestamp = f"2026-08-{1 + index % 28:02d}T12:{index % 60:02d}:00.000Z"
+                    connection.execute(
+                        "INSERT INTO mentat_conversations (id, agent_id, title, "
+                        "title_source, state, revision, next_message_sequence, "
+                        "next_turn_ordinal, created_at, updated_at, archived_at) "
+                        "VALUES (?, ?, ?, 'manual', ?, 1, 1, 1, ?, ?, ?)",
+                        (
+                            f"conv_history_{index:04d}",
+                            first.agent_id,
+                            f"Straße record {index:04d}",
+                            state,
+                            timestamp,
+                            timestamp,
+                            timestamp if state == "archived" else None,
+                        ),
+                    )
+                connection.commit()
+
+            seen = []
+            cursor = None
+            while True:
+                page, cursor = repository.history_page(
+                    state="all",
+                    cursor=cursor,
+                )
+                self.assertLessEqual(len(page), 50)
+                seen.extend(record.id for record in page)
+                if cursor is None:
+                    break
+            self.assertEqual(len(seen), 1024)
+            self.assertEqual(len(set(seen)), 1024)
+
+            matches, cursor = repository.history_page(
+                state="active",
+                query="STRASSE",
+            )
+            self.assertTrue(matches)
+            self.assertTrue(all(record.state == "active" for record in matches))
+            self.assertTrue(all("strasse" in record.title.casefold() for record in matches))
+            self.assertIsNotNone(cursor)
+            with self.assertRaisesRegex(
+                ConversationRepositoryValidationError,
+                "conversation.cursor_invalid",
+            ):
+                repository.history_page(
+                    state="archived",
+                    query="STRASSE",
+                    cursor=cursor,
+                )
+            with self.assertRaisesRegex(
+                ConversationRepositoryValidationError,
+                "conversation.cursor_invalid",
+            ):
+                repository.history_page(
+                    state="active",
+                    query="record",
+                    cursor=cursor,
+                )
+            repository.append_message_for_test(
+                first.id,
+                role="user",
+                text="message-only-private-needle",
+            )
+            message_only, _cursor = repository.history_page(
+                state="all",
+                query="private-needle",
+            )
+            self.assertEqual(message_only, ())
+            for invalid_query in ("", " padded ", "line\nbreak", "x" * 161):
+                with self.assertRaisesRegex(
+                    ConversationRepositoryValidationError,
+                    "conversation.query_invalid",
+                ):
+                    repository.history_page(state="all", query=invalid_query)
+
+    def test_manual_rename_is_exact_archived_safe_and_private(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = ConversationRepository(root)
+            created = repository.create().conversation
+            archived = repository.set_archived(
+                created.id,
+                expected_revision=created.revision,
+                archived=True,
+            )
+            renamed = repository.rename(
+                created.id,
+                expected_revision=archived.revision,
+                title="Manual title",
+            )
+            self.assertEqual(renamed.title, "Manual title")
+            self.assertEqual(renamed.title_source, "manual")
+            self.assertEqual(renamed.state, "archived")
+            self.assertEqual(
+                ConversationRepository(root).read(created.id).conversation.title,
+                "Manual title",
+            )
+            with self.assertRaisesRegex(Exception, "conversation.changed"):
+                repository.rename(
+                    created.id,
+                    expected_revision=archived.revision,
+                    title="Stale",
+                )
+            for invalid in ("", " padded ", "line\nbreak", "unsafe\u202e"):
+                with self.assertRaisesRegex(Exception, "conversation.title_invalid"):
+                    repository.rename(
+                        created.id,
+                        expected_revision=renamed.revision,
+                        title=invalid,
+                    )
+
+            with patch.object(server, "DATA_DIR", root):
+                history, status = local_bridge.bridge_conversation_history_payload(
+                    state="archived",
+                    query="MANUAL",
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(len(history["conversations"]), 1)
+                serialized = json.dumps(history)
+                for private in ("messages", "runs", "runtime_config", "snippet"):
+                    self.assertNotIn(private, serialized)
+                renamed_again, status = local_bridge.bridge_rename_conversation_payload(
+                    created.id,
+                    {
+                        "expected_revision": renamed.revision,
+                        "title": "Renamed again",
+                    },
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(renamed_again["action"], "rename")
+                self.assertEqual(renamed_again["conversation"]["title_source"], "manual")
+
+    def test_history_bridge_rejects_private_or_extra_fields(self):
+        safe = {
+            "schema_version": 1,
+            "conversations": [],
+            "count": 0,
+            "next_cursor": None,
+            "messages": [],
+        }
+        with patch.object(server, "mentat_conversation_history_payload", return_value=safe):
+            payload, status = local_bridge.bridge_conversation_history_payload(state="all")
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["status"], "error")
+
+        wrong_selection = {
+            "schema_version": 1,
+            "conversations": [{
+                "id": "conv_wrong_history",
+                "agent_id": "agent_direct",
+                "title": "Different title",
+                "title_source": "manual",
+                "state": "active",
+                "revision": 1,
+                "created_at": "2026-08-29T12:00:00Z",
+                "updated_at": "2026-08-29T12:00:00Z",
+                "archived_at": None,
+            }],
+            "count": 1,
+            "next_cursor": None,
+        }
+        with patch.object(
+            server,
+            "mentat_conversation_history_payload",
+            return_value=wrong_selection,
+        ):
+            payload, status = local_bridge.bridge_conversation_history_payload(
+                state="archived",
+                query="Manual",
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["status"], "error")
 
     def test_archive_is_exact_reversible_and_does_not_touch_runs(self):
         with TemporaryDirectory() as temporary:

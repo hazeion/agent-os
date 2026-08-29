@@ -6,6 +6,8 @@ import type {
   PublicConversationRunAttemptResult,
   PublicConversationDetail,
   PublicConversationList,
+  PublicConversationHistory,
+  PublicConversationRenameResult,
   PublicConversationQueueMutation,
   PublicConversationSteerResult,
   PublicQueuedConversationTurn,
@@ -84,12 +86,65 @@ function validConversation(value: unknown): value is PublicConversation {
   return id(value.id, CONVERSATION_ID)
     && id(value.agent_id, OPAQUE_ID)
     && boundedText(value.title, 160)
-    && (value.title_source === "default" || value.title_source === "first_prompt")
+    && ["default", "first_prompt", "manual"].includes(String(value.title_source))
     && (value.state === "active" || value.state === "archived")
     && Number.isInteger(value.revision) && (value.revision as number) >= 1
     && timestamp(value.created_at) && timestamp(value.updated_at)
     && (value.archived_at === null || timestamp(value.archived_at))
     && (value.state === "active" ? value.archived_at === null : value.archived_at !== null);
+}
+
+function parseHistory(value: unknown): PublicConversationHistory {
+  if (!record(value) || !keys(value, "conversations,count,next_cursor,runtime,schema_version,service,status")) throw new PublicConversationError("response_invalid");
+  const conversations = value.conversations;
+  if (
+    value.schema_version !== 1
+    || value.service !== "mentat-local-bridge"
+    || value.runtime !== "python"
+    || value.status !== "ready"
+    || !Array.isArray(conversations)
+    || conversations.length > MAXIMUM_CONVERSATIONS
+    || !conversations.every(validConversation)
+    || new Set(conversations.map((conversation) => (conversation as PublicConversation).id)).size !== conversations.length
+    || !Number.isInteger(value.count)
+    || value.count !== conversations.length
+    || value.next_cursor !== null && (typeof value.next_cursor !== "string" || !/^[A-Za-z0-9_-]{1,512}$/u.test(value.next_cursor))
+  ) throw new PublicConversationError("response_invalid");
+  return structuredClone(value) as PublicConversationHistory;
+}
+
+function historyMatchesStateAndOrder(
+  history: PublicConversationHistory,
+  state: "all" | "active" | "archived",
+): boolean {
+  if (history.conversations.some((conversation) => (
+    state !== "all" && conversation.state !== state
+  ))) return false;
+  return history.conversations.every((conversation, index, rows) => {
+    if (index === 0) return true;
+    const previous = rows[index - 1]!;
+    const previousRank = previous.state === "active" ? 0 : 1;
+    const rank = conversation.state === "active" ? 0 : 1;
+    return previousRank < rank
+      || previousRank === rank
+      && (previous.updated_at > conversation.updated_at
+        || previous.updated_at === conversation.updated_at && previous.id > conversation.id);
+  });
+}
+
+function parseRenameResult(value: unknown): PublicConversationRenameResult {
+  if (
+    !record(value)
+    || !keys(value, "action,conversation,runtime,schema_version,service,status")
+    || value.schema_version !== 1
+    || value.service !== "mentat-local-bridge"
+    || value.runtime !== "python"
+    || value.status !== "ready"
+    || value.action !== "rename"
+    || !validConversation(value.conversation)
+    || value.conversation.title_source !== "manual"
+  ) throw new PublicConversationError("response_invalid");
+  return structuredClone(value) as PublicConversationRenameResult;
 }
 
 function validMessage(value: unknown): boolean {
@@ -340,6 +395,30 @@ export async function fetchConversations(cursor: string | null = null): Promise<
   fixed(response, payload);
 }
 
+export async function fetchConversationHistory(
+  state: "all" | "active" | "archived",
+  query: string | null = null,
+  cursor: string | null = null,
+): Promise<PublicConversationHistory> {
+  if (
+    !["all", "active", "archived"].includes(state)
+    || query !== null && (!boundedText(query, 160) || /\p{C}/u.test(query))
+    || cursor !== null && !/^[A-Za-z0-9_-]{1,512}$/u.test(cursor)
+  ) throw new PublicConversationError("invalid");
+  const parameters = new URLSearchParams({ state });
+  if (query !== null) parameters.set("q", query);
+  if (cursor !== null) parameters.set("cursor", cursor);
+  const { response, payload } = await request(`/api/conversation-history?${parameters.toString()}`);
+  if (response.status === 200) {
+    const history = parseHistory(payload);
+    if (!historyMatchesStateAndOrder(history, state)) {
+      throw new PublicConversationError("response_invalid");
+    }
+    return history;
+  }
+  fixed(response, payload);
+}
+
 export async function fetchConversation(id: string, before: string | null = null): Promise<PublicConversationDetail> {
   if (!CONVERSATION_ID.test(id) || before !== null && !/^[1-9][0-9]{0,9}$/u.test(before)) throw new PublicConversationError("request_invalid");
   const { response, payload } = await request(`/api/conversations/${encodeURIComponent(id)}${before === null ? "" : `?before=${before}`}`);
@@ -380,6 +459,36 @@ export async function archiveConversation(
   if (response.status === 200) {
     const parsed = parseArchiveResult(payload);
     if (parsed.conversation.id !== conversationId || parsed.action !== action) throw new PublicConversationError("response_invalid");
+    return parsed;
+  }
+  fixed(response, payload);
+}
+
+export async function renameConversation(
+  conversationId: string,
+  expectedRevision: number,
+  title: string,
+): Promise<PublicConversationRenameResult> {
+  if (
+    !CONVERSATION_ID.test(conversationId)
+    || !Number.isSafeInteger(expectedRevision)
+    || expectedRevision < 1
+    || !boundedText(title, 160)
+    || /\p{C}/u.test(title)
+  ) throw new PublicConversationError("invalid");
+  const { response, payload } = await request(
+    `/api/conversations/${encodeURIComponent(conversationId)}/rename`,
+    {
+      body: JSON.stringify({ expected_revision: expectedRevision, title }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (response.status === 200) {
+    const parsed = parseRenameResult(payload);
+    if (parsed.conversation.id !== conversationId || parsed.conversation.title !== title) {
+      throw new PublicConversationError("response_invalid");
+    }
     return parsed;
   }
   fixed(response, payload);

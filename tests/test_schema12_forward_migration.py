@@ -643,7 +643,7 @@ class Schema12ForwardMigrationTests(unittest.TestCase):
             finally:
                 migrated.close()
 
-        self.assertEqual(version, 15)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue({
             "mentat_conversation_staged_contexts",
             "mentat_conversation_staged_attachments",

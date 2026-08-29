@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import unicodedata
 from typing import Any, Iterable, Mapping
 
 from agent_registry import (
@@ -47,6 +48,8 @@ _TIMESTAMP = re.compile(
 )
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CURSOR = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
+_HISTORY_CURSOR = re.compile(r"[A-Za-z0-9_-]{1,512}\Z")
+_HISTORY_STATES = frozenset({"all", "active", "archived"})
 _BLOCKED_REASONS = frozenset({"capacity", "failed", "stopped", "interrupted", "unknown", "partial"})
 _ACTIVE_RUN_STATUSES = frozenset(
     {
@@ -501,6 +504,13 @@ def _text(value: object, *, label: str, maximum: int) -> str:
     return value
 
 
+def _manual_title(value: object) -> str:
+    title = _text(value, label="title", maximum=MAX_TITLE_LENGTH)
+    if any(unicodedata.category(character).startswith("C") for character in title):
+        raise ConversationRepositoryValidationError("conversation.title_invalid")
+    return title
+
+
 def _identifier(value: object, pattern: re.Pattern[str], code: str) -> str:
     if not isinstance(value, str) or pattern.fullmatch(value) is None:
         raise ConversationRepositoryValidationError(code)
@@ -596,6 +606,71 @@ def _decode_conversation_cursor(value: object) -> tuple[int, str, str]:
     return int(decoded[0]), decoded[1], decoded[2]
 
 
+def _history_query(value: object) -> tuple[str | None, str]:
+    if value is None:
+        return None, ""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > MAX_TITLE_LENGTH
+        or any(unicodedata.category(character).startswith("C") for character in value)
+    ):
+        raise ConversationRepositoryValidationError("conversation.query_invalid")
+    return value, value.casefold()
+
+
+def _history_query_digest(normalized_query: str) -> str:
+    return hashlib.sha256(normalized_query.encode("utf-8")).hexdigest()
+
+
+def _encode_history_cursor(
+    row: ConversationRecord,
+    *,
+    state: str,
+    normalized_query: str,
+) -> str:
+    rank = 0 if row.state == "active" else 1
+    raw = json.dumps(
+        [state, _history_query_digest(normalized_query), rank, row.updated_at, row.id],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_history_cursor(
+    value: object,
+    *,
+    state: str,
+    normalized_query: str,
+) -> tuple[int, str, str]:
+    if not isinstance(value, str) or _HISTORY_CURSOR.fullmatch(value) is None:
+        raise ConversationRepositoryValidationError("conversation.cursor_invalid")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        raw = base64.urlsafe_b64decode(padded)
+        if base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != value:
+            raise ValueError("noncanonical cursor")
+        decoded = json.loads(raw.decode("ascii"))
+    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ConversationRepositoryValidationError("conversation.cursor_invalid") from exc
+    if (
+        not isinstance(decoded, list)
+        or len(decoded) != 5
+        or decoded[0] != state
+        or decoded[1] != _history_query_digest(normalized_query)
+        or type(decoded[2]) is not int
+        or decoded[2] not in {0, 1}
+        or not isinstance(decoded[3], str)
+        or _timestamp(decoded[3]) is None
+        or not isinstance(decoded[4], str)
+        or _CONVERSATION_ID.fullmatch(decoded[4]) is None
+    ):
+        raise ConversationRepositoryValidationError("conversation.cursor_invalid")
+    return int(decoded[2]), decoded[3], decoded[4]
+
+
 def _decode_content(value: object, *, role: str, content_bytes: object) -> dict[str, Any]:
     if not isinstance(value, str) or len(value.encode("utf-8")) > MAX_MESSAGE_CONTENT_BYTES:
         raise ConversationRepositoryValidationError("conversation.content_invalid")
@@ -662,7 +737,7 @@ def _conversation_row(row: Mapping[str, object]) -> ConversationRecord:
     title = _text(row["title"], label="title", maximum=MAX_TITLE_LENGTH)
     title_source = row["title_source"]
     state = row["state"]
-    if title_source not in {"default", "first_prompt"} or state not in {
+    if title_source not in {"default", "first_prompt", "manual"} or state not in {
         "active",
         "archived",
     }:
@@ -1043,7 +1118,7 @@ def validate_repository_connection(
         expected_version = (
             DATABASE_SCHEMA_VERSION if schema_version is None else schema_version
         )
-        if expected_version not in {10, 11, 12, 13, 14, DATABASE_SCHEMA_VERSION}:
+        if expected_version not in {10, 11, 12, 13, 14, 15, DATABASE_SCHEMA_VERSION}:
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         legacy_missing_objects = {
             ("trigger", "mentat_conversations_agent_immutable"),
@@ -1530,6 +1605,137 @@ class ConversationRepository:
     def list(self, *, limit: int = MAX_CONVERSATION_PAGE) -> tuple[ConversationRecord, ...]:
         return self.list_page(limit=limit)[0]
 
+    def history_page(
+        self,
+        *,
+        state: str,
+        query: str | None = None,
+        cursor: str | None = None,
+    ) -> tuple[tuple[ConversationRecord, ...], str | None]:
+        """Return one title-only, query-bound history page."""
+
+        if not isinstance(state, str) or state not in _HISTORY_STATES:
+            raise ConversationRepositoryValidationError(
+                "conversation.state_filter_invalid"
+            )
+        _canonical_query, normalized_query = _history_query(query)
+        decoded_cursor = (
+            _decode_history_cursor(
+                cursor,
+                state=state,
+                normalized_query=normalized_query,
+            )
+            if cursor is not None
+            else None
+        )
+        self._bootstrap_agents()
+        connection = self._connection()
+        try:
+            rows = connection.execute(
+                "SELECT * FROM mentat_conversations "
+                "ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END, "
+                "updated_at DESC, id DESC"
+            ).fetchall()
+            records = [
+                _conversation_row(row)
+                for row in rows
+                if (state == "all" or row["state"] == state)
+                and normalized_query in str(row["title"]).casefold()
+            ]
+            if decoded_cursor is not None:
+                cursor_key = decoded_cursor
+                start = next(
+                    (
+                        index + 1
+                        for index, record in enumerate(records)
+                        if (
+                            0 if record.state == "active" else 1,
+                            record.updated_at,
+                            record.id,
+                        )
+                        == cursor_key
+                    ),
+                    None,
+                )
+                if start is None:
+                    raise ConversationRepositoryValidationError(
+                        "conversation.cursor_invalid"
+                    )
+                records = records[start:]
+            page = tuple(records[:MAX_CONVERSATION_PAGE])
+            next_cursor = (
+                _encode_history_cursor(
+                    page[-1],
+                    state=state,
+                    normalized_query=normalized_query,
+                )
+                if len(records) > MAX_CONVERSATION_PAGE
+                else None
+            )
+            return page, next_cursor
+        finally:
+            connection.close()
+
+    def rename(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        title: str,
+    ) -> ConversationRecord:
+        """Apply one exact manual title to an active or archived Conversation."""
+
+        identifier = _identifier(
+            conversation_id, _CONVERSATION_ID, "conversation_id_invalid"
+        )
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ConversationRepositoryValidationError(
+                "conversation.revision_invalid"
+            )
+        clean_title = _manual_title(title)
+        connection = self._connection()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM mentat_conversations WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                raise ConversationRepositoryConflict("conversation.not_found")
+            current = _conversation_row(row)
+            if current.revision != expected_revision:
+                raise ConversationRepositoryConflict("conversation.changed")
+            occurred_at = _now()
+            changed = connection.execute(
+                "UPDATE mentat_conversations SET title = ?, title_source = 'manual', "
+                "revision = revision + 1, updated_at = ? "
+                "WHERE id = ? AND revision = ?",
+                (clean_title, occurred_at, identifier, expected_revision),
+            ).rowcount
+            if changed != 1:
+                raise ConversationRepositoryConflict("conversation.changed")
+            stored = connection.execute(
+                "SELECT * FROM mentat_conversations WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if stored is None:
+                raise ConversationRepositoryError("conversation.corrupt")
+            connection.commit()
+            return _conversation_row(stored)
+        except ConversationRepositoryError:
+            connection.rollback()
+            raise
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise ConversationRepositoryConflict("conversation.changed") from exc
+        except sqlite3.Error as exc:
+            connection.rollback()
+            raise ConversationRepositoryUnavailable(
+                "conversation.unavailable"
+            ) from exc
+        finally:
+            connection.close()
+
     def set_archived(
         self,
         conversation_id: str,
@@ -1952,6 +2158,26 @@ def conversations_public(
     }
 
 
+def conversation_history_public(
+    repository: ConversationRepository,
+    *,
+    state: str,
+    query: str | None = None,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    records, next_cursor = repository.history_page(
+        state=state,
+        query=query,
+        cursor=cursor,
+    )
+    return {
+        "schema_version": CONVERSATION_SCHEMA_VERSION,
+        "conversations": [_conversation_public(record) for record in records],
+        "count": len(records),
+        "next_cursor": next_cursor,
+    }
+
+
 def activity_public(repository: ConversationRepository) -> dict[str, Any]:
     agents = repository._bootstrap_agents()
     direct = next(
@@ -1991,6 +2217,7 @@ __all__ = [
     "activity_public",
     "conversation_public",
     "conversation_message_record",
+    "conversation_history_public",
     "conversation_turn_record",
     "conversations_public",
     "validate_repository_connection",

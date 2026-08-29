@@ -608,6 +608,33 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertFalse(probe.is_alive())
         self.assertEqual(failures, [])
 
+    def test_first_turn_never_replaces_a_manual_conversation_title(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = FakeRuntime(root)
+            service, conversation_id = self.prepare_conversation(root, runtime)
+            conversation_repository = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            )
+            initial = conversation_repository.read(conversation_id).conversation
+            renamed = conversation_repository.rename(
+                conversation_id,
+                expected_revision=initial.revision,
+                title="Operator title",
+            )
+
+            service.submit_conversation_turn(
+                conversation_id=conversation_id,
+                text="This first prompt must not become the title.",
+                idempotency_key="manual-title-first-turn-key",
+            )
+
+            stored = conversation_repository.read(conversation_id).conversation
+            self.assertEqual(stored.title, "Operator title")
+            self.assertEqual(stored.title_source, "manual")
+            self.assertGreater(stored.revision, renamed.revision)
+
     def test_conversation_turn_commits_authority_before_one_unlocked_runtime_call(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
