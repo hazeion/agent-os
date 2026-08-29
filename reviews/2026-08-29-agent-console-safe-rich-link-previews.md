@@ -173,6 +173,12 @@ owner to avoid shared-file races.
   require `O_BINARY` to prevent newline translation. The validator accepts
   only zero or one Windows link, still rejects hard links, writes the secret
   and WebP bytes in binary mode, and uses platform-correct unsafe fixtures.
+- The macOS Python 3.11.9 matrix exposed patch-level `ipaddress` differences
+  for mapped IPv6 serialization and IANA global exceptions. Source-controlled
+  canonicalization and the reviewed exception tables now decide both cases;
+  ordinary addresses still require `is_global` as an independent check. The
+  deny table also includes IANA's non-global `100:0:0:1::/64` Dummy IPv6 Prefix,
+  which older Python patches incorrectly classify as global.
 - The production performance gate now warms the complete fixture once, then
   scores seven unchanged samples with 200 rows, three preview cards, and one
   image card. It passed at 127.6 ms accepted dispatch, 18.9 ms loaded tab,

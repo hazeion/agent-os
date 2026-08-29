@@ -60,9 +60,10 @@ _SPECIAL_USE_NAMES = frozenset(
 )
 
 # Reviewed conservative deny tables derived from the IANA IPv4 and IPv6
-# special-purpose registries.  ``ipaddress.is_global`` is required as a second,
-# independent check below.  Broad containing prefixes intentionally fail closed
-# when a special-purpose block has narrow globally-reachable exceptions.
+# special-purpose registries. ``ipaddress.is_global`` is a second independent
+# check for ordinary addresses. The reviewed exception sets are authoritative
+# because Python patch releases have classified those IANA exceptions
+# differently. Broad containing prefixes otherwise fail closed.
 _IPV4_DENY = tuple(
     ipaddress.ip_network(value)
     for value in (
@@ -91,6 +92,7 @@ _IPV6_DENY = tuple(
         "64:ff9b::/96",
         "64:ff9b:1::/48",
         "100::/64",
+        "100:0:0:1::/64",
         "2001::/23",
         "2002::/16",
         "3fff::/20",
@@ -254,13 +256,21 @@ def _address_is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -
         if mapped is not None:
             return _address_is_public(mapped)
         if any(address in network for network in _IPV6_GLOBAL_EXCEPTIONS):
-            return bool(address.is_global)
+            return True
         if any(address in network for network in _IPV6_DENY):
             return False
-    elif address not in _IPV4_GLOBAL_EXCEPTIONS:
+    elif address in _IPV4_GLOBAL_EXCEPTIONS:
+        return True
+    else:
         if any(address in network for network in _IPV4_DENY):
             return False
     return bool(address.is_global)
+
+
+def _canonical_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return f"::ffff:{address.ipv4_mapped.compressed}"
+    return address.compressed
 
 
 def _normalize_ip_literal(host: str) -> tuple[str, bool] | None:
@@ -274,7 +284,7 @@ def _normalize_ip_literal(host: str) -> tuple[str, bool] | None:
         ):
             _fail()
         return None
-    canonical = address.compressed
+    canonical = _canonical_address(address)
     if isinstance(address, ipaddress.IPv4Address):
         if not _CANONICAL_IPV4.fullmatch(host) or host != canonical:
             _fail()
@@ -366,7 +376,7 @@ def validate_public_addresses(values: Iterable[str]) -> PublicAddressSet:
             address = ipaddress.ip_address(value)
         except ValueError:
             _fail()
-        if str(address) != value.lower():
+        if _canonical_address(address) != value.lower():
             _fail()
         if not _address_is_public(address):
             _fail("link_preview.blocked")

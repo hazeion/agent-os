@@ -201,6 +201,7 @@ class LinkPreviewAddressPolicyTests(unittest.TestCase):
             "::1",
             "64:ff9b::808:808",
             "100::1",
+            "100:0:0:1::1",
             "2001:db8::1",
             "2002:808:808::1",
             "3fff::1",
