@@ -15,7 +15,7 @@ from urllib.parse import quote
 from mentat import local_bridge
 from agent_registry import AgentRegistry
 from agent_runtime import RuntimeContext
-from agent_console_attachments import create_attachment
+from agent_console_attachments import AttachmentUnavailable, create_attachment
 from agent_console_attachments import resolve_blob_path
 from conversation_repository import ConversationRepository
 from conversation_attachments import staged_context_evidence
@@ -28,6 +28,19 @@ CONVERSATION_ID = "conv_" + "a" * 32
 ATTACHMENT_ID = "attachment_" + "b" * 32
 PACK_ID = "pack_" + "c" * 16
 PACK_REVISION = "sha256:" + "d" * 64
+TEST_AGENT_ID = "agent_conversation_files"
+
+
+def conversation_repository_with_test_agent(root: Path) -> ConversationRepository:
+    AgentRegistry(root, supported_runtime_types=("hermes",)).create_agent(
+        agent_id=TEST_AGENT_ID,
+        name="Conversation files",
+        runtime_config_id="runtime_conversation_files",
+        runtime_type="hermes",
+        runtime_agent_ref="conversation-files",
+        capabilities=("run.message", "run.start"),
+    )
+    return ConversationRepository(root, supported_runtime_types=("hermes",))
 
 
 def staged_payload(*, source: str = "upload") -> dict[str, object]:
@@ -416,8 +429,9 @@ class ConversationFileBridgeTests(unittest.TestCase):
     def test_raw_upload_and_content_are_end_to_end_conversation_bound(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            first = ConversationRepository(root).create().conversation.id
-            second = ConversationRepository(root).create().conversation.id
+            repository = conversation_repository_with_test_agent(root)
+            first = repository.create(agent_id=TEST_AGENT_ID).conversation.id
+            second = repository.create(agent_id=TEST_AGENT_ID).conversation.id
             with patch.object(server, "DATA_DIR", root):
                 status, uploaded, _headers = self.json_request(
                     "POST",
@@ -601,7 +615,8 @@ class ConversationFileServerTests(unittest.TestCase):
     def test_staged_read_waits_behind_the_exact_python_upload_lock(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            conversation = ConversationRepository(root).create().conversation.id
+            repository = conversation_repository_with_test_agent(root)
+            conversation = repository.create(agent_id=TEST_AGENT_ID).conversation.id
             entered = threading.Event()
             release = threading.Event()
             finished = threading.Event()
@@ -725,6 +740,10 @@ class ConversationFileServerTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual([item["id"] for item in prepared], identifiers)
 
+    @unittest.skipUnless(
+        server.SECURE_DIR_FD_DELETE,
+        "secure POSIX directory descriptors required",
+    )
     def test_pre_admission_input_materialization_is_digest_verified_and_atomic(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -744,20 +763,6 @@ class ConversationFileServerTests(unittest.TestCase):
                 (root / "runtime" / "agent-console-inputs" / run_id).exists()
             )
             self.assertNotIn(run_id, server.AGENT_CONSOLE_PREPARED_INPUTS)
-
-            unsupported_run_id = "run_insecure_cleanup"
-            with patch.object(server, "DATA_DIR", root), patch.object(
-                server,
-                "SECURE_DIR_FD_DELETE",
-                False,
-            ), self.assertRaises(Exception):
-                server.prepare_mentat_conversation_run_inputs(
-                    unsupported_run_id,
-                    (first["id"],),
-                )
-            self.assertFalse(
-                (root / "runtime" / "agent-console-inputs" / unsupported_run_id).exists()
-            )
 
             crash_run_id = "run_crash_orphan"
             with patch.object(server, "DATA_DIR", root):
@@ -823,6 +828,29 @@ class ConversationFileServerTests(unittest.TestCase):
             self.assertFalse(
                 (root / "runtime" / "agent-console-inputs" / crash_run_id).exists()
             )
+
+    def test_input_materialization_fails_before_write_without_secure_cleanup(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            attachment = create_attachment(
+                root,
+                original_name="context.txt",
+                content=b"context",
+            )
+            run_id = "run_insecure_cleanup"
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server,
+                "SECURE_DIR_FD_DELETE",
+                False,
+            ), self.assertRaises(AttachmentUnavailable):
+                server.prepare_mentat_conversation_run_inputs(
+                    run_id,
+                    (attachment["id"],),
+                )
+            self.assertFalse(
+                (root / "runtime" / "agent-console-inputs" / run_id).exists()
+            )
+            self.assertNotIn(run_id, server.AGENT_CONSOLE_PREPARED_INPUTS)
 
     def test_agent_attachment_enable_is_explicit_runtime_checked_and_revision_bound(self):
         with TemporaryDirectory() as temporary:
@@ -907,8 +935,9 @@ class ConversationFileServerTests(unittest.TestCase):
     def test_upload_refresh_content_release_and_cross_conversation_denial(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            first = ConversationRepository(root).create().conversation.id
-            second = ConversationRepository(root).create().conversation.id
+            repository = conversation_repository_with_test_agent(root)
+            first = repository.create(agent_id=TEST_AGENT_ID).conversation.id
+            second = repository.create(agent_id=TEST_AGENT_ID).conversation.id
             with patch.object(server, "DATA_DIR", root):
                 uploaded, status = server.stage_mentat_conversation_upload(
                     first,
@@ -981,7 +1010,8 @@ class ConversationFileServerTests(unittest.TestCase):
             vault.mkdir()
             (workspace / "README.md").write_text("# Workspace\n", encoding="utf-8")
             (vault / "Plan.md").write_text("# Reviewed plan\n", encoding="utf-8")
-            conversation = ConversationRepository(root).create().conversation.id
+            repository = conversation_repository_with_test_agent(root)
+            conversation = repository.create(agent_id=TEST_AGENT_ID).conversation.id
             pack = {
                 "schema_version": 1,
                 "id": PACK_ID,

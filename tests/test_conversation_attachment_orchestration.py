@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
@@ -60,7 +61,7 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
             self.assertEqual(conversation_staged_context(root, conversation_id)["attachments"], [])
             media = conversation_media(root, conversation_id)
             self.assertEqual(media["runs"][0]["inputs"][0]["id"], attachment_id)
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT COUNT(*) FROM mentat_conversation_run_contexts WHERE run_id = ?",
@@ -92,7 +93,7 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
             self.assertTrue(replay.duplicate)
             self.assertEqual(replay.run.id, first.run.id)
 
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 connection.execute(
                     "UPDATE mentat_runs SET status = 'completed', dispatch_state = 'accepted', "
                     "terminal_finalized = 1, completed_at = updated_at WHERE id = ?",
@@ -176,7 +177,7 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
                     )
                 self.assertEqual(rejected.exception.code, expected)
                 self.assertEqual(runtime.calls, [])
-                with connect(root) as connection:
+                with closing(connect(root)) as connection:
                     self.assertEqual(
                         connection.execute(
                             "SELECT COUNT(*) FROM mentat_conversation_turns"
@@ -231,7 +232,7 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
                 len(conversation_staged_context(root, conversation_id)["attachments"]),
                 1,
             )
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT COUNT(*) FROM mentat_conversation_turns"
@@ -274,7 +275,7 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
             staged = conversation_staged_context(root, conversation_id)
             self.assertEqual(staged["context_pack"]["name"], "Changed pack")
             self.assertEqual(len(staged["attachments"]), 1)
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT COUNT(*) FROM mentat_conversation_turns"
@@ -314,7 +315,7 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
                 len(conversation_staged_context(root, conversation_id)["attachments"]),
                 1,
             )
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT COUNT(*) FROM mentat_conversation_turns"
@@ -360,7 +361,7 @@ class ConversationAttachmentOrchestrationTests(unittest.TestCase):
 
             self.assertEqual(len(runtime.calls), 2)
             self.assertEqual(runtime.calls[1][1].attachment_ids, (attachment_id,))
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 bindings = connection.execute(
                     "SELECT run_id, attachment_id FROM run_attachments "
                     "WHERE direction = 'input' ORDER BY run_id"

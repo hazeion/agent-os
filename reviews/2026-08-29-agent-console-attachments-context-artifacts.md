@@ -272,6 +272,18 @@ targets. The final security review reported no remaining security findings. The
 final product review reported no remaining product, accessibility, or
 concurrency findings.
 
+### PR CI follow-up
+
+PR #156 exposed two Windows-only test defects. A cleanup test expected POSIX
+descriptor deletion on Windows, several tests selected the optional Direct
+Codex Agent instead of creating an explicit fixture Agent, and SQLite context
+managers committed without closing their handles. The tests now skip only the
+positive descriptor-dependent cases, retain separate fail-closed assertions,
+create an explicit Hermes fixture Agent, and close every SQLite handle. The
+corrected 36-test set passed normally and with secure descriptor deletion
+forced off, where the two positive POSIX cases skipped. Both adversarial
+reviewers rechecked the test-only diff and reported clean results.
+
 ## Documentation updates
 
 - `AGENTS.md` records schema-15 staging limits, immediate-only dispatch,
@@ -284,8 +296,8 @@ concurrency findings.
 
 - Branch and base: `codex/agent-console-slice-8` to `main` after Slice 7 closeout.
 - User authorization and scope: standing approval recorded; ready PR only.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- Commit hash: `c01b49de6f46b5b41bf5c42cab53ab129b34a8b6` plus the test-only CI follow-up.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/156
 
 ## Outcome review
 
