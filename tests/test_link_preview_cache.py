@@ -40,11 +40,12 @@ class LinkPreviewCacheTests(unittest.TestCase):
     def test_windows_zero_link_count_is_regular_but_hardlinks_still_fail(self):
         regular = SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_nlink=0, st_size=32)
         hardlinked = SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_nlink=2, st_size=32)
+        path = Path("cache-secret")
         with mock.patch("link_preview_cache.os.name", "nt"), mock.patch("link_preview_cache.os.lstat", return_value=regular):
-            self.assertIs(_owned_file(Path("cache-secret"), maximum_bytes=32), regular)
+            self.assertIs(_owned_file(path, maximum_bytes=32), regular)
         with mock.patch("link_preview_cache.os.name", "nt"), mock.patch("link_preview_cache.os.lstat", return_value=hardlinked):
             with self.assertRaises(LinkPreviewCacheError):
-                _owned_file(Path("cache-secret"), maximum_bytes=32)
+                _owned_file(path, maximum_bytes=32)
 
     def test_secret_bytes_are_written_without_platform_newline_translation(self):
         with tempfile.TemporaryDirectory() as temporary:
