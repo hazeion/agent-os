@@ -27,13 +27,13 @@ production packaging, Codex adapter, runtime coexistence, Agent registry
 convergence, and optional Vercel capability adapters are complete through Slice
 4A.
 
-Agent Console Slices 1 through 8 are complete. Slice 8 shipped through PR #156
-with durable Conversation staging, validated uploads and workspace snapshots,
-Context Pack revalidation, exact local Hermes Run inputs, retained media,
-explicit file enablement, two clean adversarial re-reviews, 52 green PR checks,
-and production desktop/mobile browser acceptance. The current Wayfinder
-frontier is Agent Console Slice 9: history depth and command ergonomics (GitHub
-issue #141).
+Agent Console Slices 1 through 9 are complete. Slice 9 shipped through PR #158
+with schema-16 manual titles, bounded title-only Conversation history, exact
+rename, reversible archive management, the fixed four-command manifest,
+keyboard completion, clean adversarial re-reviews, 52 green PR checks, and
+production desktop/mobile browser and Lighthouse acceptance. The current
+Wayfinder frontier is Agent Console Slice 10: project and planning context
+(GitHub issue #142).
 
 ## Slice order
 
@@ -60,7 +60,7 @@ issue #141).
 | Console 6 | Complete | Polished transcript and reasoning summaries. |
 | Console 7 | Complete | Safe rich-link previews. |
 | Console 8 | Complete | Attachments, Context Packs, images, and artifacts. |
-| Console 9 | Approved | History depth and command ergonomics. |
+| Console 9 | Complete | History depth and command ergonomics. |
 | Console 10 | Approved | Project and planning context. |
 
 ## Working rules

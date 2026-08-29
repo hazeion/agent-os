@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console history depth and command ergonomics
 
-Status: Ready for publication
+Status: Complete
 Slice: `agent-console-history-command-ergonomics`
 Date: `2026-08-29`
 Review log: `reviews/2026-08-29-agent-console-history-commands.md`
@@ -74,7 +74,7 @@ composer into a generic execution boundary.
 | AC-7 | `/new`, `/model`, `/steer`, and `/help` perform only their fixed behavior, while every command error preserves its full draft and never falls back to ordinary Send. | Composer parser, handler-spy, mutation-count, stale-tab, and failure tests. | Pass |
 | AC-8 | History management and completion are keyboard and screen-reader usable, mobile-safe, reduced-motion-safe, high-contrast-safe, and create no page overflow. | React semantics plus production desktop/mobile browser use. | Pass |
 | AC-9 | The 1,024-record history fixture paints the current result page with a seven-sample median below 250 ms; completion typing performs no network mutation. | Production performance gate with recorded medians and request deltas. | Pass |
-| AC-10 | Full Python/web/build/package/CI gates and two independent adversarial re-reviews pass. | Full local and GitHub evidence. | Local pass; PR CI pending |
+| AC-10 | Full Python/web/build/package/CI gates and two independent adversarial re-reviews pass. | Full local and GitHub evidence. | Pass |
 
 ### Constraints and recovery
 
@@ -303,19 +303,22 @@ composer into a generic execution boundary.
 - User authorization and scope: standing approval recorded; ready PR only.
 - Implementation commit: `fec5268`.
 - Ready PR URL: https://github.com/hazeion/agent-os/pull/158
+- Final head commit: `97e998e`.
+- Merge commit: `2110c80`.
+- GitHub result: all 52 checks passed; issue #141 closed automatically at
+  merge.
 
 ## Outcome review
 
-- Classification: Implemented and locally verified; publication and PR CI
-  pending.
-- Acceptance criteria summary: AC-1 through AC-9 pass locally. AC-10 has clean
-  local full-suite, build, package, browser, performance, and dual-review
-  evidence and awaits only PR CI.
+- Classification: Implemented, verified, merged, and closed.
+- Acceptance criteria summary: AC-1 through AC-10 pass. Local full-suite,
+  build, package, browser, performance, dual-review, and 52-check GitHub
+  evidence are green.
 - Potential bugs or untested paths: no release blocker found; a real assistive
   technology audit remains outside the approved semantic/browser scope.
 - Remaining reviewer dissent: none.
 - Compatibility/migration/rollback concerns: schema 16 is forward-only.
 - User decision: standing acceptance/continuation authorization recorded,
   subject to all-green and clean-review gates.
-- Next slice authorized: Yes, but implementation will not begin until Slice 9
-  itself is merged and closed out.
+- Next slice authorized: Yes. Slice 10 may begin from merge `2110c80` after this
+  closeout lands.
