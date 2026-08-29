@@ -1,10 +1,12 @@
 export const PUBLIC_CONVERSATIONS_PATH = "/api/conversations";
 export const PUBLIC_ACTIVITY_PATH = "/api/agent-activity";
 export const PUBLIC_CODEX_READINESS_PATH = "/api/codex-readiness";
+export const PUBLIC_AGENT_CONFIGURATION_PATH = "/api/agents";
 
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
 const PRIVATE_ACTIVITY_PATH = "/bridge/v1/agent-activity";
 const PRIVATE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness";
+const PRIVATE_AGENTS_PATH = "/bridge/v1/agents";
 const MAXIMUM_RESPONSE_BYTES = 3_000_000;
 const READ_TIMEOUT_MILLISECONDS = 3_500;
 const MAXIMUM_CONVERSATIONS = 50;
@@ -13,6 +15,9 @@ const MAXIMUM_MESSAGES = 100;
 const MAXIMUM_QUEUED_TURNS = 8;
 export const CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS = 32_000;
 export const CODEX_READINESS_BRIDGE_TIMEOUT_MILLISECONDS = 8_000;
+export const AGENT_CONFIGURATION_READ_TIMEOUT_MILLISECONDS = 40_000;
+export const AGENT_CONFIGURATION_PREVIEW_TIMEOUT_MILLISECONDS = 70_000;
+export const AGENT_CONFIGURATION_CONFIRM_TIMEOUT_MILLISECONDS = 190_000;
 
 type Environment = Readonly<Record<string, string | undefined>>;
 type FetchLike = (
@@ -58,6 +63,7 @@ export type PublicCurrentRun = {
   status: string;
   partial: boolean;
   updated_at: string;
+  configuration?: { provider: string; model: string; effort: string } | null;
 };
 
 export type PublicConversationTurn = {
@@ -151,6 +157,52 @@ export type PublicCodexReadiness = {
   status: "ready";
   state: "cli_missing" | "sign_in_required" | "ready" | "unavailable";
   setup_command: "codex login" | null;
+};
+
+export type PublicAgentConfiguration = {
+  schema_version: 1;
+  agent_id: string;
+  runtime_type: string;
+  state: "ready" | "read_only" | "unavailable";
+  mutable: boolean;
+  active_run: boolean;
+  current: { provider: string | null; model: string | null; effort: "runtime_default" };
+  providers: Array<{ id: string; name: string; current: boolean; models: string[] }>;
+  efforts: [{ id: "runtime_default"; name: "Runtime default" }];
+  explanation: string;
+};
+
+export type PublicAgentConfigurationPayload = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  configuration: PublicAgentConfiguration;
+};
+
+export type PublicAgentConfigurationPreview = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  action: "configure";
+  agent_id: string;
+  requires_confirmation: true;
+  confirmation_id: string;
+  current: { provider: string | null; model: string | null };
+  target: { provider: string; provider_name: string; model: string; effort: "runtime_default" };
+  message: string;
+};
+
+export type PublicAgentConfigurationResult = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  action: "configure";
+  agent_id: string;
+  configuration: PublicAgentConfiguration;
+  message: string;
 };
 
 export type PublicConversationList = {
@@ -290,6 +342,91 @@ function validAgent(value: unknown): value is PublicConversationAgent {
     ));
 }
 
+export function validAgentConfiguration(value: unknown): value is PublicAgentConfiguration {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const configuration = value as Record<string, unknown>;
+  const current = configuration.current;
+  const providers = configuration.providers;
+  const efforts = configuration.efforts;
+  return Object.keys(configuration).sort().join(",") === "active_run,agent_id,current,efforts,explanation,mutable,providers,runtime_type,schema_version,state"
+    && configuration.schema_version === 1
+    && opaqueId(configuration.agent_id)
+    && typeof configuration.runtime_type === "string"
+    && /^[a-z][a-z0-9_-]{0,31}$/u.test(configuration.runtime_type)
+    && ["ready", "read_only", "unavailable"].includes(String(configuration.state))
+    && typeof configuration.mutable === "boolean"
+    && configuration.mutable === (configuration.state === "ready")
+    && typeof configuration.active_run === "boolean"
+    && !!current && typeof current === "object" && !Array.isArray(current)
+    && Object.keys(current).sort().join(",") === "effort,model,provider"
+    && ((current as Record<string, unknown>).provider === null || text((current as Record<string, unknown>).provider, 120))
+    && ((current as Record<string, unknown>).model === null || text((current as Record<string, unknown>).model, 160))
+    && (current as Record<string, unknown>).effort === "runtime_default"
+    && Array.isArray(providers) && providers.length <= 32
+    && providers.every((provider) => {
+      if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+      const row = provider as Record<string, unknown>;
+      return Object.keys(row).sort().join(",") === "current,id,models,name"
+        && text(row.id, 120) && text(row.name, 160)
+        && typeof row.current === "boolean"
+        && Array.isArray(row.models) && row.models.length <= 256
+        && row.models.every((model) => text(model, 160))
+        && new Set(row.models).size === row.models.length;
+    })
+    && new Set(providers.map((provider) => (provider as Record<string, unknown>).id)).size === providers.length
+    && Array.isArray(efforts) && efforts.length === 1
+    && !!efforts[0] && typeof efforts[0] === "object" && !Array.isArray(efforts[0])
+    && Object.keys(efforts[0] as Record<string, unknown>).sort().join(",") === "id,name"
+    && (efforts[0] as Record<string, unknown>).id === "runtime_default"
+    && (efforts[0] as Record<string, unknown>).name === "Runtime default"
+    && typeof configuration.explanation === "string"
+    && configuration.explanation.length <= 300 && !configuration.explanation.includes("\0");
+}
+
+export function validAgentConfigurationPayload(value: unknown): value is PublicAgentConfigurationPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  return Object.keys(payload).sort().join(",") === "configuration,runtime,schema_version,service,status"
+    && payload.schema_version === 1 && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python" && payload.status === "ready"
+    && validAgentConfiguration(payload.configuration);
+}
+
+export function validAgentConfigurationPreview(value: unknown): value is PublicAgentConfigurationPreview {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  const current = payload.current;
+  const target = payload.target;
+  return Object.keys(payload).sort().join(",") === "action,agent_id,confirmation_id,current,message,requires_confirmation,runtime,schema_version,service,status,target"
+    && payload.schema_version === 1 && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python" && payload.status === "ready"
+    && payload.action === "configure" && opaqueId(payload.agent_id)
+    && payload.requires_confirmation === true && text(payload.confirmation_id, 80)
+    && !!current && typeof current === "object" && !Array.isArray(current)
+    && Object.keys(current).sort().join(",") === "model,provider"
+    && ((current as Record<string, unknown>).provider === null || text((current as Record<string, unknown>).provider, 120))
+    && ((current as Record<string, unknown>).model === null || text((current as Record<string, unknown>).model, 160))
+    && !!target && typeof target === "object" && !Array.isArray(target)
+    && Object.keys(target).sort().join(",") === "effort,model,provider,provider_name"
+    && text((target as Record<string, unknown>).provider, 120)
+    && text((target as Record<string, unknown>).provider_name, 160)
+    && text((target as Record<string, unknown>).model, 160)
+    && (target as Record<string, unknown>).effort === "runtime_default"
+    && text(payload.message, 300);
+}
+
+export function validAgentConfigurationResult(value: unknown): value is PublicAgentConfigurationResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  return Object.keys(payload).sort().join(",") === "action,agent_id,configuration,message,runtime,schema_version,service,status"
+    && payload.schema_version === 1 && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python" && payload.status === "ready"
+    && payload.action === "configure" && opaqueId(payload.agent_id)
+    && validAgentConfiguration(payload.configuration)
+    && (payload.configuration as PublicAgentConfiguration).agent_id === payload.agent_id
+    && text(payload.message, 300);
+}
+
 function validConversation(value: unknown): value is PublicConversation {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const conversation = value as Record<string, unknown>;
@@ -345,12 +482,20 @@ function validCurrentRun(value: unknown): value is PublicCurrentRun | null {
   if (value === null) return true;
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const run = value as Record<string, unknown>;
-  return Object.keys(run).sort().join(",") === "id,partial,status,updated_at"
+  const keys = Object.keys(run).sort().join(",");
+  const configuration = run.configuration;
+  return (keys === "id,partial,status,updated_at" || keys === "configuration,id,partial,status,updated_at")
     && runId(run.id)
     && typeof run.status === "string"
     && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(run.status)
     && typeof run.partial === "boolean"
-    && timestamp(run.updated_at);
+    && timestamp(run.updated_at)
+    && (configuration === undefined || configuration === null || !!configuration
+      && typeof configuration === "object" && !Array.isArray(configuration)
+      && Object.keys(configuration).sort().join(",") === "effort,model,provider"
+      && text((configuration as Record<string, unknown>).provider, 160)
+      && text((configuration as Record<string, unknown>).model, 160)
+      && text((configuration as Record<string, unknown>).effort, 64));
 }
 
 function validTurn(value: unknown): value is PublicConversationTurn {
@@ -1081,6 +1226,74 @@ export async function fetchBridgeCodexReadiness(
     timeoutMilliseconds,
   );
   if (response.status === 200 && validCodexReadiness(payload)) return { ...payload };
+  handleFixedState(response, payload);
+}
+
+function configurationPath(agentId: string, suffix = ""): string {
+  if (!opaqueId(agentId)) throw new BridgeConversationsError("agent_id_invalid");
+  return `${PRIVATE_AGENTS_PATH}/${encodeURIComponent(agentId)}/configuration${suffix}`;
+}
+
+export async function fetchBridgeAgentConfiguration(
+  agentId: string,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+): Promise<PublicAgentConfigurationPayload> {
+  const { response, payload } = await requestBridge(
+    configurationPath(agentId), fetcher, environment, { method: "GET" },
+    AGENT_CONFIGURATION_READ_TIMEOUT_MILLISECONDS,
+  );
+  if (response.status === 200 && validAgentConfigurationPayload(payload)
+    && payload.configuration.agent_id === agentId) return structuredClone(payload);
+  handleFixedState(response, payload);
+}
+
+export async function previewBridgeAgentConfiguration(
+  agentId: string,
+  provider: string,
+  model: string,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+): Promise<PublicAgentConfigurationPreview> {
+  if (!text(provider, 120) || !text(model, 160)) throw new BridgeConversationsError("conversation_request_invalid");
+  const { response, payload } = await requestBridge(
+    configurationPath(agentId, "/preview"), fetcher, environment,
+    { body: JSON.stringify({ provider, model }), headers: { "Content-Type": "application/json" }, method: "POST" },
+    AGENT_CONFIGURATION_PREVIEW_TIMEOUT_MILLISECONDS,
+  );
+  if (response.status === 200 && validAgentConfigurationPreview(payload)
+    && payload.agent_id === agentId && payload.target.provider === provider
+    && payload.target.model === model) return structuredClone(payload);
+  handleFixedState(response, payload);
+}
+
+export async function confirmBridgeAgentConfiguration(
+  agentId: string,
+  provider: string,
+  model: string,
+  confirmationId: string,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+  timeoutMilliseconds = AGENT_CONFIGURATION_CONFIRM_TIMEOUT_MILLISECONDS,
+): Promise<PublicAgentConfigurationResult> {
+  if (!text(provider, 120) || !text(model, 160) || !text(confirmationId, 80)) throw new BridgeConversationsError("conversation_request_invalid");
+  let response: Response;
+  let payload: unknown;
+  try {
+    ({ response, payload } = await requestBridge(
+      configurationPath(agentId), fetcher, environment,
+      { body: JSON.stringify({ confirmation_id: confirmationId, provider, model }), headers: { "Content-Type": "application/json" }, method: "POST" },
+      timeoutMilliseconds,
+    ));
+  } catch (error) {
+    if (error instanceof BridgeConversationsError && error.code === "bridge_unavailable") {
+      throw new BridgeConversationsError("conversation_partial");
+    }
+    throw error;
+  }
+  if (response.status === 200 && validAgentConfigurationResult(payload)
+    && payload.agent_id === agentId && payload.configuration.current.provider === provider
+    && payload.configuration.current.model === model) return structuredClone(payload);
   handleFixedState(response, payload);
 }
 

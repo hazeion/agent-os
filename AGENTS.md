@@ -248,6 +248,16 @@ environment-variable names, or tokens to the browser, and never show the full
 unsupported provider catalog as if it were configured. Hermes exclusively owns
 credential setup and authentication.
 
+The Next.js composer may address configuration only by canonical Mentat Agent
+ID. Resolve its private runtime binding in Python and never return that binding
+to Node or the browser. Only a uniquely bound local Hermes Agent with authenticated
+inventory and the fixed switch capability is mutable. Codex, Vercel,
+unsupported runtimes, and unsupported effort controls remain visible but
+read-only. Configuration changes are for the next Run; an active Run displays
+only its immutable safe execution snapshot.
+Remote Hermes may expose only its current safe identity here, never alternate
+provider/model inventory or mutation.
+
 A provider switch requires an inventory match, exact preview, profile-bound
 confirmation, and no active Agent Console run. Refresh Hermes state afterward
 to verify the change and roll back to the prior provider on verification failure

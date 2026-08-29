@@ -12,6 +12,8 @@ import type {
   PublicConversationTurnSubmission,
   PublicQueuedConversationTurn,
   PublicCodexReadiness,
+  PublicAgentConfiguration,
+  PublicAgentConfigurationPreview,
 } from "@/lib/bridge-conversations";
 import {
   conversationComposerIntent,
@@ -42,6 +44,12 @@ import {
   previewRunStop,
   PublicRunActionError,
 } from "@/lib/public-run-actions";
+import {
+  confirmAgentConfiguration,
+  fetchAgentConfiguration,
+  previewAgentConfiguration,
+  PublicAgentConfigurationError,
+} from "@/lib/public-agent-configuration";
 
 const SUGGESTIONS = [
   "Help me plan the work I need to finish today",
@@ -387,6 +395,73 @@ function tabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number
   select(next);
 }
 
+function ComposerConfiguration({
+  active,
+  agentId,
+  agentLocked,
+  agents,
+  busy,
+  configuration,
+  loading,
+  model,
+  onAgent,
+  onConfirm,
+  onModel,
+  onPreview,
+  onProvider,
+  preview,
+  provider,
+  snapshot,
+}: Readonly<{
+  active: boolean;
+  agentId: string | null;
+  agentLocked: boolean;
+  agents: PublicConversationAgent[];
+  busy: boolean;
+  configuration: PublicAgentConfiguration | null;
+  loading: LoadingState;
+  model: string;
+  onAgent: (agentId: string | null) => void;
+  onConfirm: () => void;
+  onModel: (model: string) => void;
+  onPreview: () => void;
+  onProvider: (provider: string) => void;
+  preview: PublicAgentConfigurationPreview | null;
+  provider: string;
+  snapshot: { provider: string; model: string; effort: string } | null;
+}>) {
+  const confirmFocus = useRef<HTMLButtonElement>(null);
+  const providerFocus = useRef<HTMLSelectElement>(null);
+  const hadPreview = useRef(false);
+  useEffect(() => {
+    if (preview) confirmFocus.current?.focus();
+    else if (hadPreview.current) providerFocus.current?.focus();
+    hadPreview.current = preview !== null;
+  }, [preview]);
+  const selectedProvider = configuration?.providers.find((item) => item.id === provider);
+  const models = selectedProvider?.models ?? [];
+  const changed = !!configuration
+    && (provider !== (configuration.current.provider ?? "")
+      || model !== (configuration.current.model ?? ""));
+  const disabled = busy || active || !configuration?.mutable;
+  const explanation = active
+    ? "Active Run snapshot is unchanged. Stop it before configuring the next Run."
+    : loading === "loading" ? "Loading Agent configuration…"
+      : loading === "unavailable" ? "Agent configuration is temporarily unavailable."
+        : loading === "unsupported" ? "This Mentat build does not support Agent configuration."
+          : loading === "error" ? "Agent configuration could not be read safely."
+      : configuration?.explanation || (configuration?.mutable ? "Changes apply to the next Run." : "Configuration is read-only.");
+  return <div aria-label="Composer Agent configuration" className="composer-configuration">
+    <label><span>Agent</span><select aria-label={agentLocked ? "Conversation Agent" : "Agent for new conversations"} disabled={agentLocked} onChange={(event) => onAgent(event.target.value || null)} value={agentId ?? ""}><option value="">Choose an Agent</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
+    <label><span>Provider</span><select aria-label="Provider for next Run" disabled={disabled || !configuration?.providers.length} onChange={(event) => onProvider(event.target.value)} ref={providerFocus} value={provider}><option value="">{configuration?.current.provider ?? "Unavailable"}</option>{configuration?.providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+    <label><span>Model</span><select aria-label="Model for next Run" disabled={disabled || !models.length} onChange={(event) => onModel(event.target.value)} value={model}><option value="">{configuration?.current.model ?? "Unavailable"}</option>{models.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+    <label><span>Effort</span><select aria-label="Effort for next Run" disabled value="runtime_default"><option value="runtime_default">Runtime default</option></select></label>
+    {preview ? <div className="configuration-confirmation"><span>{preview.target.provider_name} · {preview.target.model} · next Run</span><button disabled={busy || active} onClick={onConfirm} ref={confirmFocus} type="button">{busy ? "Applying…" : "Confirm"}</button></div> : changed && !disabled ? <button className="configuration-review" disabled={!provider || !model} onClick={onPreview} type="button">Review</button> : null}
+    {active && snapshot ? <small className="configuration-snapshot">Active snapshot: {snapshot.provider} · {snapshot.model} · {readable(snapshot.effort)}</small> : null}
+    <small className="configuration-explanation">{explanation}</small>
+  </div>;
+}
+
 export function HomeConsole() {
   const [conversations, setConversations] = useState<PublicConversation[]>([]);
   const [conversationCursor, setConversationCursor] = useState<string | null>(null);
@@ -426,6 +501,15 @@ export function HomeConsole() {
   const [stopConfirmation, setStopConfirmation] = useState<{ confirmationId: string; runId: string } | null>(null);
   const [verifiedLiveRunIds, setVerifiedLiveRunIds] = useState<ReadonlySet<string>>(new Set());
   const [retryBusyRunIds, setRetryBusyRunIds] = useState<ReadonlySet<string>>(new Set());
+  const [agentConfiguration, setAgentConfiguration] = useState<PublicAgentConfiguration | null>(null);
+  const [agentConfigurationState, setAgentConfigurationState] = useState<LoadingState>("loading");
+  const [configurationProvider, setConfigurationProvider] = useState("");
+  const [configurationModel, setConfigurationModel] = useState("");
+  const [configurationPreview, setConfigurationPreview] = useState<PublicAgentConfigurationPreview | null>(null);
+  const [configurationBusy, setConfigurationBusy] = useState(false);
+  const [configurationRefresh, setConfigurationRefresh] = useState(0);
+  const configurationRequest = useRef(0);
+  const selectedConversationRef = useRef<string | null>(null);
   const noticeSequence = useRef(0);
   const pendingTabFocus = useRef<string | null>(null);
   const setNotice = (message: string) => {
@@ -454,6 +538,9 @@ export function HomeConsole() {
     : notice.message;
   const detail = selectedConversationId ? details[selectedConversationId] ?? null : null;
   const selectedAgent = detail?.agent ?? agents.find((agent) => agent.id === selectedAgentId) ?? null;
+  const configurationAgentId = selectedConversationId === null
+    ? selectedAgentId
+    : detail?.agent.id ?? null;
   const setupRequired = directAgentId === null;
   const selectedIsDirect = selectedAgent?.id === directAgentId && directAgentId !== null;
   const selectedNeedsCodexReadiness = selectedAgent?.runtime_type === "codex";
@@ -509,6 +596,43 @@ export function HomeConsole() {
     : detail?.conversation.id === selectedConversationId ? detailState : "loading";
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { selectedConversationRef.current = selectedConversationId; }, [selectedConversationId]);
+
+  useEffect(() => {
+    const request = configurationRequest.current + 1;
+    configurationRequest.current = request;
+    void Promise.resolve().then(async () => {
+      if (!mounted.current || configurationRequest.current !== request) return;
+      setConfigurationPreview(null);
+      setAgentConfiguration(null);
+      if (!configurationAgentId) {
+        setAgentConfigurationState("empty");
+        setConfigurationProvider("");
+        setConfigurationModel("");
+        return;
+      }
+      setAgentConfigurationState("loading");
+      try {
+        const payload = await fetchAgentConfiguration(configurationAgentId);
+        if (!mounted.current || configurationRequest.current !== request) return;
+        setAgentConfiguration(payload.configuration);
+        setConfigurationProvider(payload.configuration.current.provider ?? "");
+        setConfigurationModel(payload.configuration.current.model ?? "");
+        setAgentConfigurationState("ready");
+      } catch (error) {
+        if (!mounted.current || configurationRequest.current !== request) return;
+        const code = error instanceof PublicAgentConfigurationError ? error.code : "error";
+        setAgentConfigurationState(code === "unavailable" ? "unavailable" : code === "unsupported" ? "unsupported" : "error");
+      }
+    });
+  }, [configurationAgentId, configurationRefresh, selectedConversationId]);
+
+  useEffect(() => {
+    if (!activeRunId) return;
+    void Promise.resolve().then(() => {
+      if (mounted.current) setConfigurationPreview(null);
+    });
+  }, [activeRunId]);
 
   const setSelectedDraft = useCallback((value: string) => {
     setDrafts((current) => current[draftKey] === value
@@ -760,6 +884,69 @@ export function HomeConsole() {
     if (creating || !selectedAgentId) return;
     setCreating(true); setNotice("Creating a new Conversation…");
     try { const created = await createConversation(selectedAgentId); setDetails((current) => ({ ...current, [created.conversation.id]: created })); setDrafts((current) => { const next = { ...current }; const carriedDraft = next[UNBOUND_DRAFT_KEY] ?? ""; delete next[UNBOUND_DRAFT_KEY]; if (carriedDraft) next[created.conversation.id] = carriedDraft; return next; }); setOpenConversationIds((current) => new Set(current).add(created.conversation.id)); setDetailState("ready"); setSelectedConversationId(created.conversation.id); setConversations((current) => [created.conversation, ...current.filter((item) => item.id !== created.conversation.id)]); setConversationState("ready"); setNotice("Conversation created and ready for a prompt."); } catch { setNotice("Mentat could not create that Conversation. Try again."); } finally { setCreating(false); }
+  }
+
+  function chooseConfigurationProvider(provider: string) {
+    setConfigurationPreview(null);
+    setConfigurationProvider(provider);
+    const selected = agentConfiguration?.providers.find((item) => item.id === provider);
+    setConfigurationModel(
+      provider === agentConfiguration?.current.provider
+        && selected?.models.includes(agentConfiguration.current.model ?? "")
+        ? agentConfiguration.current.model ?? ""
+        : selected?.models[0] ?? "",
+    );
+  }
+
+  async function prepareAgentConfiguration() {
+    if (!configurationAgentId || !configurationProvider || !configurationModel || configurationBusy || activeRun) return;
+    const targetAgentId = configurationAgentId;
+    const targetConversationId = selectedConversationId;
+    const request = configurationRequest.current;
+    setConfigurationBusy(true);
+    if (targetConversationId) setConversationNotice(targetConversationId, "Verifying the exact next-Run configuration…");
+    else setNotice("Verifying the exact next-Run configuration…");
+    try {
+      const prepared = await previewAgentConfiguration(targetAgentId, configurationProvider, configurationModel);
+      if (configurationRequest.current === request && selectedConversationRef.current === targetConversationId) {
+        setConfigurationPreview(prepared);
+        if (targetConversationId) setConversationNotice(targetConversationId, "Review the verified Agent configuration, then Confirm.");
+        else setNotice("Review the verified Agent configuration, then Confirm.");
+      }
+    } catch (error) {
+      if (configurationRequest.current === request && selectedConversationRef.current === targetConversationId) {
+        const code = error instanceof PublicAgentConfigurationError ? error.code : "error";
+        const message = code === "conflict" ? "The Agent or active Run changed. Refresh configuration and try again." : code === "partial" ? "Hermes could not verify configuration or rollback. Review the Agent in Hermes before running it." : "Mentat could not verify that configuration. Nothing was changed.";
+        if (targetConversationId) setConversationNotice(targetConversationId, message); else setNotice(message);
+      }
+    } finally { setConfigurationBusy(false); }
+  }
+
+  async function applyAgentConfiguration() {
+    if (!configurationPreview || !configurationAgentId || configurationBusy || activeRun) return;
+    const targetAgentId = configurationAgentId;
+    const targetConversationId = selectedConversationId;
+    const request = configurationRequest.current;
+    const prepared = configurationPreview;
+    setConfigurationBusy(true);
+    try {
+      const result = await confirmAgentConfiguration(targetAgentId, prepared.target.provider, prepared.target.model, prepared.confirmation_id);
+      setConfigurationRefresh((current) => current + 1);
+      if (configurationRequest.current !== request || selectedConversationRef.current !== targetConversationId) return;
+      setAgentConfiguration(result.configuration);
+      setConfigurationProvider(result.configuration.current.provider ?? "");
+      setConfigurationModel(result.configuration.current.model ?? "");
+      setConfigurationPreview(null);
+      if (targetConversationId) setConversationNotice(targetConversationId, "Agent configuration verified. The next Run will use it; active Run evidence was unchanged.");
+      else setNotice("Agent configuration verified. The next Run will use it.");
+    } catch (error) {
+      if (configurationRequest.current === request && selectedConversationRef.current === targetConversationId) {
+        const code = error instanceof PublicAgentConfigurationError ? error.code : "error";
+        setConfigurationPreview(null);
+        const message = code === "conflict" ? "Configuration changed after preview. Nothing was retried; preview it again." : code === "partial" ? "Hermes did not verify the change or rollback. Review the Agent in Hermes before running it." : "Mentat could not apply that configuration. Nothing was retried.";
+        if (targetConversationId) setConversationNotice(targetConversationId, message); else setNotice(message);
+      }
+    } finally { setConfigurationBusy(false); }
   }
 
   async function setConversationArchived(conversation: PublicConversation, archived: boolean) {
@@ -1157,7 +1344,7 @@ export function HomeConsole() {
           {retryableRun ? <section aria-label="Run recovery" className="run-recovery-card"><div><p className="console-kicker">Run recovery</p><h3>Run {readable(retryableRun.status)}{retryableRun.partial ? " · verification partial" : ""}</h3><p>The prior Run and its events remain in history. Retry creates a separate execution attempt with the current Agent configuration.</p></div><div className="run-recovery-actions"><button disabled={retryBusyRunIds.has(retryableRun.id) || detail?.conversation.state !== "active"} onClick={() => void continueRun("retry")} type="button">{retryBusyRunIds.has(retryableRun.id) ? "Working…" : "Retry"}</button></div></section> : null}
           <QueuedTurns busyTurnIds={queueBusyTurnIds} editDrafts={queueEditDrafts} editingTurnId={editingTurnId} onBeginEdit={(turn) => { if (!selectedConversationId) return; setConversationEditor(selectedConversationId, turn.id); setQueueEditDrafts((current) => ({ ...current, [turn.id]: turn.text })); }} onCancel={(turn) => void cancelQueuedTurn(turn)} onContinue={(turn) => void continueQueuedTurn(turn)} onDiscardEdit={(turn) => { if (!selectedConversationId) return; const conversationId = selectedConversationId; if (editingTurnIdsRef.current[conversationId] !== turn.id) return; setConversationEditor(conversationId, null); focusQueueTarget(conversationId, turn.id); }} onEditDraft={(turnId, text) => setQueueEditDrafts((current) => ({ ...current, [turnId]: text }))} onSaveEdit={(turn) => void editQueuedTurn(turn)} turns={detail?.queued_turns ?? []} />
           {setupRequired || selectedNeedsCodexReadiness ? <div className="codex-setup" data-state={codexReadiness ?? "unchecked"}><div><strong>{codexReadiness === "ready" ? "Codex ready" : "Codex subscription sign-in"}</strong><p>{codexReadiness === "sign_in_required" ? <>Run <code>codex login</code> in a terminal, finish the browser sign-in, then Recheck.</> : codexReadiness === "cli_missing" ? <>Install the Codex CLI, run <code>codex login</code>, then restart Mentat.</> : codexReadiness === "unavailable" ? "Mentat could not confirm local Codex readiness." : codexReadiness === "ready" ? "The local Codex CLI is signed in. Mentat never receives your credentials." : "Mentat uses the Codex CLI's existing ChatGPT subscription sign-in; credentials stay with Codex."}</p></div><button disabled={checkingCodex} onClick={() => void recheckCodex()} type="button">{checkingCodex ? "Checking…" : codexReadiness === null ? "Check readiness" : "Recheck"}</button></div> : null}
-          <form className="console-composer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}><label htmlFor="console-prompt">Prompt</label><textarea disabled={initialWorkspaceLoading || sending} id="console-prompt" onChange={(event) => setSelectedDraft(event.target.value)} onCompositionEnd={() => { compositionActive.current = false; }} onCompositionStart={() => { compositionActive.current = true; }} onKeyDown={(event) => { const native = event.nativeEvent; const composing = compositionActive.current || native.isComposing || native.keyCode === 229; if (event.key === "Enter" && !event.shiftKey && !composing) { event.preventDefault(); void sendTurn(); } }} placeholder={initialWorkspaceLoading ? "Loading Conversations" : sending ? composerIntent.kind === "steer" ? "Steering this Run" : "Submitting this Turn" : activeRun ? "Write a follow-up to queue, or begin with /steer" : "Write a prompt for your Agent…"} rows={1} value={draft} /><div className="composer-footer"><span className="composer-context">{selectedAgent ? `${selectedAgent.name} · ${selectedIsDirect ? "Direct mode" : "Selected Agent"}` : setupRequired ? "Direct Agent setup required" : "Select an Agent to continue"}</span><span className="composer-boundary">{sending ? composerIntent.kind === "steer" ? "Steering exact active Run…" : "Submitting exact Turn…" : composerIntent.kind === "steer" ? draftIsValid ? "Steering is never queued" : "Add guidance after /steer" : queueAtCapacity ? "Queue full · edit, cancel, or continue existing work" : activeRun ? `Run ${readable(activeRun.status)} · ordinary Send queues` : selectedNeedsCodexReadiness && codexReadiness !== "ready" && !(detail?.queued_turns.length) ? "Check Codex readiness before starting a Run" : "Enter to send · Shift+Enter for a new line"}</span><button aria-disabled={!canSend} className="composer-send" disabled={!canSend} type="submit">{sending ? "Sending…" : composerIntent.kind === "turn" && activeRun ? "Queue" : "Send"}</button></div></form>
+          <form className="console-composer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}><label htmlFor="console-prompt">Prompt</label><textarea disabled={initialWorkspaceLoading || sending} id="console-prompt" onChange={(event) => setSelectedDraft(event.target.value)} onCompositionEnd={() => { compositionActive.current = false; }} onCompositionStart={() => { compositionActive.current = true; }} onKeyDown={(event) => { const native = event.nativeEvent; const composing = compositionActive.current || native.isComposing || native.keyCode === 229; if (event.key === "Enter" && !event.shiftKey && !composing) { event.preventDefault(); void sendTurn(); } }} placeholder={initialWorkspaceLoading ? "Loading Conversations" : sending ? composerIntent.kind === "steer" ? "Steering this Run" : "Submitting this Turn" : activeRun ? "Write a follow-up to queue, or begin with /steer" : "Write a prompt for your Agent…"} rows={1} value={draft} /><div className="composer-footer"><ComposerConfiguration active={activeRun !== null} agentId={configurationAgentId} agentLocked={selectedConversationId !== null} agents={agents} busy={configurationBusy} configuration={agentConfiguration} loading={agentConfigurationState} model={configurationModel} onAgent={setSelectedAgentId} onConfirm={() => void applyAgentConfiguration()} onModel={(value) => { setConfigurationPreview(null); setConfigurationModel(value); }} onPreview={() => void prepareAgentConfiguration()} onProvider={chooseConfigurationProvider} preview={configurationPreview} provider={configurationProvider} snapshot={activeRun?.configuration ?? null} /><span className="composer-context">{selectedAgent ? `${selectedAgent.name} · ${selectedIsDirect ? "Direct mode" : "Selected Agent"}` : setupRequired ? "Direct Agent setup required" : "Select an Agent to continue"}</span><span className="composer-boundary">{sending ? composerIntent.kind === "steer" ? "Steering exact active Run…" : "Submitting exact Turn…" : composerIntent.kind === "steer" ? draftIsValid ? "Steering is never queued" : "Add guidance after /steer" : queueAtCapacity ? "Queue full · edit, cancel, or continue existing work" : activeRun ? `Run ${readable(activeRun.status)} · ordinary Send queues` : selectedNeedsCodexReadiness && codexReadiness !== "ready" && !(detail?.queued_turns.length) ? "Check Codex readiness before starting a Run" : "Enter to send · Shift+Enter for a new line"}</span><button aria-disabled={!canSend} className="composer-send" disabled={!canSend} type="submit">{sending ? "Sending…" : composerIntent.kind === "turn" && activeRun ? "Queue" : "Send"}</button></div></form>
           <p aria-atomic="true" aria-live="polite" className="console-notice" role="status">{visibleNotice}</p>
         </section>
         <ActivityRail activity={activity} activityState={activityState} collapsed={rightCollapsed} expandedAgents={expandedAgents} onSelectConversation={selectActivityConversation} onToggle={() => setRightCollapsed((current) => !current)} onToggleAgent={(agentId) => setExpandedAgents((current) => { const next = new Set(current); if (next.has(agentId)) next.delete(agentId); else next.add(agentId); return next; })} />

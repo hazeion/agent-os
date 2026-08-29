@@ -667,6 +667,10 @@ class OrchestrationServiceTests(unittest.TestCase):
             finally:
                 connection.close()
             unit = capture_private_console_unit(root)
+            detail = ConversationRepository(
+                root,
+                supported_runtime_types=(runtime.runtime_type,),
+            ).read(conversation_id)
 
         self.assertFalse(result.duplicate)
         self.assertEqual(result.disposition, "accepted")
@@ -693,6 +697,10 @@ class OrchestrationServiceTests(unittest.TestCase):
         self.assertEqual(len(row["capacity_scope_digest"]), 64)
         self.assertEqual(row["admitted_capacity_limit"], 1)
         self.assertNotIn("profile-service", row["execution_config_json"])
+        self.assertEqual(
+            detail.current_run["configuration"],
+            {"provider": "test-provider", "model": "test-model", "effort": "medium"},
+        )
         self.assertEqual(unit.run_count, 1)
 
     def test_conversation_submission_guard_covers_reservation_through_adapter_call(self):

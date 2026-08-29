@@ -1056,6 +1056,20 @@ a result. Deep Hermes message search remains a separate read-only endpoint.
 
 ## Provider switching boundary
 
+The Next.js Home composer reaches this boundary only through a canonical Mentat
+Agent ID. Python resolves the private runtime binding, and the fixed bridge
+returns no profile ID or runtime reference. For a uniquely bound local Hermes Agent,
+the composer may show only the authenticated profile-scoped provider/model
+inventory below and must use the same exact preview-confirm-verification path.
+Codex, Vercel, unsupported runtimes, and effort without a fixed mutation
+capability stay visible but read-only. The browser never selects their provider,
+model, effort, executable, working directory, credential source, session, or
+thread. A confirmed pair is labeled for the next Run. The active Run continues
+to display its immutable runtime-reported provider/model/effort snapshot from
+SQLite and is never relabeled from current Agent state.
+Remote Hermes exposes only its current safe provider/model identity through this
+composer capability; alternate remote inventory never crosses the boundary.
+
 Provider discovery and selection are scoped to the selected Hermes profile.
 The current mutation adapter runs locally. Remote mode may display the
 capability-advertised current provider/model identity, but keeps mutation
