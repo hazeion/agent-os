@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import hermes_runtime
 from agent_runtime import (
     AgentEventType,
     AgentRuntimeError,
@@ -68,7 +69,10 @@ class AgentRuntimeContractTests(unittest.TestCase):
             ),
             compatibility_handlers=handlers,
         )
-        self.assertTrue(runtime.supports_attachments("default"))
+        self.assertEqual(
+            runtime.supports_attachments("default"),
+            hermes_runtime.SECURE_DIR_FD_DELETE,
+        )
         with patch("hermes_runtime.SECURE_DIR_FD_DELETE", False):
             self.assertFalse(runtime.supports_attachments("default"))
 

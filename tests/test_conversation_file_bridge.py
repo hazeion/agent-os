@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from http.client import HTTPConnection
 import io
 import json
@@ -1065,13 +1066,31 @@ class ConversationFileServerTests(unittest.TestCase):
                     PACK_ID,
                     {"expected_revision": summary["revision"]},
                 )
+                if not server._OS_OPEN_SUPPORTS_DIR_FD:
+                    self.assertEqual(status, 410)
+                    self.assertEqual(
+                        applied,
+                        {"error_code": "conversation_file.unavailable"},
+                    )
+                    remaining, remaining_status = (
+                        server.mentat_conversation_staged_context_payload(
+                            conversation
+                        )
+                    )
+                    self.assertEqual(remaining_status, 200)
+                    self.assertIsNone(remaining["context_pack"])
+                    self.assertEqual(
+                        [item["source"] for item in remaining["attachments"]],
+                        ["workspace"],
+                    )
+                    return
                 self.assertEqual(status, 201)
                 self.assertEqual(applied["context_pack"]["id"], PACK_ID)
                 self.assertEqual(
                     [item["source"] for item in applied["attachments"]],
                     ["workspace", "context_pack"],
                 )
-                with connect(root) as connection:
+                with closing(connect(root)) as connection:
                     evidence = staged_context_evidence(connection, conversation)
                 self.assertTrue(server.conversation_context_pack_is_current(
                     applied["context_pack"],

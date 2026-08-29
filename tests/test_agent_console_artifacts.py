@@ -191,8 +191,16 @@ class AgentConsoleArtifactTests(unittest.TestCase):
             self.assertEqual(image_path.read_bytes(), PNG_BYTES)
             self.assertEqual(Path(context["attachments"][0]["path"]), image_path)
             self.assertNotEqual(image_path, source)
-            self.assertEqual(artifacts.cleanup_run_input_directory(root, "run_image"), 1)
-            self.assertFalse(image_path.exists())
+            if artifacts.SECURE_DIR_FD_DELETE:
+                self.assertEqual(
+                    artifacts.cleanup_run_input_directory(root, "run_image"),
+                    1,
+                )
+                self.assertFalse(image_path.exists())
+            else:
+                with self.assertRaises(artifacts.ArtifactValidationError):
+                    artifacts.cleanup_run_input_directory(root, "run_image")
+                self.assertTrue(image_path.exists())
 
     def test_artifact_discovery_registers_only_owned_valid_files(self):
         with TemporaryDirectory() as tmpdir:

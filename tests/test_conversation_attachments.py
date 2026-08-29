@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -17,6 +18,7 @@ from conversation_attachments import (
     stage_uploaded_attachment,
 )
 from agent_console_attachments import create_attachment, get_attachment
+from agent_registry import AgentRegistry
 from conversation_repository import ConversationRepository
 from mentat_db import SCHEMA_VERSION, connect, schema_version
 from private_console_unit import capture_private_console_unit
@@ -24,8 +26,23 @@ from private_console_unit import capture_private_console_unit
 
 class ConversationAttachmentTests(unittest.TestCase):
     def conversations(self, root: Path) -> tuple[str, str]:
-        repository = ConversationRepository(root)
-        return repository.create().conversation.id, repository.create().conversation.id
+        agent_id = "agent_conversation_attachments"
+        AgentRegistry(root, supported_runtime_types=("hermes",)).create_agent(
+            agent_id=agent_id,
+            name="Conversation attachments",
+            runtime_config_id="runtime_conversation_attachments",
+            runtime_type="hermes",
+            runtime_agent_ref="conversation-attachments",
+            capabilities=("run.message", "run.start"),
+        )
+        repository = ConversationRepository(
+            root,
+            supported_runtime_types=("hermes",),
+        )
+        return (
+            repository.create(agent_id=agent_id).conversation.id,
+            repository.create(agent_id=agent_id).conversation.id,
+        )
 
     def test_schema_15_staging_is_exact_conversation_owned_and_refreshable(self):
         with TemporaryDirectory() as temporary:
@@ -92,7 +109,7 @@ class ConversationAttachmentTests(unittest.TestCase):
                 content=b"expired",
             )
             attachment_id = staged["attachments"][0]["id"]
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 connection.execute(
                     "UPDATE attachments SET expires_at = ? WHERE id = ?",
                     (0, attachment_id),
@@ -185,7 +202,7 @@ class ConversationAttachmentTests(unittest.TestCase):
 
             stale = create_attachment(root, original_name="stale.txt", content=b"stale")
             associate_staged_attachment(root, conversation, stale["id"], source="workspace")
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 connection.execute(
                     "UPDATE attachments SET state = 'missing' WHERE id = ?",
                     (stale["id"],),
@@ -209,7 +226,7 @@ class ConversationAttachmentTests(unittest.TestCase):
                 attachment_ids=(first["id"], second["id"]),
                 source_digests=("3" * 64, "4" * 64),
             )
-            with connect(root) as connection:
+            with closing(connect(root)) as connection:
                 connection.execute(
                     "UPDATE attachments SET state = 'missing' WHERE id = ?",
                     (first["id"],),

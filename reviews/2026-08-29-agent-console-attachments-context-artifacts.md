@@ -274,15 +274,16 @@ concurrency findings.
 
 ### PR CI follow-up
 
-PR #156 exposed two Windows-only test defects. A cleanup test expected POSIX
-descriptor deletion on Windows, several tests selected the optional Direct
-Codex Agent instead of creating an explicit fixture Agent, and SQLite context
-managers committed without closing their handles. The tests now skip only the
-positive descriptor-dependent cases, retain separate fail-closed assertions,
-create an explicit Hermes fixture Agent, and close every SQLite handle. The
-corrected 36-test set passed normally and with secure descriptor deletion
-forced off, where the two positive POSIX cases skipped. Both adversarial
-reviewers rechecked the test-only diff and reported clean results.
+PR #156 exposed cross-platform test defects rather than runtime failures.
+Several suites selected the optional Direct Codex Agent, SQLite context
+managers committed without closing their handles, and positive POSIX
+descriptor tests expected secure cleanup or note reads on Windows. The tests
+now create explicit Hermes fixture Agents, close every SQLite handle, assert
+each platform's real Hermes capability, and keep separate fail-closed checks
+for unsupported cleanup and Context Pack note reads. The corrected 76-test set
+passed on macOS; the 68-test Windows-capability simulation passed with four
+positive descriptor cases skipped. Both adversarial reviewers rechecked each
+test-only diff and reported clean results.
 
 ## Documentation updates
 
