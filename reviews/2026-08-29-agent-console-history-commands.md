@@ -279,8 +279,8 @@ composer into a generic execution boundary.
 
 - Branch and base: `codex/agent-console-slice-9` to `main`.
 - User authorization and scope: standing approval recorded; ready PR only.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- Implementation commit: `fec5268`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/158
 
 ## Outcome review
 
