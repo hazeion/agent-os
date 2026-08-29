@@ -2,6 +2,8 @@
 
 import { Fragment, memo, useMemo, useState } from "react";
 
+import { backendTrustedLinkHrefs, linkifiedText, TranscriptLinkPreviews, type SafeLinkPreviewProjection } from "./transcript-link-previews";
+
 const MAXIMUM_DISPLAY_CODE_POINTS = 20_000;
 const MAXIMUM_RENDER_UNITS = 512;
 const MAXIMUM_TRANSCRIPT_RENDER_UNITS = 8_000;
@@ -143,24 +145,24 @@ export function transcriptContentRenderUnits(content: string): number {
   return renderUnits(parseMarkdown(boundedContent(content).text));
 }
 
-function inlineContent(value: string) {
+function inlineContent(value: string, backendTrusted: ReadonlySet<string>) {
   const nodes: React.ReactNode[] = [];
   let cursor = 0;
   INLINE_TOKEN.lastIndex = 0;
   for (const match of value.matchAll(INLINE_TOKEN)) {
     const offset = match.index ?? 0;
-    if (offset > cursor) nodes.push(value.slice(cursor, offset));
+    if (offset > cursor) nodes.push(...linkifiedText(value.slice(cursor, offset), `inline-${cursor}`, backendTrusted));
     const token = match[0];
     if (token.startsWith("`")) {
       nodes.push(<code key={`inline-${offset}`}>{token.slice(1, -1)}</code>);
     } else if (token.startsWith("**")) {
-      nodes.push(<strong key={`strong-${offset}`}>{token.slice(2, -2)}</strong>);
+      nodes.push(<strong key={`strong-${offset}`}>{linkifiedText(token.slice(2, -2), `strong-${offset}`, backendTrusted)}</strong>);
     } else {
-      nodes.push(<em key={`em-${offset}`}>{token.slice(1, -1)}</em>);
+      nodes.push(<em key={`em-${offset}`}>{linkifiedText(token.slice(1, -1), `em-${offset}`, backendTrusted)}</em>);
     }
     cursor = offset + token.length;
   }
-  if (cursor < value.length) nodes.push(value.slice(cursor));
+  if (cursor < value.length) nodes.push(...linkifiedText(value.slice(cursor), `inline-${cursor}`, backendTrusted));
   return nodes;
 }
 
@@ -217,15 +219,30 @@ export const TranscriptContent = memo(function TranscriptContent({
   content,
   copyText = defaultCopyText,
   forcePlainText = false,
+  linkPreviewConversationId,
+  linkPreviews = [],
+  linkPreviewMessageId,
+  linkPreviewMessageRevision,
+  linkPreviewRetrying = false,
   messageLabel = "message",
+  onRetryLinkPreviews,
+  showLinkPreviewCards = true,
 }: Readonly<{
   content: string;
   copyText?: CopyText;
   forcePlainText?: boolean;
+  linkPreviewConversationId?: string;
+  linkPreviews?: readonly SafeLinkPreviewProjection[];
+  linkPreviewMessageId?: string;
+  linkPreviewMessageRevision?: number;
+  linkPreviewRetrying?: boolean;
   messageLabel?: string;
+  onRetryLinkPreviews?: (conversationId: string, messageId: string, revision: number) => void;
+  showLinkPreviewCards?: boolean;
 }>) {
   const bounded = useMemo(() => boundedContent(content), [content]);
   const blocks = useMemo(() => forcePlainText ? [] : parseMarkdown(bounded.text), [bounded.text, forcePlainText]);
+  const backendTrusted = useMemo(() => backendTrustedLinkHrefs(bounded.text, linkPreviews), [bounded.text, linkPreviews]);
   const simplified = useMemo(() => forcePlainText || renderUnits(blocks) > MAXIMUM_RENDER_UNITS, [blocks, forcePlainText]);
   const [copyStatus, setCopyStatus] = useState("");
 
@@ -244,17 +261,17 @@ export const TranscriptContent = memo(function TranscriptContent({
         <button aria-label={`Copy ${messageLabel}`} onClick={() => void copy(bounded.text, "Message")} type="button">Copy</button>
       </div>
       <div className="transcript-markdown">
-        {simplified ? <p dir="auto">{bounded.text}</p> : blocks.map((block, index) => {
+        {simplified ? <p dir="auto">{linkifiedText(bounded.text, "plain", backendTrusted)}</p> : blocks.map((block, index) => {
           if (block.kind === "heading") {
             const Tag = block.depth === 1 ? "h2" : block.depth === 2 ? "h3" : "h4";
-            return <Tag dir="auto" key={`heading-${index}`}>{inlineContent(block.text)}</Tag>;
+            return <Tag dir="auto" key={`heading-${index}`}>{inlineContent(block.text, backendTrusted)}</Tag>;
           }
           if (block.kind === "blockquote") {
-            return <blockquote dir="auto" key={`quote-${index}`}>{inlineContent(block.text)}</blockquote>;
+            return <blockquote dir="auto" key={`quote-${index}`}>{inlineContent(block.text, backendTrusted)}</blockquote>;
           }
           if (block.kind === "list") {
             const Tag = block.ordered ? "ol" : "ul";
-            return <Tag key={`list-${index}`}>{block.items.map((item, itemIndex) => <li dir="auto" key={`item-${itemIndex}`}>{inlineContent(item)}</li>)}</Tag>;
+            return <Tag key={`list-${index}`}>{block.items.map((item, itemIndex) => <li dir="auto" key={`item-${itemIndex}`}>{inlineContent(item, backendTrusted)}</li>)}</Tag>;
           }
           if (block.kind === "code") {
             const label = languageLabel(block.language);
@@ -263,9 +280,12 @@ export const TranscriptContent = memo(function TranscriptContent({
               <pre aria-label={`${label} code block ${block.ordinal}`} dir="ltr" tabIndex={0}><code>{highlightedCode(block.code)}</code></pre>
             </div>;
           }
-          return <p dir="auto" key={`paragraph-${index}`}>{inlineContent(block.text)}</p>;
+          return <p dir="auto" key={`paragraph-${index}`}>{inlineContent(block.text, backendTrusted)}</p>;
         })}
       </div>
+      <TranscriptLinkPreviews messageLabel={messageLabel} onRetry={onRetryLinkPreviews && linkPreviewConversationId && linkPreviewMessageId && linkPreviewMessageRevision
+        ? () => onRetryLinkPreviews(linkPreviewConversationId, linkPreviewMessageId, linkPreviewMessageRevision)
+        : undefined} previews={showLinkPreviewCards ? linkPreviews : []} retrying={linkPreviewRetrying} />
       {bounded.truncated ? <p className="transcript-truncated" role="note">Content truncated for safe display.</p> : null}
       {simplified ? <p className="transcript-truncated" role="note">Formatting simplified for safe display.</p> : null}
       {copyStatus ? <span aria-live="polite" className="transcript-copy-status" role="status">{copyStatus}</span> : null}

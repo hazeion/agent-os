@@ -154,6 +154,32 @@ class DataBackupRestoreTests(unittest.TestCase):
             self.assertNotIn(b"runtime-secret", encoded)
             self.assertNotIn(os.fsencode(str(base)), encoded)
 
+    def test_link_preview_cache_and_preference_do_not_enter_backup(self):
+        from link_preview_cache import LinkPreviewCache, LinkPreviewPreferenceStore
+
+        with TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            _seeds, source = self.make_current(base, "source", "source")
+            preference = LinkPreviewPreferenceStore(source)
+            preference.update(enabled=False, expected_revision=1)
+            cache = LinkPreviewCache(source)
+            cache.store(
+                "https://python.org/private-query?ordinary=secret-canary",
+                final_normalized_url="https://python.org/final",
+                status="ready",
+                ttl_seconds=60,
+                title="preview-title-canary",
+                display_host="python.org",
+            )
+            result = backup_restore.create_durable_backup(source)
+            self.assertEqual(result.status, "created")
+            archive_path = source / "backups" / str(result.backup_name)
+            encoded = archive_path.read_bytes()
+            self.assertNotIn(b"preview-title-canary", encoded)
+            self.assertNotIn(b"secret-canary", encoded)
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertFalse(any("link-preview" in name for name in archive.namelist()))
+
     def test_default_released_private_units_round_trip_for_formats_two_and_three(self):
         with TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

@@ -5,6 +5,13 @@ All notable changes to Mentat.
 ## 2026-08-29
 
 ### Added
+- Added Message-bound public-HTTPS rich-link previews with pinned DNS/IP/TLS
+  transport, credential-free replaceable workers, bounded metadata parsing,
+  verified WebP transformation, safe asynchronous cards, and permanent plain
+  link fallback.
+- Added an enabled-by-default revisioned privacy control, explicit disposable
+  cache clear, negative caching, offline/cache-only behavior, and opaque
+  same-origin preview images.
 - Added a bounded React-text Markdown transcript with inert highlighted code,
   Message/code copy actions, Run grouping, and provenance-safe Thinking and
   Activity disclosures.
@@ -19,7 +26,14 @@ All notable changes to Mentat.
   Conversation projection.
 
 ### Safety
-- Kept raw HTML, links, bidi controls, tool payloads, provider reasoning,
+- Prevented browser-selected URLs and generic proxying; every preview re-reads
+  one exact accepted user Message and keeps raw URLs, HTML, headers, redirects,
+  addresses, original images, paths, credentials, and internal errors outside
+  cache and browser projections.
+- Excluded the versioned preview cache, transformed images, and cache secret
+  from backup/restore/compatible export while keeping the privacy preference in
+  a separate owner-only exact-revision file.
+- Kept raw HTML, unsupported links, bidi controls, tool payloads, provider reasoning,
   runtime references, and executable code outside the transcript presentation
   boundary; long transcripts remain capped at 200 rendered Message rows.
 - Prevented the shell mutation observer from retriggering itself by making
