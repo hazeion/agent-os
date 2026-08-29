@@ -29,6 +29,9 @@ from conversation_repository import (
 )
 from agent_registry import AgentRegistryError, AgentRegistryValidationError
 from orchestration_service import OrchestrationServiceError
+from link_preview_cache import LinkPreviewCacheError, LinkPreviewPreferenceConflict
+from link_preview_service import LinkPreviewServiceError
+from link_preview_webp import valid_transformed_webp
 from .version import DISPLAY_VERSION
 
 
@@ -42,6 +45,8 @@ BRIDGE_RUNS_PATH = "/bridge/v1/runs"
 BRIDGE_CONVERSATIONS_PATH = "/bridge/v1/conversations"
 BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
 BRIDGE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness"
+BRIDGE_LINK_PREVIEW_PREFERENCE_PATH = "/bridge/v1/link-previews/preference"
+BRIDGE_LINK_PREVIEW_CACHE_CLEAR_PATH = "/bridge/v1/link-previews/cache/clear"
 MINIMUM_TOKEN_LENGTH = 43
 MAXIMUM_TOKEN_LENGTH = 256
 SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
@@ -69,6 +74,7 @@ _RUN_SOURCE = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _CONVERSATION_ID = re.compile(r"conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _MESSAGE_ID = re.compile(r"msg_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _TURN_ID = re.compile(r"turn_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
+_LINK_PREVIEW_IMAGE_ID = re.compile(r"[0-9a-f]{32}\Z")
 
 
 class BridgeConfigurationError(ValueError):
@@ -101,6 +107,10 @@ class BridgeRunEventProjectionError(ValueError):
 
 class BridgeConversationProjectionError(ValueError):
     """Raised when canonical Conversation data cannot cross this capability."""
+
+
+class BridgeLinkPreviewProjectionError(ValueError):
+    """Raised when link-preview data cannot cross the private bridge."""
 
 
 class _LoopbackBridgeHTTPServer(ThreadingHTTPServer):
@@ -963,6 +973,224 @@ def bridge_conversation_payload(
             return _conversation_failure("error")
     except Exception:
         return _conversation_failure("error")
+
+
+def _link_preview_failure(status: str) -> tuple[dict[str, object], int]:
+    codes = {
+        "capacity_unavailable": 429,
+        "conflict": 409,
+        "error": 500,
+        "invalid": 400,
+        "not_found": 404,
+        "unavailable": 503,
+    }
+    safe = status if status in codes else "error"
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": safe,
+    }, codes[safe]
+
+
+def _safe_link_preview_text(value: object, maximum: int) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > maximum
+        or re.search(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", value)
+    ):
+        raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+    return value
+
+
+def _ready_link_preview_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "conversation_id", "message_id", "message_revision",
+        "enabled", "previews",
+    }:
+        raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+    previews = value.get("previews")
+    if (
+        value.get("schema_version") != 1
+        or _CONVERSATION_ID.fullmatch(str(value.get("conversation_id") or "")) is None
+        or _MESSAGE_ID.fullmatch(str(value.get("message_id") or "")) is None
+        or type(value.get("message_revision")) is not int
+        or value["message_revision"] < 1
+        or type(value.get("enabled")) is not bool
+        or not isinstance(previews, list)
+        or len(previews) > 3
+    ):
+        raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+    result: list[dict[str, object]] = []
+    ordinals: list[int] = []
+    for preview in previews:
+        if not isinstance(preview, dict):
+            raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+        ordinal = preview.get("candidate_ordinal")
+        status = preview.get("status")
+        if type(ordinal) is not int or not 1 <= ordinal <= 3 or status not in {"pending", "ready", "unavailable", "blocked", "disabled"}:
+            raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+        ordinals.append(ordinal)
+        if status != "ready":
+            if set(preview) != {"candidate_ordinal", "status"}:
+                raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+            result.append({"candidate_ordinal": ordinal, "status": status})
+            continue
+        if set(preview) - {"candidate_ordinal", "status", "title", "description", "site_name", "display_host", "image_alt", "image_id"}:
+            raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+        title = _safe_link_preview_text(preview.get("title"), 200)
+        description = _safe_link_preview_text(preview.get("description"), 500)
+        display_host = _safe_link_preview_text(preview.get("display_host"), 253)
+        valid_display_host = display_host is not None and re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", display_host) is not None
+        if display_host is not None and not valid_display_host:
+            try:
+                address = ipaddress.ip_address(display_host)
+                valid_display_host = address.is_global and str(address) == display_host
+            except ValueError:
+                valid_display_host = False
+        if (title is None and description is None) or not valid_display_host:
+            raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+        item: dict[str, object] = {
+            "candidate_ordinal": ordinal,
+            "status": "ready",
+            "display_host": display_host,
+        }
+        for key, maximum in (("title", 200), ("description", 500), ("site_name", 120), ("image_alt", 200)):
+            text = _safe_link_preview_text(preview.get(key), maximum)
+            if text is not None:
+                item[key] = text
+        image_id = preview.get("image_id")
+        if image_id is not None:
+            if not isinstance(image_id, str) or _LINK_PREVIEW_IMAGE_ID.fullmatch(image_id) is None:
+                raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+            item["image_id"] = image_id
+        result.append(item)
+    if ordinals != sorted(set(ordinals)):
+        raise BridgeLinkPreviewProjectionError("link_preview_projection_invalid")
+    return {
+        "schema_version": 1,
+        "conversation_id": value["conversation_id"],
+        "message_id": value["message_id"],
+        "message_revision": value["message_revision"],
+        "enabled": value["enabled"],
+        "previews": result,
+    }
+
+
+def _bounded_link_preview_response(payload: dict[str, object], status: int) -> tuple[dict[str, object], int]:
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return (payload, status) if len(body) <= MAXIMUM_BRIDGE_RESPONSE_BODY_BYTES else _link_preview_failure("error")
+
+
+def bridge_link_previews_payload(
+    conversation_id: str,
+    message_id: str,
+    message_revision: int,
+    *,
+    action: str = "read",
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_link_previews_payload
+
+        source, source_status = mentat_link_previews_payload(
+            conversation_id,
+            message_id,
+            message_revision,
+            action=action,
+        )
+        expected_status = 200 if action == "read" else 202
+        if source_status != expected_status:
+            return _link_preview_failure("error")
+        ready = _ready_link_preview_payload(source)
+        if ready["conversation_id"] != conversation_id or ready["message_id"] != message_id or ready["message_revision"] != message_revision:
+            raise BridgeLinkPreviewProjectionError("link_preview_target_invalid")
+        return _bounded_link_preview_response(
+            {**ready, "service": "mentat-local-bridge", "runtime": "python", "status": "ready"},
+            expected_status,
+        )
+    except LinkPreviewPreferenceConflict:
+        return _link_preview_failure("conflict")
+    except LinkPreviewServiceError as exc:
+        return _link_preview_failure(exc.code.removeprefix("link_preview."))
+    except (BridgeLinkPreviewProjectionError, LinkPreviewCacheError, OSError, ValueError):
+        return _link_preview_failure("error")
+    except Exception:
+        return _link_preview_failure("error")
+
+
+def bridge_link_preview_preference_payload(payload: object | None = None) -> tuple[dict[str, object], int]:
+    try:
+        if payload is None:
+            from server import mentat_link_preview_preference_payload
+
+            source = mentat_link_preview_preference_payload()
+            status_code = 200
+        else:
+            from server import update_mentat_link_preview_preference
+
+            source, status_code = update_mentat_link_preview_preference(payload)
+        if (
+            status_code != 200
+            or not isinstance(source, dict)
+            or set(source) != {"schema_version", "enabled", "revision"}
+            or source.get("schema_version") != 1
+            or type(source.get("enabled")) is not bool
+            or type(source.get("revision")) is not int
+            or source["revision"] < 1
+        ):
+            raise BridgeLinkPreviewProjectionError("link_preview_preference_invalid")
+        return _bounded_link_preview_response(
+            {**source, "service": "mentat-local-bridge", "runtime": "python", "status": "ready"},
+            200,
+        )
+    except LinkPreviewPreferenceConflict:
+        return _link_preview_failure("conflict")
+    except LinkPreviewServiceError as exc:
+        return _link_preview_failure(exc.code.removeprefix("link_preview."))
+    except (BridgeLinkPreviewProjectionError, LinkPreviewCacheError, OSError, ValueError):
+        return _link_preview_failure("error")
+    except Exception:
+        return _link_preview_failure("error")
+
+
+def bridge_clear_link_preview_cache(payload: object) -> tuple[dict[str, object], int]:
+    try:
+        from server import clear_mentat_link_preview_cache
+
+        source, status = clear_mentat_link_preview_cache(payload)
+        if status != 200 or source != {"schema_version": 1, "cleared": True}:
+            raise BridgeLinkPreviewProjectionError("link_preview_clear_invalid")
+        return {
+            **source,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+        }, 200
+    except LinkPreviewServiceError as exc:
+        return _link_preview_failure(exc.code.removeprefix("link_preview."))
+    except (BridgeLinkPreviewProjectionError, LinkPreviewCacheError, OSError, ValueError):
+        return _link_preview_failure("error")
+    except Exception:
+        return _link_preview_failure("error")
+
+
+def bridge_link_preview_image(image_id: str) -> tuple[bytes, int] | None:
+    try:
+        from server import mentat_link_preview_image
+
+        value = mentat_link_preview_image(image_id)
+        if value is None:
+            return None
+        body, max_age = value
+        if not valid_transformed_webp(body) or type(max_age) is not int or not 0 <= max_age <= 300:
+            raise BridgeLinkPreviewProjectionError("link_preview_image_invalid")
+        return body, max_age
+    except Exception:
+        return None
 
 
 def bridge_create_conversation_payload(payload: object) -> tuple[dict[str, object], int]:
@@ -2400,6 +2628,19 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_webp(self, body: bytes, max_age: int) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "image/webp")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", f"private, max-age={max_age}, no-transform")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _request_is_private(self, *, reject_body_headers: bool = True) -> bool:
         if not client_is_loopback(self.client_address[0]):
             return False
@@ -2557,6 +2798,48 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_codex_readiness_payload()
             self._send_json(payload, status)
             return
+        if parsed.path == BRIDGE_LINK_PREVIEW_PREFERENCE_PATH and not parsed.query:
+            payload, status = bridge_link_preview_preference_payload()
+            self._send_json(payload, status)
+            return
+        link_preview_image_match = re.fullmatch(
+            r"/bridge/v1/link-previews/images/([^/]+)", parsed.path
+        )
+        if link_preview_image_match is not None and not parsed.query:
+            image_id = unquote(link_preview_image_match.group(1))
+            if _LINK_PREVIEW_IMAGE_ID.fullmatch(image_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            image = bridge_link_preview_image(image_id)
+            if image is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+            else:
+                self._send_webp(*image)
+            return
+        link_preview_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/messages/([^/]+)/link-previews",
+            parsed.path,
+        )
+        if link_preview_match is not None:
+            conversation_id = unquote(link_preview_match.group(1))
+            message_id = unquote(link_preview_match.group(2))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None or _MESSAGE_ID.fullmatch(message_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) != 1 or pairs[0][0] != "revision" or re.fullmatch(r"[1-9][0-9]{0,9}", pairs[0][1]) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_link_previews_payload(
+                conversation_id,
+                message_id,
+                int(pairs[0][1]),
+            )
+            self._send_json(payload, status)
+            return
         conversation_match = re.fullmatch(
             r"/bridge/v1/conversations/([^/]+)", parsed.path
         )
@@ -2608,6 +2891,44 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
+        if parsed.path == BRIDGE_LINK_PREVIEW_PREFERENCE_PATH and not parsed.query:
+            body = self._action_json_body()
+            if body is None or set(body) != {"enabled", "expected_revision"}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_link_preview_preference_payload(body)
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_LINK_PREVIEW_CACHE_CLEAR_PATH and not parsed.query:
+            body = self._action_json_body()
+            if body != {}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_clear_link_preview_cache(body)
+            self._send_json(payload, status)
+            return
+        link_preview_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/messages/([^/]+)/link-previews",
+            parsed.path,
+        )
+        if link_preview_match is not None and not parsed.query:
+            conversation_id = unquote(link_preview_match.group(1))
+            message_id = unquote(link_preview_match.group(2))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None or _MESSAGE_ID.fullmatch(message_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body()
+            if body is None or set(body) != {"message_revision", "action"} or body.get("action") not in {"enqueue", "retry"} or type(body.get("message_revision")) is not int or body["message_revision"] < 1:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_link_previews_payload(
+                conversation_id,
+                message_id,
+                body.get("message_revision"),
+                action=str(body["action"]),
+            )
+            self._send_json(payload, status)
+            return
         agent_configuration_match = re.fullmatch(
             r"/bridge/v1/agents/([^/]+)/configuration(?:/(preview))?",
             parsed.path,

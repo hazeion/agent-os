@@ -1249,6 +1249,8 @@ class TaskRepositoryTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), before)
 
     def test_compatible_export_creates_runnable_schema_five_sibling(self):
+        from link_preview_cache import LinkPreviewCache, LinkPreviewPreferenceStore
+
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "data"
             source = write_seed_root(root, [task("task_a")])
@@ -1283,6 +1285,15 @@ class TaskRepositoryTests(unittest.TestCase):
                 root,
                 lambda tasks: ([*tasks, task("task_b")], None),
             )
+            LinkPreviewPreferenceStore(root).update(enabled=False, expected_revision=1)
+            LinkPreviewCache(root).store(
+                "https://python.org/private?ordinary=compatible-canary",
+                final_normalized_url="https://python.org/final",
+                status="ready",
+                ttl_seconds=60,
+                title="compatible-preview-canary",
+                display_host="python.org",
+            )
             source_before = source.read_bytes()
             preview = preview_task_compatible_export(root)
             self.assertEqual(preview.target_name, "data-schema5-downgrade")
@@ -1316,6 +1327,8 @@ class TaskRepositoryTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["status"], "exported")
             self.assertTrue(target.is_dir())
+            self.assertFalse((target / "cache" / "link-previews-v1").exists())
+            self.assertFalse((target / "config" / "link-previews-v1.json").exists())
             self.assertEqual(source.read_bytes(), source_before)
             self.assertEqual(
                 [

@@ -2282,6 +2282,7 @@ test("Home Console bounds a 100-message transcript and typing causes no network 
   const user = userEvent.setup({ document: dom.window.document });
   render(<HomeConsole />);
   await waitFor(() => assert.equal(document.querySelectorAll(".message-row").length, 100));
+  await screen.findByText("Link previews · Unavailable");
   const callsAfterLoad = calls.length;
   const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
   await user.type(prompt, "Typing remains entirely client-side");
@@ -2388,4 +2389,91 @@ test("Home Console announces Codex readiness transitions through one persistent 
   ));
   assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, true);
   assert.equal(screen.getByRole("button", { name: "Recheck" }).getAttribute("disabled"), null);
+});
+
+test("Home Console keeps plain links authoritative across preview retry, ready, disable, and clear", async () => {
+  const linkedMessage = {
+    ...transcriptMessage(1, "user", "Read https://python.org/docs"),
+    run_id: "run_link_preview",
+  };
+  const calls: Array<{ body: string; path: string }> = [];
+  const preview = (status: "unavailable" | "ready" | "disabled") => ({
+    schema_version: 1,
+    service: "mentat-local-bridge",
+    runtime: "python",
+    status: "ready",
+    conversation_id: conversation.id,
+    message_id: linkedMessage.id,
+    message_revision: linkedMessage.revision,
+    enabled: status !== "disabled",
+    previews: status === "ready"
+      ? [{ candidate_ordinal: 1, status: "ready", title: "Python docs", description: "Documentation", display_host: "python.org" }]
+      : [{ candidate_ordinal: 1, status }],
+  });
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, conversation, [], [linkedMessage]));
+    if (path === "/api/link-previews/preference" && method === "GET") return Response.json({ schema_version: 1, service: "mentat-local-bridge", runtime: "python", status: "ready", enabled: true, revision: 1 });
+    if (path.endsWith(`/messages/${linkedMessage.id}/link-previews`) && method === "GET") return Response.json(preview("unavailable"));
+    if (path.endsWith(`/messages/${linkedMessage.id}/link-previews`) && method === "POST") {
+      calls.push({ body: String(init?.body), path });
+      return Response.json(preview("ready"), { status: 202 });
+    }
+    if (path === "/api/link-previews/preference" && method === "POST") {
+      calls.push({ body: String(init?.body), path });
+      return Response.json({ schema_version: 1, service: "mentat-local-bridge", runtime: "python", status: "ready", enabled: false, revision: 2 });
+    }
+    if (path === "/api/link-previews/cache/clear" && method === "POST") {
+      calls.push({ body: String(init?.body), path });
+      return Response.json({ schema_version: 1, status: "ready", cleared: true });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const link = await screen.findByRole("link", { name: "https://python.org/docs" });
+  assert.equal(link.getAttribute("rel"), "noopener noreferrer");
+  await screen.findByText("Preview unavailable");
+  await user.click(screen.getByRole("button", { name: "Retry previews for user message 1" }));
+  await screen.findByText("Python docs");
+  assert.equal(screen.getByRole("link", { name: "https://python.org/docs" }), link);
+  assert.equal(calls[0].body, '{"action":"retry","message_revision":1}');
+  assert.equal(calls[0].body.includes("url"), false);
+
+  await user.click(screen.getByText("Link previews · On"));
+  await user.click(screen.getByRole("button", { name: "Turn off" }));
+  await screen.findByText("Link previews · Off");
+  await waitFor(() => assert.equal(document.querySelector(".transcript-link-preview"), null));
+  await user.click(screen.getByRole("button", { name: "Clear preview cache" }));
+  assert.equal(calls.some((call) => call.path === "/api/link-previews/cache/clear" && call.body === "{}"), true);
+  assert.equal(screen.getByRole("link", { name: "https://python.org/docs" }).getAttribute("referrerpolicy"), "no-referrer");
+});
+
+test("Home Console accepts a durable Turn when automatic preview work fails", async () => {
+  const text = "Review https://python.org/devguide";
+  const submission = acceptedSubmission(text);
+  const calls = installFetch({ turnResponse: async () => Response.json(submission, { status: 202 }) });
+  const ordinaryFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/link-previews/preference" && method === "GET") return Response.json({ schema_version: 1, service: "mentat-local-bridge", runtime: "python", status: "ready", enabled: true, revision: 1 });
+    if (path.endsWith(`/messages/${submission.message.id}/link-previews`) && method === "POST") throw new Error("preview unavailable");
+    if (path === `/api/conversations/${conversation.id}` && method === "GET" && calls.some((call) => call.path.endsWith("/turns"))) return Response.json(detail(submission.run, conversation, [], [submission.message]));
+    return await ordinaryFetch(input, init);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await screen.findByLabelText("Prompt");
+  await user.click(screen.getByRole("button", { name: "Check readiness" }));
+  const prompt = screen.getByLabelText("Prompt");
+  await user.type(prompt, text);
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Turn accepted/u));
+  assert.equal((prompt as HTMLTextAreaElement).value, "");
+  assert.equal((await screen.findByRole("link", { name: "https://python.org/devguide" })).textContent, "https://python.org/devguide");
+  assert.equal(calls.filter((call) => call.path.endsWith("/turns")).length, 1);
 });

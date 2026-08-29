@@ -109,6 +109,30 @@ export async function readExpectedRevisionBody(
     : null;
 }
 
+export async function readLinkPreviewMutationBody(
+  request: Request,
+): Promise<{ action: "enqueue" | "retry"; messageRevision: number } | null> {
+  const body = await readBoundedJson(request, 512);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "action,message_revision") return null;
+  const value = body as Record<string, unknown>;
+  return (value.action === "enqueue" || value.action === "retry")
+    && Number.isSafeInteger(value.message_revision) && (value.message_revision as number) >= 1
+    ? { action: value.action, messageRevision: value.message_revision as number }
+    : null;
+}
+
+export async function readLinkPreviewPreferenceBody(
+  request: Request,
+): Promise<{ enabled: boolean; expectedRevision: number } | null> {
+  const body = await readBoundedJson(request, 512);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "enabled,expected_revision") return null;
+  const value = body as Record<string, unknown>;
+  return typeof value.enabled === "boolean"
+    && Number.isSafeInteger(value.expected_revision) && (value.expected_revision as number) >= 1
+    ? { enabled: value.enabled, expectedRevision: value.expected_revision as number }
+    : null;
+}
+
 export async function readAgentConfigurationBody(
   request: Request,
   preview: boolean,

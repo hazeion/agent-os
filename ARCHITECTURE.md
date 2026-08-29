@@ -1220,6 +1220,52 @@ label describe the action that the next click will take. Shell synchronization
 must compare current DOM values before writing so its mutation observer cannot
 be retriggered by idempotent updates.
 
+### Safe rich-link preview boundary
+
+Link previews are asynchronous, Message-bound derived data. A browser request
+contains only canonical Conversation ID, Message ID, exact Message revision,
+and a fixed enqueue or retry action. Python re-reads the accepted user Message
+and extracts at most three candidates; no browser or Node field can select a
+URL, header, destination, proxy, cache key, image source, or bridge path.
+
+The network policy allows only canonical public HTTPS on port 443. It applies
+UTS #46 nontransitional IDNA, strict component normalization, credential-query
+blocking, special-use domain and source-controlled IANA address denial, whole
+A/AAAA-set validation, sixteen-answer and two-candidate bounds, numeric-IP
+dialing, hostname SNI/Host, peer-address verification, and three fully
+revalidated redirects. Fixed page/image requests send no cookie, authorization,
+proxy authorization, referrer, origin, browser user-agent, language, client
+certificate, provider credential, or returned cookie.
+
+Two replaceable isolated Python workers own DNS, TLS, bounded transfer, HTML
+metadata parsing, and image decoding. They receive no data-root path, Console
+descriptor, HOME, NETRC, proxy, CA override, provider variable, or bridge token.
+The parent kills and replaces a worker after a one-second DNS phase or a
+5.25-second operation watchdog. Page bodies, decoded gzip, headers, MIME,
+charsets, tags, attributes, images, pixels, dimensions, frames, and output WebP
+all retain the fixed limits recorded in the Slice 7 review log and accepted
+research.
+
+Sanitized metadata is cached under keyed, versioned URL digests in the
+owner-private disposable `cache/link-previews-v1/` namespace. It stores no raw
+URLs, HTML, headers, addresses, or original images and is capped at 512 rows and
+64 MiB of transformed images. Process-local no-store and capacity states use a
+separate 512-entry LRU, and persisted results are not duplicated there. The
+256-bit cache secret and cache members are
+excluded from backup, restore, and compatible export. The enabled-by-default,
+exact-revision privacy preference lives separately at
+`config/link-previews-v1.json`; clearing cache cannot change it. Disabling
+cancels/suppresses work and cards, and re-enabling never automatically fetches
+old Messages.
+
+Candidate ordinals preserve the raw first-three Message positions even when
+equivalent normalized URLs share one fetch. The browser receives only candidate ordinal, fixed status, bounded text,
+canonical display host, and optional opaque image ID. Images are fixed
+same-origin WebP responses and cannot fetch on a miss. Remote HTML and image
+URLs never cross. The original HTTPS text remains present when metadata is
+pending, blocked, disabled, unavailable, expired, or unsupported, and preview
+failure never changes Message, Turn, Conversation, or Run authority.
+
 Completed runs may also receive a private structured usage report. Billing
 totals remain separate from `context_tokens` (the last actual prompt size) and
 `context_length` (the active model window). The UI calculates a percentage only

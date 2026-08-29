@@ -173,6 +173,9 @@ class CdpClient {
 
 function installPerformanceFixture() {
   const timestamp = "2026-08-27T12:00:00Z";
+  const linkedMessageCount = 1;
+  const previewCardCount = 3;
+  const imageId = "a".repeat(32);
   const serviceFields = {
     runtime: "python",
     schema_version: 1,
@@ -220,16 +223,25 @@ function installPerformanceFixture() {
     state: "accepted",
     updated_at: timestamp,
   });
+  const performanceText = (sequence) => sequence === 199
+    ? [
+      `Performance transcript ${sequence}`,
+      "https://docs.python.org/3/library/functions.html",
+      "https://developer.mozilla.org/en-US/docs/Web/API/URL",
+      "https://www.w3.org/TR/url-1/",
+      "https://localhost/private",
+    ].join(" ")
+    : `Performance transcript ${sequence}`;
   const olderMessages = Array.from({ length: 100 }, (_, index) => makeMessage(
     index + 1,
     firstConversation,
-    `Performance transcript ${index + 1}`,
+    performanceText(index + 1),
     index % 2 === 0 ? "user" : "assistant",
   ));
   const recentMessages = Array.from({ length: 100 }, (_, index) => makeMessage(
     index + 101,
     firstConversation,
-    `Performance transcript ${index + 101}`,
+    performanceText(index + 101),
     index % 2 === 0 ? "user" : "assistant",
   ));
   const secondMessage = makeMessage(1, secondConversation, "Cached second transcript");
@@ -245,8 +257,12 @@ function installPerformanceFixture() {
     accepted: false,
     dispatchMessage: null,
     eventSources: [],
+    expectedPreviewCards: previewCardCount,
+    expectedPreviewRequests: linkedMessageCount,
+    expectedSafeLinks: 3,
     networkRequests: 0,
     resolveTurn: null,
+    settledPreviewRequests: 0,
   };
   window.__mentatPerf = state;
 
@@ -267,6 +283,42 @@ function installPerformanceFixture() {
     ...firstConversation,
     revision: 2,
     updated_at: "2026-08-27T12:00:01Z",
+  };
+  const previewState = (messageId) => {
+    const threeCardMessage = messageId === "msg_perf_conv_perf_a_199";
+    const previews = threeCardMessage ? [{
+      candidate_ordinal: 1,
+      description: "The performance fixture inserts this card after the transcript renders.",
+      display_host: "docs.python.org",
+      image_alt: "Performance fixture preview",
+      image_id: imageId,
+      status: "ready",
+      title: "Python documentation",
+    }] : [];
+    if (threeCardMessage) previews.push(
+      {
+        candidate_ordinal: 2,
+        description: "Web API reference used by the three-card fixture.",
+        display_host: "developer.mozilla.org",
+        status: "ready",
+        title: "MDN URL API",
+      },
+      {
+        candidate_ordinal: 3,
+        description: "URL standard reference used by the three-card fixture.",
+        display_host: "www.w3.org",
+        status: "ready",
+        title: "W3C URL standard",
+      },
+    );
+    return {
+      ...serviceFields,
+      conversation_id: firstConversation.id,
+      enabled: true,
+      message_id: messageId,
+      message_revision: 1,
+      previews,
+    };
   };
   window.fetch = (input, init = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
@@ -298,6 +350,24 @@ function installPerformanceFixture() {
         setup_command: null,
         state: "ready",
       }));
+    }
+    if (url.pathname === "/api/link-previews/preference" && method === "GET") {
+      return Promise.resolve(response({
+        ...serviceFields,
+        enabled: true,
+        revision: 1,
+      }));
+    }
+    const previewMatch = url.pathname.match(
+      /^\/api\/conversations\/conv_perf_a\/messages\/(msg_perf_conv_perf_a_\d+)\/link-previews$/u,
+    );
+    if (previewMatch && method === "GET" && url.searchParams.get("revision") === "1") {
+      return new Promise((resolvePreview) => {
+        window.setTimeout(() => {
+          state.settledPreviewRequests += 1;
+          resolvePreview(response(previewState(previewMatch[1])));
+        }, 20);
+      });
     }
     if (url.pathname === `/api/conversations/${firstConversation.id}` && method === "GET") {
       if (url.searchParams.get("before") === "101") {
@@ -457,6 +527,25 @@ async function measureSample(client, index) {
     () => client.evaluate("document.querySelectorAll('.message-row').length === 200"),
     "200-message bounded transcript",
   );
+  await waitFor(
+    () => client.evaluate(`(() => {
+      const image = document.querySelector('.transcript-link-preview img');
+      const threeCardMessage = [...document.querySelectorAll('.message-row')]
+        .some((row) => row.querySelectorAll('.transcript-link-preview').length === 3);
+      return document.querySelectorAll('.message-row a').length
+          === window.__mentatPerf.expectedSafeLinks
+        && document.querySelectorAll('.message-row a[href^="https://localhost/"]').length === 0
+        && document.querySelectorAll('.transcript-link-preview').length
+          === window.__mentatPerf.expectedPreviewCards
+        && window.__mentatPerf.settledPreviewRequests
+          === window.__mentatPerf.expectedPreviewRequests
+        && threeCardMessage
+        && image !== null
+        && image.getBoundingClientRect().width === 104;
+    })()`),
+    "settled safe-link and preview-card fixture",
+  );
+  await client.evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   progress(`sample ${index + 1}: fixture ready`);
   await client.evaluate(
     "[...document.querySelectorAll('button')].find((button) => button.textContent === 'Check readiness')?.click()",
@@ -584,6 +673,10 @@ async function main() {
     client = new CdpClient(webSocket);
     await client.call("Runtime.enable");
     await client.call("Page.enable");
+    await client.call("Network.enable");
+    await client.call("Network.setBlockedURLs", {
+      urls: [`${baseUrl.origin}/api/link-previews/images/*`],
+    });
     await client.call("Emulation.setDeviceMetricsOverride", {
       deviceScaleFactor: 1,
       height: 900,
@@ -594,6 +687,8 @@ async function main() {
       source: `(${installPerformanceFixture.toString()})();`,
     });
 
+    progress("warm-up: full fixture and interaction path");
+    await measureSample(client, -1);
     const samples = [];
     for (let index = 0; index < sampleCount; index += 1) {
       samples.push(await measureSample(client, index));
@@ -632,7 +727,10 @@ async function main() {
       fixtures: {
         conversations: 2,
         initial_messages: 100,
+        linked_messages: 1,
         paginated_retained_messages: 200,
+        preview_cards: 3,
+        preview_image_cards: 1,
         samples: sampleCount,
       },
       medians_ms: Object.fromEntries(

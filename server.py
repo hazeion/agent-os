@@ -142,6 +142,13 @@ from json_store import (
     read_json_guarded as store_read_json,
     update_json as store_update_json,
 )
+from link_preview_cache import (
+    LinkPreviewCache,
+    LinkPreviewCacheError,
+    LinkPreviewPreferenceConflict,
+    LinkPreviewPreferenceStore,
+)
+from link_preview_service import LinkPreviewService, LinkPreviewServiceError
 from data_backup_restore import restore_status_under_lock
 from hermes_profile_creation import preview_profile_creation, profile_creation_arguments
 from hermes_profile_deletion import delete_hermes_profile, preview_profile_deletion
@@ -500,6 +507,9 @@ AGENT_CONSOLE_VERIFIED_RUN_IDS: set[str] = set()
 HERMES_CONNECTION_OPERATION_LOCK = threading.RLock()
 CONTEXT_PACK_OPERATION_LOCK = threading.RLock()
 REMOTE_CONTEXT_STAGE_LOCK = threading.Lock()
+LINK_PREVIEW_SERVICE_LOCK = threading.RLock()
+LINK_PREVIEW_SERVICE: LinkPreviewService | None = None
+LINK_PREVIEW_SERVICE_ROOT: Path | None = None
 REMOTE_CONTEXT_STAGES: dict[str, dict] = {}
 AGENT_CONSOLE_ATTACHMENT_GC_STOP = threading.Event()
 AGENT_CONSOLE_ATTACHMENT_GC_INTERVAL_SECONDS = 30 * 60
@@ -1676,6 +1686,83 @@ def _conversation_repository() -> ConversationRepository:
         DATA_DIR,
         supported_runtime_types=AGENT_RUNTIME_REGISTRY.runtime_types,
     )
+
+
+class _LinkPreviewMessageRepository:
+    def read_message(self, message_id: str):
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise ConversationRepositoryError("conversation.unavailable")
+            return _conversation_repository().read_message(message_id)
+
+
+def _link_preview_service() -> LinkPreviewService:
+    global LINK_PREVIEW_SERVICE, LINK_PREVIEW_SERVICE_ROOT
+    root = _absolute_without_following(DATA_DIR)
+    with LINK_PREVIEW_SERVICE_LOCK:
+        if LINK_PREVIEW_SERVICE is not None and LINK_PREVIEW_SERVICE_ROOT != root:
+            LINK_PREVIEW_SERVICE.close()
+            LINK_PREVIEW_SERVICE = None
+            LINK_PREVIEW_SERVICE_ROOT = None
+        if LINK_PREVIEW_SERVICE is None:
+            LINK_PREVIEW_SERVICE = LinkPreviewService(
+                _LinkPreviewMessageRepository(),
+                LinkPreviewCache(root),
+                LinkPreviewPreferenceStore(root),
+            )
+            LINK_PREVIEW_SERVICE_ROOT = root
+        return LINK_PREVIEW_SERVICE
+
+
+def mentat_link_previews_payload(
+    conversation_id: str,
+    message_id: str,
+    message_revision: int,
+    *,
+    action: str = "read",
+) -> tuple[dict, int]:
+    service = _link_preview_service()
+    if action == "read":
+        return service.read(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            message_revision=message_revision,
+        ), 200
+    if action not in {"enqueue", "retry"}:
+        raise LinkPreviewServiceError("link_preview.invalid")
+    return service.enqueue(
+        conversation_id=conversation_id,
+        message_id=message_id,
+        message_revision=message_revision,
+        retry=action == "retry",
+    ), 202
+
+
+def mentat_link_preview_preference_payload() -> dict:
+    return {"schema_version": 1, **_link_preview_service().preference().public_projection()}
+
+
+def update_mentat_link_preview_preference(payload: object) -> tuple[dict, int]:
+    if not isinstance(payload, dict) or set(payload) != {"enabled", "expected_revision"}:
+        raise LinkPreviewServiceError("link_preview.invalid")
+    if type(payload.get("enabled")) is not bool or type(payload.get("expected_revision")) is not int or payload["expected_revision"] < 1:
+        raise LinkPreviewServiceError("link_preview.invalid")
+    preference = _link_preview_service().update_preference(
+        enabled=payload["enabled"],
+        expected_revision=payload["expected_revision"],
+    )
+    return {"schema_version": 1, **preference.public_projection()}, 200
+
+
+def clear_mentat_link_preview_cache(payload: object) -> tuple[dict, int]:
+    if payload != {}:
+        raise LinkPreviewServiceError("link_preview.invalid")
+    _link_preview_service().clear_cache()
+    return {"schema_version": 1, "cleared": True}, 200
+
+
+def mentat_link_preview_image(image_id: str) -> tuple[bytes, int] | None:
+    return _link_preview_service().image(image_id)
 
 
 def mentat_conversations_payload(cursor: str | None = None) -> dict:
@@ -7984,10 +8071,19 @@ AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry(
 def shutdown_agent_runtimes() -> None:
     """Close process-owning runtime adapters during either server lifecycle."""
 
+    global LINK_PREVIEW_SERVICE, LINK_PREVIEW_SERVICE_ROOT
     try:
         stop_agent_console_processes()
     finally:
-        CODEX_RUNTIME.close()
+        try:
+            CODEX_RUNTIME.close()
+        finally:
+            with LINK_PREVIEW_SERVICE_LOCK:
+                service = LINK_PREVIEW_SERVICE
+                LINK_PREVIEW_SERVICE = None
+                LINK_PREVIEW_SERVICE_ROOT = None
+            if service is not None:
+                service.close()
 
 
 def hermes_console_transport() -> HermesConsoleTransport:
