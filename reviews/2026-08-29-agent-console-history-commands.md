@@ -253,6 +253,14 @@ composer into a generic execution boundary.
   mobile median 96; mobile CLS fell from CI's 0.169631 to about 0.020.
 - Both adversarial reviewers completed a fresh full-diff review after the CI
   fixes and again reported clean results.
+- GitHub's next Lighthouse run revealed a smaller fresh-workspace shift when
+  the tab strip collapsed after its loading line disappeared. The strip now
+  reserves its normal 41 px desktop height and 51 px mobile height, which also
+  contains the 44 px mobile close target. The full web check and production
+  build pass again. A fresh six-run Lighthouse gate scored desktop median 100
+  and mobile median 99 with mobile CLS about 0.0011.
+- Both adversarial reviewers re-reviewed the final tab-strip reservation and
+  complete diff and reported clean results.
 
 ## Adversarial review
 

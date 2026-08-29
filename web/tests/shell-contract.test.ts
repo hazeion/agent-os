@@ -93,6 +93,11 @@ test("Slice 9 history and command controls keep mobile touch targets", () => {
     css,
     /\.conversation-history\[open\] > \.history-manager \{\s*display: grid;/,
   );
+  assert.match(css, /\.conversation-tabs \{[\s\S]*min-height: 41px;/);
+  assert.match(
+    css,
+    /@media \(max-width: 520px\)[\s\S]*\.conversation-tabs \{\s*min-height: 51px;/,
+  );
   assert.match(
     css,
     /@media \(max-width: 520px\)[\s\S]*\.conversation-history summary \{ min-height: 44px; \}/,
