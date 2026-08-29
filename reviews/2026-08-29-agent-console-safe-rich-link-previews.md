@@ -168,6 +168,10 @@ owner to avoid shared-file races.
   build passed with all fixed preview routes.
 - The tracked-file secret scan passed after test-only credential-shaped URL and
   environment fixtures were split into inert components.
+- The first Windows matrix exposed that regular files may report link count
+  zero and do not expose POSIX mode bits. The validator now accepts only zero
+  or one on Windows, still rejects hard links, and has a platform regression
+  test; POSIX-only mode assertions no longer make false Windows claims.
 - The production performance gate now warms the complete fixture once, then
   scores seven unchanged samples with 200 rows, three preview cards, and one
   image card. It passed at 127.6 ms accepted dispatch, 18.9 ms loaded tab,

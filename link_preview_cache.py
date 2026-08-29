@@ -99,7 +99,7 @@ def _owned_file(path: Path, *, maximum_bytes: int | None = None) -> os.stat_resu
     if (
         not stat.S_ISREG(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_nlink != 1
+        or metadata.st_nlink not in ({0, 1} if os.name == "nt" else {1})
         or maximum_bytes is not None
         and metadata.st_size > maximum_bytes
     ):

@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import stat
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 from io import BytesIO
@@ -19,6 +20,7 @@ from link_preview_cache import (
     LinkPreviewPreferenceStore,
     MAXIMUM_READY_SECONDS,
     UNAVAILABLE_SECONDS,
+    _owned_file,
 )
 
 
@@ -35,6 +37,15 @@ class LinkPreviewCacheTests(unittest.TestCase):
             (root / name).mkdir(mode=0o700)
         return root
 
+    def test_windows_zero_link_count_is_regular_but_hardlinks_still_fail(self):
+        regular = SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_nlink=0, st_size=32)
+        hardlinked = SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_nlink=2, st_size=32)
+        with mock.patch("link_preview_cache.os.name", "nt"), mock.patch("link_preview_cache.os.lstat", return_value=regular):
+            self.assertIs(_owned_file(Path("cache-secret"), maximum_bytes=32), regular)
+        with mock.patch("link_preview_cache.os.name", "nt"), mock.patch("link_preview_cache.os.lstat", return_value=hardlinked):
+            with self.assertRaises(LinkPreviewCacheError):
+                _owned_file(Path("cache-secret"), maximum_bytes=32)
+
     def test_preference_defaults_enabled_and_updates_by_exact_revision(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.root(temporary)
@@ -47,7 +58,10 @@ class LinkPreviewCacheTests(unittest.TestCase):
             unchanged = store.update(enabled=False, expected_revision=2)
             self.assertEqual(unchanged, disabled)
             path = root / "config" / "link-previews-v1.json"
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            else:
+                self.assertTrue(path.is_file())
 
     def test_preference_rejects_extra_fields_broad_permissions_and_links(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -59,8 +73,11 @@ class LinkPreviewCacheTests(unittest.TestCase):
                 LinkPreviewPreferenceStore(root).read()
             path.write_text('{"schema_version":1,"enabled":true,"revision":1}', encoding="utf-8")
             path.chmod(0o644)
-            with self.assertRaises(OSError):
-                LinkPreviewPreferenceStore(root).read()
+            if os.name == "posix":
+                with self.assertRaises(OSError):
+                    LinkPreviewPreferenceStore(root).read()
+            else:
+                self.assertTrue(LinkPreviewPreferenceStore(root).read().enabled)
             path.unlink()
             target = root / "outside.json"
             target.write_text('{"schema_version":1,"enabled":true,"revision":1}', encoding="utf-8")
