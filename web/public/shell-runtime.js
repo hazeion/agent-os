@@ -64,19 +64,27 @@ function shellElements() {
 
 function toggleSidebarRail() {
   if (mobileNavigation.matches) return;
-  const { sidebarToggle } = shellElements();
   const collapsed = root.dataset.sidebarCollapsed === "true";
   const nextCollapsed = !collapsed;
   root.dataset.sidebarCollapsed = nextCollapsed ? "true" : "false";
-  if (sidebarToggle instanceof HTMLButtonElement) {
-    sidebarToggle.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-    sidebarToggle.setAttribute(
-      "aria-label",
-      nextCollapsed ? "Expand workspace navigation" : "Collapse workspace navigation",
-    );
-    const label = sidebarToggle.querySelector("span");
-    if (label instanceof HTMLElement) label.textContent = nextCollapsed ? "›" : "‹";
+  synchronizeSidebarToggle();
+}
+
+function synchronizeSidebarToggle() {
+  const { sidebarToggle } = shellElements();
+  if (!(sidebarToggle instanceof HTMLButtonElement)) return;
+  const collapsed = root.dataset.sidebarCollapsed === "true";
+  const expanded = collapsed ? "false" : "true";
+  const label = collapsed ? "Expand workspace navigation" : "Collapse workspace navigation";
+  if (sidebarToggle.getAttribute("aria-expanded") !== expanded) {
+    sidebarToggle.setAttribute("aria-expanded", expanded);
   }
+  if (sidebarToggle.getAttribute("aria-label") !== label) {
+    sidebarToggle.setAttribute("aria-label", label);
+  }
+  const icon = sidebarToggle.querySelector("[data-sidebar-toggle-icon]");
+  const glyph = collapsed ? "›" : "‹";
+  if (icon instanceof HTMLElement && icon.textContent !== glyph) icon.textContent = glyph;
 }
 
 function setSidebarAvailability(isOpen) {
@@ -863,6 +871,7 @@ function synchronizeShell() {
   if (!document.querySelector(".app-shell")) return;
   applyContrast(root.dataset.contrastPreference || storedContrast());
   setSidebarAvailability(Boolean(root.dataset.navOpen));
+  synchronizeSidebarToggle();
   applyBridgeState();
 
   if (window.location.pathname !== observedPath) {

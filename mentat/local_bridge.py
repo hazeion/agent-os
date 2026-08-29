@@ -1888,15 +1888,17 @@ def _public_run_event_record(value: object, *, expected_run_id: str) -> dict[str
         "summary",
         "message",
         "metrics",
+        "presentation",
     }
     if not isinstance(value, dict) or set(value) != required:
         raise BridgeRunEventProjectionError("event_projection_invalid")
     event_id, run_id, sequence = value.get("id"), value.get("run_id"), value.get("sequence")
     event_type, occurred_at = value.get("type"), value.get("occurred_at")
-    summary, message, metrics = (
+    summary, message, metrics, presentation = (
         value.get("summary"),
         value.get("message"),
         value.get("metrics"),
+        value.get("presentation"),
     )
     allowed_metrics = {"input_tokens", "output_tokens", "total_tokens", "context_tokens", "context_length"}
     if (
@@ -1916,6 +1918,11 @@ def _public_run_event_record(value: object, *, expected_run_id: str) -> dict[str
         )
         or not isinstance(metrics, dict) or set(metrics) - allowed_metrics
         or any(type(metric) is not int or not 0 <= metric <= 10**9 for metric in metrics.values())
+        or not _safe_run_event_presentation(
+            presentation,
+            event_type=event_type,
+            summary=summary,
+        )
     ):
         raise BridgeRunEventProjectionError("event_projection_invalid")
     return {
@@ -1927,7 +1934,30 @@ def _public_run_event_record(value: object, *, expected_run_id: str) -> dict[str
         "summary": summary,
         "message": message,
         "metrics": dict(metrics),
+        "presentation": None if presentation is None else dict(presentation),
     }
+
+
+def _safe_run_event_presentation(
+    value: object,
+    *,
+    event_type: object,
+    summary: object,
+) -> bool:
+    if value is None:
+        return event_type not in {"tool.requested", "tool.completed"}
+    if not isinstance(value, dict) or set(value) != {"kind", "phase", "label"}:
+        return False
+    kind, phase, label = value.get("kind"), value.get("phase"), value.get("label")
+    if label != summary:
+        return False
+    allowed = {
+        ("tool", "requested", "Tool activity requested", "tool.requested"),
+        ("tool", "started", "Tool activity started", "tool.requested"),
+        ("tool", "completed", "Tool activity completed", "tool.completed"),
+        ("reasoning", "available", "Reasoning summary available", "message"),
+    }
+    return (kind, phase, label, event_type) in allowed
 
 
 def _trusted_vercel_message_event_id(run_id: str) -> str:

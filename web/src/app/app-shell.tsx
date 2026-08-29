@@ -84,7 +84,7 @@ export function AppShell({ children, homeConsole = false, route: routeHref }: Ap
         data-sidebar-toggle
         type="button"
       >
-        <span aria-hidden="true">‹</span>
+        <span aria-hidden="true" data-sidebar-toggle-icon>‹</span>
       </button>
 
       <div aria-hidden="true" className="nav-tooltip" data-nav-tooltip hidden />

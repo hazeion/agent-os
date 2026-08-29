@@ -178,8 +178,12 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.match(runtime, /AbortSignal\.timeout\(3500\)/);
   assert.match(runtime, /mobileNavigation = window\.matchMedia\("\(max-width: 900px\)"\)/);
   assert.match(runtime, /const nextCollapsed = !collapsed/);
-  assert.match(runtime, /setAttribute\("aria-expanded", nextCollapsed \? "false" : "true"\)/);
-  assert.match(runtime, /nextCollapsed \? "Expand workspace navigation" : "Collapse workspace navigation"/);
+  assert.match(runtime, /const expanded = collapsed \? "false" : "true"/);
+  assert.match(runtime, /getAttribute\("aria-expanded"\) !== expanded/);
+  assert.match(runtime, /setAttribute\("aria-expanded", expanded\)/);
+  assert.match(runtime, /collapsed \? "Expand workspace navigation" : "Collapse workspace navigation"/);
+  assert.match(runtime, /const glyph = collapsed \? "›" : "‹"/);
+  assert.match(runtime, /icon\.textContent !== glyph/);
   assert.match(runtime, /workspace\.inert = true/);
   assert.match(runtime, /event\.key === "Escape"/);
   assert.match(runtime, /full: "Python unavailable", compact: "Offline"/);

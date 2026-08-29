@@ -326,6 +326,14 @@ class RunRecord:
     resume_of_run_id: str | None = None
 
 
+@dataclass(frozen=True)
+class HydratedRunEvent:
+    """One canonical event paired with its validated private source class."""
+
+    event: AgentEvent
+    source_type: str
+
+
 _RUN_SCHEMA_OBJECTS = frozenset(
     {
         "mentat_run_store_state",
@@ -6493,12 +6501,14 @@ class RunRepository:
             result.append(hydrated)
         return result
 
-    def list_events(
+    def list_hydrated_events(
         self,
         run_id: str,
         *,
         after_sequence: int = 0,
-    ) -> tuple[tuple[AgentEvent, ...], bool, int]:
+    ) -> tuple[tuple[HydratedRunEvent, ...], bool, int]:
+        """Hydrate validated events with server-only presentation provenance."""
+
         identifier = _identifier(run_id)
         if type(after_sequence) is not int or after_sequence < 0:
             raise RunRepositoryValidationError("event.cursor_invalid")
@@ -6511,22 +6521,27 @@ class RunRepository:
         _validate_run_row(row)
         event_rows = self._event_rows(identifier)
         _validate_event_window(row, event_rows)
-        events: list[AgentEvent] = []
+        events: list[HydratedRunEvent] = []
         for event_row in event_rows:
             if int(event_row["sequence"]) <= after_sequence:
                 continue
             events.append(
-                AgentEvent(
-                    id=str(event_row["id"]),
-                    run_id=identifier,
-                    sequence=int(event_row["sequence"]),
-                    type=str(event_row["event_type"]),
-                    occurred_at=str(event_row["occurred_at"]),
-                    summary=str(event_row["summary"]),
-                    content=event_row["content"],
-                    metrics=_decode_json(
-                        event_row["metrics_json"], expected=dict, code="event.corrupt"
+                HydratedRunEvent(
+                    event=AgentEvent(
+                        id=str(event_row["id"]),
+                        run_id=identifier,
+                        sequence=int(event_row["sequence"]),
+                        type=str(event_row["event_type"]),
+                        occurred_at=str(event_row["occurred_at"]),
+                        summary=str(event_row["summary"]),
+                        content=event_row["content"],
+                        metrics=_decode_json(
+                            event_row["metrics_json"],
+                            expected=dict,
+                            code="event.corrupt",
+                        ),
                     ),
+                    source_type=str(event_row["source_type"]),
                 )
             )
         reset = bool(row["timeline_truncated"]) and (
@@ -6534,6 +6549,20 @@ class RunRepository:
             or after_sequence < int(row["first_retained_sequence"]) - 1
         )
         return tuple(events), reset, int(row["last_event_sequence"])
+
+    def list_events(
+        self,
+        run_id: str,
+        *,
+        after_sequence: int = 0,
+    ) -> tuple[tuple[AgentEvent, ...], bool, int]:
+        """Return the compatibility event domain without source provenance."""
+
+        hydrated, reset, cursor = self.list_hydrated_events(
+            run_id,
+            after_sequence=after_sequence,
+        )
+        return tuple(item.event for item in hydrated), reset, cursor
 
     def trusted_vercel_result_message_id(self, run_id: str) -> str | None:
         """Return the sole provenance-bound Vercel result message, if retained."""
@@ -7392,6 +7421,7 @@ __all__ = [
     "ConversationRunAdmission",
     "ConversationRunAttemptResult",
     "ConversationSubmissionResult",
+    "HydratedRunEvent",
     "RunAuthorityReceipt",
     "RunRepository",
     "RunRepositoryConflict",

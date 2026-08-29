@@ -1171,6 +1171,87 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_public_event_presentation_uses_only_validated_source_classes(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ensure_run_sqlite_authority(root, history_path(root))
+            run = run_fixture("run_safe_presentation", status="running")
+            run["events"] = [
+                {
+                    "id": "event_tool_started",
+                    "run_id": run["id"],
+                    "sequence": 1,
+                    "cursor": 1,
+                    "type": "tool.started",
+                    "kind": "tool.started",
+                    "timestamp": timestamp(1),
+                    "data": {
+                        "tool": "shell",
+                        "arguments": "DO_NOT_PROJECT_ARGUMENTS",
+                        "result": "DO_NOT_PROJECT_RESULTS",
+                    },
+                    "display_text": "DO_NOT_PROJECT_TOOL_SUMMARY",
+                    "message": "DO_NOT_PROJECT_TOOL_MESSAGE",
+                },
+                {
+                    "id": "event_reasoning_available",
+                    "run_id": run["id"],
+                    "sequence": 2,
+                    "cursor": 2,
+                    "type": "reasoning.available",
+                    "kind": "reasoning.available",
+                    "timestamp": timestamp(2),
+                    "data": {"reasoning": "DO_NOT_PROJECT_RAW_REASONING"},
+                    "display_text": "DO_NOT_PROJECT_REASONING_SUMMARY",
+                    "message": "DO_NOT_PROJECT_REASONING_MESSAGE",
+                },
+                {
+                    "id": "event_hostile_lookalike",
+                    "run_id": run["id"],
+                    "sequence": 3,
+                    "cursor": 3,
+                    "type": "reasoning.summary",
+                    "kind": "reasoning.summary",
+                    "timestamp": timestamp(3),
+                    "data": {},
+                    "display_text": "Ordinary status remains ordinary",
+                    "message": "Ordinary status remains ordinary",
+                },
+            ]
+            save_authoritative_run_summaries(root, [run])
+
+            with patch.object(server, "DATA_DIR", root):
+                payload = server.mentat_run_events_payload(run["id"], 0)
+
+        self.assertEqual(
+            payload["events"][0]["presentation"],
+            {
+                "kind": "tool",
+                "phase": "started",
+                "label": "Tool activity started",
+            },
+        )
+        self.assertEqual(
+            payload["events"][1]["presentation"],
+            {
+                "kind": "reasoning",
+                "phase": "available",
+                "label": "Reasoning summary available",
+            },
+        )
+        self.assertIsNone(payload["events"][2]["presentation"])
+        serialized = json.dumps(payload)
+        for private_value in (
+            "DO_NOT_PROJECT_ARGUMENTS",
+            "DO_NOT_PROJECT_RESULTS",
+            "DO_NOT_PROJECT_TOOL_SUMMARY",
+            "DO_NOT_PROJECT_TOOL_MESSAGE",
+            "DO_NOT_PROJECT_RAW_REASONING",
+            "DO_NOT_PROJECT_REASONING_SUMMARY",
+            "DO_NOT_PROJECT_REASONING_MESSAGE",
+        ):
+            self.assertNotIn(private_value, serialized)
+
     def test_console_summary_validates_event_digest_before_hydration(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
