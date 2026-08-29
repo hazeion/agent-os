@@ -243,6 +243,16 @@ composer into a generic execution boundary.
   response fixture. It contained no credential. The fixture now uses the same
   rejected private-field shape under `runtime_reference`; its four focused
   tests and `python scripts/check_tracked_secrets.py` pass.
+- The next PR run exposed deterministic mobile layout shift: the new history
+  disclosure occupied the transcript's old flexible grid row, and the history
+  manager's unconditional `display:grid` overrode closed-`details` hiding. The
+  workspace now has a dedicated automatic history row, the transcript retains
+  `minmax(300px, 1fr)`, and only an open disclosure displays its manager.
+  Contract coverage, the full 203-test web check, and the production build
+  pass. The complete local Lighthouse gate passed at desktop median 100 and
+  mobile median 96; mobile CLS fell from CI's 0.169631 to about 0.020.
+- Both adversarial reviewers completed a fresh full-diff review after the CI
+  fixes and again reported clean results.
 
 ## Adversarial review
 

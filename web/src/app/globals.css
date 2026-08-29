@@ -1171,7 +1171,7 @@ button {
 
 .conversation-workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(300px, 1fr) auto auto;
+  grid-template-rows: auto auto auto minmax(300px, 1fr) auto auto;
   overflow: hidden;
 }
 
@@ -1667,8 +1667,15 @@ button {
   font-weight: 650;
 }
 
-.history-manager {
+.conversation-history:not([open]) > .history-manager {
+  display: none;
+}
+
+.conversation-history[open] > .history-manager {
   display: grid;
+}
+
+.history-manager {
   gap: 8px;
   padding: 0 18px 12px;
 }
