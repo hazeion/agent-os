@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console operator control, recovery, and durable continuation
 
-Status: Ready for publication
+Status: Complete
 Slice: `agent-console-operator-control-recovery-continuation`
 Date: `2026-08-28`
 Review log: `reviews/2026-08-28-agent-console-operator-control-recovery-continuation.md`
@@ -271,11 +271,13 @@ without losing evidence or confusing presentation state with execution state.
   POSIX `os.kill` branch test inherited the runner's `os.name == "nt"` and
   passed or failed depending on whether PID 4321 happened to exist. The test
   now fixes `os.name` to `posix`; the adjacent Windows-specific test continues
-  to cover `_pid_is_running`. CI rerun evidence and merge SHA will be recorded
-  after the corrected push.
+  to cover `_pid_is_running`.
+- The corrected fresh run completed with all 52 checks green. PR #148 merged as
+  `c9f68fae5c73a2deb11a133eaae5d4515ef5eb39`; issue #136 closed and Wayfinder
+  #128 records the resolution and advances to Slice 5.
 
 ## Outcome review
 
-- Classification: Successful and ready for publication.
+- Classification: Successful and merged.
 - Next slice authorized: Yes, under the user's standing approval, but it will
   not begin until Slice 4 passes its required gates and closes.
