@@ -249,7 +249,7 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 13)
+            self.assertEqual(SCHEMA_VERSION, 14)
             self.assertTrue(
                 {
                     "mentat_tasks",
@@ -2057,6 +2057,9 @@ class TaskRepositoryTests(unittest.TestCase):
             try:
                 TaskRepository(connection).insert_collection([task("occupied")])
                 with transaction(connection, immediate=True):
+                    connection.execute(
+                        "DROP TABLE mentat_conversation_run_attempts"
+                    )
                     connection.execute(
                         "DROP TABLE mentat_conversation_submission_results"
                     )

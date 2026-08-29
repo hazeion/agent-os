@@ -104,6 +104,14 @@ def _apply_schema_12(
             connection.execute("PRAGMA foreign_keys = ON")
 
 
+def _apply_schema_13(connection: sqlite3.Connection) -> None:
+    _apply_schema_12(connection)
+    connection.executescript(dict(MIGRATIONS)[13])
+    connection.execute(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (13, 13)"
+    )
+
+
 def _seed_conversation_turn(
     connection: sqlite3.Connection,
     *,
@@ -503,6 +511,77 @@ class Schema12ForwardMigrationTests(unittest.TestCase):
         self.assertEqual(source_version_after_capture, 11)
         self.assertEqual(version, SCHEMA_VERSION)
 
+    def test_schema_14_upgrades_only_the_exact_schema_13_attempt_boundary(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            ensure_private_console_dir(root)
+            path = database_path(root)
+            connection = sqlite3.connect(path, isolation_level=None)
+            try:
+                _apply_schema_13(connection)
+            finally:
+                connection.close()
+            path.chmod(0o600)
+
+            migrated = connect(root)
+            try:
+                version = int(
+                    migrated.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0]
+                )
+                attempt_table = migrated.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'mentat_conversation_run_attempts'"
+                ).fetchone()
+            finally:
+                migrated.close()
+
+            drift_root = Path(temporary) / "drift"
+            ensure_private_console_dir(drift_root)
+            drift_path = database_path(drift_root)
+            drift = sqlite3.connect(drift_path, isolation_level=None)
+            try:
+                _apply_schema_13(drift)
+                drift.execute(
+                    "DROP TRIGGER mentat_conversation_submission_result_insert"
+                )
+                drift.executescript(
+                    """
+                    CREATE TRIGGER mentat_conversation_submission_result_insert
+                    AFTER INSERT ON mentat_runs
+                    BEGIN
+                        SELECT NULL;
+                    END;
+                    """
+                )
+            finally:
+                drift.close()
+            drift_path.chmod(0o600)
+            with self.assertRaisesRegex(
+                mentat_db.MentatDatabaseError,
+                "schema 13 cannot be safely upgraded",
+            ):
+                connect(drift_root)
+            read_only = sqlite3.connect(drift_path)
+            try:
+                drift_version = int(
+                    read_only.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0]
+                )
+                drift_attempt_table = read_only.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'mentat_conversation_run_attempts'"
+                ).fetchone()
+            finally:
+                read_only.close()
+
+        self.assertEqual(version, 14)
+        self.assertIsNotNone(attempt_table)
+        self.assertEqual(drift_version, 13)
+        self.assertIsNone(drift_attempt_table)
+
     def test_upgrade_preserves_turn_rows_and_restores_exact_constraints(self):
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "legacy.sqlite3"
@@ -727,8 +806,10 @@ class Schema12ForwardMigrationTests(unittest.TestCase):
                     )
                 }
 
-        self.assertEqual(len(racer_outcomes), 1)
-        self.assertIn("locked", racer_outcomes[0].lower())
+        self.assertEqual(len(racer_outcomes), 2)
+        self.assertTrue(
+            all("locked" in outcome.lower() for outcome in racer_outcomes)
+        )
         self.assertNotIn("raced_payload", columns)
 
     def test_active_caller_transaction_is_never_committed_by_schema_rewrite(self):

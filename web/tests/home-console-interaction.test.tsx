@@ -56,6 +56,10 @@ const conversation = {
   title_source: "default",
   updated_at: timestamp,
 };
+type ConversationFixture = Omit<typeof conversation, "archived_at" | "state"> & {
+  archived_at: string | null;
+  state: "active" | "archived";
+};
 const list = {
   agents: [agent],
   conversations: [conversation],
@@ -78,7 +82,7 @@ const activity = {
 
 function detail(
   currentRun: null | Record<string, unknown> = null,
-  targetConversation = conversation,
+  targetConversation: Record<string, unknown> = conversation,
   queuedTurns: Array<Record<string, unknown>> = [],
   messages: Array<Record<string, unknown>> = [],
   targetAgent = agent,
@@ -749,7 +753,16 @@ test("Home Console keeps the exact stream and queue affordance while Hermes fina
     MockEventSource.instances[0].url,
     `/api/runs/${finalizingRun.id}/events`,
   );
-  assert.match(document.querySelector(".selected-run-progress")?.textContent ?? "", /Run Finalizing/u);
+  assert.match(document.querySelector(".selected-run-progress")?.textContent ?? "", /Run Reconciling/u);
+  await act(async () => {
+    MockEventSource.instances[0].emit("snapshot", JSON.stringify({
+      event: { run_id: finalizingRun.id, summary: "Final evidence is durable" },
+    }));
+  });
+  await waitFor(() => assert.match(
+    document.querySelector(".selected-run-progress")?.textContent ?? "",
+    /Run Finalizing/u,
+  ));
   assert.equal(prompt.placeholder, "Write a follow-up to queue, or begin with /steer");
   await user.type(prompt, "Queue after final artifacts are durable");
   assert.equal((screen.getByRole("button", { name: "Queue" }) as HTMLButtonElement).disabled, false);
@@ -1251,6 +1264,11 @@ test("Home Console explicitly continues the blocked FIFO head after exact revali
 });
 
 test("Home Console steers only the exact running Run and keeps an unverifiable draft", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", {
+    configurable: true,
+    value: MockEventSource,
+  });
   const activeRun = {
     id: "run_steer",
     partial: false,
@@ -1292,6 +1310,16 @@ test("Home Console steers only the exact running Run and keeps an unverifiable d
   render(<HomeConsole />);
   const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
   await waitFor(() => assert.equal(prompt.disabled, false));
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  await act(async () => {
+    MockEventSource.instances[0].emit("snapshot", JSON.stringify({
+      event: { run_id: activeRun.id, summary: "Running" },
+    }));
+  });
+  await waitFor(() => assert.match(
+    document.querySelector(".selected-run-progress")?.textContent ?? "",
+    /Run Running/u,
+  ));
   await user.type(prompt, "   /steer focus only on the final answer");
   assert.equal(screen.queryByRole("button", { name: "Steer" }), null);
   await user.click(screen.getByRole("button", { name: "Send" }));
@@ -1314,6 +1342,238 @@ test("Home Console steers only the exact running Run and keeps an unverifiable d
     });
   }
   assert.equal(calls.some((call) => call.path.endsWith("/turns")), false);
+});
+
+test("Home Console previews and confirms Stop without closing the Conversation", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const stoppableAgent = { ...agent, capabilities: [...agent.capabilities, "run.stop"] };
+  const activeRun = { id: "run_stop_home", partial: false, status: "running", updated_at: timestamp };
+  let stopped = false;
+  const calls: Array<{ body: string; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [stoppableAgent] });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(stopped ? null : activeRun, conversation, [], [], stoppableAgent));
+    if (path.endsWith("/stop/preview") && method === "POST") {
+      calls.push({ body: String(init?.body), path });
+      return Response.json({ action: "stop", confirmation_id: "a".repeat(64), requires_confirmation: true, run_id: activeRun.id, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    }
+    if (path.endsWith("/stop") && method === "POST") {
+      calls.push({ body: String(init?.body), path });
+      stopped = true;
+      return Response.json({ action: "stop", disposition: "requested", run_id: activeRun.id, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" }, { status: 202 });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  await act(async () => MockEventSource.instances[0].emit("snapshot", JSON.stringify({ event: { run_id: activeRun.id, summary: "Running" } })));
+  await user.click(await screen.findByRole("button", { name: "Stop" }));
+  await user.click(await screen.findByRole("button", { name: "Confirm Stop" }));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Conversation remains open/u));
+  assert.ok(document.getElementById(`conversation-tab-${conversation.id}`));
+  assert.deepEqual(calls, [
+    { body: "{}", path: `/api/runs/${activeRun.id}/stop/preview` },
+    { body: `{"confirmation_id":"${"a".repeat(64)}"}`, path: `/api/runs/${activeRun.id}/stop` },
+  ]);
+});
+
+test("Home Console keeps approval in a dedicated card and confirms the exact response", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const waitingRun = { id: "run_approval_home", partial: false, status: "waiting_for_approval", updated_at: timestamp };
+  const request = { kind: "approval", title: "Use a tool", summary: "Read project data", choices: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }] };
+  let answered = false;
+  const calls: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(answered ? { ...waitingRun, status: "running" } : waitingRun));
+    if (path.endsWith("/response/preview") && method === "POST") return Response.json({ action: "respond", confirmation_id: "b".repeat(64), request, requires_confirmation: true, run_id: waitingRun.id, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    if (path.endsWith("/response") && method === "POST") {
+      calls.push(String(init?.body));
+      if (String(init?.body) === "{}") return Response.json({ action: "respond", request, requires_confirmation: false, run_id: waitingRun.id, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+      answered = true;
+      return Response.json({ action: "respond", disposition: "accepted", run_id: waitingRun.id, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" }, { status: 202 });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  await act(async () => MockEventSource.instances[0].emit("snapshot", JSON.stringify({ event: { run_id: waitingRun.id, summary: "Waiting" } })));
+  const card = await screen.findByLabelText("Approval required");
+  assert.match(card.textContent ?? "", /prompt composer cannot answer/u);
+  await user.click(screen.getByRole("button", { name: "Allow once" }));
+  await user.click(await screen.findByRole("button", { name: "Confirm response" }));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Response accepted/u));
+  assert.equal(calls.some((body) => body.includes('"kind":"approval"')), true);
+  assert.equal(calls.some((body) => body.includes("idempotency_key")), false);
+});
+
+test("Home Console closes, reopens, archives, and restores without deleting history", async () => {
+  let state = { ...conversation } as ConversationFixture;
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [state] });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, state));
+    if ((path.endsWith("/archive") || path.endsWith("/restore")) && method === "POST") {
+      const archived = path.endsWith("/archive");
+      state = { ...state, archived_at: archived ? timestamp : null, revision: state.revision + 1, state: archived ? "archived" as const : "active" as const };
+      return Response.json({ action: archived ? "archive" : "restore", conversation: state, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await screen.findByLabelText("Prompt");
+  await user.click(screen.getByRole("button", { name: "Close New conversation tab" }));
+  assert.equal(document.getElementById(`conversation-tab-${conversation.id}`), null);
+  await waitFor(() => assert.equal(document.activeElement?.id, "recent-conversations-summary"));
+  await user.click(screen.getByText("Recent Conversations"));
+  await user.click(document.querySelector<HTMLButtonElement>(".history-open")!);
+  assert.ok(document.getElementById(`conversation-tab-${conversation.id}`));
+  await user.click(screen.getByRole("button", { name: "Archive New conversation" }));
+  await waitFor(() => assert.equal((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value, ""));
+  assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, true);
+  await user.click(screen.getByRole("button", { name: "Restore New conversation" }));
+  await waitFor(() => assert.equal(screen.getByRole("button", { name: "Archive New conversation" }).getAttribute("disabled"), null));
+});
+
+test("Home Console creates one exact Retry Run and preserves the prior failure", async () => {
+  const failedRun = { id: "run_failed_home", partial: false, status: "failed", updated_at: timestamp };
+  const retryRun = { id: "run_retry_home", partial: false, status: "starting", updated_at: "2026-08-26T12:01:00Z" };
+  let retried = false;
+  const retryBodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(retried ? retryRun : failedRun));
+    if (path === `/api/conversations/${conversation.id}/retry` && method === "POST") {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      retryBodies.push(body);
+      retried = true;
+      return Response.json({ action: "retry", conversation_id: conversation.id, duplicate: false, run: retryRun, runtime: "python", schema_version: 1, service: "mentat-local-bridge", source_run_id: failedRun.id, status: "ready" }, { status: 202 });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const recovery = await screen.findByLabelText("Run recovery");
+  assert.match(recovery.textContent ?? "", /prior Run and its events remain in history/u);
+  assert.equal(screen.queryByRole("button", { name: "Resume" }), null);
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Retry accepted as a new Run/u));
+  assert.equal(retryBodies.length, 1);
+  assert.equal(retryBodies[0].source_run_id, failedRun.id);
+  assert.equal(typeof retryBodies[0].idempotency_key, "string");
+  assert.match(document.querySelector(".selected-run-progress")?.textContent ?? "", /Run Starting/u);
+});
+
+test("Home Console keeps a duplicate Retry replay reconciling until exact readback", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const failedRun = { id: "run_failed_duplicate", partial: false, status: "failed", updated_at: timestamp };
+  const replayedRun = { id: "run_retry_duplicate", partial: false, status: "starting", updated_at: timestamp };
+  let replayed = false;
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(replayed ? replayedRun : failedRun));
+    if (path === `/api/conversations/${conversation.id}/retry` && method === "POST") {
+      replayed = true;
+      return Response.json({ action: "retry", conversation_id: conversation.id, duplicate: true, run: replayedRun, runtime: "python", schema_version: 1, service: "mentat-local-bridge", source_run_id: failedRun.id, status: "ready" });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await user.click(await screen.findByRole("button", { name: "Retry" }));
+  await waitFor(() => assert.match(document.querySelector(".selected-run-progress")?.textContent ?? "", /Run Reconciling/u));
+  assert.equal(screen.queryByRole("button", { name: "Stop" }), null);
+  assert.equal(MockEventSource.instances.length, 1);
+});
+
+test("Home Console hides Resume when only the Agent declaration advertises it", async () => {
+  const resumableAgent = { ...agent, capabilities: [...agent.capabilities, "run.resume"].sort() };
+  const stoppedRun = { id: "run_stopped_home", partial: false, status: "stopped", updated_at: timestamp };
+  const paths: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    paths.push(`${method} ${path}`);
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [resumableAgent] });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(stoppedRun, conversation, [], [], resumableAgent));
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  render(<HomeConsole />);
+  await screen.findByLabelText("Run recovery");
+  assert.equal(screen.queryByRole("button", { name: "Resume" }), null);
+  assert.equal(paths.includes(`POST /api/conversations/${conversation.id}/resume`), false);
+});
+
+test("Home Console never offers Retry for active partial or unknown Runs", async () => {
+  for (const status of ["running", "waiting_for_approval", "unknown"]) {
+    installFetch({ currentRun: { id: `run_${status}`, partial: true, status, updated_at: timestamp } });
+    const rendered = render(<HomeConsole />);
+    await screen.findByLabelText("Prompt");
+    assert.equal(screen.queryByLabelText("Run recovery"), null, status);
+    assert.equal(screen.queryByRole("button", { name: "Retry" }), null, status);
+    rendered.unmount();
+  }
+});
+
+test("Home Console keeps each terminal outcome visible when verification is partial", async () => {
+  for (const status of ["failed", "stopped", "interrupted", "completed"]) {
+    installFetch({ currentRun: { id: `run_partial_${status}`, partial: true, status, updated_at: timestamp } });
+    const rendered = render(<HomeConsole />);
+    const recovery = await screen.findByLabelText("Run recovery");
+    assert.match(recovery.textContent ?? "", new RegExp(`Run ${status}`, "iu"), status);
+    assert.match(recovery.textContent ?? "", /verification partial/iu, status);
+    rendered.unmount();
+  }
+});
+
+test("Home Console opens a tab for an activity Conversation outside the loaded page", async () => {
+  const unloaded = { ...conversation, id: "conv_unloaded_activity", title: "Unloaded work", title_source: "first_prompt" as const };
+  const unloadedActivity = {
+    ...activity,
+    activity: [{
+      agent,
+      attention: true,
+      conversations: [{ attention: true, id: unloaded.id, run_id: "run_unloaded_activity", run_status: "failed", title: unloaded.title, updated_at: timestamp }],
+      state: "failed",
+      summary: unloaded.title,
+      updated_at: timestamp,
+    }],
+  };
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [], count: 0 });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(unloadedActivity);
+    if (path === `/api/conversations/${unloaded.id}` && method === "GET") return Response.json(detail({ id: "run_unloaded_activity", partial: false, status: "failed", updated_at: timestamp }, unloaded));
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await user.click(await screen.findByRole("button", { name: new RegExp(agent.name, "u") }));
+  await user.click(screen.getByRole("button", { name: unloaded.title }));
+  await waitFor(() => assert.ok(document.getElementById(`conversation-tab-${unloaded.id}`)));
+  assert.equal(document.getElementById(`conversation-tab-${unloaded.id}`)?.getAttribute("aria-selected"), "true");
 });
 
 test("Home Console streams only the selected Run and reconciles durable completion", async () => {

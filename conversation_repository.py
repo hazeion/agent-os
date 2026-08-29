@@ -233,7 +233,14 @@ _REQUIRED_SCHEMA_OBJECTS = {
             ) VALUES (
                 NEW.turn_id, NEW.id, NEW.runtime_binding_digest,
                 NEW.dispatch_state, NEW.status, NEW.partial, NEW.updated_at
-            );
+            )
+            ON CONFLICT(turn_id) DO UPDATE SET
+                run_id = excluded.run_id,
+                runtime_binding_digest = excluded.runtime_binding_digest,
+                dispatch_state = excluded.dispatch_state,
+                status = excluded.status,
+                partial = excluded.partial,
+                updated_at = excluded.updated_at;
         END
     """,
     ("trigger", "mentat_conversation_submission_result_update"): """
@@ -257,7 +264,103 @@ _REQUIRED_SCHEMA_OBJECTS = {
             END;
         END
     """,
+    ("table", "mentat_conversation_run_attempts"): """
+        CREATE TABLE mentat_conversation_run_attempts (
+            key_digest TEXT PRIMARY KEY CHECK (length(key_digest) = 64),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            action TEXT NOT NULL CHECK (action IN ('retry', 'resume')),
+            conversation_id TEXT NOT NULL
+                REFERENCES mentat_conversations(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL
+                REFERENCES mentat_conversation_turns(id) ON DELETE CASCADE,
+            source_run_id TEXT NOT NULL CHECK (
+                length(source_run_id) BETWEEN 1 AND 128
+            ),
+            run_id TEXT NOT NULL UNIQUE CHECK (
+                length(run_id) BETWEEN 1 AND 128
+            ),
+            runtime_binding_digest TEXT NOT NULL CHECK (
+                length(runtime_binding_digest) = 64
+            ),
+            dispatch_state TEXT NOT NULL CHECK (
+                dispatch_state IN (
+                    'reserved', 'submitting', 'accepted', 'rejected', 'unknown'
+                )
+            ),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'reserved', 'queued', 'submitting', 'starting', 'running',
+                    'cancelling', 'waiting', 'waiting_for_approval',
+                    'waiting_for_clarification', 'unknown', 'completed',
+                    'failed', 'cancelled', 'stopped', 'interrupted'
+                )
+            ),
+            partial INTEGER NOT NULL CHECK (partial IN (0, 1)),
+            created_at TEXT NOT NULL CHECK (
+                length(created_at) BETWEEN 1 AND 64
+            ),
+            updated_at TEXT NOT NULL CHECK (
+                length(updated_at) BETWEEN 1 AND 64
+            )
+        )
+    """,
+    ("index", "idx_mentat_conversation_run_attempts_turn"): """
+        CREATE INDEX idx_mentat_conversation_run_attempts_turn
+            ON mentat_conversation_run_attempts(turn_id, created_at, run_id)
+    """,
+    ("trigger", "mentat_conversation_run_attempts_capacity"): """
+        CREATE TRIGGER mentat_conversation_run_attempts_capacity
+        BEFORE INSERT ON mentat_conversation_run_attempts
+        WHEN (
+            SELECT COUNT(*) FROM mentat_conversation_run_attempts
+            WHERE turn_id = NEW.turn_id
+        ) >= 7
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_attempt_capacity');
+        END
+    """,
+    ("trigger", "mentat_conversation_run_attempt_result_update"): """
+        CREATE TRIGGER mentat_conversation_run_attempt_result_update
+        AFTER UPDATE OF status, dispatch_state, partial,
+            runtime_binding_digest, updated_at ON mentat_runs
+        WHEN NEW.source = 'console'
+          AND NEW.conversation_id IS NOT NULL
+          AND NEW.turn_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM mentat_conversation_run_attempts
+              WHERE run_id = NEW.id
+          )
+        BEGIN
+            UPDATE mentat_conversation_run_attempts
+            SET runtime_binding_digest = NEW.runtime_binding_digest,
+                dispatch_state = NEW.dispatch_state,
+                status = NEW.status,
+                partial = NEW.partial,
+                updated_at = NEW.updated_at
+            WHERE run_id = NEW.id;
+            SELECT CASE WHEN changes() != 1
+                THEN RAISE(ABORT, 'conversation_attempt_result_missing')
+            END;
+        END
+    """,
 }
+
+_PRE_SCHEMA_14_SUBMISSION_INSERT_TRIGGER = """
+    CREATE TRIGGER mentat_conversation_submission_result_insert
+    AFTER INSERT ON mentat_runs
+    WHEN NEW.source = 'console'
+      AND NEW.conversation_id IS NOT NULL
+      AND NEW.turn_id IS NOT NULL
+    BEGIN
+        INSERT INTO mentat_conversation_submission_results (
+            turn_id, run_id, runtime_binding_digest, dispatch_state,
+            status, partial, updated_at
+        ) VALUES (
+            NEW.turn_id, NEW.id, NEW.runtime_binding_digest,
+            NEW.dispatch_state, NEW.status, NEW.partial, NEW.updated_at
+        );
+    END
+"""
 
 _PRE_SCHEMA_13_RUN_IDENTITY_TRIGGER = """
     CREATE TRIGGER mentat_runs_conversation_identity_immutable
@@ -655,7 +758,7 @@ def _turn_row(row: Mapping[str, object]) -> ConversationTurnRecord:
         or type(revision) is not int
         or revision < 1
         or type(attempt_count) is not int
-        or attempt_count < 0
+        or not 0 <= attempt_count <= 8
     ):
         raise ConversationRepositoryValidationError("conversation.turn_invalid")
     if latest_run_id is not None and (
@@ -908,7 +1011,7 @@ def validate_repository_connection(
         expected_version = (
             DATABASE_SCHEMA_VERSION if schema_version is None else schema_version
         )
-        if expected_version not in {10, 11, 12, DATABASE_SCHEMA_VERSION}:
+        if expected_version not in {10, 11, 12, 13, DATABASE_SCHEMA_VERSION}:
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         legacy_missing_objects = {
             ("trigger", "mentat_conversations_agent_immutable"),
@@ -931,6 +1034,8 @@ def validate_repository_connection(
         }
         if expected_version >= 11:
             required.add("mentat_conversation_submission_results")
+        if expected_version >= 14:
+            required.add("mentat_conversation_run_attempts")
         if not required.issubset(tables):
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         version = int(
@@ -948,6 +1053,19 @@ def validate_repository_connection(
                 "mentat_conversation_submission_result_update",
             }:
                 continue
+            if expected_version < 14 and object_name in {
+                "mentat_conversation_run_attempts",
+                "idx_mentat_conversation_run_attempts_turn",
+                "mentat_conversation_run_attempts_capacity",
+                "mentat_conversation_run_attempt_result_update",
+            }:
+                continue
+            if (
+                expected_version < 14
+                and object_type == "trigger"
+                and object_name == "mentat_conversation_submission_result_insert"
+            ):
+                expected_sql = _PRE_SCHEMA_14_SUBMISSION_INSERT_TRIGGER
             if (
                 expected_version < 13
                 and object_type == "trigger"
@@ -1061,7 +1179,7 @@ def validate_repository_connection(
                     or type(turn["queue_ordinal"]) is not int
                     or int(turn["queue_ordinal"]) < 1
                     or type(turn["attempt_count"]) is not int
-                    or int(turn["attempt_count"]) < 0
+                    or not 0 <= int(turn["attempt_count"]) <= 8
                 ):
                     raise ConversationRepositoryError("conversation.turn_invalid")
                 if not _SHA256.fullmatch(str(turn["idempotency_key_digest"])) or not _SHA256.fullmatch(
@@ -1151,6 +1269,61 @@ def validate_repository_connection(
                         raise ConversationRepositoryError("conversation.turn_invalid")
                 elif result is not None and result["status"] in _ACTIVE_RUN_STATUSES:
                     raise ConversationRepositoryError("conversation.turn_invalid")
+                attempts = connection.execute(
+                    "SELECT * FROM mentat_conversation_run_attempts "
+                    "WHERE turn_id = ? ORDER BY created_at, run_id",
+                    (turn_id,),
+                ).fetchall() if expected_version >= 14 else ()
+                if len(attempts) > 7:
+                    raise ConversationRepositoryError("conversation.turn_invalid")
+                for attempt in attempts:
+                    if (
+                        attempt["conversation_id"] != conversation.id
+                        or attempt["action"] not in {"retry", "resume"}
+                        or not _SHA256.fullmatch(str(attempt["key_digest"]))
+                        or not _SHA256.fullmatch(str(attempt["request_digest"]))
+                        or not _SHA256.fullmatch(
+                            str(attempt["runtime_binding_digest"])
+                        )
+                        or re.fullmatch(
+                            r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z",
+                            str(attempt["source_run_id"]),
+                        ) is None
+                        or re.fullmatch(
+                            r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z",
+                            str(attempt["run_id"]),
+                        ) is None
+                        or attempt["dispatch_state"] not in {
+                            "reserved", "submitting", "accepted", "rejected", "unknown"
+                        }
+                        or attempt["status"] not in _ACTIVE_RUN_STATUSES
+                        | {"completed", "failed", "cancelled", "stopped", "interrupted"}
+                        or type(attempt["partial"]) is not int
+                        or attempt["partial"] not in {0, 1}
+                        or _timestamp(attempt["created_at"]) is None
+                        or _timestamp(attempt["updated_at"]) is None
+                    ):
+                        raise ConversationRepositoryError(
+                            "conversation.turn_invalid"
+                        )
+                    attempt_run = connection.execute(
+                        "SELECT conversation_id, turn_id, retry_of_run_id, "
+                        "resume_of_run_id FROM mentat_runs WHERE id = ?",
+                        (attempt["run_id"],),
+                    ).fetchone()
+                    if attempt_run is not None and (
+                        attempt_run["conversation_id"] != conversation.id
+                        or attempt_run["turn_id"] != turn_id
+                        or attempt["action"] == "retry"
+                        and attempt_run["retry_of_run_id"]
+                        != attempt["source_run_id"]
+                        or attempt["action"] == "resume"
+                        and attempt_run["resume_of_run_id"]
+                        != attempt["source_run_id"]
+                    ):
+                        raise ConversationRepositoryError(
+                            "conversation.turn_invalid"
+                        )
                 if not turn_id:
                     raise ConversationRepositoryError("conversation.turn_invalid")
             maximum_turn_ordinal = int(
@@ -1324,6 +1497,78 @@ class ConversationRepository:
 
     def list(self, *, limit: int = MAX_CONVERSATION_PAGE) -> tuple[ConversationRecord, ...]:
         return self.list_page(limit=limit)[0]
+
+    def set_archived(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        archived: bool,
+    ) -> ConversationRecord:
+        """Apply one exact reversible Conversation lifecycle change."""
+
+        identifier = _identifier(
+            conversation_id, _CONVERSATION_ID, "conversation_id_invalid"
+        )
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ConversationRepositoryValidationError(
+                "conversation.revision_invalid"
+            )
+        if type(archived) is not bool:
+            raise ConversationRepositoryValidationError(
+                "conversation.archive_invalid"
+            )
+        connection = self._connection()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM mentat_conversations WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                raise ConversationRepositoryConflict("conversation.not_found")
+            current = _conversation_row(row)
+            target_state = "archived" if archived else "active"
+            if current.revision != expected_revision:
+                raise ConversationRepositoryConflict("conversation.changed")
+            if current.state == target_state:
+                connection.commit()
+                return current
+            occurred_at = _now()
+            updated = connection.execute(
+                "UPDATE mentat_conversations SET state = ?, revision = revision + 1, "
+                "updated_at = ?, archived_at = ? WHERE id = ? AND revision = ?",
+                (
+                    target_state,
+                    occurred_at,
+                    occurred_at if archived else None,
+                    identifier,
+                    expected_revision,
+                ),
+            ).rowcount
+            if updated != 1:
+                raise ConversationRepositoryConflict("conversation.changed")
+            connection.commit()
+            stored = connection.execute(
+                "SELECT * FROM mentat_conversations WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if stored is None:
+                raise ConversationRepositoryError("conversation.corrupt")
+            return _conversation_row(stored)
+        except ConversationRepositoryError:
+            connection.rollback()
+            raise
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise ConversationRepositoryConflict("conversation.changed") from exc
+        except sqlite3.Error as exc:
+            connection.rollback()
+            raise ConversationRepositoryUnavailable(
+                "conversation.unavailable"
+            ) from exc
+        finally:
+            connection.close()
 
     def read(
         self,

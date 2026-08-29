@@ -93,6 +93,22 @@ export async function readConversationCreateBody(
     : null;
 }
 
+export async function readExpectedRevisionBody(
+  request: Request,
+): Promise<{ expectedRevision: number } | null> {
+  const body = await readBoundedJson(request, 512);
+  if (
+    !body
+    || typeof body !== "object"
+    || Array.isArray(body)
+    || Object.keys(body).join(",") !== "expected_revision"
+  ) return null;
+  const revision = (body as Record<string, unknown>).expected_revision;
+  return Number.isSafeInteger(revision) && (revision as number) >= 1
+    ? { expectedRevision: revision as number }
+    : null;
+}
+
 export async function readConversationTurnBody(
   request: Request,
   timeoutMilliseconds = BODY_READ_TIMEOUT_MILLISECONDS,
@@ -122,6 +138,29 @@ export async function readConversationTurnBody(
   ) return null;
   const keyBytes = new TextEncoder().encode(idempotencyKey).byteLength;
   return 16 <= keyBytes && keyBytes <= 256 ? { idempotencyKey, text } : null;
+}
+
+export async function readConversationRunAttemptBody(
+  request: Request,
+): Promise<{ idempotencyKey: string; sourceRunId: string } | null> {
+  const body = await readBoundedJson(request, CONVERSATION_TURN_BODY_BYTES);
+  if (
+    !body
+    || typeof body !== "object"
+    || Array.isArray(body)
+    || Object.keys(body).sort().join(",") !== "idempotency_key,source_run_id"
+  ) return null;
+  const value = body as Record<string, unknown>;
+  if (
+    typeof value.idempotency_key !== "string"
+    || value.idempotency_key.includes("\0")
+    || typeof value.source_run_id !== "string"
+    || !/^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(value.source_run_id)
+  ) return null;
+  const keyBytes = new TextEncoder().encode(value.idempotency_key).byteLength;
+  return 16 <= keyBytes && keyBytes <= 256
+    ? { idempotencyKey: value.idempotency_key, sourceRunId: value.source_run_id }
+    : null;
 }
 
 export async function readConversationQueueActionBody(

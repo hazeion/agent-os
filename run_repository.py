@@ -236,6 +236,60 @@ class ConversationSubmissionResult:
 
 
 @dataclass(frozen=True)
+class ConversationRunAttemptResult:
+    action: str
+    conversation_id: str
+    turn_id: str
+    source_run_id: str
+    run_id: str
+    status: str
+    dispatch_state: str
+    partial: bool
+    updated_at: str
+
+
+def _conversation_run_attempt_result(
+    row: Mapping[str, object],
+) -> ConversationRunAttemptResult:
+    try:
+        action = str(row["action"])
+        conversation_id = str(row["conversation_id"])
+        turn_id = str(row["turn_id"])
+        source_run_id = str(row["source_run_id"])
+        run_id = str(row["run_id"])
+        status = str(row["status"])
+        dispatch_state = str(row["dispatch_state"])
+        partial = row["partial"]
+        updated_at = _timestamp(row["updated_at"])
+        if (
+            action not in {"retry", "resume"}
+            or _CONVERSATION_ID.fullmatch(conversation_id) is None
+            or _TURN_ID.fullmatch(turn_id) is None
+            or _RUN_ID.fullmatch(source_run_id) is None
+            or _RUN_ID.fullmatch(run_id) is None
+            or status not in _ALL_STATUSES
+            or dispatch_state
+            not in {"reserved", "submitting", "accepted", "rejected", "unknown"}
+            or type(partial) is not int
+            or partial not in {0, 1}
+        ):
+            raise RunRepositoryError("run_repository.corrupt")
+    except (KeyError, TypeError, ValueError, RunRepositoryError) as exc:
+        raise RunRepositoryError("run_repository.corrupt") from exc
+    return ConversationRunAttemptResult(
+        action=action,
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        source_run_id=source_run_id,
+        run_id=run_id,
+        status=status,
+        dispatch_state=dispatch_state,
+        partial=bool(partial),
+        updated_at=updated_at,
+    )
+
+
+@dataclass(frozen=True)
 class RunRecord:
     id: str
     source: str
@@ -268,6 +322,7 @@ class RunRecord:
     runtime_execution_digest: str | None = None
     capacity_scope_digest: str | None = None
     admitted_capacity_limit: int | None = None
+    retry_of_run_id: str | None = None
     resume_of_run_id: str | None = None
 
 
@@ -283,14 +338,18 @@ _RUN_SCHEMA_OBJECTS = frozenset(
 _CONVERSATION_RESULT_SCHEMA_OBJECTS = frozenset(
     {"mentat_conversation_submission_results"}
 )
+_CONVERSATION_ATTEMPT_SCHEMA_OBJECTS = frozenset(
+    {"mentat_conversation_run_attempts"}
+)
 
 
 def _run_schema_objects(schema_version: int) -> frozenset[str]:
-    return (
-        _RUN_SCHEMA_OBJECTS | _CONVERSATION_RESULT_SCHEMA_OBJECTS
-        if schema_version >= 11
-        else _RUN_SCHEMA_OBJECTS
-    )
+    objects = _RUN_SCHEMA_OBJECTS
+    if schema_version >= 11:
+        objects |= _CONVERSATION_RESULT_SCHEMA_OBJECTS
+    if schema_version >= 14:
+        objects |= _CONVERSATION_ATTEMPT_SCHEMA_OBJECTS
+    return objects
 
 
 def _run_schema_fingerprint(
@@ -1321,6 +1380,7 @@ class RunRepository:
                 10,
                 CONVERSATION_SUBMISSION_SCHEMA_VERSION,
                 12,
+                13,
                 DATABASE_SCHEMA_VERSION,
             }
             or not _run_schema_objects(version).issubset(names)
@@ -1641,6 +1701,12 @@ class RunRepository:
                 int(row["admitted_capacity_limit"])
                 if "admitted_capacity_limit" in row.keys()
                 and row["admitted_capacity_limit"] is not None
+                else None
+            ),
+            retry_of_run_id=(
+                str(row["retry_of_run_id"])
+                if "retry_of_run_id" in row.keys()
+                and row["retry_of_run_id"] is not None
                 else None
             ),
             resume_of_run_id=(
@@ -2399,6 +2465,16 @@ class RunRepository:
         ).fetchone()
         if conversation is None:
             raise RunRepositoryConflict("conversation.not_found")
+        if conversation["state"] == "archived":
+            # Archive is reversible presentation state. It must not roll back
+            # a verified result or start queued work while hidden. Make the
+            # exact head explicitly continuable after restore.
+            self._block_oldest_pending_turn(
+                conversation_id=conversation_id,
+                reason="partial",
+                occurred_at=occurred_at,
+            )
+            return None
         if conversation["state"] != "active":
             raise RunRepositoryConflict("conversation.not_active")
         if conversation["agent_id"] != admission.agent_id:
@@ -2700,6 +2776,366 @@ class RunRepository:
             if row is None:
                 raise RunRepositoryConflict("conversation.turn_not_found")
             return self._conversation_reservation(row)
+
+    def reserve_conversation_run_attempt(
+        self,
+        *,
+        action: str,
+        idempotency_key: str,
+        conversation_id: str,
+        source_run_id: str,
+        admission: ConversationRunAdmission,
+        now: str | None = None,
+    ) -> ConversationDispatchReservation:
+        """Reserve one explicit Retry or Resume without replacing prior evidence."""
+
+        key_digest = self._idempotency_key_digest(idempotency_key)
+        if (
+            action not in {"retry", "resume"}
+            or _CONVERSATION_ID.fullmatch(str(conversation_id)) is None
+            or _RUN_ID.fullmatch(str(source_run_id)) is None
+        ):
+            raise RunRepositoryValidationError("conversation.attempt_invalid")
+        request_digest = hashlib.sha256(
+            _canonical_json(
+                {
+                    "action": action,
+                    "conversation_id": conversation_id,
+                    "source_run_id": source_run_id,
+                },
+                maximum=1_024,
+                code="conversation.attempt_invalid",
+            ).encode("ascii")
+        ).hexdigest()
+        occurred_at = _timestamp(now or _now_iso())
+        with self.mutation():
+            self.authority_receipt(required=True)
+            existing = self.connection.execute(
+                "SELECT * FROM mentat_conversation_run_attempts "
+                "WHERE key_digest = ?",
+                (key_digest,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["request_digest"] != request_digest
+                    or existing["action"] != action
+                    or existing["conversation_id"] != conversation_id
+                    or existing["source_run_id"] != source_run_id
+                ):
+                    raise RunRepositoryConflict(
+                        "conversation.attempt_idempotency_conflict"
+                    )
+                turn = self._conversation_turn_by_id(str(existing["turn_id"]))
+                if turn is None:
+                    raise RunRepositoryError("run_repository.corrupt")
+                return ConversationDispatchReservation(
+                    conversation_id=conversation_id,
+                    message_id=str(turn["user_message_id"]),
+                    turn_id=str(existing["turn_id"]),
+                    run_id=str(existing["run_id"]),
+                    request_digest=request_digest,
+                    runtime_binding_digest=str(
+                        existing["runtime_binding_digest"]
+                    ),
+                    state=str(existing["dispatch_state"]),
+                    attempt_count=int(turn["attempt_count"]),
+                    duplicate=True,
+                )
+
+            self._apply_retention(protected_run_ids=(source_run_id,))
+            source = self.connection.execute(
+                """
+                SELECT r.*, t.user_message_id, t.state AS turn_state,
+                       t.revision AS turn_revision, t.attempt_count,
+                       t.latest_run_id, m.content_json AS message_content_json,
+                       m.content_bytes AS message_content_bytes,
+                       m.revision AS message_revision,
+                       c.state AS conversation_state,
+                       c.agent_id AS conversation_agent_id
+                FROM mentat_runs AS r
+                JOIN mentat_conversation_turns AS t
+                  ON t.id = r.turn_id
+                 AND t.conversation_id = r.conversation_id
+                JOIN mentat_conversation_messages AS m
+                  ON m.id = t.user_message_id
+                 AND m.conversation_id = t.conversation_id
+                JOIN mentat_conversations AS c ON c.id = t.conversation_id
+                WHERE r.id = ? AND r.conversation_id = ?
+                """,
+                (source_run_id, conversation_id),
+            ).fetchone()
+            if source is None:
+                raise RunRepositoryConflict("run.not_found")
+            if (
+                source["source"] != "console"
+                or source["conversation_state"] != "active"
+                or source["conversation_agent_id"] != admission.agent_id
+                or source["agent_id"] != admission.agent_id
+                or source["turn_state"] != "consumed"
+                or source["latest_run_id"] != source_run_id
+                or source["status"] not in _TERMINAL_STATUSES
+                or not bool(source["terminal_finalized"])
+                or int(source["attempt_count"]) >= 8
+                or action == "resume"
+                and (
+                    source["runtime_type"] != admission.runtime_type
+                    or source["runtime_binding_digest"]
+                    != admission.runtime_binding_digest
+                    or source["runtime_run_ref"] is None
+                )
+            ):
+                raise RunRepositoryConflict("conversation.attempt_stale")
+            receipt_count = int(
+                self.connection.execute(
+                    "SELECT COUNT(*) FROM mentat_conversation_run_attempts "
+                    "WHERE turn_id = ?",
+                    (source["turn_id"],),
+                ).fetchone()[0]
+            )
+            if receipt_count >= 7:
+                raise RunRepositoryConflict(
+                    "conversation.attempt_capacity"
+                )
+            active = self.connection.execute(
+                "SELECT 1 FROM mentat_runs WHERE conversation_id = ? "
+                "AND status IN (" + ",".join("?" for _ in _ACTIVE_STATUSES) + ") LIMIT 1",
+                (conversation_id, *tuple(sorted(_ACTIVE_STATUSES))),
+            ).fetchone()
+            if active is not None:
+                raise RunRepositoryConflict("conversation.active_run")
+            agent = self.connection.execute(
+                """
+                SELECT a.revision, a.runtime_config_id, a.capabilities_json,
+                       1 AS runtime_config_revision,
+                       c.runtime_type, c.runtime_agent_ref
+                FROM mentat_agents AS a
+                JOIN agent_runtime_configs AS c ON c.id = a.runtime_config_id
+                WHERE a.id = ?
+                """,
+                (admission.agent_id,),
+            ).fetchone()
+            if agent is None:
+                raise RunRepositoryConflict("conversation.agent_missing")
+            live_capabilities = _decode_json(
+                agent["capabilities_json"],
+                expected=list,
+                code="run_repository.corrupt",
+            )
+            if (
+                int(agent["revision"]) != admission.agent_revision
+                or str(agent["runtime_config_id"])
+                != admission.runtime_config_id
+                or int(agent["runtime_config_revision"])
+                != admission.runtime_config_revision
+                or str(agent["runtime_type"]) != admission.runtime_type
+                or live_capabilities != list(admission.capabilities)
+                or runtime_binding_digest(
+                    agent_id=admission.agent_id,
+                    runtime_type=admission.runtime_type,
+                    runtime_config_id=admission.runtime_config_id,
+                    runtime_agent_ref=str(agent["runtime_agent_ref"]),
+                    capabilities=live_capabilities,
+                )
+                != admission.runtime_binding_digest
+            ):
+                raise RunRepositoryConflict("conversation.binding_changed")
+            if self._active_capacity_count(
+                runtime_type=admission.runtime_type,
+                binding_digest=admission.runtime_binding_digest,
+                capacity_scope_digest=admission.capacity_scope_digest,
+            ) >= admission.capacity_limit:
+                raise RunRepositoryConflict("conversation.capacity_unavailable")
+            try:
+                content = _decode_json(
+                    source["message_content_json"],
+                    expected=dict,
+                    code="run_repository.corrupt",
+                )
+                text = str(content["parts"][0]["text"])
+                _, canonical_json, content_bytes = canonical_message_content(
+                    text,
+                    role="user",
+                )
+            except (KeyError, IndexError, TypeError, ConversationRepositoryError) as exc:
+                raise RunRepositoryError("run_repository.corrupt") from exc
+            if (
+                canonical_json != source["message_content_json"]
+                or content_bytes != int(source["message_content_bytes"])
+            ):
+                raise RunRepositoryError("run_repository.corrupt")
+            self._ensure_run_capacity((admission.run_id, source_run_id))
+            capabilities_json, execution_json, execution_digest, details_json = (
+                self._conversation_admission_documents(admission, text=text)
+            )
+            self.connection.execute(
+                """
+                INSERT INTO mentat_runs (
+                    id, source, task_id, task_revision, task_snapshot_json,
+                    agent_id, runtime_type, runtime_config_id,
+                    runtime_binding_digest, capabilities_json, status,
+                    dispatch_state, details_json, created_at, updated_at,
+                    conversation_id, turn_id, retry_of_run_id,
+                    resume_of_run_id, agent_revision,
+                    runtime_config_revision, execution_config_json,
+                    execution_config_digest, capacity_scope_digest,
+                    admitted_capacity_limit
+                ) VALUES (
+                    ?, 'console', NULL, NULL, NULL, ?, ?, ?, ?, ?,
+                    'reserved', 'reserved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    admission.run_id,
+                    admission.agent_id,
+                    admission.runtime_type,
+                    admission.runtime_config_id,
+                    admission.runtime_binding_digest,
+                    capabilities_json,
+                    details_json,
+                    occurred_at,
+                    occurred_at,
+                    conversation_id,
+                    source["turn_id"],
+                    source_run_id if action == "retry" else None,
+                    source_run_id if action == "resume" else None,
+                    admission.agent_revision,
+                    admission.runtime_config_revision,
+                    execution_json,
+                    execution_digest,
+                    admission.capacity_scope_digest,
+                    admission.capacity_limit,
+                ),
+            )
+            self.connection.execute(
+                """
+                INSERT INTO mentat_conversation_run_attempts (
+                    key_digest, request_digest, action, conversation_id,
+                    turn_id, source_run_id, run_id,
+                    runtime_binding_digest, dispatch_state, status, partial,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', 'reserved', 0, ?, ?)
+                """,
+                (
+                    key_digest,
+                    request_digest,
+                    action,
+                    conversation_id,
+                    source["turn_id"],
+                    source_run_id,
+                    admission.run_id,
+                    admission.runtime_binding_digest,
+                    occurred_at,
+                    occurred_at,
+                ),
+            )
+            message_updated = self.connection.execute(
+                "UPDATE mentat_conversation_messages SET run_id = ?, "
+                "revision = revision + 1, updated_at = ? WHERE id = ? "
+                "AND conversation_id = ? AND run_id = ? AND revision = ?",
+                (
+                    admission.run_id,
+                    occurred_at,
+                    source["user_message_id"],
+                    conversation_id,
+                    source_run_id,
+                    source["message_revision"],
+                ),
+            ).rowcount
+            turn_updated = self.connection.execute(
+                "UPDATE mentat_conversation_turns SET state = 'dispatching', "
+                "blocked_reason = NULL, latest_run_id = ?, "
+                "revision = revision + 1, updated_at = ? WHERE id = ? "
+                "AND conversation_id = ? AND state = 'consumed' "
+                "AND latest_run_id = ? AND revision = ?",
+                (
+                    admission.run_id,
+                    occurred_at,
+                    source["turn_id"],
+                    conversation_id,
+                    source_run_id,
+                    source["turn_revision"],
+                ),
+            ).rowcount
+            if message_updated != 1 or turn_updated != 1:
+                raise RunRepositoryConflict("conversation.state_changed")
+            self.connection.execute(
+                "UPDATE mentat_conversations SET revision = revision + 1, "
+                "updated_at = ? WHERE id = ?",
+                (occurred_at, conversation_id),
+            )
+            self._append_event_record(
+                _event_from_domain(
+                    AgentEvent(
+                        id="event_" + hashlib.sha256(
+                            f"{admission.run_id}:reserved".encode("utf-8")
+                        ).hexdigest()[:32],
+                        run_id=admission.run_id,
+                        sequence=1,
+                        type=AgentEventType.DISPATCH_RESERVED,
+                        occurred_at=occurred_at,
+                        summary=(
+                            "Conversation Turn retry reserved"
+                            if action == "retry"
+                            else "Conversation Turn resume reserved"
+                        ),
+                    )
+                )
+            )
+            reserved = self._conversation_turn_by_id(str(source["turn_id"]))
+            if reserved is None:
+                raise RunRepositoryError("run_repository.corrupt")
+            return self._conversation_reservation(reserved)
+
+    def get_conversation_run_attempt_result(
+        self,
+        *,
+        idempotency_key: str,
+    ) -> ConversationRunAttemptResult:
+        key_digest = self._idempotency_key_digest(idempotency_key)
+        row = self.connection.execute(
+            "SELECT * FROM mentat_conversation_run_attempts WHERE key_digest = ?",
+            (key_digest,),
+        ).fetchone()
+        if row is None:
+            raise RunRepositoryConflict("conversation.attempt_not_found")
+        return _conversation_run_attempt_result(row)
+
+    def lookup_conversation_run_attempt(
+        self,
+        *,
+        action: str,
+        idempotency_key: str,
+        conversation_id: str,
+        source_run_id: str,
+    ) -> ConversationRunAttemptResult | None:
+        key_digest = self._idempotency_key_digest(idempotency_key)
+        row = self.connection.execute(
+            "SELECT * FROM mentat_conversation_run_attempts WHERE key_digest = ?",
+            (key_digest,),
+        ).fetchone()
+        if row is None:
+            return None
+        request_digest = hashlib.sha256(
+            _canonical_json(
+                {
+                    "action": action,
+                    "conversation_id": conversation_id,
+                    "source_run_id": source_run_id,
+                },
+                maximum=1_024,
+                code="conversation.attempt_invalid",
+            ).encode("ascii")
+        ).hexdigest()
+        if (
+            row["request_digest"] != request_digest
+            or row["action"] != action
+            or row["conversation_id"] != conversation_id
+            or row["source_run_id"] != source_run_id
+        ):
+            raise RunRepositoryConflict(
+                "conversation.attempt_idempotency_conflict"
+            )
+        return _conversation_run_attempt_result(row)
 
     def reserve_conversation_turn(
         self,
@@ -3424,24 +3860,29 @@ class RunRepository:
                 raise RunRepositoryConflict("conversation.binding_changed")
             if (
                 str(row["state"]) != "dispatching"
-                or int(row["attempt_count"]) != 0
                 or str(row["run_status"]) != "reserved"
                 or str(row["run_dispatch_state"]) != "reserved"
             ):
                 raise RunRepositoryConflict("conversation.attempt_already_claimed")
+            prior_attempt_count = int(row["attempt_count"])
+            if prior_attempt_count < 0 or prior_attempt_count >= 8:
+                raise RunRepositoryConflict("conversation.attempt_already_claimed")
             turn_updated = self.connection.execute(
-                "UPDATE mentat_conversation_turns SET attempt_count = 1, "
+                "UPDATE mentat_conversation_turns SET attempt_count = attempt_count + 1, "
                 "revision = revision + 1, updated_at = ? "
-                "WHERE id = ? AND state = 'dispatching' AND attempt_count = 0",
-                (occurred_at, turn_id),
+                "WHERE id = ? AND state = 'dispatching' AND attempt_count = ?",
+                (occurred_at, turn_id, prior_attempt_count),
             ).rowcount
             run_updated = self.connection.execute(
                 "UPDATE mentat_runs SET status = 'submitting', "
-                "dispatch_state = 'submitting', resume_of_run_id = NULL, "
+                "dispatch_state = 'submitting', resume_of_run_id = CASE "
+                "WHEN EXISTS (SELECT 1 FROM mentat_conversation_run_attempts "
+                "WHERE run_id = ? AND action = 'resume') "
+                "THEN resume_of_run_id ELSE NULL END, "
                 "state_revision = state_revision + 1, "
                 "updated_at = ? WHERE id = ? AND status = 'reserved' "
                 "AND dispatch_state = 'reserved'",
-                (occurred_at, row["latest_run_id"]),
+                (row["latest_run_id"], occurred_at, row["latest_run_id"]),
             ).rowcount
             if turn_updated != 1 or run_updated != 1:
                 raise RunRepositoryConflict("conversation.state_changed")
@@ -3470,7 +3911,6 @@ class RunRepository:
                 row is None
                 or row["latest_run_id"] is None
                 or row["state"] != "dispatching"
-                or int(row["attempt_count"]) != 0
                 or row["run_status"] != "reserved"
                 or row["run_dispatch_state"] != "reserved"
             ):
@@ -3478,8 +3918,8 @@ class RunRepository:
             turn_updated = self.connection.execute(
                 "UPDATE mentat_conversation_turns SET state = 'consumed', "
                 "revision = revision + 1, updated_at = ? "
-                "WHERE id = ? AND state = 'dispatching' AND attempt_count = 0",
-                (occurred_at, turn_id),
+                "WHERE id = ? AND state = 'dispatching' AND attempt_count = ?",
+                (occurred_at, turn_id, row["attempt_count"]),
             ).rowcount
             run_updated = self.connection.execute(
                 "UPDATE mentat_runs SET status = 'failed', dispatch_state = 'rejected', "
@@ -3536,7 +3976,7 @@ class RunRepository:
                 row is None
                 or row["latest_run_id"] is None
                 or row["state"] != "dispatching"
-                or int(row["attempt_count"]) != 1
+                or int(row["attempt_count"]) < 1
                 or row["run_status"] != "submitting"
                 or row["run_dispatch_state"] != "submitting"
             ):
@@ -3594,8 +4034,8 @@ class RunRepository:
             turn_updated = self.connection.execute(
                 "UPDATE mentat_conversation_turns SET state = 'consumed', "
                 "revision = revision + 1, updated_at = ? "
-                "WHERE id = ? AND state = 'dispatching' AND attempt_count = 1",
-                (occurred_at, turn_id),
+                "WHERE id = ? AND state = 'dispatching' AND attempt_count = ?",
+                (occurred_at, turn_id, row["attempt_count"]),
             ).rowcount
             run_updated = self.connection.execute(
                 "UPDATE mentat_runs SET status = ?, dispatch_state = ?, partial = ?, "
@@ -4397,16 +4837,16 @@ class RunRepository:
                 WHERE r.source = 'console' AND r.conversation_id IS NOT NULL
                   AND (
                     (r.status = 'reserved' AND r.dispatch_state = 'reserved'
-                     AND t.state = 'dispatching' AND t.attempt_count = 0)
+                     AND t.state = 'dispatching' AND t.attempt_count >= 0)
                     OR
                     (r.status = 'submitting' AND r.dispatch_state = 'submitting'
-                     AND t.state = 'dispatching' AND t.attempt_count = 1)
+                     AND t.state = 'dispatching' AND t.attempt_count >= 1)
                     OR
                     (r.dispatch_state = 'accepted' AND r.runtime_run_ref IS NULL
                      AND r.status IN (
                         'queued', 'starting', 'running', 'cancelling', 'waiting',
                         'waiting_for_approval', 'waiting_for_clarification'
-                     ) AND t.state = 'consumed' AND t.attempt_count = 1)
+                     ) AND t.state = 'consumed' AND t.attempt_count >= 1)
                   )
                 ORDER BY r.id
                 """
@@ -5031,7 +5471,7 @@ class RunRepository:
                 authority_updated = int(
                     turn is not None
                     and turn["state"] == "consumed"
-                    and int(turn["attempt_count"]) == 1
+                    and int(turn["attempt_count"]) >= 1
                     and turn["latest_run_id"] == identifier
                 )
             else:
@@ -6432,7 +6872,6 @@ class RunRepository:
                         or row["agent_id"] is None
                         or row["runtime_config_id"] is None
                         or row["runtime_binding_digest"] is None
-                        or row["retry_of_run_id"] is not None
                     ):
                         raise RunRepositoryError("run_repository.corrupt")
                     authority = self.connection.execute(
@@ -6458,55 +6897,107 @@ class RunRepository:
                     if (
                         authority is None
                         or authority["conversation_agent_id"] != row["agent_id"]
-                        or authority["latest_run_id"] != row["id"]
-                        or authority["message_run_id"] != row["id"]
                         or authority["message_conversation_id"] != row["conversation_id"]
                         or authority["message_role"] != "user"
                     ):
                         raise RunRepositoryError("run_repository.corrupt")
+                    if authority["latest_run_id"] == row["id"]:
+                        if authority["message_run_id"] != row["id"]:
+                            raise RunRepositoryError("run_repository.corrupt")
+                    else:
+                        successor = self.connection.execute(
+                            "SELECT 1 FROM mentat_conversation_run_attempts "
+                            "WHERE conversation_id = ? AND turn_id = ? "
+                            "AND source_run_id = ? LIMIT 1",
+                            (
+                                row["conversation_id"],
+                                row["turn_id"],
+                                row["id"],
+                            ),
+                        ).fetchone()
+                        if (
+                            authority["message_run_id"]
+                            != authority["latest_run_id"]
+                            or successor is None
+                        ):
+                            raise RunRepositoryError("run_repository.corrupt")
+                    retry_predecessor_id = row["retry_of_run_id"]
+                    if retry_predecessor_id is not None:
+                        retry_receipt = self.connection.execute(
+                            "SELECT 1 FROM mentat_conversation_run_attempts "
+                            "WHERE action = 'retry' AND conversation_id = ? "
+                            "AND turn_id = ? AND source_run_id = ? "
+                            "AND run_id = ? LIMIT 1",
+                            (
+                                row["conversation_id"],
+                                row["turn_id"],
+                                retry_predecessor_id,
+                                row["id"],
+                            ),
+                        ).fetchone()
+                        if retry_receipt is None:
+                            raise RunRepositoryError("run_repository.corrupt")
                     predecessor_id = row["resume_of_run_id"]
                     if predecessor_id is not None:
                         predecessor_id = _identifier(str(predecessor_id))
-                        latest_prior = self.connection.execute(
-                            "SELECT latest_run_id FROM mentat_conversation_turns "
-                            "WHERE conversation_id = ? AND queue_ordinal < ? "
-                            "AND latest_run_id IS NOT NULL "
-                            "ORDER BY queue_ordinal DESC, id DESC LIMIT 1",
-                            (
-                                row["conversation_id"],
-                                int(authority["turn_queue_ordinal"]),
-                            ),
-                        ).fetchone()
                         predecessor = self.connection.execute(
                             "SELECT * FROM mentat_runs WHERE id = ?",
                             (predecessor_id,),
                         ).fetchone()
-                        if (
-                            latest_prior is None
-                            or latest_prior["latest_run_id"] != predecessor_id
-                            or (
-                                predecessor is None
-                                and row["status"] == "reserved"
-                            )
-                            or (
+                        resume_receipt = self.connection.execute(
+                            "SELECT 1 FROM mentat_conversation_run_attempts "
+                            "WHERE action = 'resume' AND conversation_id = ? "
+                            "AND turn_id = ? AND source_run_id = ? "
+                            "AND run_id = ? LIMIT 1",
+                            (
+                                row["conversation_id"],
+                                row["turn_id"],
+                                predecessor_id,
+                                row["id"],
+                            ),
+                        ).fetchone()
+                        if resume_receipt is not None:
+                            valid_predecessor = (
                                 predecessor is not None
-                                and (
-                                    predecessor["conversation_id"]
-                                    != row["conversation_id"]
-                                    or predecessor["agent_id"] != row["agent_id"]
-                                    or predecessor["runtime_type"]
-                                    != row["runtime_type"]
-                                    or predecessor["runtime_binding_digest"]
-                                    != row["runtime_binding_digest"]
-                                    or predecessor["status"] != "completed"
-                                    or predecessor["dispatch_state"] != "accepted"
-                                    or bool(predecessor["partial"])
-                                    or not bool(
-                                        predecessor["terminal_finalized"]
-                                    )
-                                )
+                                and predecessor["conversation_id"]
+                                == row["conversation_id"]
+                                and predecessor["turn_id"] == row["turn_id"]
+                                and predecessor["agent_id"] == row["agent_id"]
+                                and predecessor["runtime_type"]
+                                == row["runtime_type"]
+                                and predecessor["runtime_binding_digest"]
+                                == row["runtime_binding_digest"]
+                                and predecessor["status"] in _TERMINAL_STATUSES
+                                and bool(predecessor["terminal_finalized"])
                             )
-                        ):
+                        else:
+                            latest_prior = self.connection.execute(
+                                "SELECT latest_run_id FROM mentat_conversation_turns "
+                                "WHERE conversation_id = ? AND queue_ordinal < ? "
+                                "AND latest_run_id IS NOT NULL "
+                                "ORDER BY queue_ordinal DESC, id DESC LIMIT 1",
+                                (
+                                    row["conversation_id"],
+                                    int(authority["turn_queue_ordinal"]),
+                                ),
+                            ).fetchone()
+                            valid_predecessor = (
+                                latest_prior is not None
+                                and latest_prior["latest_run_id"] == predecessor_id
+                                and predecessor is not None
+                                and predecessor["conversation_id"]
+                                == row["conversation_id"]
+                                and predecessor["agent_id"] == row["agent_id"]
+                                and predecessor["runtime_type"]
+                                == row["runtime_type"]
+                                and predecessor["runtime_binding_digest"]
+                                == row["runtime_binding_digest"]
+                                and predecessor["status"] == "completed"
+                                and predecessor["dispatch_state"] == "accepted"
+                                and not bool(predecessor["partial"])
+                                and bool(predecessor["terminal_finalized"])
+                            )
+                        if not valid_predecessor:
                             raise RunRepositoryError("run_repository.corrupt")
                     status = str(row["status"])
                     dispatch_state = str(row["dispatch_state"])
@@ -6517,31 +7008,31 @@ class RunRepository:
                             dispatch_state == "reserved"
                             and status == "reserved"
                             and turn_state == "dispatching"
-                            and attempt_count == 0
+                            and attempt_count >= 0
                         )
                         or (
                             dispatch_state == "submitting"
                             and status == "submitting"
                             and turn_state == "dispatching"
-                            and attempt_count == 1
+                            and attempt_count >= 1
                         )
                         or (
                             dispatch_state == "accepted"
                             and status not in {"reserved", "submitting", "unknown"}
                             and turn_state == "consumed"
-                            and attempt_count == 1
+                            and attempt_count >= 1
                         )
                         or (
                             dispatch_state == "rejected"
                             and status in {"failed", "interrupted"}
                             and turn_state == "consumed"
-                            and attempt_count in {0, 1}
+                            and attempt_count >= 0
                         )
                         or (
                             dispatch_state == "unknown"
                             and status == "unknown"
                             and turn_state == "consumed"
-                            and attempt_count == 1
+                            and attempt_count >= 1
                         )
                     )
                     if not legal:
@@ -6899,6 +7390,7 @@ __all__ = [
     "RUN_AUTHORITY_CONTRACT",
     "ConversationDispatchReservation",
     "ConversationRunAdmission",
+    "ConversationRunAttemptResult",
     "ConversationSubmissionResult",
     "RunAuthorityReceipt",
     "RunRepository",

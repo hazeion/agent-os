@@ -491,6 +491,8 @@ AGENT_CONSOLE_CONTINUATIONS_PENDING: dict[str, str] = {}
 # shutdown wins, the durable reservation is left for startup recovery.
 AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK = threading.RLock()
 AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED = False
+AGENT_CONSOLE_VERIFIED_RUNS_LOCK = threading.Lock()
+AGENT_CONSOLE_VERIFIED_RUN_IDS: set[str] = set()
 # Serialize connection-bound summary/start/selection work without blocking run
 # events or cancellation during slow Hermes discovery. When both are needed,
 # acquire this lock before AGENT_CONSOLE_LOCK.
@@ -1719,6 +1721,125 @@ def create_mentat_conversation(payload: object) -> tuple[dict, int]:
         raise
 
 
+def archive_mentat_conversation(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Archive or restore one exact Conversation without touching its Runs."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "archived",
+        "expected_revision",
+    }:
+        return {"error_code": "conversation.request_invalid"}, 400
+    archived = payload.get("archived")
+    expected_revision = payload.get("expected_revision")
+    if type(archived) is not bool or type(expected_revision) is not int or expected_revision < 1:
+        return {"error_code": "conversation.request_invalid"}, 400
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationRepositoryError("conversation.unavailable")
+        record = _conversation_repository().set_archived(
+            conversation_id,
+            expected_revision=expected_revision,
+            archived=archived,
+        )
+    return {
+        "schema_version": 1,
+        "action": "archive" if archived else "restore",
+        "conversation": _public_conversation_record(record),
+    }, 200
+
+
+def _mentat_conversation_run_action(
+    action: str,
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Create one explicit, idempotent Retry or Resume Run."""
+
+    if action not in {"retry", "resume"} or not isinstance(payload, dict) or set(payload) != {
+        "idempotency_key",
+        "source_run_id",
+    }:
+        return {"error_code": "conversation.request_invalid"}, 400
+    key = payload.get("idempotency_key")
+    source_run_id = payload.get("source_run_id")
+    try:
+        key_size = len(key.encode("utf-8")) if isinstance(key, str) else 0
+    except UnicodeEncodeError:
+        key_size = 0
+    if (
+        not isinstance(key, str)
+        or not 16 <= key_size <= 256
+        or "\x00" in key
+        or not isinstance(source_run_id, str)
+        or re.fullmatch(
+            r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}",
+            source_run_id,
+        ) is None
+    ):
+        return {"error_code": "conversation.request_invalid"}, 400
+    with AGENT_CONSOLE_CONTINUATION_DRAIN_LOCK:
+        if (
+            not AGENT_CONSOLE_CONTINUATION_DRAIN_ENABLED
+            or agent_console_storage_degraded()
+        ):
+            return {"error_code": "conversation.unavailable"}, 503
+        service = OrchestrationService(
+            DATA_DIR,
+            runtime_registry=AGENT_RUNTIME_REGISTRY,
+            agent_registry=_mentat_agent_registry(),
+            conversation_continuation_handler=(
+                _dispatch_reserved_agent_console_continuation
+            ),
+        )
+        operation = (
+            service.retry_conversation_run
+            if action == "retry"
+            else service.resume_conversation_run
+        )
+        result = operation(
+            conversation_id=conversation_id,
+            source_run_id=source_run_id,
+            idempotency_key=key,
+        )
+    attempt = result.attempt
+    if (
+        not result.duplicate
+        and attempt.status in MENTAT_PROVIDER_ACTIVE_RUN_STATUSES
+        and attempt.status != "unknown"
+    ):
+        _mark_agent_console_runs_verified(attempt.run_id)
+    return {
+        "schema_version": 1,
+        "action": action,
+        "conversation_id": attempt.conversation_id,
+        "source_run_id": attempt.source_run_id,
+        "duplicate": result.duplicate,
+        "run": {
+            "id": attempt.run_id,
+            "status": attempt.status,
+            "partial": attempt.partial,
+            "updated_at": attempt.updated_at,
+        },
+    }, 200 if result.duplicate else 202
+
+
+def retry_mentat_conversation_run(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    return _mentat_conversation_run_action("retry", conversation_id, payload)
+
+
+def resume_mentat_conversation_run(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    return _mentat_conversation_run_action("resume", conversation_id, payload)
+
+
 def _dispatch_reserved_agent_console_continuation(
     source_run_id: str,
     turn_id: str,
@@ -1816,6 +1937,13 @@ def submit_mentat_conversation_turn(
         if result.run is not None
         else None
     )
+    if (
+        not result.duplicate
+        and result.run is not None
+        and result.run.status in MENTAT_PROVIDER_ACTIVE_RUN_STATUSES
+        and result.run.status != "unknown"
+    ):
+        _mark_agent_console_runs_verified(result.run.id)
     turn = conversation_turn_public(result.turn)
     return {
         "schema_version": 1,
@@ -1932,6 +2060,13 @@ def mutate_mentat_conversation_turn(
                 if continued.run is not None
                 else None
             )
+            if (
+                not continued.duplicate
+                and continued.run is not None
+                and continued.run.status in MENTAT_PROVIDER_ACTIVE_RUN_STATUSES
+                and continued.run.status != "unknown"
+            ):
+                _mark_agent_console_runs_verified(continued.run.id)
             return {
                 "schema_version": 1,
                 "duplicate": continued.duplicate,
@@ -1971,13 +2106,54 @@ def mentat_codex_readiness_payload() -> dict:
     }
 
 
-def mentat_agent_activity_payload() -> dict:
-    """Return bounded Agent activity from canonical Agents and Runs only."""
+def _mark_agent_console_runs_verified(*run_ids: str) -> None:
+    with AGENT_CONSOLE_VERIFIED_RUNS_LOCK:
+        AGENT_CONSOLE_VERIFIED_RUN_IDS.update(run_ids)
 
+
+def _clear_agent_console_verified_runs() -> None:
+    with AGENT_CONSOLE_VERIFIED_RUNS_LOCK:
+        AGENT_CONSOLE_VERIFIED_RUN_IDS.clear()
+
+
+def mentat_agent_activity_payload() -> dict:
+    """Return activity without presenting unreconciled Run state as live."""
+
+    with AGENT_CONSOLE_VERIFIED_RUNS_LOCK:
+        verified_run_ids = set(AGENT_CONSOLE_VERIFIED_RUN_IDS)
     with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
         if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
             raise ConversationRepositoryError("conversation.unavailable")
-        return activity_public(_conversation_repository())
+        payload = activity_public(_conversation_repository())
+
+    active_statuses = {
+        "reserved", "queued", "submitting", "starting", "running",
+        "cancelling", "waiting", "waiting_for_approval",
+        "waiting_for_clarification", "unknown", "finalizing",
+    }
+    retained_active_ids: set[str] = set()
+    for item in payload["activity"]:
+        checking = False
+        for conversation in item["conversations"]:
+            if conversation["run_status"] in active_statuses:
+                retained_active_ids.add(conversation["run_id"])
+            if (
+                conversation["run_status"] in active_statuses
+                and (
+                    conversation["run_id"] not in verified_run_ids
+                    or conversation["run_status"] == "unknown"
+                )
+            ):
+                conversation["run_status"] = "reconciling"
+                conversation["attention"] = False
+                checking = True
+        if checking and item["state"] in {"working", "waiting"}:
+            item["state"] = "checking"
+            item["summary"] = "Checking exact runtime state"
+            item["attention"] = False
+    with AGENT_CONSOLE_VERIFIED_RUNS_LOCK:
+        AGENT_CONSOLE_VERIFIED_RUN_IDS.intersection_update(retained_active_ids)
+    return payload
 
 
 def mentat_provider_connections_payload():
@@ -2227,6 +2403,7 @@ def refresh_mentat_run_payload(run_id: str) -> dict:
         )
     if report.unavailable:
         raise OrchestrationServiceError("reconcile.unavailable")
+    _mark_agent_console_runs_verified(*report.reconciled)
     return {
         "schema_version": 1,
         "run_id": run_id,
@@ -2281,7 +2458,7 @@ def reconcile_orchestration_runtime_references_at_startup() -> None:
                 )
             ):
                 return
-            OrchestrationService(
+            report = OrchestrationService(
                 DATA_DIR,
                 runtime_registry=AGENT_RUNTIME_REGISTRY,
                 agent_registry=_mentat_agent_registry(),
@@ -2289,6 +2466,7 @@ def reconcile_orchestration_runtime_references_at_startup() -> None:
                     _dispatch_reserved_agent_console_continuation
                 ),
             ).reconcile_runs(owner=f"startup_reconciler_{uuid4().hex}", limit=20)
+            _mark_agent_console_runs_verified(*report.reconciled)
     except (
         MentatDatabaseError,
         OrchestrationServiceError,
@@ -2304,6 +2482,7 @@ def reconcile_orchestration_runtime_references_at_startup() -> None:
 def reconcile_orchestration_runs_at_startup() -> None:
     """Recover crash states, then run one bounded best-effort readback."""
 
+    _clear_agent_console_verified_runs()
     try:
         recover_orchestration_crash_states_at_startup()
     except (
@@ -13017,6 +13196,7 @@ def serve_dashboard() -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
         load_agent_console_runs()
+        _clear_agent_console_verified_runs()
         threading.Thread(
             target=reconcile_orchestration_runtime_references_at_startup,
             daemon=True,

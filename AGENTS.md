@@ -199,6 +199,19 @@ Message projection. Adapter capacity is private and scope-specific: every
 unqualified adapter remains at one, while only the fixed qualified Codex
 `default` binding may use the ceiling of two concurrent compatible Runs.
 
+Operator recovery remains Conversation-owned. Retry creates a separate Run for
+the same Turn and preserves prior Run/Event evidence; a bounded durable action
+receipt prevents a repeated browser request from calling the adapter twice.
+Resume is a separate fixed capability and must not appear unless both the Agent
+and exact live adapter advertise `run.resume` with verified private continuity.
+No production adapter currently advertises it. Initial nonterminal browser
+state is reconciling until exact readback; controls fail closed meanwhile.
+Global activity must likewise project unverified nonterminal state as checking,
+not working or waiting.
+Closing a tab is presentation-only, and reversible Conversation archive never
+stops work or deletes evidence. Completion while archived commits normally but
+must not start hidden queued work.
+
 Hermes mutations are allowed only when an approved adapter operation uses a
 fixed Hermes CLI/API call with validation, capability checks, confirmation,
 locking, verification, and secret-free audit behavior. Browser text must never

@@ -131,6 +131,12 @@ class PrivateConsoleStateTests(unittest.TestCase):
     ) -> private_console_unit.PrivateConsoleUnit:
         return self.rebuild_schema_unit(unit, 12)
 
+    def schema_thirteen_unit(
+        self,
+        unit: private_console_unit.PrivateConsoleUnit,
+    ) -> private_console_unit.PrivateConsoleUnit:
+        return self.rebuild_schema_unit(unit, 13)
+
     def rebuild_schema_unit(
         self,
         unit: private_console_unit.PrivateConsoleUnit,
@@ -225,7 +231,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                         [tuple(row) for row in rows],
                     )
                 target.commit()
-                if schema_version == 12:
+                if schema_version in {12, 13}:
                     # Released backup captures normalize the standalone SQLite
                     # snapshot through the same filtered VACUUM boundary.
                     # Keep this historical fixture storage-stable across its
@@ -974,6 +980,66 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 self.assertEqual(
                     restored_conversation[0],
                     "agent_schema_twelve",
+                )
+            finally:
+                database.close()
+
+    def test_released_schema_thirteen_format_four_backup_restores_and_upgrades(self):
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = self.make_current(base, "source-thirteen", "source")
+            AgentRegistry(
+                source,
+                supported_runtime_types=("hermes",),
+            ).create_agent(
+                agent_id="agent_schema_thirteen",
+                name="Schema Thirteen Agent",
+                runtime_config_id="config_schema_thirteen",
+                runtime_type="hermes",
+                runtime_agent_ref="profile-schema-thirteen",
+                capabilities=("run.start", "run.message"),
+            )
+            documents = data_backup_restore._load_live_documents(source, None)
+            schema_thirteen = self.schema_thirteen_unit(
+                capture_private_console_unit(source)
+            )
+            private_console_unit.validate_private_console_unit(schema_thirteen)
+            raw = data_backup_restore._build_backup(
+                documents,
+                schema_thirteen,
+                format_version=4,
+            )
+            path = base / data_backup_restore._backup_name(
+                documents,
+                schema_thirteen,
+                format_version=4,
+            )
+            path.write_bytes(raw)
+            if os.name == "posix":
+                path.chmod(0o600)
+
+            target = self.make_current(base, "target-thirteen", "target")
+            preview = data_backup_restore.preview_durable_restore(target, path)
+            restored = data_backup_restore.restore_durable_backup(
+                target,
+                path,
+                confirmation_token=preview.confirmation_token or "",
+            )
+
+            self.assertEqual(restored.status, "restored", restored.public_summary())
+            database = connect(target)
+            try:
+                self.assertEqual(
+                    database.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0],
+                    DATABASE_SCHEMA_VERSION,
+                )
+                self.assertEqual(
+                    database.execute(
+                        "SELECT COUNT(*) FROM mentat_conversation_run_attempts"
+                    ).fetchone()[0],
+                    0,
                 )
             finally:
                 database.close()

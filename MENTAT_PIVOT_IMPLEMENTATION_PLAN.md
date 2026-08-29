@@ -32,6 +32,9 @@ and remediation PR #146 after schema-13 hardening, two clean adversarial
 reviews, the complete required matrix, and uncontaminated concurrent Hermes and
 Codex browser acceptance. The current Wayfinder frontier is Agent Console Slice
 4: operator control, recovery, and durable continuation (GitHub issue #136).
+Its approved implementation is in progress on
+`codex/agent-console-slice-4` with the persistent review log at
+`reviews/2026-08-28-agent-console-operator-control-recovery-continuation.md`.
 
 ## Slice order
 
@@ -53,7 +56,7 @@ Codex browser acceptance. The current Wayfinder frontier is Agent Console Slice
 | Console 1 | Complete | Conversation/message read foundation, Direct Agent identity, and three-column Home. |
 | Console 2 | Complete | One bounded text Turn, atomic Run reservation, exact replay, and safe Codex readiness. |
 | Console 3 | Complete | Live transcript, active composer, durable queued turns, steering, and adapter-scoped concurrency. |
-| Console 4 | Approved | Operator control, recovery, and durable continuation. |
+| Console 4 | In progress | Operator control, recovery, and durable continuation. |
 | Console 5 | Approved | Composer Agent configuration. |
 | Console 6 | Approved | Polished transcript and reasoning summaries. |
 | Console 7 | Approved | Safe rich-link previews. |

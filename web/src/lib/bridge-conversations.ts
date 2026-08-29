@@ -69,7 +69,7 @@ export type PublicConversationTurn = {
   blocked_reason: "capacity" | "failed" | "stopped" | "interrupted" | "unknown" | "partial" | null;
   latest_run_id: string | null;
   revision: number;
-  attempt_count: 0 | 1;
+  attempt_count: number;
   created_at: string;
   updated_at: string;
 };
@@ -110,6 +110,27 @@ export type PublicConversationQueueMutation = {
   conversation: PublicConversation;
   message: PublicConversationMessage;
   turn: PublicConversationTurn;
+};
+
+export type PublicConversationArchiveResult = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  action: "archive" | "restore";
+  conversation: PublicConversation;
+};
+
+export type PublicConversationRunAttemptResult = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  action: "retry" | "resume";
+  conversation_id: string;
+  source_run_id: string;
+  duplicate: boolean;
+  run: PublicCurrentRun;
 };
 
 export type PublicConversationSteerResult = {
@@ -159,7 +180,7 @@ export type PublicConversationDetail = {
 
 export type PublicAgentActivity = {
   agent: PublicConversationAgent;
-  state: "working" | "waiting" | "failed" | "stopped" | "interrupted" | "idle";
+  state: "checking" | "working" | "waiting" | "failed" | "stopped" | "interrupted" | "idle";
   summary: string;
   attention: boolean;
   updated_at: string | null;
@@ -347,7 +368,9 @@ function validTurn(value: unknown): value is PublicConversationTurn {
     && (turn.latest_run_id === null || runId(turn.latest_run_id))
     && Number.isInteger(turn.revision)
     && (turn.revision as number) >= 1
-    && (turn.attempt_count === 0 || turn.attempt_count === 1)
+    && Number.isInteger(turn.attempt_count)
+    && (turn.attempt_count as number) >= 0
+    && (turn.attempt_count as number) <= 8
     && timestamp(turn.created_at)
     && timestamp(turn.updated_at);
 }
@@ -424,6 +447,40 @@ function validQueueMutation(value: unknown): value is PublicConversationQueueMut
     && (payload.disposition === "edited"
       ? (turn.state === "pending" || turn.state === "blocked") && message.state === "accepted"
       : turn.state === "cancelled" && message.state === "cancelled");
+}
+
+function validArchiveResult(value: unknown): value is PublicConversationArchiveResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  if (Object.keys(payload).sort().join(",") !== "action,conversation,runtime,schema_version,service,status") return false;
+  if (
+    payload.schema_version !== 1
+    || payload.service !== "mentat-local-bridge"
+    || payload.runtime !== "python"
+    || payload.status !== "ready"
+    || (payload.action !== "archive" && payload.action !== "restore")
+    || !validConversation(payload.conversation)
+  ) return false;
+  const conversation = payload.conversation as PublicConversation;
+  return payload.action === "archive"
+    ? conversation.state === "archived"
+    : conversation.state === "active";
+}
+
+function validRunAttemptResult(value: unknown): value is PublicConversationRunAttemptResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  return Object.keys(payload).sort().join(",") === "action,conversation_id,duplicate,run,runtime,schema_version,service,source_run_id,status"
+    && payload.schema_version === 1
+    && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python"
+    && payload.status === "ready"
+    && (payload.action === "retry" || payload.action === "resume")
+    && conversationId(payload.conversation_id)
+    && runId(payload.source_run_id)
+    && typeof payload.duplicate === "boolean"
+    && validCurrentRun(payload.run)
+    && (payload.run as PublicCurrentRun).id !== payload.source_run_id;
 }
 
 function validSteer(value: unknown): value is PublicConversationSteerResult {
@@ -521,7 +578,7 @@ function validActivityItem(value: unknown): value is PublicAgentActivity {
   const conversations = item.conversations;
   return Object.keys(item).sort().join(",") === "agent,attention,conversations,state,summary,updated_at"
     && validAgent(item.agent)
-    && ["working", "waiting", "failed", "stopped", "interrupted", "idle"].includes(item.state as string)
+    && ["checking", "working", "waiting", "failed", "stopped", "interrupted", "idle"].includes(item.state as string)
     && text(item.summary, 160)
     && typeof item.attention === "boolean"
     && (item.updated_at === null || timestamp(item.updated_at))
@@ -535,7 +592,7 @@ function validActivityItem(value: unknown): value is PublicAgentActivity {
         && text(value.title, 160)
         && runId(value.run_id)
         && typeof value.run_status === "string"
-        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.run_status)
+        && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "reconciling", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.run_status)
         && typeof value.attention === "boolean"
         && timestamp(value.updated_at);
     });
@@ -714,6 +771,93 @@ export async function createBridgeConversation(
     throw new BridgeConversationsError("conversation_not_found");
   }
   handleFixedState(response, payload);
+}
+
+export async function archiveBridgeConversation(
+  id: string,
+  expectedRevision: number,
+  archived: boolean,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+): Promise<PublicConversationArchiveResult> {
+  if (
+    !conversationId(id)
+    || !Number.isSafeInteger(expectedRevision)
+    || expectedRevision < 1
+    || typeof archived !== "boolean"
+  ) throw new BridgeConversationsError("conversation_request_invalid");
+  const action = archived ? "archive" : "restore";
+  const { response, payload } = await requestBridge(
+    `${PRIVATE_CONVERSATIONS_PATH}/${encodeURIComponent(id)}/${action}`,
+    fetcher,
+    environment,
+    {
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (
+    response.status === 200
+    && validArchiveResult(payload)
+    && payload.conversation.id === id
+    && payload.action === action
+  ) return structuredClone(payload);
+  handleFixedState(response, payload);
+}
+
+async function bridgeConversationRunAttempt(
+  action: "retry" | "resume",
+  id: string,
+  sourceRunId: string,
+  idempotencyKey: string,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+  timeoutMilliseconds = CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS,
+): Promise<PublicConversationRunAttemptResult> {
+  const keyBytes = typeof idempotencyKey === "string" ? new TextEncoder().encode(idempotencyKey).byteLength : 0;
+  if (!conversationId(id) || !runId(sourceRunId) || keyBytes < 16 || keyBytes > 256 || idempotencyKey.includes("\0")) throw new BridgeConversationsError("conversation_request_invalid");
+  const { response, payload } = await requestBridge(
+    `${PRIVATE_CONVERSATIONS_PATH}/${encodeURIComponent(id)}/${action}`,
+    fetcher,
+    environment,
+    {
+      body: JSON.stringify({ idempotency_key: idempotencyKey, source_run_id: sourceRunId }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+    timeoutMilliseconds,
+  );
+  if (
+    (response.status === 200 || response.status === 202)
+    && validRunAttemptResult(payload)
+    && payload.conversation_id === id
+    && payload.source_run_id === sourceRunId
+    && payload.action === action
+  ) return structuredClone(payload);
+  handleFixedState(response, payload);
+}
+
+export function retryBridgeConversationRun(
+  id: string,
+  sourceRunId: string,
+  idempotencyKey: string,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+  timeoutMilliseconds = CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS,
+): Promise<PublicConversationRunAttemptResult> {
+  return bridgeConversationRunAttempt("retry", id, sourceRunId, idempotencyKey, fetcher, environment, timeoutMilliseconds);
+}
+
+export function resumeBridgeConversationRun(
+  id: string,
+  sourceRunId: string,
+  idempotencyKey: string,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+  timeoutMilliseconds = CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS,
+): Promise<PublicConversationRunAttemptResult> {
+  return bridgeConversationRunAttempt("resume", id, sourceRunId, idempotencyKey, fetcher, environment, timeoutMilliseconds);
 }
 
 export async function submitBridgeConversationTurn(
