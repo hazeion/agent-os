@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console polished transcript and reasoning summaries
 
-Status: Ready for publication
+Status: Complete
 Slice: `agent-console-polished-transcript-reasoning`
 Date: `2026-08-29`
 Review log: `reviews/2026-08-29-agent-console-polished-transcript-reasoning.md`
@@ -159,7 +159,9 @@ transcripts remain stable, accessible, and responsive.
 
 ## Publication gate
 
-- Standing authorization recorded; CI and merge evidence remain pending.
+- Standing authorization was recorded. Implementation PR #152 passed all 51
+  GitHub checks and merged to `main` as `89a3b127bdcc2594ec6e0c54c38c35962d4ece56`
+  on 2026-08-29. GitHub issue #138 closed with the merge.
 
 ## Outcome review
 
