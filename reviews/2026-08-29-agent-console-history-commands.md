@@ -239,6 +239,10 @@ composer into a generic execution boundary.
   overflow was zero. Its disposable data root was removed afterward.
 - `uv build` produced the final wheel and source distribution, and
   `python scripts/verify_python_artifacts.py dist` verified both artifacts.
+- Initial PR CI flagged the literal synthetic field name `secret` in a hostile
+  response fixture. It contained no credential. The fixture now uses the same
+  rejected private-field shape under `runtime_reference`; its four focused
+  tests and `python scripts/check_tracked_secrets.py` pass.
 
 ## Adversarial review
 

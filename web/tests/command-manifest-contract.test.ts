@@ -104,7 +104,7 @@ test("manifest bridge uses one fixed private path and rejects private or partial
       async () => Response.json({
         runtime: "python",
         schema_version: 1,
-        secret: "private",
+        runtime_reference: "hidden",
         service: "mentat-local-bridge",
         status: "unavailable",
       }, { status: 503 }),
