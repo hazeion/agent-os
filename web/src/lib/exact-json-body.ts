@@ -109,6 +109,24 @@ export async function readExpectedRevisionBody(
     : null;
 }
 
+export async function readConversationRenameBody(
+  request: Request,
+): Promise<{ expectedRevision: number; title: string } | null> {
+  const value = await readBoundedJson(request, 768);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).sort().join(",") !== "expected_revision,title") return null;
+  if (!Number.isSafeInteger(body.expected_revision) || (body.expected_revision as number) < 1) return null;
+  if (
+    typeof body.title !== "string"
+    || body.title.trim() !== body.title
+    || [...body.title].length < 1
+    || [...body.title].length > 160
+    || /\p{C}/u.test(body.title)
+  ) return null;
+  return { expectedRevision: body.expected_revision as number, title: body.title };
+}
+
 export async function readLinkPreviewMutationBody(
   request: Request,
 ): Promise<{ action: "enqueue" | "retry"; messageRevision: number } | null> {

@@ -628,6 +628,24 @@ the exact schema-13 fingerprint in the same write transaction, replaces only
 the latest-result insertion trigger, and adds the bounded attempt-receipt
 authority.
 
+Schema 16 rebuilds only the exact schema-15 Conversation table constraint to
+add the `manual` title source. The migration preserves Messages, Turns, Runs,
+submission receipts, staging, and attachment references under one SQLite write
+transaction and foreign-key check. Manual rename is an exact-revision mutation
+for active or archived Conversations. Later first-Turn title derivation and
+queued-Turn edits may update only their existing derived title source and can
+never replace a manual title.
+
+Conversation history search reads titles only. It scans the validated maximum
+of 1,024 Conversations, applies Unicode case-folded substring matching plus an
+`all`, `active`, or `archived` filter, and returns at most 50 safe summaries in
+deterministic state and update order. The opaque cursor carries only the state,
+query digest, and ordering key. It is rejected under another query/filter or if
+its exact ordering boundary is no longer authoritative. Messages, Runs,
+snippets, Agents, attachments, runtime references, and query text are absent
+from the result. Typing changes only the result view; selection requires an
+explicit Open action.
+
 The Next.js Home Console treats initial nonterminal SQLite state as
 `Reconciling` until the selected Run stream completes its fixed mutating
 readback. Stop, steering, and pending-action controls remain unavailable until
@@ -1320,6 +1338,15 @@ schema and a fixed handler registry. The allowlist is `/model`, `/new`,
 CLI. `/steer` is a remote-control command, not CLI passthrough, and dispatches a
 fixed, revision-bound exact-Run operation. The target Next.js Console has no
 Steer button.
+
+The Next.js Console reads that exact complete version-one manifest through one
+fixed same-origin capability and maps it to a fixed local handler registry.
+`/new` creates a durable Conversation for the selected Agent, `/model` refreshes
+or stages only the existing safe next-Run configuration selector, `/steer`
+retains the exact active-Run boundary, and `/help` shows fixed Mentat-facing
+descriptions. Local completion never performs a mutation. Any unknown command,
+invalid usage, manifest failure, handler failure, or stale target preserves the
+full draft and creates no ordinary Turn as fallback.
 
 Remote active-run steering is available only when Hermes advertises
 `run_steer` with the exact `POST /v1/runs/{run_id}/steer` endpoint. Mentat

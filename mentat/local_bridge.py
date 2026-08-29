@@ -44,6 +44,8 @@ BRIDGE_PROVIDER_CONNECTIONS_PATH = "/bridge/v1/provider-connections"
 BRIDGE_TASKS_PATH = "/bridge/v1/tasks"
 BRIDGE_RUNS_PATH = "/bridge/v1/runs"
 BRIDGE_CONVERSATIONS_PATH = "/bridge/v1/conversations"
+BRIDGE_CONVERSATION_HISTORY_PATH = "/bridge/v1/conversation-history"
+BRIDGE_COMMAND_MANIFEST_PATH = "/bridge/v1/agent-console/commands"
 BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
 BRIDGE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness"
 BRIDGE_LINK_PREVIEW_PREFERENCE_PATH = "/bridge/v1/link-previews/preference"
@@ -64,6 +66,7 @@ MAXIMUM_BRIDGE_CONVERSATION_MESSAGES = 100
 MAXIMUM_BRIDGE_QUEUED_TURNS = 8
 MAXIMUM_BRIDGE_CONVERSATION_RESPONSE_BYTES = 3_000_000
 MAXIMUM_BRIDGE_ACTION_BODY_BYTES = 512
+MAXIMUM_BRIDGE_RENAME_BODY_BYTES = 2_048
 MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES = 24_576
 MAXIMUM_BRIDGE_CONVERSATION_TURN_BODY_BYTES = 96 * 1024
 MAXIMUM_BRIDGE_RESPONSE_BODY_BYTES = 24_576
@@ -789,7 +792,7 @@ def _public_conversation_summary(value: object) -> dict[str, object]:
         or not isinstance(value.get("agent_id"), str)
         or not _OPAQUE_ID.fullmatch(value["agent_id"])
         or not _conversation_text(value.get("title"), 160)
-        or value.get("title_source") not in {"default", "first_prompt"}
+        or value.get("title_source") not in {"default", "first_prompt", "manual"}
         or value.get("state") not in {"active", "archived"}
         or type(value.get("revision")) is not int
         or value["revision"] < 1
@@ -997,6 +1000,61 @@ def _ready_conversation_list(value: object) -> dict[str, object]:
     }
 
 
+def _ready_conversation_history(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "conversations", "count", "next_cursor",
+    }:
+        raise BridgeConversationProjectionError("conversation_history_invalid")
+    conversations = value.get("conversations")
+    next_cursor = value.get("next_cursor")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(conversations, list)
+        or len(conversations) > MAXIMUM_BRIDGE_CONVERSATIONS
+        or type(value.get("count")) is not int
+        or value["count"] != len(conversations)
+        or next_cursor is not None
+        and (
+            not isinstance(next_cursor, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,512}", next_cursor) is None
+        )
+    ):
+        raise BridgeConversationProjectionError("conversation_history_invalid")
+    public = [_public_conversation_summary(item) for item in conversations]
+    if len({item["id"] for item in public}) != len(public):
+        raise BridgeConversationProjectionError("conversation_history_invalid")
+    return {
+        "schema_version": 1,
+        "conversations": public,
+        "count": len(public),
+        "next_cursor": next_cursor,
+    }
+
+
+def _conversation_history_matches_request(
+    conversations: list[dict[str, object]],
+    *,
+    state: str,
+    query: str | None,
+) -> bool:
+    normalized_query = "" if query is None else query.casefold()
+    for conversation in conversations:
+        if state != "all" and conversation["state"] != state:
+            return False
+        if normalized_query not in str(conversation["title"]).casefold():
+            return False
+    for left, right in zip(conversations, conversations[1:]):
+        left_rank = 0 if left["state"] == "active" else 1
+        right_rank = 0 if right["state"] == "active" else 1
+        if left_rank > right_rank or (
+            left_rank == right_rank
+            and (str(left["updated_at"]), str(left["id"]))
+            < (str(right["updated_at"]), str(right["id"]))
+        ):
+            return False
+    return True
+
+
 def _ready_conversation_detail(value: object) -> dict[str, object]:
     required = {
         "schema_version", "conversation", "agent", "messages",
@@ -1110,6 +1168,72 @@ def bridge_conversations_payload(cursor: str | None = None) -> tuple[dict[str, o
             return _conversation_failure("unavailable")
         except (BridgeConversationProjectionError, OSError, ValueError):
             return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def bridge_conversation_history_payload(
+    *,
+    state: str,
+    query: str | None = None,
+    cursor: str | None = None,
+) -> tuple[dict[str, object], int]:
+    """Read one query-bound title-only history page."""
+
+    try:
+        from server import mentat_conversation_history_payload
+
+        source = _ready_conversation_history(
+            mentat_conversation_history_payload(
+                state=state,
+                query=query,
+                cursor=cursor,
+            )
+        )
+        if not _conversation_history_matches_request(
+            source["conversations"],
+            state=state,
+            query=query,
+        ):
+            raise BridgeConversationProjectionError("conversation_history_invalid")
+        return _bounded_conversation_response(
+            {
+                **source,
+                "service": "mentat-local-bridge",
+                "runtime": "python",
+                "status": "ready",
+            },
+            200,
+        )
+    except ConversationRepositoryError as exc:
+        if exc.code.endswith("invalid"):
+            return _conversation_failure("invalid")
+        if exc.code == "conversation.schema_unsupported":
+            return _conversation_failure("unsupported")
+        return _conversation_failure("unavailable")
+    except (BridgeConversationProjectionError, OSError, ValueError):
+        return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def bridge_command_manifest_payload() -> tuple[dict[str, object], int]:
+    """Return only the exact project-owned version-one command manifest."""
+
+    try:
+        from command_manifest import command_manifest_payload as expected_manifest
+        from server import command_manifest_payload as server_manifest
+
+        expected = expected_manifest()
+        source = server_manifest()
+        if source != expected:
+            raise BridgeConversationProjectionError("command_manifest_invalid")
+        return {
+            **source,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+        }, 200
     except Exception:
         return _conversation_failure("error")
 
@@ -2034,6 +2158,53 @@ def bridge_archive_conversation_payload(
         if exc.code == "conversation.not_found":
             return _conversation_failure("not_found")
         return _conversation_failure("conflict")
+    except ConversationRepositoryError as exc:
+        if exc.code.endswith("invalid"):
+            return _conversation_failure("invalid")
+        return _conversation_failure("unavailable")
+    except (BridgeConversationProjectionError, OSError, ValueError):
+        return _conversation_failure("error")
+    except Exception:
+        return _conversation_failure("error")
+
+
+def bridge_rename_conversation_payload(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    """Rename one exact Conversation through the private bridge."""
+
+    try:
+        from server import rename_mentat_conversation
+
+        source, status = rename_mentat_conversation(conversation_id, payload)
+        if status != 200:
+            return _conversation_failure("invalid")
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"schema_version", "action", "conversation"}
+            or source.get("schema_version") != 1
+            or source.get("action") != "rename"
+        ):
+            raise BridgeConversationProjectionError("conversation_rename_invalid")
+        conversation = _public_conversation_summary(source.get("conversation"))
+        if conversation["id"] != conversation_id or conversation["title_source"] != "manual":
+            raise BridgeConversationProjectionError("conversation_rename_invalid")
+        return _bounded_conversation_response(
+            {
+                "schema_version": 1,
+                "service": "mentat-local-bridge",
+                "runtime": "python",
+                "status": "ready",
+                "action": "rename",
+                "conversation": conversation,
+            },
+            200,
+        )
+    except ConversationRepositoryConflict as exc:
+        return _conversation_failure(
+            "not_found" if exc.code == "conversation.not_found" else "conflict"
+        )
     except ConversationRepositoryError as exc:
         if exc.code.endswith("invalid"):
             return _conversation_failure("invalid")
@@ -3642,6 +3813,45 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_runs_payload()
             self._send_json(payload, status)
             return
+        if parsed.path == BRIDGE_COMMAND_MANIFEST_PATH and not parsed.query:
+            payload, status = bridge_command_manifest_payload()
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_CONVERSATION_HISTORY_PATH:
+            try:
+                pairs = parse_qsl(
+                    parsed.query,
+                    keep_blank_values=True,
+                    strict_parsing=True,
+                )
+            except ValueError:
+                pairs = []
+            values = {key: value for key, value in pairs}
+            if (
+                not pairs
+                or len(values) != len(pairs)
+                or set(values) - {"state", "q", "cursor"}
+                or values.get("state") not in {"all", "active", "archived"}
+                or "q" in values
+                and (
+                    not values["q"]
+                    or values["q"].strip() != values["q"]
+                    or len(values["q"]) > 160
+                    or re.search(r"[\x00-\x1f\x7f]", values["q"])
+                )
+                or "cursor" in values
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,512}", values["cursor"])
+                is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_conversation_history_payload(
+                state=values["state"],
+                query=values.get("q"),
+                cursor=values.get("cursor"),
+            )
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_CONVERSATIONS_PATH:
             try:
                 pairs = parse_qsl(
@@ -4147,6 +4357,34 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     "archived": action == "archive",
                     "expected_revision": body["expected_revision"],
                 },
+            )
+            self._send_json(payload, status)
+            return
+        conversation_rename_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/rename",
+            parsed.path,
+        )
+        if conversation_rename_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_rename_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_RENAME_BODY_BYTES)
+            if (
+                body is None
+                or set(body) != {"expected_revision", "title"}
+                or type(body.get("expected_revision")) is not int
+                or body["expected_revision"] < 1
+                or not isinstance(body.get("title"), str)
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_rename_conversation_payload(
+                conversation_id,
+                body,
             )
             self._send_json(payload, status)
             return

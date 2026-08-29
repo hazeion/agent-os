@@ -63,6 +63,7 @@ if (!externalBaseUrl && !existsSync(standaloneEntry)) {
 
 const thresholds = Object.freeze({
   acceptedDispatchMilliseconds: 1_000,
+  historyPaintMilliseconds: 250,
   loadedTabMilliseconds: 50,
   optimisticPaintMilliseconds: 1000 / 60,
   streamPaintMilliseconds: 250,
@@ -205,6 +206,17 @@ function installPerformanceFixture() {
     id: "conv_perf_b",
     title: "Performance B",
   };
+  const historyConversations = Array.from({ length: 1_024 }, (_, index) => ({
+    ...firstConversation,
+    id: `conv_history_${String(index + 1).padStart(4, "0")}`,
+    state: index % 5 === 0 ? "archived" : "active",
+    archived_at: index % 5 === 0 ? timestamp : null,
+    title: `History Conversation ${String(index + 1).padStart(4, "0")}`,
+    updated_at: new Date(Date.parse(timestamp) - index * 1_000).toISOString(),
+  })).sort((left, right) => {
+    const stateOrder = Number(left.state === "archived") - Number(right.state === "archived");
+    return stateOrder || right.updated_at.localeCompare(left.updated_at) || right.id.localeCompare(left.id);
+  });
   const run = {
     id: "run_perf_a",
     partial: false,
@@ -261,6 +273,7 @@ function installPerformanceFixture() {
     expectedPreviewRequests: linkedMessageCount,
     expectedSafeLinks: 3,
     networkRequests: 0,
+    mutationRequests: 0,
     resolveTurn: null,
     settledPreviewRequests: 0,
   };
@@ -324,6 +337,7 @@ function installPerformanceFixture() {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
     const method = init.method || (input instanceof Request ? input.method : "GET");
     state.networkRequests += 1;
+    if (method !== "GET" && method !== "HEAD") state.mutationRequests += 1;
     if (url.pathname === "/api/bridge/health" && method === "GET") {
       return Promise.resolve(response({ mentat_version: "performance-fixture", status: "ready" }));
     }
@@ -335,6 +349,37 @@ function installPerformanceFixture() {
         count: 2,
         direct_agent_id: agent.id,
         next_cursor: null,
+      }));
+    }
+    if (url.pathname === "/api/conversation-history" && method === "GET") {
+      const query = (url.searchParams.get("q") || "").toLocaleLowerCase();
+      const filter = url.searchParams.get("state") || "all";
+      const filtered = historyConversations.filter((conversation) => (
+        (filter === "all" || conversation.state === filter)
+        && (!query || conversation.title.toLocaleLowerCase().includes(query))
+      ));
+      return Promise.resolve(response({
+        ...serviceFields,
+        conversations: filtered.slice(0, 50),
+        count: Math.min(50, filtered.length),
+        next_cursor: filtered.length > 50 ? "history_cursor_2" : null,
+      }));
+    }
+    if (url.pathname === "/api/agent-console/commands" && method === "GET") {
+      return Promise.resolve(response({
+        ...serviceFields,
+        capabilities: {
+          "commands.external_source": false,
+          "commands.hermes_cli_passthrough": false,
+          "commands.manifest.read": true,
+        },
+        commands: [
+          { arguments: [{ description: "Optional active-provider model to select for review.", name: "model", required: false }], command: "/model", description: "Refresh current provider models", handler: "agent_console.refresh_models", safety: "read_only" },
+          { arguments: [], command: "/new", description: "Start a new Hermes session", handler: "agent_console.new_session", safety: "local_state" },
+          { arguments: [{ description: "Text guidance for the active remote Hermes run.", name: "guidance", required: true, variadic: true }], command: "/steer", description: "Guide the active remote Hermes run", handler: "agent_console.steer_active_run", safety: "remote_control" },
+          { arguments: [], command: "/help", description: "Show dashboard commands", handler: "agent_console.show_help", safety: "read_only" },
+        ],
+        source: "mentat",
       }));
     }
     if (url.pathname === "/api/agent-activity" && method === "GET") {
@@ -564,6 +609,27 @@ async function measureSample(client, index) {
   );
   await client.evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   progress(`sample ${index + 1}: fixture ready`);
+  await client.evaluate("document.querySelector('.conversation-history summary').click()");
+  await waitFor(
+    () => client.evaluate("document.querySelectorAll('.conversation-history li').length === 50"),
+    "initial 50-row history page",
+  );
+  const historyPaint = await client.evaluate(mutationMeasurementExpression({
+    action: `const input = document.querySelector('.history-toolbar input');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'History Conversation 1024');
+      input.dispatchEvent(new Event('input', { bubbles: true }))`,
+    predicate: `document.querySelectorAll('.conversation-history li').length === 1
+      && document.querySelector('.conversation-history li strong')?.textContent === 'History Conversation 1024'`,
+  }));
+  const completionMutationsBefore = await client.evaluate("window.__mentatPerf.mutationRequests");
+  await client.evaluate(textInputExpression("/"));
+  await waitFor(
+    () => client.evaluate("document.querySelectorAll('.composer-command-menu [role=\"option\"]').length === 4"),
+    "four local command completions",
+  );
+  const completionMutationsAfter = await client.evaluate("window.__mentatPerf.mutationRequests");
+  await client.evaluate(textInputExpression(""));
   await client.evaluate(
     "[...document.querySelectorAll('button')].find((button) => button.textContent === 'Check readiness')?.click()",
   );
@@ -629,6 +695,8 @@ async function measureSample(client, index) {
 
   return {
     accepted,
+    completionMutationDelta: completionMutationsAfter - completionMutationsBefore,
+    historyPaint,
     loadedTab,
     optimistic,
     retainedRows,
@@ -712,6 +780,7 @@ async function main() {
     }
     const metrics = {
       acceptedDispatchMilliseconds: samples.map((sample) => sample.accepted),
+      historyPaintMilliseconds: samples.map((sample) => sample.historyPaint),
       loadedTabMilliseconds: samples.map((sample) => sample.loadedTab),
       optimisticPaintMilliseconds: samples.map((sample) => sample.optimistic),
       streamPaintMilliseconds: samples.map((sample) => sample.stream),
@@ -725,6 +794,9 @@ async function main() {
     }
     if (samples.some((sample) => sample.typingNetworkDelta !== 0)) {
       failures.push("typing initiated network work");
+    }
+    if (samples.some((sample) => sample.completionMutationDelta !== 0)) {
+      failures.push("command completion typing initiated a network mutation");
     }
     if (samples.some((sample) => sample.retainedRows !== 200)) {
       failures.push("the production transcript did not retain exactly 200 bounded rows");
@@ -743,6 +815,7 @@ async function main() {
       },
       fixtures: {
         conversations: 2,
+        history_conversations: 1_024,
         initial_messages: 100,
         linked_messages: 1,
         paginated_retained_messages: 200,
@@ -758,6 +831,7 @@ async function main() {
         Object.entries(metrics).map(([name, values]) => [name, rounded(values)]),
       ),
       thresholds_ms: thresholds,
+      command_completion_mutation_deltas: samples.map((sample) => sample.completionMutationDelta),
       typing_network_deltas: samples.map((sample) => sample.typingNetworkDelta),
     };
     console.log(JSON.stringify(report, null, 2));

@@ -16,12 +16,14 @@ import type {
   PublicAgentConfigurationPreview,
 } from "@/lib/bridge-conversations";
 import {
+  commandSuggestions,
   conversationComposerIntent,
+  MENTAT_COMMAND_DESCRIPTIONS,
+  validComposerCommandSource,
   validConversationComposerText,
 } from "@/lib/conversation-composer";
 import {
   cancelConversationTurn,
-  archiveConversation,
   continueConversationTurn,
   createConversation,
   editConversationTurn,
@@ -63,6 +65,8 @@ import {
 } from "@/lib/public-agent-configuration";
 import { RunConversationMedia } from "./conversation-media";
 import { ConversationContextControls } from "./conversation-context-controls";
+import { ConversationHistoryManager } from "./conversation-history-manager";
+import { fetchCommandManifest } from "@/lib/public-command-manifest";
 import {
   readConversationMedia,
   readStagedConversationContext,
@@ -85,6 +89,12 @@ type QueueEditorGuard = { revision: number; turnId: string | null };
 const UNBOUND_DRAFT_KEY = "new-conversation";
 const MAX_TRANSCRIPT_MESSAGES = 200;
 const HAS_HTTPS_LINK = /https:\/\//iu;
+const COMMAND_HANDLERS = {
+  "/help": "agent_console.show_help",
+  "/model": "agent_console.refresh_models",
+  "/new": "agent_console.new_session",
+  "/steer": "agent_console.steer_active_run",
+} as const;
 
 const ACTIVE_RUN_STATUSES = new Set([
   "reserved", "queued", "submitting", "starting", "running", "cancelling",
@@ -686,10 +696,10 @@ function ComposerConfiguration({
         : loading === "unsupported" ? "This Mentat build does not support Agent configuration."
           : loading === "error" ? "Agent configuration could not be read safely."
       : configuration?.explanation || (configuration?.mutable ? "Changes apply to the next Run." : "Configuration is read-only.");
-  return <div aria-label="Composer Agent configuration" className="composer-configuration">
+  return <div aria-label="Composer Agent configuration" className="composer-configuration" id="composer-agent-configuration" tabIndex={-1}>
     <label><span>Agent</span><select aria-label={agentLocked ? "Conversation Agent" : "Agent for new conversations"} disabled={agentLocked} onChange={(event) => onAgent(event.target.value || null)} value={agentId ?? ""}><option value="">Choose an Agent</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
     <label><span>Provider</span><select aria-label="Provider for next Run" disabled={disabled || !configuration?.providers.length} onChange={(event) => onProvider(event.target.value)} ref={providerFocus} value={provider}><option value="">{configuration?.current.provider ?? "Unavailable"}</option>{configuration?.providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-    <label><span>Model</span><select aria-label="Model for next Run" disabled={disabled || !models.length} onChange={(event) => onModel(event.target.value)} value={model}><option value="">{configuration?.current.model ?? "Unavailable"}</option>{models.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+    <label><span>Model</span><select aria-label="Model for next Run" disabled={disabled || !models.length} id="composer-model-select" onChange={(event) => onModel(event.target.value)} value={model}><option value="">{configuration?.current.model ?? "Unavailable"}</option>{models.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
     <label><span>Effort</span><select aria-label="Effort for next Run" disabled value="runtime_default"><option value="runtime_default">Runtime default</option></select></label>
     {preview ? <div className="configuration-confirmation"><span>{preview.target.provider_name} · {preview.target.model} · next Run</span><button disabled={busy || active} onClick={onConfirm} ref={confirmFocus} type="button">{busy ? "Applying…" : "Confirm"}</button></div> : changed && !disabled ? <button className="configuration-review" disabled={!provider || !model} onClick={onPreview} type="button">Review</button> : null}
     {active && snapshot ? <small className="configuration-snapshot">Active snapshot: {snapshot.provider} · {snapshot.model} · {readable(snapshot.effort)}</small> : null}
@@ -728,7 +738,11 @@ export function HomeConsole() {
   const [creating, setCreating] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [archiveBusyIds, setArchiveBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const [commandManifest, setCommandManifest] = useState<Awaited<ReturnType<typeof fetchCommandManifest>> | null>(null);
+  const [commandManifestState, setCommandManifestState] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [commandSelection, setCommandSelection] = useState(0);
+  const [dismissedCompletion, setDismissedCompletion] = useState<string | null>(null);
+  const [commandHelpOpen, setCommandHelpOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<{ request: PendingRunRequest; runId: string } | null>(null);
   const [pendingActionState, setPendingActionState] = useState<{ runId: string; state: "ready" | "unavailable" } | null>(null);
   const [pendingResponse, setPendingResponse] = useState<{ confirmationId: string; response: RunActionResponse; runId: string } | null>(null);
@@ -807,7 +821,13 @@ export function HomeConsole() {
   const selectedRunPresentationEvents = selectedRunId ? runPresentationEvents[selectedRunId] ?? EMPTY_RUN_EVENTS : EMPTY_RUN_EVENTS;
   const initialWorkspaceLoading = selectedConversationId === null && conversationState === "loading";
   const composerIntent = conversationComposerIntent(draft);
-  const draftIsValid = validConversationComposerText(composerIntent.text);
+  const draftIsValid = composerIntent.kind === "turn"
+    ? validConversationComposerText(composerIntent.text)
+    : validComposerCommandSource(draft);
+  const completionSuggestions = useMemo(
+    () => dismissedCompletion === draft ? [] : commandSuggestions(draft, commandManifest?.commands ?? []),
+    [commandManifest, dismissedCompletion, draft],
+  );
   const queueAtCapacity = (detail?.queued_turns.length ?? 0) >= 8;
   const stagedContext = selectedConversationId ? stagedContexts[selectedConversationId] ?? null : null;
   const stagedContextState = selectedConversationId ? stagedContextStates[selectedConversationId] ?? "loading" : "loading";
@@ -833,13 +853,16 @@ export function HomeConsole() {
     || codexReadiness === "ready"
     || activeRun !== null
     || (detail?.queued_turns.length ?? 0) > 0;
-  const canSend = !!selectedConversationId
+  const canSendTurn = !!selectedConversationId
     && detail?.conversation.state === "active"
     && draftIsValid
     && !sending
-    && (composerIntent.kind !== "steer" || activeRunVerified)
-    && (composerIntent.kind === "steer" || !queueAtCapacity && codexSendReady)
+    && !queueAtCapacity
+    && codexSendReady
     && contextSendReady;
+  const canSend = composerIntent.kind === "turn"
+    ? canSendTurn
+    : draftIsValid && !sending && !initialWorkspaceLoading;
   const loadedConversationIds = useMemo(() => new Set(conversations.map((item) => item.id)), [conversations]);
   const openConversations = useMemo(
     () => conversations.filter((item) => openConversationIds.has(item.id)),
@@ -867,6 +890,15 @@ export function HomeConsole() {
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { selectedConversationRef.current = selectedConversationId; }, [selectedConversationId]);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCommandManifest().then((manifest) => {
+      if (!cancelled) { setCommandManifest(manifest); setCommandManifestState("ready"); }
+    }).catch(() => {
+      if (!cancelled) { setCommandManifest(null); setCommandManifestState("unavailable"); }
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -913,6 +945,8 @@ export function HomeConsole() {
   }, [activeRunId]);
 
   const setSelectedDraft = useCallback((value: string) => {
+    setCommandSelection(0);
+    setDismissedCompletion(null);
     setDrafts((current) => current[draftKey] === value
       ? current
       : { ...current, [draftKey]: value });
@@ -1274,10 +1308,48 @@ export function HomeConsole() {
     void refreshConversationDetail(conversationId).then(() => { if (mounted.current) selectConversation(conversationId); }).catch(() => setNotice("Mentat could not reopen that Conversation safely."));
   }, [loadedConversationIds, refreshConversationDetail, selectConversation]);
 
-  async function createNewConversation() {
-    if (creating || !selectedAgentId) return;
+  async function createNewConversation(agentId = selectedAgentId, carryUnboundDraft = true): Promise<boolean> {
+    if (creating || !agentId) return false;
     setCreating(true); setNotice("Creating a new Conversation…");
-    try { const created = await createConversation(selectedAgentId); setDetails((current) => ({ ...current, [created.conversation.id]: created })); setDrafts((current) => { const next = { ...current }; const carriedDraft = next[UNBOUND_DRAFT_KEY] ?? ""; delete next[UNBOUND_DRAFT_KEY]; if (carriedDraft) next[created.conversation.id] = carriedDraft; return next; }); setOpenConversationIds((current) => new Set(current).add(created.conversation.id)); setDetailState("ready"); setSelectedConversationId(created.conversation.id); setConversations((current) => [created.conversation, ...current.filter((item) => item.id !== created.conversation.id)]); setConversationState("ready"); setNotice("Conversation created and ready for a prompt."); } catch { setNotice("Mentat could not create that Conversation. Try again."); } finally { setCreating(false); }
+    try {
+      const created = await createConversation(agentId);
+      setDetails((current) => ({ ...current, [created.conversation.id]: created }));
+      if (carryUnboundDraft) setDrafts((current) => {
+        const next = { ...current };
+        const carriedDraft = next[UNBOUND_DRAFT_KEY] ?? "";
+        delete next[UNBOUND_DRAFT_KEY];
+        if (carriedDraft) next[created.conversation.id] = carriedDraft;
+        return next;
+      });
+      setOpenConversationIds((current) => new Set(current).add(created.conversation.id));
+      setDetailState("ready");
+      setSelectedConversationId(created.conversation.id);
+      setConversations((current) => [created.conversation, ...current.filter((item) => item.id !== created.conversation.id)]);
+      setConversationState("ready");
+      setNotice("Conversation created and ready for a prompt.");
+      return true;
+    } catch {
+      setNotice("Mentat could not create that Conversation. Try again.");
+      return false;
+    } finally { setCreating(false); }
+  }
+
+  function openHistoryConversation(conversation: PublicConversation) {
+    setConversations((current) => current.some((item) => item.id === conversation.id)
+      ? current.map((item) => item.id === conversation.id ? conversation : item)
+      : [conversation, ...current]);
+    setOpenConversationIds((current) => new Set(current).add(conversation.id));
+    setDetailState(details[conversation.id] ? "ready" : "loading");
+    setSelectedConversationId(conversation.id);
+  }
+
+  function mergeConversationSummary(conversation: PublicConversation) {
+    setConversations((current) => current.some((item) => item.id === conversation.id)
+      ? current.map((item) => item.id === conversation.id ? conversation : item)
+      : current);
+    setDetails((current) => current[conversation.id]
+      ? { ...current, [conversation.id]: { ...current[conversation.id], conversation } }
+      : current);
   }
 
   async function toggleLinkPreviewPreference() {
@@ -1425,29 +1497,6 @@ export function HomeConsole() {
     } finally { setConfigurationBusy(false); }
   }
 
-  async function setConversationArchived(conversation: PublicConversation, archived: boolean) {
-    if (archiveBusyIds.has(conversation.id)) return;
-    setArchiveBusyIds((current) => new Set(current).add(conversation.id));
-    setConversationNotice(conversation.id, archived ? "Archiving this Conversation…" : "Restoring this Conversation…");
-    try {
-      const result = await archiveConversation(conversation.id, conversation.revision, archived);
-      setConversations((current) => current.map((item) => item.id === conversation.id ? result.conversation : item));
-      setDetails((current) => current[conversation.id]
-        ? { ...current, [conversation.id]: { ...current[conversation.id], conversation: result.conversation } }
-        : current);
-      setConversationNotice(conversation.id, archived
-        ? "Conversation archived. Active work, Messages, and Runs were not changed."
-        : "Conversation restored and ready for work.");
-    } catch (error) {
-      setConversationNotice(conversation.id, errorCode(error) === "conflict"
-        ? "That Conversation changed before its archive state could be updated."
-        : "Mentat could not verify the Conversation archive change.");
-      void refreshConversationDetail(conversation.id).catch(() => undefined);
-    } finally {
-      setArchiveBusyIds((current) => { const next = new Set(current); next.delete(conversation.id); return next; });
-    }
-  }
-
   async function preparePendingResponse(response: RunActionResponse) {
     if (!pendingAction || !selectedConversationId || runActionBusy || pendingAction.runId !== activeRunId) return;
     const runId = pendingAction.runId;
@@ -1584,11 +1633,108 @@ export function HomeConsole() {
     finally { setCheckingCodex(false); }
   }
 
+  function commandDefinitionIsExact(command: keyof typeof COMMAND_HANDLERS): boolean {
+    return commandManifestState === "ready"
+      && commandManifest?.commands.find((item) => item.command === command)?.handler === COMMAND_HANDLERS[command];
+  }
+
+  async function runModelCommand(argument: string, sourceDraft: string): Promise<void> {
+    if (!configurationAgentId || configurationBusy) {
+      if (selectedConversationId) setConversationNotice(selectedConversationId, "Agent configuration is unavailable. The command was not run, and the draft was kept.");
+      else setNotice("Select an Agent before using /model. The draft was kept.");
+      return;
+    }
+    const targetAgentId = configurationAgentId;
+    const targetConversationId = selectedConversationId;
+    const request = configurationRequest.current + 1;
+    configurationRequest.current = request;
+    setConfigurationBusy(true);
+    if (targetConversationId) setConversationNotice(targetConversationId, "Refreshing the selected Agent's safe model list…");
+    else setNotice("Refreshing the selected Agent's safe model list…");
+    try {
+      const payload = await fetchAgentConfiguration(targetAgentId);
+      if (configurationRequest.current !== request || selectedConversationRef.current !== targetConversationId) return;
+      const configuration = payload.configuration;
+      const provider = configuration.providers.find((item) => item.id === configuration.current.provider);
+      if (argument && !provider?.models.includes(argument)) {
+        const message = `${argument} is not an exact model in the selected provider. Nothing was staged, and the draft was kept.`;
+        if (targetConversationId) setConversationNotice(targetConversationId, message); else setNotice(message);
+        setAgentConfiguration(configuration);
+        setAgentConfigurationState("ready");
+        return;
+      }
+      setAgentConfiguration(configuration);
+      setAgentConfigurationState("ready");
+      setConfigurationProvider(configuration.current.provider ?? "");
+      setConfigurationModel(argument || configuration.current.model || "");
+      setConfigurationPreview(null);
+      setDrafts((current) => current[draftKey] === sourceDraft ? { ...current, [draftKey]: "" } : current);
+      const message = argument
+        ? `${argument} is staged in the existing configuration selector. Review it before applying.`
+        : "The safe model list was refreshed.";
+      if (targetConversationId) setConversationNotice(targetConversationId, message); else setNotice(message);
+      window.setTimeout(() => {
+        const modelSelect = document.getElementById("composer-model-select") as HTMLSelectElement | null;
+        (modelSelect && !modelSelect.disabled ? modelSelect : document.getElementById("composer-agent-configuration"))?.focus();
+      }, 0);
+    } catch {
+      if (configurationRequest.current === request && selectedConversationRef.current === targetConversationId) {
+        const message = "Agent configuration could not be refreshed. The command was not run, and the draft was kept.";
+        if (targetConversationId) setConversationNotice(targetConversationId, message); else setNotice(message);
+      }
+    } finally { setConfigurationBusy(false); }
+  }
+
   async function sendTurn() {
-    if (!canSend || !selectedConversationId || !detail) return;
-    const conversationId = selectedConversationId;
+    if (!canSend) return;
     const draftAtSend = draft;
-    if (composerIntent.kind === "steer") {
+    if (composerIntent.kind === "invalid_command") {
+      const message = composerIntent.reason === "unknown"
+        ? `${composerIntent.command || "That command"} is not supported by Mentat. Nothing was sent, and the draft was kept.`
+        : composerIntent.command === "/steer"
+          ? "Usage: /steer <guidance>. Nothing was sent, and the draft was kept."
+          : `Usage: ${composerIntent.command}. Nothing was sent, and the draft was kept.`;
+      if (selectedConversationId) setConversationNotice(selectedConversationId, message); else setNotice(message);
+      return;
+    }
+    if (composerIntent.kind === "command") {
+      if (!commandDefinitionIsExact(composerIntent.command)) {
+        const message = "Mentat could not verify the fixed command manifest. Nothing was run, and the draft was kept.";
+        if (selectedConversationId) setConversationNotice(selectedConversationId, message); else setNotice(message);
+        return;
+      }
+      if (composerIntent.command === "/help") {
+        setCommandHelpOpen(true);
+        setDrafts((current) => current[draftKey] === draftAtSend ? { ...current, [draftKey]: "" } : current);
+        if (selectedConversationId) setConversationNotice(selectedConversationId, "Command help opened."); else setNotice("Command help opened.");
+        return;
+      }
+      if (composerIntent.command === "/new") {
+        const sourceKey = draftKey;
+        const commandAgentId = selectedAgentId;
+        if (!commandAgentId) {
+          setNotice("Select an Agent before using /new. Nothing was created, and the draft was kept.");
+          return;
+        }
+        const created = await createNewConversation(commandAgentId, false);
+        if (created) setDrafts((current) => current[sourceKey] === draftAtSend ? { ...current, [sourceKey]: "" } : current);
+        return;
+      }
+      if (composerIntent.command === "/model") {
+        await runModelCommand(composerIntent.argument, draftAtSend);
+        return;
+      }
+    }
+    if (composerIntent.kind === "command" && composerIntent.command === "/steer") {
+      if (!selectedConversationId) {
+        setNotice("Open a Conversation before using /steer. Nothing was sent, and the draft was kept.");
+        return;
+      }
+      const conversationId = selectedConversationId;
+      if (!detail) {
+        setConversationNotice(conversationId, "This Conversation is still loading. Nothing was sent, and the draft was kept.");
+        return;
+      }
       if (!activeRun) {
         setConversationNotice(conversationId, "There is no active Run to steer. Nothing was sent, and the draft was kept.");
         return;
@@ -1601,10 +1747,15 @@ export function HomeConsole() {
         setConversationNotice(conversationId, "This Agent does not support steering. Nothing was sent, and the draft was kept.");
         return;
       }
+      if (!activeRunVerified) {
+        setConversationNotice(conversationId, "This Run is still reconciling. Nothing was sent, and the draft was kept.");
+        void refreshConversationDetail(conversationId).catch(() => undefined);
+        return;
+      }
       setSendingConversationIds((current) => new Set(current).add(conversationId));
       setConversationNotice(conversationId, "Steering the exact active Run…");
       try {
-        await steerConversation(conversationId, activeRun.id, composerIntent.text);
+        await steerConversation(conversationId, activeRun.id, composerIntent.argument);
         setDrafts((current) => current[conversationId] === draftAtSend
           ? { ...current, [conversationId]: "" }
           : current);
@@ -1627,6 +1778,9 @@ export function HomeConsole() {
       }
       return;
     }
+    if (!selectedConversationId || !detail) return;
+    const conversationId = selectedConversationId;
+    if (composerIntent.kind !== "turn") return;
     const text = composerIntent.text;
     const reusable = retryByConversationRef.current.get(conversationId);
     const request: OptimisticMessage = reusable?.text === text
@@ -1844,7 +1998,7 @@ export function HomeConsole() {
             {conversationState === "loading" ? <StatusMessage state="loading">Loading Conversations…</StatusMessage> : null}
             {conversationCursor ? <button className="load-more-conversations" disabled={loadingConversations} onClick={loadMoreConversations} type="button">{loadingConversations ? "Loading…" : "Load older"}</button> : null}
           </div>
-          {conversations.length ? <details className="conversation-history"><summary id="recent-conversations-summary" tabIndex={-1}>Recent Conversations</summary><ul>{conversations.map((conversation) => <li key={conversation.id}><button className="history-open" onClick={() => selectConversation(conversation.id)} type="button"><span>{conversationLabel(conversation)}</span><small>{readable(conversation.state)} · {new Date(conversation.updated_at).toLocaleDateString()}</small></button><button aria-label={`${conversation.state === "archived" ? "Restore" : "Archive"} ${conversationLabel(conversation)}`} disabled={archiveBusyIds.has(conversation.id)} onClick={() => void setConversationArchived(conversation, conversation.state !== "archived")} type="button">{archiveBusyIds.has(conversation.id) ? "Updating…" : conversation.state === "archived" ? "Restore" : "Archive"}</button></li>)}</ul></details> : null}
+          <ConversationHistoryManager initialConversations={conversations} onChanged={mergeConversationSummary} onNotice={(message) => selectedConversationId ? setConversationNotice(selectedConversationId, message) : setNotice(message)} onOpen={openHistoryConversation} />
           <Transcript detail={detail} detailState={displayedDetailState} draftSuggestion={setSelectedDraft} linkPreviewBusyMessages={linkPreviewBusyMessages} linkPreviews={linkPreviewStates} loadOlder={loadOlder} loadingOlder={loadingOlder} mediaRuns={selectedMedia} onRetryLinkPreviews={retryTrackedLinkPreviews} optimisticMessage={optimisticMessage} presentationEvents={selectedRunPresentationEvents} presentationRunId={selectedRunId} runActive={activeRun !== null} selectedAgentName={selectedAgent?.name ?? null} selectedConversationId={selectedConversationId} showLinkPreviewCards={linkPreviewPreferenceState === "ready" && linkPreviewPreference?.enabled === true} />
           {selectedConversationId && conversationMediaStates[selectedConversationId] === "error" ? <StatusMessage state="unavailable">Run files could not be refreshed. Stale file actions were removed.</StatusMessage> : null}
           {activeRun ? <><div aria-live="polite" className="selected-run-progress"><span className="activity-state-dot" aria-hidden="true" /><div><strong>Run {activeRunVerified ? readable(activeRun.status) : "Reconciling"}</strong><p>{liveProgress?.runId === activeRun.id ? liveProgress.summary : "Checking the exact runtime state before enabling controls…"}</p></div><div className="selected-run-actions">{activeRunVerified ? stopConfirmation?.runId === activeRun.id ? <><button disabled={runActionBusy} onClick={() => setStopConfirmation(null)} type="button">Keep running</button><button className="run-stop-confirm" disabled={runActionBusy} onClick={() => void submitStop()} type="button">{runActionBusy ? "Stopping…" : "Confirm Stop"}</button></> : selectedAgent?.capabilities.includes("run.stop") && activeRun.status !== "finalizing" ? <button className="run-stop" disabled={runActionBusy} onClick={() => void prepareStop()} type="button">Stop</button> : null : null}</div></div>{activeRunVerified && activeRunNeedsResponse && pendingActionState?.runId === activeRun.id && pendingActionState.state === "unavailable" ? <StatusMessage state="unavailable">The pending request could not be verified. Composer text will not answer it.</StatusMessage> : null}{activeRunVerified && pendingAction?.runId === activeRun.id ? <PendingActionCard busy={runActionBusy} clarificationText={clarificationText} confirmationPending={pendingResponse?.runId === activeRun.id} onCancelConfirmation={() => setPendingResponse(null)} onClarificationText={setClarificationText} onConfirm={() => void submitPendingResponse()} onPrepare={(response) => void preparePendingResponse(response)} request={pendingAction.request} /> : null}</> : null}
@@ -1852,7 +2006,57 @@ export function HomeConsole() {
           <QueuedTurns busyTurnIds={queueBusyTurnIds} editDrafts={queueEditDrafts} editingTurnId={editingTurnId} onBeginEdit={(turn) => { if (!selectedConversationId) return; setConversationEditor(selectedConversationId, turn.id); setQueueEditDrafts((current) => ({ ...current, [turn.id]: turn.text })); }} onCancel={(turn) => void cancelQueuedTurn(turn)} onContinue={(turn) => void continueQueuedTurn(turn)} onDiscardEdit={(turn) => { if (!selectedConversationId) return; const conversationId = selectedConversationId; if (editingTurnIdsRef.current[conversationId] !== turn.id) return; setConversationEditor(conversationId, null); focusQueueTarget(conversationId, turn.id); }} onEditDraft={(turnId, text) => setQueueEditDrafts((current) => ({ ...current, [turnId]: text }))} onSaveEdit={(turn) => void editQueuedTurn(turn)} turns={detail?.queued_turns ?? []} />
           {setupRequired || selectedNeedsCodexReadiness ? <div className="codex-setup" data-state={codexReadiness ?? "unchecked"}><div><strong>{codexReadiness === "ready" ? "Codex ready" : "Codex subscription sign-in"}</strong><p>{codexReadiness === "sign_in_required" ? <>Run <code>codex login</code> in a terminal, finish the browser sign-in, then Recheck.</> : codexReadiness === "cli_missing" ? <>Install the Codex CLI, run <code>codex login</code>, then restart Mentat.</> : codexReadiness === "unavailable" ? "Mentat could not confirm local Codex readiness." : codexReadiness === "ready" ? "The local Codex CLI is signed in. Mentat never receives your credentials." : "Mentat uses the Codex CLI's existing ChatGPT subscription sign-in; credentials stay with Codex."}</p></div><button disabled={checkingCodex} onClick={() => void recheckCodex()} type="button">{checkingCodex ? "Checking…" : codexReadiness === null ? "Check readiness" : "Recheck"}</button></div> : null}
           {selectedConversationId && detail ? <ConversationContextControls agent={selectedAgent} conversationId={selectedConversationId} disabledReason={contextDisabledReason} key={selectedConversationId} onAgentEnabled={(enabled) => { setAgents((current) => current.map((agent) => agent.id === enabled.id ? enabled : agent)); setDetails((current) => current[selectedConversationId] ? { ...current, [selectedConversationId]: { ...current[selectedConversationId], agent: enabled } } : current); }} onContext={(context) => setStagedContexts((current) => ({ ...current, [selectedConversationId]: context }))} onContextState={(state) => setStagedContextStates((current) => ({ ...current, [selectedConversationId]: state }))} onNotice={(message) => setConversationNotice(selectedConversationId, message)} onRefresh={() => void refreshConversationContext(selectedConversationId)} staged={stagedContext} stagingState={stagedContextState} /> : null}
-          <form className="console-composer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}><label htmlFor="console-prompt">Prompt</label><textarea disabled={initialWorkspaceLoading || sending} id="console-prompt" onChange={(event) => setSelectedDraft(event.target.value)} onCompositionEnd={() => { compositionActive.current = false; }} onCompositionStart={() => { compositionActive.current = true; }} onKeyDown={(event) => { const native = event.nativeEvent; const composing = compositionActive.current || native.isComposing || native.keyCode === 229; if (event.key === "Enter" && !event.shiftKey && !composing) { event.preventDefault(); void sendTurn(); } }} placeholder={initialWorkspaceLoading ? "Loading Conversations" : sending ? composerIntent.kind === "steer" ? "Steering this Run" : "Submitting this Turn" : activeRun ? "Write a follow-up to queue, or begin with /steer" : "Write a prompt for your Agent…"} rows={1} value={draft} /><div className="composer-footer"><ComposerConfiguration active={activeRun !== null} agentId={configurationAgentId} agentLocked={selectedConversationId !== null} agents={agents} busy={configurationBusy} configuration={agentConfiguration} loading={agentConfigurationState} model={configurationModel} onAgent={setSelectedAgentId} onConfirm={() => void applyAgentConfiguration()} onModel={(value) => { setConfigurationPreview(null); setConfigurationModel(value); }} onPreview={() => void prepareAgentConfiguration()} onProvider={chooseConfigurationProvider} preview={configurationPreview} provider={configurationProvider} snapshot={activeRun?.configuration ?? null} /><span className="composer-context">{selectedAgent ? `${selectedAgent.name} · ${selectedIsDirect ? "Direct mode" : "Selected Agent"}` : setupRequired ? "Direct Agent setup required" : "Select an Agent to continue"}</span><span className="composer-boundary">{sending ? composerIntent.kind === "steer" ? "Steering exact active Run…" : "Submitting exact Turn…" : hasStagedContext && !contextSendReady ? "Files send only from an idle Conversation" : hasStagedContext ? `${stagedContextCount} staged context item${stagedContextCount === 1 ? "" : "s"} · Send starts one exact Run` : composerIntent.kind === "steer" ? draftIsValid ? "Steering is never queued" : "Add guidance after /steer" : queueAtCapacity ? "Queue full · edit, cancel, or continue existing work" : activeRun ? `Run ${readable(activeRun.status)} · ordinary Send queues` : selectedNeedsCodexReadiness && codexReadiness !== "ready" && !(detail?.queued_turns.length) ? "Check Codex readiness before starting a Run" : "Enter to send · Shift+Enter for a new line"}</span><button aria-disabled={!canSend} className="composer-send" disabled={!canSend} type="submit">{sending ? "Sending…" : composerIntent.kind === "turn" && activeRun ? "Queue" : "Send"}</button></div></form>
+          {commandHelpOpen && commandManifest ? <section aria-label="Mentat command help" className="command-help"><div><strong>Mentat commands</strong><button aria-label="Close command help" onClick={() => { setCommandHelpOpen(false); document.getElementById("console-prompt")?.focus(); }} type="button">×</button></div><ul>{commandManifest.commands.map((item) => <li key={item.command}><code>{item.command}</code><span>{MENTAT_COMMAND_DESCRIPTIONS[item.command]}</span></li>)}</ul></section> : null}
+          <form className="console-composer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}>
+            <label htmlFor="console-prompt">Prompt</label>
+            <div className="composer-input-wrap">
+              <textarea
+                aria-activedescendant={completionSuggestions.length ? `command-option-${completionSuggestions[commandSelection]?.command.slice(1)}` : undefined}
+                aria-autocomplete="list"
+                aria-controls="composer-command-menu"
+                aria-expanded={completionSuggestions.length > 0}
+                disabled={initialWorkspaceLoading || sending}
+                id="console-prompt"
+                onChange={(event) => setSelectedDraft(event.target.value)}
+                onCompositionEnd={() => { compositionActive.current = false; }}
+                onCompositionStart={() => { compositionActive.current = true; }}
+                onKeyDown={(event) => {
+                  const native = event.nativeEvent;
+                  const composing = compositionActive.current || native.isComposing || native.keyCode === 229;
+                  if (composing) return;
+                  if (completionSuggestions.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                    event.preventDefault();
+                    const change = event.key === "ArrowDown" ? 1 : -1;
+                    setCommandSelection((current) => (current + change + completionSuggestions.length) % completionSuggestions.length);
+                    return;
+                  }
+                  if (completionSuggestions.length && event.key === "Tab") {
+                    event.preventDefault();
+                    setSelectedDraft(completionSuggestions[commandSelection]?.completion ?? draft);
+                    return;
+                  }
+                  if (completionSuggestions.length && event.key === "Escape") {
+                    event.preventDefault();
+                    setDismissedCompletion(draft);
+                    return;
+                  }
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    const suggestion = completionSuggestions[commandSelection];
+                    if (suggestion && (draft !== suggestion.command || suggestion.command === "/steer")) setSelectedDraft(suggestion.completion);
+                    else void sendTurn();
+                  }
+                }}
+                placeholder={initialWorkspaceLoading ? "Loading Conversations" : sending ? composerIntent.kind === "command" && composerIntent.command === "/steer" ? "Steering this Run" : "Submitting this Turn" : activeRun ? "Write a follow-up to queue, or begin with /steer" : "Write a prompt for your Agent…"}
+                rows={1}
+                role="combobox"
+                value={draft}
+              />
+              {completionSuggestions.length ? <div aria-label="Mentat commands" className="composer-command-menu" id="composer-command-menu" role="listbox">{completionSuggestions.map((suggestion, index) => <button aria-selected={index === commandSelection} id={`command-option-${suggestion.command.slice(1)}`} key={suggestion.command} onMouseDown={(event) => event.preventDefault()} onClick={() => { setSelectedDraft(suggestion.completion); document.getElementById("console-prompt")?.focus(); }} role="option" type="button"><code>{suggestion.command}</code><span>{suggestion.description}</span></button>)}</div> : null}
+              <span aria-live="polite" className="command-completion-status">{completionSuggestions.length ? `${completionSuggestions.length} command${completionSuggestions.length === 1 ? "" : "s"} available.` : ""}</span>
+            </div>
+            <div className="composer-footer"><ComposerConfiguration active={activeRun !== null} agentId={configurationAgentId} agentLocked={selectedConversationId !== null} agents={agents} busy={configurationBusy} configuration={agentConfiguration} loading={agentConfigurationState} model={configurationModel} onAgent={setSelectedAgentId} onConfirm={() => void applyAgentConfiguration()} onModel={(value) => { setConfigurationPreview(null); setConfigurationModel(value); }} onPreview={() => void prepareAgentConfiguration()} onProvider={chooseConfigurationProvider} preview={configurationPreview} provider={configurationProvider} snapshot={activeRun?.configuration ?? null} /><span className="composer-context">{selectedAgent ? `${selectedAgent.name} · ${selectedIsDirect ? "Direct mode" : "Selected Agent"}` : setupRequired ? "Direct Agent setup required" : "Select an Agent to continue"}</span><span className="composer-boundary">{sending ? composerIntent.kind === "command" && composerIntent.command === "/steer" ? "Steering exact active Run…" : "Submitting exact Turn…" : hasStagedContext && !contextSendReady ? "Files send only from an idle Conversation" : hasStagedContext ? `${stagedContextCount} staged context item${stagedContextCount === 1 ? "" : "s"} · Send starts one exact Run` : composerIntent.kind === "command" ? composerIntent.command === "/steer" ? "Steering is never queued" : "Mentat command · no ordinary Send fallback" : composerIntent.kind === "invalid_command" ? "Unsupported command · draft will be kept" : queueAtCapacity ? "Queue full · edit, cancel, or continue existing work" : activeRun ? `Run ${readable(activeRun.status)} · ordinary Send queues` : selectedNeedsCodexReadiness && codexReadiness !== "ready" && !(detail?.queued_turns.length) ? "Check Codex readiness before starting a Run" : commandManifestState === "unavailable" ? "Commands unavailable · ordinary prompts still work" : "Enter to send · type / for commands"}</span><button aria-disabled={!canSend} className="composer-send" disabled={!canSend} type="submit">{sending ? "Sending…" : composerIntent.kind === "turn" && activeRun ? "Queue" : "Send"}</button></div>
+          </form>
           <p aria-atomic="true" aria-live="polite" className="console-notice" role="status">{visibleNotice}</p>
         </section>
         <ActivityRail activity={activity} activityState={activityState} collapsed={rightCollapsed} expandedAgents={expandedAgents} onSelectConversation={selectActivityConversation} onToggle={() => setRightCollapsed((current) => !current)} onToggleAgent={(agentId) => setExpandedAgents((current) => { const next = new Set(current); if (next.has(agentId)) next.delete(agentId); else next.add(agentId); return next; })} />

@@ -1,7 +1,9 @@
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from command_manifest import command_manifest_payload
+from mentat import local_bridge
 import server
 
 
@@ -34,6 +36,30 @@ class CommandManifestTests(unittest.TestCase):
         first = command_manifest_payload()
         first["commands"].append({"command": "/unsafe"})
         self.assertNotIn("/unsafe", [item["command"] for item in command_manifest_payload()["commands"]])
+
+    def test_private_bridge_accepts_only_the_exact_complete_manifest(self):
+        payload, status = local_bridge.bridge_command_manifest_payload()
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["source"], "mentat")
+        self.assertEqual(
+            [item["command"] for item in payload["commands"]],
+            ["/model", "/new", "/steer", "/help"],
+        )
+
+        original = server.command_manifest_payload
+        for invalid in (
+            lambda: {**original(), "private": True},
+            lambda: {**original(), "commands": original()["commands"][:-1]},
+            lambda: {**original(), "commands": list(reversed(original()["commands"]))},
+        ):
+            with patch.object(
+                server,
+                "command_manifest_payload",
+                side_effect=invalid,
+            ):
+                rejected, rejected_status = local_bridge.bridge_command_manifest_payload()
+            self.assertEqual(rejected_status, 500)
+            self.assertEqual(rejected["status"], "error")
 
     def test_manifest_has_local_only_api_route(self):
         self.assertIs(server.API_ROUTES["/api/agent-console/commands"], command_manifest_payload)

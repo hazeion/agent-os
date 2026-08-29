@@ -370,6 +370,24 @@ function pathOf(input: string | URL | Request): string {
 
 function emptyConversationContextResponse(path: string, method: string): Response | null {
   if (method !== "GET") return null;
+  if (path === "/api/agent-console/commands") return Response.json({
+    capabilities: {
+      "commands.external_source": false,
+      "commands.hermes_cli_passthrough": false,
+      "commands.manifest.read": true,
+    },
+    commands: [
+      { arguments: [{ description: "Optional active-provider model to select for review.", name: "model", required: false }], command: "/model", description: "Refresh current provider models", handler: "agent_console.refresh_models", safety: "read_only" },
+      { arguments: [], command: "/new", description: "Start a new Hermes session", handler: "agent_console.new_session", safety: "local_state" },
+      { arguments: [{ description: "Text guidance for the active remote Hermes run.", name: "guidance", required: true, variadic: true }], command: "/steer", description: "Guide the active remote Hermes run", handler: "agent_console.steer_active_run", safety: "remote_control" },
+      { arguments: [], command: "/help", description: "Show dashboard commands", handler: "agent_console.show_help", safety: "read_only" },
+    ],
+    runtime: "python",
+    schema_version: 1,
+    service: "mentat-local-bridge",
+    source: "mentat",
+    status: "ready",
+  });
   const match = /^\/api\/conversations\/(conv_[^/]+)\/(staged-context|media)$/u.exec(path);
   if (!match) return null;
   const base = { runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready", conversation_id: match[1] };
@@ -391,12 +409,16 @@ function deferredResponse() {
 }
 
 function installFetch({
+  configurationResponse,
+  createResponse,
   currentRun = null,
   currentRunAfterTurn = currentRun,
   conversationList = list,
   readinessState = "ready",
   turnResponse,
 }: Readonly<{
+  configurationResponse?: () => Response;
+  createResponse?: () => Response;
   currentRun?: null | Record<string, unknown>;
   currentRunAfterTurn?: null | Record<string, unknown>;
   conversationList?: typeof list;
@@ -412,6 +434,7 @@ function installFetch({
     if (contextFixture) return contextFixture;
     calls.push({ body: init?.body?.toString(), method, path });
     if (path === "/api/conversations" && method === "GET") return Response.json(conversationList);
+    if (path === "/api/conversations" && method === "POST" && createResponse) return createResponse();
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === "/api/conversations/conv_ui" && method === "GET") {
       return Response.json(detail(turnRequested ? currentRunAfterTurn : currentRun));
@@ -430,6 +453,7 @@ function installFetch({
         status: "ready",
       });
     }
+    if (path === `/api/agents/${agent.id}/configuration` && method === "GET" && configurationResponse) return configurationResponse();
     throw new Error(`Unexpected fetch: ${method} ${path}`);
   };
   return calls;
@@ -476,6 +500,78 @@ test("Home Console enables Send and normalizes an accidental trailing space", as
 
   const turnBody = JSON.parse(calls.find((call) => call.path.endsWith("/turns"))?.body ?? "{}");
   assert.equal(turnBody.text, "Ready to send");
+});
+
+test("Home Console completes only local manifest commands and keeps unknown command drafts", async () => {
+  const calls = installFetch();
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
+  await waitFor(() => assert.equal(prompt.disabled, false));
+  await user.type(prompt, "/");
+  await waitFor(() => assert.equal(screen.getAllByRole("option").filter((item) => item.closest(".composer-command-menu")).length, 4));
+  assert.equal(prompt.getAttribute("aria-expanded"), "true");
+  await user.keyboard("{ArrowDown}{Tab}");
+  assert.equal(prompt.value, "/new");
+  await user.clear(prompt);
+  await user.type(prompt, "/steer");
+  await user.keyboard("{Enter}");
+  assert.equal(prompt.value, "/steer ");
+  await user.clear(prompt);
+  await user.type(prompt, "/unknown keep all of this");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  assert.equal(prompt.value, "/unknown keep all of this");
+  assert.match(screen.getByRole("status").textContent ?? "", /not supported by Mentat/u);
+  assert.equal(calls.some((call) => call.method !== "GET"), false);
+  await user.clear(prompt);
+  await user.type(prompt, "/help");
+  await user.keyboard("{Enter}");
+  await screen.findByRole("region", { name: "Mentat command help" });
+  assert.ok(screen.getByText("Start a new Conversation"));
+  assert.ok(screen.getByText("Guide the active Run"));
+  assert.equal(prompt.value, "");
+});
+
+test("Home Console runs fixed new and model commands without ordinary Turn fallback", async () => {
+  const targetAgent = { ...agent, id: "agent_command_target", name: "Command target", system_role: null };
+  const createdConversation = { ...conversation, agent_id: targetAgent.id, id: "conv_command_new", revision: 1, title: "Command-created Conversation" };
+  const configuration = {
+    active_run: false,
+    agent_id: agent.id,
+    current: { effort: "runtime_default", model: "gpt-current", provider: "openai" },
+    efforts: [{ id: "runtime_default", name: "Runtime default" }],
+    explanation: "",
+    mutable: true,
+    providers: [{ current: true, id: "openai", models: ["gpt-current", "gpt-next"], name: "OpenAI" }],
+    runtime_type: "codex",
+    schema_version: 1,
+    state: "ready",
+  };
+  const calls = installFetch({
+    configurationResponse: () => Response.json({ configuration, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" }),
+    conversationList: { ...list, agents: [agent, targetAgent] } as unknown as typeof list,
+    createResponse: () => Response.json({ ...detail(null, createdConversation), agent: targetAgent }, { status: 201 }),
+  });
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
+  await waitFor(() => assert.equal(prompt.disabled, false));
+  await user.type(prompt, "/model gpt-next");
+  await user.keyboard("{Enter}");
+  const model = screen.getByLabelText("Model for next Run") as HTMLSelectElement;
+  await waitFor(() => assert.equal(model.value, "gpt-next"));
+  assert.equal(document.activeElement, model);
+  assert.equal(prompt.value, "");
+  assert.equal(calls.some((call) => call.path.endsWith("/turns")), false);
+  assert.equal(calls.some((call) => call.path.endsWith("/configuration/preview")), false);
+  await user.selectOptions(screen.getByRole("combobox", { name: "Agent for new conversations" }), targetAgent.id);
+  await user.type(prompt, "/new");
+  assert.equal(prompt.value, "/new");
+  await user.keyboard("{Enter}");
+  await waitFor(() => assert.ok(document.getElementById("conversation-tab-conv_command_new"), JSON.stringify(calls)));
+  const createCall = calls.find((call) => call.path === "/api/conversations" && call.method === "POST");
+  assert.deepEqual(JSON.parse(createCall?.body ?? "{}"), { agent_id: targetAgent.id });
+  assert.equal(calls.some((call) => call.path.endsWith("/turns")), false);
 });
 
 test("Home Console gates initial drafting and moves an unbound draft only once", async () => {
@@ -1348,6 +1444,12 @@ test("Home Console steers only the exact running Run and keeps an unverifiable d
   const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
   await waitFor(() => assert.equal(prompt.disabled, false));
   await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  await user.type(prompt, "   /steer focus only on the final answer");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  assert.match(screen.getByRole("status").textContent ?? "", /still reconciling/u);
+  assert.equal(calls.some((call) => call.path.endsWith("/steer")), false);
+  assert.equal(calls.some((call) => call.path.endsWith("/turns")), false);
+  assert.equal(prompt.value, "   /steer focus only on the final answer");
   await act(async () => {
     MockEventSource.instances[0].emit("snapshot", JSON.stringify({
       event: { run_id: activeRun.id, summary: "Running" },
@@ -1357,7 +1459,6 @@ test("Home Console steers only the exact running Run and keeps an unverifiable d
     document.querySelector(".selected-run-progress")?.textContent ?? "",
     /Run Running/u,
   ));
-  await user.type(prompt, "   /steer focus only on the final answer");
   assert.equal(screen.queryByRole("button", { name: "Steer" }), null);
   await user.click(screen.getByRole("button", { name: "Send" }));
   await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /may have received this steering/u));
@@ -1379,6 +1480,43 @@ test("Home Console steers only the exact running Run and keeps an unverifiable d
     });
   }
   assert.equal(calls.some((call) => call.path.endsWith("/turns")), false);
+});
+
+test("Home Console explains steer failure before a Conversation or detail is available", async () => {
+  const emptyCalls = installFetch({ conversationList: { ...list, conversations: [], count: 0 } });
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  let prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
+  await user.type(prompt, "/steer guidance");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  assert.match(screen.getByRole("status").textContent ?? "", /Open a Conversation/u);
+  assert.equal(prompt.value, "/steer guidance");
+  assert.equal(emptyCalls.some((call) => call.method !== "GET"), false);
+  cleanup();
+
+  let resolveDetail: ((response: Response) => void) | undefined;
+  const pendingDetail = new Promise<Response>((resolve) => { resolveDetail = resolve; });
+  const detailCalls: Array<{ method: string; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
+    detailCalls.push({ method, path });
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return await pendingDetail;
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  render(<HomeConsole />);
+  prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
+  await waitFor(() => assert.equal(prompt.disabled, false));
+  await user.type(prompt, "/steer guidance");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  assert.match(screen.getByRole("status").textContent ?? "", /still loading/u);
+  assert.equal(prompt.value, "/steer guidance");
+  assert.equal(detailCalls.some((call) => call.method !== "GET"), false);
+  await act(async () => { resolveDetail?.(Response.json(detail(null))); await pendingDetail; });
 });
 
 test("Home Console previews and confirms Stop without closing the Conversation", async () => {
@@ -1484,11 +1622,11 @@ test("Home Console closes, reopens, archives, and restores without deleting hist
   await user.click(screen.getByText("Recent Conversations"));
   await user.click(document.querySelector<HTMLButtonElement>(".history-open")!);
   assert.ok(document.getElementById(`conversation-tab-${conversation.id}`));
-  await user.click(screen.getByRole("button", { name: "Archive New conversation" }));
+  await user.click(screen.getByRole("button", { name: "Archive New conversation, Conversation 1" }));
   await waitFor(() => assert.equal((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value, ""));
   assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, true);
-  await user.click(screen.getByRole("button", { name: "Restore New conversation" }));
-  await waitFor(() => assert.equal(screen.getByRole("button", { name: "Archive New conversation" }).getAttribute("disabled"), null));
+  await user.click(screen.getByRole("button", { name: "Restore New conversation, Conversation 1" }));
+  await waitFor(() => assert.equal(screen.getByRole("button", { name: "Archive New conversation, Conversation 1" }).getAttribute("disabled"), null));
 });
 
 test("Home Console creates one exact Retry Run and preserves the prior failure", async () => {

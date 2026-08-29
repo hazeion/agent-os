@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1374,9 +1374,68 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         END;
         """,
     ),
+    (
+        16,
+        """
+        DROP INDEX idx_mentat_conversations_activity;
+        DROP INDEX idx_mentat_conversations_agent_activity;
+        DROP TRIGGER mentat_conversations_agent_immutable;
+
+        CREATE TABLE mentat_conversations_v16 (
+            id TEXT PRIMARY KEY CHECK (
+                length(id) BETWEEN 1 AND 128
+            ),
+            agent_id TEXT NOT NULL CHECK (
+                length(agent_id) BETWEEN 1 AND 128
+            ) REFERENCES mentat_agents(id) ON DELETE RESTRICT,
+            title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 160),
+            title_source TEXT NOT NULL CHECK (
+                title_source IN ('default', 'first_prompt', 'manual')
+            ),
+            state TEXT NOT NULL CHECK (state IN ('active', 'archived')),
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            next_message_sequence INTEGER NOT NULL DEFAULT 1 CHECK (
+                next_message_sequence >= 1
+            ),
+            next_turn_ordinal INTEGER NOT NULL DEFAULT 1 CHECK (
+                next_turn_ordinal >= 1
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            archived_at TEXT CHECK (
+                archived_at IS NULL OR length(archived_at) BETWEEN 1 AND 64
+            )
+        );
+
+        INSERT INTO mentat_conversations_v16 (
+            id, agent_id, title, title_source, state, revision,
+            next_message_sequence, next_turn_ordinal,
+            created_at, updated_at, archived_at
+        )
+        SELECT id, agent_id, title, title_source, state, revision,
+               next_message_sequence, next_turn_ordinal,
+               created_at, updated_at, archived_at
+        FROM mentat_conversations;
+
+        DROP TABLE mentat_conversations;
+        ALTER TABLE mentat_conversations_v16 RENAME TO mentat_conversations;
+
+        CREATE INDEX idx_mentat_conversations_activity
+            ON mentat_conversations(state, updated_at DESC, id);
+        CREATE INDEX idx_mentat_conversations_agent_activity
+            ON mentat_conversations(agent_id, state, updated_at DESC, id);
+
+        CREATE TRIGGER mentat_conversations_agent_immutable
+        BEFORE UPDATE OF agent_id ON mentat_conversations
+        WHEN OLD.agent_id IS NOT NEW.agent_id
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_agent_immutable');
+        END;
+        """,
+    ),
 )
 
-MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12})
+MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
 
 _LEGACY_SCHEMA_11_MISSING_CONVERSATION_OBJECTS = frozenset(
     {
@@ -1678,7 +1737,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -1726,6 +1785,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 14 cannot be safely upgraded"
+                    )
+                if (
+                    version == 16
+                    and schema_signature_state(connection, 15) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 15 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

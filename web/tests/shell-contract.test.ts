@@ -79,6 +79,18 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
   assert.match(routeSources.get("/runs") ?? "", /aria-live="polite" className="runs-summary"/);
 });
 
+test("Slice 9 history and command controls keep mobile touch targets", () => {
+  const css = source("src/app/globals.css");
+  assert.match(
+    css,
+    /@media \(max-width: 520px\)[\s\S]*\.conversation-history summary \{ min-height: 44px; \}/,
+  );
+  assert.match(
+    css,
+    /@media \(max-width: 520px\)[\s\S]*\.command-help > div button \{[\s\S]*width: 44px;[\s\S]*min-height: 44px;/,
+  );
+});
+
 test("contrast preference is applied before paint with safe system fallback", () => {
   assert.deepEqual(runPreferencePreload(null, false), {
     uiShell: "emerald",

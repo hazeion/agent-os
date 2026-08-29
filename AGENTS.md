@@ -374,6 +374,23 @@ Do not advertise local file execution where Run input cleanup cannot use a
 descriptor-relative no-follow delete. Such platforms must fail before
 materializing inputs; never fall back to check-then-delete path traversal.
 
+Schema 16 adds manual Conversation titles and bounded title-only history. Search
+may filter active, archived, or all Conversations and returns at most 50 safe
+summaries per query-bound page across the 1,024-Conversation authority. Search
+typing is navigation-only; only an explicit Open action may select or reopen a
+Conversation. Rename requires the exact Conversation revision, works for active
+or archived Conversations, and prevents later first-Turn derivation from
+replacing the manual title. Closing, archiving, restoring, renaming, and opening
+remain distinct. Conversation deletion is not part of this capability.
+
+The Next.js Console accepts only the complete version-1 Mentat command manifest
+and its fixed `/model`, `/new`, `/steer`, and `/help` handler registry. Unknown,
+malformed, unavailable, or failed commands keep the full draft and must never
+fall through to an ordinary Turn. `/new` creates a durable Conversation for the
+selected Agent. `/model` may only refresh or stage the existing safe next-Run
+configuration workflow. Completion is local presentation state and grants no
+CLI, shell, runtime-method, or generic bridge authority.
+
 Do not pass extensionless content-addressed blob paths directly to Hermes image
 arguments. Materialize a private run-scoped input snapshot with the validated
 image extension, keep that path server-only, and clean it after execution.

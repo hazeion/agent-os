@@ -4,6 +4,7 @@ export const PUBLIC_CODEX_READINESS_PATH = "/api/codex-readiness";
 export const PUBLIC_AGENT_CONFIGURATION_PATH = "/api/agents";
 
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
+const PRIVATE_CONVERSATION_HISTORY_PATH = "/bridge/v1/conversation-history";
 const PRIVATE_ACTIVITY_PATH = "/bridge/v1/agent-activity";
 const PRIVATE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness";
 const PRIVATE_AGENTS_PATH = "/bridge/v1/agents";
@@ -37,12 +38,31 @@ export type PublicConversation = {
   id: string;
   agent_id: string;
   title: string;
-  title_source: "default" | "first_prompt";
+  title_source: "default" | "first_prompt" | "manual";
   state: "active" | "archived";
   revision: number;
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+};
+
+export type PublicConversationHistory = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  conversations: PublicConversation[];
+  count: number;
+  next_cursor: string | null;
+};
+
+export type PublicConversationRenameResult = {
+  schema_version: 1;
+  service: "mentat-local-bridge";
+  runtime: "python";
+  status: "ready";
+  action: "rename";
+  conversation: PublicConversation;
 };
 
 export type PublicConversationMessage = {
@@ -434,7 +454,7 @@ function validConversation(value: unknown): value is PublicConversation {
     && conversationId(conversation.id)
     && opaqueId(conversation.agent_id)
     && text(conversation.title, 160)
-    && (conversation.title_source === "default" || conversation.title_source === "first_prompt")
+    && ["default", "first_prompt", "manual"].includes(String(conversation.title_source))
     && (conversation.state === "active" || conversation.state === "archived")
     && Number.isInteger(conversation.revision)
     && (conversation.revision as number) >= 1
@@ -442,6 +462,57 @@ function validConversation(value: unknown): value is PublicConversation {
     && timestamp(conversation.updated_at)
     && (conversation.archived_at === null || timestamp(conversation.archived_at))
     && (conversation.state === "active" ? conversation.archived_at === null : conversation.archived_at !== null);
+}
+
+function validHistory(value: unknown): value is PublicConversationHistory {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  const conversations = payload.conversations;
+  return Object.keys(payload).sort().join(",") === "conversations,count,next_cursor,runtime,schema_version,service,status"
+    && payload.schema_version === 1
+    && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python"
+    && payload.status === "ready"
+    && Array.isArray(conversations)
+    && conversations.length <= MAXIMUM_CONVERSATIONS
+    && conversations.every(validConversation)
+    && new Set(conversations.map((conversation) => (conversation as PublicConversation).id)).size === conversations.length
+    && Number.isInteger(payload.count)
+    && payload.count === conversations.length
+    && (payload.next_cursor === null
+      || typeof payload.next_cursor === "string" && /^[A-Za-z0-9_-]{1,512}$/u.test(payload.next_cursor));
+}
+
+function historyMatchesStateAndOrder(
+  history: PublicConversationHistory,
+  state: "all" | "active" | "archived",
+): boolean {
+  if (history.conversations.some((conversation) => (
+    state !== "all" && conversation.state !== state
+  ))) return false;
+  return history.conversations.every((conversation, index, rows) => {
+    if (index === 0) return true;
+    const previous = rows[index - 1]!;
+    const previousRank = previous.state === "active" ? 0 : 1;
+    const rank = conversation.state === "active" ? 0 : 1;
+    return previousRank < rank
+      || previousRank === rank
+      && (previous.updated_at > conversation.updated_at
+        || previous.updated_at === conversation.updated_at && previous.id > conversation.id);
+  });
+}
+
+function validRenameResult(value: unknown): value is PublicConversationRenameResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  return Object.keys(payload).sort().join(",") === "action,conversation,runtime,schema_version,service,status"
+    && payload.schema_version === 1
+    && payload.service === "mentat-local-bridge"
+    && payload.runtime === "python"
+    && payload.status === "ready"
+    && payload.action === "rename"
+    && validConversation(payload.conversation)
+    && payload.conversation.title_source === "manual";
 }
 
 function validContent(value: unknown, role: unknown): value is PublicConversationMessage["content"] {
@@ -867,6 +938,40 @@ export async function fetchBridgeConversations(
   handleFixedState(response, payload);
 }
 
+export async function fetchBridgeConversationHistory(
+  state: "all" | "active" | "archived",
+  query: string | null = null,
+  cursor: string | null = null,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+): Promise<PublicConversationHistory> {
+  if (
+    !["all", "active", "archived"].includes(state)
+    || query !== null && (!text(query, 160) || /\p{C}/u.test(query))
+    || cursor !== null && !/^[A-Za-z0-9_-]{1,512}$/u.test(cursor)
+  ) throw new BridgeConversationsError("conversation_request_invalid");
+  const parameters = new URLSearchParams({ state });
+  if (query !== null) parameters.set("q", query);
+  if (cursor !== null) parameters.set("cursor", cursor);
+  const { response, payload } = await requestBridge(
+    `${PRIVATE_CONVERSATION_HISTORY_PATH}?${parameters.toString()}`,
+    fetcher,
+    environment,
+    { method: "GET" },
+  );
+  if (
+    response.status === 200
+    && validHistory(payload)
+    && historyMatchesStateAndOrder(payload, state)
+  ) {
+    return {
+      ...payload,
+      conversations: payload.conversations.map((conversation) => ({ ...conversation })),
+    };
+  }
+  handleFixedState(response, payload);
+}
+
 export async function fetchBridgeConversation(
   id: string,
   before: string | null = null,
@@ -948,6 +1053,39 @@ export async function archiveBridgeConversation(
     && payload.conversation.id === id
     && payload.action === action
   ) return structuredClone(payload);
+  handleFixedState(response, payload);
+}
+
+export async function renameBridgeConversation(
+  id: string,
+  expectedRevision: number,
+  title: string,
+  fetcher: FetchLike = fetch,
+  environment: Environment = process.env,
+): Promise<PublicConversationRenameResult> {
+  if (
+    !conversationId(id)
+    || !Number.isSafeInteger(expectedRevision)
+    || expectedRevision < 1
+    || !text(title, 160)
+    || /\p{C}/u.test(title)
+  ) throw new BridgeConversationsError("conversation_request_invalid");
+  const { response, payload } = await requestBridge(
+    `${PRIVATE_CONVERSATIONS_PATH}/${encodeURIComponent(id)}/rename`,
+    fetcher,
+    environment,
+    {
+      body: JSON.stringify({ expected_revision: expectedRevision, title }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (
+    response.status === 200
+    && validRenameResult(payload)
+    && payload.conversation.id === id
+    && payload.conversation.title === title
+  ) return { ...payload, conversation: { ...payload.conversation } };
   handleFixedState(response, payload);
 }
 

@@ -14,6 +14,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from urllib.parse import urlencode
 
 from agent_registry import AgentRegistryError, AgentRegistryUnavailableError
 from mentat_db import connect as connect_mentat_database, database_path as mentat_database_path
@@ -125,6 +126,86 @@ class LocalBridgeTests(unittest.TestCase):
                 rejected_status, rejected, _headers = self.request(token=supplied)
                 self.assertEqual(rejected_status, 403)
                 self.assertEqual(rejected, {"error": "bridge_request_forbidden"})
+
+    def test_history_rename_and_command_manifest_are_fixed_capabilities(self):
+        history_response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "conversations": [],
+            "count": 0,
+            "next_cursor": None,
+        }
+        query = urlencode({"state": "archived", "q": "Straße"})
+        with patch.object(
+            local_bridge,
+            "bridge_conversation_history_payload",
+            return_value=(history_response, 200),
+        ) as history:
+            status, payload, _headers = self.request(
+                path=f"{local_bridge.BRIDGE_CONVERSATION_HISTORY_PATH}?{query}"
+            )
+        self.assertEqual((status, payload), (200, history_response))
+        history.assert_called_once_with(
+            state="archived",
+            query="Straße",
+            cursor=None,
+        )
+
+        rename_response = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "action": "rename",
+        }
+        body = {"expected_revision": 7, "title": "Manual title"}
+        with patch.object(
+            local_bridge,
+            "bridge_rename_conversation_payload",
+            return_value=(rename_response, 200),
+        ) as rename:
+            status, payload, _headers = self.request(
+                method="POST",
+                path="/bridge/v1/conversations/conv_current/rename",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps(body).encode("utf-8"),
+            )
+        self.assertEqual((status, payload), (200, rename_response))
+        rename.assert_called_once_with("conv_current", body)
+
+        status, manifest, _headers = self.request(
+            path=local_bridge.BRIDGE_COMMAND_MANIFEST_PATH
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(manifest["source"], "mentat")
+        self.assertEqual(
+            [item["command"] for item in manifest["commands"]],
+            ["/model", "/new", "/steer", "/help"],
+        )
+
+        for path in (
+            f"{local_bridge.BRIDGE_CONVERSATION_HISTORY_PATH}?state=all&extra=1",
+            f"{local_bridge.BRIDGE_CONVERSATION_HISTORY_PATH}?state=all&state=active",
+            f"{local_bridge.BRIDGE_CONVERSATION_HISTORY_PATH}?state=all&q=",
+            f"{local_bridge.BRIDGE_COMMAND_MANIFEST_PATH}?extra=1",
+        ):
+            rejected, payload, _headers = self.request(path=path)
+            self.assertEqual(
+                (rejected, payload),
+                (404, {"error": "bridge_route_not_found"}),
+            )
+        rejected, payload, _headers = self.request(
+            method="POST",
+            path="/bridge/v1/conversations/conv_current/rename",
+            headers={"Content-Type": "application/json"},
+            body=b'{"expected_revision":7,"title":"Manual","extra":true}',
+        )
+        self.assertEqual(
+            (rejected, payload),
+            (404, {"error": "bridge_route_not_found"}),
+        )
 
     def test_browser_and_forged_host_requests_fail_closed(self):
         rejected_headers = (
