@@ -267,8 +267,12 @@ without losing evidence or confusing presentation state with execution state.
 
 ## Publication gate
 
-- Standing authorization recorded above. Exact files, commit, ready PR, CI,
-  and merge evidence will be recorded before publication.
+- Ready PR #148 exposed one pre-existing nondeterministic Windows test: the
+  POSIX `os.kill` branch test inherited the runner's `os.name == "nt"` and
+  passed or failed depending on whether PID 4321 happened to exist. The test
+  now fixes `os.name` to `posix`; the adjacent Windows-specific test continues
+  to cover `_pid_is_running`. CI rerun evidence and merge SHA will be recorded
+  after the corrected push.
 
 ## Outcome review
 

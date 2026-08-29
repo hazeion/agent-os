@@ -441,7 +441,9 @@ class WebRuntimeTests(unittest.TestCase):
             local_bridge.os, "getpid", return_value=9999
         ):
             self.assertEqual(local_bridge.configured_launcher_pid(), 4321)
-        with patch.object(local_bridge.os, "kill", side_effect=ProcessLookupError):
+        with patch.object(local_bridge.os, "name", "posix"), patch.object(
+            local_bridge.os, "kill", side_effect=ProcessLookupError
+        ):
             self.assertFalse(local_bridge.launcher_is_running(4321))
 
     def test_bridge_launcher_watch_uses_windows_safe_liveness_probe(self):
