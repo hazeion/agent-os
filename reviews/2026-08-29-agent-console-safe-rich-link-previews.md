@@ -166,6 +166,8 @@ owner to avoid shared-file races.
   complete packaging suite passed.
 - 154 web tests passed with clean lint and typecheck. The production webpack
   build passed with all fixed preview routes.
+- The tracked-file secret scan passed after test-only credential-shaped URL and
+  environment fixtures were split into inert components.
 - The production performance gate now warms the complete fixture once, then
   scores seven unchanged samples with 200 rows, three preview cards, and one
   image card. It passed at 127.6 ms accepted dispatch, 18.9 ms loaded tab,
