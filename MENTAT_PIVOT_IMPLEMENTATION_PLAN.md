@@ -27,11 +27,12 @@ production packaging, Codex adapter, runtime coexistence, Agent registry
 convergence, and optional Vercel capability adapters are complete through Slice
 4A.
 
-Agent Console Slices 1 through 4 are complete. Slice 4 shipped through PR #148
-after schema-14 recovery attempts, honest startup liveness, archive and queue
-recovery, four adversarial review rounds, 52 green PR checks, and production
-desktop/mobile browser acceptance. The current Wayfinder frontier is Agent
-Console Slice 5: composer Agent configuration (GitHub issue #137).
+Agent Console Slices 1 through 5 are complete. Slice 5 shipped through PR #150
+after canonical-Agent configuration, authenticated local Hermes mutation,
+immutable active snapshots, three adversarial review rounds, 52 green PR
+checks, and production desktop/mobile browser acceptance. The current Wayfinder
+frontier is Agent Console Slice 6: polished transcript and reasoning summaries
+(GitHub issue #138).
 
 ## Slice order
 
@@ -54,7 +55,7 @@ Console Slice 5: composer Agent configuration (GitHub issue #137).
 | Console 2 | Complete | One bounded text Turn, atomic Run reservation, exact replay, and safe Codex readiness. |
 | Console 3 | Complete | Live transcript, active composer, durable queued turns, steering, and adapter-scoped concurrency. |
 | Console 4 | Complete | Operator control, recovery, and durable continuation. |
-| Console 5 | Approved | Composer Agent configuration. |
+| Console 5 | Complete | Composer Agent configuration. |
 | Console 6 | Approved | Polished transcript and reasoning summaries. |
 | Console 7 | Approved | Safe rich-link previews. |
 | Console 8 | Approved | Attachments, Context Packs, images, and artifacts. |

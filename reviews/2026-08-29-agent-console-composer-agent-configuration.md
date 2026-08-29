@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console composer Agent configuration
 
-Status: Ready for publication
+Status: Complete
 Slice: `agent-console-composer-agent-configuration`
 Date: `2026-08-29`
 Review log: `reviews/2026-08-29-agent-console-composer-agent-configuration.md`
@@ -171,8 +171,10 @@ Run. Unsupported adapters stay visible and honestly read-only.
 
 ## Publication gate
 
-- Standing authorization recorded. CI and merge evidence remain pending.
+- All 52 fresh PR checks passed. PR #150 merged as
+  `ca4ae2d88d73371ef44ba57d69127ff7503c90f9`; issue #137 closed and Wayfinder
+  #128 records the resolution and advances to Slice 6.
 
 ## Outcome review
 
-- Classification: Successful and ready for publication.
+- Classification: Successful and merged.
