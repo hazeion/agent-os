@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console safe rich-link previews
 
-Status: Ready for publication
+Status: Merged
 Slice: `agent-console-safe-rich-link-previews`
 Date: `2026-08-29`
 Review log: `reviews/2026-08-29-agent-console-safe-rich-link-previews.md`
@@ -79,7 +79,7 @@ Conversation, or Run authority.
 | AC-5 | Only verified static JPEG/PNG/WebP becomes a bounded metadata-stripped WebP behind an opaque same-origin ID. | Image matrix I1–I4 and binary route tests. | Passed |
 | AC-6 | Cache identities, freshness, negative caching, LRU, secret/root/version isolation, preference revisions, offline behavior, clear, restart, backup, restore, and compatible export are exact. | Cache/preference C1–C4 and V1–V2 tests. | Passed |
 | AC-7 | Message submission remains independent; asynchronous cards and permanent plain links handle ready, pending, disabled, blocked, unavailable, retry, tab switching, pagination, and stale revisions accessibly. | Bridge/BFF/Home/renderer interaction and browser tests. | Passed |
-| AC-8 | Full Python/web/build/browser gates, optional dated public compatibility observations, dependency/license evidence, and two adversarial re-reviews pass. | Final verification record. | Passed; CI pending |
+| AC-8 | Full Python/web/build/browser gates, optional dated public compatibility observations, dependency/license evidence, and two adversarial re-reviews pass. | Final verification record. | Passed |
 
 ### Fixed limits
 
@@ -206,9 +206,11 @@ owner to avoid shared-file races.
 
 ## Publication gate
 
-- Standing authorization recorded. Local implementation gates are complete;
-  ready-PR CI and merge evidence remain pending.
+- Standing authorization recorded. PR #154 passed all 52 checks and merged as
+  `91ae1e8e1ab06b6440fe5f5583cb16de7b8a4a4f` on 2026-08-29. Final workflow
+  runs: CI `33243219052`, Native artifact smoke `33243219054`, and Quality gates
+  `33243219068`.
 
 ## Outcome review
 
-- Classification: Ready for publication.
+- Classification: Complete.

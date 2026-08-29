@@ -27,12 +27,13 @@ production packaging, Codex adapter, runtime coexistence, Agent registry
 convergence, and optional Vercel capability adapters are complete through Slice
 4A.
 
-Agent Console Slices 1 through 6 are complete. Slice 6 shipped through PR #152
-after safe bounded Markdown/code rendering, provenance-aware Thinking and
-Activity, transcript-wide render limits, stable Run grouping, per-Conversation
-scroll state, two clean adversarial re-reviews, 51 green PR checks, and
-production desktop/mobile browser acceptance. The current Wayfinder frontier
-is Agent Console Slice 7: safe rich-link previews (GitHub issue #139).
+Agent Console Slices 1 through 7 are complete. Slice 7 shipped through PR #154
+with Message-bound public-HTTPS previews, pinned network policy, replaceable
+credential-free workers, bounded metadata and WebP images, a disposable private
+cache, permanent protected links, two clean adversarial re-reviews, 52 green PR
+checks, and production desktop/mobile browser acceptance. The current
+Wayfinder frontier is Agent Console Slice 8: attachments, Context Packs, images,
+and artifacts (GitHub issue #140).
 
 ## Slice order
 
@@ -57,7 +58,7 @@ is Agent Console Slice 7: safe rich-link previews (GitHub issue #139).
 | Console 4 | Complete | Operator control, recovery, and durable continuation. |
 | Console 5 | Complete | Composer Agent configuration. |
 | Console 6 | Complete | Polished transcript and reasoning summaries. |
-| Console 7 | Approved | Safe rich-link previews. |
+| Console 7 | Complete | Safe rich-link previews. |
 | Console 8 | Approved | Attachments, Context Packs, images, and artifacts. |
 | Console 9 | Approved | History depth and command ergonomics. |
 | Console 10 | Approved | Project and planning context. |
