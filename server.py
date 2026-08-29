@@ -65,6 +65,7 @@ from conversation_repository import (
     conversations_public,
 )
 from run_repository import (
+    HydratedRunEvent,
     RunRecord,
     RunRepository,
     RunRepositoryConflict,
@@ -2505,27 +2506,67 @@ def _public_orchestration_run(run: RunRecord) -> dict:
 
 
 def _public_orchestration_event(
-    event: AgentEvent,
+    hydrated: HydratedRunEvent,
     *,
     trusted_message_id: str | None = None,
 ) -> dict:
     # Only a normalized Vercel message result may cross this boundary. Raw
     # adapter payloads, tool arguments/results, and private reasoning remain
     # excluded.
+    event = hydrated.event
+    presentation = _safe_event_presentation(hydrated.source_type, event.type)
     return {
         "id": event.id,
         "run_id": event.run_id,
         "sequence": event.sequence,
         "type": event.type.value,
         "occurred_at": event.occurred_at,
-        "summary": event.summary,
+        "summary": (
+            presentation["label"] if presentation is not None else event.summary
+        ),
         "message": (
             event.content
             if event.id == trusted_message_id and event.type == AgentEventType.MESSAGE
             else None
         ),
         "metrics": dict(event.metrics),
+        "presentation": presentation,
     }
+
+
+_TOOL_PRESENTATION_SOURCES = {
+    "tool": ("requested", "Tool activity requested"),
+    "tool.requested": ("requested", "Tool activity requested"),
+    "tool.started": ("started", "Tool activity started"),
+    "tool.completed": ("completed", "Tool activity completed"),
+    "tool.finished": ("completed", "Tool activity completed"),
+}
+
+
+def _safe_event_presentation(
+    source_type: str,
+    event_type: AgentEventType,
+) -> dict[str, str] | None:
+    """Classify only provenance-backed progress without returning source data."""
+
+    tool = _TOOL_PRESENTATION_SOURCES.get(source_type)
+    if tool is not None:
+        phase, label = tool
+        expected = (
+            AgentEventType.TOOL_COMPLETED
+            if phase == "completed"
+            else AgentEventType.TOOL_REQUESTED
+        )
+        if event_type != expected:
+            return None
+        return {"kind": "tool", "phase": phase, "label": label}
+    if source_type == "reasoning.available" and event_type == AgentEventType.MESSAGE:
+        return {
+            "kind": "reasoning",
+            "phase": "available",
+            "label": "Reasoning summary available",
+        }
+    return None
 
 
 def _encode_run_cursor(run: RunRecord) -> str:
@@ -2810,7 +2851,7 @@ def mentat_run_events_payload(run_id: str, after_sequence: int) -> dict:
                 repository = RunRepository(connection)
                 repository.authority_receipt(required=True)
                 run = repository.get_run(run_id)
-                events, reset, cursor = repository.list_events(
+                events, reset, cursor = repository.list_hydrated_events(
                     run_id, after_sequence=after_sequence
                 )
                 trusted_message_id = repository.trusted_vercel_result_message_id(
@@ -3516,7 +3557,7 @@ def orchestration_run_events_payload(run_id: str, query: str = ""):
             try:
                 repository = RunRepository(connection)
                 run = repository.get_run(run_id)
-                events, reset, cursor = repository.list_events(
+                events, reset, cursor = repository.list_hydrated_events(
                     run_id, after_sequence=int(raw_after)
                 )
                 trusted_message_id = repository.trusted_vercel_result_message_id(

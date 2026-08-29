@@ -1195,6 +1195,31 @@ announces only inactive-to-active and active-to-inactive transitions for the
 selected transport/profile; concurrent tool counts do not repeat the
 announcement.
 
+Durable Message text is rendered through a deliberately small presentation
+grammar: paragraphs, up to three heading levels, blockquotes, ordered and
+unordered lists, emphasis, inline code, and fenced code. React text nodes are
+the only HTML boundary; raw HTML and URLs remain inert text, bidi controls are
+replaced, displayed content is bounded, and fenced code is never executable.
+Copy acts only on the bounded displayed Message or code text. Consecutive
+Messages are grouped under presentation-only Run or queued-turn headings
+without revealing runtime references. The browser retains at most 200 Message
+rows, 512 formatting units per Message, and 8,000 formatting units across the
+transcript; excess formatting falls back to bounded plain text. Scroll position
+and near-bottom state are isolated per Conversation.
+
+Presentation history follows the SSE envelope contract: `reset: false`
+snapshots merge after reconnect, `reset: true` snapshots and explicit reset
+events replace the retained window, and malformed envelopes change nothing.
+Events without an allowlisted presentation remain bounded sequence markers so
+later ordinary progress can close Thinking without exposing unclassified data.
+
+The desktop Console uses one compact tab strip and centers the Conversation
+workspace exactly between the navigation rail and activity rail. Closing a tab
+does not archive or delete its Conversation. The rail arrow and accessible
+label describe the action that the next click will take. Shell synchronization
+must compare current DOM values before writing so its mutation observer cannot
+be retriggered by idempotent updates.
+
 Completed runs may also receive a private structured usage report. Billing
 totals remain separate from `context_tokens` (the last actual prompt size) and
 `context_length` (the active model window). The UI calculates a percentage only

@@ -5,7 +5,7 @@ import test from "node:test";
 import { BridgeRunEventsError, fetchBridgeRunEvents, lastEventCursor, refreshBridgeRun } from "../src/lib/bridge-run-events.ts";
 
 const environment = { MENTAT_BRIDGE_ORIGIN: "http://127.0.0.1:49152", MENTAT_BRIDGE_TOKEN: "A_very_long_urlsafe_bridge_token_with_more_than_43_chars" };
-const event = { id: "event_current", run_id: "run_current", sequence: 4, type: "run.started", occurred_at: "2026-08-22T00:01:00Z", summary: "Runtime accepted dispatch", message: null, metrics: { total_tokens: 12 } };
+const event = { id: "event_current", run_id: "run_current", sequence: 4, type: "run.started", occurred_at: "2026-08-22T00:01:00Z", summary: "Runtime accepted dispatch", message: null, metrics: { total_tokens: 12 }, presentation: null };
 const payload = { schema_version: 1, service: "mentat-local-bridge", runtime: "python", status: "ready", run_id: "run_current", after: 3, next_cursor: 4, cursor_reset_required: false, events: [event] };
 function trustedVercelMessageId(runId: string) {
   const source = `vercel_message_${createHash("sha256").update(`${runId}:message`, "utf8").digest("hex").slice(0, 24)}`;
@@ -103,6 +103,21 @@ test("Run event bridge encodes a valid colon-containing Run ID once", async () =
   }, environment);
   assert.equal(url, "http://127.0.0.1:49152/bridge/v1/runs/run_current%3Achild/events?after=3");
   assert.equal(result.run_id, runId);
+});
+
+test("Run event bridge accepts only fixed provenance-safe presentation labels", async () => {
+  const tool = { ...event, id: "event_tool", metrics: {}, presentation: { kind: "tool", label: "Tool activity started", phase: "started" }, sequence: 5, summary: "Tool activity started", type: "tool.requested" };
+  const reasoning = { ...event, id: "event_reasoning", metrics: {}, presentation: { kind: "reasoning", label: "Reasoning summary available", phase: "available" }, sequence: 6, summary: "Reasoning summary available", type: "message" };
+  const safe = { ...payload, events: [event, tool, reasoning], next_cursor: 6 };
+  assert.equal((await fetchBridgeRunEvents("run_current", 3, async () => Response.json(safe), environment)).events[2].presentation?.kind, "reasoning");
+  for (const poisoned of [
+    { ...tool, presentation: null },
+    { ...tool, presentation: { ...tool.presentation, tool: "shell" } },
+    { ...tool, presentation: { ...tool.presentation, label: "Using secret path" } },
+    { ...reasoning, presentation: { ...reasoning.presentation, raw: "chain of thought" } },
+  ]) {
+    await assert.rejects(fetchBridgeRunEvents("run_current", 3, async () => Response.json({ ...payload, events: [poisoned], next_cursor: poisoned.sequence }), environment), BridgeRunEventsError);
+  }
 });
 
 test("selected Run refresh is one exact private mutation", async () => {

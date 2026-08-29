@@ -35,6 +35,7 @@ globalThis.cancelAnimationFrame = (handle) => clearTimeout(handle);
 const { act, cleanup, fireEvent, render, screen, waitFor } = await import("@testing-library/react");
 const { default: userEvent } = await import("@testing-library/user-event");
 const { HomeConsole } = await import("../src/app/home-console.tsx");
+const { transcriptContentLimits } = await import("../src/app/transcript-content.tsx");
 const originalEventSource = globalThis.EventSource;
 
 const timestamp = "2026-08-26T12:00:00Z";
@@ -923,7 +924,7 @@ test("Home Console edits and cancels a queued Turn with both exact revisions", a
   await waitFor(() => assert.equal(screen.queryByLabelText("Queued Turns"), null));
   await waitFor(() => assert.equal(document.activeElement, screen.getByLabelText("Prompt")));
   assert.equal(screen.getByRole("status").textContent, "Queued Turn #2 was cancelled. Its FIFO ordinal remains retired.");
-  assert.equal(document.querySelector(".message-cancelled")?.textContent, `You · Cancelled${editedText}`);
+  assert.equal(document.querySelector(".message-cancelled .transcript-markdown")?.textContent, editedText);
   assert.deepEqual(mutationCalls, [
     {
       body: { expected_message_revision: 2, expected_revision: 3, text: editedText },
@@ -1601,8 +1602,11 @@ test("Home Console invalidates a pending configuration preview when a Run starts
   await screen.findByRole("button", { name: "Confirm" });
   const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
   await user.type(prompt, "Start with the old snapshot");
-  await user.click(screen.getByRole("button", { name: "Send" }));
-  await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Confirm" }), null));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  assert.equal(screen.queryByRole("button", { name: "Confirm" }), null);
   assert.match(document.querySelector(".configuration-explanation")?.textContent ?? "", /Active Run snapshot is unchanged/u);
 });
 
@@ -1627,6 +1631,7 @@ test("Home Console rejects a delayed Agent configuration read after tab handoff"
   };
   render(<HomeConsole />);
   await screen.findByLabelText("Prompt");
+  await waitFor(() => assert.ok(document.getElementById(`conversation-tab-${secondConversation.id}`)));
   fireEvent.click(document.getElementById(`conversation-tab-${secondConversation.id}`)!);
   const provider = screen.getByLabelText("Provider for next Run") as HTMLSelectElement;
   await waitFor(() => assert.equal(provider.value, "second-provider"));
@@ -1877,6 +1882,154 @@ test("Home Console streams only the selected Run and reconciles durable completi
   await waitFor(() => assert.equal(source.closed, true));
   assert.equal(MockEventSource.instances.length, 1);
   assert.equal(MockEventSource.instances.some((item) => item.url.includes("background")), false);
+});
+
+test("Home Console opens genuine Thinking, collapses on later Activity, and keeps raw payloads hidden", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const activeRun = { id: "run_safe_presentation", partial: false, status: "running", updated_at: timestamp };
+  installFetch({ currentRun: activeRun });
+  const event = (sequence: number, type: string, summary: string, presentation: Record<string, string> | null) => ({ id: `event_safe_${sequence}`, message: null, metrics: {}, occurred_at: timestamp, presentation, raw_reasoning: "must never render", run_id: activeRun.id, sequence, summary, tool_arguments: { path: "/private/secret" }, type });
+  render(<HomeConsole />);
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  await act(async () => MockEventSource.instances[0].emit("snapshot", JSON.stringify({ events: [event(1, "message", "Reasoning summary available", { kind: "reasoning", label: "Reasoning summary available", phase: "available" })], reset: false })));
+  const thinkingSummary = await screen.findByText("Thinking…");
+  const thinking = thinkingSummary.closest("details") as HTMLDetailsElement;
+  await waitFor(() => assert.equal(thinking.open, true));
+  assert.equal(document.body.textContent?.includes("must never render"), false);
+  assert.equal(document.body.textContent?.includes("/private/secret"), false);
+
+  await act(async () => MockEventSource.instances[0].emit("timeline", JSON.stringify({ event: event(2, "run.progress", "Run progress", null) })));
+  await waitFor(() => assert.equal(thinking.open, false));
+  await act(async () => MockEventSource.instances[0].emit("timeline", JSON.stringify({ event: event(3, "tool.requested", "Tool activity started", { kind: "tool", label: "Tool activity started", phase: "started" }) })));
+  await waitFor(() => assert.equal(thinking.open, false));
+  await waitFor(() => assert.equal(document.querySelector(".presentation-announcement")?.textContent, "Agent activity started."));
+  const activitySummary = await screen.findByText("Activity in progress");
+  const activityDetails = activitySummary.closest("details") as HTMLDetailsElement;
+  assert.equal(activityDetails.open, false);
+  await act(async () => MockEventSource.instances[0].emit("snapshot", JSON.stringify({ events: [], reset: false })));
+  assert.equal(screen.getByText("Activity in progress").textContent, "Activity in progress");
+  await userEvent.setup({ document: dom.window.document }).click(screen.getByText("Thinking"));
+  assert.equal(thinking.open, true);
+
+  await act(async () => MockEventSource.instances[0].emit("timeline", JSON.stringify({ event: event(4, "tool.completed", "Tool activity completed", { kind: "tool", label: "Tool activity completed", phase: "completed" }) })));
+  await waitFor(() => assert.equal(document.querySelector(".presentation-announcement")?.textContent, "Agent activity finished."));
+
+  await act(async () => MockEventSource.instances[0].emit("reset", JSON.stringify({ events: [event(3, "message", "Reasoning summary available", { kind: "reasoning", label: "Reasoning summary available", phase: "available" })] })));
+  await screen.findByText("Thinking…");
+  assert.equal(screen.queryByText(/Activity/u), null);
+  await act(async () => MockEventSource.instances[0].emit("reset", JSON.stringify({ events: [] })));
+  await waitFor(() => assert.equal(screen.queryByText(/^Thinking/u), null));
+});
+
+test("Home Console groups durable Run and queued Messages in screen-reader order", async () => {
+  const base = {
+    content: { parts: [{ text: "# Safe heading\n\n`inline` text", type: "text" }], schema_version: 1 },
+    conversation_id: conversation.id,
+    created_at: timestamp,
+    revision: 1,
+    state: "accepted",
+    updated_at: timestamp,
+  };
+  const messages = [
+    { ...base, id: "msg_group_1", role: "user", run_id: "run_group_1", sequence: 1 },
+    { ...base, content: { parts: [{ text: "Queued follow-up", type: "text" }], schema_version: 1 }, id: "msg_group_2", role: "user", run_id: null, sequence: 2 },
+    { ...base, content: { parts: [{ text: "First answer", type: "text" }], schema_version: 1 }, id: "msg_group_3", role: "assistant", run_id: "run_group_1", sequence: 3 },
+    { ...base, content: { parts: [{ text: "Second queued follow-up", type: "text" }], schema_version: 1 }, id: "msg_group_4", role: "user", run_id: null, sequence: 4 },
+    { ...base, content: { parts: [{ text: "Second answer", type: "text" }], schema_version: 1 }, id: "msg_group_5", role: "assistant", run_id: "run_group_2", sequence: 5 },
+  ];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, conversation, [], messages));
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  render(<HomeConsole />);
+  await waitFor(() => assert.equal(document.querySelectorAll(".message-row").length, 5));
+  const groups = [...document.querySelectorAll<HTMLElement>(".message-group")];
+  assert.deepEqual(groups.map((group) => group.getAttribute("aria-label")), ["Run 1", "Queued turn", "Run 1", "Queued turn", "Run 2"]);
+  assert.deepEqual([...document.querySelectorAll(".message-row")].map((row) => row.textContent?.includes("First answer") ? "first-answer" : row.textContent?.includes("Second queued") ? "second-queued" : row.textContent?.includes("Queued follow-up") ? "queued" : row.textContent?.includes("Second answer") ? "second-answer" : "first-prompt"), ["first-prompt", "queued", "first-answer", "second-queued", "second-answer"]);
+  assert.equal(screen.getByRole("heading", { name: "Safe heading" }).tagName, "H2");
+});
+
+test("Home Console isolates Thinking and Activity state across selected Runs", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const secondConversation = { ...conversation, id: "conv_presentation_second", title: "Second live Run" };
+  const firstRun = { id: "run_presentation_first", partial: false, status: "running", updated_at: timestamp };
+  const secondRun = { id: "run_presentation_second", partial: false, status: "running", updated_at: timestamp };
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [conversation, secondConversation], count: 2 });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(firstRun));
+    if (path === `/api/conversations/${secondConversation.id}` && method === "GET") return Response.json(detail(secondRun, secondConversation));
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const event = (runId: string, sequence: number, type: string, summary: string, presentation: Record<string, string>) => ({ id: `event_${runId}_${sequence}`, message: null, metrics: {}, occurred_at: timestamp, presentation, run_id: runId, sequence, summary, type });
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  await act(async () => MockEventSource.instances[0].emit("snapshot", JSON.stringify({ events: [event(firstRun.id, 1, "message", "Reasoning summary available", { kind: "reasoning", label: "Reasoning summary available", phase: "available" })], reset: false })));
+  const firstThinking = (await screen.findByText("Thinking…")).closest("details") as HTMLDetailsElement;
+  await user.click(screen.getByText("Thinking…"));
+  assert.equal(firstThinking.open, false);
+
+  await user.click(document.getElementById(`conversation-tab-${secondConversation.id}`)!);
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 2));
+  await act(async () => MockEventSource.instances[1].emit("snapshot", JSON.stringify({ events: [event(secondRun.id, 1, "message", "Reasoning summary available", { kind: "reasoning", label: "Reasoning summary available", phase: "available" })], reset: false })));
+  const secondThinking = (await screen.findByText("Thinking…")).closest("details") as HTMLDetailsElement;
+  assert.equal(secondThinking.open, true);
+  await act(async () => MockEventSource.instances[1].emit("timeline", JSON.stringify({ event: event(secondRun.id, 2, "tool.requested", "Tool activity started", { kind: "tool", label: "Tool activity started", phase: "started" }) })));
+  await waitFor(() => assert.equal(document.querySelector(".presentation-announcement")?.textContent, "Agent activity started."));
+});
+
+test("Home Console retains independent scroll anchors for equal-length Conversation tabs", async () => {
+  const secondConversation = { ...conversation, id: "conv_scroll_second", title: "Second scroll position" };
+  const message = (target: typeof conversation, id: string, text: string) => ({
+    content: { parts: [{ text, type: "text" }], schema_version: 1 },
+    conversation_id: target.id,
+    created_at: timestamp,
+    id,
+    revision: 1,
+    role: "assistant",
+    run_id: "run_scroll",
+    sequence: 1,
+    state: "accepted",
+    updated_at: timestamp,
+  });
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [conversation, secondConversation], count: 2 });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, conversation, [], [message(conversation, "msg_scroll_first", "First scroll transcript")]));
+    if (path === `/api/conversations/${secondConversation.id}` && method === "GET") return Response.json(detail(null, secondConversation, [], [message(secondConversation, "msg_scroll_second", "Second scroll transcript")]));
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  render(<HomeConsole />);
+  await screen.findByText("First scroll transcript");
+  const transcript = document.querySelector(".conversation-transcript") as HTMLDivElement;
+  Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+  Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+  transcript.scrollTop = 120;
+  fireEvent.scroll(transcript);
+
+  fireEvent.click(document.getElementById(`conversation-tab-${secondConversation.id}`)!);
+  await screen.findByText("Second scroll transcript");
+  assert.equal(transcript.scrollTop, 1_000);
+  transcript.scrollTop = 650;
+  fireEvent.scroll(transcript);
+
+  fireEvent.click(document.getElementById(`conversation-tab-${conversation.id}`)!);
+  await screen.findByText("First scroll transcript");
+  assert.equal(transcript.scrollTop, 120);
+  fireEvent.click(document.getElementById(`conversation-tab-${secondConversation.id}`)!);
+  await screen.findByText("Second scroll transcript");
+  assert.equal(transcript.scrollTop, 650);
 });
 
 test("Home Console coalesces a live-event burst and rejects a trailing stale refresh", async () => {
@@ -2135,6 +2288,42 @@ test("Home Console bounds a 100-message transcript and typing causes no network 
   await act(async () => { await Promise.resolve(); });
   assert.equal(calls.length, callsAfterLoad);
   assert.equal(document.querySelectorAll(".message-row").length, 100);
+});
+
+test("Home Console enforces one aggregate formatting budget across 200 fragmented Messages", async () => {
+  const fragmented = Array.from({ length: 200 }, (_, index) => `**token ${index}**`).join(" ");
+  const olderMessages = Array.from({ length: 100 }, (_, index) => transcriptMessage(
+    index + 1,
+    index % 2 === 0 ? "user" : "assistant",
+    fragmented,
+  ));
+  const recentMessages = Array.from({ length: 100 }, (_, index) => transcriptMessage(
+    index + 101,
+    index % 2 === 0 ? "user" : "assistant",
+    fragmented,
+  ));
+  globalThis.fetch = async (input, init) => {
+    const requestUrl = new URL(input instanceof Request ? input.url : input.toString(), origin);
+    const path = requestUrl.pathname;
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") {
+      if (requestUrl.searchParams.get("before") === "101") return Response.json(detail(null, conversation, [], olderMessages));
+      return Response.json({ ...detail(null, conversation, [], recentMessages), next_message_cursor: "101" });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await waitFor(() => assert.equal(document.querySelectorAll(".message-row").length, 100));
+  await user.click(screen.getByRole("button", { name: "Load older messages" }));
+  await waitFor(() => assert.equal(document.querySelectorAll(".message-row").length, 200));
+  const formattedNodes = document.querySelectorAll(".transcript-markdown strong").length;
+  assert.ok(formattedNodes > 0);
+  assert.ok(formattedNodes <= transcriptContentLimits.maximumTranscriptRenderUnits / 2);
+  assert.ok(screen.getAllByText("Formatting simplified for safe display.").length > 0);
 });
 
 test("Home Console retains a bounded 200-row transcript across older-message pagination", async () => {

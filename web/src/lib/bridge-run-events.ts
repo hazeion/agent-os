@@ -11,7 +11,10 @@ const METRICS = new Set(["input_tokens", "output_tokens", "total_tokens", "conte
 type Environment = Readonly<Record<string, string | undefined>>;
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export type PublicRunEvent = { id: string; run_id: string; sequence: number; type: string; occurred_at: string; summary: string; message: string | null; metrics: Record<string, number> };
+export type PublicRunEventPresentation =
+  | { kind: "tool"; phase: "requested" | "started" | "completed"; label: "Tool activity requested" | "Tool activity started" | "Tool activity completed" }
+  | { kind: "reasoning"; phase: "available"; label: "Reasoning summary available" };
+export type PublicRunEvent = { id: string; run_id: string; sequence: number; type: string; occurred_at: string; summary: string; message: string | null; metrics: Record<string, number>; presentation: PublicRunEventPresentation | null };
 export type PublicBridgeRunEvents = { schema_version: 1; service: "mentat-local-bridge"; runtime: "python"; status: "ready"; run_id: string; after: number; next_cursor: number; cursor_reset_required: boolean; events: PublicRunEvent[] };
 export type PublicBridgeRunRefresh = { schema_version: 1; service: "mentat-local-bridge"; runtime: "python"; status: "ready"; run_id: string; disposition: "reconciled" | "idle" };
 
@@ -39,10 +42,18 @@ function trustedVercelMessageId(runId: string): string {
 function validEvent(value: unknown, runId: string): value is PublicRunEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const event = value as Record<string, unknown>;
-  if (Object.keys(event).sort().join(",") !== "id,message,metrics,occurred_at,run_id,sequence,summary,type") return false;
+  if (Object.keys(event).sort().join(",") !== "id,message,metrics,occurred_at,presentation,run_id,sequence,summary,type") return false;
   if (typeof event.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(event.id) || event.run_id !== runId || !cursor(event.sequence) || event.sequence < 1 || typeof event.type !== "string" || !EVENT_TYPES.has(event.type) || !timestamp(event.occurred_at) || typeof event.summary !== "string" || event.summary.length === 0 || event.summary.length > 500 || event.summary.trim() !== event.summary || event.summary.includes("\0") || (event.message !== null && (event.type !== "message" || event.id !== trustedVercelMessageId(runId) || typeof event.message !== "string" || event.message.length === 0 || event.message.length > 20_000 || event.message.trim() !== event.message || event.message.includes("\0"))) || !event.metrics || typeof event.metrics !== "object" || Array.isArray(event.metrics)) return false;
   const metricMap = event.metrics as Record<string, unknown>;
-  return Object.entries(metricMap).every(([name, metric]) => typeof metric === "number" && METRICS.has(name) && Number.isSafeInteger(metric) && metric >= 0 && metric <= 1_000_000_000);
+  if (!Object.entries(metricMap).every(([name, metric]) => typeof metric === "number" && METRICS.has(name) && Number.isSafeInteger(metric) && metric >= 0 && metric <= 1_000_000_000)) return false;
+  if (event.presentation === null) return !new Set(["tool.requested", "tool.completed"]).has(event.type);
+  if (!event.presentation || typeof event.presentation !== "object" || Array.isArray(event.presentation)) return false;
+  const presentation = event.presentation as Record<string, unknown>;
+  if (Object.keys(presentation).sort().join(",") !== "kind,label,phase" || event.summary !== presentation.label) return false;
+  if (presentation.kind === "reasoning") return event.type === "message" && presentation.phase === "available" && presentation.label === "Reasoning summary available";
+  if (presentation.kind !== "tool") return false;
+  if (event.type === "tool.completed") return presentation.phase === "completed" && presentation.label === "Tool activity completed";
+  return event.type === "tool.requested" && (presentation.phase === "requested" && presentation.label === "Tool activity requested" || presentation.phase === "started" && presentation.label === "Tool activity started");
 }
 function fixed(payload: unknown, expected: string) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
@@ -81,7 +92,7 @@ export async function fetchBridgeRunEvents(runId: string, after: number, fetcher
     if (Object.keys(item).sort().join(",") === "after,cursor_reset_required,events,next_cursor,run_id,runtime,schema_version,service,status" && item.schema_version === 1 && item.service === "mentat-local-bridge" && item.runtime === "python" && item.status === "ready" && item.run_id === runId && item.after === after && cursor(item.next_cursor) && typeof item.cursor_reset_required === "boolean" && Array.isArray(events) && events.length <= MAX_EVENTS && messageCount <= 1 && events.every((event) => validEvent(event, runId))) {
       const sequences = events.map((event) => event.sequence);
       const continuous = sequences.every((sequence, index) => index === 0 || sequence === sequences[index - 1] + 1);
-      if (new Set(sequences).size === sequences.length && sequences.every((sequence) => sequence > after) && continuous && (!sequences.length || sequences.at(-1) === item.next_cursor) && (item.cursor_reset_required || item.next_cursor === after + sequences.length)) return { ...item, events: events.map((event) => ({ ...event, metrics: { ...event.metrics } })) } as PublicBridgeRunEvents;
+      if (new Set(sequences).size === sequences.length && sequences.every((sequence) => sequence > after) && continuous && (!sequences.length || sequences.at(-1) === item.next_cursor) && (item.cursor_reset_required || item.next_cursor === after + sequences.length)) return { ...item, events: events.map((event) => ({ ...event, metrics: { ...event.metrics }, presentation: event.presentation === null ? null : { ...event.presentation } })) } as PublicBridgeRunEvents;
     }
   }
   if (response.status === 404 && fixed(payload, "not_found")) throw new BridgeRunEventsError("run_not_found");

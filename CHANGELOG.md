@@ -5,6 +5,12 @@ All notable changes to Mentat.
 ## 2026-08-29
 
 ### Added
+- Added a bounded React-text Markdown transcript with inert highlighted code,
+  Message/code copy actions, Run grouping, and provenance-safe Thinking and
+  Activity disclosures.
+- Added compact Chrome-style Conversation tabs, working close controls, exact
+  desktop centering between navigation and activity rails, and a directional
+  navigation collapse arrow.
 - Added compact Agent, Provider, Model, and Effort controls to the Home composer.
 - Added a canonical-Agent configuration bridge that resolves private Hermes
   profile bindings only inside Python and reuses exact provider preview and
@@ -13,6 +19,11 @@ All notable changes to Mentat.
   Conversation projection.
 
 ### Safety
+- Kept raw HTML, links, bidi controls, tool payloads, provider reasoning,
+  runtime references, and executable code outside the transcript presentation
+  boundary; long transcripts remain capped at 200 rendered Message rows.
+- Prevented the shell mutation observer from retriggering itself by making
+  collapse-control synchronization idempotent.
 - Kept Codex, Vercel, unsupported runtimes, and unsupported effort mutation
   read-only; browser input cannot choose private runtime settings.
 - Filtered Hermes choices to authenticated profile inventory and preserved

@@ -11,6 +11,7 @@ const standaloneEntry = resolve(projectRoot, ".next", "standalone", "server.js")
 const sampleCount = Number(process.env.MENTAT_AGENT_CONSOLE_PERF_SAMPLES || 7);
 const serverPort = Number(process.env.MENTAT_AGENT_CONSOLE_PERF_PORT || 8892);
 const debugPort = Number(process.env.MENTAT_AGENT_CONSOLE_PERF_DEBUG_PORT || 9337);
+const progressEnabled = process.env.MENTAT_AGENT_CONSOLE_PERF_PROGRESS === "1";
 const externalBaseUrl = process.env.MENTAT_WEB_BASE_URL;
 const baseUrl = new URL(externalBaseUrl || `http://127.0.0.1:${serverPort}`);
 const runtimeRoot = resolve(
@@ -71,6 +72,10 @@ function sleep(milliseconds) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 }
 
+function progress(message) {
+  if (progressEnabled) process.stderr.write(`[agent-console-performance] ${message}\n`);
+}
+
 async function waitFor(operation, label, timeoutMilliseconds = 15_000) {
   const deadline = Date.now() + timeoutMilliseconds;
   let lastError;
@@ -120,8 +125,10 @@ class CdpClient {
     webSocket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (!message.id || !this.pending.has(message.id)) return;
+      progress(`CDP response ${message.id}`);
       const pending = this.pending.get(message.id);
       this.pending.delete(message.id);
+      clearTimeout(pending.timeout);
       if (message.error) pending.reject(new Error(message.error.message || "CDP call failed"));
       else pending.resolve(message.result || {});
     };
@@ -130,9 +137,20 @@ class CdpClient {
   call(method, params = {}) {
     const id = this.nextId;
     this.nextId += 1;
-    this.webSocket.send(JSON.stringify({ id, method, params }));
     return new Promise((resolveCall, rejectCall) => {
-      this.pending.set(id, { reject: rejectCall, resolve: resolveCall });
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        rejectCall(new Error(`CDP ${method} timed out`));
+      }, 15_000);
+      this.pending.set(id, { reject: rejectCall, resolve: resolveCall, timeout });
+      try {
+        progress(`CDP request ${id}: ${method}`);
+        this.webSocket.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pending.delete(id);
+        rejectCall(error);
+      }
     });
   }
 
@@ -432,12 +450,14 @@ async function navigate(client) {
 }
 
 async function measureSample(client, index) {
+  progress(`sample ${index + 1}: navigation`);
   await navigate(client);
   await client.evaluate("document.querySelector('.load-older')?.click()");
   await waitFor(
     () => client.evaluate("document.querySelectorAll('.message-row').length === 200"),
     "200-message bounded transcript",
   );
+  progress(`sample ${index + 1}: fixture ready`);
   await client.evaluate(
     "[...document.querySelectorAll('button')].find((button) => button.textContent === 'Check readiness')?.click()",
   );
@@ -482,6 +502,7 @@ async function measureSample(client, index) {
       )`,
     predicate: `document.querySelector('.selected-run-progress')?.textContent.includes(${JSON.stringify(streamLabel)})`,
   }));
+  progress(`sample ${index + 1}: live update measured`);
   const retainedRows = await client.evaluate("document.querySelectorAll('.message-row').length");
 
   await client.evaluate("document.getElementById('conversation-tab-conv_perf_b').click()");
@@ -498,6 +519,7 @@ async function measureSample(client, index) {
     action: "document.getElementById('conversation-tab-conv_perf_b').click()",
     predicate: "document.querySelector('.conversation-transcript')?.textContent.includes('Cached second transcript')",
   }));
+  progress(`sample ${index + 1}: complete`);
 
   return {
     accepted,
@@ -534,6 +556,7 @@ async function main() {
       const response = await fetch(baseUrl);
       return response.ok;
     }, "standalone production server", 30_000);
+    progress("production server ready");
 
     chrome = spawn(chromePath, [
       "--headless=new",
@@ -552,6 +575,7 @@ async function main() {
       const pages = await response.json();
       return pages.find((item) => item.type === "page" && item.webSocketDebuggerUrl);
     }, "Chrome debug page", 30_000);
+    progress("Chrome ready");
     const webSocket = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((resolveOpen, rejectOpen) => {
       webSocket.onopen = resolveOpen;

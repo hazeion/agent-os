@@ -1034,6 +1034,7 @@ class LocalBridgeTests(unittest.TestCase):
                 "summary": "Runtime accepted dispatch",
                 "message": None,
                 "metrics": {"total_tokens": 12},
+                "presentation": None,
             }, {
                 "id": trusted_vercel_message_event_id("run_current"),
                 "run_id": "run_current",
@@ -1043,6 +1044,7 @@ class LocalBridgeTests(unittest.TestCase):
                 "summary": "Vercel AI Gateway returned a response",
                 "message": "A bounded result from Vercel.",
                 "metrics": {},
+                "presentation": None,
             }],
         }
         with patch.object(server, "mentat_run_events_payload", return_value=canonical):
@@ -1052,6 +1054,57 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertEqual(payload["events"][1]["message"], "A bounded result from Vercel.")
         for private_name in ("content", "runtime_run_ref", "payload", "data"):
             self.assertNotIn(private_name, json.dumps(payload))
+
+        safe_tool = {
+            **canonical["events"][0],
+            "type": "tool.requested",
+            "summary": "Tool activity started",
+            "metrics": {},
+            "presentation": {
+                "kind": "tool",
+                "phase": "started",
+                "label": "Tool activity started",
+            },
+        }
+        safe_reasoning = {
+            **canonical["events"][0],
+            "type": "message",
+            "summary": "Reasoning summary available",
+            "metrics": {},
+            "presentation": {
+                "kind": "reasoning",
+                "phase": "available",
+                "label": "Reasoning summary available",
+            },
+        }
+        self.assertEqual(
+            local_bridge._public_run_event_record(
+                safe_tool,
+                expected_run_id="run_current",
+            )["presentation"]["phase"],
+            "started",
+        )
+        self.assertEqual(
+            local_bridge._public_run_event_record(
+                safe_reasoning,
+                expected_run_id="run_current",
+            )["presentation"]["kind"],
+            "reasoning",
+        )
+        for hostile in (
+            {**safe_tool, "presentation": None},
+            {**safe_tool, "presentation": {**safe_tool["presentation"], "arguments": "private"}},
+            {**safe_tool, "presentation": {**safe_tool["presentation"], "label": "shell /private/result"}},
+            {**safe_reasoning, "summary": "Raw hidden reasoning"},
+            {**safe_reasoning, "type": "tool.requested"},
+        ):
+            with self.assertRaises(
+                local_bridge.BridgeRunEventProjectionError
+            ):
+                local_bridge._public_run_event_record(
+                    hostile,
+                    expected_run_id="run_current",
+                )
 
     def test_run_events_reject_invalid_data_and_map_fixed_failures(self):
         malformed = {
@@ -1064,6 +1117,7 @@ class LocalBridgeTests(unittest.TestCase):
                 "id": "event_current", "run_id": "run_current", "sequence": 1,
                 "type": "run.started", "occurred_at": "2026-08-22T00:01:00Z",
                 "summary": "Event", "message": "not allowed", "metrics": {},
+                "presentation": None,
             }],
         }
         with patch.object(server, "mentat_run_events_payload", return_value=malformed):

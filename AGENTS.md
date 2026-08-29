@@ -211,6 +211,14 @@ not working or waiting.
 Closing a tab is presentation-only, and reversible Conversation archive never
 stops work or deletes evidence. Completion while archived commits normally but
 must not start hidden queued work.
+Console transcript Markdown is a small React-text-only presentation subset;
+raw HTML, links, provider reasoning, tool payloads, and executable code remain
+inert or omitted. Thinking and Activity may appear only from fixed safe event
+presentations derived from validated server-side provenance. Keep transcript
+pages bounded to 100 Messages and the retained browser DOM bounded to 200 rows,
+512 formatting units per Message, and 8,000 formatting units per transcript.
+Reconnect snapshots merge unless their exact reset flag requires replacement;
+retain null-presentation sequence markers only for disclosure ordering.
 
 Hermes mutations are allowed only when an approved adapter operation uses a
 fixed Hermes CLI/API call with validation, capability checks, confirmation,
