@@ -109,6 +109,34 @@ export async function readExpectedRevisionBody(
     : null;
 }
 
+export async function readAgentConfigurationBody(
+  request: Request,
+  preview: boolean,
+): Promise<{ confirmationId: string | null; provider: string; model: string } | null> {
+  const body = await readBoundedJson(request, 768);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const expected = preview ? "model,provider" : "confirmation_id,model,provider";
+  if (Object.keys(body).sort().join(",") !== expected) return null;
+  const value = body as Record<string, unknown>;
+  if (
+    typeof value.provider !== "string" || !value.provider
+    || value.provider.trim() !== value.provider || value.provider.length > 120
+    || value.provider.includes("\0")
+    || typeof value.model !== "string" || !value.model
+    || value.model.trim() !== value.model || value.model.length > 160
+    || value.model.includes("\0")
+    || !preview && (
+      typeof value.confirmation_id !== "string"
+      || !/^provider_switch_[0-9a-f]{24}$/u.test(value.confirmation_id)
+    )
+  ) return null;
+  return {
+    confirmationId: preview ? null : value.confirmation_id as string,
+    provider: value.provider,
+    model: value.model,
+  };
+}
+
 export async function readConversationTurnBody(
   request: Request,
   timeoutMilliseconds = BODY_READ_TIMEOUT_MILLISECONDS,

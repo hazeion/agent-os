@@ -1506,6 +1506,240 @@ test("Home Console keeps a duplicate Retry replay reconciling until exact readba
   assert.equal(MockEventSource.instances.length, 1);
 });
 
+test("Home Console previews and confirms one exact Hermes next-Run configuration", async () => {
+  const hermesAgent = { ...agent, id: "agent_hermes_config", name: "Hermes Builder", runtime_type: "hermes" };
+  const hermesConversation = { ...conversation, agent_id: hermesAgent.id };
+  let configured = false;
+  const calls: Array<{ body: string; path: string }> = [];
+  const configuration = () => ({
+    active_run: false,
+    agent_id: hermesAgent.id,
+    current: { effort: "runtime_default", model: configured ? "claude-next" : "gpt-current", provider: configured ? "anthropic" : "openai" },
+    efforts: [{ id: "runtime_default", name: "Runtime default" }],
+    explanation: "",
+    mutable: true,
+    providers: [{ current: !configured, id: "openai", models: ["gpt-current"], name: "OpenAI" }, { current: configured, id: "anthropic", models: ["claude-next"], name: "Anthropic" }],
+    runtime_type: "hermes",
+    schema_version: 1,
+    state: "ready",
+  });
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [hermesAgent], conversations: [hermesConversation], direct_agent_id: null });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json({ ...activity, activity: [], direct_agent_id: null });
+    if (path === `/api/conversations/${hermesConversation.id}` && method === "GET") return Response.json(detail(null, hermesConversation, [], [], hermesAgent));
+    if (path === `/api/agents/${hermesAgent.id}/configuration` && method === "GET") return Response.json({ configuration: configuration(), runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    if (path.endsWith("/configuration/preview") && method === "POST") {
+      calls.push({ body: String(init?.body), path });
+      return Response.json({ action: "configure", agent_id: hermesAgent.id, confirmation_id: "provider_switch_" + "a".repeat(24), current: { model: "gpt-current", provider: "openai" }, message: "Next Run", requires_confirmation: true, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready", target: { effort: "runtime_default", model: "claude-next", provider: "anthropic", provider_name: "Anthropic" } });
+    }
+    if (path.endsWith("/configuration") && method === "POST") {
+      calls.push({ body: String(init?.body), path });
+      configured = true;
+      return Response.json({ action: "configure", agent_id: hermesAgent.id, configuration: configuration(), message: "Verified", runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const provider = await screen.findByLabelText("Provider for next Run") as HTMLSelectElement;
+  await waitFor(() => assert.equal(provider.disabled, false));
+  await user.selectOptions(provider, "anthropic");
+  assert.equal((screen.getByLabelText("Model for next Run") as HTMLSelectElement).value, "claude-next");
+  await user.click(screen.getByRole("button", { name: "Review" }));
+  assert.match((await screen.findByText(/Anthropic · claude-next · next Run/u)).textContent ?? "", /next Run/u);
+  const confirm = screen.getByRole("button", { name: "Confirm" });
+  await waitFor(() => assert.equal(document.activeElement, confirm));
+  await user.click(confirm);
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /next Run will use it/u));
+  await waitFor(() => assert.equal(document.activeElement, provider));
+  assert.equal(provider.value, "anthropic");
+  assert.deepEqual(calls, [
+    { body: '{"provider":"anthropic","model":"claude-next"}', path: `/api/agents/${hermesAgent.id}/configuration/preview` },
+    { body: `{"confirmation_id":"provider_switch_${"a".repeat(24)}","provider":"anthropic","model":"claude-next"}`, path: `/api/agents/${hermesAgent.id}/configuration` },
+  ]);
+});
+
+test("Home Console keeps active Run configuration visible and selectors read-only", async () => {
+  const activeRun = { configuration: { effort: "high", model: "gpt-active", provider: "openai" }, id: "run_config_snapshot", partial: false, status: "running", updated_at: timestamp };
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(activeRun));
+    if (path === `/api/agents/${agent.id}/configuration` && method === "GET") return Response.json({ configuration: { active_run: true, agent_id: agent.id, current: { effort: "runtime_default", model: "Codex default", provider: "OpenAI" }, efforts: [{ id: "runtime_default", name: "Runtime default" }], explanation: "Codex is read-only.", mutable: false, providers: [], runtime_type: "codex", schema_version: 1, state: "read_only" }, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  render(<HomeConsole />);
+  assert.match((await screen.findByText(/Active snapshot:/u)).textContent ?? "", /Openai · gpt-active · High/iu);
+  assert.equal((screen.getByLabelText("Provider for next Run") as HTMLSelectElement).disabled, true);
+  assert.match(document.querySelector(".configuration-explanation")?.textContent ?? "", /Active Run snapshot is unchanged/u);
+});
+
+test("Home Console invalidates a pending configuration preview when a Run starts", async () => {
+  const hermesAgent = { ...agent, id: "agent_preview_active", name: "Hermes Active", runtime_type: "hermes" };
+  const hermesConversation = { ...conversation, agent_id: hermesAgent.id };
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [hermesAgent], conversations: [hermesConversation], direct_agent_id: null });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json({ ...activity, activity: [], direct_agent_id: null });
+    if (path === `/api/conversations/${hermesConversation.id}` && method === "GET") return Response.json(detail(null, hermesConversation, [], [], hermesAgent));
+    if (path === `/api/agents/${hermesAgent.id}/configuration` && method === "GET") return Response.json({ configuration: { active_run: false, agent_id: hermesAgent.id, current: { effort: "runtime_default", model: "gpt", provider: "openai" }, efforts: [{ id: "runtime_default", name: "Runtime default" }], explanation: "", mutable: true, providers: [{ current: true, id: "openai", models: ["gpt"], name: "OpenAI" }, { current: false, id: "anthropic", models: ["claude"], name: "Anthropic" }], runtime_type: "hermes", schema_version: 1, state: "ready" }, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    if (path.endsWith("/configuration/preview") && method === "POST") return Response.json({ action: "configure", agent_id: hermesAgent.id, confirmation_id: "provider_switch_" + "c".repeat(24), current: { model: "gpt", provider: "openai" }, message: "Next Run", requires_confirmation: true, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready", target: { effort: "runtime_default", model: "claude", provider: "anthropic", provider_name: "Anthropic" } });
+    if (path === `/api/conversations/${hermesConversation.id}/turns` && method === "POST") return Response.json(acceptedSubmission("Start with the old snapshot", hermesConversation), { status: 202 });
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const provider = await screen.findByLabelText("Provider for next Run") as HTMLSelectElement;
+  await waitFor(() => assert.equal(provider.disabled, false));
+  await user.selectOptions(provider, "anthropic");
+  await user.click(screen.getByRole("button", { name: "Review" }));
+  await screen.findByRole("button", { name: "Confirm" });
+  const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+  await user.type(prompt, "Start with the old snapshot");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Confirm" }), null));
+  assert.match(document.querySelector(".configuration-explanation")?.textContent ?? "", /Active Run snapshot is unchanged/u);
+});
+
+test("Home Console rejects a delayed Agent configuration read after tab handoff", async () => {
+  const firstAgent = { ...agent, id: "agent_config_first", name: "First Agent", runtime_type: "hermes" };
+  const secondAgent = { ...agent, id: "agent_config_second", name: "Second Agent", runtime_type: "hermes" };
+  const firstConversation = { ...conversation, agent_id: firstAgent.id };
+  const secondConversation = { ...conversation, agent_id: secondAgent.id, id: "conv_config_second", title: "Second configuration", title_source: "first_prompt" as const };
+  let resolveFirst: ((response: Response) => void) | null = null;
+  const firstConfiguration = new Promise<Response>((resolve) => { resolveFirst = resolve; });
+  const configuration = (targetAgent: typeof firstAgent, provider: string) => ({ configuration: { active_run: false, agent_id: targetAgent.id, current: { effort: "runtime_default", model: `${provider}-model`, provider }, efforts: [{ id: "runtime_default", name: "Runtime default" }], explanation: "", mutable: true, providers: [{ current: true, id: provider, models: [`${provider}-model`], name: provider }], runtime_type: "hermes", schema_version: 1, state: "ready" }, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [firstAgent, secondAgent], conversations: [firstConversation, secondConversation], count: 2, direct_agent_id: null });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json({ ...activity, activity: [], direct_agent_id: null });
+    if (path === `/api/conversations/${firstConversation.id}` && method === "GET") return Response.json(detail(null, firstConversation, [], [], firstAgent));
+    if (path === `/api/conversations/${secondConversation.id}` && method === "GET") return Response.json(detail(null, secondConversation, [], [], secondAgent));
+    if (path === `/api/agents/${firstAgent.id}/configuration` && method === "GET") return await firstConfiguration;
+    if (path === `/api/agents/${secondAgent.id}/configuration` && method === "GET") return Response.json(configuration(secondAgent, "second-provider"));
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  render(<HomeConsole />);
+  await screen.findByLabelText("Prompt");
+  fireEvent.click(document.getElementById(`conversation-tab-${secondConversation.id}`)!);
+  const provider = screen.getByLabelText("Provider for next Run") as HTMLSelectElement;
+  await waitFor(() => assert.equal(provider.value, "second-provider"));
+  await act(async () => { resolveFirst?.(Response.json(configuration(firstAgent, "first-provider"))); await firstConfiguration; });
+  await waitFor(() => assert.equal(provider.value, "second-provider"));
+  assert.equal((screen.getByLabelText("Conversation Agent") as HTMLSelectElement).value, secondAgent.id);
+});
+
+test("Home Console never configures the picker Agent while Conversation detail is unresolved", async () => {
+  const pickerAgent = { ...agent, id: "agent_picker_only", name: "Picker Agent", runtime_type: "hermes" };
+  const boundAgent = { ...agent, id: "agent_bound_detail", name: "Bound Agent", runtime_type: "hermes" };
+  const boundConversation = { ...conversation, agent_id: boundAgent.id };
+  let resolveDetail: ((response: Response) => void) | null = null;
+  const delayedDetail = new Promise<Response>((resolve) => { resolveDetail = resolve; });
+  const configurationCalls: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [pickerAgent, boundAgent], conversations: [boundConversation], direct_agent_id: pickerAgent.id });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json({ ...activity, activity: [], direct_agent_id: pickerAgent.id });
+    if (path === `/api/conversations/${boundConversation.id}` && method === "GET") return await delayedDetail;
+    if (path.startsWith("/api/agents/") && path.endsWith("/configuration")) {
+      configurationCalls.push(path);
+      return Response.json({ configuration: { active_run: false, agent_id: boundAgent.id, current: { effort: "runtime_default", model: "bound-model", provider: "bound-provider" }, efforts: [{ id: "runtime_default", name: "Runtime default" }], explanation: "", mutable: true, providers: [{ current: true, id: "bound-provider", models: ["bound-model"], name: "Bound" }], runtime_type: "hermes", schema_version: 1, state: "ready" }, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  render(<HomeConsole />);
+  const composerAgent = await screen.findByLabelText("Conversation Agent") as HTMLSelectElement;
+  assert.equal(composerAgent.disabled, true);
+  assert.equal(composerAgent.value, "");
+  assert.deepEqual(configurationCalls, []);
+  assert.equal(screen.queryByRole("button", { name: "Review" }), null);
+  await act(async () => { resolveDetail?.(Response.json(detail(null, boundConversation, [], [], boundAgent))); await delayedDetail; });
+  await waitFor(() => assert.deepEqual(configurationCalls, [`/api/agents/${boundAgent.id}/configuration`]));
+  assert.equal(composerAgent.value, boundAgent.id);
+});
+
+test("Home Console distinguishes unavailable, unsupported, and unsafe configuration reads", async () => {
+  for (const [status, code, copy] of [
+    ["unavailable", 503, /temporarily unavailable/u],
+    ["unsupported", 501, /does not support Agent configuration/u],
+    ["error", 502, /could not be read safely/u],
+  ] as const) {
+    globalThis.fetch = async (input, init) => {
+      const path = pathOf(input);
+      const method = init?.method ?? "GET";
+      if (path === "/api/conversations" && method === "GET") return Response.json(list);
+      if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+      if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null));
+      if (path === `/api/agents/${agent.id}/configuration` && method === "GET") return Response.json({ schema_version: 1, status }, { status: code });
+      throw new Error(`Unexpected fetch: ${method} ${path}`);
+    };
+    const rendered = render(<HomeConsole />);
+    await waitFor(() => assert.match(document.querySelector(".configuration-explanation")?.textContent ?? "", copy));
+    assert.equal(screen.queryByRole("button", { name: "Review" }), null);
+    rendered.unmount();
+  }
+});
+
+test("Home Console scopes same-Agent preview and confirmed refresh to the selected tab", async () => {
+  const secondConversation = { ...conversation, id: "conv_same_agent_second", title: "Same Agent second", title_source: "first_prompt" as const };
+  let configured = false;
+  let delayPreview = true;
+  let resolvePreview: ((response: Response) => void) | null = null;
+  let resolveConfirm: ((response: Response) => void) | null = null;
+  let configurationReads = 0;
+  const delayedPreview = new Promise<Response>((resolve) => { resolvePreview = resolve; });
+  const delayedConfirm = new Promise<Response>((resolve) => { resolveConfirm = resolve; });
+  const config = () => ({ configuration: { active_run: false, agent_id: agent.id, current: { effort: "runtime_default", model: configured ? "claude" : "gpt", provider: configured ? "anthropic" : "openai" }, efforts: [{ id: "runtime_default", name: "Runtime default" }], explanation: "", mutable: true, providers: [{ current: !configured, id: "openai", models: ["gpt"], name: "OpenAI" }, { current: configured, id: "anthropic", models: ["claude"], name: "Anthropic" }], runtime_type: "hermes", schema_version: 1, state: "ready" }, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+  const previewResponse = () => Response.json({ action: "configure", agent_id: agent.id, confirmation_id: "provider_switch_" + "b".repeat(24), current: { model: "gpt", provider: "openai" }, message: "Next Run", requires_confirmation: true, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready", target: { effort: "runtime_default", model: "claude", provider: "anthropic", provider_name: "Anthropic" } });
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [conversation, secondConversation], count: 2 });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null));
+    if (path === `/api/conversations/${secondConversation.id}` && method === "GET") return Response.json(detail(null, secondConversation));
+    if (path === `/api/agents/${agent.id}/configuration` && method === "GET") { configurationReads += 1; return Response.json(config()); }
+    if (path.endsWith("/configuration/preview") && method === "POST") {
+      if (delayPreview) return await delayedPreview;
+      return previewResponse();
+    }
+    if (path.endsWith("/configuration") && method === "POST") return await delayedConfirm;
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const provider = await screen.findByLabelText("Provider for next Run") as HTMLSelectElement;
+  await waitFor(() => assert.equal(provider.disabled, false));
+  await user.selectOptions(provider, "anthropic");
+  await user.click(screen.getByRole("button", { name: "Review" }));
+  fireEvent.click(document.getElementById(`conversation-tab-${secondConversation.id}`)!);
+  await act(async () => { resolvePreview?.(previewResponse()); await delayedPreview; });
+  await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Confirm" }), null));
+
+  fireEvent.click(document.getElementById(`conversation-tab-${conversation.id}`)!);
+  await waitFor(() => assert.equal(provider.value, "openai"));
+  await user.selectOptions(provider, "anthropic");
+  delayPreview = false;
+  await user.click(screen.getByRole("button", { name: "Review" }));
+  await user.click(await screen.findByRole("button", { name: "Confirm" }));
+  fireEvent.click(document.getElementById(`conversation-tab-${secondConversation.id}`)!);
+  configured = true;
+  await act(async () => {
+    resolveConfirm?.(Response.json({ action: "configure", agent_id: agent.id, configuration: config().configuration, message: "Verified", runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" }));
+    await delayedConfirm;
+  });
+  await waitFor(() => assert.equal(provider.value, "anthropic"));
+  assert.ok(configurationReads >= 5);
+  assert.equal(screen.queryByRole("button", { name: "Confirm" }), null);
+});
+
 test("Home Console hides Resume when only the Agent declaration advertises it", async () => {
   const resumableAgent = { ...agent, capabilities: [...agent.capabilities, "run.resume"].sort() };
   const stoppedRun = { id: "run_stopped_home", partial: false, status: "stopped", updated_at: timestamp };

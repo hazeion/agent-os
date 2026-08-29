@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import base64
 from pathlib import Path
@@ -888,6 +889,36 @@ def _run_public(row: Mapping[str, object]) -> dict[str, Any]:
         and status not in _TERMINAL_RUN_STATUSES
     ):
         raise ConversationRepositoryValidationError("conversation.run_invalid")
+    configuration = None
+    keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+    execution_json = row["runtime_execution_json"] if "runtime_execution_json" in keys else None
+    execution_digest = row["runtime_execution_digest"] if "runtime_execution_digest" in keys else None
+    if execution_json is not None or execution_digest is not None:
+        if not isinstance(execution_json, str) or not isinstance(execution_digest, str):
+            raise ConversationRepositoryValidationError("conversation.run_invalid")
+        try:
+            execution = json.loads(execution_json)
+        except (json.JSONDecodeError, TypeError):
+            raise ConversationRepositoryValidationError("conversation.run_invalid")
+        if (
+            not isinstance(execution, dict)
+            or set(execution) != {
+                "contract", "model", "provider", "reasoning_effort", "verification"
+            }
+            or execution.get("contract") != "mentat-runtime-execution-identity-v1"
+            or hashlib.sha256(execution_json.encode("ascii")).hexdigest()
+            != execution_digest
+            or not isinstance(execution.get("provider"), str)
+            or not isinstance(execution.get("model"), str)
+            or execution.get("reasoning_effort") is not None
+            and not isinstance(execution.get("reasoning_effort"), str)
+        ):
+            raise ConversationRepositoryValidationError("conversation.run_invalid")
+        configuration = {
+            "provider": execution["provider"],
+            "model": execution["model"],
+            "effort": execution.get("reasoning_effort") or "runtime_default",
+        }
     return {
         "id": run_id,
         "status": (
@@ -897,6 +928,7 @@ def _run_public(row: Mapping[str, object]) -> dict[str, Any]:
         ),
         "partial": bool(row["partial"]),
         "updated_at": updated_at,
+        "configuration": configuration,
     }
 
 
@@ -1618,7 +1650,9 @@ class ConversationRepository:
             )
             current = connection.execute(
                 """
-                SELECT r.id, r.status, r.partial, r.terminal_finalized, r.updated_at
+                SELECT r.id, r.status, r.partial, r.terminal_finalized,
+                       r.updated_at, r.runtime_execution_json,
+                       r.runtime_execution_digest
                 FROM mentat_runs AS r
                 LEFT JOIN mentat_conversation_turns AS t ON t.id = r.turn_id
                 WHERE r.conversation_id = ? AND r.agent_id = ?

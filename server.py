@@ -2156,6 +2156,260 @@ def mentat_agent_activity_payload() -> dict:
     return payload
 
 
+def _canonical_agent_configuration_target(agent_id: str):
+    """Resolve one public Agent ID to its private immutable runtime binding."""
+
+    if not isinstance(agent_id, str) or re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", agent_id
+    ) is None:
+        raise AgentRegistryValidationError("agent.invalid")
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise AgentRegistryError("agent_registry.restore_in_progress")
+        registry = _mentat_agent_registry()
+        agents = registry.list_agents()
+        agent = next((item for item in agents if item.id == agent_id), None)
+        if agent is None:
+            raise AgentRegistryError("agent.not_found")
+        binding = registry.get_runtime_binding(agent_id)
+    # The canonical schema has a UNIQUE(runtime_type, runtime_agent_ref)
+    # constraint, so one private runtime identity cannot cross-bind Agents.
+    return agent, binding, False
+
+
+def _safe_agent_configuration_projection(
+    agent,
+    binding,
+    *,
+    inventory: dict | None = None,
+    shared: bool = False,
+    active: bool = False,
+    unavailable: str = "",
+    read_only_reason: str = "",
+    display_provider: str = "",
+    display_model: str = "",
+) -> dict:
+    providers = []
+    current_provider = compact_text(display_provider, max_length=120)
+    current_model = compact_text(display_model, max_length=160)
+    mutable = False
+    if binding.runtime_type == "hermes" and isinstance(inventory, dict):
+        current_provider = compact_text(
+            inventory.get("current_provider"), max_length=120
+        )
+        current_model = compact_text(inventory.get("current_model"), max_length=160)
+        for row in inventory.get("providers") or []:
+            if not isinstance(row, dict) or row.get("authenticated") is not True:
+                continue
+            provider_id = compact_text(row.get("id"), max_length=120)
+            if not provider_id:
+                continue
+            models = []
+            for value in row.get("models") or []:
+                model = compact_text(value, max_length=160)
+                if model and model not in models:
+                    models.append(model)
+            providers.append({
+                "id": provider_id,
+                "name": compact_text(row.get("name"), max_length=160)
+                or provider_id,
+                "current": provider_id == current_provider,
+                "models": models,
+            })
+        mutable = (
+            inventory.get("capabilities", {}).get("providers.switch") is True
+            and bool(providers)
+            and not shared
+            and not active
+            and not unavailable
+            and not read_only_reason
+        )
+        if read_only_reason:
+            # Remote Hermes may expose only its current safe identity here;
+            # alternate inventory remains private until mutation is approved.
+            providers = []
+    if binding.runtime_type == "codex":
+        current_provider = "OpenAI"
+        current_model = "Codex default"
+    explanation = unavailable
+    if not explanation and active:
+        explanation = "Stop the active Run before changing this Agent configuration."
+    elif not explanation and shared:
+        explanation = "This Hermes binding is shared and cannot be changed from the browser."
+    elif not explanation and read_only_reason:
+        explanation = read_only_reason
+    elif not explanation and binding.runtime_type == "codex":
+        explanation = "Codex model and effort stay with the fixed private runtime configuration."
+    elif not explanation and binding.runtime_type != "hermes":
+        explanation = "This runtime does not expose browser configuration controls."
+    elif not explanation and not mutable:
+        explanation = "Hermes did not advertise a supported provider change capability."
+    return {
+        "schema_version": 1,
+        "agent_id": agent.id,
+        "runtime_type": binding.runtime_type,
+        "state": "unavailable" if unavailable else "ready" if mutable else "read_only",
+        "mutable": mutable,
+        "active_run": active,
+        "current": {
+            "provider": current_provider or None,
+            "model": current_model or None,
+            "effort": "runtime_default",
+        },
+        "providers": providers,
+        "efforts": [{"id": "runtime_default", "name": "Runtime default"}],
+        "explanation": explanation,
+    }
+
+
+def _agent_configuration_inventory_locked(binding) -> tuple[dict | None, str, str]:
+    transport, transport_error, _status = _provider_mutation_transport_locked()
+    if transport_error:
+        return None, compact_text(transport_error.get("error"), max_length=300), ""
+    profile_id = binding.runtime_agent_ref
+    if transport.mode == "remote":
+        try:
+            transport.revalidate(DATA_DIR)
+            if not _remote_profile_available(transport, profile_id):
+                return None, "The bound remote Hermes profile is unavailable.", ""
+            return (
+                transport.read_profile_runtime(profile_id),
+                "",
+                "Remote Hermes configuration is visible but read-only in the Home composer.",
+            )
+        except HermesTransportError as exc:
+            return None, compact_text(exc.public_message, max_length=300), ""
+    if agent_console_profile(profile_id) is None:
+        return None, "The bound local Hermes profile is unavailable.", ""
+    inventory = agent_console_provider_inventory(profile_id)
+    error = compact_text(inventory.get("error"), max_length=300)
+    return inventory, error if error and not inventory.get("providers") else "", ""
+
+
+def mentat_agent_configuration_payload(agent_id: str) -> dict:
+    agent, binding, shared = _canonical_agent_configuration_target(agent_id)
+    if binding.runtime_type == "vercel":
+        try:
+            safe = public_vercel_connections(DATA_DIR)
+            connection = (safe.get("connections") or [{}])[0]
+            return _safe_agent_configuration_projection(
+                agent,
+                binding,
+                display_provider=compact_text(
+                    connection.get("provider"), max_length=120
+                ) or "Vercel AI Gateway",
+                display_model=compact_text(connection.get("model"), max_length=160)
+                or "Configured model",
+            )
+        except (VercelConnectionError, OSError, sqlite3.Error):
+            return _safe_agent_configuration_projection(
+                agent,
+                binding,
+                unavailable="Vercel configuration is unavailable.",
+            )
+    if binding.runtime_type != "hermes":
+        return _safe_agent_configuration_projection(agent, binding)
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        inventory, unavailable, read_only_reason = _agent_configuration_inventory_locked(binding)
+        active, active_error = _provider_mutation_active_run(
+            binding.runtime_agent_ref,
+            target_only=False,
+        )
+    if active_error is not None:
+        unavailable = compact_text(
+            active_error[0].get("error"), max_length=300
+        ) or "Mentat could not verify active Run state."
+    return _safe_agent_configuration_projection(
+        agent,
+        binding,
+        inventory=inventory,
+        shared=shared,
+        active=active is not None,
+        unavailable=unavailable,
+        read_only_reason=read_only_reason,
+    )
+
+
+def preview_mentat_agent_configuration(
+    agent_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    if not isinstance(payload, dict) or set(payload) != {"provider", "model"}:
+        return {"error_code": "agent_configuration.request_invalid"}, 400
+    agent, binding, shared = _canonical_agent_configuration_target(agent_id)
+    if binding.runtime_type != "hermes" or shared:
+        return {"error_code": "agent_configuration.read_only"}, 409
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        transport, transport_error, _transport_status = _provider_mutation_transport_locked()
+        if transport_error or transport.mode != "local":
+            return {"error_code": "agent_configuration.read_only"}, 409
+        preview, status = _preview_agent_console_provider_switch_locked({
+            "agent_id": binding.runtime_agent_ref,
+            "provider": payload.get("provider"),
+            "model": payload.get("model"),
+        })
+    if status != 200:
+        return preview, status
+    return {
+        "schema_version": 1,
+        "action": "configure",
+        "agent_id": agent.id,
+        "requires_confirmation": True,
+        "confirmation_id": preview["confirmation_id"],
+        "current": dict(preview["current"]),
+        "target": {
+            "provider": preview["target"]["provider"],
+            "provider_name": preview["target"]["provider_name"],
+            "model": preview["target"]["model"],
+            "effort": "runtime_default",
+        },
+        "message": "This verified change applies to the next Run.",
+    }, 200
+
+
+def confirm_mentat_agent_configuration(
+    agent_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    if not isinstance(payload, dict) or set(payload) != {
+        "confirmation_id", "provider", "model"
+    }:
+        return {"error_code": "agent_configuration.request_invalid"}, 400
+    agent, binding, shared = _canonical_agent_configuration_target(agent_id)
+    if binding.runtime_type != "hermes" or shared:
+        return {"error_code": "agent_configuration.read_only"}, 409
+    with HERMES_CONNECTION_OPERATION_LOCK:
+        transport, transport_error, _transport_status = _provider_mutation_transport_locked()
+        if transport_error or transport.mode != "local":
+            return {"error_code": "agent_configuration.read_only"}, 409
+        result, status = _switch_agent_console_provider_locked({
+            "agent_id": binding.runtime_agent_ref,
+            "provider": payload.get("provider"),
+            "model": payload.get("model"),
+            "confirmation_id": payload.get("confirmation_id"),
+            "confirmed": True,
+        })
+    if status != 200:
+        return result, status
+    configuration = mentat_agent_configuration_payload(agent.id)
+    if configuration["current"] != {
+        "provider": result["provider"],
+        "model": result["model"],
+        "effort": "runtime_default",
+    }:
+        return {
+            "error": "The Agent configuration changed after verification.",
+            "error_code": "agent_configuration.verification_changed",
+        }, 409
+    return {
+        "schema_version": 1,
+        "action": "configure",
+        "agent_id": agent.id,
+        "configuration": configuration,
+        "message": "Agent configuration verified for the next Run.",
+    }, 200
+
+
 def mentat_provider_connections_payload():
     """Return only the safe provider status projection used by the Node BFF."""
 

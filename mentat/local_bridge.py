@@ -27,6 +27,7 @@ from conversation_repository import (
     ConversationRepositoryConflict,
     ConversationRepositoryError,
 )
+from agent_registry import AgentRegistryError, AgentRegistryValidationError
 from orchestration_service import OrchestrationServiceError
 from .version import DISPLAY_VERSION
 
@@ -76,6 +77,10 @@ class BridgeConfigurationError(ValueError):
 
 class BridgeAgentProjectionError(ValueError):
     """Raised when canonical Agent data cannot cross this fixed capability."""
+
+
+class BridgeAgentConfigurationProjectionError(ValueError):
+    """Raised when Agent configuration cannot cross the private bridge."""
 
 
 class BridgeProviderConnectionProjectionError(ValueError):
@@ -339,6 +344,204 @@ def bridge_agents_payload() -> tuple[dict[str, object], int]:
     }, code
 
 
+def _configuration_text(value: object, maximum: int) -> bool:
+    return (
+        isinstance(value, str)
+        and value.strip() == value
+        and bool(value)
+        and len(value) <= maximum
+        and "\x00" not in value
+    )
+
+
+def _public_agent_configuration(value: object) -> dict[str, object]:
+    required = {
+        "schema_version", "agent_id", "runtime_type", "state", "mutable",
+        "active_run", "current", "providers", "efforts", "explanation",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeAgentConfigurationProjectionError("configuration_invalid")
+    current = value.get("current")
+    providers = value.get("providers")
+    efforts = value.get("efforts")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(value.get("agent_id"), str)
+        or not _OPAQUE_ID.fullmatch(value["agent_id"])
+        or not isinstance(value.get("runtime_type"), str)
+        or not _RUNTIME_TYPE.fullmatch(value["runtime_type"])
+        or value.get("state") not in {"ready", "read_only", "unavailable"}
+        or not isinstance(value.get("mutable"), bool)
+        or not isinstance(value.get("active_run"), bool)
+        or value.get("mutable") is not (value.get("state") == "ready")
+        or not isinstance(current, dict)
+        or set(current) != {"provider", "model", "effort"}
+        or current.get("provider") is not None
+        and not _configuration_text(current.get("provider"), 120)
+        or current.get("model") is not None
+        and not _configuration_text(current.get("model"), 160)
+        or current.get("effort") != "runtime_default"
+        or not isinstance(providers, list)
+        or len(providers) > 32
+        or not isinstance(efforts, list)
+        or efforts != [{"id": "runtime_default", "name": "Runtime default"}]
+        or not isinstance(value.get("explanation"), str)
+        or len(value["explanation"]) > 300
+        or "\x00" in value["explanation"]
+    ):
+        raise BridgeAgentConfigurationProjectionError("configuration_invalid")
+    public_providers = []
+    for provider in providers:
+        if not isinstance(provider, dict) or set(provider) != {
+            "id", "name", "current", "models"
+        }:
+            raise BridgeAgentConfigurationProjectionError("configuration_invalid")
+        models = provider.get("models")
+        if (
+            not _configuration_text(provider.get("id"), 120)
+            or not _configuration_text(provider.get("name"), 160)
+            or not isinstance(provider.get("current"), bool)
+            or not isinstance(models, list)
+            or len(models) > 256
+            or any(not _configuration_text(model, 160) for model in models)
+            or models != list(dict.fromkeys(models))
+        ):
+            raise BridgeAgentConfigurationProjectionError("configuration_invalid")
+        public_providers.append(dict(provider))
+    if len({row["id"] for row in public_providers}) != len(public_providers):
+        raise BridgeAgentConfigurationProjectionError("configuration_invalid")
+    return {
+        **{key: value[key] for key in required - {"providers", "current", "efforts"}},
+        "current": dict(current),
+        "providers": public_providers,
+        "efforts": [dict(efforts[0])],
+    }
+
+
+def bridge_agent_configuration_payload(agent_id: str) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_agent_configuration_payload
+
+        configuration = _public_agent_configuration(
+            mentat_agent_configuration_payload(agent_id)
+        )
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "configuration": configuration,
+        }, 200
+    except AgentRegistryValidationError:
+        return _conversation_failure("invalid")
+    except AgentRegistryError as exc:
+        return _conversation_failure(
+            "not_found" if exc.code == "agent.not_found" else "unavailable"
+        )
+    except (BridgeAgentConfigurationProjectionError, OSError, ValueError):
+        return _conversation_failure("error")
+
+
+def _public_configuration_preview(value: object, agent_id: str) -> dict[str, object]:
+    required = {
+        "schema_version", "action", "agent_id", "requires_confirmation",
+        "confirmation_id", "current", "target", "message",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeAgentConfigurationProjectionError("configuration_invalid")
+    current = value.get("current")
+    target = value.get("target")
+    if (
+        value.get("schema_version") != 1
+        or value.get("action") != "configure"
+        or value.get("agent_id") != agent_id
+        or value.get("requires_confirmation") is not True
+        or not _configuration_text(value.get("confirmation_id"), 80)
+        or not isinstance(current, dict)
+        or set(current) != {"provider", "model"}
+        or not isinstance(target, dict)
+        or set(target) != {"provider", "provider_name", "model", "effort"}
+        or target.get("effort") != "runtime_default"
+        or any(
+            not _configuration_text(item, limit)
+            for item, limit in (
+                (target.get("provider"), 120),
+                (target.get("provider_name"), 160),
+                (target.get("model"), 160),
+                (value.get("message"), 300),
+            )
+        )
+        or any(
+            item is not None and not _configuration_text(item, limit)
+            for item, limit in (
+                (current.get("provider"), 120),
+                (current.get("model"), 160),
+            )
+        )
+    ):
+        raise BridgeAgentConfigurationProjectionError("configuration_invalid")
+    return dict(value)
+
+
+def bridge_agent_configuration_mutation(
+    agent_id: str,
+    payload: object,
+    *,
+    preview: bool,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import (
+            confirm_mentat_agent_configuration,
+            preview_mentat_agent_configuration,
+        )
+
+        operation = (
+            preview_mentat_agent_configuration
+            if preview
+            else confirm_mentat_agent_configuration
+        )
+        source, status = operation(agent_id, payload)
+        if status != 200:
+            fixed = {
+                400: "invalid",
+                404: "not_found",
+                409: "conflict",
+                422: "invalid",
+                500: "partial",
+                502: "partial",
+                503: "unavailable",
+            }.get(status, "error")
+            return _conversation_failure(fixed)
+        if preview:
+            result = _public_configuration_preview(source, agent_id)
+        else:
+            if not isinstance(source, dict) or set(source) != {
+                "schema_version", "action", "agent_id", "configuration", "message"
+            } or source.get("schema_version") != 1 or source.get("action") != "configure" or source.get("agent_id") != agent_id or not _configuration_text(source.get("message"), 300):
+                raise BridgeAgentConfigurationProjectionError("configuration_invalid")
+            result = {
+                "schema_version": 1,
+                "action": "configure",
+                "agent_id": agent_id,
+                "configuration": _public_agent_configuration(source["configuration"]),
+                "message": source["message"],
+            }
+        return {
+            **result,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+        }, 200
+    except AgentRegistryValidationError:
+        return _conversation_failure("invalid")
+    except AgentRegistryError as exc:
+        return _conversation_failure(
+            "not_found" if exc.code == "agent.not_found" else "unavailable"
+        )
+    except (BridgeAgentConfigurationProjectionError, OSError, ValueError):
+        return _conversation_failure("error")
+
+
 def _conversation_text(value: object, maximum: int) -> bool:
     return (
         isinstance(value, str)
@@ -481,9 +684,10 @@ def _public_conversation_message(value: object) -> dict[str, object]:
 def _public_current_run(value: object) -> dict[str, object] | None:
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {
-        "id", "status", "partial", "updated_at"
-    }:
+    if not isinstance(value, dict) or set(value) not in (
+        {"id", "status", "partial", "updated_at"},
+        {"id", "status", "partial", "updated_at", "configuration"},
+    ):
         raise BridgeConversationProjectionError("conversation_run_invalid")
     if (
         not isinstance(value.get("id"), str)
@@ -496,6 +700,15 @@ def _public_current_run(value: object) -> dict[str, object] | None:
         }
         or not isinstance(value.get("partial"), bool)
         or not _conversation_timestamp(value.get("updated_at"))
+    ):
+        raise BridgeConversationProjectionError("conversation_run_invalid")
+    configuration = value.get("configuration")
+    if configuration is not None and (
+        not isinstance(configuration, dict)
+        or set(configuration) != {"provider", "model", "effort"}
+        or not _configuration_text(configuration.get("provider"), 160)
+        or not _configuration_text(configuration.get("model"), 160)
+        or not _configuration_text(configuration.get("effort"), 64)
     ):
         raise BridgeConversationProjectionError("conversation_run_invalid")
     return dict(value)
@@ -2263,6 +2476,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_agents_payload()
             self._send_json(payload, status)
             return
+        agent_configuration_match = re.fullmatch(
+            r"/bridge/v1/agents/([^/]+)/configuration", parsed.path
+        )
+        if agent_configuration_match is not None and not parsed.query:
+            agent_id = unquote(agent_configuration_match.group(1))
+            if _OPAQUE_ID.fullmatch(agent_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_agent_configuration_payload(agent_id)
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_PROVIDER_CONNECTIONS_PATH and not parsed.query:
             payload, status = bridge_provider_connections_payload()
             self._send_json(payload, status)
@@ -2354,6 +2578,35 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
+        agent_configuration_match = re.fullmatch(
+            r"/bridge/v1/agents/([^/]+)/configuration(?:/(preview))?",
+            parsed.path,
+        )
+        if agent_configuration_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            agent_id = unquote(agent_configuration_match.group(1))
+            preview = agent_configuration_match.group(2) == "preview"
+            if _OPAQUE_ID.fullmatch(agent_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
+            required = (
+                {"provider", "model"}
+                if preview
+                else {"provider", "model", "confirmation_id"}
+            )
+            if body is None or set(body) != required:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_agent_configuration_mutation(
+                agent_id,
+                body,
+                preview=preview,
+            )
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_CONVERSATIONS_PATH and not parsed.query:
             body = self._action_json_body()
             if body is None or set(body) - {"agent_id"}:

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   BridgeConversationsError,
+  AGENT_CONFIGURATION_CONFIRM_TIMEOUT_MILLISECONDS,
   CODEX_READINESS_BRIDGE_TIMEOUT_MILLISECONDS,
   CONVERSATION_TURN_BRIDGE_TIMEOUT_MILLISECONDS,
   cancelBridgeConversationTurn,
@@ -14,6 +15,9 @@ import {
   fetchBridgeCodexReadiness,
   fetchBridgeConversation,
   fetchBridgeConversations,
+  fetchBridgeAgentConfiguration,
+  previewBridgeAgentConfiguration,
+  confirmBridgeAgentConfiguration,
   retryBridgeConversationRun,
   resumeBridgeConversationRun,
   steerBridgeConversation,
@@ -174,6 +178,22 @@ test("Conversation archive bridge is exact, reversible, and rejects cross-target
     (error: unknown) => error instanceof BridgeConversationsError
       && error.code === "bridge_response_invalid",
   );
+  assert.equal(AGENT_CONFIGURATION_CONFIRM_TIMEOUT_MILLISECONDS, 190_000);
+  await assert.rejects(
+    confirmBridgeAgentConfiguration(
+      agent.id,
+      "anthropic",
+      "claude",
+      "provider_switch_" + "a".repeat(24),
+      async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      }),
+      environment,
+      20,
+    ),
+    (error: unknown) => error instanceof BridgeConversationsError
+      && error.code === "conversation_partial",
+  );
 });
 
 test("Conversation Retry bridge binds the exact source and idempotency key", async () => {
@@ -240,6 +260,41 @@ test("Conversation Retry bridge binds the exact source and idempotency key", asy
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Agent configuration bridge uses only canonical Agent paths and safe projections", async () => {
+  const configuration = {
+    active_run: false,
+    agent_id: agent.id,
+    current: { effort: "runtime_default" as const, model: "gpt", provider: "openai" },
+    efforts: [{ id: "runtime_default" as const, name: "Runtime default" as const }] as [{ id: "runtime_default"; name: "Runtime default" }],
+    explanation: "",
+    mutable: true,
+    providers: [{ current: true, id: "openai", models: ["gpt"], name: "OpenAI" }, { current: false, id: "anthropic", models: ["claude"], name: "Anthropic" }],
+    runtime_type: "hermes",
+    schema_version: 1 as const,
+    state: "ready" as const,
+  };
+  const envelope = { configuration, runtime: "python" as const, schema_version: 1 as const, service: "mentat-local-bridge" as const, status: "ready" as const };
+  const calls: Array<{ body: string | undefined; method: string; url: string }> = [];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ body: init?.body?.toString(), method: init?.method ?? "", url: input.toString() });
+    if (input.toString().endsWith("/preview")) return Response.json({ action: "configure", agent_id: agent.id, confirmation_id: "provider_switch_" + "a".repeat(24), current: { model: "gpt", provider: "openai" }, message: "Next Run", requires_confirmation: true, runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready", target: { effort: "runtime_default", model: "claude", provider: "anthropic", provider_name: "Anthropic" } });
+    if (init?.method === "POST") return Response.json({ action: "configure", agent_id: agent.id, configuration: { ...configuration, current: { effort: "runtime_default", model: "claude", provider: "anthropic" } }, message: "Verified", runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" });
+    return Response.json(envelope);
+  };
+  await fetchBridgeAgentConfiguration(agent.id, fetcher, environment);
+  const preview = await previewBridgeAgentConfiguration(agent.id, "anthropic", "claude", fetcher, environment);
+  await confirmBridgeAgentConfiguration(agent.id, "anthropic", "claude", preview.confirmation_id, fetcher, environment);
+  assert.deepEqual(calls, [
+    { body: undefined, method: "GET", url: `http://127.0.0.1:49152/bridge/v1/agents/${agent.id}/configuration` },
+    { body: '{"provider":"anthropic","model":"claude"}', method: "POST", url: `http://127.0.0.1:49152/bridge/v1/agents/${agent.id}/configuration/preview` },
+    { body: `{"confirmation_id":"${preview.confirmation_id}","provider":"anthropic","model":"claude"}`, method: "POST", url: `http://127.0.0.1:49152/bridge/v1/agents/${agent.id}/configuration` },
+  ]);
+  await assert.rejects(
+    fetchBridgeAgentConfiguration(agent.id, async () => Response.json({ ...envelope, configuration: { ...configuration, runtime_agent_ref: "private" } }), environment),
+    (error: unknown) => error instanceof BridgeConversationsError && error.code === "bridge_response_invalid",
+  );
 });
 
 test("Conversation bridge returns detached safe data and rejects private fields", async () => {

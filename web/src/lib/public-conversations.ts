@@ -111,12 +111,18 @@ function validMessage(value: unknown): boolean {
 
 function validCurrentRun(value: unknown): boolean {
   if (value === null) return true;
-  if (!record(value) || !keys(value, "id,partial,status,updated_at")) return false;
+  if (!record(value) || !["id,partial,status,updated_at", "configuration,id,partial,status,updated_at"].includes(Object.keys(value).sort().join(","))) return false;
+  const configuration = value.configuration;
   return id(value.id, RUN_ID)
     && typeof value.status === "string"
     && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "finalizing", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.status)
     && typeof value.partial === "boolean"
-    && timestamp(value.updated_at);
+    && timestamp(value.updated_at)
+    && (configuration === undefined || configuration === null || record(configuration)
+      && keys(configuration, "effort,model,provider")
+      && boundedText(configuration.provider, 160)
+      && boundedText(configuration.model, 160)
+      && boundedText(configuration.effort, 64));
 }
 
 function validTurn(value: unknown): value is PublicConversationTurn {

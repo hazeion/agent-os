@@ -2,6 +2,23 @@
 
 All notable changes to Mentat.
 
+## 2026-08-29
+
+### Added
+- Added compact Agent, Provider, Model, and Effort controls to the Home composer.
+- Added a canonical-Agent configuration bridge that resolves private Hermes
+  profile bindings only inside Python and reuses exact provider preview and
+  confirmation.
+- Added the active Run's safe immutable provider/model/effort snapshot to the
+  Conversation projection.
+
+### Safety
+- Kept Codex, Vercel, unsupported runtimes, and unsupported effort mutation
+  read-only; browser input cannot choose private runtime settings.
+- Filtered Hermes choices to authenticated profile inventory and preserved
+  active-Run exclusion, post-write verification, rollback, and partial-failure
+  behavior.
+
 ## 2026-08-28
 
 ### Added
