@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console attachments, Context Packs, images, and artifacts
 
-Status: Ready for publication
+Status: Complete
 Slice: `agent-console-attachments-context-images-artifacts`
 Date: `2026-08-29`
 Review log: `reviews/2026-08-29-agent-console-attachments-context-artifacts.md`
@@ -72,7 +72,7 @@ refresh without exposing filesystem authority to Node or the browser.
 | AC-4 | Only the exact capable local Hermes Run receives server-resolved snapshots; Node/browser never receive paths, hashes, blob keys, runtime refs, or arbitrary content URLs. | RuntimeContext/Hermes/bridge projection and private-field rejection tests. | Pass |
 | AC-5 | Retained input and trusted run-export output media render by Run through Conversation-bound opaque routes; model-prose paths and stale metadata cannot mint access. | Artifact integration, media projection, content authorization, and hostile route tests. | Pass |
 | AC-6 | Compact upload/picker/chip/image/file-card UI is keyboard and screen-reader usable, handles cancel/error/loading, and has no desktop/mobile overflow. | React interaction tests and in-app browser checks at desktop/mobile sizes. | Pass |
-| AC-7 | Backup/restore, schema-5 compatible export, startup recovery, Windows/POSIX behavior, packaging, performance, and full CI remain green. | Migration/backup/export/full-suite/build/performance/matrix evidence. | Local pass; PR CI pending |
+| AC-7 | Backup/restore, schema-5 compatible export, startup recovery, Windows/POSIX behavior, packaging, performance, and full CI remain green. | Migration/backup/export/full-suite/build/performance/matrix evidence. | Pass |
 | AC-8 | Two independent adversarial review rounds end with no blocking findings and project records describe the final boundary. | Final review packets, re-review results, and documentation checks. | Pass |
 
 ### Constraints and recovery
@@ -281,9 +281,15 @@ descriptor tests expected secure cleanup or note reads on Windows. The tests
 now create explicit Hermes fixture Agents, close every SQLite handle, assert
 each platform's real Hermes capability, and keep separate fail-closed checks
 for unsupported cleanup and Context Pack note reads. The corrected 76-test set
-passed on macOS; the 68-test Windows-capability simulation passed with four
+passed on macOS; the 76-test Windows-capability simulation passed with four
 positive descriptor cases skipped. Both adversarial reviewers rechecked each
 test-only diff and reported clean results.
+
+The final PR matrix passed all 52 required checks across Python 3.11–3.13,
+Ubuntu, macOS Intel, Windows shards, browser smoke, package lifecycle, native
+installers, and dependency and secret scanning. One unchanged Codex protocol
+test hit its one-second budget on the first macOS Intel Python 3.13 run and
+passed unchanged on the failed-job retry.
 
 ## Documentation updates
 
@@ -297,21 +303,21 @@ test-only diff and reported clean results.
 
 - Branch and base: `codex/agent-console-slice-8` to `main` after Slice 7 closeout.
 - User authorization and scope: standing approval recorded; ready PR only.
-- Commit hash: `c01b49de6f46b5b41bf5c42cab53ab129b34a8b6` plus the test-only CI follow-up.
-- Ready PR URL: https://github.com/hazeion/agent-os/pull/156
+- Implementation head: `d71f2317a66ec65bfa4b84889e7f672248982dd4`.
+- Merge commit: `5cc18fbd759a444ee663c9ea59d9cb454a5ce72a`.
+- Merged PR: https://github.com/hazeion/agent-os/pull/156
 
 ## Outcome review
 
-- Classification: Implemented; PR CI pending.
-- Acceptance criteria summary: AC-1 through AC-6 and AC-8 pass locally; AC-7
-  awaits PR CI.
+- Classification: Complete and merged.
+- Acceptance criteria summary: AC-1 through AC-8 pass.
 - Potential bugs or untested paths: real third-party artifact generation remains
   observational; the deterministic trusted export, retained media, and browser
   paths are covered.
 - Remaining reviewer dissent: none.
-- Compatibility/migration/rollback concerns: schema-15 migration and old-backup
-  restore require explicit cross-platform evidence.
-- User decision: standing acceptance/continuation authorization recorded, subject
-  to the required all-green and clean-review gates.
-- Next slice authorized: Yes, but implementation will not begin until Slice 8
-  itself is merged and closed out.
+- Compatibility/migration/rollback concerns: schema-15 migration, released
+  backup restore, Windows fail-closed behavior, and compatible export passed the
+  full matrix. Rollback remains validated backup restore or schema-5 sibling
+  export, never in-place downgrade.
+- User decision: standing acceptance and continuation authorization recorded.
+- Next slice authorized: Yes. Slice 9 is the active frontier after this closeout.
