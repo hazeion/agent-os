@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1199,6 +1199,181 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         END;
         """,
     ),
+    (
+        15,
+        """
+        CREATE TABLE mentat_conversation_staged_contexts (
+            conversation_id TEXT PRIMARY KEY
+                REFERENCES mentat_conversations(id) ON DELETE CASCADE,
+            context_pack_id TEXT CHECK (
+                context_pack_id IS NULL OR length(context_pack_id) BETWEEN 1 AND 128
+            ),
+            context_pack_revision TEXT CHECK (
+                context_pack_revision IS NULL OR length(context_pack_revision) BETWEEN 1 AND 96
+            ),
+            context_pack_name TEXT CHECK (
+                context_pack_name IS NULL OR length(context_pack_name) BETWEEN 1 AND 80
+            ),
+            context_pack_source_digests_json TEXT CHECK (
+                context_pack_source_digests_json IS NULL
+                OR length(context_pack_source_digests_json) BETWEEN 2 AND 600
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            CHECK (
+                (context_pack_id IS NULL AND context_pack_revision IS NULL
+                    AND context_pack_name IS NULL
+                    AND context_pack_source_digests_json IS NULL)
+                OR
+                (context_pack_id IS NOT NULL AND context_pack_revision IS NOT NULL
+                    AND context_pack_name IS NOT NULL
+                    AND context_pack_source_digests_json IS NOT NULL)
+            )
+        );
+
+        CREATE TABLE mentat_conversation_staged_attachments (
+            conversation_id TEXT NOT NULL
+                REFERENCES mentat_conversations(id) ON DELETE CASCADE,
+            attachment_id TEXT NOT NULL UNIQUE
+                REFERENCES attachments(id) ON DELETE CASCADE,
+            source TEXT NOT NULL CHECK (
+                source IN ('upload', 'workspace', 'context_pack')
+            ),
+            ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 7),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            PRIMARY KEY (conversation_id, attachment_id),
+            UNIQUE (conversation_id, ordinal)
+        );
+
+        CREATE TABLE mentat_conversation_run_contexts (
+            run_id TEXT PRIMARY KEY
+                REFERENCES mentat_runs(id) ON DELETE CASCADE,
+            context_digest TEXT NOT NULL CHECK (length(context_digest) = 64),
+            context_pack_id TEXT CHECK (
+                context_pack_id IS NULL OR length(context_pack_id) BETWEEN 1 AND 128
+            ),
+            context_pack_revision TEXT CHECK (
+                context_pack_revision IS NULL OR length(context_pack_revision) BETWEEN 1 AND 96
+            ),
+            context_pack_name TEXT CHECK (
+                context_pack_name IS NULL OR length(context_pack_name) BETWEEN 1 AND 80
+            ),
+            context_pack_source_digests_json TEXT CHECK (
+                context_pack_source_digests_json IS NULL
+                OR length(context_pack_source_digests_json) BETWEEN 2 AND 600
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            CHECK (
+                (context_pack_id IS NULL AND context_pack_revision IS NULL
+                    AND context_pack_name IS NULL
+                    AND context_pack_source_digests_json IS NULL)
+                OR
+                (context_pack_id IS NOT NULL AND context_pack_revision IS NOT NULL
+                    AND context_pack_name IS NOT NULL
+                    AND context_pack_source_digests_json IS NOT NULL)
+            )
+        );
+
+        CREATE INDEX idx_mentat_conversation_staged_attachments_order
+            ON mentat_conversation_staged_attachments(conversation_id, ordinal);
+        CREATE INDEX idx_mentat_conversation_run_context_pack
+            ON mentat_conversation_run_contexts(context_pack_id, context_pack_revision);
+
+        CREATE TRIGGER mentat_conversation_staged_context_idle_insert
+        BEFORE INSERT ON mentat_conversation_staged_contexts
+        WHEN EXISTS (
+            SELECT 1 FROM mentat_runs AS r
+            WHERE r.conversation_id = NEW.conversation_id
+              AND (
+                r.status IN (
+                    'reserved', 'queued', 'submitting', 'starting', 'running',
+                    'cancelling', 'waiting', 'waiting_for_approval',
+                    'waiting_for_clarification', 'unknown'
+                )
+                OR (r.runtime_type = 'hermes'
+                    AND r.status IN (
+                        'completed', 'failed', 'cancelled', 'stopped', 'interrupted'
+                    ) AND r.terminal_finalized = 0)
+              )
+        ) OR EXISTS (
+            SELECT 1 FROM mentat_conversation_turns AS t
+            WHERE t.conversation_id = NEW.conversation_id
+              AND t.state IN ('pending', 'blocked', 'dispatching')
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_context_requires_idle');
+        END;
+
+        CREATE TRIGGER mentat_conversation_staged_attachment_idle_insert
+        BEFORE INSERT ON mentat_conversation_staged_attachments
+        WHEN EXISTS (
+            SELECT 1 FROM mentat_runs AS r
+            WHERE r.conversation_id = NEW.conversation_id
+              AND (
+                r.status IN (
+                    'reserved', 'queued', 'submitting', 'starting', 'running',
+                    'cancelling', 'waiting', 'waiting_for_approval',
+                    'waiting_for_clarification', 'unknown'
+                )
+                OR (r.runtime_type = 'hermes'
+                    AND r.status IN (
+                        'completed', 'failed', 'cancelled', 'stopped', 'interrupted'
+                    ) AND r.terminal_finalized = 0)
+              )
+        ) OR EXISTS (
+            SELECT 1 FROM mentat_conversation_turns AS t
+            WHERE t.conversation_id = NEW.conversation_id
+              AND t.state IN ('pending', 'blocked', 'dispatching')
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_context_requires_idle');
+        END;
+
+        CREATE TRIGGER mentat_conversation_staged_attachment_capacity
+        BEFORE INSERT ON mentat_conversation_staged_attachments
+        WHEN (
+            SELECT COUNT(*) FROM mentat_conversation_staged_attachments
+            WHERE conversation_id = NEW.conversation_id
+        ) >= 8
+        OR (
+            NEW.source != 'context_pack'
+            AND (
+                SELECT COUNT(*) FROM mentat_conversation_staged_attachments
+                WHERE conversation_id = NEW.conversation_id
+                  AND source != 'context_pack'
+            ) >= 5
+        )
+        OR (
+            (SELECT kind FROM attachments WHERE id = NEW.attachment_id) = 'image'
+            AND EXISTS (
+                SELECT 1
+                FROM mentat_conversation_staged_attachments AS s
+                JOIN attachments AS a ON a.id = s.attachment_id
+                WHERE s.conversation_id = NEW.conversation_id
+                  AND a.kind = 'image'
+            )
+        )
+        OR (
+            NEW.source = 'context_pack'
+            AND NOT EXISTS (
+                SELECT 1 FROM mentat_conversation_staged_contexts
+                WHERE conversation_id = NEW.conversation_id
+                  AND context_pack_id IS NOT NULL
+            )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'conversation_context_capacity');
+        END;
+
+        CREATE TRIGGER mentat_conversation_staged_context_cleanup
+        AFTER DELETE ON mentat_conversation_staged_contexts
+        BEGIN
+            DELETE FROM mentat_conversation_staged_attachments
+            WHERE conversation_id = OLD.conversation_id
+              AND source = 'context_pack';
+        END;
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12})
@@ -1409,12 +1584,20 @@ def _validate_database_file(path: Path, runtime: Path) -> tuple[int, int] | None
         details = path.lstat()
     except FileNotFoundError:
         return None
+    try:
+        resolved_parent = path.resolve(strict=True).parent
+    except FileNotFoundError:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return None
+        raise MentatDatabaseError("Mentat database path changed during validation")
     if (
         stat.S_ISLNK(details.st_mode)
         or _is_reparse_point(details)
         or not stat.S_ISREG(details.st_mode)
         or details.st_nlink != 1
-        or path.resolve(strict=True).parent != runtime
+        or resolved_parent != runtime
         or (
             os.name == "posix"
             and (
@@ -1495,7 +1678,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14}
+        requires_exact_source_gate = version in {12, 13, 14, 15}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -1536,6 +1719,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 13 cannot be safely upgraded"
+                    )
+                if (
+                    version == 15
+                    and schema_signature_state(connection, 14) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 14 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:
@@ -1723,9 +1913,8 @@ def _connect_with_identity_locked(
                 )
         _secure_database_files(path)
         verified = _validate_database_set(path, private)
-        for candidate, identity in identities.items():
-            if identity is not None and verified.get(candidate) != identity:
-                raise MentatDatabaseError("Mentat database file identity changed while opening")
+        if identities.get(path) is not None and verified.get(path) != identities[path]:
+            raise MentatDatabaseError("Mentat database file identity changed while opening")
         return connection, verified
     except Exception:
         connection.close()

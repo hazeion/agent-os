@@ -130,8 +130,8 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(SCHEMA_VERSION, 14)
-        self.assertEqual(version, 14)
+        self.assertEqual(SCHEMA_VERSION, 15)
+        self.assertEqual(version, 15)
         self.assertTrue(
             {
                 "mentat_run_store_state",
@@ -140,6 +140,7 @@ class RunRepositoryTests(unittest.TestCase):
                 "mentat_dispatch_reservations",
                 "mentat_conversation_submission_results",
                 "mentat_conversation_run_attempts",
+                "mentat_conversation_run_contexts",
             }.issubset(tables)
         )
 

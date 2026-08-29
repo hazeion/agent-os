@@ -895,6 +895,37 @@ revalidates the references. Console use creates normal private staged snapshots;
 delegation use resolves bounded text into the exact preview and confirmation
 digest, so changed pack content must be previewed again.
 
+Schema 15 makes Conversation composer staging durable without making it backup
+authority. `mentat_conversation_staged_contexts` and
+`mentat_conversation_staged_attachments` belong to one active, idle
+Conversation and hold only an exact Context Pack revision plus opaque attachment
+references. At most eight context items may be staged, with at most five direct
+upload/workspace items and one image. A context-bearing Send must reserve one
+immediate local Hermes Run and move that exact set into `run_attachments` and
+`mentat_conversation_run_contexts` in the same SQLite transaction. It cannot
+queue, steer, cross Conversations, or fall back to text-only. Exact Send replay
+uses the retained context digest, and Retry copies the retained input bindings
+or fails before another adapter call.
+
+Existing Agents do not gain file authority during migration. The browser may
+offer an explicit two-step Enable files action only for a stopped, exact local
+Hermes Agent; the mutation is bound to its current capability set and rechecks
+that the fixed local runtime supports the file boundary. Codex, Vercel, remote
+Hermes, and incomplete adapters remain unsupported. Unsent staging is removed
+from private backup snapshots and compatible export, while retained Run inputs
+and trusted export artifacts remain part of the validated private consistency
+unit. Startup and periodic reconciliation discard an entire staged Context Pack
+if any of its snapshots becomes unavailable.
+
+Local Hermes file capability also requires descriptor-relative, no-follow Run
+input cleanup. Platforms without that primitive do not advertise or enable
+Conversation files; they fail before materializing input bytes. A stale input
+directory left by an older build is never traversed through a pathname fallback.
+Recovery is stopped-server-only: inspect and remove the exact
+`<data-root>/runtime/agent-console-inputs` scratch tree, then restart so bounded
+reconciliation can verify a clean root. Retained attachment/blob authority under
+`private/console` is not removed by that scratch recovery.
+
 Remote Console use adds a short-lived random grant around those existing
 private snapshots. The grant is bound to one connection, pack revision, and
 ordered attachment-id set, and is consumed once. Mentat reads only validated

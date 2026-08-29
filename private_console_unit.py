@@ -85,6 +85,7 @@ CONVERSATION_DATABASE_SCHEMA_VERSION = 10
 SUBMISSION_DATABASE_SCHEMA_VERSION = 11
 CONVERSATION_REPAIR_DATABASE_SCHEMA_VERSION = 12
 TERMINAL_FINALIZATION_DATABASE_SCHEMA_VERSION = 13
+ATTEMPT_DATABASE_SCHEMA_VERSION = 14
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -96,6 +97,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     SUBMISSION_DATABASE_SCHEMA_VERSION,
     CONVERSATION_REPAIR_DATABASE_SCHEMA_VERSION,
     TERMINAL_FINALIZATION_DATABASE_SCHEMA_VERSION,
+    ATTEMPT_DATABASE_SCHEMA_VERSION,
     DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
@@ -800,6 +802,23 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             else:
                 _require_empty_unclaimed_run_store(path)
         placeholders = ",".join("?" for _ in retained)
+        if schema_version >= 15:
+            connection.execute(
+                "DELETE FROM mentat_conversation_staged_attachments"
+            )
+            connection.execute(
+                "DELETE FROM mentat_conversation_staged_contexts"
+            )
+            if retained:
+                connection.execute(
+                    f"DELETE FROM mentat_conversation_run_contexts "
+                    f"WHERE run_id NOT IN ({placeholders})",
+                    retained,
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM mentat_conversation_run_contexts"
+                )
         if retained:
             connection.execute(
                 f"DELETE FROM run_attachments WHERE run_id NOT IN ({placeholders})",
@@ -908,6 +927,46 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
         database_runs = {str(row[0]) for row in connection.execute("SELECT DISTINCT run_id FROM run_attachments")}
         if not database_runs.issubset(retained):
             raise PrivateConsoleUnitError("private_database_not_filtered")
+        if schema_version >= 15:
+            staged_count = int(connection.execute(
+                "SELECT (SELECT COUNT(*) FROM mentat_conversation_staged_attachments) "
+                "+ (SELECT COUNT(*) FROM mentat_conversation_staged_contexts)"
+            ).fetchone()[0])
+            context_runs = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT run_id FROM mentat_conversation_run_contexts"
+                )
+            }
+            context_digests_valid = True
+            for row in connection.execute(
+                "SELECT context_pack_id, context_pack_source_digests_json "
+                "FROM mentat_conversation_run_contexts"
+            ):
+                encoded = row[1]
+                if row[0] is None:
+                    context_digests_valid = encoded is None
+                else:
+                    try:
+                        values = json.loads(encoded)
+                    except (TypeError, json.JSONDecodeError):
+                        context_digests_valid = False
+                    else:
+                        context_digests_valid = (
+                            isinstance(values, list)
+                            and len(values) <= 8
+                            and all(
+                                isinstance(value, str)
+                                and re.fullmatch(r"[0-9a-f]{64}", value)
+                                for value in values
+                            )
+                            and encoded
+                            == json.dumps(values, ensure_ascii=True, separators=(",", ":"))
+                        )
+                if not context_digests_valid:
+                    break
+            if staged_count or not context_runs.issubset(retained) or not context_digests_valid:
+                raise PrivateConsoleUnitError("private_database_not_filtered")
         extra_attachments = connection.execute(
             "SELECT COUNT(*) FROM attachments WHERE id NOT IN (SELECT attachment_id FROM run_attachments)"
         ).fetchone()[0]

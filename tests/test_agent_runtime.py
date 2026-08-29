@@ -1,5 +1,8 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import hermes_runtime
 from agent_runtime import (
     AgentEventType,
     AgentRuntimeError,
@@ -50,6 +53,29 @@ class FakeRuntime:
 
 
 class AgentRuntimeContractTests(unittest.TestCase):
+    def test_hermes_files_require_secure_run_input_cleanup(self):
+        handlers = HermesCompatibilityHandlers(
+            start=lambda _payload: ({}, 200),
+            start_task=lambda _task, _context: ({}, 200),
+            message=lambda _run_id, _payload: ({}, 200),
+            response=lambda _run_id, _payload: ({}, 200),
+            stop=lambda _run_id: ({}, 200),
+            status=lambda _run_id, cursor=None: ({}, 200),
+        )
+        runtime = HermesRuntime(
+            transport_factory=lambda: SimpleNamespace(
+                mode="local",
+                console_available=True,
+            ),
+            compatibility_handlers=handlers,
+        )
+        self.assertEqual(
+            runtime.supports_attachments("default"),
+            hermes_runtime.SECURE_DIR_FD_DELETE,
+        )
+        with patch("hermes_runtime.SECURE_DIR_FD_DELETE", False):
+            self.assertFalse(runtime.supports_attachments("default"))
+
     def test_domain_types_keep_mentat_identity_separate_from_runtime_refs(self):
         agent = MentatAgent(
             id="agent_researcher",
@@ -86,6 +112,30 @@ class AgentRuntimeContractTests(unittest.TestCase):
             MentatTask(id="task_1", title="Task", objective="Work", status="paused")
         with self.assertRaises(ValueError):
             RuntimeContext(agent_id="agent_1", runtime_agent_ref="../profile")
+
+    def test_runtime_context_accepts_only_canonical_attachment_and_pack_ids(self):
+        context = RuntimeContext(
+            agent_id="agent_1",
+            runtime_agent_ref="default",
+            attachment_ids=("attachment_" + "a" * 32,),
+            context_pack_id="pack_0123456789abcdef",
+            context_pack_revision="sha256:" + "b" * 64,
+        )
+        self.assertEqual(len(context.attachment_ids), 1)
+
+        with self.assertRaises(ValueError):
+            RuntimeContext(
+                agent_id="agent_1",
+                runtime_agent_ref="default",
+                attachment_ids=("artifact_unsafe",),
+            )
+        with self.assertRaises(ValueError):
+            RuntimeContext(
+                agent_id="agent_1",
+                runtime_agent_ref="default",
+                context_pack_id="pack_unsafe",
+                context_pack_revision="sha256:" + "b" * 64,
+            )
 
     def test_registry_is_deterministic_and_rejects_duplicates(self):
         runtime = FakeRuntime()

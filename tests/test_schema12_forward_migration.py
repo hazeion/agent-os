@@ -9,7 +9,9 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from conversation_repository import canonical_message_content
+from conversation_repository import canonical_message_content, validate_repository_connection
+from agent_registry import validate_registry_connection
+from vercel_connections import validate_provider_connections
 import mentat_db
 from mentat_db import (
     AGENT_REGISTRY_AUTHORITY_CONTRACT,
@@ -109,6 +111,14 @@ def _apply_schema_13(connection: sqlite3.Connection) -> None:
     connection.executescript(dict(MIGRATIONS)[13])
     connection.execute(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (13, 13)"
+    )
+
+
+def _apply_schema_14(connection: sqlite3.Connection) -> None:
+    _apply_schema_13(connection)
+    connection.executescript(dict(MIGRATIONS)[14])
+    connection.execute(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (14, 14)"
     )
 
 
@@ -577,10 +587,107 @@ class Schema12ForwardMigrationTests(unittest.TestCase):
             finally:
                 read_only.close()
 
-        self.assertEqual(version, 14)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertIsNotNone(attempt_table)
         self.assertEqual(drift_version, 13)
         self.assertIsNone(drift_attempt_table)
+
+    def test_schema_15_adds_conversation_staging_without_granting_agent_permission(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            ensure_private_console_dir(root)
+            path = database_path(root)
+            connection = sqlite3.connect(path, isolation_level=None)
+            try:
+                _apply_schema_14(connection)
+                connection.execute(
+                    "INSERT INTO agent_runtime_configs(id, runtime_type, runtime_agent_ref, created_at, updated_at) "
+                    "VALUES ('config_hermes', 'hermes', 'default', 1, 1)"
+                )
+                connection.execute(
+                    "INSERT INTO mentat_agents(id, name, runtime_config_id, capabilities_json, "
+                    "created_at, updated_at, revision, system_role) "
+                    "VALUES ('agent_hermes', 'Hermes', 'config_hermes', '[\"run.start\"]', 1, 1, 1, NULL)"
+                )
+                connection.execute(
+                    "INSERT INTO mentat_agent_registry_state(singleton, authority, "
+                    "migration_contract, source_kind, source_sha256, source_agent_count, cutover_at) "
+                    "VALUES (1, 'sqlite', ?, 'legacy', ?, 1, 1)",
+                    (AGENT_REGISTRY_AUTHORITY_CONTRACT, "c" * 64),
+                )
+                connection.row_factory = sqlite3.Row
+                validate_repository_connection(connection, schema_version=14)
+                RunRepository(connection)
+                validate_registry_connection(
+                    connection,
+                    supported_runtime_types=("codex", "hermes", "vercel"),
+                    runtime_binding_validator=lambda _agent, _reference: True,
+                )
+                validate_provider_connections(connection)
+            finally:
+                connection.close()
+            path.chmod(0o600)
+
+            migrated = connect(root)
+            try:
+                version = int(migrated.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0])
+                tables = {
+                    str(row[0])
+                    for row in migrated.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                agent = migrated.execute(
+                    "SELECT capabilities_json, revision FROM mentat_agents WHERE id = 'agent_hermes'"
+                ).fetchone()
+            finally:
+                migrated.close()
+
+        self.assertEqual(version, 15)
+        self.assertTrue({
+            "mentat_conversation_staged_contexts",
+            "mentat_conversation_staged_attachments",
+            "mentat_conversation_run_contexts",
+        }.issubset(tables))
+        self.assertEqual(tuple(agent), ('["run.start"]', 1))
+
+    def test_schema_15_rejects_schema_14_drift_before_staging_tables(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            ensure_private_console_dir(root)
+            path = database_path(root)
+            connection = sqlite3.connect(path, isolation_level=None)
+            try:
+                _apply_schema_14(connection)
+                connection.execute(
+                    "DROP INDEX idx_mentat_conversation_run_attempts_turn"
+                )
+            finally:
+                connection.close()
+            path.chmod(0o600)
+
+            with self.assertRaisesRegex(
+                mentat_db.MentatDatabaseError,
+                "schema 14 cannot be safely upgraded",
+            ):
+                connect(root)
+
+            read_only = sqlite3.connect(path)
+            try:
+                version = int(
+                    read_only.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0]
+                )
+                staging_table = read_only.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'mentat_conversation_staged_contexts'"
+                ).fetchone()
+            finally:
+                read_only.close()
+
+        self.assertEqual(version, 14)
+        self.assertIsNone(staging_table)
 
     def test_upgrade_preserves_turn_rows_and_restores_exact_constraints(self):
         with TemporaryDirectory() as temporary:
@@ -806,7 +913,7 @@ class Schema12ForwardMigrationTests(unittest.TestCase):
                     )
                 }
 
-        self.assertEqual(len(racer_outcomes), 2)
+        self.assertEqual(len(racer_outcomes), SCHEMA_VERSION - 12)
         self.assertTrue(
             all("locked" in outcome.lower() for outcome in racer_outcomes)
         )

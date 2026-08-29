@@ -7,6 +7,7 @@ from pathlib import Path
 import stat
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import agent_console_artifacts as artifacts
 
@@ -95,6 +96,82 @@ class AgentConsoleArtifactTests(unittest.TestCase):
                     [{"id": "att_link", "kind": "text", "path": link}],
                 )
 
+    def test_verified_bytes_materialize_a_run_snapshot_instead_of_reopening_blob(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            blobs = root / "private" / "console" / "blobs"
+            blobs.mkdir(parents=True)
+            source = blobs / "extensionless-text"
+            source.write_bytes(b"tampered")
+
+            context = artifacts.build_execution_context(
+                root,
+                "run_verified",
+                [{
+                    "id": "attachment_" + "a" * 32,
+                    "kind": "text",
+                    "mime_type": "text/plain",
+                    "path": source,
+                    "_verified_content": b"verified",
+                }],
+            )
+
+            snapshot = Path(context["attachments"][0]["path"])
+            self.assertNotEqual(snapshot, source)
+            self.assertEqual(snapshot.read_bytes(), b"verified")
+            self.assertIn("agent-console-inputs", snapshot.parts)
+
+            image_context = artifacts.build_execution_context(
+                root,
+                "run_verified_image",
+                [{
+                    "id": "attachment_" + "b" * 32,
+                    "kind": "image",
+                    "mime_type": "image/png",
+                    "path": source,
+                    "_verified_content": PNG_BYTES,
+                }],
+            )
+            image_path = Path(image_context["_image_path"])
+            self.assertEqual(image_path.read_bytes(), PNG_BYTES)
+            self.assertEqual(image_path.suffix, ".png")
+
+    def test_input_cleanup_never_follows_a_swapped_run_directory(self):
+        if not artifacts.SECURE_DIR_FD_DELETE or not hasattr(os, "symlink"):
+            self.skipTest("descriptor-relative cleanup unavailable")
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "data"
+            run_id = "run_cleanup_swap"
+            run_root = artifacts.prepare_input_directory(root, run_id)
+            (run_root / "input.txt").write_text("input", encoding="utf-8")
+            outside = Path(tmpdir) / "outside"
+            outside.mkdir()
+            secret = outside / "secret.txt"
+            secret.write_text("secret", encoding="utf-8")
+            held = run_root.with_name("held-cleanup-swap")
+            original_listdir = os.listdir
+            swapped = False
+
+            def racing_listdir(path):
+                nonlocal swapped
+                if isinstance(path, int) and not swapped:
+                    run_root.rename(held)
+                    run_root.symlink_to(outside, target_is_directory=True)
+                    swapped = True
+                return original_listdir(path)
+
+            try:
+                with patch.object(artifacts.os, "listdir", side_effect=racing_listdir), self.assertRaises(artifacts.ArtifactValidationError):
+                    artifacts.cleanup_run_input_directory(root, run_id)
+            finally:
+                if run_root.is_symlink():
+                    run_root.unlink()
+                if held.exists():
+                    held.rename(run_root)
+
+            self.assertTrue(swapped)
+            self.assertEqual(secret.read_text(encoding="utf-8"), "secret")
+
     def test_image_execution_context_uses_private_extension_bearing_snapshot(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "data"
@@ -114,8 +191,16 @@ class AgentConsoleArtifactTests(unittest.TestCase):
             self.assertEqual(image_path.read_bytes(), PNG_BYTES)
             self.assertEqual(Path(context["attachments"][0]["path"]), image_path)
             self.assertNotEqual(image_path, source)
-            self.assertEqual(artifacts.cleanup_run_input_directory(root, "run_image"), 1)
-            self.assertFalse(image_path.exists())
+            if artifacts.SECURE_DIR_FD_DELETE:
+                self.assertEqual(
+                    artifacts.cleanup_run_input_directory(root, "run_image"),
+                    1,
+                )
+                self.assertFalse(image_path.exists())
+            else:
+                with self.assertRaises(artifacts.ArtifactValidationError):
+                    artifacts.cleanup_run_input_directory(root, "run_image")
+                self.assertTrue(image_path.exists())
 
     def test_artifact_discovery_registers_only_owned_valid_files(self):
         with TemporaryDirectory() as tmpdir:

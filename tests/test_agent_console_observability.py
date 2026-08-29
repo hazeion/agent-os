@@ -9,7 +9,11 @@ from unittest.mock import patch
 
 import agent_run_history
 import server
-from agent_console_artifacts import cleanup_run_input_directory
+from agent_console_artifacts import (
+    SECURE_DIR_FD_DELETE,
+    ArtifactValidationError,
+    cleanup_run_input_directory,
+)
 from agent_console_telemetry import (
     MAX_PROGRESS_BYTES,
     ProgressTail,
@@ -77,12 +81,17 @@ class AgentConsoleObservabilityTests(unittest.TestCase):
             ))
             worker.return_value.start.assert_called_once_with()
 
-            rejected, rejected_status = server.start_agent_console_run({
-                "agent_id": "default",
-                "prompt": "Conflicting request",
-                "session_id": "session_existing",
-                "start_new_session": True,
-            })
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+                server,
+                "CONFIGURED_DATA_DIR",
+                data_dir,
+            ):
+                rejected, rejected_status = server.start_agent_console_run({
+                    "agent_id": "default",
+                    "prompt": "Conflicting request",
+                    "session_id": "session_existing",
+                    "start_new_session": True,
+                })
             self.assertEqual(rejected_status, 400)
             self.assertIn("cannot also resume", rejected["error"])
 
@@ -177,6 +186,10 @@ class AgentConsoleObservabilityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ProgressTail(progress_path).poll()
 
+    @unittest.skipUnless(
+        SECURE_DIR_FD_DELETE,
+        "secure POSIX directory descriptors required",
+    )
     def test_cleanup_removes_unsafe_telemetry_symlink_without_following_it(self):
         if not hasattr(os, "symlink"):
             self.skipTest("symlinks unavailable")
@@ -197,6 +210,22 @@ class AgentConsoleObservabilityTests(unittest.TestCase):
             )
             self.assertEqual(removed, 2)
             self.assertEqual(outside.read_text(encoding="utf-8"), "keep")
+
+    def test_cleanup_fails_closed_without_secure_directory_descriptors(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            root.mkdir()
+            progress_path, _usage_path = prepare_local_telemetry_paths(
+                root,
+                "run_1234567890abcd",
+            )
+            with patch(
+                "agent_console_artifacts.SECURE_DIR_FD_DELETE",
+                False,
+            ), self.assertRaises(ArtifactValidationError) as rejected:
+                cleanup_run_input_directory(root, "run_1234567890abcd")
+            self.assertEqual(rejected.exception.code, "unsafe_input_directory")
+            self.assertTrue(progress_path.is_file())
 
     def test_progress_tail_fails_closed_on_duplicate_or_regressing_sequence(self):
         with tempfile.TemporaryDirectory() as temporary:

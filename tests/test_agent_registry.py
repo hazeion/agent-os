@@ -280,6 +280,26 @@ class AgentRegistryTests(unittest.TestCase):
             self.assertNotIn("researcher-main", encoded)
             self.assertNotIn("runtime_agent_ref", encoded)
 
+    def test_local_hermes_attachment_permission_requires_exact_explicit_capabilities(self):
+        with TemporaryDirectory() as tmpdir:
+            registry = self.registry(Path(tmpdir))
+            self.create_researcher(registry)
+            enabled = registry.enable_local_hermes_attachments(
+                "agent_researcher",
+                expected_capabilities=("browser-use", "research.web"),
+            )
+            self.assertIn("run.attachments", enabled.agent.capabilities)
+            with self.assertRaises(AgentRegistryConflict):
+                registry.enable_local_hermes_attachments(
+                    "agent_researcher",
+                    expected_capabilities=("browser-use", "research.web"),
+                )
+            repeated = registry.enable_local_hermes_attachments(
+                "agent_researcher",
+                expected_capabilities=tuple(sorted(enabled.agent.capabilities)),
+            )
+            self.assertEqual(repeated.revision, enabled.revision)
+
     def test_create_and_list_api_are_separate_from_heartbeat_agents(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

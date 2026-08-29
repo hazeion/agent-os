@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from itertools import islice
 from pathlib import Path
@@ -41,6 +41,11 @@ from conversation_repository import (
     ConversationRepository,
     ConversationRepositoryError,
     ConversationTurnRecord,
+)
+from conversation_attachments import (
+    ConversationAttachmentError,
+    run_input_context,
+    staged_context_evidence,
 )
 from run_repository import (
     ConversationDispatchReservation,
@@ -167,6 +172,10 @@ class OrchestrationService:
         agent_registry: AgentRegistry | None = None,
         id_factory: Callable[[str], str] | None = None,
         conversation_continuation_handler: Callable[[str, str], None] | None = None,
+        conversation_context_validator: Callable[[dict[str, str], tuple[str, ...]], bool] | None = None,
+        conversation_context_guard: object | None = None,
+        conversation_attachment_preparer: Callable[[str, tuple[str, ...]], None] | None = None,
+        conversation_attachment_cleanup: Callable[[str], None] | None = None,
     ):
         self.data_dir = Path(data_dir)
         self.runtime_registry = runtime_registry
@@ -178,6 +187,36 @@ class OrchestrationService:
             lambda prefix: f"{prefix}_{uuid4().hex}"
         )
         self.conversation_continuation_handler = conversation_continuation_handler
+        self.conversation_context_validator = conversation_context_validator
+        self.conversation_context_guard = conversation_context_guard
+        self.conversation_attachment_preparer = conversation_attachment_preparer
+        self.conversation_attachment_cleanup = conversation_attachment_cleanup
+
+    def _conversation_context_is_current(
+        self,
+        binding: dict[str, str],
+        source_digests: tuple[str, ...],
+    ) -> bool:
+        if self.conversation_context_validator is None:
+            return False
+        try:
+            return bool(self.conversation_context_validator(binding, source_digests))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _runtime_supports_attachments(
+        runtime: AgentRuntime,
+        binding: RuntimeBinding,
+    ) -> bool:
+        supports_attachments = getattr(runtime, "supports_attachments", None)
+        try:
+            return bool(
+                callable(supports_attachments)
+                and supports_attachments(binding.runtime_agent_ref)
+            )
+        except Exception:
+            return False
 
     def _connect(self):
         try:
@@ -680,7 +719,11 @@ class OrchestrationService:
         conversation_id: str,
         text: str,
         idempotency_key: str,
-    ) -> tuple[str, ConversationDispatchReservation | None]:
+    ) -> tuple[
+        str,
+        ConversationDispatchReservation | None,
+        dict[str, object] | None,
+    ]:
         if (
             not isinstance(conversation_id, str)
             or re.fullmatch(
@@ -701,13 +744,20 @@ class OrchestrationService:
                 if conversation is None:
                     raise OrchestrationServiceError("conversation.not_found")
                 agent_id = str(conversation["agent_id"])
+                context = staged_context_evidence(
+                    connection,
+                    conversation_id,
+                )
                 retry = repository.lookup_conversation_turn_retry(
                     idempotency_key=idempotency_key,
                     conversation_id=conversation_id,
                     agent_id=agent_id,
                     text=text,
+                    context_digest=(
+                        None if context is None else str(context["context_digest"])
+                    ),
                 )
-                return agent_id, retry
+                return agent_id, retry, context
             except OrchestrationServiceError:
                 raise
             except RunRepositoryError as exc:
@@ -931,7 +981,7 @@ class OrchestrationService:
     ) -> ConversationTurnDispatchResult:
         """Submit one exact text Turn with at most one unlocked adapter call."""
 
-        agent_id, retry = self._conversation_retry(
+        agent_id, retry, staged_context = self._conversation_retry(
             conversation_id=conversation_id,
             text=text,
             idempotency_key=idempotency_key,
@@ -948,6 +998,15 @@ class OrchestrationService:
             raise OrchestrationServiceError(exc.code) from exc
         if RuntimeCapability.START_TASK.value not in record.agent.capabilities:
             raise OrchestrationServiceError("conversation.agent_capability_missing")
+        if staged_context is not None:
+            if RuntimeCapability.ATTACHMENTS.value not in record.agent.capabilities:
+                raise OrchestrationServiceError(
+                    "conversation_context.capability_missing"
+                )
+            if not self._runtime_supports_attachments(runtime, binding):
+                raise OrchestrationServiceError(
+                    "conversation_context.runtime_unsupported"
+                )
         binding_digest = self._binding_digest(record.agent, binding)
         capacity_scope_digest, capacity_limit = self._capacity_evidence(
             runtime, binding, binding_digest
@@ -955,7 +1014,60 @@ class OrchestrationService:
 
         guard_factory = getattr(runtime, "submission_guard", None)
         guard = guard_factory() if callable(guard_factory) else nullcontext()
-        with guard:
+        context_guard = (
+            self.conversation_context_guard
+            if staged_context is not None
+            and staged_context.get("context_pack") is not None
+            and self.conversation_context_guard is not None
+            else nullcontext()
+        )
+        with guard, context_guard:
+            fresh_agent_id, guarded_retry, guarded_context = self._conversation_retry(
+                conversation_id=conversation_id,
+                text=text,
+                idempotency_key=idempotency_key,
+            )
+            if guarded_retry is not None:
+                return self._conversation_result(guarded_retry, duplicate=True)
+            if fresh_agent_id != agent_id or (
+                None if guarded_context is None else guarded_context["context_digest"]
+            ) != (
+                None if staged_context is None else staged_context["context_digest"]
+            ):
+                raise OrchestrationServiceError("conversation_context.conflict")
+            staged_context = guarded_context
+            attachment_ids: tuple[str, ...] = ()
+            if staged_context is not None:
+                if not self._runtime_supports_attachments(runtime, binding):
+                    raise OrchestrationServiceError(
+                        "conversation_context.runtime_unsupported"
+                    )
+                with private_state_lock(self.data_dir):
+                    connection = self._connect()
+                    try:
+                        current_context = staged_context_evidence(
+                            connection,
+                            conversation_id,
+                        )
+                    finally:
+                        connection.close()
+                if (
+                    current_context is None
+                    or current_context["context_digest"]
+                    != staged_context["context_digest"]
+                ):
+                    raise OrchestrationServiceError(
+                        "conversation_context.conflict"
+                    )
+                pack = current_context.get("context_pack")
+                if pack is not None and not self._conversation_context_is_current(
+                    pack,
+                    tuple(current_context["context_pack_source_digests"]),
+                ):
+                    raise OrchestrationServiceError(
+                        "conversation_context.pack_changed"
+                    )
+                attachment_ids = tuple(current_context["attachment_ids"])
             return self._submit_new_conversation_turn(
                 conversation_id=conversation_id,
                 text=text,
@@ -966,6 +1078,7 @@ class OrchestrationService:
                 capacity_scope_digest=capacity_scope_digest,
                 capacity_limit=capacity_limit,
                 runtime=runtime,
+                attachment_ids=attachment_ids,
             )
 
     def _conversation_run_action(
@@ -1018,6 +1131,18 @@ class OrchestrationService:
             finally:
                 connection.close()
         try:
+            source_input_context = run_input_context(
+                self.data_dir,
+                source_run_id,
+            )
+        except ConversationAttachmentError as exc:
+            raise OrchestrationServiceError(exc.code) from exc
+        source_pack = (
+            None
+            if source_input_context is None
+            else source_input_context.get("context_pack")
+        )
+        try:
             record, binding = self._agent_record_and_binding(agent_id)
             runtime = self.runtime_registry.require(binding.runtime_type)
         except AgentRegistryError as exc:
@@ -1035,6 +1160,15 @@ class OrchestrationService:
             raise OrchestrationServiceError(
                 "conversation.agent_capability_missing"
             )
+        if source_input_context is not None:
+            if RuntimeCapability.ATTACHMENTS.value not in record.agent.capabilities:
+                raise OrchestrationServiceError(
+                    "conversation_context.capability_missing"
+                )
+            if not self._runtime_supports_attachments(runtime, binding):
+                raise OrchestrationServiceError(
+                    "conversation_context.runtime_unsupported"
+                )
         if action == "resume":
             if source_runtime_run_ref is None:
                 raise OrchestrationServiceError(
@@ -1073,7 +1207,52 @@ class OrchestrationService:
         )
         guard_factory = getattr(runtime, "submission_guard", None)
         guard = guard_factory() if callable(guard_factory) else nullcontext()
-        with guard:
+        context_guard = (
+            self.conversation_context_guard
+            if source_pack is not None and self.conversation_context_guard is not None
+            else nullcontext()
+        )
+        with ExitStack() as stack:
+            stack.enter_context(guard)
+            stack.enter_context(context_guard)
+            if source_input_context is not None and not self._runtime_supports_attachments(
+                runtime,
+                binding,
+            ):
+                raise OrchestrationServiceError(
+                    "conversation_context.runtime_unsupported"
+                )
+            if source_pack is not None and not self._conversation_context_is_current(
+                source_pack,
+                tuple(source_input_context["context_pack_source_digests"]),
+            ):
+                raise OrchestrationServiceError(
+                    "conversation_context.pack_changed"
+                )
+            source_attachment_ids = (
+                ()
+                if source_input_context is None
+                else tuple(source_input_context["attachment_ids"])
+            )
+            if source_attachment_ids:
+                if self.conversation_attachment_preparer is None:
+                    raise OrchestrationServiceError(
+                        "conversation_context.runtime_unsupported"
+                    )
+                try:
+                    self.conversation_attachment_preparer(
+                        admission.run_id,
+                        source_attachment_ids,
+                    )
+                except Exception as exc:
+                    raise OrchestrationServiceError(
+                        "conversation_context.attachment_unavailable"
+                    ) from exc
+                if self.conversation_attachment_cleanup is not None:
+                    stack.callback(
+                        self.conversation_attachment_cleanup,
+                        admission.run_id,
+                    )
             with private_state_lock(self.data_dir):
                 connection = self._connect()
                 try:
@@ -1214,6 +1393,21 @@ class OrchestrationService:
                 failure_code="runtime.task_invalid",
             )
         else:
+            try:
+                input_context = run_input_context(
+                    self.data_dir,
+                    reservation.run_id,
+                )
+            except ConversationAttachmentError as exc:
+                return self._conversation_rejected_result(
+                    reservation,
+                    failure_code=exc.code,
+                )
+            pack = (
+                None
+                if input_context is None
+                else input_context.get("context_pack")
+            )
             context = RuntimeContext(
                 agent_id=record.agent.id,
                 runtime_agent_ref=current_binding.runtime_agent_ref,
@@ -1221,6 +1415,17 @@ class OrchestrationService:
                 mentat_run_id=reservation.run_id,
                 dispatch_id=reservation.turn_id,
                 continuation_runtime_run_ref=continuation_runtime_run_ref,
+                attachment_ids=(
+                    ()
+                    if input_context is None
+                    else tuple(input_context["attachment_ids"])
+                ),
+                context_pack_id=(
+                    None if pack is None else str(pack["id"])
+                ),
+                context_pack_revision=(
+                    None if pack is None else str(pack["revision"])
+                ),
             )
             try:
                 # No SQLite or private-state lock crosses this external call.
@@ -1482,50 +1687,78 @@ class OrchestrationService:
         capacity_scope_digest: str,
         capacity_limit: int,
         runtime: AgentRuntime,
+        attachment_ids: tuple[str, ...] = (),
     ) -> ConversationTurnDispatchResult:
         """Reserve, submit once, and persist while holding an adapter guard."""
 
-        with private_state_lock(self.data_dir):
-            connection = self._connect()
+        message_id = self.id_factory("msg")
+        turn_id = self.id_factory("turn")
+        run_id = self.id_factory("run")
+        prepared = False
+        if attachment_ids:
+            if self.conversation_attachment_preparer is None:
+                raise OrchestrationServiceError("conversation_context.runtime_unsupported")
             try:
-                reservation = RunRepository(connection).reserve_conversation_turn(
-                    idempotency_key=idempotency_key,
-                    conversation_id=conversation_id,
-                    message_id=self.id_factory("msg"),
-                    turn_id=self.id_factory("turn"),
-                    run_id=self.id_factory("run"),
-                    text=text,
-                    agent_id=record.agent.id,
-                    agent_name=record.agent.name,
-                    agent_revision=record.revision,
-                    runtime_type=binding.runtime_type,
-                    runtime_config_id=binding.id,
-                    runtime_config_revision=binding.revision,
-                    binding_digest=binding_digest,
-                    capabilities=record.agent.capabilities,
-                    capacity_scope_digest=capacity_scope_digest,
-                    capacity_limit=capacity_limit,
-                )
-            except RunRepositoryError as exc:
-                raise OrchestrationServiceError(exc.code) from exc
-            finally:
-                connection.close()
+                self.conversation_attachment_preparer(run_id, attachment_ids)
+                prepared = True
+            except Exception as exc:
+                raise OrchestrationServiceError(
+                    "conversation_context.attachment_unavailable"
+                ) from exc
+        try:
+            with private_state_lock(self.data_dir):
+                connection = self._connect()
+                try:
+                    reservation = RunRepository(connection).reserve_conversation_turn(
+                        idempotency_key=idempotency_key,
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        run_id=run_id,
+                        text=text,
+                        agent_id=record.agent.id,
+                        agent_name=record.agent.name,
+                        agent_revision=record.revision,
+                        runtime_type=binding.runtime_type,
+                        runtime_config_id=binding.id,
+                        runtime_config_revision=binding.revision,
+                        binding_digest=binding_digest,
+                        capabilities=record.agent.capabilities,
+                        capacity_scope_digest=capacity_scope_digest,
+                        capacity_limit=capacity_limit,
+                    )
+                except RunRepositoryError as exc:
+                    raise OrchestrationServiceError(exc.code) from exc
+                finally:
+                    connection.close()
+        except Exception:
+            if prepared and self.conversation_attachment_cleanup is not None:
+                self.conversation_attachment_cleanup(run_id)
+            raise
         if reservation.duplicate:
+            if prepared and self.conversation_attachment_cleanup is not None:
+                self.conversation_attachment_cleanup(run_id)
             return self._conversation_result(reservation, duplicate=True)
         if reservation.run_id is None:
+            if prepared and self.conversation_attachment_cleanup is not None:
+                self.conversation_attachment_cleanup(run_id)
             return self._conversation_result(
                 reservation,
                 duplicate=False,
                 disposition=reservation.state,
             )
 
-        return self._execute_reserved_conversation_turn(
-            reservation=reservation,
-            text=text,
-            record=record,
-            binding=binding,
-            runtime=runtime,
-        )
+        try:
+            return self._execute_reserved_conversation_turn(
+                reservation=reservation,
+                text=text,
+                record=record,
+                binding=binding,
+                runtime=runtime,
+            )
+        finally:
+            if prepared and self.conversation_attachment_cleanup is not None:
+                self.conversation_attachment_cleanup(run_id)
 
     def _reject_reserved_conversation_continuation(
         self,
