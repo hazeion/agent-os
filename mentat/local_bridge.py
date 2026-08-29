@@ -7,6 +7,7 @@ is not a generic proxy for ``server.py`` and it owns no durable state.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import date, datetime
 import hashlib
 import hmac
@@ -21,7 +22,7 @@ from socketserver import TCPServer
 import sys
 import threading
 import time
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, unquote_to_bytes, urlsplit
 
 from conversation_repository import (
     ConversationRepositoryConflict,
@@ -47,6 +48,9 @@ BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
 BRIDGE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness"
 BRIDGE_LINK_PREVIEW_PREFERENCE_PATH = "/bridge/v1/link-previews/preference"
 BRIDGE_LINK_PREVIEW_CACHE_CLEAR_PATH = "/bridge/v1/link-previews/cache/clear"
+BRIDGE_WORKSPACE_FILES_PATH = "/bridge/v1/workspace-files"
+BRIDGE_CONTEXT_PACKS_PATH = "/bridge/v1/context-packs"
+BRIDGE_UPLOAD_FILENAME_HEADER = "X-Mentat-Filename"
 MINIMUM_TOKEN_LENGTH = 43
 MAXIMUM_TOKEN_LENGTH = 256
 SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
@@ -63,6 +67,9 @@ MAXIMUM_BRIDGE_ACTION_BODY_BYTES = 512
 MAXIMUM_BRIDGE_MESSAGE_BODY_BYTES = 24_576
 MAXIMUM_BRIDGE_CONVERSATION_TURN_BODY_BYTES = 96 * 1024
 MAXIMUM_BRIDGE_RESPONSE_BODY_BYTES = 24_576
+MAXIMUM_BRIDGE_UPLOAD_BODY_BYTES = 10 * 1024 * 1024
+MAXIMUM_BRIDGE_WORKSPACE_BODY_BYTES = 8_192
+MAXIMUM_BRIDGE_AGENT_CAPABILITY_BODY_BYTES = 8_192
 BRIDGE_BODY_READ_TIMEOUT_SECONDS = 5.0
 BRIDGE_BODY_READ_CHUNK_BYTES = 8_192
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
@@ -75,6 +82,71 @@ _CONVERSATION_ID = re.compile(r"conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _MESSAGE_ID = re.compile(r"msg_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _TURN_ID = re.compile(r"turn_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _LINK_PREVIEW_IMAGE_ID = re.compile(r"[0-9a-f]{32}\Z")
+_ATTACHMENT_ID = re.compile(r"attachment_[0-9a-f]{32}\Z")
+_CONTEXT_PACK_ID = re.compile(r"pack_[0-9a-f]{16}\Z")
+_CONTEXT_PACK_REVISION = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_SAFE_UPLOAD_CONTENT_TYPES = frozenset({
+    "application/json",
+    "application/javascript",
+    "application/octet-stream",
+    "application/sql",
+    "application/toml",
+    "application/x-ndjson",
+    "application/x-javascript",
+    "application/xml",
+    "application/yaml",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "text/css",
+    "text/csv",
+    "text/html",
+    "text/javascript",
+    "text/markdown",
+    "text/plain",
+    "text/tab-separated-values",
+    "text/typescript",
+    "text/x-c",
+    "text/x-c++",
+    "text/x-csharp",
+    "text/x-diff",
+    "text/x-go",
+    "text/x-java-source",
+    "text/x-kotlin",
+    "text/x-php",
+    "text/x-python",
+    "text/x-ruby",
+    "text/x-rust",
+    "text/x-swift",
+})
+_SAFE_IMAGE_CONTENT_TYPES = frozenset({
+    "image/gif", "image/jpeg", "image/png", "image/webp",
+})
+_CONVERSATION_FILE_SEQUENCE = threading.Condition()
+_CONVERSATION_FILE_NEXT: dict[str, int] = {}
+_CONVERSATION_FILE_SERVING: dict[str, int] = {}
+
+
+@contextmanager
+def _conversation_file_sequence(conversation_id: str):
+    """Serialize accepted file operations in bridge-arrival order."""
+
+    with _CONVERSATION_FILE_SEQUENCE:
+        ticket = _CONVERSATION_FILE_NEXT.get(conversation_id, 0)
+        _CONVERSATION_FILE_NEXT[conversation_id] = ticket + 1
+        _CONVERSATION_FILE_SERVING.setdefault(conversation_id, 0)
+        while _CONVERSATION_FILE_SERVING[conversation_id] != ticket:
+            _CONVERSATION_FILE_SEQUENCE.wait()
+    try:
+        yield
+    finally:
+        with _CONVERSATION_FILE_SEQUENCE:
+            _CONVERSATION_FILE_SERVING[conversation_id] = ticket + 1
+            if _CONVERSATION_FILE_SERVING[conversation_id] == _CONVERSATION_FILE_NEXT[conversation_id]:
+                _CONVERSATION_FILE_SERVING.pop(conversation_id, None)
+                _CONVERSATION_FILE_NEXT.pop(conversation_id, None)
+            _CONVERSATION_FILE_SEQUENCE.notify_all()
 
 
 class BridgeConfigurationError(ValueError):
@@ -111,6 +183,10 @@ class BridgeConversationProjectionError(ValueError):
 
 class BridgeLinkPreviewProjectionError(ValueError):
     """Raised when link-preview data cannot cross the private bridge."""
+
+
+class BridgeConversationFileProjectionError(ValueError):
+    """Raised when Conversation file data cannot cross the private bridge."""
 
 
 class _LoopbackBridgeHTTPServer(ThreadingHTTPServer):
@@ -352,6 +428,109 @@ def bridge_agents_payload() -> tuple[dict[str, object], int]:
         "runtime": "python",
         "status": status,
     }, code
+
+
+def _ready_agent_attachment_payload(
+    value: object,
+    expected_agent_id: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"schema_version", "agent"}:
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    agent = value.get("agent")
+    if not isinstance(agent, dict) or set(agent) != {
+        "id", "name", "runtime_type", "system_role", "capabilities",
+    }:
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    agent_id = agent.get("id")
+    name = agent.get("name")
+    runtime_type = agent.get("runtime_type")
+    system_role = agent.get("system_role")
+    capabilities = agent.get("capabilities")
+    if (
+        value.get("schema_version") != 1
+        or agent_id != expected_agent_id
+        or not isinstance(agent_id, str)
+        or _OPAQUE_ID.fullmatch(agent_id) is None
+        or not isinstance(name, str)
+        or not name
+        or name.strip() != name
+        or len(name) > 120
+        or re.search(
+            r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]",
+            name,
+        )
+        or runtime_type != "hermes"
+        or system_role not in {None, "direct"}
+        or not isinstance(capabilities, list)
+        or len(capabilities) > 64
+        or capabilities != sorted(set(capabilities))
+        or "run.attachments" not in capabilities
+        or any(
+            not isinstance(capability, str)
+            or _CAPABILITY.fullmatch(capability) is None
+            for capability in capabilities
+        )
+    ):
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": "ready",
+        "agent": {
+            "id": agent_id,
+            "name": name,
+            "runtime_type": "hermes",
+            "system_role": system_role,
+            "capabilities": list(capabilities),
+        },
+    }
+
+
+def bridge_enable_agent_attachments(
+    agent_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import enable_mentat_agent_attachments
+
+        source, status = enable_mentat_agent_attachments(agent_id, payload)
+        if status != 200:
+            return _conversation_file_failure(status)
+        return _ready_agent_attachment_payload(source, agent_id), 200
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_agent_attachment_enable_status(
+    agent_id: str,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_agent_attachment_enable_status
+
+        source, status = mentat_agent_attachment_enable_status(agent_id)
+        if status != 200:
+            return _conversation_file_failure(status)
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"schema_version", "agent_id", "state"}
+            or source.get("schema_version") != 1
+            or source.get("agent_id") != agent_id
+            or source.get("state") not in {
+                "active_run", "available", "enabled", "unsupported",
+            }
+        ):
+            raise BridgeAgentProjectionError("agent_projection_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "agent_id": agent_id,
+            "state": source["state"],
+        }, 200
+    except Exception:
+        return _conversation_file_failure(500)
 
 
 def _configuration_text(value: object, maximum: int) -> bool:
@@ -973,6 +1152,570 @@ def bridge_conversation_payload(
             return _conversation_failure("error")
     except Exception:
         return _conversation_failure("error")
+
+
+def _conversation_file_failure(status_code: int) -> tuple[dict[str, object], int]:
+    names = {
+        400: "invalid",
+        404: "not_found",
+        409: "conflict",
+        410: "gone",
+        413: "too_large",
+        415: "unsupported",
+        500: "error",
+        503: "unavailable",
+    }
+    status = names.get(status_code, "error")
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": status,
+    }, status_code if status_code in names else 500
+
+
+def _safe_file_text(value: object, maximum: int, *, optional: bool = False) -> str | None:
+    if value is None and optional:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > maximum
+        or re.search(
+            r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]",
+            value,
+        )
+    ):
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    return value
+
+
+def _safe_attachment_item(value: object, *, staged: bool) -> dict[str, object]:
+    common = {
+        "id", "name", "mime_type", "kind", "byte_size", "state",
+        "available", "created_at", "expires_at",
+    }
+    expected = common | ({"source", "ordinal"} if staged else set())
+    if not isinstance(value, dict) or set(value) != expected:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    attachment_id = value.get("id")
+    name = _safe_file_text(value.get("name"), 255)
+    mime_type = value.get("mime_type")
+    kind = value.get("kind")
+    byte_size = value.get("byte_size")
+    state = value.get("state")
+    available = value.get("available")
+    created_at = _safe_file_text(value.get("created_at"), 64)
+    expires_at = _safe_file_text(value.get("expires_at"), 64, optional=True)
+    if (
+        not isinstance(attachment_id, str)
+        or _ATTACHMENT_ID.fullmatch(attachment_id) is None
+        or name in {".", ".."}
+        or "/" in str(name)
+        or "\\" in str(name)
+        or not isinstance(mime_type, str)
+        or mime_type not in _SAFE_UPLOAD_CONTENT_TYPES - {"application/octet-stream"}
+        or kind not in {"image", "text"}
+        or type(byte_size) is not int
+        or not 1 <= byte_size <= MAXIMUM_BRIDGE_UPLOAD_BODY_BYTES
+        or state not in {
+            "staged", "attached", "orphaned", "pending_delete", "missing",
+        }
+        or type(available) is not bool
+    ):
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    if kind == "image" and mime_type not in _SAFE_IMAGE_CONTENT_TYPES:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    if kind != "image" and mime_type in _SAFE_IMAGE_CONTENT_TYPES:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    result: dict[str, object] = {
+        "id": attachment_id,
+        "name": name,
+        "mime_type": mime_type,
+        "kind": kind,
+        "byte_size": byte_size,
+        "state": state,
+        "available": available,
+        "created_at": created_at,
+        "expires_at": expires_at,
+    }
+    if staged:
+        source = value.get("source")
+        ordinal = value.get("ordinal")
+        if (
+            source not in {"upload", "workspace", "context_pack"}
+            or type(ordinal) is not int
+            or not 0 <= ordinal <= 7
+        ):
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        result.update({"source": source, "ordinal": ordinal})
+    return result
+
+
+def _ready_staged_context(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "conversation_id", "attachments", "context_pack", "limits",
+    }:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    conversation_id = value.get("conversation_id")
+    attachments = value.get("attachments")
+    limits = value.get("limits")
+    context_pack = value.get("context_pack")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(conversation_id, str)
+        or _CONVERSATION_ID.fullmatch(conversation_id) is None
+        or not isinstance(attachments, list)
+        or len(attachments) > 8
+        or limits != {"direct": 5, "total": 8, "images": 1}
+    ):
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    public_attachments = [
+        _safe_attachment_item(item, staged=True) for item in attachments
+    ]
+    if (
+        len({item["id"] for item in public_attachments}) != len(public_attachments)
+        or [item["ordinal"] for item in public_attachments]
+        != sorted(item["ordinal"] for item in public_attachments)
+        or len([item for item in public_attachments if item["source"] != "context_pack"]) > 5
+        or len([item for item in public_attachments if item["kind"] == "image"]) > 1
+    ):
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    safe_pack = None
+    if context_pack is not None:
+        if not isinstance(context_pack, dict) or set(context_pack) != {
+            "id", "name", "revision",
+        }:
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        pack_id = context_pack.get("id")
+        revision = context_pack.get("revision")
+        name = _safe_file_text(context_pack.get("name"), 80)
+        if (
+            not isinstance(pack_id, str)
+            or _CONTEXT_PACK_ID.fullmatch(pack_id) is None
+            or not isinstance(revision, str)
+            or _CONTEXT_PACK_REVISION.fullmatch(revision) is None
+        ):
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        safe_pack = {"id": pack_id, "name": name, "revision": revision}
+    if any(
+        item["source"] == "context_pack" for item in public_attachments
+    ) and safe_pack is None:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    return {
+        "schema_version": 1,
+        "conversation_id": conversation_id,
+        "attachments": public_attachments,
+        "context_pack": safe_pack,
+        "limits": {"direct": 5, "total": 8, "images": 1},
+    }
+
+
+def _ready_workspace_files(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "query", "files",
+    }:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    query = value.get("query")
+    files = value.get("files")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(query, str)
+        or len(query) > 200
+        or query.strip() != query
+        or re.search(
+            r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]",
+            query,
+        )
+        or not isinstance(files, list)
+        or len(files) > 50
+    ):
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    result = []
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {
+            "root_id", "path", "name", "kind", "mime_type", "byte_size",
+        }:
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        root_id = item.get("root_id")
+        relative_path = _safe_file_text(item.get("path"), 1000)
+        name = _safe_file_text(item.get("name"), 160)
+        kind = item.get("kind")
+        mime_type = item.get("mime_type")
+        byte_size = item.get("byte_size")
+        parts = str(relative_path).split("/")
+        if (
+            not isinstance(root_id, str)
+            or _OPAQUE_ID.fullmatch(root_id) is None
+            or str(relative_path).startswith("/")
+            or "\\" in str(relative_path)
+            or any(part in {"", ".", ".."} for part in parts)
+            or "/" in str(name)
+            or "\\" in str(name)
+            or kind not in {"image", "text"}
+            or not isinstance(mime_type, str)
+            or mime_type not in _SAFE_UPLOAD_CONTENT_TYPES - {"application/octet-stream"}
+            or type(byte_size) is not int
+            or not 1 <= byte_size <= MAXIMUM_BRIDGE_UPLOAD_BODY_BYTES
+        ):
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        result.append(dict(item))
+    return {"schema_version": 1, "query": query, "files": result}
+
+
+def _ready_context_pack_summaries(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "context_packs", "max_items",
+    }:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    packs = value.get("context_packs")
+    if value.get("schema_version") != 1 or value.get("max_items") != 8 or not isinstance(packs, list) or len(packs) > 256:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    result = []
+    for pack in packs:
+        if not isinstance(pack, dict) or set(pack) != {
+            "id", "name", "description", "revision", "item_count",
+        }:
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        pack_id = pack.get("id")
+        name = _safe_file_text(pack.get("name"), 80)
+        description = pack.get("description")
+        revision = pack.get("revision")
+        item_count = pack.get("item_count")
+        if (
+            not isinstance(pack_id, str)
+            or _CONTEXT_PACK_ID.fullmatch(pack_id) is None
+            or not isinstance(description, str)
+            or len(description) > 500
+            or re.search(
+                r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]",
+                description,
+            )
+            or not isinstance(revision, str)
+            or _CONTEXT_PACK_REVISION.fullmatch(revision) is None
+            or type(item_count) is not int
+            or not 0 <= item_count <= 8
+        ):
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        result.append({
+            "id": pack_id,
+            "name": name,
+            "description": description,
+            "revision": revision,
+            "item_count": item_count,
+        })
+    if len({pack["id"] for pack in result}) != len(result):
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    return {"schema_version": 1, "context_packs": result, "max_items": 8}
+
+
+def _ready_conversation_media(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "conversation_id", "runs",
+    }:
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    conversation_id = value.get("conversation_id")
+    runs = value.get("runs")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(conversation_id, str)
+        or _CONVERSATION_ID.fullmatch(conversation_id) is None
+        or not isinstance(runs, list)
+        or len(runs) > 50
+    ):
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    public_runs = []
+    attachment_count = 0
+    for run in runs:
+        if not isinstance(run, dict) or set(run) != {"run_id", "created_at", "inputs", "outputs"}:
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        run_id = run.get("run_id")
+        created_at = run.get("created_at")
+        inputs = run.get("inputs")
+        outputs = run.get("outputs")
+        if (
+            not isinstance(run_id, str)
+            or _RUN_ID.fullmatch(run_id) is None
+            or not _conversation_timestamp(created_at)
+            or not isinstance(inputs, list)
+            or not isinstance(outputs, list)
+            or len(inputs) > 8
+            or len(outputs) > 20
+        ):
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        safe_inputs = [_safe_attachment_item(item, staged=False) for item in inputs]
+        safe_outputs = [_safe_attachment_item(item, staged=False) for item in outputs]
+        combined_ids = [
+            item["id"] for item in (*safe_inputs, *safe_outputs)
+        ]
+        if len(set(combined_ids)) != len(combined_ids):
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        attachment_count += len(safe_inputs) + len(safe_outputs)
+        if attachment_count > 1_400:
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        public_runs.append({
+            "run_id": run_id,
+            "created_at": created_at,
+            "inputs": safe_inputs,
+            "outputs": safe_outputs,
+        })
+    if len({run["run_id"] for run in public_runs}) != len(public_runs):
+        raise BridgeConversationFileProjectionError(
+            "conversation_file_projection_invalid"
+        )
+    return {
+        "schema_version": 1,
+        "conversation_id": conversation_id,
+        "runs": public_runs,
+    }
+
+
+def _bridge_ready_file_payload(
+    source: object,
+    source_status: int,
+    expected_status: int,
+    validator,
+) -> tuple[dict[str, object], int]:
+    if source_status != expected_status:
+        return _conversation_file_failure(source_status)
+    ready = validator(source)
+    return {
+        **ready,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": "ready",
+    }, expected_status
+
+
+def bridge_conversation_staged_context_payload(
+    conversation_id: str,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_conversation_staged_context_payload
+
+        return _bridge_ready_file_payload(
+            *mentat_conversation_staged_context_payload(conversation_id),
+            200,
+            _ready_staged_context,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_stage_conversation_upload(
+    conversation_id: str,
+    *,
+    original_name: str,
+    content_type: str,
+    content: bytes,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import stage_mentat_conversation_upload
+
+        return _bridge_ready_file_payload(
+            *stage_mentat_conversation_upload(
+                conversation_id,
+                original_name=original_name,
+                content_type=content_type,
+                content=content,
+            ),
+            201,
+            _ready_staged_context,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_release_conversation_attachment(
+    conversation_id: str,
+    attachment_id: str,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import release_mentat_conversation_attachment
+
+        return _bridge_ready_file_payload(
+            *release_mentat_conversation_attachment(conversation_id, attachment_id),
+            200,
+            _ready_staged_context,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_workspace_files_payload(query: str) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_workspace_files_payload
+
+        return _bridge_ready_file_payload(
+            *mentat_workspace_files_payload(query),
+            200,
+            _ready_workspace_files,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_stage_workspace_file(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import stage_mentat_workspace_file
+
+        return _bridge_ready_file_payload(
+            *stage_mentat_workspace_file(conversation_id, payload),
+            201,
+            _ready_staged_context,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_context_pack_summaries_payload() -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_context_pack_summaries_payload
+
+        return _bridge_ready_file_payload(
+            *mentat_context_pack_summaries_payload(),
+            200,
+            _ready_context_pack_summaries,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_apply_conversation_context_pack(
+    conversation_id: str,
+    pack_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import apply_mentat_conversation_context_pack
+
+        return _bridge_ready_file_payload(
+            *apply_mentat_conversation_context_pack(
+                conversation_id,
+                pack_id,
+                payload,
+            ),
+            201,
+            _ready_staged_context,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_clear_conversation_context_pack(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import clear_mentat_conversation_context_pack
+
+        return _bridge_ready_file_payload(
+            *clear_mentat_conversation_context_pack(conversation_id, payload),
+            200,
+            _ready_staged_context,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_conversation_media_payload(
+    conversation_id: str,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_conversation_media_payload
+
+        return _bridge_ready_file_payload(
+            *mentat_conversation_media_payload(conversation_id),
+            200,
+            _ready_conversation_media,
+        )
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_conversation_attachment_content(
+    conversation_id: str,
+    attachment_id: str,
+) -> tuple[dict[str, object] | None, object | None, int]:
+    try:
+        from server import mentat_conversation_attachment_content
+
+        metadata, stream, status = mentat_conversation_attachment_content(
+            conversation_id,
+            attachment_id,
+        )
+        if status != 200:
+            if stream is not None and callable(getattr(stream, "close", None)):
+                stream.close()
+            return _conversation_file_failure(status)[0], None, status
+        safe = _safe_attachment_item(metadata, staged=False)
+        if not safe["available"]:
+            raise BridgeConversationFileProjectionError(
+                "conversation_file_projection_invalid"
+            )
+        return safe, stream, 200
+    except Exception:
+        if "stream" in locals() and stream is not None and callable(getattr(stream, "close", None)):
+            stream.close()
+        return _conversation_file_failure(500)[0], None, 500
 
 
 def _link_preview_failure(status: str) -> tuple[dict[str, object], int]:
@@ -2641,6 +3384,65 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_attachment_content(self, metadata: dict[str, object], stream: object) -> None:
+        expected_size = metadata.get("byte_size")
+        mime_type = metadata.get("mime_type")
+        kind = metadata.get("kind")
+        if (
+            type(expected_size) is not int
+            or not 1 <= expected_size <= MAXIMUM_BRIDGE_UPLOAD_BODY_BYTES
+            or not callable(getattr(stream, "read", None))
+            or not callable(getattr(stream, "close", None))
+        ):
+            if callable(getattr(stream, "close", None)):
+                stream.close()
+            self._send_json({"error": "bridge_route_not_found"}, 404)
+            return
+        content_type = (
+            str(mime_type)
+            if kind == "image" and mime_type in _SAFE_IMAGE_CONTENT_TYPES
+            else "text/plain; charset=utf-8"
+        )
+        try:
+            stream.seek(0, 2)
+            actual_size = stream.tell()
+            stream.seek(0)
+        except (AttributeError, OSError, ValueError):
+            stream.close()
+            self._send_json({"error": "bridge_route_not_found"}, 404)
+            return
+        if actual_size != expected_size:
+            stream.close()
+            self._send_json({"error": "bridge_route_not_found"}, 404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(expected_size))
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        remaining = expected_size
+        try:
+            while remaining:
+                chunk = stream.read(min(64 * 1024, remaining))
+                if (
+                    not isinstance(chunk, bytes)
+                    or not chunk
+                    or len(chunk) > remaining
+                ):
+                    self.close_connection = True
+                    return
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+            if stream.read(1):
+                self.close_connection = True
+        finally:
+            stream.close()
+
     def _request_is_private(self, *, reject_body_headers: bool = True) -> bool:
         if not client_is_loopback(self.client_address[0]):
             return False
@@ -2702,6 +3504,64 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return None
         return value if isinstance(value, dict) else None
 
+    def _raw_upload_body(self) -> tuple[str, str, bytes] | None:
+        """Read one exact bounded upload with fixed metadata headers."""
+
+        content_types = self.headers.get_all("Content-Type", failobj=[]) or []
+        lengths = self.headers.get_all("Content-Length", failobj=[]) or []
+        filenames = self.headers.get_all(
+            BRIDGE_UPLOAD_FILENAME_HEADER, failobj=[]
+        ) or []
+        if (
+            len(content_types) != 1
+            or len(lengths) != 1
+            or len(filenames) != 1
+            or self.headers.get_all("Transfer-Encoding", failobj=[])
+            or self.headers.get_all("Content-Encoding", failobj=[])
+            or self.headers.get_all("Content-Range", failobj=[])
+            or self.headers.get_all("Trailer", failobj=[])
+            or self.headers.get_all("Expect", failobj=[])
+        ):
+            return None
+        content_type = content_types[0].strip().lower()
+        if content_type not in _SAFE_UPLOAD_CONTENT_TYPES:
+            return None
+        maximum_digits = len(str(MAXIMUM_BRIDGE_UPLOAD_BODY_BYTES))
+        if re.fullmatch(
+            rf"[1-9][0-9]{{0,{maximum_digits - 1}}}", lengths[0]
+        ) is None:
+            return None
+        size = int(lengths[0])
+        if size > MAXIMUM_BRIDGE_UPLOAD_BODY_BYTES:
+            return None
+        encoded_name = filenames[0]
+        if (
+            not 1 <= len(encoded_name) <= 1024
+            or re.fullmatch(r"(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2})+", encoded_name)
+            is None
+        ):
+            return None
+        try:
+            original_name = unquote_to_bytes(encoded_name).decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if (
+            quote(original_name, safe="-_.!~*'()") != encoded_name
+            or not 1 <= len(original_name) <= 255
+            or re.search(
+                r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]",
+                original_name,
+            )
+        ):
+            return None
+        try:
+            content = self._read_exact_body(size)
+        except (OSError, TimeoutError):
+            return None
+        if content is None or len(content) != size:
+            return None
+        return original_name, content_type, content
+
     def _read_exact_body(self, size: int) -> bytes | None:
         """Read one declared body exactly within a total wall-clock deadline."""
 
@@ -2745,6 +3605,18 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == BRIDGE_AGENTS_PATH and not parsed.query:
             payload, status = bridge_agents_payload()
+            self._send_json(payload, status)
+            return
+        agent_attachment_status_match = re.fullmatch(
+            r"/bridge/v1/agents/([^/]+)/attachments/enable",
+            parsed.path,
+        )
+        if agent_attachment_status_match is not None and not parsed.query:
+            agent_id = unquote(agent_attachment_status_match.group(1))
+            if _OPAQUE_ID.fullmatch(agent_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_agent_attachment_enable_status(agent_id)
             self._send_json(payload, status)
             return
         agent_configuration_match = re.fullmatch(
@@ -2802,6 +3674,30 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_link_preview_preference_payload()
             self._send_json(payload, status)
             return
+        if parsed.path == BRIDGE_WORKSPACE_FILES_PATH:
+            try:
+                pairs = parse_qsl(
+                    parsed.query,
+                    keep_blank_values=True,
+                    strict_parsing=True,
+                )
+            except ValueError:
+                pairs = []
+            if (
+                len(pairs) != 1
+                or pairs[0][0] != "query"
+                or len(pairs[0][1]) > 200
+                or re.search(r"[\x00-\x1f\x7f]", pairs[0][1])
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_workspace_files_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_CONTEXT_PACKS_PATH and not parsed.query:
+            payload, status = bridge_context_pack_summaries_payload()
+            self._send_json(payload, status)
+            return
         link_preview_image_match = re.fullmatch(
             r"/bridge/v1/link-previews/images/([^/]+)", parsed.path
         )
@@ -2838,6 +3734,58 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 message_id,
                 int(pairs[0][1]),
             )
+            self._send_json(payload, status)
+            return
+        conversation_content_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/attachments/([^/]+)/content",
+            parsed.path,
+        )
+        if conversation_content_match is not None and not parsed.query:
+            conversation_id = unquote(conversation_content_match.group(1))
+            attachment_id = unquote(conversation_content_match.group(2))
+            if (
+                _CONVERSATION_ID.fullmatch(conversation_id) is None
+                or _ATTACHMENT_ID.fullmatch(attachment_id) is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            metadata, stream, status = bridge_conversation_attachment_content(
+                conversation_id,
+                attachment_id,
+            )
+            if status != 200 or metadata is None or stream is None:
+                self._send_json(
+                    metadata or _conversation_file_failure(status)[0],
+                    status,
+                )
+            else:
+                self._send_attachment_content(metadata, stream)
+            return
+        staged_context_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/staged-context",
+            parsed.path,
+        )
+        if staged_context_match is not None and not parsed.query:
+            conversation_id = unquote(staged_context_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            with _conversation_file_sequence(conversation_id):
+                payload, status = bridge_conversation_staged_context_payload(
+                    conversation_id
+                )
+            self._send_json(payload, status)
+            return
+        conversation_media_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/media",
+            parsed.path,
+        )
+        if conversation_media_match is not None and not parsed.query:
+            conversation_id = unquote(conversation_media_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_conversation_media_payload(conversation_id)
             self._send_json(payload, status)
             return
         conversation_match = re.fullmatch(
@@ -2891,6 +3839,153 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
+        conversation_upload_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/attachments",
+            parsed.path,
+        )
+        if conversation_upload_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_upload_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            upload = self._raw_upload_body()
+            if upload is None:
+                lengths = self.headers.get_all("Content-Length", failobj=[]) or []
+                content_types = self.headers.get_all("Content-Type", failobj=[]) or []
+                if (
+                    len(lengths) == 1
+                    and re.fullmatch(r"[1-9][0-9]{0,15}", lengths[0])
+                    and int(lengths[0]) > MAXIMUM_BRIDGE_UPLOAD_BODY_BYTES
+                ):
+                    payload, status = _conversation_file_failure(413)
+                    self._send_json(payload, status)
+                elif (
+                    len(content_types) == 1
+                    and content_types[0].strip().lower()
+                    not in _SAFE_UPLOAD_CONTENT_TYPES
+                ):
+                    payload, status = _conversation_file_failure(415)
+                    self._send_json(payload, status)
+                else:
+                    self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            original_name, content_type, content = upload
+            with _conversation_file_sequence(conversation_id):
+                payload, status = bridge_stage_conversation_upload(
+                    conversation_id,
+                    original_name=original_name,
+                    content_type=content_type,
+                    content=content,
+                )
+            self._send_json(payload, status)
+            return
+        conversation_release_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/attachments/([^/]+)/release",
+            parsed.path,
+        )
+        if conversation_release_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_release_match.group(1))
+            attachment_id = unquote(conversation_release_match.group(2))
+            if (
+                _CONVERSATION_ID.fullmatch(conversation_id) is None
+                or _ATTACHMENT_ID.fullmatch(attachment_id) is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body()
+            if body != {}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            with _conversation_file_sequence(conversation_id):
+                payload, status = bridge_release_conversation_attachment(
+                    conversation_id,
+                    attachment_id,
+                )
+            self._send_json(payload, status)
+            return
+        conversation_workspace_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/workspace-files",
+            parsed.path,
+        )
+        if conversation_workspace_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_workspace_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_WORKSPACE_BODY_BYTES)
+            if body is None or set(body) != {"root_id", "relative_path"}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            with _conversation_file_sequence(conversation_id):
+                payload, status = bridge_stage_workspace_file(conversation_id, body)
+            self._send_json(payload, status)
+            return
+        conversation_context_pack_clear_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/context-packs/release",
+            parsed.path,
+        )
+        if conversation_context_pack_clear_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_context_pack_clear_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body()
+            if body != {}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            with _conversation_file_sequence(conversation_id):
+                payload, status = bridge_clear_conversation_context_pack(
+                    conversation_id,
+                    body,
+                )
+            self._send_json(payload, status)
+            return
+        conversation_context_pack_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/context-packs/([^/]+)",
+            parsed.path,
+        )
+        if conversation_context_pack_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            conversation_id = unquote(conversation_context_pack_match.group(1))
+            pack_id = unquote(conversation_context_pack_match.group(2))
+            if (
+                _CONVERSATION_ID.fullmatch(conversation_id) is None
+                or _CONTEXT_PACK_ID.fullmatch(pack_id) is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body()
+            if (
+                body is None
+                or set(body) != {"expected_revision"}
+                or not isinstance(body.get("expected_revision"), str)
+                or _CONTEXT_PACK_REVISION.fullmatch(body["expected_revision"])
+                is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            with _conversation_file_sequence(conversation_id):
+                payload, status = bridge_apply_conversation_context_pack(
+                    conversation_id,
+                    pack_id,
+                    body,
+                )
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_LINK_PREVIEW_PREFERENCE_PATH and not parsed.query:
             body = self._action_json_body()
             if body is None or set(body) != {"enabled", "expected_revision"}:
@@ -2927,6 +4022,39 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 body.get("message_revision"),
                 action=str(body["action"]),
             )
+            self._send_json(payload, status)
+            return
+        agent_attachment_match = re.fullmatch(
+            r"/bridge/v1/agents/([^/]+)/attachments/enable",
+            parsed.path,
+        )
+        if agent_attachment_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            agent_id = unquote(agent_attachment_match.group(1))
+            if _OPAQUE_ID.fullmatch(agent_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(
+                MAXIMUM_BRIDGE_AGENT_CAPABILITY_BODY_BYTES
+            )
+            expected = None if body is None else body.get("expected_capabilities")
+            if (
+                body is None
+                or set(body) != {"expected_capabilities"}
+                or not isinstance(expected, list)
+                or len(expected) > 64
+                or expected != sorted(set(expected))
+                or any(
+                    not isinstance(capability, str)
+                    or _CAPABILITY.fullmatch(capability) is None
+                    for capability in expected
+                )
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_enable_agent_attachments(agent_id, body)
             self._send_json(payload, status)
             return
         agent_configuration_match = re.fullmatch(

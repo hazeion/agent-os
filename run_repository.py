@@ -52,6 +52,12 @@ from conversation_repository import (
     conversation_message_record,
     conversation_turn_record,
 )
+from conversation_attachments import (
+    ConversationAttachmentError,
+    bind_staged_context_to_run,
+    copy_run_input_context,
+    staged_context_evidence,
+)
 from mentat_db import (
     MIGRATIONS,
     SCHEMA_VERSION as DATABASE_SCHEMA_VERSION,
@@ -357,6 +363,8 @@ def _run_schema_objects(schema_version: int) -> frozenset[str]:
         objects |= _CONVERSATION_RESULT_SCHEMA_OBJECTS
     if schema_version >= 14:
         objects |= _CONVERSATION_ATTEMPT_SCHEMA_OBJECTS
+    if schema_version >= 15:
+        objects |= frozenset({"mentat_conversation_run_contexts"})
     return objects
 
 
@@ -1389,6 +1397,7 @@ class RunRepository:
                 CONVERSATION_SUBMISSION_SCHEMA_VERSION,
                 12,
                 13,
+                14,
                 DATABASE_SCHEMA_VERSION,
             }
             or not _run_schema_objects(version).issubset(names)
@@ -1869,6 +1878,7 @@ class RunRepository:
         conversation_id: str,
         agent_id: str,
         text: str,
+        context_digest: str | None = None,
     ) -> ConversationDispatchReservation | None:
         """Resolve exact Send replay before consulting mutable Agent state."""
 
@@ -1884,6 +1894,16 @@ class RunRepository:
         if (
             str(row["conversation_id"]) != conversation_id
             or str(row["request_digest"]) != request_digest
+        ):
+            raise RunRepositoryConflict("conversation.idempotency_conflict")
+        stored_context = self.connection.execute(
+            "SELECT context_digest FROM mentat_conversation_run_contexts "
+            "WHERE run_id = COALESCE(?, ?)",
+            (row["result_run_id"], row["latest_run_id"]),
+        ).fetchone()
+        if context_digest is not None and (
+            stored_context is None
+            or str(stored_context["context_digest"]) != context_digest
         ):
             raise RunRepositoryConflict("conversation.idempotency_conflict")
         return self._conversation_reservation(row, duplicate=True)
@@ -3014,6 +3034,15 @@ class RunRepository:
                     admission.capacity_limit,
                 ),
             )
+            try:
+                copy_run_input_context(
+                    self.connection,
+                    source_run_id,
+                    admission.run_id,
+                    occurred_at=occurred_at,
+                )
+            except ConversationAttachmentError as exc:
+                raise RunRepositoryConflict(exc.code) from exc
             self.connection.execute(
                 """
                 INSERT INTO mentat_conversation_run_attempts (
@@ -3355,6 +3384,17 @@ class RunRepository:
                 ),
             ).fetchone()
             queue_head = self._oldest_queue_active_turn(conversation_id)
+            staged_context = staged_context_evidence(
+                self.connection,
+                conversation_id,
+            )
+            if staged_context is not None and (
+                runtime_type != "hermes"
+                or "run.attachments" not in capability_values
+            ):
+                raise RunRepositoryConflict(
+                    "conversation_context.capability_missing"
+                )
             if active is None and queue_head is not None and queue_head["state"] == "dispatching":
                 raise RunRepositoryError("run_repository.corrupt")
             create_run = active is None and queue_head is None
@@ -3380,6 +3420,10 @@ class RunRepository:
                 else:
                     self._ensure_run_capacity((run_identifier,))
                     turn_state = "dispatching"
+            if staged_context is not None and not create_run:
+                raise RunRepositoryConflict(
+                    "conversation_context.requires_idle"
+                )
             message_count = int(
                 self.connection.execute(
                     "SELECT COUNT(*) FROM mentat_conversation_messages"
@@ -3502,6 +3546,16 @@ class RunRepository:
                         "UPDATE mentat_conversation_turns SET latest_run_id = ? WHERE id = ?",
                         (run_identifier, turn_id),
                     )
+                    if staged_context is not None:
+                        try:
+                            bind_staged_context_to_run(
+                                self.connection,
+                                conversation_id,
+                                run_identifier,
+                                occurred_at=occurred_at,
+                            )
+                        except ConversationAttachmentError as exc:
+                            raise RunRepositoryConflict(exc.code) from exc
                 self.connection.execute(
                     """
                     UPDATE mentat_conversations

@@ -368,6 +368,16 @@ function pathOf(input: string | URL | Request): string {
   return new URL(input instanceof Request ? input.url : input.toString(), origin).pathname;
 }
 
+function emptyConversationContextResponse(path: string, method: string): Response | null {
+  if (method !== "GET") return null;
+  const match = /^\/api\/conversations\/(conv_[^/]+)\/(staged-context|media)$/u.exec(path);
+  if (!match) return null;
+  const base = { runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready", conversation_id: match[1] };
+  return Response.json(match[2] === "staged-context"
+    ? { ...base, attachments: [], context_pack: null, limits: { direct: 5, total: 8, images: 1 } }
+    : { ...base, runs: [] });
+}
+
 function deferredResponse() {
   let resolve: ((response: Response) => void) | undefined;
   const promise = new Promise<Response>((next) => { resolve = next; });
@@ -398,6 +408,8 @@ function installFetch({
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     calls.push({ body: init?.body?.toString(), method, path });
     if (path === "/api/conversations" && method === "GET") return Response.json(conversationList);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
@@ -473,6 +485,8 @@ test("Home Console gates initial drafting and moves an unbound draft only once",
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return await listResponse;
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === "/api/conversations" && method === "POST") {
@@ -627,6 +641,8 @@ test("Home Console scopes in-flight drafts and exact retry keys per Conversation
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(conversationList);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activityWithConversation);
     if (path === "/api/codex-readiness" && method === "GET") {
@@ -789,6 +805,8 @@ test("Home Console durably queues an ordinary Send behind the active Run", async
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     calls.push({ body: init?.body?.toString(), method, path });
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
@@ -852,6 +870,8 @@ test("Home Console keeps a ninth active-queue Turn client-side", async () => {
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     calls.push(`${method} ${path}`);
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
@@ -886,6 +906,8 @@ test("Home Console edits and cancels a queued Turn with both exact revisions", a
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") {
@@ -955,6 +977,8 @@ test("Home Console gives multi-row queue actions unique names and restores keybo
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") {
@@ -1022,6 +1046,8 @@ test("Home Console keeps a delayed queue mutation scoped away from another tab's
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") {
       return Response.json({ ...list, conversations: [conversation, otherConversation], count: 2 });
     }
@@ -1083,6 +1109,8 @@ test("Home Console does not let a delayed edit steal focus from a newer Turn edi
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") {
@@ -1134,6 +1162,8 @@ test("Home Console does not let delayed cancellation steal focus from a newer Tu
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") {
@@ -1182,6 +1212,8 @@ test("Home Console does not let delayed Continue steal focus from a newer Turn e
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") {
@@ -1231,6 +1263,8 @@ test("Home Console explicitly continues the blocked FIFO head after exact revali
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     calls.push({ body: init?.body?.toString(), method, path });
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
@@ -1281,6 +1315,8 @@ test("Home Console steers only the exact running Run and keeps an unverifiable d
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     calls.push({ body: init?.body?.toString(), method, path });
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
@@ -1355,6 +1391,8 @@ test("Home Console previews and confirms Stop without closing the Conversation",
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [stoppableAgent] });
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(stopped ? null : activeRun, conversation, [], [], stoppableAgent));
@@ -1393,6 +1431,8 @@ test("Home Console keeps approval in a dedicated card and confirms the exact res
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(answered ? { ...waitingRun, status: "running" } : waitingRun));
@@ -1423,6 +1463,8 @@ test("Home Console closes, reopens, archives, and restores without deleting hist
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [state] });
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, state));
@@ -1457,6 +1499,8 @@ test("Home Console creates one exact Retry Run and preserves the prior failure",
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(retried ? retryRun : failedRun));
@@ -1490,6 +1534,8 @@ test("Home Console keeps a duplicate Retry replay reconciling until exact readba
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(replayed ? replayedRun : failedRun));
@@ -1527,6 +1573,8 @@ test("Home Console previews and confirms one exact Hermes next-Run configuration
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [hermesAgent], conversations: [hermesConversation], direct_agent_id: null });
     if (path === "/api/agent-activity" && method === "GET") return Response.json({ ...activity, activity: [], direct_agent_id: null });
     if (path === `/api/conversations/${hermesConversation.id}` && method === "GET") return Response.json(detail(null, hermesConversation, [], [], hermesAgent));
@@ -1567,6 +1615,8 @@ test("Home Console keeps active Run configuration visible and selectors read-onl
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(activeRun));
@@ -1585,6 +1635,8 @@ test("Home Console invalidates a pending configuration preview when a Run starts
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [hermesAgent], conversations: [hermesConversation], direct_agent_id: null });
     if (path === "/api/agent-activity" && method === "GET") return Response.json({ ...activity, activity: [], direct_agent_id: null });
     if (path === `/api/conversations/${hermesConversation.id}` && method === "GET") return Response.json(detail(null, hermesConversation, [], [], hermesAgent));
@@ -1621,6 +1673,8 @@ test("Home Console rejects a delayed Agent configuration read after tab handoff"
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [firstAgent, secondAgent], conversations: [firstConversation, secondConversation], count: 2, direct_agent_id: null });
     if (path === "/api/agent-activity" && method === "GET") return Response.json({ ...activity, activity: [], direct_agent_id: null });
     if (path === `/api/conversations/${firstConversation.id}` && method === "GET") return Response.json(detail(null, firstConversation, [], [], firstAgent));
@@ -1650,6 +1704,8 @@ test("Home Console never configures the picker Agent while Conversation detail i
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [pickerAgent, boundAgent], conversations: [boundConversation], direct_agent_id: pickerAgent.id });
     if (path === "/api/agent-activity" && method === "GET") return Response.json({ ...activity, activity: [], direct_agent_id: pickerAgent.id });
     if (path === `/api/conversations/${boundConversation.id}` && method === "GET") return await delayedDetail;
@@ -1679,6 +1735,8 @@ test("Home Console distinguishes unavailable, unsupported, and unsafe configurat
     globalThis.fetch = async (input, init) => {
       const path = pathOf(input);
       const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
       if (path === "/api/conversations" && method === "GET") return Response.json(list);
       if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
       if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null));
@@ -1706,6 +1764,8 @@ test("Home Console scopes same-Agent preview and confirmed refresh to the select
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [conversation, secondConversation], count: 2 });
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null));
@@ -1752,6 +1812,8 @@ test("Home Console hides Resume when only the Agent declaration advertises it", 
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     paths.push(`${method} ${path}`);
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [resumableAgent] });
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
@@ -1802,6 +1864,8 @@ test("Home Console opens a tab for an activity Conversation outside the loaded p
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [], count: 0 });
     if (path === "/api/agent-activity" && method === "GET") return Response.json(unloadedActivity);
     if (path === `/api/conversations/${unloaded.id}` && method === "GET") return Response.json(detail({ id: "run_unloaded_activity", partial: false, status: "failed", updated_at: timestamp }, unloaded));
@@ -1839,6 +1903,8 @@ test("Home Console streams only the selected Run and reconciles durable completi
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") {
       return Response.json({ ...list, conversations: [conversation, otherConversation], count: 2 });
     }
@@ -1941,6 +2007,8 @@ test("Home Console groups durable Run and queued Messages in screen-reader order
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, conversation, [], messages));
@@ -1963,6 +2031,8 @@ test("Home Console isolates Thinking and Activity state across selected Runs", a
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [conversation, secondConversation], count: 2 });
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(firstRun));
@@ -2004,6 +2074,8 @@ test("Home Console retains independent scroll anchors for equal-length Conversat
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, conversations: [conversation, secondConversation], count: 2 });
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, conversation, [], [message(conversation, "msg_scroll_first", "First scroll transcript")]));
@@ -2078,6 +2150,8 @@ test("Home Console coalesces a live-event burst and rejects a trailing stale ref
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") {
@@ -2145,6 +2219,8 @@ test("Home Console closes old streams and hands live progress across two active 
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") {
       return Response.json({ ...list, conversations: [conversation, otherConversation], count: 2 });
     }
@@ -2230,6 +2306,8 @@ test("Home Console switches loaded tabs from cached canonical detail immediately
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") {
       return Response.json({ ...list, conversations: [conversation, otherConversation], count: 2 });
     }
@@ -2270,6 +2348,8 @@ test("Home Console bounds a 100-message transcript and typing causes no network 
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     calls.push(`${method} ${path}`);
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
@@ -2307,6 +2387,8 @@ test("Home Console enforces one aggregate formatting budget across 200 fragmente
     const requestUrl = new URL(input instanceof Request ? input.url : input.toString(), origin);
     const path = requestUrl.pathname;
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") {
@@ -2343,6 +2425,8 @@ test("Home Console retains a bounded 200-row transcript across older-message pag
     const requestUrl = new URL(input instanceof Request ? input.url : input.toString(), origin);
     const path = requestUrl.pathname;
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     calls.push(`${method} ${requestUrl.pathname}${requestUrl.search}`);
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
@@ -2413,6 +2497,8 @@ test("Home Console keeps plain links authoritative across preview retry, ready, 
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/conversations" && method === "GET") return Response.json(list);
     if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
     if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, conversation, [], [linkedMessage]));
@@ -2460,6 +2546,8 @@ test("Home Console accepts a durable Turn when automatic preview work fails", as
   globalThis.fetch = async (input, init) => {
     const path = pathOf(input);
     const method = init?.method ?? "GET";
+    const contextFixture = emptyConversationContextResponse(path, method);
+    if (contextFixture) return contextFixture;
     if (path === "/api/link-previews/preference" && method === "GET") return Response.json({ schema_version: 1, service: "mentat-local-bridge", runtime: "python", status: "ready", enabled: true, revision: 1 });
     if (path.endsWith(`/messages/${submission.message.id}/link-previews`) && method === "POST") throw new Error("preview unavailable");
     if (path === `/api/conversations/${conversation.id}` && method === "GET" && calls.some((call) => call.path.endsWith("/turns"))) return Response.json(detail(submission.run, conversation, [], [submission.message]));
@@ -2476,4 +2564,136 @@ test("Home Console accepts a durable Turn when automatic preview work fails", as
   assert.equal((prompt as HTMLTextAreaElement).value, "");
   assert.equal((await screen.findByRole("link", { name: "https://python.org/devguide" })).textContent, "https://python.org/devguide");
   assert.equal(calls.filter((call) => call.path.endsWith("/turns")).length, 1);
+});
+
+test("Home Console restores staged controls and groups retained files with their exact Run", async () => {
+  const hermesAgent = {
+    capabilities: ["run.attachments", "run.message", "run.start"],
+    id: "agent_hermes",
+    name: "Hermes Local",
+    runtime_type: "hermes",
+    system_role: "direct",
+  };
+  const runId = "run_media_ui";
+  const messages = [
+    transcriptMessage(1, "user", "Create a result", runId),
+    transcriptMessage(2, "assistant", "Done", runId),
+  ];
+  const mediaItem = {
+    available: true,
+    byte_size: 12,
+    created_at: timestamp,
+    expires_at: null,
+    id: `attachment_${"a".repeat(32)}`,
+    kind: "text",
+    mime_type: "text/plain",
+    name: "result.txt",
+    state: "attached",
+  };
+  const conversationList = {
+    ...list,
+    agents: [hermesAgent],
+    direct_agent_id: hermesAgent.id,
+    conversations: [{ ...conversation, agent_id: hermesAgent.id }],
+  };
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(conversationList);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") {
+      return Response.json(detail({ id: runId, partial: false, status: "completed", updated_at: timestamp }, { ...conversation, agent_id: hermesAgent.id }, [], messages, hermesAgent));
+    }
+    if (path === `/api/conversations/${conversation.id}/staged-context` && method === "GET") {
+      return Response.json({ runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready", conversation_id: conversation.id, attachments: [], context_pack: { id: "pack_0123456789abcdef", name: "Reviewed plan", revision: `sha256:${"b".repeat(64)}` }, limits: { direct: 5, total: 8, images: 1 } });
+    }
+    if (path === `/api/conversations/${conversation.id}/media` && method === "GET") {
+      return Response.json({ runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready", conversation_id: conversation.id, runs: [{ run_id: "run_file_only", created_at: "2026-08-25T11:00:00Z", inputs: [], outputs: [{ ...mediaItem, id: `attachment_${"c".repeat(32)}`, name: "file-only.txt" }] }, { run_id: runId, created_at: "2026-08-26T12:00:00Z", inputs: [], outputs: [mediaItem] }] });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await screen.findByRole("button", { name: "Remove Reviewed plan Context Pack" });
+  assert.equal(screen.getByText("result.txt").textContent, "result.txt");
+  assert.equal(screen.getAllByText("Generated file").length, 2);
+  assert.equal(screen.getByText("file-only.txt").textContent, "file-only.txt");
+  assert.ok(screen.getByRole("region", { name: "Run files run_file_only" }));
+  const fileOnly = screen.getByText("file-only.txt");
+  const resultFile = screen.getByText("result.txt");
+  assert.equal(Boolean(fileOnly.compareDocumentPosition(resultFile) & Node.DOCUMENT_POSITION_FOLLOWING), true);
+  const review = screen.getByText("result.txt").closest("article")?.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+  assert.ok(review);
+  assert.equal(review.getAttribute("href"), `/api/conversations/${conversation.id}/attachments/${mediaItem.id}/content`);
+
+  const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+  await user.type(prompt, "Use the reviewed plan");
+  assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, false);
+  assert.match(document.querySelector(".composer-boundary")?.textContent ?? "", /1 staged context item/u);
+});
+
+test("Home Console pauses Send until an uncertain staged-context read is reconciled", async () => {
+  const hermesAgent = { ...agent, capabilities: ["run.attachments", "run.message", "run.start"], id: "agent_context_gate", runtime_type: "hermes" };
+  const targetConversation = { ...conversation, agent_id: hermesAgent.id };
+  let stagedReads = 0;
+  const calls: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    calls.push(`${method} ${path}`);
+    if (path === "/api/conversations" && method === "GET") return Response.json({ ...list, agents: [hermesAgent], conversations: [targetConversation], direct_agent_id: hermesAgent.id });
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(null, targetConversation, [], [], hermesAgent));
+    if (path === `/api/conversations/${conversation.id}/staged-context` && method === "GET") {
+      stagedReads += 1;
+      if (stagedReads === 1) return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 });
+      return emptyConversationContextResponse(path, method)!;
+    }
+    if (path === `/api/conversations/${conversation.id}/media` && method === "GET") return emptyConversationContextResponse(path, method)!;
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  const refresh = await screen.findByRole("button", { name: "Refresh files" });
+  const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+  await user.type(prompt, "Do not send hidden context");
+  assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, true);
+  assert.equal(calls.some((call) => call.endsWith("/turns")), false);
+
+  await user.click(refresh);
+  await waitFor(() => assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, false));
+  assert.equal(stagedReads, 2);
+});
+
+test("staged-context read failure does not block active Run queueing or steering", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const activeRun = { id: "run_context_read_failure", partial: false, status: "running", updated_at: timestamp };
+  let stagedReads = 0;
+  globalThis.fetch = async (input, init) => {
+    const path = pathOf(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/conversations" && method === "GET") return Response.json(list);
+    if (path === "/api/agent-activity" && method === "GET") return Response.json(activity);
+    if (path === `/api/conversations/${conversation.id}` && method === "GET") return Response.json(detail(activeRun));
+    if (path === `/api/conversations/${conversation.id}/staged-context` && method === "GET") { stagedReads += 1; return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 }); }
+    if (path === `/api/conversations/${conversation.id}/media` && method === "GET") return emptyConversationContextResponse(path, method)!;
+    throw new Error(`Unexpected fetch: ${method} ${path}`);
+  };
+
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await waitFor(() => assert.equal(stagedReads, 1));
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  await act(async () => {
+    MockEventSource.instances[0].emit("snapshot", JSON.stringify({ event: { run_id: activeRun.id, summary: "Running" } }));
+  });
+  const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+  await user.type(prompt, "Queue without file authority");
+  assert.equal((screen.getByRole("button", { name: "Queue" }) as HTMLButtonElement).disabled, false);
+  await user.clear(prompt);
+  await user.type(prompt, "/steer keep going");
+  assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, false);
 });

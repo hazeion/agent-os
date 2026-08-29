@@ -359,6 +359,21 @@ path merely because model prose mentions it. Preserve staged expiry,
 reference-aware grace, active-run protection, bounded garbage collection, and
 startup reconciliation when extending this surface.
 
+Schema-15 Conversation staging is disposable, Conversation-owned composer state,
+not backup authority. Keep the total ceiling at eight, the direct
+upload/workspace ceiling at five, and the image ceiling at one. Context-bearing
+Send is local-Hermes-only and immediate: it requires an active idle Conversation
+with no queue-active Turn, binds the exact staged set to the reserved Run in the
+same transaction, and must never queue, steer, retry without retained inputs, or
+silently continue as text-only. Existing Agents gain `run.attachments` only
+through the exact explicit local-Hermes Enable files action; never grant it in a
+migration or infer it from runtime availability. If any staged Context Pack
+snapshot becomes unavailable, discard the entire pack stage rather than sending
+partial context.
+Do not advertise local file execution where Run input cleanup cannot use a
+descriptor-relative no-follow delete. Such platforms must fail before
+materializing inputs; never fall back to check-then-delete path traversal.
+
 Do not pass extensionless content-addressed blob paths directly to Hermes image
 arguments. Materialize a private run-scoped input snapshot with the validated
 image extension, keep that path server-only, and clean it after execution.

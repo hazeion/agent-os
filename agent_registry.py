@@ -788,7 +788,7 @@ def validate_registry_connection(
                 )
             except (sqlite3.Error, TypeError, ValueError) as exc:
                 raise AgentRegistryError("agent_registry.corrupt") from exc
-            if schema_version not in {8, 9, 10, 11, 12, 13, DATABASE_SCHEMA_VERSION}:
+            if schema_version not in {8, 9, 10, 11, 12, 13, 14, DATABASE_SCHEMA_VERSION}:
                 raise AgentRegistryError("agent_registry.unsupported")
             if (
                 _embedded_schema_signature(connection)
@@ -1022,6 +1022,119 @@ class AgentRegistry:
                 connection,
                 supported_runtime_types=self.supported_runtime_types,
             )
+        finally:
+            connection.close()
+
+    def enable_local_hermes_attachments(
+        self,
+        agent_id: str,
+        *,
+        expected_capabilities: Iterable[str],
+    ) -> CanonicalAgentRecord:
+        """Enable files only after one explicit, exact Agent-scoped action."""
+
+        expected = tuple(sorted(set(str(value) for value in expected_capabilities)))
+        if (
+            not isinstance(agent_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", agent_id)
+            or isinstance(expected_capabilities, (str, bytes))
+            or len(expected) > 64
+            or any(re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", value) is None for value in expected)
+        ):
+            raise AgentRegistryValidationError("agent.invalid")
+        connection = connect_registry(self.data_dir)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                records = _canonical_agent_records(
+                    connection,
+                    supported_runtime_types=self.supported_runtime_types,
+                )
+                current = next((record for record in records if record.agent.id == agent_id), None)
+                if current is None:
+                    raise AgentRegistryConflict("agent.not_found")
+                if current.agent.runtime_type != "hermes":
+                    raise AgentRegistryValidationError("agent.runtime_unsupported")
+                if tuple(sorted(current.agent.capabilities)) != expected:
+                    raise AgentRegistryConflict("agent.conflict")
+                active = connection.execute(
+                    "SELECT 1 FROM mentat_runs WHERE agent_id = ? AND ("
+                    "status IN ('reserved','queued','submitting','starting','running',"
+                    "'cancelling','waiting','waiting_for_approval','waiting_for_clarification','unknown') "
+                    "OR (runtime_type = 'hermes' AND source = 'console' "
+                    "AND status IN ('completed','failed','cancelled','stopped','interrupted') "
+                    "AND terminal_finalized = 0)) LIMIT 1",
+                    (agent_id,),
+                ).fetchone()
+                if active is not None:
+                    raise AgentRegistryConflict("agent.active_run")
+                if "run.attachments" not in current.agent.capabilities:
+                    next_capabilities = tuple(sorted((*expected, "run.attachments")))
+                    encoded = json.dumps(next_capabilities, ensure_ascii=True, separators=(",", ":"))
+                    updated = connection.execute(
+                        "UPDATE mentat_agents SET capabilities_json = ?, revision = revision + 1, "
+                        "updated_at = ? WHERE id = ? AND capabilities_json = ?",
+                        (
+                            encoded,
+                            time.time(),
+                            agent_id,
+                            json.dumps(expected, ensure_ascii=True, separators=(",", ":")),
+                        ),
+                    ).rowcount
+                    if updated != 1:
+                        raise AgentRegistryConflict("agent.conflict")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            records = _canonical_agent_records(
+                connection,
+                supported_runtime_types=self.supported_runtime_types,
+            )
+            enabled = next((record for record in records if record.agent.id == agent_id), None)
+            if enabled is None or "run.attachments" not in enabled.agent.capabilities:
+                raise AgentRegistryError("agent_registry.corrupt")
+            return enabled
+        except sqlite3.Error as exc:
+            raise _translate_sqlite_error(exc) from exc
+        finally:
+            connection.close()
+
+    def local_hermes_attachment_enable_state(self, agent_id: str) -> str:
+        """Return one bounded eligibility state without changing Agent authority."""
+
+        if not isinstance(agent_id, str) or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", agent_id
+        ) is None:
+            raise AgentRegistryValidationError("agent.invalid")
+        connection = connect_registry(self.data_dir)
+        try:
+            records = _canonical_agent_records(
+                connection,
+                supported_runtime_types=self.supported_runtime_types,
+            )
+            current = next(
+                (record for record in records if record.agent.id == agent_id),
+                None,
+            )
+            if current is None:
+                return "not_found"
+            if "run.attachments" in current.agent.capabilities:
+                return "enabled"
+            if current.agent.runtime_type != "hermes":
+                return "unsupported"
+            active = connection.execute(
+                "SELECT 1 FROM mentat_runs WHERE agent_id = ? AND ("
+                "status IN ('reserved','queued','submitting','starting','running',"
+                "'cancelling','waiting','waiting_for_approval','waiting_for_clarification','unknown') "
+                "OR (runtime_type = 'hermes' AND source = 'console' "
+                "AND status IN ('completed','failed','cancelled','stopped','interrupted') "
+                "AND terminal_finalized = 0)) LIMIT 1",
+                (agent_id,),
+            ).fetchone()
+            return "active_run" if active is not None else "available"
+        except sqlite3.Error as exc:
+            raise _translate_sqlite_error(exc) from exc
         finally:
             connection.close()
 

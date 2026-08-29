@@ -32,6 +32,10 @@ MAX_WORKSPACE_RESULTS = 50
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_TEXT_BYTES = 2 * 1024 * 1024
 COPY_CHUNK_BYTES = 64 * 1024
+SECURE_DIR_FD_DELETE = all(
+    function in getattr(os, "supports_dir_fd", set())
+    for function in (os.open, os.stat, os.unlink, os.rmdir)
+)
 
 IMAGE_TYPES = {
     ".png": "image/png",
@@ -211,6 +215,75 @@ def _copy_private_regular_file(source: Path, destination: Path, *, max_bytes: in
     return destination.resolve(strict=True)
 
 
+def _write_private_bytes(content: bytes, destination: Path, *, max_bytes: int) -> Path:
+    """Materialize already digest-verified bytes without following a destination link."""
+
+    if not isinstance(content, bytes) or not content or len(content) > max_bytes:
+        raise ArtifactValidationError("invalid_attachment", "Verified attachment bytes are invalid")
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    binary = getattr(os, "O_BINARY", 0)
+    descriptor = None
+    created = False
+    completed = False
+    try:
+        descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow | binary,
+            0o600,
+        )
+        created = True
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        completed = True
+    except FileExistsError as exc:
+        raise ArtifactValidationError("unsafe_input_directory", "Agent input snapshot already exists") from exc
+    except OSError as exc:
+        raise ArtifactValidationError("unsafe_input_directory", "Agent input snapshot could not be prepared") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if created and not completed:
+            destination.unlink(missing_ok=True)
+    if os.name != "nt":
+        destination.chmod(0o600, follow_symlinks=False)
+    return destination.resolve(strict=True)
+
+
+def materialize_verified_input_bytes(
+    data_dir: Path,
+    run_id: str,
+    attachment_id: str,
+    *,
+    kind: str,
+    mime_type: str,
+    content: bytes,
+) -> Path:
+    """Write digest-verified attachment bytes into one private Run input path."""
+
+    normalized_run_id = validate_run_id(run_id)
+    if not OPAQUE_ID_PATTERN.fullmatch(str(attachment_id or "")):
+        raise ArtifactValidationError("invalid_attachment", "Attachment identifier is invalid")
+    if kind == "image":
+        suffix = IMAGE_SUFFIXES.get(str(mime_type or "").strip().lower())
+        maximum = MAX_IMAGE_BYTES
+    elif kind in {"text", "code", "file"}:
+        suffix = ".txt"
+        maximum = MAX_TEXT_BYTES
+    else:
+        suffix = None
+        maximum = 0
+    if not suffix:
+        raise ArtifactValidationError("invalid_attachment", "Attachment kind is unsupported")
+    return _write_private_bytes(
+        content,
+        prepare_input_directory(data_dir, normalized_run_id) / f"{attachment_id}{suffix}",
+        max_bytes=maximum,
+    )
+
+
 def _path_has_symlink(root: Path, relative: Path) -> bool:
     cursor = root
     for part in relative.parts:
@@ -280,8 +353,26 @@ def build_execution_context(
         kind = str(item.get("kind") or "file").strip().lower()
         if kind not in {"image", "text", "code", "file"}:
             raise ArtifactValidationError("invalid_attachment", "Attachment kind is unsupported")
-        path = _validated_owned_file(item.get("path") or item.get("storage_path"), owned_root)
-        if kind == "image":
+        verified_content = item.get("_verified_content")
+        pre_materialized = item.get("_pre_materialized") is True
+        if pre_materialized:
+            path = _validated_owned_file(item.get("path"), owned_root)
+            if kind == "image":
+                image_path = path
+        elif verified_content is not None:
+            path = materialize_verified_input_bytes(
+                data_dir,
+                normalized_run_id,
+                attachment_id,
+                kind=kind,
+                mime_type=str(item.get("mime_type") or ""),
+                content=verified_content,
+            )
+            if kind == "image":
+                image_path = path
+        else:
+            path = _validated_owned_file(item.get("path") or item.get("storage_path"), owned_root)
+        if kind == "image" and verified_content is None and not pre_materialized:
             mime_type = str(item.get("mime_type") or "").strip().lower()
             suffix = IMAGE_SUFFIXES.get(mime_type)
             if not suffix:
@@ -319,23 +410,85 @@ def cleanup_run_input_directory(data_dir: Path, run_id: str) -> int:
     run_root = input_root / normalized
     if not run_root.exists():
         return 0
-    if input_root.is_symlink() or run_root.is_symlink():
-        raise ArtifactValidationError("unsafe_input_directory", "Agent input directory is unsafe")
-    resolved_input_root = input_root.resolve(strict=True)
-    resolved_run_root = run_root.resolve(strict=True)
-    if resolved_input_root not in resolved_run_root.parents or not resolved_run_root.is_dir():
-        raise ArtifactValidationError("unsafe_input_directory", "Agent input directory is outside runtime storage")
+    if SECURE_DIR_FD_DELETE:
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        directory_flags = os.O_RDONLY | no_follow | getattr(os, "O_DIRECTORY", 0)
+        descriptors: list[int] = []
+        try:
+            current = os.open(data_root, directory_flags)
+            descriptors.append(current)
+            for part in ("runtime", "agent-console-inputs", normalized):
+                current = os.open(part, directory_flags, dir_fd=current)
+                descriptors.append(current)
+            input_descriptor = descriptors[-2]
+            run_descriptor = descriptors[-1]
+            removed = 0
+            for name in os.listdir(run_descriptor):
+                details = os.stat(
+                    name,
+                    dir_fd=run_descriptor,
+                    follow_symlinks=False,
+                )
+                if stat.S_ISDIR(details.st_mode):
+                    raise ArtifactValidationError(
+                        "unsafe_input_directory",
+                        "Agent input directory contains an unsafe entry",
+                    )
+                if not (stat.S_ISREG(details.st_mode) or stat.S_ISLNK(details.st_mode)):
+                    raise ArtifactValidationError(
+                        "unsafe_input_directory",
+                        "Agent input directory contains an unsafe entry",
+                    )
+                os.unlink(name, dir_fd=run_descriptor)
+                removed += 1
+            os.rmdir(normalized, dir_fd=input_descriptor)
+            return removed
+        except OSError as exc:
+            raise ArtifactValidationError(
+                "unsafe_input_directory",
+                "Agent input directory could not be cleaned safely",
+            ) from exc
+        finally:
+            for descriptor in reversed(descriptors):
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+    raise ArtifactValidationError(
+        "unsafe_input_directory",
+        "Secure Run input cleanup is unavailable on this platform",
+    )
+
+
+def reconcile_run_input_directories(
+    data_dir: Path,
+    *,
+    active_run_ids: Sequence[str] = (),
+    maximum_directories: int = 128,
+) -> int:
+    """Remove bounded stale Run input directories without following links."""
+
+    root = Path(data_dir).absolute() / "runtime" / "agent-console-inputs"
+    if not root.exists():
+        return 0
+    if root.is_symlink() or not root.is_dir():
+        raise ArtifactValidationError("unsafe_input_directory", "Agent input storage is unsafe")
+    active = {validate_run_id(run_id) for run_id in active_run_ids}
+    entries = sorted(root.iterdir(), key=lambda item: item.name)
+    if entries and not SECURE_DIR_FD_DELETE:
+        raise ArtifactValidationError(
+            "unsafe_input_directory",
+            "Automatic stale input cleanup is unavailable on this platform",
+        )
+    if len(entries) > maximum_directories:
+        entries = entries[:maximum_directories]
     removed = 0
-    for candidate in resolved_run_root.iterdir():
-        if candidate.is_symlink():
-            candidate.unlink()
-            removed += 1
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_dir() or not RUN_ID_PATTERN.fullmatch(entry.name):
             continue
-        if not candidate.is_file():
-            raise ArtifactValidationError("unsafe_input_directory", "Agent input directory contains an unsafe entry")
-        candidate.unlink()
-        removed += 1
-    resolved_run_root.rmdir()
+        if entry.name in active:
+            continue
+        removed += cleanup_run_input_directory(data_dir, entry.name)
     return removed
 
 

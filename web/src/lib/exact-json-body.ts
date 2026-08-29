@@ -133,6 +133,53 @@ export async function readLinkPreviewPreferenceBody(
     : null;
 }
 
+export async function readWorkspaceAttachmentBody(
+  request: Request,
+): Promise<{ rootId: string; relativePath: string } | null> {
+  const body = await readBoundedJson(request, 1_024);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "relative_path,root_id") return null;
+  const value = body as Record<string, unknown>;
+  if (
+    typeof value.root_id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u.test(value.root_id)
+    || typeof value.relative_path !== "string"
+    || !value.relative_path
+    || value.relative_path.length > 1_000
+    || value.relative_path.trim() !== value.relative_path
+    || value.relative_path.startsWith("/")
+    || value.relative_path.includes("\\")
+    || value.relative_path.includes("\0")
+    || value.relative_path.split("/").some((part) => !part || part === "." || part === "..")
+  ) return null;
+  return { rootId: value.root_id, relativePath: value.relative_path };
+}
+
+export async function readContextPackApplyBody(
+  request: Request,
+): Promise<{ expectedRevision: string } | null> {
+  const body = await readBoundedJson(request, 256);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join(",") !== "expected_revision") return null;
+  const revision = (body as Record<string, unknown>).expected_revision;
+  return typeof revision === "string" && /^sha256:[0-9a-f]{64}$/u.test(revision)
+    ? { expectedRevision: revision }
+    : null;
+}
+
+export async function readEnableAgentAttachmentsBody(
+  request: Request,
+): Promise<{ expectedCapabilities: string[] } | null> {
+  const body = await readBoundedJson(request, 4_096);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join(",") !== "expected_capabilities") return null;
+  const capabilities = (body as Record<string, unknown>).expected_capabilities;
+  if (
+    !Array.isArray(capabilities)
+    || capabilities.length > 64
+    || !capabilities.every((item) => typeof item === "string" && /^[a-z][a-z0-9_.-]{0,63}$/u.test(item))
+    || capabilities.some((item, index) => index > 0 && capabilities[index - 1] >= item)
+  ) return null;
+  return { expectedCapabilities: [...capabilities] as string[] };
+}
+
 export async function readAgentConfigurationBody(
   request: Request,
   preview: boolean,

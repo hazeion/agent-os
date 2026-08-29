@@ -7,6 +7,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from typing import Any
 
+from agent_console_artifacts import SECURE_DIR_FD_DELETE
+
 from agent_runtime import (
     AgentEvent,
     AgentEventType,
@@ -172,6 +174,26 @@ class HermesRuntime:
 
     def console_transport(self) -> Any:
         return self._transport_factory()
+
+    def supports_attachments(self, runtime_agent_ref: str) -> bool:
+        """Return true only for the fixed local compatibility file boundary."""
+
+        if (
+            not SECURE_DIR_FD_DELETE
+            or
+            self._compatibility_handlers is None
+            or not isinstance(runtime_agent_ref, str)
+            or not runtime_agent_ref
+        ):
+            return False
+        try:
+            transport = self._transport_factory()
+        except Exception:
+            return False
+        return bool(
+            getattr(transport, "mode", None) == "local"
+            and getattr(transport, "console_available", False)
+        )
 
     def submission_guard(self):
         """Serialize reservation-through-launch with Hermes configuration changes."""

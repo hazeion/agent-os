@@ -24,6 +24,8 @@ _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
 _VERCEL_MESSAGE_EVENT_ID = re.compile(r"vercel_message_[0-9a-f]{24}\Z")
 _VERCEL_COST_EVENT_ID = re.compile(r"vercel_usage_[0-9a-f]{24}\Z")
+_ATTACHMENT_ID = re.compile(r"attachment_[0-9a-f]{32}\Z")
+_CONTEXT_PACK_ID = re.compile(r"pack_[0-9a-f]{16}\Z")
 _CANONICAL_EVENT_BYTES = 32_768
 
 
@@ -556,6 +558,9 @@ class RuntimeContext:
     dispatch_id: str | None = None
     runtime_run_ref: str | None = None
     continuation_runtime_run_ref: str | None = None
+    attachment_ids: tuple[str, ...] = ()
+    context_pack_id: str | None = None
+    context_pack_revision: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "agent_id", _require_id(self.agent_id, "agent id"))
@@ -593,6 +598,29 @@ class RuntimeContext:
                     "runtime continuation reference",
                 ),
             )
+        attachments = tuple(self.attachment_ids)
+        if (
+            len(attachments) > 8
+            or len(set(attachments)) != len(attachments)
+            or any(
+                not isinstance(value, str)
+                or _ATTACHMENT_ID.fullmatch(value) is None
+                for value in attachments
+            )
+        ):
+            raise ValueError("runtime attachments are invalid")
+        object.__setattr__(self, "attachment_ids", attachments)
+        if (self.context_pack_id is None) != (self.context_pack_revision is None):
+            raise ValueError("runtime Context Pack binding is incomplete")
+        if self.context_pack_id is not None:
+            if _CONTEXT_PACK_ID.fullmatch(self.context_pack_id) is None:
+                raise ValueError("runtime Context Pack id is invalid")
+            revision = self.context_pack_revision
+            if (
+                not isinstance(revision, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", revision) is None
+            ):
+                raise ValueError("runtime Context Pack revision is invalid")
 
 
 @runtime_checkable

@@ -358,6 +358,23 @@ function installPerformanceFixture() {
         revision: 1,
       }));
     }
+    const conversationContextMatch = url.pathname.match(
+      /^\/api\/conversations\/(conv_perf_[ab])\/(staged-context|media)$/u,
+    );
+    if (conversationContextMatch && method === "GET") {
+      const [, conversationId, resource] = conversationContextMatch;
+      return Promise.resolve(response(resource === "staged-context" ? {
+        ...serviceFields,
+        attachments: [],
+        context_pack: null,
+        conversation_id: conversationId,
+        limits: { direct: 5, images: 1, total: 8 },
+      } : {
+        ...serviceFields,
+        conversation_id: conversationId,
+        runs: [],
+      }));
+    }
     const previewMatch = url.pathname.match(
       /^\/api\/conversations\/conv_perf_a\/messages\/(msg_perf_conv_perf_a_\d+)\/link-previews$/u,
     );

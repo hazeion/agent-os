@@ -5,6 +5,12 @@ All notable changes to Mentat.
 ## 2026-08-29
 
 ### Added
+- Added schema-15 Conversation-owned file and Context Pack staging with exact
+  refresh recovery, idle-only local Hermes dispatch, retained Retry inputs, and
+  explicit Agent-scoped file permission.
+- Added fixed Python/Node upload, workspace snapshot, Context Pack, retained
+  media, and Conversation-bound content capabilities plus compact composer
+  controls and Run-grouped image/file cards.
 - Added Message-bound public-HTTPS rich-link previews with pinned DNS/IP/TLS
   transport, credential-free replaceable workers, bounded metadata parsing,
   verified WebP transformation, safe asynchronous cards, and permanent plain
@@ -26,6 +32,12 @@ All notable changes to Mentat.
   Conversation projection.
 
 ### Safety
+- Kept file bytes, paths, hashes, storage keys, runtime references, and arbitrary
+  URLs outside Node and browser authority; Context Packs and every snapshot are
+  revalidated before dispatch with no queued, remote, or text-only fallback.
+- Excluded unsent Conversation staging from backup and compatible export,
+  preserved retained Run inputs/artifacts, and made startup reconciliation drop
+  an entire changed Context Pack snapshot set.
 - Prevented browser-selected URLs and generic proxying; every preview re-reads
   one exact accepted user Message and keeps raw URLs, HTML, headers, redirects,
   addresses, original images, paths, credentials, and internal errors outside

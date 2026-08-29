@@ -77,12 +77,17 @@ class AgentConsoleObservabilityTests(unittest.TestCase):
             ))
             worker.return_value.start.assert_called_once_with()
 
-            rejected, rejected_status = server.start_agent_console_run({
-                "agent_id": "default",
-                "prompt": "Conflicting request",
-                "session_id": "session_existing",
-                "start_new_session": True,
-            })
+            with patch.object(server, "DATA_DIR", data_dir), patch.object(
+                server,
+                "CONFIGURED_DATA_DIR",
+                data_dir,
+            ):
+                rejected, rejected_status = server.start_agent_console_run({
+                    "agent_id": "default",
+                    "prompt": "Conflicting request",
+                    "session_id": "session_existing",
+                    "start_new_session": True,
+                })
             self.assertEqual(rejected_status, 400)
             self.assertIn("cannot also resume", rejected["error"])
 
