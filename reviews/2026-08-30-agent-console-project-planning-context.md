@@ -307,8 +307,8 @@ cutover.
 
 - Branch and base: `codex/agent-console-slice-10` to `main` at `475d308`.
 - User authorization and scope: standing approval recorded; ready PR only.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- Implementation commit: `fe8db57`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/160
 
 ## Outcome review
 
