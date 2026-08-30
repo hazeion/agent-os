@@ -310,8 +310,20 @@ async function captureGeometry(client) {
       const value = element.getBoundingClientRect();
       return { left: value.left, right: value.right, top: value.top, width: value.width, height: value.height };
     };
+    const configurationItems = [
+      ...document.querySelectorAll('.composer-configuration label'),
+      document.querySelector('.configuration-explanation'),
+    ].filter(Boolean).map(rect);
+    const configurationOverlap = configurationItems.some((left, index) =>
+      configurationItems.slice(index + 1).some((right) =>
+        Math.min(left.right, right.right) - Math.max(left.left, right.left) > 0.5
+        && Math.min(left.top + left.height, right.top + right.height) - Math.max(left.top, right.top) > 0.5
+      )
+    );
     return {
       bridge: rect(document.querySelector('.bridge-status')),
+      configurationMinimumWidth: Math.min(...configurationItems.slice(0, 4).map((item) => item.width)),
+      configurationOverlap,
       panels: [...document.querySelectorAll('.conversation-workspace, .activity-rail')].map(rect),
       sidebar: rect(document.querySelector('.sidebar')),
       workspace: rect(document.querySelector('.workspace')),
@@ -379,8 +391,13 @@ async function inspectViewport(client, viewport) {
     if (
       ready.overflow > 1
       || checking.overflow > 1
+      || ready.configurationOverlap
+      || checking.configurationOverlap
+      || ready.configurationMinimumWidth < 70
+      || checking.configurationMinimumWidth < 70
       || geometryShift > 0.5
       || !panelsStack
+      || viewport.width > 900 && ready.panels[1].height >= ready.panels[0].height
       || !modeValid
       || details.bridgeLive !== "polite"
       || details.bridgeAtomic !== "true"
@@ -408,10 +425,60 @@ async function inspectViewport(client, viewport) {
   }
 }
 
+async function inspectCollapsedRailCentering(client) {
+  const results = [];
+  for (const viewport of [
+    { width: 1680, height: 1050, mobile: false },
+    { width: 2560, height: 1200, mobile: false },
+  ]) {
+    await setViewport(client, viewport);
+    await navigate(client, "/", `${viewport.width} collapsed rail centering`);
+    await waitFor(
+      () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
+      `${viewport.width} bridge readiness`,
+    );
+    await client.eval(`(() => {
+      document.querySelector('.sidebar-toggle')?.click();
+      document.querySelector('.activity-toggle')?.click();
+    })()`);
+    await waitFor(
+      () => client.eval("document.documentElement.dataset.sidebarCollapsed === 'true' && document.querySelector('.home-console-layout')?.dataset.rightCollapsed === 'true'"),
+      `${viewport.width} collapsed rails`,
+    );
+    const result = await client.eval(`(() => {
+      const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+      const sidebar = rect('.sidebar');
+      const center = rect('.conversation-workspace');
+      const rail = rect('.activity-rail');
+      return {
+        centerMidpoint: (center.left + center.right) / 2,
+        leftGap: center.left - sidebar.right,
+        overflow: document.documentElement.scrollWidth - innerWidth,
+        railWidth: rail.width,
+        rightGap: rail.left - center.right,
+        viewportMidpoint: innerWidth / 2,
+      };
+    })()`);
+    if (
+      Math.abs(result.leftGap - 12) > 0.5
+      || Math.abs(result.rightGap - 12) > 0.5
+      || Math.abs(result.centerMidpoint - result.viewportMidpoint) > 0.5
+      || Math.abs(result.railWidth - 44) > 0.5
+      || result.overflow > 1
+    ) throw new Error(`${viewport.width} collapsed rail centering failed: ${JSON.stringify(result)}`);
+    results.push({ viewport, result });
+  }
+  return results;
+}
+
 async function inspectKeyboardDrawerAndContrast(client) {
   const phone = viewports.at(-1);
   await setViewport(client, phone);
   await navigate(client, "/", "phone interaction");
+  await waitFor(
+    () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
+    "phone interaction readiness",
+  );
 
   await client.eval("document.activeElement?.blur()");
   await dispatchKey(client, "Tab");
@@ -725,10 +792,9 @@ async function inspectProviderConnectionsWorkspace(client) {
         || !new Set(["ready", "empty"]).has(loaded.state)
         || loaded.busy !== "false"
         || loaded.refreshDisabled
-        || loaded.listHeight < 188
         || loaded.overflow > 1
-        || (loaded.state === "empty" && (loaded.summary !== "No optional provider connections configured." || loaded.cards !== 0))
-        || (loaded.state === "ready" && loaded.cards !== 1)
+        || (loaded.state === "empty" && (loaded.summary !== "No optional provider connections configured." || loaded.cards !== 0 || loaded.listHeight > 1))
+        || (loaded.state === "ready" && (loaded.cards !== 1 || loaded.listHeight < 1))
         || /credential_ref|team_id|project_id|token|secret/i.test(loaded.rendered)
       ) throw new Error(`${probe.name} provider workspace contract failed: ${JSON.stringify({ loading, loaded })}`);
       results.push({ probe: probe.name, loading, loaded });
@@ -836,7 +902,7 @@ async function inspectProviderConnectionFailureStates(client) {
         refreshDisabled: document.querySelector('[data-provider-connections-refresh]')?.disabled,
         listHeight: document.querySelector('[data-provider-connections-list]')?.getBoundingClientRect().height,
       }))()`);
-      if (result.summary !== current.detail || result.busy !== "false" || result.cards !== 0 || result.refreshDisabled || result.listHeight < 188) throw new Error(`Provider ${current.name} contract failed: ${JSON.stringify(result)}`);
+      if (result.summary !== current.detail || result.busy !== "false" || result.cards !== 0 || result.refreshDisabled || result.listHeight > 1) throw new Error(`Provider ${current.name} contract failed: ${JSON.stringify(result)}`);
       results.push({ name: current.name, result });
     } finally {
       await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier });
@@ -1738,6 +1804,7 @@ async function main() {
     for (const viewport of viewports) {
       viewportResults.push(await inspectViewport(client, viewport));
     }
+    const collapsedCenteringResult = await inspectCollapsedRailCentering(client);
     const interactionResult = await inspectKeyboardDrawerAndContrast(client);
     const agentsResult = await inspectAgentsWorkspace(client);
     const providerConnectionsResult = await inspectProviderConnectionsWorkspace(client);
@@ -1768,6 +1835,7 @@ async function main() {
       preEnhancement: preEnhancementResult,
       routes: routeResults,
       viewports: viewportResults,
+      collapsedCentering: collapsedCenteringResult,
       interactions: interactionResult,
       agents: agentsResult,
       providerConnections: providerConnectionsResult,

@@ -137,6 +137,12 @@ Model as borderless or visually quiet selectors in the composer footer. The
 send action remains clear and reachable without turning the footer into a
 toolbar wall.
 
+Keep Agent, Provider, Model, and Effort text-led and inline at desktop widths.
+They may wrap into a second compact row when space is constrained, but labels,
+values, and the next-Run explanation must never compete for the same row or
+collapse a control below a readable width. Preserve the established two-column
+touch layout on phones.
+
 An unassigned prompt cannot be sent. Disabled, unsupported, uploading,
 validation, and disconnected states must explain what is preventing dispatch.
 
@@ -158,6 +164,11 @@ not legacy heartbeat observations.
 The right rail collapses completely except for its narrow edge rail and toggle.
 Its toggle uses the same app-level vertical center as the left toggle, remains
 on the seam in both states, and is layered above the center conversation.
+On desktop, the expanded rail is content-led, sticky, and bounded to the
+available viewport height rather than stretching with a long transcript. Its
+content scrolls internally only when necessary. The collapsed right track and
+outer inset must equal the collapsed left rail's effective footprint so the
+Conversation workspace remains centered in the viewport.
 
 ## Conversation and Run presentation
 
@@ -211,6 +222,7 @@ the inherited Emerald principles unless this guide overrides them:
 - sentence-case labels;
 - status text in addition to color;
 - stable layouts during loading and failure;
+- compact settled empty states that do not reserve an absent card grid;
 - no page-level horizontal overflow;
 - reduced-motion support;
 - WCAG 2.2 AA target.

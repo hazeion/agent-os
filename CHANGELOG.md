@@ -4,6 +4,12 @@ All notable changes to Mentat.
 
 ## 2026-08-29
 
+### Changed
+- Balanced the collapsed desktop rails so the Conversation workspace is
+  centered exactly, made Agent configuration compact and text-led, bounded the
+  activity rail to the viewport, and removed the empty Provider connections
+  card area after settled empty or failure states.
+
 ### Added
 - Added schema-17 non-owning Conversation Project/Task associations with exact
   Apply/Clear, stale-target projection, bounded planning overview and Task

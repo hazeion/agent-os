@@ -131,6 +131,42 @@ test("Slice 10 planning controls stay compact and mobile safe", () => {
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.planning-load-more,[\s\S]*\.planning-view-all \{ min-height: 44px; \}/);
 });
 
+test("Agent Console layout polish stays balanced and content-led", () => {
+  const css = source("src/app/globals.css");
+  assert.match(
+    css,
+    /\.home-console-layout \{[\s\S]*align-items: start;/,
+  );
+  assert.match(
+    css,
+    /\.home-console-layout\[data-right-collapsed="true"\] \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) 44px;/,
+  );
+  assert.match(
+    css,
+    /\.home-console-layout\[data-right-collapsed="true"\] \{[\s\S]*--activity-rail-width: 44px;/,
+  );
+  assert.match(
+    css,
+    /\.composer-configuration \{[\s\S]*flex-wrap: wrap;/,
+  );
+  assert.match(
+    css,
+    /\.composer-configuration label \{[\s\S]*display: inline-flex;/,
+  );
+  assert.match(
+    css,
+    /\.activity-rail \{[\s\S]*position: sticky;[\s\S]*max-height: min\(720px, calc\(100vh - 190px\)\);/,
+  );
+  assert.match(
+    css,
+    /\[data-provider-connections-state="loading"\] \.provider-connections-list \{[\s\S]*min-height: 188px;/,
+  );
+  assert.match(
+    css,
+    /\[data-provider-connections-state="empty"\] \.provider-connections-list,[\s\S]*\[data-provider-connections-state="error"\] \.provider-connections-list \{[\s\S]*display: none;/,
+  );
+});
+
 test("contrast preference is applied before paint with safe system fallback", () => {
   assert.deepEqual(runPreferencePreload(null, false), {
     uiShell: "emerald",
