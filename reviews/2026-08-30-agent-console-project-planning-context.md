@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console project and planning context
 
-Status: Ready for publication
+Status: Complete
 Slice: `agent-console-project-planning-context`
 Date: `2026-08-30`
 Review log: `reviews/2026-08-30-agent-console-project-planning-context.md`
@@ -80,7 +80,7 @@ turning the Console into another Task workspace or delegation scheduler.
 | AC-8 | Prompt/transcript remain dominant with keyboard, mobile, high-contrast, reduced-motion, zoom, and no-overflow behavior intact. | Semantic React tests and production desktop/mobile browser use. | Pass |
 | AC-9 | Projects & Tasks provides simple accessible creation: Name-only Project; Title, Agent, and Due Task; Project implicit; short actions; canonical persistence with no execution side effect. | Backend/Node exact-mutation tests plus React and production browser creation workflows. | Pass |
 | AC-10 | Worst-case planning fixtures meet the approved paint/filter budget and create no picker, suggestion, creation-form, or ordinary typing mutation traffic before explicit submit. | Seven-sample production performance gate with request deltas. | Pass |
-| AC-11 | Full Python/web/build/package/CI gates and two independent adversarial re-reviews pass. | Full local and GitHub evidence. | Local pass; CI pending |
+| AC-11 | Full Python/web/build/package/CI gates and two independent adversarial re-reviews pass. | Full local and GitHub evidence. | Pass |
 
 ### Constraints and recovery
 
@@ -235,7 +235,7 @@ turning the Console into another Task workspace or delegation scheduler.
 ### Full suite
 
 - The final full Python suite passed 1,789 tests with five platform skips in
-  677.051 seconds. The GitHub matrix is pending. `uv build` plus
+  677.051 seconds. GitHub passed all 52 checks on the final head. `uv build` plus
   artifact verification passed for `mentat_local-0.1.0b1-py3-none-any.whl`
   and `mentat_local-0.1.0b1.tar.gz`; the tracked-file secret scan also passed.
 - The final seven-sample production performance gate passed: planning Task
@@ -315,14 +315,14 @@ cutover.
 
 - Branch and base: `codex/agent-console-slice-10` to `main` at `475d308`.
 - User authorization and scope: standing approval recorded; ready PR only.
-- Implementation commit: `fe8db57`.
+- Implementation commit: `fe8db57`; CI-fix commit: `c4c8155`; merge commit:
+  `bc1efe57`.
 - Ready PR URL: https://github.com/hazeion/agent-os/pull/160
 
 ## Outcome review
 
-- Classification: Implemented and locally verified; publication remains.
-- Acceptance criteria summary: AC-1 through AC-10 pass; AC-11 is locally green
-  and awaits the GitHub matrix.
+- Classification: Complete and merged.
+- Acceptance criteria summary: AC-1 through AC-11 pass.
 - Potential bugs or untested paths: no known P0-P2 issue; a real assistive-
   technology audit remains outside the approved slice.
 - Remaining reviewer dissent: none.
