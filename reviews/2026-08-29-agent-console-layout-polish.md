@@ -135,6 +135,11 @@ or runtime behavior.
   An unchanged-main run against the exact same disposable data root passed at
   96, and a cooled exact-branch rerun passed at 97 with all non-performance
   categories at 100. No threshold or test was weakened.
+- The first GitHub Node runtime foundation run exposed a browser-smoke race:
+  after the two new large-screen navigation passes, the phone drawer click
+  could run before Home finished hydrating. The smoke now waits for the bridge
+  ready projection before testing drawer interaction. The unchanged UI test
+  then passed locally; no production behavior or timeout was changed.
 
 ## Verification
 
@@ -145,6 +150,7 @@ or runtime behavior.
 | `node --import ./web/scripts/register-test-typescript.mjs --test web/tests/shell-contract.test.ts` | Node 24.19 | 0 | 8 pass | Includes new layout contract. |
 | `python3 -m unittest tests.test_node_runtime_foundation -v` | Python 3.13 | 0 | 3 pass | Packaging/browser contract remains valid. |
 | `node scripts/web_foundation_smoke.mjs` | Production standalone, Chromium 152 | 0 | 1 complete smoke | Six standard viewports, two centering viewports, all routes and provider states pass. |
+| Browser smoke after CI hydration-race fix | Production standalone, Chromium 152 | 0 | 1 complete smoke | Drawer interaction now begins only after the hydrated ready projection; the full smoke passes unchanged. |
 | `npm --prefix web run check` | Node 24.19 | 0 | 228 pass | Lint and typecheck also pass. |
 | `node web/scripts/run-next.mjs build --webpack && node web/scripts/prepare-standalone.mjs` | Node 24.19 | 0 | Build pass | Home and Projects & Tasks remain dynamic; Agents and Runs remain static. |
 | `npm --prefix web run performance:agent-console` | Production, 7 samples | 0 | Gate pass | Optimistic 10.4 ms; accepted 120 ms; stream 5.4 ms; loaded tab 10.6 ms. |
@@ -180,6 +186,16 @@ or runtime behavior.
 | Product behavior and compatibility | Clean | No P0-P2 findings. No evidence gap. Responsive layout, provider states, focus behavior, and activity rail behavior match the contract. | No change required. |
 
 Both reviews were independent and read-only. No reviewer disagreement remains.
+
+### Round 2
+
+The reviewers independently inspected the single browser-smoke readiness wait
+added after the first CI run exposed a hydration race.
+
+| Reviewer lens | Result | Findings or evidence gaps | Resolution |
+| --- | --- | --- | --- |
+| Correctness and safety | Clean | The bounded ready-state wait proves shell initialization and does not mask an unavailable bridge or weaken drawer assertions. | No change required. |
+| Product behavior and compatibility | Clean | Without hydration the status remains checking, so the test still fails closed. The full smoke and Node foundation rerun close the evidence gap. | No change required. |
 
 ## Documentation updates
 

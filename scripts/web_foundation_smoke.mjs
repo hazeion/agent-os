@@ -475,6 +475,10 @@ async function inspectKeyboardDrawerAndContrast(client) {
   const phone = viewports.at(-1);
   await setViewport(client, phone);
   await navigate(client, "/", "phone interaction");
+  await waitFor(
+    () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
+    "phone interaction readiness",
+  );
 
   await client.eval("document.activeElement?.blur()");
   await dispatchKey(client, "Tab");
