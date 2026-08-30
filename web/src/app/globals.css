@@ -585,7 +585,18 @@ button {
 }
 
 .provider-connections-list {
+  min-height: 0;
+}
+
+[data-provider-connections-state="loading"] .provider-connections-list {
   min-height: 188px;
+}
+
+[data-provider-connections-state="empty"] .provider-connections-list,
+[data-provider-connections-state="unsupported"] .provider-connections-list,
+[data-provider-connections-state="unavailable"] .provider-connections-list,
+[data-provider-connections-state="error"] .provider-connections-list {
+  display: none;
 }
 
 .agent-card,
@@ -1238,15 +1249,15 @@ button {
   gap: 12px;
   min-width: 0;
   min-height: min(720px, calc(100vh - 190px));
-  align-items: stretch;
+  align-items: start;
 }
 
 .home-console-layout[data-right-collapsed="true"] {
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) 44px;
 }
 
 .home-console-layout[data-right-collapsed="true"] {
-  --activity-rail-width: 28px;
+  --activity-rail-width: 44px;
 }
 
 .conversation-workspace,
@@ -2916,8 +2927,9 @@ button {
 
 .composer-configuration {
   display: flex;
-  align-items: end;
-  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 12px;
   width: 100%;
   min-width: 0;
   padding-bottom: 7px;
@@ -2925,17 +2937,19 @@ button {
 }
 
 .composer-configuration label {
-  display: grid;
-  gap: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
 }
 
-.composer-configuration label:first-child { flex: 1 1 150px; }
-.composer-configuration label:nth-child(2) { flex: 1 1 130px; }
-.composer-configuration label:nth-child(3) { flex: 1.4 1 170px; }
-.composer-configuration label:nth-child(4) { flex: 0.8 1 120px; }
+.composer-configuration label:first-child { flex: 1 1 160px; }
+.composer-configuration label:nth-child(2) { flex: 0 1 170px; }
+.composer-configuration label:nth-child(3) { flex: 0 1 200px; }
+.composer-configuration label:nth-child(4) { flex: 0 1 175px; }
 
 .composer-configuration label > span {
+  flex: 0 0 auto;
   color: var(--text-tertiary);
   font-size: 0.61rem;
   font-weight: 700;
@@ -2944,8 +2958,10 @@ button {
 }
 
 .composer-configuration select {
-  width: 100%;
+  width: auto;
   min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
   min-height: 28px;
   padding: 3px 20px 3px 2px;
   border: 0;
@@ -2977,6 +2993,8 @@ button {
 .configuration-confirmation {
   display: flex;
   align-items: center;
+  flex: 1 0 100%;
+  justify-content: flex-end;
   gap: 7px;
   color: var(--text-secondary);
   font-size: 0.68rem;
@@ -3029,6 +3047,10 @@ button {
 }
 
 .activity-rail {
+  position: sticky;
+  top: calc(var(--utility-height) + 16px);
+  align-self: start;
+  max-height: min(720px, calc(100vh - 190px));
   overflow: visible;
 }
 
@@ -3036,16 +3058,19 @@ button {
   display: grid;
   align-content: start;
   gap: 16px;
-  height: 100%;
+  height: auto;
+  max-height: min(718px, calc(100vh - 192px));
   min-width: 0;
   overflow: auto;
   padding: 18px 15px;
 }
 
 .home-console-layout[data-right-collapsed="true"] .activity-rail-content {
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
+  display: none;
+}
+
+.home-console-layout[data-right-collapsed="true"] .activity-rail {
+  height: min(720px, calc(100vh - 190px));
 }
 
 .activity-heading {
@@ -3282,10 +3307,19 @@ button {
   }
 
   .activity-rail {
+    position: relative;
+    top: auto;
+    max-height: none;
     min-height: 250px;
   }
 
+  .activity-rail-content {
+    max-height: none;
+    overflow: visible;
+  }
+
   .home-console-layout[data-right-collapsed="true"] .activity-rail {
+    height: auto;
     min-height: 46px;
   }
 
@@ -3410,8 +3444,12 @@ button {
     margin-right: 0;
   }
 
-  .composer-configuration { align-items: stretch; flex-wrap: wrap; }
-  .composer-configuration label { flex: 1 1 calc(50% - 8px); }
+  .composer-configuration { align-items: stretch; }
+  .composer-configuration label:nth-child(n) {
+    display: grid;
+    flex: 1 1 calc(50% - 8px);
+    gap: 2px;
+  }
   .composer-configuration select,
   .configuration-review,
   .configuration-confirmation button { min-height: 44px; }
