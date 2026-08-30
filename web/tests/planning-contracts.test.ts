@@ -59,7 +59,7 @@ test("public planning parsers accept only exact detached projections", () => {
   assert.deepEqual(parseConversationPlanningMutation(mutation, "conv_alpha"), mutation);
   const parsed = parsePlanningOverview(overview); parsed.projects[0]!.name = "Changed"; assert.equal(project.name, "Alpha");
   const hostile = [
-    { ...overview, secret: "private" },
+    { ...overview, runtime_reference: "private" },
     { ...overview, project_count: 2 },
     { ...overview, attention_count: 2, truncated: false },
     { ...overview, projects: [{ ...project, path: "/private" }] },

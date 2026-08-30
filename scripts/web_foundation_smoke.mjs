@@ -53,7 +53,7 @@ if (!chromePath) {
 const routes = [
   { path: "/", heading: "What can Mentat help with?", navLabel: "Home", title: "Mentat" },
   { path: "/agents", heading: "Agents", navLabel: "Agents", title: "Agents · Mentat" },
-  { path: "/tasks", heading: "Tasks", navLabel: "Tasks", title: "Tasks · Mentat" },
+  { path: "/tasks", heading: "Projects & Tasks", navLabel: "Projects & Tasks", title: "Projects & Tasks · Mentat" },
   { path: "/runs", heading: "Runs", navLabel: "Runs", title: "Runs · Mentat" },
 ];
 const viewports = [
@@ -221,7 +221,7 @@ async function inspectRoutes(client) {
       hasLogo: document.querySelector('.brand-mark')?.getAttribute('src') === '/mentat-mark-emerald.png',
       overflow: document.documentElement.scrollWidth - innerWidth,
     }))()`);
-    const staticRoute = route.path !== "/";
+    const staticRoute = route.path !== "/" && route.path !== "/tasks";
     const hasFrameworkScripts = result.scriptPaths.some((path) => path.startsWith("/_next/static/"));
     if (
       result.title !== route.title
@@ -1582,7 +1582,7 @@ async function inspectClientNavigationPersistence(client, consoleErrors) {
   })()`);
   await dispatchPointerClick(client, taskPoint);
   await waitFor(
-    () => client.eval("location.pathname === '/tasks' && document.querySelector('h1')?.textContent === 'Tasks'"),
+    () => client.eval("location.pathname === '/tasks' && document.querySelector('h1')?.textContent === 'Projects & Tasks'"),
     "Next Link client transition",
   );
   await waitFor(
@@ -1625,7 +1625,7 @@ async function inspectClientNavigationPersistence(client, consoleErrors) {
   })()`);
   await dispatchPointerClick(client, homePoint);
   await waitFor(
-    () => client.eval("location.pathname === '/' && document.querySelector('h1')?.textContent === 'Home'"),
+    () => client.eval("location.pathname === '/' && document.querySelector('h1')?.textContent === 'What can Mentat help with?'"),
     "Mentat Home Link client transition",
   );
   await waitFor(
@@ -1646,7 +1646,7 @@ async function inspectClientNavigationPersistence(client, consoleErrors) {
 
   if (
     afterTransition.marker !== "persistent-document"
-    || afterTransition.active !== "Tasks"
+    || afterTransition.active !== "Projects & Tasks"
     || afterTransition.bridge !== "Python ready"
     || afterTransition.contrast !== "high"
     || afterTransition.selected !== "high"

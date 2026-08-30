@@ -63,6 +63,9 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         lighthouse_gate = (
             ROOT / "web" / "scripts" / "lighthouse-gate.mjs"
         ).read_text(encoding="utf-8")
+        foundation_smoke = (
+            ROOT / "scripts" / "web_foundation_smoke.mjs"
+        ).read_text(encoding="utf-8")
         proxy = (ROOT / "web" / "src" / "proxy.ts").read_text(encoding="utf-8")
         next_config = (ROOT / "web" / "next.config.ts").read_text(encoding="utf-8")
         quality = (ROOT / ".github" / "workflows" / "quality-gates.yml").read_text(
@@ -91,6 +94,14 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         ):
             self.assertIn(f'destination: "{destination}"', next_config)
         self.assertNotIn('destination: "/shell/tasks.html"', next_config)
+        self.assertIn('route.path !== "/" && route.path !== "/tasks"', foundation_smoke)
+        self.assertIn(
+            '{ path: "/tasks", heading: "Projects & Tasks", navLabel: "Projects & Tasks", title: "Projects & Tasks · Mentat" }',
+            foundation_smoke,
+        )
+        self.assertIn("document.querySelector('h1')?.textContent === 'Projects & Tasks'", foundation_smoke)
+        self.assertIn('afterTransition.active !== "Projects & Tasks"', foundation_smoke)
+        self.assertIn("document.querySelector('h1')?.textContent === 'What can Mentat help with?'", foundation_smoke)
         self.assertNotIn('source: "tasks.html"', standalone)
         self.assertIn(
             "data-mentat-(?:preference-preload|shell-runtime)", standalone

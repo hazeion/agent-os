@@ -66,6 +66,19 @@ PROJECTS = [
 ]
 
 
+def create_test_agent(root: Path) -> str:
+    agent_id = "agent_planner"
+    AgentRegistry(root, supported_runtime_types={"hermes"}).create_agent(
+        agent_id=agent_id,
+        name="Planner",
+        runtime_config_id="config_planner",
+        runtime_type="hermes",
+        runtime_agent_ref="planner-profile",
+        capabilities={"run.start"},
+    )
+    return agent_id
+
+
 class ConversationPlanningTests(unittest.TestCase):
     def test_exact_global_task_locator_reads_non_attention_task_without_private_fields(self):
         with TemporaryDirectory() as temporary:
@@ -257,7 +270,7 @@ class ConversationPlanningTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             repository = ConversationRepository(root)
-            created = repository.create().conversation
+            created = repository.create(agent_id=create_test_agent(root)).conversation
             connection = connect(root)
             try:
                 TaskRepository(connection).insert_collection([task("task_context")])
@@ -312,7 +325,7 @@ class ConversationPlanningTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             repository = ConversationRepository(root)
-            created = repository.create().conversation
+            created = repository.create(agent_id=create_test_agent(root)).conversation
             archived = repository.set_archived(
                 created.id, expected_revision=created.revision, archived=True
             )

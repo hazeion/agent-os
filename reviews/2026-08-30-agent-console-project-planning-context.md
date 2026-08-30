@@ -246,6 +246,14 @@ turning the Console into another Task workspace or delegation scheduler.
 - The final uncontended Lighthouse gate passed three desktop and three mobile
   runs. Median performance was 100 desktop and 96 mobile; accessibility, best
   practices, and SEO were 100 in every run.
+- The first GitHub run found three integration-test defects rather than product
+  failures: one hostile-field fixture used a secret-scanner keyword, the
+  production smoke still classified `/tasks` as a static shell and expected
+  its old title, and two planning tests relied on a machine-local Agent. The
+  fixture now uses a neutral unexpected field, the smoke treats Home and
+  Projects & Tasks as hydrated routes with their exact current labels, and the
+  tests create their own canonical Agent. Focused tests, the tracked-file scan,
+  and the complete production browser smoke pass after the fixes.
 
 ### Rendered or manual behavior
 
