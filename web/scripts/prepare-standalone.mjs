@@ -32,7 +32,6 @@ for (const packagePath of [
 
 const routes = [
   { source: "agents.html", output: "agents.html", currentLabel: "Agents" },
-  { source: "tasks.html", output: "tasks.html", currentLabel: "Tasks" },
   { source: "runs.html", output: "runs.html", currentLabel: "Runs" },
 ];
 const renderedAppRoot = resolve(nextRoot, "server", "app");

@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1433,6 +1433,34 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         END;
         """,
     ),
+    (
+        17,
+        """
+        CREATE TABLE mentat_conversation_planning_context (
+            conversation_id TEXT PRIMARY KEY REFERENCES mentat_conversations(id) ON DELETE CASCADE,
+            project_id TEXT NOT NULL CHECK (
+                length(project_id) BETWEEN 1 AND 80
+                AND substr(project_id, 1, 1) GLOB '[A-Za-z0-9]'
+                AND project_id NOT GLOB '*[^A-Za-z0-9_.:-]*'
+            ),
+            task_id TEXT CHECK (
+                task_id IS NULL OR (
+                    length(task_id) BETWEEN 1 AND 160
+                    AND substr(task_id, 1, 1) GLOB '[A-Za-z0-9]'
+                    AND task_id NOT GLOB '*[^A-Za-z0-9_.:@-]*'
+                )
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64)
+        );
+
+        CREATE INDEX idx_mentat_conversation_planning_project
+            ON mentat_conversation_planning_context(project_id, conversation_id);
+        CREATE INDEX idx_mentat_conversation_planning_task
+            ON mentat_conversation_planning_context(task_id, conversation_id)
+            WHERE task_id IS NOT NULL;
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
@@ -1737,7 +1765,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -1792,6 +1820,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 15 cannot be safely upgraded"
+                    )
+                if (
+                    version == 17
+                    and schema_signature_state(connection, 16) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 16 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

@@ -5,6 +5,12 @@ All notable changes to Mentat.
 ## 2026-08-29
 
 ### Added
+- Added schema-17 non-owning Conversation Project/Task associations with exact
+  Apply/Clear, stale-target projection, bounded planning overview and Task
+  paging, draft-only suggestions, and capped planning attention.
+- Added the interactive Projects & Tasks workspace with Name-only Project
+  creation and selected-Project Task creation using only Title, optional Agent,
+  and optional Due date.
 - Added schema-16 manual Conversation titles with exact-revision rename for
   active or archived Conversations.
 - Added bounded title-only Conversation history search with active, archived,
@@ -40,6 +46,13 @@ All notable changes to Mentat.
   Conversation projection.
 
 ### Safety
+- Kept planning context out of Run `task_id`, hidden prompt input, Pending-turn
+  scheduling, and Hermes delegation; selector changes remain staged until an
+  explicit exact-revision Apply or Clear.
+- Kept Project/Task creation behind fixed same-origin and private bridge
+  capabilities with server-owned defaults and no runtime or delegation side
+  effect. Private Task planning, note, calendar, delegation, file, and Agent
+  details remain outside planning projections.
 - Kept history search navigation-only and free of Messages, Runs, snippets,
   runtime references, and query echoes. Delete and bulk mutations remain absent.
 - Made unknown, malformed, unavailable, or failed slash commands preserve the

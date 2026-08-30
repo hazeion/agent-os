@@ -87,10 +87,11 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn('"package-runtime/**"', eslint_config)
         for destination in (
             "/shell/agents.html",
-            "/shell/tasks.html",
             "/shell/runs.html",
         ):
             self.assertIn(f'destination: "{destination}"', next_config)
+        self.assertNotIn('destination: "/shell/tasks.html"', next_config)
+        self.assertNotIn('source: "tasks.html"', standalone)
         self.assertIn(
             "data-mentat-(?:preference-preload|shell-runtime)", standalone
         )

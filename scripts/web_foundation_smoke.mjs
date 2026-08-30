@@ -945,30 +945,26 @@ async function inspectAgentProjection(client) {
 async function inspectTasksWorkspace(client) {
   await setViewport(client, viewports[1]);
   await navigate(client, "/tasks", "Tasks workspace");
-  await waitFor(() => client.eval("document.querySelector('[data-tasks-root]')?.dataset.tasksState !== 'loading'"), "Tasks ready state");
+  await waitFor(() => client.eval("document.querySelector('.projects-tasks-workspace') && !document.body.textContent.includes('Loading Projects')"), "Projects and Tasks ready state");
   const result = await client.eval(`(() => ({
-    state: document.querySelector('[data-tasks-root]')?.dataset.tasksState,
-    summary: document.querySelector('[data-tasks-summary]')?.textContent,
-    cards: document.querySelectorAll('.task-card').length,
-    rendered: document.querySelector('[data-tasks-list]')?.textContent,
+    projects: document.querySelectorAll('.projects-pane li button').length,
+    tasks: document.querySelectorAll('.project-task-list li').length,
+    rendered: document.querySelector('.projects-tasks-workspace')?.textContent || '',
     overflow: document.documentElement.scrollWidth - innerWidth,
   }))()`);
-  if (!new Set(["ready", "empty"]).has(result.state) || result.overflow > 1 || (result.state === "empty" && (result.summary !== "No current Tasks yet." || result.cards !== 0)) || (result.state === "ready" && result.cards === 0) || result.rendered.includes("description") || result.rendered.includes("delegation")) throw new Error(`Tasks workspace contract failed: ${JSON.stringify({ state: result.state, summary: result.summary, cards: result.cards, overflow: result.overflow })}`);
-  const before = await client.eval("performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/tasks').length");
-  await client.eval("document.querySelector('[data-tasks-refresh]').click()");
-  await waitFor(() => client.eval(`performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === '/api/tasks').length > ${before}`), "Tasks refresh request");
-  return { state: result.state, summary: result.summary, cards: result.cards, overflow: result.overflow };
+  if (result.projects < 1 || result.overflow > 1 || result.rendered.includes("description") || result.rendered.includes("delegation")) throw new Error(`Projects and Tasks workspace contract failed: ${JSON.stringify(result)}`);
+  return result;
 }
 
 async function inspectTaskFailureStates(client) {
   const states = [
-    { name: "unsupported", status: 501, detail: "This Python bridge does not support Task data yet." },
-    { name: "unavailable", status: 503, detail: "Task data is temporarily unavailable. Check the Python connection and retry." },
-    { name: "error", status: 502, detail: "Mentat could not safely read Task data. Try again." },
+    { name: "unsupported", status: 501 },
+    { name: "unavailable", status: 503 },
+    { name: "error", status: 502 },
   ]; const results = [];
   for (const state of states) {
-    const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); return url.pathname === '/api/tasks' ? Promise.resolve(new Response(JSON.stringify({ schema_version: 1, status: '${state.name}' }), { status: ${state.status}, headers: { 'Content-Type': 'application/json' } })) : nativeFetch(input, init); }; })();` });
-    try { await navigate(client, "/tasks", `Tasks ${state.name}`); await waitFor(() => client.eval(`document.querySelector('[data-tasks-root]')?.dataset.tasksState === '${state.name}'`), `Tasks ${state.name} state`); const result = await client.eval(`({ summary: document.querySelector('[data-tasks-summary]')?.textContent, cards: document.querySelectorAll('.task-card').length })`); if (result.summary !== state.detail || result.cards !== 0) throw new Error(`Tasks ${state.name} contract failed: ${JSON.stringify(result)}`); results.push({ name: state.name, result }); } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
+    const injection = await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const nativeFetch = window.fetch.bind(window); window.fetch = (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, location.href); return url.pathname === '/api/agent-console/planning-overview' ? Promise.resolve(new Response(JSON.stringify({ schema_version: 1, status: '${state.name}' }), { status: ${state.status}, headers: { 'Content-Type': 'application/json' } })) : nativeFetch(input, init); }; })();` });
+    try { await navigate(client, "/tasks", `Projects and Tasks ${state.name}`); await waitFor(() => client.eval("document.querySelector('.projects-pane')?.textContent.includes('Projects are temporarily unavailable.')"), `Projects ${state.name} state`); const result = await client.eval(`({ detail: document.querySelector('.projects-pane')?.textContent, tasks: document.querySelectorAll('.project-task-list li').length })`); if (!result.detail.includes("Projects are temporarily unavailable.")) throw new Error(`Projects ${state.name} contract failed: ${JSON.stringify(result)}`); results.push({ name: state.name, result }); } finally { await client.call("Page.removeScriptToEvaluateOnNewDocument", { identifier: injection.identifier }); }
   } return results;
 }
 

@@ -788,7 +788,7 @@ def validate_registry_connection(
                 )
             except (sqlite3.Error, TypeError, ValueError) as exc:
                 raise AgentRegistryError("agent_registry.corrupt") from exc
-            if schema_version not in {8, 9, 10, 11, 12, 13, 14, 15, DATABASE_SCHEMA_VERSION}:
+            if schema_version not in {8, 9, 10, 11, 12, 13, 14, 15, 16, DATABASE_SCHEMA_VERSION}:
                 raise AgentRegistryError("agent_registry.unsupported")
             if (
                 _embedded_schema_signature(connection)

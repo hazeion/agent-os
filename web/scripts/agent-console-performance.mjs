@@ -66,6 +66,7 @@ const thresholds = Object.freeze({
   historyPaintMilliseconds: 250,
   loadedTabMilliseconds: 50,
   optimisticPaintMilliseconds: 1000 / 60,
+  planningTaskPaintMilliseconds: 250,
   streamPaintMilliseconds: 250,
 });
 
@@ -217,6 +218,32 @@ function installPerformanceFixture() {
     const stateOrder = Number(left.state === "archived") - Number(right.state === "archived");
     return stateOrder || right.updated_at.localeCompare(left.updated_at) || right.id.localeCompare(left.id);
   });
+  const planningToday = "2026-08-29";
+  const planningProjects = Array.from({ length: 256 }, (_, index) => ({
+    id: `project_perf_${String(index + 1).padStart(3, "0")}`,
+    name: `Performance Project ${String(index + 1).padStart(3, "0")}`,
+    status: "active",
+  }));
+  const planningTask = (index, projectIndex = 0) => ({
+    attention_reasons: index < 50 ? ["overdue"] : [],
+    due_date: index < 50 ? "2026-08-28" : null,
+    id: `task_perf_${projectIndex + 1}_${String(index + 1).padStart(3, "0")}`,
+    needs_attention: index < 50,
+    planned_for_today: false,
+    planning_state: "planned",
+    priority: index % 3 === 0 ? "high" : index % 3 === 1 ? "medium" : "low",
+    project_id: planningProjects[projectIndex].id,
+    project_name: planningProjects[projectIndex].name,
+    review_required: false,
+    status: "todo",
+    title: `Performance Task ${projectIndex + 1}-${String(index + 1).padStart(3, "0")}`,
+    updated_at: new Date(Date.parse(timestamp) - index * 1_000).toISOString(),
+  });
+  const planningAttention = Array.from({ length: 50 }, (_, index) => planningTask(index));
+  const planningProjectTasks = new Map([
+    [planningProjects[0].id, planningAttention],
+    [planningProjects[1].id, Array.from({ length: 50 }, (_, index) => planningTask(index + 50, 1))],
+  ]);
   const run = {
     id: "run_perf_a",
     partial: false,
@@ -382,6 +409,32 @@ function installPerformanceFixture() {
         source: "mentat",
       }));
     }
+    if (url.pathname === "/api/agent-console/planning-overview" && method === "GET") {
+      return Promise.resolve(response({
+        ...serviceFields,
+        attention: planningAttention,
+        attention_count: planningAttention.length,
+        project_count: planningProjects.length,
+        projects: planningProjects,
+        today: planningToday,
+        truncated: false,
+      }));
+    }
+    if (url.pathname === "/api/agent-console/planning-tasks" && method === "GET") {
+      const projectId = url.searchParams.get("project_id");
+      const project = planningProjects.find((item) => item.id === projectId);
+      const tasks = planningProjectTasks.get(projectId) || [];
+      if (!project || url.searchParams.has("cursor")) {
+        return Promise.resolve(response({ schema_version: 1, status: "invalid" }, 400));
+      }
+      return Promise.resolve(response({
+        ...serviceFields,
+        count: tasks.length,
+        next_cursor: null,
+        project,
+        tasks,
+      }));
+    }
     if (url.pathname === "/api/agent-activity" && method === "GET") {
       return Promise.resolve(response({
         ...serviceFields,
@@ -418,6 +471,22 @@ function installPerformanceFixture() {
         ...serviceFields,
         conversation_id: conversationId,
         runs: [],
+      }));
+    }
+    const planningContextMatch = url.pathname.match(
+      /^\/api\/conversations\/(conv_perf_[ab])\/planning-context$/u,
+    );
+    if (planningContextMatch && method === "GET") {
+      const conversationId = planningContextMatch[1];
+      const ready = conversationId === firstConversation.id;
+      return Promise.resolve(response({
+        ...serviceFields,
+        association: ready ? { project_id: planningProjects[0].id, task_id: planningAttention[0].id } : null,
+        conversation_id: conversationId,
+        conversation_revision: 1,
+        project: ready ? planningProjects[0] : null,
+        state: ready ? "ready" : "empty",
+        task: ready ? planningAttention[0] : null,
       }));
     }
     const previewMatch = url.pathname.match(
@@ -622,6 +691,31 @@ async function measureSample(client, index) {
     predicate: `document.querySelectorAll('.conversation-history li').length === 1
       && document.querySelector('.conversation-history li strong')?.textContent === 'History Conversation 1024'`,
   }));
+  await client.evaluate("document.querySelector('.composer-planning summary')?.click()");
+  await waitFor(
+    () => client.evaluate("document.querySelector('[aria-label=\"Project planning context\"]') !== null"),
+    "open planning context",
+  );
+  const planningMutationsBefore = await client.evaluate("window.__mentatPerf.mutationRequests");
+  const planningTaskPaint = await client.evaluate(mutationMeasurementExpression({
+    action: `const select = document.querySelector('[aria-label="Project planning context"]');
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      setter.call(select, 'project_perf_002');
+      select.dispatchEvent(new Event('change', { bubbles: true }))`,
+    predicate: `document.querySelectorAll('[aria-label="Task planning context"] option').length === 51
+      && document.querySelector('[aria-label="Project planning context"]')?.value === 'project_perf_002'`,
+  }));
+  const planningMutationsAfter = await client.evaluate("window.__mentatPerf.mutationRequests");
+  const suggestionNetworkBefore = await client.evaluate("window.__mentatPerf.networkRequests");
+  const suggestionMutationsBefore = await client.evaluate("window.__mentatPerf.mutationRequests");
+  await client.evaluate("[...document.querySelectorAll('.planning-suggestions button')].find((button) => button.textContent === 'Plan next steps')?.click()");
+  await waitFor(
+    () => client.evaluate("document.getElementById('console-prompt')?.value.startsWith('Plan the next concrete steps')"),
+    "local planning suggestion",
+  );
+  const suggestionNetworkAfter = await client.evaluate("window.__mentatPerf.networkRequests");
+  const suggestionMutationsAfter = await client.evaluate("window.__mentatPerf.mutationRequests");
+  await client.evaluate(textInputExpression(""));
   const completionMutationsBefore = await client.evaluate("window.__mentatPerf.mutationRequests");
   await client.evaluate(textInputExpression("/"));
   await waitFor(
@@ -699,6 +793,10 @@ async function measureSample(client, index) {
     historyPaint,
     loadedTab,
     optimistic,
+    planningMutationDelta: planningMutationsAfter - planningMutationsBefore,
+    planningSuggestionMutationDelta: suggestionMutationsAfter - suggestionMutationsBefore,
+    planningSuggestionNetworkDelta: suggestionNetworkAfter - suggestionNetworkBefore,
+    planningTaskPaint,
     retainedRows,
     stream,
     typingNetworkDelta: networkAfterTyping - networkBeforeTyping,
@@ -783,6 +881,7 @@ async function main() {
       historyPaintMilliseconds: samples.map((sample) => sample.historyPaint),
       loadedTabMilliseconds: samples.map((sample) => sample.loadedTab),
       optimisticPaintMilliseconds: samples.map((sample) => sample.optimistic),
+      planningTaskPaintMilliseconds: samples.map((sample) => sample.planningTaskPaint),
       streamPaintMilliseconds: samples.map((sample) => sample.stream),
     };
     const failures = [];
@@ -797,6 +896,12 @@ async function main() {
     }
     if (samples.some((sample) => sample.completionMutationDelta !== 0)) {
       failures.push("command completion typing initiated a network mutation");
+    }
+    if (samples.some((sample) => sample.planningMutationDelta !== 0)) {
+      failures.push("planning selection initiated a mutation");
+    }
+    if (samples.some((sample) => sample.planningSuggestionMutationDelta !== 0 || sample.planningSuggestionNetworkDelta !== 0)) {
+      failures.push("planning suggestion initiated network or mutation work");
     }
     if (samples.some((sample) => sample.retainedRows !== 200)) {
       failures.push("the production transcript did not retain exactly 200 bounded rows");
@@ -818,6 +923,9 @@ async function main() {
         history_conversations: 1_024,
         initial_messages: 100,
         linked_messages: 1,
+        planning_attention: 50,
+        planning_projects: 256,
+        planning_task_page: 50,
         paginated_retained_messages: 200,
         preview_cards: 3,
         preview_image_cards: 1,
@@ -832,6 +940,9 @@ async function main() {
       ),
       thresholds_ms: thresholds,
       command_completion_mutation_deltas: samples.map((sample) => sample.completionMutationDelta),
+      planning_selection_mutation_deltas: samples.map((sample) => sample.planningMutationDelta),
+      planning_suggestion_mutation_deltas: samples.map((sample) => sample.planningSuggestionMutationDelta),
+      planning_suggestion_network_deltas: samples.map((sample) => sample.planningSuggestionNetworkDelta),
       typing_network_deltas: samples.map((sample) => sample.typingNetworkDelta),
     };
     console.log(JSON.stringify(report, null, 2));

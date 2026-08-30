@@ -13,7 +13,7 @@ export const SHELL_ROUTES = [
   },
   {
     href: "/tasks",
-    label: "Tasks",
+    label: "Projects & Tasks",
     description: "Personal planning",
     icon: "tasks",
   },

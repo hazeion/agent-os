@@ -66,7 +66,19 @@ import {
 import { RunConversationMedia } from "./conversation-media";
 import { ConversationContextControls } from "./conversation-context-controls";
 import { ConversationHistoryManager } from "./conversation-history-manager";
+import {
+  ConversationPlanningControls,
+  PlanningAttention,
+  PlanningSuggestions,
+  type PlanningSelection,
+} from "./conversation-planning";
 import { fetchCommandManifest } from "@/lib/public-command-manifest";
+import {
+  readConversationPlanningContext,
+  readPlanningOverview,
+  type PublicConversationPlanningContext,
+  type PublicPlanningOverview,
+} from "@/lib/public-planning";
 import {
   readConversationMedia,
   readStagedConversationContext,
@@ -605,6 +617,8 @@ const ActivityRail = memo(function ActivityRail({
   activityState,
   collapsed,
   expandedAgents,
+  planning,
+  planningState,
   onToggle,
   onToggleAgent,
   onSelectConversation,
@@ -613,6 +627,8 @@ const ActivityRail = memo(function ActivityRail({
   activityState: LoadingState;
   collapsed: boolean;
   expandedAgents: ReadonlySet<string>;
+  planning: PublicPlanningOverview | null;
+  planningState: "loading" | "ready" | "unavailable" | "error";
   onToggle: () => void;
   onToggleAgent: (agentId: string) => void;
   onSelectConversation: (conversationId: string) => void;
@@ -627,6 +643,7 @@ const ActivityRail = memo(function ActivityRail({
         {activityState === "error" ? <StatusMessage state="error">Activity could not be read safely.</StatusMessage> : null}
         {activityState === "ready" && activity?.activity.length === 0 ? <StatusMessage state="empty">No Agent activity yet.</StatusMessage> : null}
         {activityState === "ready" && activity?.activity.length ? <div className="activity-list">{activity.activity.map((item) => { const expanded = expandedAgents.has(item.agent.id); const contentId = `activity-agent-${item.agent.id}`; return <article className="activity-card" data-attention={item.attention ? "true" : "false"} key={item.agent.id}><button aria-controls={contentId} aria-expanded={expanded} className="activity-agent-toggle" onClick={() => onToggleAgent(item.agent.id)} type="button"><span className="activity-state-dot" aria-hidden="true" /><span className="activity-agent-label"><strong>{item.agent.name}</strong><small>{readable(item.state)}</small></span><span aria-hidden="true">{expanded ? "−" : "+"}</span></button>{expanded ? <div className="activity-card-content" id={contentId}><p className="activity-summary">{item.summary}</p>{item.conversations.length ? <ul>{item.conversations.map((conversation) => <li key={conversation.id}><button onClick={() => onSelectConversation(conversation.id)} type="button">{conversation.title}</button><span>{readable(conversation.run_status)}</span></li>)}</ul> : null}</div> : null}</article>; })}</div> : null}
+        <PlanningAttention overview={planning} state={planningState} />
       </div>
     </aside>
   );
@@ -767,6 +784,12 @@ export function HomeConsole() {
   const [stagedContextStates, setStagedContextStates] = useState<Record<string, "loading" | "ready" | "error">>({});
   const [conversationMedia, setConversationMedia] = useState<Record<string, ConversationMedia>>({});
   const [conversationMediaStates, setConversationMediaStates] = useState<Record<string, "loading" | "ready" | "error">>({});
+  const [planningOverview, setPlanningOverview] = useState<PublicPlanningOverview | null>(null);
+  const [planningOverviewState, setPlanningOverviewState] = useState<"loading" | "ready" | "unavailable" | "error">("loading");
+  const [planningContexts, setPlanningContexts] = useState<Record<string, PublicConversationPlanningContext>>({});
+  const [planningContextStates, setPlanningContextStates] = useState<Record<string, "loading" | "ready" | "unavailable" | "error">>({});
+  const [planningSelections, setPlanningSelections] = useState<Record<string, PlanningSelection>>({});
+  const planningBusyIds = useMemo<ReadonlySet<string>>(() => new Set(), []);
   const linkPreviewReads = useRef(new Set<string>());
   const linkPreviewGeneration = useRef(0);
   const configurationRequest = useRef(0);
@@ -849,6 +872,14 @@ export function HomeConsole() {
         : configurationBusy
           ? "Wait for Agent configuration to finish before staging files."
           : null;
+  const planningWorkDisabledReason = activeRun !== null
+      ? "Planning context cannot change while this Conversation has an active Run."
+      : (detail?.queued_turns.length ?? 0) > 0
+        ? "Finish or cancel queued Turns before changing planning context."
+        : null;
+  const planningDisabledReason = detail?.conversation.state !== "active"
+    ? "Restore this Conversation before applying new planning context. Clear remains available while idle."
+    : planningWorkDisabledReason;
   const codexSendReady = !selectedNeedsCodexReadiness
     || codexReadiness === "ready"
     || activeRun !== null
@@ -890,6 +921,28 @@ export function HomeConsole() {
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { selectedConversationRef.current = selectedConversationId; }, [selectedConversationId]);
+  useEffect(() => {
+    let cancelled = false;
+    void readPlanningOverview().then((overview) => {
+      if (!cancelled) { setPlanningOverview(overview); setPlanningOverviewState("ready"); }
+    }).catch(() => { if (!cancelled) setPlanningOverviewState("unavailable"); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedConversationId) return;
+    const conversationId = selectedConversationId;
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) setPlanningContextStates((current) => ({ ...current, [conversationId]: "loading" })); });
+    void readConversationPlanningContext(conversationId).then((context) => {
+      if (cancelled) return;
+      setPlanningContexts((current) => ({ ...current, [conversationId]: context }));
+      setPlanningContextStates((current) => ({ ...current, [conversationId]: "ready" }));
+      setPlanningSelections((current) => conversationId in current ? current : { ...current, [conversationId]: { projectId: context.association?.project_id ?? null, taskId: context.association?.task_id ?? null } });
+    }).catch(() => { if (!cancelled) setPlanningContextStates((current) => ({ ...current, [conversationId]: "unavailable" })); });
+    return () => { cancelled = true; };
+  }, [selectedConversationId]);
+
   useEffect(() => {
     let cancelled = false;
     void fetchCommandManifest().then((manifest) => {
@@ -1971,30 +2024,36 @@ export function HomeConsole() {
       <div className="home-console-layout" data-right-collapsed={rightCollapsed ? "true" : "false"}>
         <section aria-label="Conversation workspace" className="conversation-workspace">
           <div className="conversation-tabs-heading"><div><p className="console-kicker">Conversations</p><h2>Workspace</h2></div><div className="conversation-heading-controls"><LinkPreviewSettings busy={linkPreviewBusy} onClear={() => void clearPreviewCache()} onToggle={() => void toggleLinkPreviewPreference()} preference={linkPreviewPreference} state={linkPreviewPreferenceState} /><label className="agent-picker"><span>Agent</span><select aria-label="Agent for new conversations" onChange={(event) => setSelectedAgentId(event.target.value || null)} value={selectedAgentId ?? ""}><option value="">{setupRequired ? "Direct Agent setup required" : "Choose an Agent"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label></div></div>
-          <div aria-label="Conversation tabs" aria-orientation="horizontal" className="conversation-tabs" role="tablist">
-            {openConversations.map((conversation, index) => (
-              <div className="conversation-tab-group" key={conversation.id} role="presentation">
-                <button
-                  aria-controls="conversation-panel"
-                  aria-selected={conversation.id === selectedConversationId}
-                  className="conversation-tab"
-                  data-conversation-tab-index={index}
-                  id={`conversation-tab-${conversation.id}`}
-                  onClick={() => selectConversation(conversation.id)}
-                  onKeyDown={(event) => tabKeyDown(event, index, openConversations.length, (next) => selectConversation(openConversations[next].id))}
-                  role="tab"
-                  tabIndex={conversation.id === selectedConversationId ? 0 : -1}
-                  title={conversationLabel(conversation)}
-                  type="button"
-                ><span>{conversationLabel(conversation)}</span></button>
-                <button
-                  aria-label={`Close ${conversationLabel(conversation)} tab`}
-                  className="conversation-tab-close"
-                  onClick={() => closeConversation(conversation.id)}
-                  type="button"
-                >×</button>
-              </div>
-            ))}
+          <div className="conversation-tab-strip">
+            <div aria-label={openConversations.length ? "Conversation tabs" : undefined} aria-orientation={openConversations.length ? "horizontal" : undefined} className="conversation-tabs" role={openConversations.length ? "tablist" : undefined}>
+              {openConversations.map((conversation, index) => (
+              <button
+                aria-controls="conversation-panel"
+                aria-label={`${conversationLabel(conversation)}; press Delete to close tab`}
+                aria-selected={conversation.id === selectedConversationId}
+                className="conversation-tab"
+                data-conversation-tab-index={index}
+                id={`conversation-tab-${conversation.id}`}
+                key={conversation.id}
+                onClick={(event) => {
+                  if ((event.target as HTMLElement).dataset.closeTab === "true") closeConversation(conversation.id);
+                  else selectConversation(conversation.id);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Delete") {
+                    event.preventDefault();
+                    closeConversation(conversation.id);
+                    return;
+                  }
+                  tabKeyDown(event, index, openConversations.length, (next) => selectConversation(openConversations[next].id));
+                }}
+                role="tab"
+                tabIndex={conversation.id === selectedConversationId ? 0 : -1}
+                title={`${conversationLabel(conversation)} · Delete closes tab`}
+                type="button"
+              ><span>{conversationLabel(conversation)}</span><span aria-hidden="true" className="conversation-tab-close" data-close-tab="true">×</span></button>
+              ))}
+            </div>
             {conversationState === "loading" ? <StatusMessage state="loading">Loading Conversations…</StatusMessage> : null}
             {conversationCursor ? <button className="load-more-conversations" disabled={loadingConversations} onClick={loadMoreConversations} type="button">{loadingConversations ? "Loading…" : "Load older"}</button> : null}
           </div>
@@ -2006,6 +2065,8 @@ export function HomeConsole() {
           <QueuedTurns busyTurnIds={queueBusyTurnIds} editDrafts={queueEditDrafts} editingTurnId={editingTurnId} onBeginEdit={(turn) => { if (!selectedConversationId) return; setConversationEditor(selectedConversationId, turn.id); setQueueEditDrafts((current) => ({ ...current, [turn.id]: turn.text })); }} onCancel={(turn) => void cancelQueuedTurn(turn)} onContinue={(turn) => void continueQueuedTurn(turn)} onDiscardEdit={(turn) => { if (!selectedConversationId) return; const conversationId = selectedConversationId; if (editingTurnIdsRef.current[conversationId] !== turn.id) return; setConversationEditor(conversationId, null); focusQueueTarget(conversationId, turn.id); }} onEditDraft={(turnId, text) => setQueueEditDrafts((current) => ({ ...current, [turnId]: text }))} onSaveEdit={(turn) => void editQueuedTurn(turn)} turns={detail?.queued_turns ?? []} />
           {setupRequired || selectedNeedsCodexReadiness ? <div className="codex-setup" data-state={codexReadiness ?? "unchecked"}><div><strong>{codexReadiness === "ready" ? "Codex ready" : "Codex subscription sign-in"}</strong><p>{codexReadiness === "sign_in_required" ? <>Run <code>codex login</code> in a terminal, finish the browser sign-in, then Recheck.</> : codexReadiness === "cli_missing" ? <>Install the Codex CLI, run <code>codex login</code>, then restart Mentat.</> : codexReadiness === "unavailable" ? "Mentat could not confirm local Codex readiness." : codexReadiness === "ready" ? "The local Codex CLI is signed in. Mentat never receives your credentials." : "Mentat uses the Codex CLI's existing ChatGPT subscription sign-in; credentials stay with Codex."}</p></div><button disabled={checkingCodex} onClick={() => void recheckCodex()} type="button">{checkingCodex ? "Checking…" : codexReadiness === null ? "Check readiness" : "Recheck"}</button></div> : null}
           {selectedConversationId && detail ? <ConversationContextControls agent={selectedAgent} conversationId={selectedConversationId} disabledReason={contextDisabledReason} key={selectedConversationId} onAgentEnabled={(enabled) => { setAgents((current) => current.map((agent) => agent.id === enabled.id ? enabled : agent)); setDetails((current) => current[selectedConversationId] ? { ...current, [selectedConversationId]: { ...current[selectedConversationId], agent: enabled } } : current); }} onContext={(context) => setStagedContexts((current) => ({ ...current, [selectedConversationId]: context }))} onContextState={(state) => setStagedContextStates((current) => ({ ...current, [selectedConversationId]: state }))} onNotice={(message) => setConversationNotice(selectedConversationId, message)} onRefresh={() => void refreshConversationContext(selectedConversationId)} staged={stagedContext} stagingState={stagedContextState} /> : null}
+          {selectedConversationId && detail ? <ConversationPlanningControls busy={planningBusyIds.has(selectedConversationId)} clearDisabledReason={planningWorkDisabledReason} context={planningContexts[selectedConversationId] ?? null} contextState={planningContextStates[selectedConversationId] ?? "loading"} conversationId={selectedConversationId} conversationRevision={planningContexts[selectedConversationId]?.conversation_revision ?? detail.conversation.revision} disabledReason={planningDisabledReason} key={`planning-${selectedConversationId}`} onContext={(context) => setPlanningContexts((current) => ({ ...current, [selectedConversationId]: context }))} onConversation={mergeConversationSummary} onNotice={(message) => setConversationNotice(selectedConversationId, message)} onRefreshConversation={() => refreshConversationDetail(selectedConversationId).then(() => undefined)} onSelection={(selection) => setPlanningSelections((current) => ({ ...current, [selectedConversationId]: selection }))} overview={planningOverview} overviewState={planningOverviewState} selection={planningSelections[selectedConversationId] ?? { projectId: planningContexts[selectedConversationId]?.association?.project_id ?? null, taskId: planningContexts[selectedConversationId]?.association?.task_id ?? null }} /> : null}
+          <PlanningSuggestions context={selectedConversationId ? planningContexts[selectedConversationId] ?? null : null} draftEmpty={draft.length === 0} onChoose={(text) => { setSelectedDraft(text); window.setTimeout(() => document.getElementById("console-prompt")?.focus(), 0); }} />
           {commandHelpOpen && commandManifest ? <section aria-label="Mentat command help" className="command-help"><div><strong>Mentat commands</strong><button aria-label="Close command help" onClick={() => { setCommandHelpOpen(false); document.getElementById("console-prompt")?.focus(); }} type="button">×</button></div><ul>{commandManifest.commands.map((item) => <li key={item.command}><code>{item.command}</code><span>{MENTAT_COMMAND_DESCRIPTIONS[item.command]}</span></li>)}</ul></section> : null}
           <form className="console-composer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}>
             <label htmlFor="console-prompt">Prompt</label>
@@ -2059,7 +2120,7 @@ export function HomeConsole() {
           </form>
           <p aria-atomic="true" aria-live="polite" className="console-notice" role="status">{visibleNotice}</p>
         </section>
-        <ActivityRail activity={activity} activityState={activityState} collapsed={rightCollapsed} expandedAgents={expandedAgents} onSelectConversation={selectActivityConversation} onToggle={() => setRightCollapsed((current) => !current)} onToggleAgent={(agentId) => setExpandedAgents((current) => { const next = new Set(current); if (next.has(agentId)) next.delete(agentId); else next.add(agentId); return next; })} />
+        <ActivityRail activity={activity} activityState={activityState} collapsed={rightCollapsed} expandedAgents={expandedAgents} onSelectConversation={selectActivityConversation} onToggle={() => setRightCollapsed((current) => !current)} onToggleAgent={(agentId) => setExpandedAgents((current) => { const next = new Set(current); if (next.has(agentId)) next.delete(agentId); else next.add(agentId); return next; })} planning={planningOverview} planningState={planningOverviewState} />
       </div>
       {conversationState === "unavailable" ? <StatusMessage state="unavailable">Conversation data is temporarily unavailable. Try refreshing the page.</StatusMessage> : null}
       {conversationState === "unsupported" ? <StatusMessage state="unsupported">The current Python bridge does not support Conversations yet.</StatusMessage> : null}

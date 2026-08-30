@@ -646,6 +646,51 @@ snippets, Agents, attachments, runtime references, and query text are absent
 from the result. Typing changes only the result view; selection requires an
 explicit Open action.
 
+### Conversation Project and Task planning context
+
+Schema 17 adds `mentat_conversation_planning_context`, one optional
+Conversation-owned reference containing a canonical Project ID and optional
+Task ID. It is deliberately separate from Conversation rows and has no Task
+foreign key: Task authority uses whole-collection replacement, and a foreign
+key would silently erase context during a valid replacement. The Conversation
+foreign key cascades only when its owning Conversation is removed. Missing,
+moved, deleted, or ambiguous targets remain stored but project only fixed
+`project_unavailable`, `task_unavailable`, or `project_mismatch` state until an
+explicit rebind or clear.
+
+Apply and Clear require the exact Conversation revision. Under the durable
+root lock, Python validates the bounded Project document and resolves the Task
+inside one immediate SQLite transaction before updating the association and
+Conversation revision. Setting context requires an active Conversation; every
+change is blocked by a nonterminal/finalizing Run or queue-active Turn. The
+operation changes no Project, Task, Message, Turn, Run, attachment, calendar,
+note, Context Pack, delegation, or runtime state. Context is presentation
+metadata only and never becomes `mentat_runs.task_id` or hidden runtime input.
+
+The browser receives separate fixed planning capabilities: a query-free
+overview capped at 256 Projects and 50 attention Tasks, a Project-bound 50-row
+Task page with an opaque cursor, one exact canonical Task locator for task-only
+navigation, and exact Conversation context read/mutation.
+Safe Task fields are limited to canonical identity, title, Project identity,
+status, priority, due date, selected boolean/state planning flags, fixed
+attention reasons, and update time. Descriptions, assignees, Agent IDs, notes,
+calendar links, reminders, dependencies, subtasks, delegation, files,
+artifacts, extensions, paths, and runtime references stay private.
+
+Planning attention is a capped navigation surface, not a second Task
+workspace. Fixed classification distinguishes overdue, due today, explicit
+review, needs attention, planned today, and due soon; completed Tasks are not
+overdue solely because an old due date passed. Planning suggestions only fill
+an empty visible draft. They do not Send, queue, mutate, or delegate.
+
+Projects & Tasks is the dedicated creation surface. Project creation accepts
+only a Name. Task creation is scoped by the selected canonical Project and
+accepts only Title, optional canonical Agent assignment, and optional Due date;
+status defaults to `todo` and priority to `medium`. These are named bridge and
+same-origin capabilities, not exposure of the generic compatibility routes.
+Assignment stores Task metadata only and never dispatches an Agent or enters
+the Hermes Kanban boundary.
+
 The Next.js Home Console treats initial nonterminal SQLite state as
 `Reconciling` until the selected Run stream completes its fixed mutating
 readback. Stop, steering, and pending-action controls remain unavailable until

@@ -68,6 +68,18 @@ from conversation_repository import (
     conversation_turn_public,
     conversations_public,
 )
+from conversation_planning import (
+    ConversationPlanningError,
+    planning_context_projection,
+    planning_overview,
+    planning_task_locator,
+    planning_task_page,
+    project_registry,
+    safe_task_projection,
+    validate_association_targets,
+    validate_project_name,
+    validate_task_title,
+)
 from run_repository import (
     HydratedRunEvent,
     RunRecord,
@@ -2482,6 +2494,300 @@ def rename_mentat_conversation(
         "action": "rename",
         "conversation": _public_conversation_record(record),
     }, 200
+
+
+def _planning_projects_under_lock() -> object:
+    projects = read_json_file("projects.json", [])
+    if not isinstance(projects, list):
+        raise ConversationPlanningError("planning.projects_unavailable")
+    return projects
+
+
+def mentat_planning_overview_payload() -> dict:
+    """Return one bounded Project and planning-attention snapshot."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            payload = planning_overview(
+                connection,
+                projects,
+                today=date.today(),
+            )
+            connection.commit()
+            return {"schema_version": 1, **payload}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
+def mentat_planning_tasks_payload(
+    *,
+    project_id: str,
+    cursor: str | None = None,
+) -> dict:
+    """Return one exact Project-bound Task page."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            payload = planning_task_page(
+                connection,
+                projects,
+                project_id=project_id,
+                cursor=cursor,
+                today=date.today(),
+            )
+            connection.commit()
+            return {"schema_version": 1, **payload}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
+def mentat_planning_task_payload(task_id: str) -> dict:
+    """Return one exact canonical Task and its uniquely resolved Project."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            payload = planning_task_locator(
+                connection,
+                projects,
+                task_id=task_id,
+                today=date.today(),
+            )
+            connection.commit()
+            return {"schema_version": 1, **payload}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
+def mentat_conversation_planning_context_payload(conversation_id: str) -> dict:
+    """Resolve one stored association without following stale targets."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        # A malformed or missing Project target is projected as a stale,
+        # clearable association rather than turning the reference into content.
+        projects = read_json_file("projects.json", [])
+        return _conversation_repository().resolve_planning_context(
+            conversation_id,
+            lambda connection, conversation, association: {
+                "schema_version": 1,
+                **planning_context_projection(
+                    connection,
+                    projects,
+                    conversation,
+                    association,
+                    today=date.today(),
+                ),
+            },
+        )
+
+
+def set_mentat_conversation_planning_context(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Apply one exact metadata-only Conversation planning association."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "expected_revision",
+        "project_id",
+        "task_id",
+    }:
+        return {"error_code": "conversation.planning_context_invalid"}, 400
+    expected_revision = payload.get("expected_revision")
+    project_id = payload.get("project_id")
+    task_id = payload.get("task_id")
+    if (
+        type(expected_revision) is not int
+        or expected_revision < 1
+        or project_id is not None
+        and not isinstance(project_id, str)
+        or task_id is not None
+        and not isinstance(task_id, str)
+        or project_id is None
+        and task_id is not None
+    ):
+        return {"error_code": "conversation.planning_context_invalid"}, 400
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = [] if project_id is None else _planning_projects_under_lock()
+        registry = None if project_id is None else project_registry(projects)
+        conversation, association = _conversation_repository().set_planning_association(
+            conversation_id,
+            expected_revision=expected_revision,
+            project_id=project_id,
+            task_id=task_id,
+            validate_targets=lambda connection, selected_project, selected_task: (
+                validate_association_targets(
+                    connection,
+                    registry,
+                    selected_project,
+                    selected_task,
+                )
+            ),
+        )
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            context = planning_context_projection(
+                connection,
+                projects,
+                conversation,
+                association,
+                today=date.today(),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+    return {
+        "schema_version": 1,
+        "action": "clear" if project_id is None else "set",
+        "conversation": _public_conversation_record(conversation),
+        **context,
+    }, 200
+
+
+def create_mentat_project(payload: object) -> tuple[dict, int]:
+    """Create one minimal Project through the canonical JSON authority."""
+
+    if not isinstance(payload, dict) or set(payload) != {"name"}:
+        return {"error_code": "planning.project_invalid"}, 400
+    try:
+        name = validate_project_name(payload.get("name"))
+    except ConversationPlanningError:
+        return {"error_code": "planning.project_invalid"}, 400
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        current = _planning_projects_under_lock()
+        if len(project_registry(current).projects) >= 256:
+            return {"error_code": "planning.project_capacity"}, 409
+        result, status = create_project({"name": name})
+        if status != 201:
+            return result, status
+        try:
+            project = project_registry(result.get("projects")).by_id[str(result["project"]["id"])]
+        except (KeyError, TypeError, ConversationPlanningError) as exc:
+            raise ConversationPlanningError("planning.projects_unavailable") from exc
+    return {"schema_version": 1, "action": "create", "project": project.public()}, 201
+
+
+def create_mentat_project_task(
+    project_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Create one minimal Task without runtime or delegation side effects."""
+
+    if (
+        not isinstance(project_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}", project_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {
+        "title",
+        "assigned_agent_id",
+        "due_date",
+        }
+    ):
+        return {"error_code": "planning.task_invalid"}, 400
+    try:
+        title = validate_task_title(payload.get("title"))
+    except ConversationPlanningError:
+        return {"error_code": "planning.task_invalid"}, 400
+    assigned_agent_id = payload.get("assigned_agent_id")
+    due_date = payload.get("due_date")
+    if (
+        assigned_agent_id is not None
+        and (
+            not isinstance(assigned_agent_id, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", assigned_agent_id)
+            is None
+        )
+        or due_date is not None
+        and (
+            not isinstance(due_date, str)
+            or len(due_date) != 10
+            or task_due_date_value(due_date) != due_date
+        )
+    ):
+        return {"error_code": "planning.task_invalid"}, 400
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        registry = project_registry(projects)
+        project = registry.by_id.get(project_id)
+        if project is None:
+            return {"error_code": "planning.project_not_found"}, 404
+        assignee = "Operator"
+        if assigned_agent_id is not None:
+            agents = {
+                record.agent.id: record
+                for record in _mentat_agent_registry().list_agent_records()
+            }
+            selected = agents.get(assigned_agent_id)
+            if selected is None:
+                return {"error_code": "planning.agent_not_found"}, 404
+            assignee = selected.agent.name
+
+        def mutator(tasks):
+            normalized, error = validate_task_payload({
+                "title": title,
+                "project": project.name,
+                "status": "todo",
+                "priority": "medium",
+                "source": "dashboard",
+                "assignee": assignee,
+                "due_date": due_date,
+            })
+            if error:
+                return tasks, ({"error_code": "planning.task_invalid"}, 400)
+            if assigned_agent_id is not None:
+                normalized["assigned_agent_id"] = assigned_agent_id
+            next_tasks = [task for task in tasks if isinstance(task, dict)]
+            dependency_error = validate_task_dependencies(normalized, next_tasks)
+            if dependency_error:
+                return tasks, ({"error_code": "planning.task_invalid"}, 400)
+            next_tasks.append(normalized)
+            return next_tasks, (normalized, 201)
+
+        task, status = update_task_snapshot(mutator)
+        if status != 201:
+            return task, status
+        safe_task = safe_task_projection(task, registry, today=date.today())
+    return {
+        "schema_version": 1,
+        "action": "create",
+        "project": project.public(),
+        "task": safe_task,
+    }, 201
 
 
 def _mentat_conversation_run_action(
