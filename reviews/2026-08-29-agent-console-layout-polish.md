@@ -1,6 +1,6 @@
 # Feature Slice Review: Agent Console layout polish
 
-Status: Ready for publication
+Status: Complete
 Slice: `agent-console-layout-polish`
 Date: `2026-08-29`
 Review log: `reviews/2026-08-29-agent-console-layout-polish.md`
@@ -151,6 +151,7 @@ or runtime behavior.
 | `python3 -m unittest tests.test_node_runtime_foundation -v` | Python 3.13 | 0 | 3 pass | Packaging/browser contract remains valid. |
 | `node scripts/web_foundation_smoke.mjs` | Production standalone, Chromium 152 | 0 | 1 complete smoke | Six standard viewports, two centering viewports, all routes and provider states pass. |
 | Browser smoke after CI hydration-race fix | Production standalone, Chromium 152 | 0 | 1 complete smoke | Drawer interaction now begins only after the hydrated ready projection; the full smoke passes unchanged. |
+| Merged local-main browser inspection | In-app Chromium, user data, 1680/1280 widths | Pass | Home and Agents inspected | Composer is compact and non-overlapping; activity is bounded; settled empty Provider space is compact; collapsed gaps are exactly 12 px and the 1680 px center midpoint is exactly 840 px. |
 | `npm --prefix web run check` | Node 24.19 | 0 | 228 pass | Lint and typecheck also pass. |
 | `node web/scripts/run-next.mjs build --webpack && node web/scripts/prepare-standalone.mjs` | Node 24.19 | 0 | Build pass | Home and Projects & Tasks remain dynamic; Agents and Runs remain static. |
 | `npm --prefix web run performance:agent-console` | Production, 7 samples | 0 | Gate pass | Optimistic 10.4 ms; accepted 120 ms; stream 5.4 ms; loaded tab 10.6 ms. |
@@ -224,15 +225,24 @@ added after the first CI run exposed a hydration race.
 - User authorization and scope: approved implementation and standing
   publication authorization; the repository workflow's final publication
   packet will still be presented before staging.
-- Commit hash: pending.
-- Ready PR URL: pending.
+- Commits: `64c6d7517075470a10987b8228cb73c0b14a9b3b` and
+  `45e83e307c036527d57b9c12315f5458faa7f38f`.
+- Ready PR URL: https://github.com/hazeion/agent-os/pull/163
+- GitHub CI: 52 checks passed after the hydration-race correction; 0 failed.
+- Merge commit: `3b102ac82b45d5c97505e21342fcc42cb534f9d0`.
+- Local integration: `main` fast-forwarded to the exact merge commit while
+  preserving all pre-existing tracked and untracked user changes. The merged
+  webpack build passed and the dashboard was restarted on port 8888.
 
 ## Outcome review
 
-- Classification: Pending.
-- Acceptance criteria summary: Pending.
-- Potential bugs or untested paths: Pending.
-- Remaining reviewer dissent: Pending.
+- Classification: Passed.
+- Acceptance criteria summary: AC-1 through AC-6 passed.
+- Potential bugs or untested paths: no known defect; native select rendering
+  may vary slightly by platform, but the CI/browser width and overlap checks
+  cover the supported breakpoints.
+- Remaining reviewer dissent: none after two clean review rounds.
 - Compatibility/migration/rollback concerns: CSS-only rollback.
-- User decision: Pending outcome review.
+- User decision: standing approval covered integration; final visual outcome
+  review remains available after handoff.
 - Next slice authorized: No
