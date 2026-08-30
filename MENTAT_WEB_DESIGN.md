@@ -237,8 +237,10 @@ contrast, and representative desktop, tablet, and mobile widths.
 - `/`: prompt-first Agent Console Home.
 - `/agents`: canonical Agent identity, capabilities, status, and supported
   management.
-- `/tasks`: project planning, assignment, dependencies, scheduling, and safe
-  mutations.
+- `/tasks`: Projects & Tasks list/detail workspace. Quick creation stays
+  deliberately small: Project Name; Task Title, optional Agent, and optional
+  Due date. Project is implicit from the selected list item, while advanced
+  planning remains in the existing detailed workflows.
 - `/runs`: bounded Run history, normalized timeline, artifacts, and supported
   controls.
 - Calendar and Settings become active only with real screens and contracts.

@@ -777,7 +777,96 @@ button {
 .task-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .task-tags li { overflow-wrap: anywhere; padding: 3px 7px; border-radius: 999px; background: var(--panel-raised); color: var(--text-secondary); font-size: 0.72rem; }
 
+.projects-tasks-workspace {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.34fr) minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.projects-pane,
+.project-tasks-pane {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.projects-tasks-heading {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.projects-tasks-heading > div { min-width: 0; }
+.projects-tasks-heading h2 { margin: 0; overflow: hidden; font-size: 1rem; text-overflow: ellipsis; white-space: nowrap; }
+.projects-tasks-heading > button { min-height: 34px; margin-left: auto; padding: 5px 10px; }
+.projects-pane > p,
+.project-tasks-pane > p { margin: 0; color: var(--text-tertiary); font-size: 0.78rem; }
+.projects-pane ul,
+.project-task-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.projects-pane li button {
+  display: grid;
+  width: 100%;
+  min-height: 42px;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--row);
+  color: var(--text-secondary);
+  text-align: left;
+}
+.projects-pane li button[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.projects-pane li strong { overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
+.projects-pane li span { color: var(--text-tertiary); font-size: 0.68rem; text-transform: capitalize; }
+.project-task-list { max-height: min(62vh, 720px); overflow: auto; }
+.project-task-list li {
+  display: flex;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--row);
+}
+.project-task-list li[data-task-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.project-task-list li > div { display: grid; min-width: 0; gap: 2px; }
+.project-task-list li strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-task-list li span,
+.project-task-list li time { color: var(--text-tertiary); font-size: 0.7rem; }
+.project-task-list li time { margin-left: auto; white-space: nowrap; }
+.project-create-form,
+.task-create-form { display: grid; gap: 8px; padding: 9px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--row); }
+.project-create-form label,
+.task-create-form label { display: grid; min-width: 0; gap: 3px; color: var(--text-tertiary); font-size: 0.68rem; font-weight: 700; }
+.project-create-form input,
+.task-create-form :is(input, select) { width: 100%; min-height: 36px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
+.project-create-form > div,
+.task-create-form > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.project-create-form button,
+.task-create-form button { min-height: 34px; padding: 5px 10px; }
+.project-tasks-more { width: fit-content; min-height: 34px; padding: 5px 10px; }
+.projects-tasks-notice { grid-column: 1 / -1; min-height: 1em; margin: 0; color: var(--text-secondary); font-size: 0.78rem; }
+
 @media (max-width: 520px) {
+  .projects-tasks-workspace { grid-template-columns: minmax(0, 1fr); }
+  .projects-tasks-heading { align-items: stretch; flex-wrap: wrap; }
+  .projects-tasks-heading > button,
+  .projects-pane li button,
+  .project-create-form :is(input, button),
+  .task-create-form :is(input, select, button),
+  .project-tasks-more { min-height: 44px; }
+  .project-task-list { max-height: none; }
+  .project-task-list li { align-items: flex-start; flex-direction: column; }
+  .project-task-list li time { margin-left: 0; }
+  .projects-tasks-notice { grid-column: auto; }
   .tasks-toolbar,
   .runs-toolbar { align-items: stretch; flex-direction: column; }
   .task-refresh,
@@ -1256,23 +1345,36 @@ button {
   text-transform: none;
 }
 
+.conversation-tab-strip {
+  display: flex;
+  min-width: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--panel) 94%, var(--canvas));
+}
+
 .conversation-tabs {
   display: flex;
   align-items: end;
+  flex: 1 1 auto;
   gap: 1px;
   min-height: 41px;
   min-width: 0;
   overflow-x: auto;
   padding: 6px 14px 0;
-  border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--panel) 94%, var(--canvas));
   scrollbar-width: thin;
 }
 
+.conversation-tab-strip > .load-more-conversations {
+  align-self: center;
+  flex: 0 0 auto;
+  margin: 6px 8px;
+}
+
 .conversation-tab {
+  position: relative;
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
+  flex: 0 0 180px;
   min-width: 112px;
   max-width: 196px;
   min-height: 34px;
@@ -1284,15 +1386,6 @@ button {
   color: var(--text-secondary);
   cursor: pointer;
   text-align: left;
-}
-
-.conversation-tab-group {
-  position: relative;
-  flex: 0 0 180px;
-}
-
-.conversation-tab-group .conversation-tab {
-  width: 100%;
 }
 
 .conversation-tab-close {
@@ -2569,6 +2662,135 @@ button {
   text-align: left;
 }
 
+.composer-planning {
+  margin: 8px clamp(12px, 4vw, 58px) 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--row);
+}
+
+.composer-planning summary {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 9px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.composer-planning summary strong {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-planning-panel {
+  display: grid;
+  gap: 8px;
+  max-height: min(280px, 38vh);
+  padding: 9px;
+  overflow: auto;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.composer-planning-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.composer-planning-fields label {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  color: var(--text-tertiary);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.composer-planning-fields select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--panel-raised);
+  color: var(--text-primary);
+}
+
+.composer-planning-status {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+}
+
+.composer-planning-actions,
+.planning-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.composer-planning-actions button,
+.planning-suggestions button,
+.planning-load-more {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--panel-raised);
+  color: var(--text-secondary);
+}
+
+.planning-suggestions {
+  margin: 8px clamp(12px, 4vw, 58px) 0;
+}
+
+.planning-suggestions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+.planning-attention {
+  display: grid;
+  gap: 9px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.planning-attention-heading h3,
+.planning-attention p { margin: 0; }
+.planning-attention > p { color: var(--text-tertiary); font-size: 0.72rem; }
+.planning-attention ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.planning-attention li a {
+  display: grid;
+  gap: 2px;
+  min-height: 44px;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--row);
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.planning-attention li strong { overflow: hidden; color: var(--text-primary); font-size: 0.74rem; text-overflow: ellipsis; white-space: nowrap; }
+.planning-attention li span,
+.planning-attention li time { color: var(--text-tertiary); font-size: 0.66rem; text-transform: capitalize; }
+.planning-view-all {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  color: var(--accent);
+  font-size: 0.72rem;
+}
+
+.task-agent-state {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+}
+
 .composer-command-menu button[aria-selected="true"],
 .composer-command-menu button:hover {
   border-color: var(--accent);
@@ -3125,7 +3347,7 @@ button {
     min-height: 44px;
   }
 
-  .conversation-tab-group .conversation-tab {
+  .conversation-tab {
     padding-right: 48px;
   }
 
@@ -3219,4 +3441,12 @@ button {
   .history-actions { flex-wrap: wrap; }
   .command-help ul { grid-template-columns: minmax(0, 1fr); }
   .composer-command-menu button { min-height: 44px; }
+  .composer-planning summary,
+  .composer-planning-fields select,
+  .composer-planning-actions button,
+  .planning-load-more,
+  .planning-suggestions button,
+  .planning-view-all { min-height: 44px; }
+  .composer-planning-fields { grid-template-columns: minmax(0, 1fr); }
+  .composer-planning-actions { align-items: stretch; }
 }

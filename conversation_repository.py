@@ -12,7 +12,7 @@ import re
 import secrets
 import sqlite3
 import unicodedata
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from agent_registry import (
     DIRECT_AGENT_ROLE,
@@ -43,6 +43,8 @@ _CONVERSATION_ID = re.compile(r"conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _MESSAGE_ID = re.compile(r"msg_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _TURN_ID = re.compile(r"turn_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
 _AGENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
+_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 _TIMESTAMP = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})\Z"
 )
@@ -73,6 +75,15 @@ _WAITING_RUN_STATUSES = frozenset(
     {"waiting", "waiting_for_approval", "waiting_for_clarification", "unknown"}
 )
 _REQUIRED_SCHEMA_OBJECTS = {
+    ("index", "idx_mentat_conversation_planning_project"): """
+        CREATE INDEX idx_mentat_conversation_planning_project
+        ON mentat_conversation_planning_context(project_id, conversation_id)
+    """,
+    ("index", "idx_mentat_conversation_planning_task"): """
+        CREATE INDEX idx_mentat_conversation_planning_task
+        ON mentat_conversation_planning_context(task_id, conversation_id)
+        WHERE task_id IS NOT NULL
+    """,
     ("index", "idx_mentat_conversations_activity"): """
         CREATE INDEX idx_mentat_conversations_activity
         ON mentat_conversations(state, updated_at DESC, id)
@@ -430,6 +441,15 @@ class ConversationRecord:
 
 
 @dataclass(frozen=True)
+class ConversationPlanningAssociation:
+    conversation_id: str
+    project_id: str
+    task_id: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class ConversationMessageRecord:
     id: str
     conversation_id: str
@@ -764,6 +784,32 @@ def _conversation_row(row: Mapping[str, object]) -> ConversationRecord:
         created_at=created_at,
         updated_at=updated_at,
         archived_at=archived_at,
+    )
+
+
+def _planning_association_row(
+    row: Mapping[str, object],
+) -> ConversationPlanningAssociation:
+    conversation_id = _identifier(
+        row["conversation_id"], _CONVERSATION_ID, "conversation_id_invalid"
+    )
+    project_id = _identifier(
+        row["project_id"], _PROJECT_ID, "conversation.project_id_invalid"
+    )
+    task_value = row["task_id"]
+    task_id = None if task_value is None else _identifier(
+        task_value, _TASK_ID, "conversation.task_id_invalid"
+    )
+    created_at = _timestamp(row["created_at"])
+    updated_at = _timestamp(row["updated_at"])
+    if created_at is None or updated_at is None or updated_at < created_at:
+        raise ConversationRepositoryError("conversation.planning_context_invalid")
+    return ConversationPlanningAssociation(
+        conversation_id=conversation_id,
+        project_id=project_id,
+        task_id=task_id,
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 
@@ -1118,7 +1164,7 @@ def validate_repository_connection(
         expected_version = (
             DATABASE_SCHEMA_VERSION if schema_version is None else schema_version
         )
-        if expected_version not in {10, 11, 12, 13, 14, 15, DATABASE_SCHEMA_VERSION}:
+        if expected_version not in {10, 11, 12, 13, 14, 15, 16, DATABASE_SCHEMA_VERSION}:
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         legacy_missing_objects = {
             ("trigger", "mentat_conversations_agent_immutable"),
@@ -1143,6 +1189,8 @@ def validate_repository_connection(
             required.add("mentat_conversation_submission_results")
         if expected_version >= 14:
             required.add("mentat_conversation_run_attempts")
+        if expected_version >= 17:
+            required.add("mentat_conversation_planning_context")
         if not required.issubset(tables):
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         version = int(
@@ -1154,6 +1202,11 @@ def validate_repository_connection(
         if version != expected_version:
             raise ConversationRepositoryUnavailable("conversation.schema_unsupported")
         for (object_type, object_name), expected_sql in _REQUIRED_SCHEMA_OBJECTS.items():
+            if expected_version < 17 and object_name in {
+                "idx_mentat_conversation_planning_project",
+                "idx_mentat_conversation_planning_task",
+            }:
+                continue
             if expected_version < 11 and object_name in {
                 "mentat_conversation_submission_results",
                 "mentat_conversation_submission_result_insert",
@@ -1443,6 +1496,17 @@ def validate_repository_connection(
                 raise ConversationRepositoryError("conversation.sequence_invalid")
             if active_turns > MAX_ACTIVE_TURNS:
                 raise ConversationRepositoryLimitError("conversation.turn_capacity")
+        if expected_version >= 17:
+            association_rows = connection.execute(
+                "SELECT * FROM mentat_conversation_planning_context "
+                "ORDER BY conversation_id"
+            ).fetchall()
+            if len(association_rows) > conversation_count:
+                raise ConversationRepositoryError(
+                    "conversation.planning_context_invalid"
+                )
+            for association_row in association_rows:
+                _planning_association_row(association_row)
         return conversation_count
     except ConversationRepositoryError:
         raise
@@ -1604,6 +1668,210 @@ class ConversationRepository:
 
     def list(self, *, limit: int = MAX_CONVERSATION_PAGE) -> tuple[ConversationRecord, ...]:
         return self.list_page(limit=limit)[0]
+
+    def planning_association(
+        self,
+        conversation_id: str,
+    ) -> tuple[ConversationRecord, ConversationPlanningAssociation | None]:
+        """Read one stored planning reference without resolving its targets."""
+
+        identifier = _identifier(
+            conversation_id, _CONVERSATION_ID, "conversation_id_invalid"
+        )
+        connection = self._connection()
+        try:
+            conversation_row = connection.execute(
+                "SELECT * FROM mentat_conversations WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if conversation_row is None:
+                raise ConversationRepositoryConflict("conversation.not_found")
+            association_row = connection.execute(
+                "SELECT * FROM mentat_conversation_planning_context "
+                "WHERE conversation_id = ?",
+                (identifier,),
+            ).fetchone()
+            return (
+                _conversation_row(conversation_row),
+                None
+                if association_row is None
+                else _planning_association_row(association_row),
+            )
+        finally:
+            connection.close()
+
+    def resolve_planning_context(
+        self,
+        conversation_id: str,
+        resolver: Callable[
+            [sqlite3.Connection, ConversationRecord, ConversationPlanningAssociation | None],
+            Any,
+        ],
+    ) -> Any:
+        """Resolve one association and its targets in one SQLite snapshot."""
+
+        if not callable(resolver):
+            raise ConversationRepositoryValidationError(
+                "conversation.planning_context_invalid"
+            )
+        identifier = _identifier(
+            conversation_id, _CONVERSATION_ID, "conversation_id_invalid"
+        )
+        connection = self._connection()
+        try:
+            connection.execute("BEGIN")
+            conversation_row = connection.execute(
+                "SELECT * FROM mentat_conversations WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if conversation_row is None:
+                raise ConversationRepositoryConflict("conversation.not_found")
+            association_row = connection.execute(
+                "SELECT * FROM mentat_conversation_planning_context "
+                "WHERE conversation_id = ?",
+                (identifier,),
+            ).fetchone()
+            result = resolver(
+                connection,
+                _conversation_row(conversation_row),
+                None if association_row is None else _planning_association_row(association_row),
+            )
+            connection.commit()
+            return result
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def set_planning_association(
+        self,
+        conversation_id: str,
+        *,
+        expected_revision: int,
+        project_id: str | None,
+        task_id: str | None,
+        validate_targets: Callable[[sqlite3.Connection, str, str | None], None],
+    ) -> tuple[ConversationRecord, ConversationPlanningAssociation | None]:
+        """Apply one exact metadata-only planning association mutation."""
+
+        identifier = _identifier(
+            conversation_id, _CONVERSATION_ID, "conversation_id_invalid"
+        )
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ConversationRepositoryValidationError(
+                "conversation.revision_invalid"
+            )
+        if not callable(validate_targets):
+            raise ConversationRepositoryValidationError(
+                "conversation.planning_context_invalid"
+            )
+        if project_id is None:
+            if task_id is not None:
+                raise ConversationRepositoryValidationError(
+                    "conversation.planning_context_invalid"
+                )
+            clean_project = None
+            clean_task = None
+        else:
+            clean_project = _identifier(
+                project_id,
+                _PROJECT_ID,
+                "conversation.project_id_invalid",
+            )
+            clean_task = None if task_id is None else _identifier(
+                task_id,
+                _TASK_ID,
+                "conversation.task_id_invalid",
+            )
+        connection = self._connection()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM mentat_conversations WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                raise ConversationRepositoryConflict("conversation.not_found")
+            current = _conversation_row(row)
+            if current.revision != expected_revision:
+                raise ConversationRepositoryConflict("conversation.changed")
+            if clean_project is not None and current.state != "active":
+                raise ConversationRepositoryConflict("conversation.archived")
+            active_run = connection.execute(
+                "SELECT 1 FROM mentat_runs WHERE conversation_id = ? AND ("
+                f"status IN ({','.join('?' for _ in _ACTIVE_RUN_STATUSES)}) "
+                "OR (source = 'console' AND runtime_type = 'hermes' "
+                f"AND status IN ({','.join('?' for _ in _TERMINAL_RUN_STATUSES)}) "
+                "AND terminal_finalized = 0)) "
+                "LIMIT 1",
+                (
+                    identifier,
+                    *tuple(sorted(_ACTIVE_RUN_STATUSES)),
+                    *tuple(sorted(_TERMINAL_RUN_STATUSES)),
+                ),
+            ).fetchone()
+            active_turn = connection.execute(
+                "SELECT 1 FROM mentat_conversation_turns WHERE conversation_id = ? "
+                "AND state IN ('pending', 'blocked', 'dispatching') LIMIT 1",
+                (identifier,),
+            ).fetchone()
+            if active_run is not None:
+                raise ConversationRepositoryConflict("conversation.active_run")
+            if active_turn is not None:
+                raise ConversationRepositoryConflict("conversation.queue_active")
+            if clean_project is not None:
+                validate_targets(connection, clean_project, clean_task)
+            occurred_at = _now()
+            if clean_project is None:
+                connection.execute(
+                    "DELETE FROM mentat_conversation_planning_context "
+                    "WHERE conversation_id = ?",
+                    (identifier,),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO mentat_conversation_planning_context ("
+                    "conversation_id, project_id, task_id, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "project_id = excluded.project_id, task_id = excluded.task_id, "
+                    "updated_at = excluded.updated_at",
+                    (identifier, clean_project, clean_task, occurred_at, occurred_at),
+                )
+            changed = connection.execute(
+                "UPDATE mentat_conversations SET revision = revision + 1, "
+                "updated_at = ? WHERE id = ? AND revision = ?",
+                (occurred_at, identifier, expected_revision),
+            ).rowcount
+            if changed != 1:
+                raise ConversationRepositoryConflict("conversation.changed")
+            stored = connection.execute(
+                "SELECT * FROM mentat_conversations WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+            association_row = connection.execute(
+                "SELECT * FROM mentat_conversation_planning_context "
+                "WHERE conversation_id = ?",
+                (identifier,),
+            ).fetchone()
+            if stored is None:
+                raise ConversationRepositoryError("conversation.corrupt")
+            connection.commit()
+            return (
+                _conversation_row(stored),
+                None if association_row is None else _planning_association_row(association_row),
+            )
+        except ConversationRepositoryError:
+            connection.rollback()
+            raise
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise ConversationRepositoryConflict("conversation.changed") from exc
+        except sqlite3.Error as exc:
+            connection.rollback()
+            raise ConversationRepositoryUnavailable("conversation.unavailable") from exc
+        finally:
+            connection.close()
 
     def history_page(
         self,
@@ -2199,6 +2467,7 @@ def activity_public(repository: ConversationRepository) -> dict[str, Any]:
 __all__ = [
     "CONVERSATION_SCHEMA_VERSION",
     "ConversationMessageRecord",
+    "ConversationPlanningAssociation",
     "ConversationQueuedTurnRecord",
     "ConversationRead",
     "ConversationRecord",

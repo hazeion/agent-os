@@ -370,6 +370,16 @@ function pathOf(input: string | URL | Request): string {
 
 function emptyConversationContextResponse(path: string, method: string): Response | null {
   if (method !== "GET") return null;
+  if (path === "/api/agent-console/planning-overview") return Response.json({
+    attention: [], attention_count: 0, project_count: 0, projects: [], runtime: "python",
+    schema_version: 1, service: "mentat-local-bridge", status: "ready", today: "2026-08-30", truncated: false,
+  });
+  const planningContext = /^\/api\/conversations\/(conv_[^/]+)\/planning-context$/u.exec(path);
+  if (planningContext) return Response.json({
+    association: null, conversation_id: planningContext[1], conversation_revision: 1,
+    project: null, runtime: "python", schema_version: 1, service: "mentat-local-bridge",
+    state: "empty", status: "ready", task: null,
+  });
   if (path === "/api/agent-console/commands") return Response.json({
     capabilities: {
       "commands.external_source": false,
@@ -1616,12 +1626,19 @@ test("Home Console closes, reopens, archives, and restores without deleting hist
   const user = userEvent.setup({ document: dom.window.document });
   render(<HomeConsole />);
   await screen.findByLabelText("Prompt");
-  await user.click(screen.getByRole("button", { name: "Close New conversation tab" }));
+  const openTab = await screen.findByRole("tab", { name: /New conversation; press Delete to close tab/u });
+  await user.click(openTab.querySelector<HTMLElement>(".conversation-tab-close")!);
   assert.equal(document.getElementById(`conversation-tab-${conversation.id}`), null);
+  assert.equal(screen.queryByRole("tablist", { name: "Conversation tabs" }), null);
+  assert.equal(document.querySelector(".conversation-tabs")?.hasAttribute("aria-label"), false);
   await waitFor(() => assert.equal(document.activeElement?.id, "recent-conversations-summary"));
   await user.click(screen.getByText("Recent Conversations"));
   await user.click(document.querySelector<HTMLButtonElement>(".history-open")!);
   assert.ok(document.getElementById(`conversation-tab-${conversation.id}`));
+  document.getElementById(`conversation-tab-${conversation.id}`)?.focus();
+  await user.keyboard("{Delete}");
+  assert.equal(document.getElementById(`conversation-tab-${conversation.id}`), null);
+  await user.click(document.querySelector<HTMLButtonElement>(".history-open")!);
   await user.click(screen.getByRole("button", { name: "Archive New conversation, Conversation 1" }));
   await waitFor(() => assert.equal((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value, ""));
   assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, true);

@@ -58,6 +58,10 @@ class PackagingContractTests(unittest.TestCase):
             document["tool"]["setuptools"]["py-modules"],
         )
         self.assertIn(
+            "conversation_planning",
+            document["tool"]["setuptools"]["py-modules"],
+        )
+        self.assertIn(
             "hermes_browser_events",
             document["tool"]["setuptools"]["py-modules"],
         )

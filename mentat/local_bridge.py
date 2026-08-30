@@ -46,6 +46,10 @@ BRIDGE_RUNS_PATH = "/bridge/v1/runs"
 BRIDGE_CONVERSATIONS_PATH = "/bridge/v1/conversations"
 BRIDGE_CONVERSATION_HISTORY_PATH = "/bridge/v1/conversation-history"
 BRIDGE_COMMAND_MANIFEST_PATH = "/bridge/v1/agent-console/commands"
+BRIDGE_PLANNING_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview"
+BRIDGE_PLANNING_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks"
+BRIDGE_PLANNING_TASK_PATH = "/bridge/v1/agent-console/planning-task"
+BRIDGE_PROJECTS_PATH = "/bridge/v1/projects"
 BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
 BRIDGE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness"
 BRIDGE_LINK_PREVIEW_PREFERENCE_PATH = "/bridge/v1/link-previews/preference"
@@ -79,6 +83,7 @@ _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _RUNTIME_TYPE = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 _CAPABILITY = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
+_PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
 _RUN_ID = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
 _RUN_SOURCE = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _CONVERSATION_ID = re.compile(r"conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}\Z")
@@ -1236,6 +1241,389 @@ def bridge_command_manifest_payload() -> tuple[dict[str, object], int]:
         }, 200
     except Exception:
         return _conversation_failure("error")
+
+
+def _planning_text(value: object, maximum: int) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value.strip() == value
+        and len(value) <= maximum
+        and re.search(r"[\x00-\x1f\x7f]", value) is None
+    )
+
+
+def _planning_project(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"id", "name", "status"}:
+        raise BridgeConversationProjectionError("planning_project_invalid")
+    if (
+        not isinstance(value.get("id"), str)
+        or _PROJECT_ID.fullmatch(value["id"]) is None
+        or not _planning_text(value.get("name"), 120)
+        or value.get("status") not in {"active", "paused", "archived"}
+    ):
+        raise BridgeConversationProjectionError("planning_project_invalid")
+    return {"id": value["id"], "name": value["name"], "status": value["status"]}
+
+
+def _planning_task(value: object) -> dict[str, object]:
+    required = {
+        "attention_reasons", "due_date", "id", "needs_attention",
+        "planned_for_today", "planning_state", "priority", "project_id",
+        "project_name", "review_required", "status", "title", "updated_at",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    reasons = value.get("attention_reasons")
+    attention_order = [
+        "overdue", "due_today", "review", "needs_attention",
+        "planned_today", "due_soon",
+    ]
+    if (
+        not isinstance(value.get("id"), str)
+        or _TASK_ID.fullmatch(value["id"]) is None
+        or not _planning_text(value.get("title"), 160)
+        or not isinstance(value.get("project_id"), str)
+        or _PROJECT_ID.fullmatch(value["project_id"]) is None
+        or not _planning_text(value.get("project_name"), 120)
+        or value.get("status") not in {"todo", "in progress", "waiting", "needs attention", "completed"}
+        or value.get("priority") not in {"high", "medium", "low"}
+        or value.get("due_date") is not None
+        and not _valid_iso_date(value["due_date"])
+        or type(value.get("planned_for_today")) is not bool
+        or value.get("planning_state") is not None
+        and value["planning_state"] not in {"inbox", "planned", "in_progress", "waiting", "review", "someday", "blocked", "done"}
+        or type(value.get("needs_attention")) is not bool
+        or type(value.get("review_required")) is not bool
+        or not isinstance(reasons, list)
+        or len(reasons) > 6
+        or len(set(reasons)) != len(reasons)
+        or any(reason not in {"overdue", "due_today", "review", "needs_attention", "planned_today", "due_soon"} for reason in reasons)
+        or reasons != sorted(reasons, key=attention_order.index)
+        or not _valid_timestamp(value.get("updated_at"))
+    ):
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    return {key: value[key] for key in sorted(required)}
+
+
+def _planning_failure(state: str, status: int) -> tuple[dict[str, object], int]:
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": state,
+    }, status
+
+
+def bridge_planning_overview_payload() -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_planning_overview_payload
+
+        source = mentat_planning_overview_payload()
+        if not isinstance(source, dict) or set(source) != {
+            "schema_version", "today", "projects", "project_count",
+            "attention", "attention_count", "truncated",
+        }:
+            raise BridgeConversationProjectionError("planning_overview_invalid")
+        projects = source.get("projects")
+        attention = source.get("attention")
+        if (
+            source.get("schema_version") != 1
+            or not _valid_iso_date(source.get("today"))
+            or not isinstance(projects, list)
+            or len(projects) > 256
+            or type(source.get("project_count")) is not int
+            or source["project_count"] != len(projects)
+            or not isinstance(attention, list)
+            or len(attention) > 50
+            or type(source.get("attention_count")) is not int
+            or source["attention_count"] < len(attention)
+            or type(source.get("truncated")) is not bool
+            or source["truncated"] != (source["attention_count"] > len(attention))
+        ):
+            raise BridgeConversationProjectionError("planning_overview_invalid")
+        public_projects = [_planning_project(project) for project in projects]
+        public_attention = [_planning_task(task) for task in attention]
+        if len({item["id"] for item in public_projects}) != len(public_projects):
+            raise BridgeConversationProjectionError("planning_overview_invalid")
+        return {
+            **source,
+            "projects": public_projects,
+            "attention": public_attention,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+        }, 200
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_planning_tasks_payload(
+    project_id: str,
+    cursor: str | None = None,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_planning_tasks_payload
+
+        source = mentat_planning_tasks_payload(project_id=project_id, cursor=cursor)
+        if not isinstance(source, dict) or set(source) != {
+            "schema_version", "project", "tasks", "count", "next_cursor",
+        }:
+            raise BridgeConversationProjectionError("planning_tasks_invalid")
+        project = _planning_project(source.get("project"))
+        tasks = source.get("tasks")
+        next_cursor = source.get("next_cursor")
+        if (
+            source.get("schema_version") != 1
+            or project["id"] != project_id
+            or not isinstance(tasks, list)
+            or len(tasks) > 50
+            or type(source.get("count")) is not int
+            or source["count"] != len(tasks)
+            or next_cursor is not None
+            and (not isinstance(next_cursor, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,512}", next_cursor) is None)
+        ):
+            raise BridgeConversationProjectionError("planning_tasks_invalid")
+        public_tasks = [_planning_task(task) for task in tasks]
+        if any(task["project_id"] != project_id for task in public_tasks):
+            raise BridgeConversationProjectionError("planning_tasks_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "project": project,
+            "tasks": public_tasks,
+            "count": len(public_tasks),
+            "next_cursor": next_cursor,
+        }, 200
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_planning_task_payload(task_id: str) -> tuple[dict[str, object], int]:
+    """Return one exact safe Task and its canonical Project."""
+
+    from conversation_planning import ConversationPlanningError
+
+    try:
+        from server import mentat_planning_task_payload
+
+        source = mentat_planning_task_payload(task_id)
+        if not isinstance(source, dict) or set(source) != {
+            "schema_version", "project", "task",
+        }:
+            raise BridgeConversationProjectionError("planning_task_locator_invalid")
+        project = _planning_project(source.get("project"))
+        task = _planning_task(source.get("task"))
+        if (
+            source.get("schema_version") != 1
+            or task["id"] != task_id
+            or task["project_id"] != project["id"]
+        ):
+            raise BridgeConversationProjectionError("planning_task_locator_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "project": project,
+            "task": task,
+        }, 200
+    except ConversationPlanningError as exc:
+        if exc.code == "planning.task_not_found":
+            return _planning_failure("not_found", 404)
+        if exc.code.endswith("_invalid"):
+            return _planning_failure("invalid", 400)
+        if exc.code in {"planning.unavailable", "planning.tasks_unavailable"}:
+            return _planning_failure("unavailable", 503)
+        return _planning_failure("error", 500)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def _planning_context(source: object, conversation_id: str) -> dict[str, object]:
+    required = {
+        "schema_version", "conversation_id", "conversation_revision",
+        "association", "project", "task", "state",
+    }
+    if not isinstance(source, dict) or set(source) != required:
+        raise BridgeConversationProjectionError("planning_context_invalid")
+    association = source.get("association")
+    project = source.get("project")
+    task = source.get("task")
+    state = source.get("state")
+    if (
+        source.get("schema_version") != 1
+        or source.get("conversation_id") != conversation_id
+        or type(source.get("conversation_revision")) is not int
+        or source["conversation_revision"] < 1
+        or state not in {"empty", "ready", "project_unavailable", "task_unavailable", "project_mismatch"}
+    ):
+        raise BridgeConversationProjectionError("planning_context_invalid")
+    public_association = None
+    if association is not None:
+        if not isinstance(association, dict) or set(association) != {"project_id", "task_id"}:
+            raise BridgeConversationProjectionError("planning_context_invalid")
+        project_id = association.get("project_id")
+        task_id = association.get("task_id")
+        if (
+            not isinstance(project_id, str)
+            or _PROJECT_ID.fullmatch(project_id) is None
+            or task_id is not None
+            and (not isinstance(task_id, str) or _TASK_ID.fullmatch(task_id) is None)
+        ):
+            raise BridgeConversationProjectionError("planning_context_invalid")
+        public_association = {"project_id": project_id, "task_id": task_id}
+    public_project = None if project is None else _planning_project(project)
+    public_task = None if task is None else _planning_task(task)
+    if (
+        state == "empty" and (public_association is not None or public_project is not None or public_task is not None)
+        or state == "ready" and (public_association is None or public_project is None)
+        or state == "ready" and public_association is not None
+        and ((public_association["task_id"] is None) != (public_task is None))
+        or state != "ready" and state != "empty" and public_association is None
+        or public_project is not None and public_association is not None
+        and public_project["id"] != public_association["project_id"]
+        or public_task is not None and public_association is not None
+        and public_task["id"] != public_association["task_id"]
+        or public_task is not None and public_project is not None
+        and public_task["project_id"] != public_project["id"]
+        or state == "project_unavailable" and (public_project is not None or public_task is not None)
+        or state in {"task_unavailable", "project_mismatch"}
+        and (
+            public_project is None
+            or public_task is not None
+            or public_association is None
+            or public_association["task_id"] is None
+        )
+    ):
+        raise BridgeConversationProjectionError("planning_context_invalid")
+    return {
+        "schema_version": 1,
+        "conversation_id": conversation_id,
+        "conversation_revision": source["conversation_revision"],
+        "association": public_association,
+        "project": public_project,
+        "task": public_task,
+        "state": state,
+    }
+
+
+def bridge_conversation_planning_context_payload(
+    conversation_id: str,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_conversation_planning_context_payload
+
+        return {
+            **_planning_context(
+                mentat_conversation_planning_context_payload(conversation_id),
+                conversation_id,
+            ),
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+        }, 200
+    except ConversationRepositoryConflict as exc:
+        return _planning_failure("not_found" if exc.code == "conversation.not_found" else "conflict", 404 if exc.code == "conversation.not_found" else 409)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_set_conversation_planning_context_payload(
+    conversation_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import set_mentat_conversation_planning_context
+
+        source, status = set_mentat_conversation_planning_context(conversation_id, payload)
+        if status != 200:
+            return _planning_failure(
+                "invalid" if status == 400 else "not_found" if status == 404 else "conflict" if status == 409 else "unavailable" if status == 503 else "error",
+                status if status in {400, 404, 409, 503} else 500,
+            )
+        if not isinstance(source, dict) or set(source) != {
+            "schema_version", "action", "conversation", "conversation_id",
+            "conversation_revision", "association", "project", "task", "state",
+        }:
+            raise BridgeConversationProjectionError("planning_context_invalid")
+        context = _planning_context(
+            {key: source[key] for key in {
+                "schema_version", "conversation_id", "conversation_revision",
+                "association", "project", "task", "state",
+            }},
+            conversation_id,
+        )
+        conversation = _public_conversation_summary(source.get("conversation"))
+        if (
+            source.get("action") not in {"set", "clear"}
+            or conversation["id"] != conversation_id
+            or conversation["revision"] != context["conversation_revision"]
+        ):
+            raise BridgeConversationProjectionError("planning_context_invalid")
+        return {
+            **context,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "action": source["action"],
+            "conversation": conversation,
+        }, 200
+    except ConversationRepositoryConflict as exc:
+        states = {
+            "conversation.not_found": ("not_found", 404),
+            "conversation.changed": ("conflict", 409),
+            "conversation.archived": ("conflict", 409),
+            "conversation.active_run": ("active_run", 409),
+            "conversation.queue_active": ("queue_active", 409),
+            "conversation.project_unavailable": ("not_found", 404),
+            "conversation.task_unavailable": ("not_found", 404),
+            "conversation.project_mismatch": ("conflict", 409),
+        }
+        state, code = states.get(exc.code, ("conflict", 409))
+        return _planning_failure(state, code)
+    except ConversationRepositoryError as exc:
+        return _planning_failure("invalid" if exc.code.endswith("invalid") else "unavailable", 400 if exc.code.endswith("invalid") else 503)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_create_project_payload(payload: object) -> tuple[dict[str, object], int]:
+    try:
+        from server import create_mentat_project
+
+        source, status = create_mentat_project(payload)
+        if status != 201 or not isinstance(source, dict) or set(source) != {"schema_version", "action", "project"}:
+            if status in {400, 404, 409, 503}:
+                return _planning_failure("conflict" if status == 409 else "invalid" if status == 400 else "not_found" if status == 404 else "unavailable", status)
+            raise BridgeConversationProjectionError("planning_project_invalid")
+        project = _planning_project(source.get("project"))
+        return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "action": "create", "project": project}, 201
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_create_project_task_payload(
+    project_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import create_mentat_project_task
+
+        source, status = create_mentat_project_task(project_id, payload)
+        if status != 201 or not isinstance(source, dict) or set(source) != {"schema_version", "action", "project", "task"}:
+            if status in {400, 404, 409, 503}:
+                return _planning_failure("conflict" if status == 409 else "invalid" if status == 400 else "not_found" if status == 404 else "unavailable", status)
+            raise BridgeConversationProjectionError("planning_task_invalid")
+        project = _planning_project(source.get("project"))
+        task = _planning_task(source.get("task"))
+        if project["id"] != project_id or task["project_id"] != project_id:
+            raise BridgeConversationProjectionError("planning_task_invalid")
+        return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "action": "create", "project": project, "task": task}, 201
+    except Exception:
+        return _planning_failure("error", 500)
 
 
 def bridge_conversation_payload(
@@ -3817,6 +4205,46 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_command_manifest_payload()
             self._send_json(payload, status)
             return
+        if parsed.path == BRIDGE_PLANNING_OVERVIEW_PATH and not parsed.query:
+            payload, status = bridge_planning_overview_payload()
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_TASKS_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            values = {key: value for key, value in pairs}
+            if (
+                not pairs
+                or len(values) != len(pairs)
+                or set(values) - {"project_id", "cursor"}
+                or _PROJECT_ID.fullmatch(values.get("project_id", "")) is None
+                or "cursor" in values
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,512}", values["cursor"]) is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_tasks_payload(
+                values["project_id"], values.get("cursor")
+            )
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_TASK_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if (
+                len(pairs) != 1
+                or pairs[0][0] != "task_id"
+                or _TASK_ID.fullmatch(pairs[0][1]) is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_task_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_CONVERSATION_HISTORY_PATH:
             try:
                 pairs = parse_qsl(
@@ -3998,6 +4426,19 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_conversation_media_payload(conversation_id)
             self._send_json(payload, status)
             return
+        conversation_planning_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/planning-context", parsed.path
+        )
+        if conversation_planning_match is not None and not parsed.query:
+            conversation_id = unquote(conversation_planning_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_conversation_planning_context_payload(
+                conversation_id
+            )
+            self._send_json(payload, status)
+            return
         conversation_match = re.fullmatch(
             r"/bridge/v1/conversations/([^/]+)", parsed.path
         )
@@ -4049,6 +4490,46 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "bridge_request_forbidden"}, 403)
             return
         parsed = urlsplit(self.path)
+        if parsed.path == BRIDGE_PROJECTS_PATH and not parsed.query:
+            body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
+            if body is None or set(body) != {"name"}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_create_project_payload(body)
+            self._send_json(payload, status)
+            return
+        project_task_match = re.fullmatch(
+            r"/bridge/v1/projects/([^/]+)/tasks", parsed.path
+        )
+        if project_task_match is not None and not parsed.query:
+            project_id = unquote(project_task_match.group(1))
+            if _PROJECT_ID.fullmatch(project_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
+            if body is None or set(body) != {"title", "assigned_agent_id", "due_date"}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_create_project_task_payload(project_id, body)
+            self._send_json(payload, status)
+            return
+        conversation_planning_match = re.fullmatch(
+            r"/bridge/v1/conversations/([^/]+)/planning-context", parsed.path
+        )
+        if conversation_planning_match is not None and not parsed.query:
+            conversation_id = unquote(conversation_planning_match.group(1))
+            if _CONVERSATION_ID.fullmatch(conversation_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
+            if body is None or set(body) != {"expected_revision", "project_id", "task_id"}:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_set_conversation_planning_context_payload(
+                conversation_id, body
+            )
+            self._send_json(payload, status)
+            return
         conversation_upload_match = re.fullmatch(
             r"/bridge/v1/conversations/([^/]+)/attachments",
             parsed.path,

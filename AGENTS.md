@@ -391,6 +391,26 @@ selected Agent. `/model` may only refresh or stage the existing safe next-Run
 configuration workflow. Completion is local presentation state and grants no
 CLI, shell, runtime-method, or generic bridge authority.
 
+Schema 17 adds one non-owning Project/Task planning association beneath a
+Conversation. The association stores canonical IDs only and never copies Task
+descriptions, notes, calendar links, dependencies, delegation, attachments, or
+other planning content. It is not Task or Run authority: it must never populate
+`mentat_runs.task_id`, dispatch work, inject hidden prompt text, or bypass the
+Hermes Kanban preview/confirmation/readback boundary. Project and Task targets
+are revalidated from project-owned JSON and canonical SQLite in one guarded
+snapshot; missing, moved, or ambiguous targets remain bounded stale references
+until an exact Conversation-revision rebind or clear.
+
+Home planning selectors stage locally until explicit Apply or Clear and remain
+blocked by active/finalizing Runs or queue-active Turns. Planning suggestions
+may fill an empty draft but never Send. The right rail shows only a capped safe
+attention projection and uses navigation-only links to Projects & Tasks.
+Projects & Tasks owns the minimal creation workflow: Project Name; Task Title,
+optional canonical Agent, and optional Due date, with Project implicit from the
+current selection and server-owned status/priority defaults. These fixed create
+capabilities mutate only Mentat Project/Task authority and never start a Run or
+delegation.
+
 Do not pass extensionless content-addressed blob paths directly to Hermes image
 arguments. Materialize a private run-scoped input snapshot with the validated
 image extension, keep that path server-only, and clean it after execution.

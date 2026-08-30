@@ -23,7 +23,6 @@ const nextConfig: NextConfig = {
       beforeFiles: staticShell
         ? [
             { source: "/agents", destination: "/shell/agents.html" },
-            { source: "/tasks", destination: "/shell/tasks.html" },
             { source: "/runs", destination: "/shell/runs.html" },
           ]
         : [],

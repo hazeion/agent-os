@@ -40,6 +40,34 @@ def trusted_vercel_message_event_id(run_id: str) -> str:
 
 
 class LocalBridgeTests(unittest.TestCase):
+    def test_exact_planning_task_route_rejects_duplicate_or_extra_query(self):
+        ready = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "project": {"id": "project_mentat", "name": "Mentat", "status": "active"},
+            "task": {"id": "task_quiet"},
+        }
+        with patch.object(local_bridge, "bridge_planning_task_payload", return_value=(ready, 200)) as locator:
+            status, payload, _headers = self.request(
+                path=f"{local_bridge.BRIDGE_PLANNING_TASK_PATH}?task_id=task_quiet"
+            )
+            self.assertEqual((status, payload), (200, ready))
+            locator.assert_called_once_with("task_quiet")
+            for query in (
+                "",
+                "?task_id=task_quiet&task_id=task_other",
+                "?task_id=task_quiet&cursor=next",
+                "?cursor=next",
+                "?task_id=bad%2Fid",
+            ):
+                rejected, body, _headers = self.request(
+                    path=f"{local_bridge.BRIDGE_PLANNING_TASK_PATH}{query}"
+                )
+                self.assertEqual((rejected, body), (404, {"error": "bridge_route_not_found"}))
+        self.assertEqual(locator.call_count, 1)
+
     def setUp(self) -> None:
         self.server = local_bridge.build_bridge_server("127.0.0.1", 0, TOKEN)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -206,6 +234,113 @@ class LocalBridgeTests(unittest.TestCase):
             (rejected, payload),
             (404, {"error": "bridge_route_not_found"}),
         )
+
+    def test_planning_and_minimal_create_routes_are_fixed_capabilities(self):
+        ready = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_planning_overview_payload",
+            return_value=({**ready, "today": "2026-08-30"}, 200),
+        ) as overview:
+            status, _payload, _headers = self.request(
+                path=local_bridge.BRIDGE_PLANNING_OVERVIEW_PATH
+            )
+        self.assertEqual(status, 200)
+        overview.assert_called_once_with()
+
+        with patch.object(
+            local_bridge,
+            "bridge_planning_tasks_payload",
+            return_value=({**ready, "tasks": []}, 200),
+        ) as tasks:
+            status, _payload, _headers = self.request(
+                path=f"{local_bridge.BRIDGE_PLANNING_TASKS_PATH}?project_id=project_mentat&cursor=cursor_1"
+            )
+        self.assertEqual(status, 200)
+        tasks.assert_called_once_with("project_mentat", "cursor_1")
+
+        context_path = "/bridge/v1/conversations/conv_planning/planning-context"
+        with patch.object(
+            local_bridge,
+            "bridge_conversation_planning_context_payload",
+            return_value=({**ready, "state": "empty"}, 200),
+        ) as context:
+            status, _payload, _headers = self.request(path=context_path)
+        self.assertEqual(status, 200)
+        context.assert_called_once_with("conv_planning")
+
+        context_body = {
+            "expected_revision": 3,
+            "project_id": "project_mentat",
+            "task_id": None,
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_set_conversation_planning_context_payload",
+            return_value=({**ready, "action": "set"}, 200),
+        ) as mutate:
+            status, _payload, _headers = self.request(
+                method="POST",
+                path=context_path,
+                headers={"Content-Type": "application/json"},
+                body=json.dumps(context_body).encode("utf-8"),
+            )
+        self.assertEqual(status, 200)
+        mutate.assert_called_once_with("conv_planning", context_body)
+
+        with patch.object(
+            local_bridge,
+            "bridge_create_project_payload",
+            return_value=({**ready, "action": "create"}, 201),
+        ) as create_project:
+            status, _payload, _headers = self.request(
+                method="POST",
+                path=local_bridge.BRIDGE_PROJECTS_PATH,
+                headers={"Content-Type": "application/json"},
+                body=b'{"name":"Alpha"}',
+            )
+        self.assertEqual(status, 201)
+        create_project.assert_called_once_with({"name": "Alpha"})
+
+        task_body = {
+            "title": "First",
+            "assigned_agent_id": None,
+            "due_date": None,
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_create_project_task_payload",
+            return_value=({**ready, "action": "create"}, 201),
+        ) as create_task:
+            status, _payload, _headers = self.request(
+                method="POST",
+                path="/bridge/v1/projects/project_alpha/tasks",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps(task_body).encode("utf-8"),
+            )
+        self.assertEqual(status, 201)
+        create_task.assert_called_once_with("project_alpha", task_body)
+
+        for path in (
+            f"{local_bridge.BRIDGE_PLANNING_OVERVIEW_PATH}?extra=1",
+            f"{local_bridge.BRIDGE_PLANNING_TASKS_PATH}?project_id=project_mentat&project_id=project_other",
+            f"{local_bridge.BRIDGE_PLANNING_TASKS_PATH}?project_id=../bad",
+        ):
+            rejected, payload, _headers = self.request(path=path)
+            self.assertEqual((rejected, payload), (404, {"error": "bridge_route_not_found"}))
+
+        rejected, payload, _headers = self.request(
+            method="POST",
+            path=local_bridge.BRIDGE_PROJECTS_PATH,
+            headers={"Content-Type": "application/json"},
+            body=b'{"name":"Alpha","extra":true}',
+        )
+        self.assertEqual((rejected, payload), (404, {"error": "bridge_route_not_found"}))
 
     def test_browser_and_forged_host_requests_fail_closed(self):
         rejected_headers = (

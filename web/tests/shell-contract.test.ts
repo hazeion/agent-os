@@ -31,7 +31,7 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
     [
       { href: "/", label: "Home" },
       { href: "/agents", label: "Agents" },
-      { href: "/tasks", label: "Tasks" },
+      { href: "/tasks", label: "Projects & Tasks" },
       { href: "/runs", label: "Runs" },
     ],
   );
@@ -49,6 +49,9 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
       assert.match(page, /<HomeConsole \/>/);
     } else {
       assert.match(page, new RegExp(`<AppShell route=["']${href}["']>`));
+      if (href === "/tasks") {
+        assert.match(page, /export const dynamic = ["']force-dynamic["']/);
+      }
     }
   }
   const home = routeSources.get("/") ?? "";
@@ -72,8 +75,8 @@ test("the Emerald shell exposes exactly the approved migration routes", () => {
   assert.match(routeSources.get("/agents") ?? "", /data-provider-connections-root/);
   assert.match(routeSources.get("/agents") ?? "", /Loading provider connections/);
   assert.match(routeSources.get("/agents") ?? "", /provider-connection-placeholder/);
-  assert.match(routeSources.get("/tasks") ?? "", /data-tasks-root/);
-  assert.match(routeSources.get("/tasks") ?? "", /Loading current Tasks/);
+  assert.match(routeSources.get("/tasks") ?? "", /ProjectsTasksWorkspace/);
+  assert.match(routeSources.get("/tasks") ?? "", /Projects & Tasks/);
   assert.match(routeSources.get("/runs") ?? "", /data-runs-root/);
   assert.match(routeSources.get("/runs") ?? "", /Loading current Runs/);
   assert.match(routeSources.get("/runs") ?? "", /aria-live="polite" className="runs-summary"/);
@@ -106,6 +109,26 @@ test("Slice 9 history and command controls keep mobile touch targets", () => {
     css,
     /@media \(max-width: 520px\)[\s\S]*\.command-help > div button \{[\s\S]*width: 44px;[\s\S]*min-height: 44px;/,
   );
+});
+
+test("Slice 10 planning controls stay compact and mobile safe", () => {
+  const css = source("src/app/globals.css");
+  const consoleSource = source("src/app/home-console.tsx");
+  const tasksSource = source("src/app/tasks/projects-tasks-workspace.tsx");
+  assert.match(consoleSource, /ConversationPlanningControls/);
+  assert.match(consoleSource, /PlanningAttention/);
+  assert.match(consoleSource, /PlanningSuggestions/);
+  assert.match(consoleSource, /key=\{`planning-\$\{selectedConversationId\}`\}/);
+  assert.match(consoleSource, /conversationRevision=\{planningContexts\[selectedConversationId\]\?\.conversation_revision/);
+  assert.match(tasksSource, /createProject/);
+  assert.match(tasksSource, /createProjectTask/);
+  assert.match(tasksSource, /Title/);
+  assert.match(tasksSource, /Agent/);
+  assert.match(tasksSource, /Due/);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.projects-tasks-workspace \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.composer-planning summary,[\s\S]*min-height: 44px;/);
+  assert.match(css, /\.planning-view-all \{[\s\S]*display: inline-flex;/);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.planning-load-more,[\s\S]*\.planning-view-all \{ min-height: 44px; \}/);
 });
 
 test("contrast preference is applied before paint with safe system fallback", () => {
@@ -237,12 +260,11 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.match(source("src/app/shell-runtime-signal.tsx"), /mentat:shell-hydrated/);
 });
 
-test("production emits three script-light static routes and hydrates Home", () => {
+test("production keeps two script-light static routes and hydrates Home and Projects & Tasks", () => {
   const config = source("next.config.ts");
   const compiler = source("scripts/prepare-standalone.mjs");
   for (const destination of [
     "/shell/agents.html",
-    "/shell/tasks.html",
     "/shell/runs.html",
   ]) {
     assert.ok(config.includes(`destination: "${destination}"`));
@@ -252,7 +274,9 @@ test("production emits three script-light static routes and hydrates Home", () =
   assert.match(compiler, /shell\.includes\("self\.__next_f"\)/);
   assert.match(compiler, /failed its no-hydration contract/);
   assert.doesNotMatch(config, /shell\/home\.html/);
+  assert.doesNotMatch(config, /shell\/tasks\.html/);
   assert.doesNotMatch(compiler, /home\.html/);
+  assert.doesNotMatch(compiler, /tasks\.html/);
   assert.match(config, /agentRules: false/);
   assert.doesNotMatch(config, /unsafe-eval/);
   assert.doesNotMatch(config, /Content-Security-Policy/);
