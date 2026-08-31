@@ -10,9 +10,9 @@ The implemented Next.js UI and this guide are the design authority. Historical
 design work is preserved in GitHub pull requests rather than duplicated in the
 working tree.
 
-For the approved Agent Console behavior, lifecycle, technical boundary,
-acceptance gates, and implementation sequence, continue with
-[MENTAT_NEXTJS_AGENT_CONSOLE_SPEC.md](MENTAT_NEXTJS_AGENT_CONSOLE_SPEC.md).
+Implemented Agent Console behavior and safety boundaries live in
+[ARCHITECTURE.md](ARCHITECTURE.md). Current sequencing and the resume point live
+in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Reading policy
 
@@ -24,10 +24,10 @@ the task requires parity with an implemented workflow, or exact historical
 rationale is necessary. This keeps stale composition guidance out of the
 working context and preserves context for the current task.
 
-Architecture and safety are governed separately by `AGENTS.md`,
-`ARCHITECTURE.md`, `MENTAT_MULTI_AGENT_PIVOT.md`, and
-`MENTAT_PIVOT_IMPLEMENTATION_PLAN.md`. If a visual proposal conflicts with one
-of those contracts, the architecture or safety contract wins.
+Architecture and safety are governed separately by `AGENTS.md` and
+`ARCHITECTURE.md`. `IMPLEMENTATION_PLAN.md` governs sequencing. If a visual
+proposal conflicts with those contracts, the architecture or safety contract
+wins.
 
 ## Design authority
 
@@ -257,9 +257,8 @@ contrast, and representative desktop, tablet, and mobile widths.
   controls.
 - Calendar and Settings become active only with real screens and contracts.
 
-Use `MENTAT_PIVOT_IMPLEMENTATION_PLAN.md` for slice order and current completion
-status. This guide defines the target experience, not authorization to start a
-slice.
+Use `IMPLEMENTATION_PLAN.md` for slice order and current completion status. This
+guide defines the target experience, not authorization to start a slice.
 
 ## Historical references
 

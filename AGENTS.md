@@ -2,10 +2,9 @@
 
 This file is the quick project guide for contributors and coding agents working in this repository.
 
-Before planning architectural work, read `MENTAT_MULTI_AGENT_PIVOT.md` for the
-target direction and `MENTAT_PIVOT_IMPLEMENTATION_PLAN.md` for the current slice
-sequence and resume point. Continue to use `ARCHITECTURE.md` for implemented
-contracts and safety boundaries. A provisional roadmap entry is not approval to
+Before planning architectural work, read `ARCHITECTURE.md` for implemented
+contracts and safety boundaries and `IMPLEMENTATION_PLAN.md` for the current
+slice sequence and resume point. A provisional roadmap entry is not approval to
 implement that slice.
 
 ## Agent skills

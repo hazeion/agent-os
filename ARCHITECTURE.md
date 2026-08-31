@@ -731,17 +731,16 @@ source or recovery evidence, and startup refusal while incomplete. Runtime
 uploads, exports, execution inputs, snapshots, future credentials, and other
 secret-bearing private state are excluded.
 
-Hermes 0.20's A2A, grounded-citation, deliverable-artifact, and voice surfaces
+Hermes 0.20's A2A, grounded-citation, deliverable-artifact, and voice features
 do not inherit webhook authority merely because they share a release. A2A is a
-separate bidirectional execution boundary; citations remain untrusted response
-Markdown until a structured provenance API exists; local artifacts remain
-restricted to Mentat's run-owned export boundary (with remote Kanban artifacts
-using the authenticated custom-host artifact API and stock 0.20.1 degrading to
-summary-only); and voice requires explicit browser
-audio privacy plus transport-advertised interruption semantics. Mentat does not
-parse assistant prose for local paths, `MEDIA:` directives, citation authority,
-audio, or transcripts. The complete decisions and future entry gates are in
-[HERMES_020_PRODUCT_DECISIONS.md](HERMES_020_PRODUCT_DECISIONS.md).
+separate bidirectional execution boundary. Citations remain untrusted response
+Markdown until a structured provenance API exists. Local artifacts remain
+restricted to Mentat's run-owned export boundary, while remote Kanban artifacts
+use the authenticated custom-host artifact API and stock 0.20.1 degrades to
+summary-only. Voice remains unavailable until Mentat has explicit browser audio
+privacy controls and transport-advertised interruption semantics. Mentat does
+not parse assistant prose for local paths, `MEDIA:` directives, citation
+authority, audio, or transcripts.
 
 ## Write boundaries
 

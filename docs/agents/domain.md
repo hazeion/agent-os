@@ -10,13 +10,12 @@ For architectural or product planning, read:
 
 - `AGENTS.md`
 - `ARCHITECTURE.md`
-- `MENTAT_MULTI_AGENT_PIVOT.md`
-- `MENTAT_PIVOT_IMPLEMENTATION_PLAN.md`
+- `IMPLEMENTATION_PLAN.md`
+- `CONTEXT.md`
 
 For Next.js web design or implementation, also read:
 
 - `MENTAT_WEB_DESIGN.md`
-- `MENTAT_NEXTJS_AGENT_CONSOLE_SPEC.md` when the work touches the Agent Console
 
 The canonical web guide contains its own conditional-reference table. A linked
 file is not automatically a required read. Do not preload older design files,
@@ -35,13 +34,11 @@ If documents conflict:
 
 1. `ARCHITECTURE.md` and the repository safety boundaries govern implemented
    authority and security.
-2. The multi-agent pivot and active implementation plan govern target
-   architecture and slice sequencing.
-3. `MENTAT_WEB_DESIGN.md` governs the current Next.js visual experience and
-   `MENTAT_NEXTJS_AGENT_CONSOLE_SPEC.md` governs the approved Agent Console
-   behavior and target implementation sequence.
-4. Conditional and superseded references fill named gaps but do not override
-   current authority.
+2. The active implementation plan governs slice sequencing and the resume
+   point.
+3. `MENTAT_WEB_DESIGN.md` governs the current Next.js visual experience.
+4. GitHub issues, pull requests, and repository history provide historical
+   rationale but do not override current authority.
 
 ## Supplemental domain documents
 
