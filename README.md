@@ -199,7 +199,7 @@ npm --prefix web run build
 ## More documentation
 
 - [Architecture and safety rules](ARCHITECTURE.md)
-- [Current pivot roadmap](MENTAT_PIVOT_IMPLEMENTATION_PLAN.md)
+- [Current implementation roadmap](IMPLEMENTATION_PLAN.md)
 - [Data, migration, and backups](DATA_LAYOUT.md)
 - [Remote Hermes setup](REMOTE_HERMES.md)
 - [Privacy](PRIVACY.md)

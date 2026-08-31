@@ -14,7 +14,7 @@ from remote_hermes import _KNOWN_BOOLEAN_FEATURES
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT = (ROOT / "HERMES_STOCK_COMPATIBILITY.md").read_text(encoding="utf-8")
-PLAN = (ROOT / "MILESTONE_9_WEBHOOK_IMPLEMENTATION_PLAN.md").read_text(encoding="utf-8")
+ARCHITECTURE = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
 CORE = (ROOT / "public" / "core.js").read_text(encoding="utf-8")
 APP = (ROOT / "public" / "app.js").read_text(encoding="utf-8")
 SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
@@ -95,11 +95,10 @@ class HermesStockCompatibilityTests(unittest.TestCase):
             self.assertIn("Custom required", row)
             self.assertRegex(row, r"Retain|Keep|Unsupported|degrades")
 
-    def test_milestone_plan_records_the_reviewed_no_retirement_decision(self):
-        section = PLAN[PLAN.index("### 9I — Fallback retirement and fork audit"):]
-        self.assertIn("Status: **Implemented and reviewed.**", section)
-        self.assertIn("No fallback is retired", section)
-        self.assertIn("HERMES_STOCK_COMPATIBILITY.md", section)
+    def test_architecture_retains_the_stock_compatibility_contract(self):
+        flattened = " ".join(ARCHITECTURE.split())
+        self.assertIn("retires none of these fallbacks", flattened)
+        self.assertIn("HERMES_STOCK_COMPATIBILITY.md", ARCHITECTURE)
 
 
 if __name__ == "__main__":
