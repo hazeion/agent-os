@@ -23,6 +23,7 @@ const { ProjectsTasksWorkspace } = await import("../src/app/tasks/projects-tasks
 const envelope = { runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" } as const;
 const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "active" as const };
 const task = { attention_reasons: ["overdue" as const], blocked: false, deferred: false, due_date: "2026-08-29", id: "task_alpha", needs_attention: true, planned_for_today: false, planning_state: "planned" as const, priority: "high" as const, project_id: project.id, project_name: project.name, review_required: false, revision: 1, status: "todo" as const, title: "Ship Alpha", updated_at: "2026-08-29T12:00:00Z", workflow_stage: "planned" as const };
+const listTask = { ...task, description_preview: "Ship the reviewed Alpha changes." };
 const overview = { ...envelope, attention: [task], attention_count: 1, project_count: 1, projects: [project], today: "2026-08-30", truncated: false };
 const emptyContext = { ...envelope, association: null, conversation_id: "conv_plan", conversation_revision: 1, project: null, state: "empty" as const, task: null };
 const readyContext = { ...envelope, association: { project_id: project.id, task_id: task.id }, conversation_id: "conv_plan", conversation_revision: 2, project, state: "ready" as const, task };
@@ -36,7 +37,7 @@ test("planning selectors stage locally and Apply is the only context mutation", 
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString(), origin); const method = init?.method ?? "GET";
     calls.push({ body: init?.body?.toString(), method, path: url.pathname + url.search });
-    if (url.pathname.endsWith("planning-tasks")) return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [task] });
+    if (url.pathname.endsWith("planning-tasks")) return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
     if (url.pathname.endsWith("planning-context") && method === "POST") return Response.json({ ...readyContext, action: "set", conversation });
     if (url.pathname.endsWith("planning-context")) return Response.json(readyContext);
     throw new Error(`${method} ${url.pathname}`);
@@ -123,7 +124,7 @@ test("Projects and Tasks deep-links, validates forms, and preserves failed input
     if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
     if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: { ...task, attention_reasons: [] } });
     if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [{ capabilities: [], id: "agent_alpha", name: "Alpha Agent", runtime_config_id: "config_alpha", runtime_type: "hermes" }], count: 1 });
-    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [task] });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
     if (url.pathname === "/api/projects" && method === "POST") { projectCreateAttempts += 1; return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 }); }
     throw new Error(`${method} ${url.pathname}`);
   };
@@ -144,11 +145,12 @@ test("a missing deep-link Project is announced without hiding the Task list", as
     const url = new URL(input.toString(), origin);
     if (url.pathname === "/api/agent-console/planning-overview") return Response.json(overview);
     if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
-    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [task] });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
     throw new Error(`GET ${url.pathname}`);
   };
   render(<ProjectsTasksWorkspace />);
   await screen.findByText("Ship Alpha");
+  assert.equal(screen.getByText("Ship the reviewed Alpha changes.").textContent, "Ship the reviewed Alpha changes.");
   await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /requested Project could not be found/u));
   const user = userEvent.setup({ document: dom.window.document });
   await user.click(screen.getByRole("button", { name: "Add" }));
@@ -189,7 +191,7 @@ test("Projects render before optional Agent inventory settles", async () => {
     const url = new URL(input.toString(), origin);
     if (url.pathname === "/api/agent-console/planning-overview") return Response.json(overview);
     if (url.pathname === "/api/agents") return await agents.promise;
-    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [task] });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
     throw new Error(`GET ${url.pathname}`);
   };
   render(<ProjectsTasksWorkspace />);
@@ -205,13 +207,13 @@ test("Task paging paints the first page before resolving an exact deep link", as
     const url = new URL(input.toString(), origin);
     if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
     if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
-    if (url.pathname === "/api/agent-console/planning-tasks" && !url.searchParams.has("cursor")) return Response.json({ ...envelope, count: 1, next_cursor: "next_page", project, tasks: [task] });
+    if (url.pathname === "/api/agent-console/planning-tasks" && !url.searchParams.has("cursor")) return Response.json({ ...envelope, count: 1, next_cursor: "next_page", project, tasks: [listTask] });
     if (url.pathname === "/api/agent-console/planning-tasks") return await laterPage.promise;
     throw new Error(`GET ${url.pathname}`);
   };
   render(<ProjectsTasksWorkspace />);
   await screen.findByText("Ship Alpha");
-  laterPage.resolve(Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [laterTask] }));
+  laterPage.resolve(Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [{ ...laterTask, description_preview: "Later Task description." }] }));
   await waitFor(() => assert.equal(document.activeElement?.getAttribute("data-planning-task-id"), laterTask.id));
 });
 
@@ -225,7 +227,7 @@ test("a task-only locator resolved before overview keeps its exact Project", asy
     if (url.pathname === "/api/agent-console/planning-overview") return await overviewRead.promise;
     if (url.pathname === "/api/agent-console/planning-task") return await locatorRead.promise;
     if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
-    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project: beta, tasks: [betaTask] });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project: beta, tasks: [{ ...betaTask, description_preview: "Beta Task description." }] });
     throw new Error(`GET ${url.pathname}`);
   };
   render(<ProjectsTasksWorkspace />);

@@ -45,6 +45,10 @@ export type PublicPlanningTask = {
   revision: number;
 };
 
+export type PublicPlanningTaskListItem = PublicPlanningTask & {
+  description_preview: string;
+};
+
 export type PublicPlanningOverview = ServiceEnvelope & {
   today: string;
   projects: PublicPlanningProject[];
@@ -56,7 +60,7 @@ export type PublicPlanningOverview = ServiceEnvelope & {
 
 export type PublicPlanningTaskPage = ServiceEnvelope & {
   project: PublicPlanningProject;
-  tasks: PublicPlanningTask[];
+  tasks: PublicPlanningTaskListItem[];
   count: number;
   next_cursor: string | null;
 };
@@ -140,6 +144,13 @@ function validTask(value: unknown): value is PublicPlanningTask {
     && timestamp(value.updated_at);
 }
 
+function validTaskListItem(value: unknown): value is PublicPlanningTaskListItem {
+  if (!record(value)) return false;
+  const { description_preview: preview, ...task } = value;
+  return typeof preview === "string" && preview.trim() === preview && [...preview].length <= 280
+    && !/\p{C}/u.test(preview) && validTask(task);
+}
+
 function validEnvelope(value: Record<string, unknown>): boolean {
   return value.schema_version === 1 && value.service === "mentat-local-bridge" && value.runtime === "python" && value.status === "ready";
 }
@@ -169,7 +180,7 @@ export function parsePlanningTaskPage(value: unknown, projectId?: string): Publi
   if (!record(value) || !keys(value, "count,next_cursor,project,runtime,schema_version,service,status,tasks") || !validEnvelope(value) || !validProject(value.project)) throw new PublicPlanningError("response_invalid");
   const project = value.project;
   if (projectId !== undefined && project.id !== projectId) throw new PublicPlanningError("response_invalid");
-  if (!Array.isArray(value.tasks) || value.tasks.length > 50 || !value.tasks.every(validTask) || value.tasks.some((task) => task.project_id !== project.id || task.project_name !== project.name) || new Set(value.tasks.map((task) => task.id)).size !== value.tasks.length || value.count !== value.tasks.length || value.next_cursor !== null && (typeof value.next_cursor !== "string" || !CURSOR.test(value.next_cursor))) throw new PublicPlanningError("response_invalid");
+  if (!Array.isArray(value.tasks) || value.tasks.length > 50 || !value.tasks.every(validTaskListItem) || value.tasks.some((task) => task.project_id !== project.id || task.project_name !== project.name) || new Set(value.tasks.map((task) => task.id)).size !== value.tasks.length || value.count !== value.tasks.length || value.next_cursor !== null && (typeof value.next_cursor !== "string" || !CURSOR.test(value.next_cursor))) throw new PublicPlanningError("response_invalid");
   return structuredClone(value) as PublicPlanningTaskPage;
 }
 

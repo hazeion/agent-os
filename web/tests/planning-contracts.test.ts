@@ -41,9 +41,10 @@ import {
 const envelope = { runtime: "python" as const, schema_version: 1 as const, service: "mentat-local-bridge" as const, status: "ready" as const };
 const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "active" as const };
 const task = { attention_reasons: ["overdue", "review"] as Array<"overdue" | "review">, blocked: false, deferred: false, due_date: "2026-08-29", id: "task_alpha", needs_attention: false, planned_for_today: false, planning_state: "review" as const, priority: "high" as const, project_id: project.id, project_name: project.name, review_required: true, revision: 1, status: "todo" as const, title: "Review Alpha", updated_at: "2026-08-30T12:00:00Z", workflow_stage: "review" as const };
+const listTask = { ...task, description_preview: "Prepare the Alpha review." };
 const createdTask = { ...task, priority: "medium" as const };
 const overview = { ...envelope, attention: [task], attention_count: 1, project_count: 1, projects: [project], today: "2026-08-30", truncated: false };
-const taskPage = { ...envelope, count: 1, next_cursor: null, project, tasks: [task] };
+const taskPage = { ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] };
 const nonAttentionTask = { ...task, attention_reasons: [] as [], due_date: null, id: "task_plain", needs_attention: false, planning_state: "inbox" as const, priority: "medium" as const, review_required: false, title: "Plain task" };
 const taskResult = { ...envelope, project, task: nonAttentionTask };
 const context = { ...envelope, association: { project_id: project.id, task_id: task.id }, conversation_id: "conv_alpha", conversation_revision: 4, project, state: "ready" as const, task };

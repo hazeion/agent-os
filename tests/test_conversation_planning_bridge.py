@@ -7,7 +7,7 @@ from mentat import local_bridge
 import server
 
 
-PROJECT = {"id": "project_mentat", "name": "Mentat", "status": "active"}
+PROJECT = {"id": "project_mentat", "name": "Mentat", "status": "active", "revision": 1}
 TASK = {
     "id": "task_1",
     "title": "Plan Slice 10",
@@ -18,11 +18,16 @@ TASK = {
     "due_date": "2026-08-30",
     "planned_for_today": True,
     "planning_state": "planned",
+    "workflow_stage": "planned",
+    "deferred": False,
+    "blocked": False,
+    "revision": 1,
     "needs_attention": False,
     "review_required": False,
     "attention_reasons": ["due_today", "planned_today"],
     "updated_at": "2026-08-30T12:00:00Z",
 }
+TASK_LIST = {**TASK, "description_preview": "Set the scope and sequence for Slice 10."}
 CONVERSATION = {
     "id": "conv_planning",
     "agent_id": "agent_direct",
@@ -88,7 +93,7 @@ class ConversationPlanningBridgeTests(unittest.TestCase):
         page = {
             "schema_version": 1,
             "project": PROJECT,
-            "tasks": [TASK],
+            "tasks": [TASK_LIST],
             "count": 1,
             "next_cursor": "cursor_1",
         }
@@ -98,7 +103,29 @@ class ConversationPlanningBridgeTests(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         read.assert_called_once_with(project_id="project_mentat", cursor="prior_1")
-        self.assertEqual(payload["tasks"], [TASK])
+        self.assertEqual(payload["tasks"], [TASK_LIST])
+        self.assertNotIn("'description':", str(payload))
+
+        for unsafe_preview in ("x" * 281, "safe\x01preview"):
+            with self.subTest(unsafe_preview=unsafe_preview), patch.object(
+                server,
+                "mentat_planning_tasks_payload",
+                return_value={**page, "tasks": [{**TASK_LIST, "description_preview": unsafe_preview}]},
+            ):
+                rejected, rejected_status = local_bridge.bridge_planning_tasks_payload(
+                    "project_mentat", None
+                )
+            self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
+
+        with patch.object(
+            server,
+            "mentat_planning_tasks_payload",
+            return_value={**page, "tasks": [{**TASK_LIST, "description": "private source text"}]},
+        ):
+            rejected, rejected_status = local_bridge.bridge_planning_tasks_payload(
+                "project_mentat", None
+            )
+        self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
 
         with patch.object(
             server,

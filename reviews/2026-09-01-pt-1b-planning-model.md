@@ -60,7 +60,13 @@ uses two independent defect-first, read-only passes under `review-agent`.
 - The final independent recheck found empty Task edits incremented a Task
   revision. Both boundaries now reject an empty `changes` object and the normal
   same-origin route plus server regression tests pass.
-- All reviewer findings are fixed. The focused Python suite now passes 74
+- The pre-publication task-list review found its bridge fixture no longer
+  represented the successful exact-list shape. It now supplies the current
+  Project/Task revisions and workflow fields plus a bounded preview, and also
+  covers rejected overlong, control-character, and unexpected raw-description
+  fields.
+- Two final independent reviews found no remaining product or boundary defects.
+  All reviewer findings are fixed. The focused Python suite now passes 74
   tests; the web planning suites pass 25 tests, with type checking and the
   production build also passing.
 
@@ -93,3 +99,7 @@ uses two independent defect-first, read-only passes under `review-agent`.
   it is now converted to the bounded `project_authority_unavailable` startup
   error with regression coverage. The gateway, package, and Project repository
   suites pass 71 tests.
+- The final pre-push browser acceptance rendered a long task and the seeded
+  Tasks list with all four cards at the same fixed 108px desktop height.
+  Each seeded card showed its bounded task-description preview. The Add Task
+  control opened its form and Cancel returned to the list successfully.

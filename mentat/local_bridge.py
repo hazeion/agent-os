@@ -1315,6 +1315,29 @@ def _planning_task(value: object) -> dict[str, object]:
     return {key: value[key] for key in sorted(required)}
 
 
+def _planning_task_list_item(value: object) -> dict[str, object]:
+    """Validate the Task-list-only, bounded description preview."""
+
+    required = {
+        "attention_reasons", "blocked", "deferred", "description_preview", "due_date",
+        "id", "needs_attention", "planned_for_today", "planning_state", "priority",
+        "project_id", "project_name", "review_required", "revision", "status", "title",
+        "updated_at", "workflow_stage",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    preview = value.get("description_preview")
+    if (
+        not isinstance(preview, str)
+        or preview.strip() != preview
+        or len(preview) > 280
+        or re.search(r"[\x00-\x1f\x7f]", preview) is not None
+    ):
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    task = _planning_task({key: value[key] for key in value if key != "description_preview"})
+    return {**task, "description_preview": preview}
+
+
 def _planning_failure(state: str, status: int) -> tuple[dict[str, object], int]:
     return {
         "schema_version": 1,
@@ -1393,7 +1416,7 @@ def bridge_planning_tasks_payload(
             and (not isinstance(next_cursor, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,512}", next_cursor) is None)
         ):
             raise BridgeConversationProjectionError("planning_tasks_invalid")
-        public_tasks = [_planning_task(task) for task in tasks]
+        public_tasks = [_planning_task_list_item(task) for task in tasks]
         if any(task["project_id"] != project_id for task in public_tasks):
             raise BridgeConversationProjectionError("planning_tasks_invalid")
         return {

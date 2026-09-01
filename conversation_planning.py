@@ -24,6 +24,7 @@ from task_repository import TaskRepository, TaskRepositoryConflict, TaskReposito
 MAX_PROJECTS = 256
 MAX_ATTENTION = 50
 MAX_TASK_PAGE = 50
+MAX_TASK_DESCRIPTION_PREVIEW = 280
 _PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 _CURSOR = re.compile(r"[A-Za-z0-9_-]{1,512}\Z")
@@ -172,6 +173,20 @@ def _task_is_blocked(task: Mapping[str, Any], all_tasks: Mapping[str, Mapping[st
     return False
 
 
+def _task_description_preview(task: Mapping[str, Any]) -> str:
+    """Return a bounded, plain-text preview for the Project Task list only."""
+
+    raw = task.get("description")
+    if not isinstance(raw, str):
+        return ""
+    preview = " ".join(raw.split())
+    if any(unicodedata.category(character).startswith("C") for character in preview):
+        return ""
+    if len(preview) > MAX_TASK_DESCRIPTION_PREVIEW:
+        preview = preview[: MAX_TASK_DESCRIPTION_PREVIEW - 1].rstrip() + "…"
+    return preview
+
+
 def _task_public(
     task: Mapping[str, Any],
     registry: ProjectRegistry,
@@ -225,6 +240,8 @@ def _safe_tasks(
     connection: sqlite3.Connection,
     registry: ProjectRegistry,
     today: date,
+    *,
+    include_description_preview: bool = False,
 ) -> list[dict[str, Any]]:
     try:
         repository = TaskRepository(connection)
@@ -244,6 +261,8 @@ def _safe_tasks(
         if projected is not None:
             projected["revision"] = revisions[str(task["id"])]
             projected["blocked"] = _task_is_blocked(task, task_map)
+            if include_description_preview:
+                projected["description_preview"] = _task_description_preview(task)
             public.append(projected)
     return public
 
@@ -334,7 +353,9 @@ def planning_task_page(
         raise ConversationPlanningError("planning.project_not_found")
     tasks = [
         task
-        for task in _safe_tasks(connection, registry, today)
+        for task in _safe_tasks(
+            connection, registry, today, include_description_preview=True
+        )
         if task["project_id"] == project_id
     ]
     tasks.sort(key=lambda task: (_task_order_key(task)[0], _task_order_key(task)[1], _task_order_key(task)[2]), reverse=False)

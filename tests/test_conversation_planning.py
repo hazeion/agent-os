@@ -226,6 +226,33 @@ class ConversationPlanningTests(unittest.TestCase):
             self.assertNotIn("task_completed", serialized)
             self.assertNotIn("task_orphan", serialized)
 
+    def test_task_page_exposes_only_a_bounded_plain_text_description_preview(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            connection = connect(root)
+            try:
+                TaskRepository(connection).insert_collection([
+                    task(
+                        "task_preview",
+                        description=("Detailed\nplanning description " + "x" * 400),
+                    )
+                ])
+                page = planning_task_page(
+                    connection,
+                    PROJECTS,
+                    project_id="project_mentat",
+                    cursor=None,
+                    today=date(2026, 8, 30),
+                )
+                overview = planning_overview(connection, PROJECTS, today=date(2026, 8, 30))
+            finally:
+                connection.close()
+        preview = page["tasks"][0]["description_preview"]
+        self.assertEqual(preview[:31], "Detailed planning description x")
+        self.assertLessEqual(len(preview), 280)
+        self.assertTrue(preview.endswith("…"))
+        self.assertNotIn("description_preview", str(overview))
+
     def test_project_bound_cursor_and_alias_resolution_fail_closed(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

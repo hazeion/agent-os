@@ -10,7 +10,7 @@ import {
   readPlanningOverview,
   readPlanningTasks,
   type PublicPlanningOverview,
-  type PublicPlanningTask,
+  type PublicPlanningTaskListItem,
 } from "@/lib/public-planning";
 
 type LoadState = "loading" | "ready" | "empty" | "unavailable" | "error";
@@ -39,7 +39,7 @@ export function ProjectsTasksWorkspace() {
   const [overview, setOverview] = useState<PublicPlanningOverview | null>(null);
   const [state, setState] = useState<LoadState>("loading");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [tasks, setTasks] = useState<PublicPlanningTask[]>([]);
+  const [tasks, setTasks] = useState<PublicPlanningTaskListItem[]>([]);
   const [tasksState, setTasksState] = useState<LoadState>("loading");
   const [taskCursor, setTaskCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -217,7 +217,7 @@ export function ProjectsTasksWorkspace() {
       const created = await createProjectTask(projectId, title, taskAgent || null, taskDue || null);
       closeTaskForm();
       if (selectedProjectRef.current === projectId) {
-        setTasks((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+        setTasks((current) => [{ ...created, description_preview: "" }, ...current.filter((item) => item.id !== created.id)]);
         setTasksState("ready");
         window.setTimeout(() => document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
       }
@@ -236,7 +236,7 @@ export function ProjectsTasksWorkspace() {
     <div className="project-tasks-pane">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Tasks</p><h2>{selectedProject?.name ?? "Tasks"}</h2></div><button disabled={busy || !selectedProjectId || selectedProject?.status !== "active"} onClick={() => { setProjectForm(false); setProjectName(""); setTaskFormProjectId(selectedProjectId); setTaskForm(true); window.setTimeout(() => taskInput.current?.focus(), 0); }} ref={addTaskButton} type="button">Add</button></div>
       {taskForm ? <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void submitTask(); }}><label><span>Title</span><input onChange={(event) => { if ([...event.target.value].length <= 161) setTaskTitle(event.target.value); }} ref={taskInput} value={taskTitle} /></label><label><span>Agent</span><select aria-describedby="task-agent-state" disabled={agentsState === "loading" || agentsState === "empty" || agentsState === "unavailable"} onChange={(event) => setTaskAgent(event.target.value)} value={taskAgent}><option value="">{agentsState === "loading" ? "Loading" : agentsState === "unavailable" ? "Unavailable" : agentsState === "empty" ? "No Agents" : "Unassigned"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><p className="task-agent-state" id="task-agent-state">{agentsState === "unavailable" ? "Agent assignment is unavailable; Create will leave this Task unassigned." : agentsState === "empty" ? "No Agents are available; Create will leave this Task unassigned." : "Assignment is optional."}</p><label><span>Due</span><input onChange={(event) => setTaskDue(event.target.value)} type="date" value={taskDue} /></label><div><button aria-label="Create Task" disabled={busy || !taskTitle.trim() || [...taskTitle.trim()].length > 160} type="submit">Create</button><button aria-label="Cancel Task" disabled={busy} onClick={() => { closeTaskForm(); window.setTimeout(() => addTaskButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
-      {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : tasks.length ? <ul className="project-task-list">{tasks.map((task) => <li data-planning-task-id={task.id} data-task-title={task.title} key={task.id} tabIndex={-1}><div><strong>{task.title}</strong><span>{task.status} · {task.priority}</span></div>{task.due_date ? <time dateTime={task.due_date}>Due {task.due_date}</time> : null}</li>)}</ul> : <p>No Tasks in this Project.</p>}
+      {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : tasks.length ? <ul className="project-task-list">{tasks.map((task) => <li data-planning-task-id={task.id} data-task-title={task.title} key={task.id} tabIndex={-1}><div><strong>{task.title}</strong>{task.description_preview ? <p>{task.description_preview}</p> : null}<span>{task.status} · {task.priority}</span></div>{task.due_date ? <time dateTime={task.due_date}>Due {task.due_date}</time> : null}</li>)}</ul> : <p>No Tasks in this Project.</p>}
       {taskCursor ? <button className="project-tasks-more" disabled={loadingMore} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
     </div>
     <p aria-live="polite" className="projects-tasks-notice" role="status">{notice}</p>
