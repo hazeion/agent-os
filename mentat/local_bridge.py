@@ -49,6 +49,7 @@ BRIDGE_COMMAND_MANIFEST_PATH = "/bridge/v1/agent-console/commands"
 BRIDGE_PLANNING_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview"
 BRIDGE_PLANNING_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks"
 BRIDGE_PLANNING_TASK_PATH = "/bridge/v1/agent-console/planning-task"
+BRIDGE_PLANNING_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail"
 BRIDGE_PROJECTS_PATH = "/bridge/v1/projects"
 BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
 BRIDGE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness"
@@ -1338,6 +1339,50 @@ def _planning_task_list_item(value: object) -> dict[str, object]:
     return {**task, "description_preview": preview}
 
 
+def _planning_task_detail(value: object) -> dict[str, object]:
+    """Validate the selected-Task editor projection, separate from list data."""
+
+    if not isinstance(value, dict):
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    extras = {"description", "tags", "estimated_minutes", "recurrence", "subtasks", "assigned_agent_id"}
+    base = {key: item for key, item in value.items() if key not in extras}
+    if set(value) != set(base) | extras:
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    description = value.get("description")
+    tags = value.get("tags")
+    estimate = value.get("estimated_minutes")
+    recurrence = value.get("recurrence")
+    subtasks = value.get("subtasks")
+    agent_id = value.get("assigned_agent_id")
+    if (
+        not isinstance(description, str)
+        or len(description) > 4000
+        or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", description) is not None
+        or not isinstance(tags, list)
+        or len(tags) > 12
+        or any(not isinstance(tag, str) or not tag.strip() or len(tag) > 48 or re.search(r"[\x00-\x1f\x7f]", tag) is not None for tag in tags)
+        or estimate is not None and (type(estimate) is not int or not 1 <= estimate <= 10080)
+        or recurrence is not None and not isinstance(recurrence, dict)
+        or subtasks is None or not isinstance(subtasks, list) or len(subtasks) > 200
+        or agent_id is not None and (not isinstance(agent_id, str) or _OPAQUE_ID.fullmatch(agent_id) is None)
+    ):
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    for item in subtasks:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"id", "title", "completed", "rank"}
+            or not isinstance(item.get("id"), str)
+            or _TASK_ID.fullmatch(item["id"]) is None
+            or not _planning_text(item.get("title"), 240)
+            or type(item.get("completed")) is not bool
+            or type(item.get("rank")) is not int
+            or not 0 <= item["rank"] <= 1000000
+        ):
+            raise BridgeConversationProjectionError("planning_task_invalid")
+    task = _planning_task(base)
+    return {**task, "description": description, "tags": list(tags), "estimated_minutes": estimate, "recurrence": recurrence, "subtasks": [dict(item) for item in subtasks], "assigned_agent_id": agent_id}
+
+
 def _planning_failure(state: str, status: int) -> tuple[dict[str, object], int]:
     return {
         "schema_version": 1,
@@ -1654,6 +1699,32 @@ def bridge_create_project_task_payload(
         if project["id"] != project_id or task["project_id"] != project_id:
             raise BridgeConversationProjectionError("planning_task_invalid")
         return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "action": "create", "project": project, "task": task}, 201
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_planning_task_detail_payload(task_id: str) -> tuple[dict[str, object], int]:
+    from conversation_planning import ConversationPlanningError
+
+    try:
+        from server import mentat_planning_task_detail_payload
+
+        source = mentat_planning_task_detail_payload(task_id)
+        if not isinstance(source, dict) or set(source) != {"schema_version", "project", "task"}:
+            raise BridgeConversationProjectionError("planning_task_locator_invalid")
+        project = _planning_project(source.get("project"))
+        task = _planning_task_detail(source.get("task"))
+        if source.get("schema_version") != 1 or task["id"] != task_id or task["project_id"] != project["id"]:
+            raise BridgeConversationProjectionError("planning_task_locator_invalid")
+        return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "project": project, "task": task}, 200
+    except ConversationPlanningError as exc:
+        if exc.code == "planning.task_not_found":
+            return _planning_failure("not_found", 404)
+        if exc.code.endswith("_invalid"):
+            return _planning_failure("invalid", 400)
+        if exc.code in {"planning.unavailable", "planning.tasks_unavailable"}:
+            return _planning_failure("unavailable", 503)
+        return _planning_failure("error", 500)
     except Exception:
         return _planning_failure("error", 500)
 
@@ -4326,6 +4397,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bridge_route_not_found"}, 404)
                 return
             payload, status = bridge_planning_task_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_TASK_DETAIL_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) != 1 or pairs[0][0] != "task_id" or _TASK_ID.fullmatch(pairs[0][1]) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_task_detail_payload(pairs[0][1])
             self._send_json(payload, status)
             return
         if parsed.path == BRIDGE_CONVERSATION_HISTORY_PATH:

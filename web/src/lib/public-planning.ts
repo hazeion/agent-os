@@ -49,6 +49,10 @@ export type PublicPlanningTaskListItem = PublicPlanningTask & {
   description_preview: string;
 };
 
+export type PublicPlanningSubtask = { id: string; title: string; completed: boolean; rank: number };
+export type PublicPlanningRecurrence = { frequency: "daily" | "weekly" | "monthly" | "yearly"; interval: number; weekdays?: Array<"mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun">; ends_on?: string; count?: number };
+export type PublicPlanningTaskDetail = PublicPlanningTask & { description: string; tags: string[]; estimated_minutes: number | null; recurrence: PublicPlanningRecurrence | null; subtasks: PublicPlanningSubtask[]; assigned_agent_id: string | null };
+
 export type PublicPlanningOverview = ServiceEnvelope & {
   today: string;
   projects: PublicPlanningProject[];
@@ -69,6 +73,7 @@ export type PublicPlanningTaskResult = ServiceEnvelope & {
   project: PublicPlanningProject;
   task: PublicPlanningTask;
 };
+export type PublicPlanningTaskDetailResult = ServiceEnvelope & { project: PublicPlanningProject; task: PublicPlanningTaskDetail };
 
 export type PublicPlanningAssociation = { project_id: string; task_id: string | null };
 
@@ -151,6 +156,24 @@ function validTaskListItem(value: unknown): value is PublicPlanningTaskListItem 
     && !/\p{C}/u.test(preview) && validTask(task);
 }
 
+function validRecurrence(value: unknown): value is PublicPlanningRecurrence {
+  if (!record(value) || !["daily", "weekly", "monthly", "yearly"].includes(String(value.frequency)) || !Number.isSafeInteger(value.interval) || (value.interval as number) < 1 || (value.interval as number) > 365) return false;
+  const allowed = new Set(["frequency", "interval", "weekdays", "ends_on", "count"]);
+  if (Object.keys(value).some((key) => !allowed.has(key)) || value.weekdays !== undefined && (!Array.isArray(value.weekdays) || !value.weekdays.length || value.weekdays.length > 7 || !value.weekdays.every((day) => ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].includes(String(day))) || value.frequency !== "weekly") || value.ends_on !== undefined && !date(value.ends_on) || value.count !== undefined && (!Number.isSafeInteger(value.count) || (value.count as number) < 1 || (value.count as number) > 10000) || value.ends_on !== undefined && value.count !== undefined) return false;
+  return true;
+}
+
+function validTaskDetail(value: unknown): value is PublicPlanningTaskDetail {
+  if (!record(value) || !keys(value, "assigned_agent_id,attention_reasons,blocked,deferred,description,due_date,estimated_minutes,id,needs_attention,planned_for_today,planning_state,priority,project_id,project_name,recurrence,review_required,revision,status,subtasks,tags,title,updated_at,workflow_stage")) return false;
+  const { description, tags, estimated_minutes: estimate, recurrence, subtasks, assigned_agent_id: agentId, ...task } = value;
+  return validTask(task) && typeof description === "string" && description.length <= 4000 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(description)
+    && Array.isArray(tags) && tags.length <= 12 && tags.every((tag) => text(tag, 48))
+    && (estimate === null || Number.isSafeInteger(estimate) && (estimate as number) >= 1 && (estimate as number) <= 10080)
+    && (recurrence === null || validRecurrence(recurrence))
+    && Array.isArray(subtasks) && subtasks.length <= 200 && subtasks.every((item) => record(item) && keys(item, "completed,id,rank,title") && typeof item.id === "string" && TASK_ID.test(item.id) && text(item.title, 240) && typeof item.completed === "boolean" && Number.isSafeInteger(item.rank) && (item.rank as number) >= 0 && (item.rank as number) <= 1000000)
+    && (agentId === null || typeof agentId === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(agentId));
+}
+
 function validEnvelope(value: Record<string, unknown>): boolean {
   return value.schema_version === 1 && value.service === "mentat-local-bridge" && value.runtime === "python" && value.status === "ready";
 }
@@ -225,6 +248,12 @@ export function parsePlanningProjectCreation(value: unknown): PublicPlanningProj
 export function parsePlanningTaskCreation(value: unknown, projectId?: string): PublicPlanningTaskCreation {
   if (!record(value) || !keys(value, "action,project,runtime,schema_version,service,status,task") || !validEnvelope(value) || value.action !== "create" || !validProject(value.project) || !validTask(value.task) || value.task.project_id !== value.project.id || value.task.project_name !== value.project.name || projectId !== undefined && value.project.id !== projectId) throw new PublicPlanningError("response_invalid");
   return structuredClone(value) as PublicPlanningTaskCreation;
+}
+
+export function parsePlanningTaskDetailResult(value: unknown, taskId?: string): PublicPlanningTaskDetailResult {
+  if (!record(value) || !keys(value, "project,runtime,schema_version,service,status,task") || !validEnvelope(value) || !validProject(value.project) || !validTaskDetail(value.task)) throw new PublicPlanningError("response_invalid");
+  if (taskId !== undefined && value.task.id !== taskId || value.task.project_id !== value.project.id || value.task.project_name !== value.project.name) throw new PublicPlanningError("response_invalid");
+  return structuredClone(value) as PublicPlanningTaskDetailResult;
 }
 
 export function parsePlanningProjectMutation(value: unknown, projectId?: string): PublicPlanningProjectMutation {
@@ -319,5 +348,27 @@ export async function createProjectTask(projectId: string, title: string, assign
     if (result.task.title !== title || result.task.due_date !== dueDate || result.task.status !== "todo" || result.task.priority !== "medium") throw new PublicPlanningError("response_invalid");
     return { ...result.task, attention_reasons: [...result.task.attention_reasons] };
   }
+  failure(payload, response);
+}
+
+export async function readPlanningTaskDetail(taskId: string): Promise<PublicPlanningTaskDetailResult> {
+  if (!TASK_ID.test(taskId)) throw new PublicPlanningError("invalid");
+  const parameters = new URLSearchParams({ task_id: taskId });
+  const { response, payload } = await request(`/api/agent-console/planning-task-detail?${parameters.toString()}`);
+  if (response.status === 200) return parsePlanningTaskDetailResult(payload, taskId);
+  failure(payload, response);
+}
+
+export async function updatePlanningProject(projectId: string, expectedRevision: number, action: "rename" | "archive" | "restore", name: string | null): Promise<PublicPlanningProjectMutation> {
+  if (!PROJECT_ID.test(projectId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !["rename", "archive", "restore"].includes(action) || action === "rename" && !text(name, 120) || action !== "rename" && name !== null) throw new PublicPlanningError("invalid");
+  const { response, payload } = await request(`/api/planning/projects/${encodeURIComponent(projectId)}/${action}`, { body: JSON.stringify({ expected_revision: expectedRevision, action, name }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parsePlanningProjectMutation(payload, projectId);
+  failure(payload, response);
+}
+
+export async function updatePlanningTask(taskId: string, expectedRevision: number, changes: Record<string, unknown>): Promise<PublicPlanningTaskMutation> {
+  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !record(changes) || Object.keys(changes).length === 0) throw new PublicPlanningError("invalid");
+  const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/edit`, { body: JSON.stringify({ expected_revision: expectedRevision, changes }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parsePlanningTaskMutation(payload, taskId);
   failure(payload, response);
 }

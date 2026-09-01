@@ -28,6 +28,7 @@ import {
   parseConversationPlanningMutation,
   parsePlanningOverview,
   parsePlanningTaskPage,
+  parsePlanningTaskDetailResult,
   parsePlanningTaskResult,
   PublicPlanningError,
   PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS,
@@ -47,6 +48,7 @@ const overview = { ...envelope, attention: [task], attention_count: 1, project_c
 const taskPage = { ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] };
 const nonAttentionTask = { ...task, attention_reasons: [] as [], due_date: null, id: "task_plain", needs_attention: false, planning_state: "inbox" as const, priority: "medium" as const, review_required: false, title: "Plain task" };
 const taskResult = { ...envelope, project, task: nonAttentionTask };
+const taskDetailResult = { ...envelope, project, task: { ...nonAttentionTask, assigned_agent_id: null, description: "A bounded description.", estimated_minutes: 30, recurrence: null, subtasks: [], tags: [] } };
 const context = { ...envelope, association: { project_id: project.id, task_id: task.id }, conversation_id: "conv_alpha", conversation_revision: 4, project, state: "ready" as const, task };
 const conversation = { agent_id: "agent_alpha", archived_at: null, created_at: "2026-08-30T12:00:00Z", id: "conv_alpha", revision: 5, state: "active" as const, title: "Alpha", title_source: "manual" as const, updated_at: "2026-08-30T12:01:00Z" };
 const mutation = { ...context, action: "set" as const, conversation, conversation_revision: 5 };
@@ -132,6 +134,11 @@ test("bridge Project and Task creation use fixed bodies and reject private or cr
   await assert.rejects(createBridgeProject("Beta", async () => json(projectCreation, 201), environment), BridgePlanningError);
   await assert.rejects(createBridgeProjectTask(project.id, "Different Task", null, task.due_date, async () => json(taskCreation, 201), environment), BridgePlanningError);
   await assert.rejects(createBridgeProjectTask(project.id, task.title, null, null, async () => json(taskCreation, 201), environment), BridgePlanningError);
+});
+
+test("selected Task details accept editable bounded fields without widening list projections", () => {
+  assert.deepEqual(parsePlanningTaskDetailResult(taskDetailResult, nonAttentionTask.id), taskDetailResult);
+  assert.throws(() => parsePlanningTaskDetailResult({ ...taskDetailResult, task: { ...taskDetailResult.task, runtime_reference: "private" } }, nonAttentionTask.id), PublicPlanningError);
 });
 
 test("detailed planning mutations use named exact routes and bodies", async () => {

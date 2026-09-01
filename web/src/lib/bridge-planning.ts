@@ -4,6 +4,7 @@ import {
   parsePlanningOverview,
   parsePlanningProjectCreation,
   parsePlanningTaskPage,
+  parsePlanningTaskDetailResult,
   parsePlanningTaskResult,
   parsePlanningTaskCreation,
   parsePlanningProjectMutation,
@@ -14,6 +15,7 @@ import {
   type PublicPlanningOverview,
   type PublicPlanningProjectCreation,
   type PublicPlanningTaskPage,
+  type PublicPlanningTaskDetailResult,
   type PublicPlanningTaskResult,
   type PublicPlanningTaskCreation,
   type PublicPlanningProjectMutation,
@@ -23,6 +25,7 @@ import {
 const PRIVATE_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview";
 const PRIVATE_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks";
 const PRIVATE_TASK_PATH = "/bridge/v1/agent-console/planning-task";
+const PRIVATE_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail";
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
 const PRIVATE_PROJECTS_PATH = "/bridge/v1/projects";
 const PRIVATE_PLANNING_PATH = "/bridge/v1/planning";
@@ -147,6 +150,14 @@ export async function createBridgeProjectTask(projectId: string, title: string, 
     if (result.task.title !== title || result.task.due_date !== dueDate || result.task.status !== "todo" || result.task.priority !== "medium") throw new BridgePlanningError("bridge_response_invalid");
     return result;
   }
+  fixedFailure(response, payload);
+}
+
+export async function fetchBridgePlanningTaskDetail(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDetailResult> {
+  if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
+  const parameters = new URLSearchParams({ task_id: taskId });
+  const { response, payload } = await request(`${PRIVATE_TASK_DETAIL_PATH}?${parameters.toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningTaskDetailResult(payload, taskId));
   fixedFailure(response, payload);
 }
 

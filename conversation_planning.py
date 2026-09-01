@@ -17,7 +17,7 @@ from conversation_repository import (
     ConversationRecord,
     ConversationRepositoryConflict,
 )
-from task_planning import PLANNING_STATES, task_is_deferred, workflow_stage
+from task_planning import PLANNING_STATES, TaskPlanningError, normalize_task_planning, task_is_deferred, workflow_stage
 from task_repository import TaskRepository, TaskRepositoryConflict, TaskRepositoryError
 
 
@@ -406,6 +406,82 @@ def planning_task_locator(
     if project is None:
         raise ConversationPlanningError("planning.project_mismatch")
     return {"project": project.public(), "task": projected}
+
+
+def planning_task_detail_locator(
+    connection: sqlite3.Connection,
+    projects_payload: object,
+    *,
+    task_id: str,
+    today: date,
+) -> dict[str, Any]:
+    """Return a bounded, selected-Task-only editor projection.
+
+    This deliberately remains separate from overview, list, and Conversation
+    projections: descriptions and editable planning fields do not belong in
+    ambient browser state.
+    """
+
+    located = planning_task_locator(
+        connection, projects_payload, task_id=task_id, today=today
+    )
+    task = TaskRepository(connection).get(task_id).document
+    description = task.get("description", "")
+    if not isinstance(description, str) or len(description) > 4000 or any(
+        unicodedata.category(character).startswith("C") and character not in "\n\t"
+        for character in description
+    ):
+        raise ConversationPlanningError("planning.task_invalid")
+    tags = task.get("tags", [])
+    if (
+        not isinstance(tags, list)
+        or len(tags) > 12
+        or any(not isinstance(tag, str) or not tag.strip() or len(tag) > 48 or any(unicodedata.category(character).startswith("C") for character in tag) for tag in tags)
+    ):
+        raise ConversationPlanningError("planning.task_invalid")
+    subtasks = task.get("subtasks", [])
+    if not isinstance(subtasks, list) or len(subtasks) > 200:
+        raise ConversationPlanningError("planning.task_invalid")
+    safe_subtasks = []
+    for item in subtasks:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"id", "title", "completed", "rank"}
+            or not isinstance(item["id"], str)
+            or _TASK_ID.fullmatch(item["id"]) is None
+            or not isinstance(item["title"], str)
+            or not item["title"].strip()
+            or len(item["title"]) > 240
+            or any(unicodedata.category(character).startswith("C") for character in item["title"])
+            or type(item["completed"]) is not bool
+            or type(item["rank"]) is not int
+            or not 0 <= item["rank"] <= 1000000
+        ):
+            raise ConversationPlanningError("planning.task_invalid")
+        safe_subtasks.append(dict(item))
+    recurrence = task.get("recurrence")
+    estimated_minutes = task.get("estimated_minutes")
+    if estimated_minutes is not None and (type(estimated_minutes) is not int or not 1 <= estimated_minutes <= 10080):
+        raise ConversationPlanningError("planning.task_invalid")
+    try:
+        normalized_recurrence = normalize_task_planning({"recurrence": recurrence}).get("recurrence") if recurrence is not None else None
+    except TaskPlanningError as exc:
+        raise ConversationPlanningError("planning.task_invalid") from exc
+    if normalized_recurrence != recurrence:
+        raise ConversationPlanningError("planning.task_invalid")
+    assignee = task.get("assigned_agent_id")
+    if assignee is not None and (not isinstance(assignee, str) or _TASK_ID.fullmatch(assignee) is None):
+        raise ConversationPlanningError("planning.task_invalid")
+    located["task"] = {
+        **located["task"],
+        "description": description,
+        "tags": list(tags),
+        "estimated_minutes": estimated_minutes,
+        "recurrence": normalized_recurrence,
+        "subtasks": safe_subtasks,
+        "assigned_agent_id": assignee,
+    }
+    return located
 
 
 def validate_association_targets(
