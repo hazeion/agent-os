@@ -103,3 +103,8 @@ uses two independent defect-first, read-only passes under `review-agent`.
   Tasks list with all four cards at the same fixed 108px desktop height.
   Each seeded card showed its bounded task-description preview. The Add Task
   control opened its form and Cancel returned to the list successfully.
+- The full GitHub matrix then exposed two stale test assumptions from the
+  earlier Project-authority startup correction: direct `projects.json` writes
+  are no longer a valid generic JSON mutation, and the lifecycle fixture must
+  mock Project authority alongside Task authority. Those tests now exercise
+  the supported JSON fixture path and complete startup boundary respectively.
