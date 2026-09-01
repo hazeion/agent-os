@@ -83,6 +83,12 @@ class ProjectAuthorityReceipt:
     cutover_at: float
 
 
+@dataclass(frozen=True)
+class ProjectSnapshot:
+    document: dict[str, Any]
+    revision: int
+
+
 R = TypeVar("R")
 
 
@@ -340,6 +346,37 @@ class ProjectRepository:
     def list_projects(self) -> list[dict[str, Any]]:
         return self._list_projects()
 
+    def list_snapshots(self) -> list[ProjectSnapshot]:
+        documents = self._list_projects()
+        revisions = {
+            str(row["id"]): int(row["revision"])
+            for row in self.connection.execute(
+                "SELECT id, revision FROM mentat_projects ORDER BY sort_order, id"
+            )
+        }
+        if set(revisions) != {project["id"] for project in documents}:
+            raise ProjectRepositoryError("project_repository.corrupt")
+        return [
+            ProjectSnapshot(document=project, revision=revisions[project["id"]])
+            for project in documents
+        ]
+
+    def get(self, project_id: str) -> ProjectSnapshot:
+        if not isinstance(project_id, str) or PROJECT_ID_RE.fullmatch(project_id) is None:
+            raise ProjectRepositoryValidationError("project_repository.id_invalid")
+        row = self.connection.execute(
+            "SELECT revision FROM mentat_projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if row is None:
+            raise ProjectRepositoryConflict("project_repository.not_found")
+        document = next(
+            (project for project in self._list_projects() if project["id"] == project_id),
+            None,
+        )
+        if document is None:
+            raise ProjectRepositoryError("project_repository.corrupt")
+        return ProjectSnapshot(document=document, revision=int(row[0]))
+
     def _insert(self, project: Mapping[str, Any], sort_order: int, revision: int = 1) -> None:
         extensions = {key: value for key, value in project.items() if key not in {"id", "name", "type", "status", "description", "obsidian_note", "aliases", "created_at", "updated_at"}}
         self.connection.execute("INSERT INTO mentat_projects (id, sort_order, revision, name, name_key, type, status, description, obsidian_note, aliases_json, extensions_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (project["id"], sort_order, revision, project["name"], project["name"].casefold(), project["type"], project["status"], project["description"], project["obsidian_note"], _canonical_json(project["aliases"], code="project.invalid"), _canonical_json(extensions, code="project.invalid"), project["created_at"], project["updated_at"]))
@@ -400,6 +437,60 @@ class ProjectRepository:
         if self._list_projects() != normalized:
             raise ProjectRepositoryError("project_repository.reconstruction_failed")
         return result
+
+    def replace(
+        self,
+        project: Mapping[str, Any],
+        *,
+        expected_revision: int,
+    ) -> ProjectSnapshot:
+        """Replace one existing Project only at its exact internal revision."""
+
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ProjectRepositoryValidationError("project_repository.revision_invalid")
+        self.authority_receipt(required=True)
+        replacement = normalize_project_document(project)
+        identifier = replacement["id"]
+        if not self.connection.in_transaction:
+            with _guarded_transaction(self.connection, None, immediate=True):
+                return self.replace(replacement, expected_revision=expected_revision)
+        current = self.get(identifier)
+        if current.revision != expected_revision:
+            raise ProjectRepositoryConflict("project_repository.revision_conflict")
+        candidates = [
+            replacement if item["id"] == identifier else item
+            for item in self._list_projects()
+        ]
+        normalize_project_collection(candidates)
+        extensions = {
+            key: value
+            for key, value in replacement.items()
+            if key not in {
+                "id", "name", "type", "status", "description", "obsidian_note",
+                "aliases", "created_at", "updated_at",
+            }
+        }
+        result = self.connection.execute(
+            "UPDATE mentat_projects SET revision = revision + 1, name = ?, "
+            "name_key = ?, type = ?, status = ?, description = ?, obsidian_note = ?, "
+            "aliases_json = ?, extensions_json = ?, created_at = ?, updated_at = ? "
+            "WHERE id = ? AND revision = ?",
+            (
+                replacement["name"], replacement["name"].casefold(), replacement["type"],
+                replacement["status"], replacement["description"], replacement["obsidian_note"],
+                _canonical_json(replacement["aliases"], code="project.invalid"),
+                _canonical_json(extensions, code="project.invalid"), replacement["created_at"],
+                replacement["updated_at"], identifier, expected_revision,
+            ),
+        )
+        if result.rowcount != 1:
+            raise ProjectRepositoryConflict("project_repository.revision_conflict")
+        if current.document["name"] != replacement["name"]:
+            self.connection.execute(
+                "UPDATE mentat_tasks SET project = ? WHERE project_id = ?",
+                (replacement["name"], identifier),
+            )
+        return ProjectSnapshot(document=replacement, revision=expected_revision + 1)
 
 
 def _project_mapping(projects: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -469,6 +560,16 @@ def read_authoritative_projects(data_dir: Path) -> list[dict[str, Any]]:
             return repository.list_projects()
 
 
+def read_authoritative_project_snapshots(data_dir: Path) -> list[ProjectSnapshot]:
+    """Read canonical Projects together with their internal revisions."""
+
+    with private_state_lock(Path(data_dir)):
+        with _open_repository_database(Path(data_dir)) as (connection, _guard):
+            repository = ProjectRepository(connection)
+            repository.authority_receipt(required=True)
+            return repository.list_snapshots()
+
+
 def export_authoritative_projects(data_dir: Path) -> bytes:
     """Return deterministic Project recovery bytes from the SQLite authority."""
 
@@ -481,6 +582,22 @@ def mutate_authoritative_projects(data_dir: Path, mutator: Callable[[list[dict[s
         with _open_repository_database(Path(data_dir)) as (connection, guard):
             with _guarded_transaction(connection, guard, immediate=True):
                 return ProjectRepository(connection).mutate_collection(mutator)
+
+
+def replace_authoritative_project(
+    data_dir: Path,
+    project: Mapping[str, Any],
+    *,
+    expected_revision: int,
+) -> ProjectSnapshot:
+    """Apply one exact-revision Project lifecycle mutation."""
+
+    with private_state_lock(Path(data_dir)):
+        with _open_repository_database(Path(data_dir)) as (connection, guard):
+            with _guarded_transaction(connection, guard, immediate=True):
+                repository = ProjectRepository(connection)
+                repository.authority_receipt(required=True)
+                return repository.replace(project, expected_revision=expected_revision)
 
 
 def validate_project_repository_connection(

@@ -17,7 +17,7 @@ from conversation_repository import (
     ConversationRecord,
     ConversationRepositoryConflict,
 )
-from task_planning import PLANNING_STATES
+from task_planning import PLANNING_STATES, task_is_deferred, workflow_stage
 from task_repository import TaskRepository, TaskRepositoryConflict, TaskRepositoryError
 
 
@@ -53,9 +53,15 @@ class ProjectSummary:
     id: str
     name: str
     status: str
+    revision: int
 
-    def public(self) -> dict[str, str]:
-        return {"id": self.id, "name": self.name, "status": self.status}
+    def public(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "status": self.status,
+            "revision": self.revision,
+        }
 
 
 @dataclass(frozen=True)
@@ -109,7 +115,10 @@ def project_registry(payload: object) -> ProjectRegistry:
         )
         if status not in _PROJECT_STATUSES:
             raise ConversationPlanningError("planning.projects_invalid")
-        project = ProjectSummary(identifier, name, status)
+        revision = raw.get("revision", 1)
+        if type(revision) is not int or revision < 1:
+            raise ConversationPlanningError("planning.projects_invalid")
+        project = ProjectSummary(identifier, name, status, revision)
         by_id[identifier] = project
         projects.append(project)
         aliases: list[str] = [name]
@@ -153,6 +162,16 @@ def _attention_reasons(task: Mapping[str, Any], today: date) -> tuple[str, ...]:
     return tuple(reason for reason in _ATTENTION_ORDER if reason in reasons)
 
 
+def _task_is_blocked(task: Mapping[str, Any], all_tasks: Mapping[str, Mapping[str, Any]]) -> bool:
+    """A Task is blocked only when a present prerequisite is not Done."""
+
+    for dependency_id in task.get("depends_on") or []:
+        dependency = all_tasks.get(str(dependency_id))
+        if dependency is None or workflow_stage(dependency) != "done":
+            return True
+    return False
+
+
 def _task_public(
     task: Mapping[str, Any],
     registry: ProjectRegistry,
@@ -179,6 +198,10 @@ def _task_public(
         "due_date": task.get("due_date"),
         "planned_for_today": bool(task.get("planned_for_today", False)),
         "planning_state": planning_state,
+        "workflow_stage": workflow_stage(task),
+        "deferred": task_is_deferred(task),
+        "blocked": False,
+        "revision": 1,
         "needs_attention": bool(task["needs_attention"]),
         "review_required": bool(task["review_required"]),
         "attention_reasons": list(_attention_reasons(task, today)),
@@ -204,13 +227,23 @@ def _safe_tasks(
     today: date,
 ) -> list[dict[str, Any]]:
     try:
-        tasks = TaskRepository(connection).list_tasks()
+        repository = TaskRepository(connection)
+        tasks = repository.list_tasks()
     except TaskRepositoryError as exc:
         raise ConversationPlanningError("planning.tasks_unavailable") from exc
+    task_map = {str(task["id"]): task for task in tasks}
+    revisions = {
+        str(row["id"]): int(row["revision"])
+        for row in connection.execute("SELECT id, revision FROM mentat_tasks")
+    }
+    if set(task_map) != set(revisions):
+        raise ConversationPlanningError("planning.tasks_unavailable")
     public: list[dict[str, Any]] = []
     for task in tasks:
         projected = _task_public(task, registry, today)
         if projected is not None:
+            projected["revision"] = revisions[str(task["id"])]
+            projected["blocked"] = _task_is_blocked(task, task_map)
             public.append(projected)
     return public
 
@@ -336,7 +369,8 @@ def planning_task_locator(
         raise ConversationPlanningError("planning.task_id_invalid")
     registry = project_registry(projects_payload)
     try:
-        task = TaskRepository(connection).get(task_id).document
+        snapshot = TaskRepository(connection).get(task_id)
+        task = snapshot.document
     except TaskRepositoryConflict as exc:
         if exc.code == "task_repository.not_found":
             raise ConversationPlanningError("planning.task_not_found") from exc
@@ -344,6 +378,9 @@ def planning_task_locator(
     except TaskRepositoryError as exc:
         raise ConversationPlanningError("planning.tasks_unavailable") from exc
     projected = safe_task_projection(task, registry, today=today)
+    projected["revision"] = snapshot.revision
+    all_tasks = {item["id"]: item for item in TaskRepository(connection).list_tasks()}
+    projected["blocked"] = _task_is_blocked(task, all_tasks)
     project = registry.by_id.get(projected["project_id"])
     if project is None:
         raise ConversationPlanningError("planning.project_mismatch")

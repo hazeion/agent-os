@@ -9,6 +9,7 @@ const CONVERSATION_ID = /^conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
 const CURSOR = /^[A-Za-z0-9_-]{1,512}$/u;
 const ATTENTION_REASONS = ["overdue", "due_today", "review", "needs_attention", "planned_today", "due_soon"] as const;
 const PLANNING_STATES = ["inbox", "planned", "in_progress", "waiting", "review", "someday", "blocked", "done"] as const;
+const WORKFLOW_STAGES = ["inbox", "planned", "in_progress", "waiting", "review", "done"] as const;
 
 type ServiceEnvelope = {
   schema_version: 1;
@@ -21,6 +22,7 @@ export type PublicPlanningProject = {
   id: string;
   name: string;
   status: "active" | "paused" | "archived";
+  revision: number;
 };
 
 export type PublicPlanningTask = {
@@ -37,6 +39,10 @@ export type PublicPlanningTask = {
   review_required: boolean;
   attention_reasons: Array<typeof ATTENTION_REASONS[number]>;
   updated_at: string;
+  workflow_stage: typeof WORKFLOW_STAGES[number];
+  deferred: boolean;
+  blocked: boolean;
+  revision: number;
 };
 
 export type PublicPlanningOverview = ServiceEnvelope & {
@@ -78,6 +84,8 @@ export type PublicConversationPlanningMutation = PublicConversationPlanningConte
 
 export type PublicPlanningProjectCreation = ServiceEnvelope & { action: "create"; project: PublicPlanningProject };
 export type PublicPlanningTaskCreation = ServiceEnvelope & { action: "create"; project: PublicPlanningProject; task: PublicPlanningTask };
+export type PublicPlanningProjectMutation = ServiceEnvelope & { action: "rename" | "archive" | "restore"; project: PublicPlanningProject };
+export type PublicPlanningTaskMutation = ServiceEnvelope & { action: "edit" | "move"; project: PublicPlanningProject; task: PublicPlanningTask };
 
 export class PublicPlanningError extends Error {
   readonly code: string;
@@ -107,12 +115,12 @@ function timestamp(value: unknown): value is string {
 }
 
 function validProject(value: unknown): value is PublicPlanningProject {
-  return record(value) && keys(value, "id,name,status") && typeof value.id === "string" && PROJECT_ID.test(value.id)
-    && text(value.name, 120) && ["active", "paused", "archived"].includes(String(value.status));
+  return record(value) && keys(value, "id,name,revision,status") && typeof value.id === "string" && PROJECT_ID.test(value.id)
+    && text(value.name, 120) && ["active", "paused", "archived"].includes(String(value.status)) && Number.isSafeInteger(value.revision) && (value.revision as number) >= 1;
 }
 
 function validTask(value: unknown): value is PublicPlanningTask {
-  if (!record(value) || !keys(value, "attention_reasons,due_date,id,needs_attention,planned_for_today,planning_state,priority,project_id,project_name,review_required,status,title,updated_at")) return false;
+  if (!record(value) || !keys(value, "attention_reasons,blocked,deferred,due_date,id,needs_attention,planned_for_today,planning_state,priority,project_id,project_name,review_required,revision,status,title,updated_at,workflow_stage")) return false;
   if (!Array.isArray(value.attention_reasons) || value.attention_reasons.length > ATTENTION_REASONS.length) return false;
   const indexes = value.attention_reasons.map((reason) => ATTENTION_REASONS.indexOf(reason as typeof ATTENTION_REASONS[number]));
   return typeof value.id === "string" && TASK_ID.test(value.id)
@@ -124,6 +132,9 @@ function validTask(value: unknown): value is PublicPlanningTask {
     && (value.due_date === null || date(value.due_date))
     && typeof value.planned_for_today === "boolean"
     && (value.planning_state === null || PLANNING_STATES.includes(value.planning_state as typeof PLANNING_STATES[number]))
+    && WORKFLOW_STAGES.includes(value.workflow_stage as typeof WORKFLOW_STAGES[number])
+    && typeof value.deferred === "boolean" && typeof value.blocked === "boolean"
+    && Number.isSafeInteger(value.revision) && (value.revision as number) >= 1
     && typeof value.needs_attention === "boolean" && typeof value.review_required === "boolean"
     && indexes.every((index) => index >= 0) && indexes.every((index, position) => position === 0 || indexes[position - 1]! < index)
     && timestamp(value.updated_at);
@@ -203,6 +214,16 @@ export function parsePlanningProjectCreation(value: unknown): PublicPlanningProj
 export function parsePlanningTaskCreation(value: unknown, projectId?: string): PublicPlanningTaskCreation {
   if (!record(value) || !keys(value, "action,project,runtime,schema_version,service,status,task") || !validEnvelope(value) || value.action !== "create" || !validProject(value.project) || !validTask(value.task) || value.task.project_id !== value.project.id || value.task.project_name !== value.project.name || projectId !== undefined && value.project.id !== projectId) throw new PublicPlanningError("response_invalid");
   return structuredClone(value) as PublicPlanningTaskCreation;
+}
+
+export function parsePlanningProjectMutation(value: unknown, projectId?: string): PublicPlanningProjectMutation {
+  if (!record(value) || !keys(value, "action,project,runtime,schema_version,service,status") || !validEnvelope(value) || !validProject(value.project) || !["rename", "archive", "restore"].includes(String(value.action)) || projectId !== undefined && value.project.id !== projectId) throw new PublicPlanningError("response_invalid");
+  return structuredClone(value) as PublicPlanningProjectMutation;
+}
+
+export function parsePlanningTaskMutation(value: unknown, taskId?: string): PublicPlanningTaskMutation {
+  if (!record(value) || !keys(value, "action,project,runtime,schema_version,service,status,task") || !validEnvelope(value) || !validProject(value.project) || !validTask(value.task) || !["edit", "move"].includes(String(value.action)) || value.task.project_id !== value.project.id || value.task.project_name !== value.project.name || taskId !== undefined && value.task.id !== taskId) throw new PublicPlanningError("response_invalid");
+  return structuredClone(value) as PublicPlanningTaskMutation;
 }
 
 async function boundedJson(response: Response): Promise<unknown> {

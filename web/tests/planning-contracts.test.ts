@@ -10,12 +10,16 @@ import {
   fetchBridgePlanningOverview,
   fetchBridgePlanningTask,
   fetchBridgePlanningTasks,
+  moveBridgePlanningTask,
+  updateBridgePlanningProject,
+  updateBridgePlanningTask,
   updateBridgeConversationPlanningContext,
 } from "../src/lib/bridge-planning.ts";
 import { createConversationPlanningContextGetHandler, createConversationPlanningContextPostHandler } from "../src/lib/conversation-planning-context-route.ts";
 import { createPlanningOverviewHandler } from "../src/lib/planning-overview-route.ts";
 import { createPlanningTasksHandler } from "../src/lib/planning-tasks-route.ts";
 import { createPlanningTaskHandler } from "../src/lib/planning-task-route.ts";
+import { createPlanningMutationHandler } from "../src/lib/planning-mutation-route.ts";
 import { createProjectHandler, createProjectTaskHandler } from "../src/lib/project-creation-route.ts";
 import {
   createProject,
@@ -35,8 +39,8 @@ import {
 } from "../src/lib/public-planning.ts";
 
 const envelope = { runtime: "python" as const, schema_version: 1 as const, service: "mentat-local-bridge" as const, status: "ready" as const };
-const project = { id: "project_alpha", name: "Alpha", status: "active" as const };
-const task = { attention_reasons: ["overdue", "review"] as Array<"overdue" | "review">, due_date: "2026-08-29", id: "task_alpha", needs_attention: false, planned_for_today: false, planning_state: "review" as const, priority: "high" as const, project_id: project.id, project_name: project.name, review_required: true, status: "todo" as const, title: "Review Alpha", updated_at: "2026-08-30T12:00:00Z" };
+const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "active" as const };
+const task = { attention_reasons: ["overdue", "review"] as Array<"overdue" | "review">, blocked: false, deferred: false, due_date: "2026-08-29", id: "task_alpha", needs_attention: false, planned_for_today: false, planning_state: "review" as const, priority: "high" as const, project_id: project.id, project_name: project.name, review_required: true, revision: 1, status: "todo" as const, title: "Review Alpha", updated_at: "2026-08-30T12:00:00Z", workflow_stage: "review" as const };
 const createdTask = { ...task, priority: "medium" as const };
 const overview = { ...envelope, attention: [task], attention_count: 1, project_count: 1, projects: [project], today: "2026-08-30", truncated: false };
 const taskPage = { ...envelope, count: 1, next_cursor: null, project, tasks: [task] };
@@ -48,6 +52,8 @@ const mutation = { ...context, action: "set" as const, conversation, conversatio
 const clearMutation = { ...envelope, action: "clear" as const, association: null, conversation, conversation_id: "conv_alpha", conversation_revision: 5, project: null, state: "empty" as const, task: null };
 const projectCreation = { ...envelope, action: "create" as const, project };
 const taskCreation = { ...envelope, action: "create" as const, project, task: createdTask };
+const projectMutation = { ...envelope, action: "rename" as const, project: { ...project, name: "Renamed", revision: 2 } };
+const taskMutation = { ...envelope, action: "edit" as const, project, task: { ...task, revision: 2, workflow_stage: "in_progress" as const, planning_state: "in_progress" as const, status: "in progress" as const } };
 const environment = { MENTAT_BRIDGE_ORIGIN: "http://127.0.0.1:49152", MENTAT_BRIDGE_TOKEN: "A_very_long_urlsafe_bridge_token_with_more_than_43_chars" };
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 const browserHeaders = { Host: "127.0.0.1:8890", Origin: "http://127.0.0.1:8890", "Sec-Fetch-Site": "same-origin" };
@@ -127,6 +133,22 @@ test("bridge Project and Task creation use fixed bodies and reject private or cr
   await assert.rejects(createBridgeProjectTask(project.id, task.title, null, null, async () => json(taskCreation, 201), environment), BridgePlanningError);
 });
 
+test("detailed planning mutations use named exact routes and bodies", async () => {
+  const calls: Array<{ body: unknown; url: string }> = [];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ body: JSON.parse(String(init?.body)), url: input.toString() });
+    return json(input.toString().endsWith("/edit") ? taskMutation : projectMutation);
+  };
+  assert.deepEqual(await updateBridgePlanningProject(project.id, 1, "rename", "Renamed", fetcher, environment), projectMutation);
+  assert.deepEqual(await updateBridgePlanningTask(task.id, 1, { workflow_stage: "in_progress" }, fetcher, environment), taskMutation);
+  assert.deepEqual(await moveBridgePlanningTask(task.id, 2, project.id, 1, async (input, init) => { calls.push({ body: JSON.parse(String(init?.body)), url: input.toString() }); return json({ ...taskMutation, action: "move" as const }); }, environment), { ...taskMutation, action: "move" as const });
+  assert.deepEqual(calls, [
+    { body: { action: "rename", expected_revision: 1, name: "Renamed" }, url: "http://127.0.0.1:49152/bridge/v1/planning/projects/project_alpha" },
+    { body: { changes: { workflow_stage: "in_progress" }, expected_revision: 1 }, url: "http://127.0.0.1:49152/bridge/v1/planning/tasks/task_alpha/edit" },
+    { body: { expected_project_revision: 1, expected_task_revision: 2, project_id: project.id }, url: "http://127.0.0.1:49152/bridge/v1/planning/tasks/task_alpha/move" },
+  ]);
+});
+
 test("planning GET routes accept exact same-origin reads and reject query widening", async () => {
   const overviewHandler = createPlanningOverviewHandler({ fetchOverview: async () => overview, gatewayPort: "8890" });
   const tasksHandler = createPlanningTasksHandler({ fetchTasks: async () => taskPage, gatewayPort: "8890" });
@@ -161,6 +183,24 @@ test("planning POST routes require exact same-origin bounded bodies", async () =
   assert.equal((await taskHandler(post("http://127.0.0.1:8890/api/projects/project_alpha/tasks", { assigned_agent_id: null, due_date: "not-date", title: "Task" }), { params: Promise.resolve({ projectId: project.id }) })).status, 400);
   assert.equal((await taskHandler(post("http://127.0.0.1:8890/api/projects/project_alpha/tasks", { assigned_agent_id: null, due_date: "2026-02-31", title: "Task" }), { params: Promise.resolve({ projectId: project.id }) })).status, 400);
   assert.equal((await projectHandler(post("http://127.0.0.1:8890/api/projects", { name: "Alpha" }, { Host: "127.0.0.1:8890", Origin: "http://evil.test", "Sec-Fetch-Site": "cross-site" }))).status, 403);
+});
+
+test("detailed planning mutation route keeps the gateway same-origin, bounded, and named", async () => {
+  const calls: unknown[] = [];
+  const handler = createPlanningMutationHandler({
+    gatewayPort: "8890",
+    updateProject: async (...args) => { calls.push(args); return projectMutation; },
+    updateTask: async (...args) => { calls.push(args); return taskMutation; },
+    moveTask: async (...args) => { calls.push(args); return { ...taskMutation, action: "move" as const }; },
+  });
+  const post = (url: string, value: unknown, headers = browserHeaders) => new Request(url, { body: JSON.stringify(value), headers: { ...headers, "Content-Type": "application/json" }, method: "POST" });
+  assert.equal((await handler(post(`http://127.0.0.1:8890/api/planning/projects/${project.id}/rename`, { action: "rename", expected_revision: 1, name: "Renamed" }), { params: Promise.resolve({ action: "rename", id: project.id, kind: "projects" }) })).status, 200);
+  assert.equal((await handler(post(`http://127.0.0.1:8890/api/planning/tasks/${task.id}/edit`, { changes: { workflow_stage: "in_progress" }, expected_revision: 1 }), { params: Promise.resolve({ action: "edit", id: task.id, kind: "tasks" }) })).status, 200);
+  assert.equal((await handler(post(`http://127.0.0.1:8890/api/planning/tasks/${task.id}/move`, { expected_project_revision: 1, expected_task_revision: 2, project_id: project.id }), { params: Promise.resolve({ action: "move", id: task.id, kind: "tasks" }) })).status, 200);
+  assert.deepEqual(calls, [[project.id, 1, "rename", "Renamed"], [task.id, 1, { workflow_stage: "in_progress" }], [task.id, 2, project.id, 1]]);
+  assert.equal((await handler(post(`http://127.0.0.1:8890/api/planning/tasks/${task.id}/edit`, { changes: { unknown: true }, expected_revision: 1 }), { params: Promise.resolve({ action: "edit", id: task.id, kind: "tasks" }) })).status, 400);
+  assert.equal((await handler(post(`http://127.0.0.1:8890/api/planning/tasks/${task.id}/edit`, { changes: {}, expected_revision: 1 }), { params: Promise.resolve({ action: "edit", id: task.id, kind: "tasks" }) })).status, 400);
+  assert.equal((await handler(post(`http://127.0.0.1:8890/api/planning/tasks/${task.id}/edit`, { changes: {}, expected_revision: 1 }, { Host: "127.0.0.1:8890", Origin: "http://evil.test", "Sec-Fetch-Site": "cross-site" }), { params: Promise.resolve({ action: "edit", id: task.id, kind: "tasks" }) })).status, 403);
 });
 
 test("public planning clients build exact requests and never return envelope or private fields", async () => {

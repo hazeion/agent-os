@@ -6,6 +6,8 @@ import {
   parsePlanningTaskPage,
   parsePlanningTaskResult,
   parsePlanningTaskCreation,
+  parsePlanningProjectMutation,
+  parsePlanningTaskMutation,
   PublicPlanningError,
   type PublicConversationPlanningContext,
   type PublicConversationPlanningMutation,
@@ -14,6 +16,8 @@ import {
   type PublicPlanningTaskPage,
   type PublicPlanningTaskResult,
   type PublicPlanningTaskCreation,
+  type PublicPlanningProjectMutation,
+  type PublicPlanningTaskMutation,
 } from "./public-planning.ts";
 
 const PRIVATE_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview";
@@ -21,6 +25,7 @@ const PRIVATE_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks";
 const PRIVATE_TASK_PATH = "/bridge/v1/agent-console/planning-task";
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
 const PRIVATE_PROJECTS_PATH = "/bridge/v1/projects";
+const PRIVATE_PLANNING_PATH = "/bridge/v1/planning";
 const MAXIMUM_RESPONSE_BYTES = 768 * 1024;
 const READ_TIMEOUT_MILLISECONDS = 3_500;
 export const PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS = 8_000;
@@ -142,5 +147,26 @@ export async function createBridgeProjectTask(projectId: string, title: string, 
     if (result.task.title !== title || result.task.due_date !== dueDate || result.task.status !== "todo" || result.task.priority !== "medium") throw new BridgePlanningError("bridge_response_invalid");
     return result;
   }
+  fixedFailure(response, payload);
+}
+
+export async function updateBridgePlanningProject(projectId: string, expectedRevision: number, action: "rename" | "archive" | "restore", name: string | null, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningProjectMutation> {
+  if (!PROJECT_ID.test(projectId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !["rename", "archive", "restore"].includes(action) || action === "rename" && (typeof name !== "string" || !name || name.trim() !== name || [...name].length > 120 || /\p{C}/u.test(name)) || action !== "rename" && name !== null) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_PLANNING_PATH}/projects/${encodeURIComponent(projectId)}`, fetcher, environment, { body: JSON.stringify({ expected_revision: expectedRevision, action, name }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parse(() => parsePlanningProjectMutation(payload, projectId));
+  fixedFailure(response, payload);
+}
+
+export async function updateBridgePlanningTask(taskId: string, expectedRevision: number, changes: Record<string, unknown>, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskMutation> {
+  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !record(changes)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_PLANNING_PATH}/tasks/${encodeURIComponent(taskId)}/edit`, fetcher, environment, { body: JSON.stringify({ expected_revision: expectedRevision, changes }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parse(() => parsePlanningTaskMutation(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function moveBridgePlanningTask(taskId: string, expectedTaskRevision: number, projectId: string, expectedProjectRevision: number, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskMutation> {
+  if (!TASK_ID.test(taskId) || !PROJECT_ID.test(projectId) || !Number.isSafeInteger(expectedTaskRevision) || expectedTaskRevision < 1 || !Number.isSafeInteger(expectedProjectRevision) || expectedProjectRevision < 1) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_PLANNING_PATH}/tasks/${encodeURIComponent(taskId)}/move`, fetcher, environment, { body: JSON.stringify({ expected_task_revision: expectedTaskRevision, project_id: projectId, expected_project_revision: expectedProjectRevision }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parse(() => parsePlanningTaskMutation(payload, taskId));
   fixedFailure(response, payload);
 }

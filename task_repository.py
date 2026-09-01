@@ -61,6 +61,8 @@ NESTED_PLANNING_FIELDS = frozenset(
         "calendar_links",
         "note_links",
         "delegation",
+        "workflow_stage",
+        "deferred",
     }
 )
 SCALAR_PLANNING_FIELDS = frozenset(
@@ -919,13 +921,25 @@ class TaskRepository:
         else:
             self.connection.execute("RELEASE mentat_task_repository_mutation")
 
-    def replace(self, task: Mapping[str, Any], *, expected_revision: int) -> TaskSnapshot:
+    def replace(
+        self,
+        task: Mapping[str, Any],
+        *,
+        expected_revision: int,
+        allow_project_move: bool = False,
+        successor: Mapping[str, Any] | None = None,
+    ) -> TaskSnapshot:
         """Atomically replace one Task when its internal revision still matches."""
 
         if type(expected_revision) is not int or expected_revision < 1:
             raise TaskRepositoryValidationError("task_repository.revision_invalid")
         replacement = normalize_task_document(task)
         identifier = replacement["id"]
+        normalized_successor = (
+            None if successor is None else normalize_task_document(successor)
+        )
+        if normalized_successor is not None and normalized_successor["id"] == identifier:
+            raise TaskRepositoryValidationError("task_repository.successor_invalid")
         result_snapshot: TaskSnapshot | None = None
         with self._mutation():
             rows = self.connection.execute(
@@ -941,8 +955,14 @@ class TaskRepository:
                 replacement if item["id"] == identifier else item
                 for item in documents
             ]
+            if normalized_successor is not None:
+                candidates.append(normalized_successor)
             normalize_task_collection(candidates)
-            self._validate_project_memberships(documents, candidates)
+            self._validate_project_memberships(
+                documents,
+                candidates,
+                allow_project_move=allow_project_move,
+            )
             self.connection.execute(
                 "DELETE FROM mentat_task_dependencies WHERE task_id = ?",
                 (identifier,),
@@ -970,6 +990,18 @@ class TaskRepository:
             if result.rowcount != 1:
                 raise TaskRepositoryConflict("task_repository.revision_conflict")
             self._insert_children(replacement)
+            if normalized_successor is not None:
+                self.connection.execute(
+                    "INSERT INTO mentat_tasks ("
+                    "id, sort_order, revision, title, description, project, project_id, status, priority, "
+                    "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
+                    "review_required, needs_attention, planned_for_today, manual_rank, "
+                    "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
+                    "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
+                    ") VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" ,
+                    (normalized_successor["id"], *self._storage_values(normalized_successor, len(documents))),
+                )
+                self._insert_children(normalized_successor)
             stored = next(
                 (item for item in self._list_tasks() if item["id"] == identifier),
                 None,
@@ -1065,6 +1097,8 @@ class TaskRepository:
         self,
         current: Sequence[Mapping[str, Any]],
         candidate: Sequence[Mapping[str, Any]],
+        *,
+        allow_project_move: bool = False,
     ) -> None:
         """Keep Task-to-Project membership immutable after Project cutover."""
 
@@ -1092,7 +1126,11 @@ class TaskRepository:
                     "task_repository.project_membership_invalid"
                 )
             previous = current_by_id.get(identifier)
-            if previous is not None and previous.get("project_id") != project_id:
+            if (
+                not allow_project_move
+                and previous is not None
+                and previous.get("project_id") != project_id
+            ):
                 raise TaskRepositoryConflict(
                     "task_repository.project_membership_immutable"
                 )
@@ -1566,6 +1604,17 @@ def read_authoritative_tasks(data_dir: Path) -> list[dict[str, Any]]:
             return repository.list_tasks()
 
 
+def read_authoritative_task_snapshot(data_dir: Path, task_id: str) -> TaskSnapshot:
+    """Read one canonical Task and its exact internal revision."""
+
+    data_root = Path(data_dir)
+    with private_state_lock(data_root):
+        with _open_repository_database(data_root) as (connection, guard):
+            repository = TaskRepository(connection, identity_guard=guard)
+            repository.authority_receipt(required=True)
+            return repository.get(task_id)
+
+
 def mutate_authoritative_tasks(
     data_dir: Path,
     mutator: Callable[[list[dict[str, Any]]], tuple[Any, R]],
@@ -1579,6 +1628,68 @@ def mutate_authoritative_tasks(
                 connection,
                 identity_guard=guard,
             ).mutate_collection(mutator)
+
+
+def replace_authoritative_task(
+    data_dir: Path,
+    task: Mapping[str, Any],
+    *,
+    expected_revision: int,
+    successor: Mapping[str, Any] | None = None,
+) -> TaskSnapshot:
+    """Apply one non-membership Task edit at its exact revision."""
+
+    data_root = Path(data_dir)
+    with private_state_lock(data_root):
+        with _open_repository_database(data_root) as (connection, guard):
+            repository = TaskRepository(connection, identity_guard=guard)
+            repository.authority_receipt(required=True)
+            return repository.replace(
+                task, expected_revision=expected_revision, successor=successor
+            )
+
+
+def move_authoritative_task(
+    data_dir: Path,
+    *,
+    task_id: str,
+    expected_task_revision: int,
+    project_id: str,
+    expected_project_revision: int,
+) -> TaskSnapshot:
+    """Move one Task through the only membership-changing repository path."""
+
+    if type(expected_project_revision) is not int or expected_project_revision < 1:
+        raise TaskRepositoryValidationError("task_repository.project_revision_invalid")
+    if PROJECT_ID_RE.fullmatch(project_id or "") is None:
+        raise TaskRepositoryValidationError("task_repository.project_id_invalid")
+    data_root = Path(data_dir)
+    with private_state_lock(data_root):
+        with _open_repository_database(data_root) as (connection, guard):
+            with _guarded_transaction(connection, guard, immediate=True):
+                repository = TaskRepository(connection, identity_guard=guard)
+                repository.authority_receipt(required=True)
+                target = connection.execute(
+                    "SELECT name, status, revision FROM mentat_projects WHERE id = ?",
+                    (project_id,),
+                ).fetchone()
+                if target is None:
+                    raise TaskRepositoryConflict("task_repository.project_not_found")
+                if int(target["revision"]) != expected_project_revision:
+                    raise TaskRepositoryConflict("task_repository.project_revision_conflict")
+                if target["status"] != "active":
+                    raise TaskRepositoryConflict("task_repository.project_unavailable")
+                snapshot = repository.get(task_id)
+                replacement = {
+                    **snapshot.document,
+                    "project_id": project_id,
+                    "project": str(target["name"]),
+                }
+                return repository.replace(
+                    replacement,
+                    expected_revision=expected_task_revision,
+                    allow_project_move=True,
+                )
 
 
 def export_tasks(data_dir: Path, *, require_authority: bool = False) -> TaskExport:

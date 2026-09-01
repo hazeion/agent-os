@@ -94,7 +94,7 @@ class ConversationPlanningTests(unittest.TestCase):
                     task_id="task_quiet",
                     today=date(2026, 8, 30),
                 )
-                self.assertEqual(located["project"], {"id": "project_mentat", "name": "Mentat", "status": "active"})
+                self.assertEqual(located["project"], {"id": "project_mentat", "name": "Mentat", "status": "active", "revision": 1})
                 self.assertEqual(located["task"]["id"], "task_quiet")
                 self.assertEqual(located["task"]["attention_reasons"], [])
                 for private in ("private description", "description", "assignee", "source", "tags"):
@@ -153,7 +153,7 @@ class ConversationPlanningTests(unittest.TestCase):
                 self.assertEqual(project_status, 201)
                 self.assertEqual(
                     project_result["project"],
-                    {"id": "project_alpha", "name": "Alpha", "status": "active"},
+                    {"id": "project_alpha", "name": "Alpha", "status": "active", "revision": 1},
                 )
                 duplicate, duplicate_status = server.create_mentat_project(
                     {"name": "Alpha"}
