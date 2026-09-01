@@ -93,6 +93,7 @@ py-modules = [
   "private_console_migration",
   "private_console_unit",
   "private_state",
+  "project_repository",
   "remote_hermes",
   "run_repository",
   "runtime_config",

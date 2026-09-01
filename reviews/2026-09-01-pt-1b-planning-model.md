@@ -73,3 +73,9 @@ uses two independent defect-first, read-only passes under `review-agent`.
 - PT-1B intentionally exposes the detailed model through named safe routes;
   its full interactive workbench controls are deferred to PT-2A. This check
   verifies that the current user-facing planning workflow remains sound.
+- The first GitHub packaging job found that `project_repository` was omitted
+  from the installed Python module list. It is now packaged, a newly built
+  wheel imports it from an isolated virtual environment, and the focused
+  Python suite passes 74 tests while the web planning suites pass 25 tests.
+- The repeat pre-push browser check navigated Home and Projects & Tasks and
+  opened and cancelled both Project and Task creation forms successfully.
