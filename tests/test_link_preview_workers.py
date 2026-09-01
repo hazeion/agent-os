@@ -131,6 +131,25 @@ class LinkPreviewWorkerTests(unittest.TestCase):
     def test_two_slots_bound_concurrency_and_capacity(self):
         pool = LinkPreviewWorkerPool(command=command(), environ={})
         results: list[dict[str, object]] = []
+        entered = threading.Event()
+        release = threading.Event()
+        entered_lock = threading.Lock()
+        entered_count = 0
+
+        def occupy(slot):
+            def execute(*, kind: str, url: str):
+                nonlocal entered_count
+                with entered_lock:
+                    entered_count += 1
+                    if entered_count == 2:
+                        entered.set()
+                release.wait(timeout=2)
+                return {"pid": id(slot), "status": "ready"}
+
+            return execute
+
+        for slot in pool._slots:
+            slot.execute = occupy(slot)
 
         def run_slow():
             results.append(pool.execute(kind="page", normalized_url="https://python.org/slow"))
@@ -139,16 +158,17 @@ class LinkPreviewWorkerTests(unittest.TestCase):
         try:
             for thread in threads:
                 thread.start()
-            time.sleep(0.05)
+            self.assertTrue(entered.wait(timeout=2))
             with self.assertRaises(LinkPreviewWorkerError) as raised:
                 pool.execute(kind="page", normalized_url="https://python.org/normal")
             self.assertEqual(raised.exception.code, "link_preview.capacity_unavailable")
+        finally:
+            release.set()
             for thread in threads:
                 thread.join(timeout=2)
-            self.assertEqual(len(results), 2)
-            self.assertEqual(len({result["pid"] for result in results}), 2)
-        finally:
             pool.close()
+        self.assertEqual(len(results), 2)
+        self.assertEqual(len({result["pid"] for result in results}), 2)
 
     def test_real_worker_rejects_private_target_without_network(self):
         pool = LinkPreviewWorkerPool(environ={"HOME": "/private/home", "HTTPS_PROXY": "https://proxy"})
