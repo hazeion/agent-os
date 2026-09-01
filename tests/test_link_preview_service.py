@@ -346,24 +346,31 @@ class LinkPreviewServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             _root, cache, preferences = self.roots(temporary)
             message = Message()
-            pool = FakePool([page_result()])
+            pool_gate = threading.Event()
+            pool = FakePool([page_result()], barrier=pool_gate)
             service = LinkPreviewService(Repository(message), cache, preferences, worker_factory=lambda: pool)
             store_entered = threading.Event()
             release_store = threading.Event()
+            clear_requested = threading.Event()
             original_store = cache.store
 
             def delayed_store(*args, **kwargs):
                 store_entered.set()
-                release_store.wait(timeout=2)
+                release_store.wait()
                 return original_store(*args, **kwargs)
+
+            def clear_cache():
+                clear_requested.set()
+                service.clear_cache()
 
             try:
                 with mock.patch.object(cache, "store", side_effect=delayed_store):
                     service.enqueue(conversation_id=message.conversation_id, message_id=message.id, message_revision=1, retry=True)
+                    pool_gate.set()
                     self.assertTrue(store_entered.wait(timeout=2))
-                    clear = threading.Thread(target=service.clear_cache)
+                    clear = threading.Thread(target=clear_cache)
                     clear.start()
-                    time.sleep(0.03)
+                    self.assertTrue(clear_requested.wait(timeout=2))
                     self.assertTrue(clear.is_alive())
                     release_store.set()
                     clear.join(timeout=2)
@@ -371,6 +378,7 @@ class LinkPreviewServiceTests(unittest.TestCase):
                 self.assertIsNone(cache.lookup("https://python.org/docs"))
                 self.assertEqual(service.read(conversation_id=message.conversation_id, message_id=message.id, message_revision=1)["previews"], [{"candidate_ordinal": 1, "status": "unavailable"}])
             finally:
+                pool_gate.set()
                 release_store.set()
                 service.close()
 
