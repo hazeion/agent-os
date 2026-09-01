@@ -809,8 +809,9 @@ button {
 .planning-stage-controls button,
 .planning-inspector > button,
 .planning-project-lifecycle > button { min-height: 34px; padding: 5px 8px; }
-.planning-mode-toggle button[aria-pressed="true"],
-.planning-stage-controls button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
+.planning-mode-toggle button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
+.planning-stage-controls button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); background: var(--accent-soft); color: var(--text-primary); font-weight: 700; }
+.planning-stage-controls button[aria-pressed="true"]:disabled { opacity: 1; }
 .planning-task-card { padding: 0 !important; }
 .planning-task-card > button { display: grid; grid-template-columns: minmax(0, 1fr) max-content; width: 100%; height: 100%; min-width: 0; align-items: stretch; gap: 10px; padding: 8px 9px; border: 0; border-radius: inherit; background: transparent; color: inherit; text-align: left; }
 .planning-task-card > button > span { display: grid; min-width: 0; align-content: start; gap: 3px; }
@@ -820,7 +821,8 @@ button {
 .planning-task-card small { min-height: 0; color: var(--text-secondary); font-size: .72rem; line-height: 1.25; -webkit-line-clamp: 2; }
 .planning-task-card em { overflow: hidden; color: var(--text-tertiary); font-size: .7rem; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .planning-task-card time { align-self: end; }
-.planning-task-card[data-task-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.planning-task-card[data-task-selected="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.planning-task-card > button:focus-visible { outline-offset: -3px; }
 .planning-board { display: grid; grid-template-columns: repeat(3, minmax(190px, 1fr)); gap: 9px; overflow-x: auto; padding-bottom: 3px; }
 .planning-board > section { display: grid; align-content: start; gap: 6px; min-width: 190px; }
 .planning-board h3 { margin: 0; color: var(--text-secondary); font-size: .76rem; font-weight: 650; text-transform: capitalize; }
@@ -838,11 +840,12 @@ button {
 .planning-edit-form { margin-top: 0; }
 .planning-full-field { grid-column: 1 / -1; }
 .planning-edit-form textarea { width: 100%; min-height: 88px; resize: vertical; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
-.planning-checklist { display: grid; grid-column: 1 / -1; gap: 5px; color: var(--text-tertiary); font-size: .7rem; font-weight: 700; }
-.planning-checklist > label { display: flex; align-items: center; gap: 6px; font-weight: 400; }
+.planning-checklist { display: grid; grid-column: 1 / -1; gap: 6px; padding: 8px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--panel-raised); color: var(--text-tertiary); font-size: .7rem; font-weight: 700; }
+.planning-checklist > span { display: block; }
+.planning-checklist > label { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 7px; font-weight: 400; }
 .planning-checklist input { width: 16px !important; min-height: 16px !important; }
 .planning-checklist label button { min-height: 28px; margin-left: auto; padding: 3px 6px; }
-.planning-checklist > button { width: fit-content; min-height: 30px; padding: 4px 7px; }
+.planning-checklist > button { justify-self: start; min-height: 30px; padding: 4px 7px; }
 .planning-checkbox { display: flex !important; align-items: center; grid-column: 1 / -1; gap: 6px !important; }
 .planning-checkbox input { width: 16px !important; min-height: 16px !important; }
 
@@ -906,7 +909,6 @@ button {
   border-radius: 7px;
   background: var(--row);
 }
-.project-task-list li[data-task-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .project-task-list li > div { display: grid; min-width: 0; align-content: start; gap: 3px; }
 .project-task-list li strong { display: -webkit-box; overflow: hidden; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .project-task-list li p { display: -webkit-box; min-height: 0; margin: 0; overflow: hidden; color: var(--text-secondary); font-size: 0.72rem; line-height: 1.25; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -921,6 +923,7 @@ button {
 .task-create-form :is(input, select) { width: 100%; min-height: 36px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
 .project-create-form > div,
 .task-create-form > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.task-create-form > .planning-checklist { display: grid; justify-content: normal; }
 .project-create-form button,
 .task-create-form button { min-height: 34px; padding: 5px 10px; }
 .project-tasks-more { width: fit-content; min-height: 34px; padding: 5px 10px; }
