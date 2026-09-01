@@ -287,6 +287,8 @@ class WebRuntimeTests(unittest.TestCase):
             ), patch.object(web_runtime, "reserve_mentat_server", side_effect=lambda _root: events.append("reserve")), patch.object(
                 web_runtime, "release_mentat_server", side_effect=lambda _root: events.append("release")
             ), patch.object(web_runtime, "establish_task_authority", side_effect=lambda _root: events.append("task_authority")), patch.object(
+                web_runtime, "establish_project_authority", side_effect=lambda _root: events.append("project_authority")
+            ), patch.object(
                 web_runtime, "establish_run_authority", side_effect=lambda _root: events.append("run_authority")
             ), patch.object(
                 web_runtime.subprocess, "Popen", side_effect=spawn
@@ -304,6 +306,8 @@ class WebRuntimeTests(unittest.TestCase):
                     1,
                 )
         self.assertLess(events.index("task_authority"), events.index("run_authority"))
+        self.assertLess(events.index("task_authority"), events.index("project_authority"))
+        self.assertLess(events.index("project_authority"), events.index("run_authority"))
         self.assertLess(events.index("run_authority"), events.index("bridge"))
         self.assertLess(events.index("bridge"), events.index("/bridge/v1/health"))
         self.assertLess(events.index("/bridge/v1/health"), events.index("node"))
@@ -422,6 +426,20 @@ class WebRuntimeTests(unittest.TestCase):
         with patch.object(web_runtime, "ensure_task_sqlite_authority") as establish:
             web_runtime.establish_task_authority(Path("/private/mentat"))
         establish.assert_called_once_with(Path("/private/mentat"), required_source_mode=0o600)
+
+    def test_gateway_establishes_project_authority_before_the_bridge_reads_projects(self):
+        with patch.object(web_runtime, "ensure_project_sqlite_authority") as establish:
+            web_runtime.establish_project_authority(Path("/private/mentat"))
+        establish.assert_called_once_with(Path("/private/mentat"), required_source_mode=0o600)
+
+    def test_gateway_reports_a_bounded_failure_when_project_bootstrap_detects_task_corruption(self):
+        with patch.object(
+            web_runtime,
+            "ensure_project_sqlite_authority",
+            side_effect=web_runtime.TaskRepositoryError("task_repository.corrupt"),
+        ):
+            with self.assertRaisesRegex(web_runtime.WebRuntimeError, "project_authority_unavailable"):
+                web_runtime.establish_project_authority(Path("/private/mentat"))
 
     def test_gateway_establishes_run_authority_before_the_bridge_reads_runs(self):
         with patch.object(web_runtime, "ensure_run_sqlite_authority") as establish:

@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 from json_store import write_json_atomic
 from private_state import PrivateStateError, release_mentat_server, reserve_mentat_server
 from private_state import history_path as private_history_path
+from project_repository import ProjectRepositoryError, ensure_project_sqlite_authority
 from run_repository import RunRepositoryError, ensure_run_sqlite_authority
 from task_repository import TaskRepositoryError, ensure_task_sqlite_authority
 from .local_bridge import BRIDGE_TOKEN_ENV, BRIDGE_TOKEN_HEADER
@@ -425,6 +426,15 @@ def establish_task_authority(data_dir: Path) -> None:
         raise WebRuntimeError("task_authority_unavailable") from exc
 
 
+def establish_project_authority(data_dir: Path) -> None:
+    """Complete Project membership cutover before the bridge can read it."""
+
+    try:
+        ensure_project_sqlite_authority(Path(data_dir), required_source_mode=0o600)
+    except (OSError, ProjectRepositoryError, TaskRepositoryError) as exc:
+        raise WebRuntimeError("project_authority_unavailable") from exc
+
+
 def establish_run_authority(data_dir: Path) -> None:
     """Complete the one-time Run cutover before the bridge can read it."""
 
@@ -480,6 +490,7 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
         except PrivateStateError as exc:
             raise WebRuntimeError("mentat_server_already_active") from exc
         establish_task_authority(data_dir)
+        establish_project_authority(data_dir)
         establish_run_authority(data_dir)
         bridge_process = subprocess.Popen(
             bridge_command(bridge_port, safe_host), cwd=application_root(),

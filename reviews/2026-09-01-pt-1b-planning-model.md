@@ -83,3 +83,13 @@ uses two independent defect-first, read-only passes under `review-agent`.
   Its allowlist now includes `project_repository`; local wheel and source
   artifact verification passes, followed by another successful browser
   navigation and Project-form check before the correction was published.
+- The installed-lifecycle smoke showed that the Node gateway cut over Tasks
+  and Runs but not Projects. It now establishes Project authority between
+  those two boundaries, before the bridge starts. A clean setup/start smoke
+  returns the seeded Project and Task planning overview, and its browser screen
+  renders that Project and Tasks.
+- Two independent final reviewers checked the startup change. One found a
+  Task-repository failure could escape Project bootstrap as a raw traceback;
+  it is now converted to the bounded `project_authority_unavailable` startup
+  error with regression coverage. The gateway, package, and Project repository
+  suites pass 71 tests.
