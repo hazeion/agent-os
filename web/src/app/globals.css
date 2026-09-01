@@ -823,7 +823,7 @@ button {
 .planning-task-card time { align-self: end; }
 .planning-task-card[data-task-selected="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .planning-task-card:not([data-task-selected="true"]) > button:focus-visible { outline-offset: -3px; }
-.planning-task-card[data-task-selected="true"] > button:focus-visible { outline: 1px dashed var(--text-secondary); outline-offset: -4px; }
+.planning-task-card[data-task-selected="true"] > button:focus-visible { outline: none; }
 .planning-board { display: grid; grid-template-columns: repeat(3, minmax(190px, 1fr)); gap: 9px; overflow-x: auto; padding-bottom: 3px; }
 .planning-board > section { display: grid; align-content: start; gap: 6px; min-width: 190px; }
 .planning-board h3 { margin: 0; color: var(--text-secondary); font-size: .76rem; font-weight: 650; text-transform: capitalize; }
