@@ -837,10 +837,11 @@ button {
 .projects-pane li span { color: var(--text-tertiary); font-size: 0.68rem; text-transform: capitalize; }
 .project-task-list { max-height: min(62vh, 720px); overflow: auto; }
 .project-task-list li {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
   min-width: 0;
-  min-height: 48px;
-  align-items: center;
+  height: 108px;
+  align-items: stretch;
   gap: 10px;
   padding: 8px 9px;
   border: 1px solid var(--border-subtle);
@@ -848,11 +849,12 @@ button {
   background: var(--row);
 }
 .project-task-list li[data-task-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
-.project-task-list li > div { display: grid; min-width: 0; gap: 2px; }
-.project-task-list li strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-task-list li > div { display: grid; min-width: 0; align-content: start; gap: 3px; }
+.project-task-list li strong { display: -webkit-box; overflow: hidden; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.project-task-list li p { display: -webkit-box; min-height: 0; margin: 0; overflow: hidden; color: var(--text-secondary); font-size: 0.72rem; line-height: 1.25; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .project-task-list li span,
 .project-task-list li time { color: var(--text-tertiary); font-size: 0.7rem; }
-.project-task-list li time { margin-left: auto; white-space: nowrap; }
+.project-task-list li time { align-self: end; white-space: nowrap; }
 .project-create-form,
 .task-create-form { display: grid; gap: 8px; padding: 9px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--row); }
 .project-create-form label,
@@ -875,8 +877,7 @@ button {
   .task-create-form :is(input, select, button),
   .project-tasks-more { min-height: 44px; }
   .project-task-list { max-height: none; }
-  .project-task-list li { align-items: flex-start; flex-direction: column; }
-  .project-task-list li time { margin-left: 0; }
+  .project-task-list li { height: 116px; }
   .projects-tasks-notice { grid-column: auto; }
   .tasks-toolbar,
   .runs-toolbar { align-items: stretch; flex-direction: column; }

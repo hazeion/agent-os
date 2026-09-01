@@ -18,9 +18,13 @@ class TaskPlanningError(ValueError):
     """Raised when optional task-planning metadata is malformed or unsafe."""
 
 
-PLANNING_STATES = frozenset(
-    {"inbox", "planned", "in_progress", "waiting", "review", "someday", "blocked", "done"}
+WORKFLOW_STAGES = frozenset(
+    {"inbox", "planned", "in_progress", "waiting", "review", "done"}
 )
+# ``planning_state`` is retained only to decode pre-PT-1B records. New planning
+# mutations use ``workflow_stage`` plus the separate ``deferred`` flag. Blocked
+# is always calculated from the full dependency graph rather than stored.
+PLANNING_STATES = WORKFLOW_STAGES | frozenset({"someday", "blocked"})
 DELEGATION_STATES = frozenset(
     {"queued", "running", "needs_input", "blocked", "ready_for_review", "completed", "failed", "cancelled"}
 )
@@ -45,6 +49,8 @@ TASK_PLANNING_FIELDS = frozenset(
         "calendar_links",
         "note_links",
         "planning_state",
+        "workflow_stage",
+        "deferred",
         "delegation",
     }
 )
@@ -446,6 +452,12 @@ def normalize_task_planning(task: Mapping[str, Any]) -> dict[str, Any]:
         result["note_links"] = _normalize_note_links(source["note_links"])
     if "planning_state" in source:
         result["planning_state"] = _enum(source["planning_state"], "planning_state", PLANNING_STATES)
+    if "workflow_stage" in source:
+        result["workflow_stage"] = _enum(
+            source["workflow_stage"], "workflow_stage", WORKFLOW_STAGES
+        )
+    if "deferred" in source:
+        result["deferred"] = _bool(source["deferred"], "deferred")
     if "delegation" in source:
         result["delegation"] = _normalize_delegation(source["delegation"])
     return result
@@ -467,7 +479,7 @@ def task_matches_saved_view(task: Mapping[str, Any], view: str, *, on_date: date
     selected_view = _text(view, "view", maximum=20).lower()
     if selected_view not in SAVED_VIEWS:
         _fail("view", f"must be one of: {', '.join(sorted(SAVED_VIEWS))}")
-    state = normalized.get("planning_state")
+    state = workflow_stage(normalized)
     status = str(normalized.get("status", "")).strip().lower().replace(" ", "_")
     delegation_state = (normalized.get("delegation") or {}).get("state")
     completed = state == "done" or status in {"done", "completed"}
@@ -487,7 +499,42 @@ def task_matches_saved_view(task: Mapping[str, Any], view: str, *, on_date: date
         return state == "review" or delegation_state == "ready_for_review" or normalized.get("review_required") is True
     if selected_view == "waiting":
         return state == "waiting" or delegation_state in {"queued", "running", "needs_input"}
+    if selected_view == "someday":
+        return task_is_deferred(normalized)
+    if selected_view == "blocked":
+        # A complete graph is needed for the authoritative derived condition.
+        # Preserve the legacy saved view only until callers migrate to that
+        # graph-aware projection.
+        return normalized.get("planning_state") == "blocked"
     return state == selected_view
+
+
+def workflow_stage(task: Mapping[str, Any]) -> str:
+    """Return the canonical visible stage for current and legacy records."""
+
+    normalized = normalize_task_planning(task)
+    explicit = normalized.get("workflow_stage")
+    if isinstance(explicit, str):
+        return explicit
+    legacy = normalized.get("planning_state")
+    if legacy in WORKFLOW_STAGES:
+        return legacy
+    if legacy in {"someday", "blocked"}:
+        return "inbox"
+    status = str(normalized.get("status") or "").strip().lower().replace(" ", "_")
+    return {
+        "completed": "done",
+        "done": "done",
+        "in_progress": "in_progress",
+        "waiting": "waiting",
+    }.get(status, "inbox")
+
+
+def task_is_deferred(task: Mapping[str, Any]) -> bool:
+    """Read the separate Someday flag while preserving legacy records."""
+
+    normalized = normalize_task_planning(task)
+    return bool(normalized.get("deferred", normalized.get("planning_state") == "someday"))
 
 
 def task_dependencies_satisfied(task: Mapping[str, Any], completed_task_ids: set[str]) -> bool:

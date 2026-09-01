@@ -720,13 +720,13 @@ class DataSchemaTests(unittest.TestCase):
                 patch.object(server, "DATA_MUTATION_LOCK", False),
             ):
                 result = server.update_json_file(
-                    "projects.json",
+                    "agents.json",
                     [],
                     lambda _current: ([{"id": "development-write"}], "ok"),
                 )
             self.assertEqual(result, "ok")
             self.assertEqual(
-                json.loads((target / "projects.json").read_text(encoding="utf-8")),
+                json.loads((target / "agents.json").read_text(encoding="utf-8")),
                 [{"id": "development-write"}],
             )
             lock_path = target / data_layout.INITIALIZATION_LOCK_NAME

@@ -94,7 +94,7 @@ class ConversationPlanningTests(unittest.TestCase):
                     task_id="task_quiet",
                     today=date(2026, 8, 30),
                 )
-                self.assertEqual(located["project"], {"id": "project_mentat", "name": "Mentat", "status": "active"})
+                self.assertEqual(located["project"], {"id": "project_mentat", "name": "Mentat", "status": "active", "revision": 1})
                 self.assertEqual(located["task"]["id"], "task_quiet")
                 self.assertEqual(located["task"]["attention_reasons"], [])
                 for private in ("private description", "description", "assignee", "source", "tags"):
@@ -153,7 +153,7 @@ class ConversationPlanningTests(unittest.TestCase):
                 self.assertEqual(project_status, 201)
                 self.assertEqual(
                     project_result["project"],
-                    {"id": "project_alpha", "name": "Alpha", "status": "active"},
+                    {"id": "project_alpha", "name": "Alpha", "status": "active", "revision": 1},
                 )
                 duplicate, duplicate_status = server.create_mentat_project(
                     {"name": "Alpha"}
@@ -225,6 +225,33 @@ class ConversationPlanningTests(unittest.TestCase):
                 self.assertNotIn(private, serialized)
             self.assertNotIn("task_completed", serialized)
             self.assertNotIn("task_orphan", serialized)
+
+    def test_task_page_exposes_only_a_bounded_plain_text_description_preview(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            connection = connect(root)
+            try:
+                TaskRepository(connection).insert_collection([
+                    task(
+                        "task_preview",
+                        description=("Detailed\nplanning description " + "x" * 400),
+                    )
+                ])
+                page = planning_task_page(
+                    connection,
+                    PROJECTS,
+                    project_id="project_mentat",
+                    cursor=None,
+                    today=date(2026, 8, 30),
+                )
+                overview = planning_overview(connection, PROJECTS, today=date(2026, 8, 30))
+            finally:
+                connection.close()
+        preview = page["tasks"][0]["description_preview"]
+        self.assertEqual(preview[:31], "Detailed planning description x")
+        self.assertLessEqual(len(preview), 280)
+        self.assertTrue(preview.endswith("…"))
+        self.assertNotIn("description_preview", str(overview))
 
     def test_project_bound_cursor_and_alias_resolution_fail_closed(self):
         with TemporaryDirectory() as temporary:

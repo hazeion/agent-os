@@ -240,18 +240,34 @@ from remote_hermes import (
     RemoteHermesClient,
     test_selected_connection as test_remote_hermes_connection,
 )
-from task_planning import TASK_PLANNING_FIELDS, validate_task_planning
+from task_planning import (
+    TASK_PLANNING_FIELDS,
+    WORKFLOW_STAGES,
+    task_is_deferred,
+    validate_task_planning,
+    workflow_stage,
+)
 from task_repository import (
+    TaskRepository,
+    TaskRepositoryConflict,
     TaskRepositoryError,
+    TaskRepositoryValidationError,
     ensure_task_sqlite_authority,
+    move_authoritative_task,
     mutate_authoritative_tasks,
+    read_authoritative_task_snapshot,
     read_authoritative_tasks,
+    replace_authoritative_task,
 )
 from project_repository import (
+    ProjectRepositoryConflict,
     ProjectRepositoryError,
+    ProjectRepositoryValidationError,
     ensure_project_sqlite_authority,
     mutate_authoritative_projects,
     read_authoritative_projects,
+    read_authoritative_project_snapshots,
+    replace_authoritative_project,
 )
 from runtime_config import (
     AppConfig,
@@ -1296,11 +1312,15 @@ def recurring_task_instance(completed: dict) -> dict | None:
             "recurrence_parent_id": series_id,
             "planned_for_today": False,
             "planning_state": "inbox",
+            "workflow_stage": "inbox",
+            "deferred": False,
             "needs_attention": False,
+            "review_required": False,
         }
     )
     next_task.pop("delegation", None)
     next_task.pop("manual_rank", None)
+    next_task.pop("depends_on", None)
     if isinstance(remaining_count, int):
         next_task["recurrence"] = {**recurrence, "count": remaining_count - 1}
 
@@ -2529,10 +2549,13 @@ def rename_mentat_conversation(
 
 
 def _planning_projects_under_lock() -> object:
-    projects = read_json_file("projects.json", [])
-    if not isinstance(projects, list):
-        raise ConversationPlanningError("planning.projects_unavailable")
-    return projects
+    try:
+        return [
+            {**snapshot.document, "revision": snapshot.revision}
+            for snapshot in read_authoritative_project_snapshots(DATA_DIR)
+        ]
+    except ProjectRepositoryError as exc:
+        raise ConversationPlanningError("planning.projects_unavailable") from exc
 
 
 def mentat_planning_overview_payload() -> dict:
@@ -2622,7 +2645,7 @@ def mentat_conversation_planning_context_payload(conversation_id: str) -> dict:
             raise ConversationPlanningError("planning.unavailable")
         # A malformed or missing Project target is projected as a stale,
         # clearable association rather than turning the reference into content.
-        projects = read_json_file("projects.json", [])
+        projects = _planning_projects_under_lock()
         return _conversation_repository().resolve_planning_context(
             conversation_id,
             lambda connection, conversation, association: {
@@ -2778,6 +2801,8 @@ def create_mentat_project_task(
         project = registry.by_id.get(project_id)
         if project is None:
             return {"error_code": "planning.project_not_found"}, 404
+        if project.status != "active":
+            return {"error_code": "planning.project_unavailable"}, 409
         assignee = "Operator"
         if assigned_agent_id is not None:
             agents = {
@@ -2820,6 +2845,234 @@ def create_mentat_project_task(
         "project": project.public(),
         "task": safe_task,
     }, 201
+
+
+_PLANNING_TASK_EDIT_FIELDS = frozenset(
+    {
+        "title", "description", "priority", "due_date", "tags",
+        "workflow_stage", "deferred", "planned_for_today", "manual_rank", "estimated_minutes",
+        "scheduled_block", "recurrence", "subtasks", "depends_on", "note_links",
+        "assigned_agent_id",
+    }
+)
+_STAGE_STATUS = {
+    "inbox": "todo",
+    "planned": "todo",
+    "in_progress": "in progress",
+    "waiting": "waiting",
+    "review": "needs attention",
+    "done": "completed",
+}
+
+
+def _planning_task_result(action: str, task_id: str) -> tuple[dict, int]:
+    payload = mentat_planning_task_payload(task_id)
+    return {"schema_version": 1, "action": action, **payload}, 200
+
+
+def _planning_expected_revision(payload: object) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    revision = payload.get("expected_revision")
+    return revision if type(revision) is int and revision >= 1 else None
+
+
+def _planning_assignee(agent_id: object) -> tuple[str | None, str | None, str | None]:
+    if agent_id is None:
+        return None, None, None
+    if not isinstance(agent_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", agent_id) is None:
+        return None, None, "planning.agent_invalid"
+    try:
+        record = next(
+            (
+                item for item in _mentat_agent_registry().list_agent_records()
+                if item.agent.id == agent_id
+            ),
+            None,
+        )
+    except AgentRegistryError:
+        return None, None, "planning.unavailable"
+    if record is None:
+        return None, None, "planning.agent_not_found"
+    return record.agent.id, record.agent.name, None
+
+
+def update_mentat_planning_task(task_id: str, payload: object) -> tuple[dict, int]:
+    """Apply one bounded detailed Task edit at its exact revision."""
+
+    if (
+        not isinstance(task_id, str)
+        or TASK_ID_PATTERN.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "changes"}
+        or _planning_expected_revision(payload) is None
+        or not isinstance(payload.get("changes"), dict)
+        or not payload["changes"]
+        or set(payload["changes"]) - _PLANNING_TASK_EDIT_FIELDS
+    ):
+        return {"error_code": "planning.task_invalid"}, 400
+    expected_revision = _planning_expected_revision(payload)
+    assert expected_revision is not None
+    changes = payload["changes"]
+    assignment_override: tuple[str | None, str | None] | None = None
+    try:
+        snapshot = read_authoritative_task_snapshot(DATA_DIR, task_id)
+    except TaskRepositoryConflict as exc:
+        return {"error_code": "planning.task_not_found"}, 404
+    except TaskRepositoryError:
+        return {"error_code": "planning.unavailable"}, 503
+    if snapshot.revision != expected_revision:
+        return {"error_code": "planning.task_conflict"}, 409
+    candidate = dict(snapshot.document)
+    candidate.update(changes)
+    # Preserve the legacy Someday meaning while moving ordinary edits onto the
+    # PT-1B split representation. An explicit deferred edit always wins.
+    if "deferred" not in changes and "deferred" not in candidate:
+        candidate["deferred"] = task_is_deferred(snapshot.document)
+    if "assigned_agent_id" in changes:
+        agent_id, agent_name, agent_error = _planning_assignee(changes["assigned_agent_id"])
+        if agent_error:
+            if agent_error == "planning.unavailable":
+                return {"error_code": agent_error}, 503
+            return {"error_code": agent_error}, 404 if agent_error.endswith("not_found") else 400
+        if agent_id is None:
+            candidate.pop("assigned_agent_id", None)
+            candidate["assignee"] = None
+            assignment_override = (None, None)
+        else:
+            candidate["assigned_agent_id"] = agent_id
+            candidate["assignee"] = agent_name
+            assignment_override = (agent_id, agent_name)
+    stage = candidate.get("workflow_stage", workflow_stage(snapshot.document))
+    if not isinstance(stage, str) or stage not in WORKFLOW_STAGES:
+        return {"error_code": "planning.task_invalid"}, 400
+    timestamp = now_iso()
+    candidate.update(
+        {
+            "workflow_stage": stage,
+            "planning_state": stage,
+            "status": _STAGE_STATUS[stage],
+            "review_required": stage == "review",
+            "needs_attention": False if stage == "done" else candidate.get("needs_attention", False),
+            "completed_at": timestamp if stage == "done" else None,
+            "updated_at": timestamp,
+        }
+    )
+    normalized, error = validate_task_payload(candidate, existing=snapshot.document)
+    if error:
+        return {"error_code": "planning.task_invalid"}, 400
+    if assignment_override is not None:
+        agent_id, agent_name = assignment_override
+        if agent_id is None:
+            normalized.pop("assigned_agent_id", None)
+            normalized["assignee"] = None
+        else:
+            normalized["assigned_agent_id"] = agent_id
+            normalized["assignee"] = agent_name
+    successor = (
+        recurring_task_instance(normalized)
+        if workflow_stage(snapshot.document) != "done" and stage == "done"
+        else None
+    )
+    try:
+        replace_authoritative_task(
+            DATA_DIR,
+            normalized,
+            expected_revision=expected_revision,
+            successor=successor,
+        )
+    except TaskRepositoryConflict:
+        return {"error_code": "planning.task_conflict"}, 409
+    except TaskRepositoryValidationError:
+        return {"error_code": "planning.task_invalid"}, 400
+    except TaskRepositoryError:
+        return {"error_code": "planning.unavailable"}, 503
+    return _planning_task_result("edit", task_id)
+
+
+def move_mentat_planning_task(task_id: str, payload: object) -> tuple[dict, int]:
+    """Move one Task through the exact-revision, active-Project capability."""
+
+    if (
+        not isinstance(task_id, str)
+        or TASK_ID_PATTERN.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_task_revision", "project_id", "expected_project_revision"}
+        or type(payload.get("expected_task_revision")) is not int
+        or payload["expected_task_revision"] < 1
+        or not isinstance(payload.get("project_id"), str)
+        or type(payload.get("expected_project_revision")) is not int
+        or payload["expected_project_revision"] < 1
+    ):
+        return {"error_code": "planning.task_invalid"}, 400
+    try:
+        move_authoritative_task(
+            DATA_DIR,
+            task_id=task_id,
+            expected_task_revision=payload["expected_task_revision"],
+            project_id=payload["project_id"],
+            expected_project_revision=payload["expected_project_revision"],
+        )
+    except TaskRepositoryConflict as exc:
+        code = "planning.project_not_found" if exc.code.endswith("project_not_found") else "planning.task_conflict"
+        return {"error_code": code}, 404 if code.endswith("not_found") else 409
+    except TaskRepositoryError:
+        return {"error_code": "planning.unavailable"}, 503
+    return _planning_task_result("move", task_id)
+
+
+def update_mentat_planning_project(project_id: str, payload: object) -> tuple[dict, int]:
+    """Rename, archive, or restore one Project at its exact revision."""
+
+    if (
+        not isinstance(project_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}", project_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "action", "name"}
+        or _planning_expected_revision(payload) is None
+        or payload.get("action") not in {"rename", "archive", "restore"}
+        or (payload["action"] == "rename" and not isinstance(payload.get("name"), str))
+        or (payload["action"] != "rename" and payload.get("name") is not None)
+    ):
+        return {"error_code": "planning.project_invalid"}, 400
+    expected_revision = _planning_expected_revision(payload)
+    assert expected_revision is not None
+    try:
+        snapshot = next(
+            item for item in read_authoritative_project_snapshots(DATA_DIR)
+            if item.document["id"] == project_id
+        )
+    except StopIteration:
+        return {"error_code": "planning.project_not_found"}, 404
+    except ProjectRepositoryError:
+        return {"error_code": "planning.unavailable"}, 503
+    if snapshot.revision != expected_revision:
+        return {"error_code": "planning.project_conflict"}, 409
+    candidate = dict(snapshot.document)
+    action = payload["action"]
+    if action == "rename":
+        name = compact_text(payload["name"], max_length=120)
+        if not name:
+            return {"error_code": "planning.project_invalid"}, 400
+        aliases = list(candidate.get("aliases") or [])
+        if candidate["name"] not in aliases:
+            aliases.append(candidate["name"])
+        candidate.update({"name": name, "aliases": aliases[-12:]})
+    else:
+        candidate["status"] = "archived" if action == "archive" else "active"
+    candidate["updated_at"] = now_iso()
+    try:
+        result = replace_authoritative_project(
+            DATA_DIR, candidate, expected_revision=expected_revision
+        )
+    except ProjectRepositoryConflict:
+        return {"error_code": "planning.project_conflict"}, 409
+    except ProjectRepositoryValidationError:
+        return {"error_code": "planning.project_invalid"}, 400
+    except ProjectRepositoryError:
+        return {"error_code": "planning.unavailable"}, 503
+    project = {"id": result.document["id"], "name": result.document["name"], "status": result.document["status"], "revision": result.revision}
+    return {"schema_version": 1, "action": action, "project": project}, 200
 
 
 def _mentat_conversation_run_action(

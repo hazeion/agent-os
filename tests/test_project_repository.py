@@ -78,7 +78,7 @@ class ProjectRepositoryTests(unittest.TestCase):
             try:
                 repository = TaskRepository(connection)
                 snapshot = repository.get("task_pt1a")
-                with self.assertRaises(TaskRepositoryConflict):
+                with self.assertRaises(TaskRepositoryValidationError):
                     repository.replace(
                         {**snapshot.document, "project_id": "project_other"},
                         expected_revision=snapshot.revision,

@@ -342,6 +342,23 @@ class LocalBridgeTests(unittest.TestCase):
         )
         self.assertEqual((rejected, payload), (404, {"error": "bridge_route_not_found"}))
 
+    def test_detailed_planning_edit_uses_its_explicit_bounded_body_limit(self):
+        changes = {"description": "x" * 4_096}
+        body = {"expected_revision": 1, "changes": changes}
+        with patch.object(
+            local_bridge,
+            "bridge_update_planning_task_payload",
+            return_value=({"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "action": "edit", "project": {"id": "project_alpha", "name": "Alpha", "status": "active", "revision": 1}, "task": {"id": "task_alpha", "title": "Task", "project_id": "project_alpha", "project_name": "Alpha", "status": "todo", "priority": "medium", "due_date": None, "planned_for_today": False, "planning_state": "inbox", "workflow_stage": "inbox", "deferred": False, "blocked": False, "revision": 2, "needs_attention": False, "review_required": False, "attention_reasons": [], "updated_at": "2026-09-01T00:00:00+00:00"}}, 200),
+        ) as edit:
+            status, _payload, _headers = self.request(
+                method="POST",
+                path="/bridge/v1/planning/tasks/task_alpha/edit",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps(body).encode("utf-8"),
+            )
+        self.assertEqual(status, 200)
+        edit.assert_called_once_with("task_alpha", body)
+
     def test_browser_and_forged_host_requests_fail_closed(self):
         rejected_headers = (
             {"Origin": f"http://127.0.0.1:{self.port}"},
