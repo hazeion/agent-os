@@ -809,6 +809,10 @@ button {
 .planning-stage-controls button,
 .planning-inspector > button,
 .planning-project-lifecycle > button { min-height: 34px; padding: 5px 8px; }
+.planning-inspector > button,
+.planning-project-lifecycle > button { border: 1px solid var(--border-subtle); border-radius: 6px; background: color-mix(in srgb, var(--canvas) 78%, var(--panel-raised)); color: var(--text-primary); }
+.planning-inspector > button:hover:not(:disabled),
+.planning-project-lifecycle > button:hover:not(:disabled) { border-color: var(--border-default); background: var(--panel-raised); }
 .planning-mode-toggle button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
 .planning-stage-controls button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); background: var(--accent-soft); color: var(--text-primary); font-weight: 700; }
 .planning-stage-controls button[aria-pressed="true"]:disabled { opacity: 1; }
