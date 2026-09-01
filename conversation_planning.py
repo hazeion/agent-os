@@ -158,7 +158,11 @@ def _task_public(
     registry: ProjectRegistry,
     today: date,
 ) -> dict[str, Any] | None:
-    project_id = registry.name_to_id.get(str(task["project"]).casefold())
+    # PT-1A makes this immutable ID authoritative. The name lookup is retained
+    # only to read pre-cutover fixtures; live Task authority always supplies it.
+    project_id = task.get("project_id")
+    if not isinstance(project_id, str):
+        project_id = registry.name_to_id.get(str(task["project"]).casefold())
     if project_id is None:
         return None
     project = registry.by_id[project_id]
@@ -360,7 +364,9 @@ def validate_association_targets(
         task = TaskRepository(connection).get(task_id).document
     except TaskRepositoryError as exc:
         raise ConversationRepositoryConflict("conversation.task_unavailable") from exc
-    resolved = registry.name_to_id.get(str(task["project"]).casefold())
+    resolved = task.get("project_id")
+    if not isinstance(resolved, str):
+        resolved = registry.name_to_id.get(str(task["project"]).casefold())
     if resolved != project_id:
         raise ConversationRepositoryConflict("conversation.project_mismatch")
 
@@ -405,7 +411,9 @@ def planning_context_projection(
     except TaskRepositoryError:
         base["state"] = "task_unavailable"
         return base
-    resolved = registry.name_to_id.get(str(task["project"]).casefold())
+    resolved = task.get("project_id")
+    if not isinstance(resolved, str):
+        resolved = registry.name_to_id.get(str(task["project"]).casefold())
     if resolved != association.project_id:
         base["state"] = "project_mismatch"
         return base

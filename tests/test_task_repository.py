@@ -249,13 +249,15 @@ class TaskRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version, SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 17)
+            self.assertEqual(SCHEMA_VERSION, 18)
             self.assertTrue(
                 {
                     "mentat_tasks",
                     "mentat_task_tags",
                     "mentat_task_dependencies",
                     "mentat_task_store_state",
+                    "mentat_projects",
+                    "mentat_project_store_state",
                 }.issubset(tables)
             )
             self.assertEqual(
@@ -2070,6 +2072,10 @@ class TaskRepositoryTests(unittest.TestCase):
             try:
                 TaskRepository(connection).insert_collection([task("occupied")])
                 with transaction(connection, immediate=True):
+                    connection.execute("DROP INDEX idx_mentat_tasks_project_id_order")
+                    connection.execute("ALTER TABLE mentat_tasks DROP COLUMN project_id")
+                    connection.execute("DROP TABLE mentat_project_store_state")
+                    connection.execute("DROP TABLE mentat_projects")
                     connection.execute(
                         "DROP TABLE mentat_conversation_run_attempts"
                     )

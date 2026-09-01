@@ -26,6 +26,7 @@ from conversation_repository import (
 )
 from mentat_db import connect
 from task_repository import TaskRepository, ensure_task_sqlite_authority, read_authoritative_tasks
+from project_repository import ensure_project_sqlite_authority
 
 
 NOW = "2026-08-30T12:00:00Z"
@@ -132,6 +133,7 @@ class ConversationPlanningTests(unittest.TestCase):
                 path.write_text("[]", encoding="utf-8")
                 path.chmod(0o600)
             ensure_task_sqlite_authority(root)
+            ensure_project_sqlite_authority(root)
             AgentRegistry(root, supported_runtime_types={"hermes"}).create_agent(
                 agent_id="agent_planner",
                 name="Planner",

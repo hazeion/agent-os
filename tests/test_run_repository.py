@@ -130,7 +130,7 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(SCHEMA_VERSION, 17)
+        self.assertEqual(SCHEMA_VERSION, 18)
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue(
             {

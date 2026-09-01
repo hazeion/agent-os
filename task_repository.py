@@ -78,6 +78,7 @@ CORE_FIELDS = frozenset(
         "title",
         "description",
         "project",
+        "project_id",
         "status",
         "priority",
         "assignee",
@@ -92,9 +93,10 @@ CORE_FIELDS = frozenset(
         "completed_at",
     }
 )
-REQUIRED_CORE_FIELDS = CORE_FIELDS - {"assigned_agent_id"}
+REQUIRED_CORE_FIELDS = CORE_FIELDS - {"assigned_agent_id", "project_id"}
 MODELED_FIELDS = CORE_FIELDS | TASK_PLANNING_FIELDS
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$")
+PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 UNKNOWN_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
 SENSITIVE_KEY_RE = re.compile(
     r"(?:api[_-]?key|secret|token|password|credential|private[_-]?key|"
@@ -383,6 +385,11 @@ def normalize_task_document(task: Mapping[str, Any]) -> dict[str, Any]:
         allow_empty=True,
     )
     normalized["project"] = _text(normalized.get("project"), "project", maximum=120)
+    if "project_id" in normalized and normalized["project_id"] is not None:
+        project_id = _text(normalized["project_id"], "project_id", maximum=80)
+        if PROJECT_ID_RE.fullmatch(project_id) is None:
+            _fail("task.project_id.invalid")
+        normalized["project_id"] = project_id
     status = _text(normalized.get("status"), "status", maximum=32)
     if status not in TASK_STATUSES:
         _fail("task.status.invalid")
@@ -705,6 +712,7 @@ class TaskRepository:
             task["title"],
             task["description"],
             task["project"],
+            task.get("project_id"),
             task["status"],
             task["priority"],
             task["assignee"],
@@ -748,12 +756,12 @@ class TaskRepository:
             for sort_order, task in enumerate(normalized):
                 self.connection.execute(
                     "INSERT INTO mentat_tasks ("
-                    "id, sort_order, revision, title, description, project, status, priority, "
+                    "id, sort_order, revision, title, description, project, project_id, status, priority, "
                     "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
                     "review_required, needs_attention, planned_for_today, manual_rank, "
                     "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
                     "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
-                    ") VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ") VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         task["id"],
                         *self._storage_values(task, sort_order),
@@ -847,6 +855,8 @@ class TaskRepository:
                 "updated_at": str(row["updated_at"]),
                 "completed_at": row["completed_at"],
             }
+            if "project_id" in row.keys() and row["project_id"] is not None:
+                task["project_id"] = str(row["project_id"])
             if bool(row["assigned_agent_id_present"]):
                 task["assigned_agent_id"] = row["assigned_agent_id"]
             for field in SCALAR_PLANNING_FIELDS:
@@ -932,6 +942,7 @@ class TaskRepository:
                 for item in documents
             ]
             normalize_task_collection(candidates)
+            self._validate_project_memberships(documents, candidates)
             self.connection.execute(
                 "DELETE FROM mentat_task_dependencies WHERE task_id = ?",
                 (identifier,),
@@ -943,7 +954,7 @@ class TaskRepository:
             result = self.connection.execute(
                 "UPDATE mentat_tasks SET "
                 "sort_order = ?, revision = revision + 1, title = ?, description = ?, "
-                "project = ?, status = ?, priority = ?, assignee = ?, assigned_agent_id = ?, "
+                "project = ?, project_id = ?, status = ?, priority = ?, assignee = ?, assigned_agent_id = ?, "
                 "assigned_agent_id_present = ?, due_date = ?, source = ?, review_required = ?, "
                 "needs_attention = ?, planned_for_today = ?, manual_rank = ?, "
                 "estimated_minutes = ?, recurrence_parent_id = ?, planning_state = ?, "
@@ -1000,6 +1011,7 @@ class TaskRepository:
             normalized = list(normalize_task_collection(candidate))
             if normalized == current:
                 return result
+            self._validate_project_memberships(current, normalized)
 
             current_by_id = {task["id"]: task for task in current}
             removed_ids = tuple(sorted(set(current_by_id) - {task["id"] for task in normalized}))
@@ -1030,12 +1042,12 @@ class TaskRepository:
                 )
                 self.connection.execute(
                     "INSERT INTO mentat_tasks ("
-                    "id, sort_order, revision, title, description, project, status, priority, "
+                    "id, sort_order, revision, title, description, project, project_id, status, priority, "
                     "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
                     "review_required, needs_attention, planned_for_today, manual_rank, "
                     "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
                     "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         task["id"],
                         sort_order,
@@ -1048,6 +1060,42 @@ class TaskRepository:
             if self._list_tasks() != normalized:
                 raise TaskRepositoryError("task_repository.reconstruction_failed")
             return result
+
+    def _validate_project_memberships(
+        self,
+        current: Sequence[Mapping[str, Any]],
+        candidate: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Keep Task-to-Project membership immutable after Project cutover."""
+
+        has_authority_table = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'mentat_project_store_state'"
+        ).fetchone()
+        if has_authority_table is None:
+            return
+        receipt = self.connection.execute(
+            "SELECT 1 FROM mentat_project_store_state WHERE singleton = 1"
+        ).fetchone()
+        if receipt is None:
+            return
+        project_ids = {
+            str(row[0])
+            for row in self.connection.execute("SELECT id FROM mentat_projects")
+        }
+        current_by_id = {str(task["id"]): task for task in current}
+        for task in candidate:
+            identifier = str(task["id"])
+            project_id = task.get("project_id")
+            if not isinstance(project_id, str) or project_id not in project_ids:
+                raise TaskRepositoryValidationError(
+                    "task_repository.project_membership_invalid"
+                )
+            previous = current_by_id.get(identifier)
+            if previous is not None and previous.get("project_id") != project_id:
+                raise TaskRepositoryConflict(
+                    "task_repository.project_membership_immutable"
+                )
 
     def export(self) -> TaskExport:
         tasks = self.list_tasks()
@@ -1181,7 +1229,11 @@ def _expected_task_schema_fingerprint(schema_version: int = DATABASE_SCHEMA_VERS
     connection = sqlite3.connect(":memory:")
     try:
         for version, script in MIGRATIONS:
-            if version == 5 or (version == 6 and schema_version >= 6):
+            if (
+                version == 5
+                or (version == 6 and schema_version >= 6)
+                or (version == 18 and schema_version >= 18)
+            ):
                 connection.executescript(script)
         return _task_schema_fingerprint(connection)
     finally:
@@ -1466,39 +1518,41 @@ def ensure_task_sqlite_authority(
             repository = TaskRepository(connection, identity_guard=guard)
             receipt = repository.authority_receipt()
             if receipt is not None:
-                return receipt
-            if repository.count() != 0:
-                raise TaskRepositoryConflict("task_repository.occupied")
-            source = _read_source_snapshot(
-                data_root / "tasks.json",
-                required_mode=required_source_mode,
-                cross_process_lock=True,
-            )
-            with _guarded_transaction(connection, guard, immediate=True):
-                repository = TaskRepository(connection, identity_guard=guard)
-                if repository.authority_receipt() is not None:
-                    raise TaskRepositoryConflict("task_repository.already_authoritative")
+                result = receipt
+            else:
                 if repository.count() != 0:
                     raise TaskRepositoryConflict("task_repository.occupied")
-                repository.insert_collection(source.tasks)
-                exported = repository.export()
-                expected = _json_bytes(
-                    list(source.tasks), code="task_migration.source_invalid"
-                )
-                if not hmac.compare_digest(exported.raw, expected):
-                    raise TaskRepositoryError("task_migration.reconstruction_failed")
-                current_source = _read_source_snapshot(
+                source = _read_source_snapshot(
                     data_root / "tasks.json",
                     required_mode=required_source_mode,
                     cross_process_lock=True,
                 )
-                if (
-                    current_source.sha256 != source.sha256
-                    or current_source.identity != source.identity
-                    or current_source.tasks != source.tasks
-                ):
-                    raise TaskRepositoryConflict("task_migration.source_changed")
-                return repository.claim_authority(source)
+                with _guarded_transaction(connection, guard, immediate=True):
+                    repository = TaskRepository(connection, identity_guard=guard)
+                    if repository.authority_receipt() is not None:
+                        raise TaskRepositoryConflict("task_repository.already_authoritative")
+                    if repository.count() != 0:
+                        raise TaskRepositoryConflict("task_repository.occupied")
+                    repository.insert_collection(source.tasks)
+                    exported = repository.export()
+                    expected = _json_bytes(
+                        list(source.tasks), code="task_migration.source_invalid"
+                    )
+                    if not hmac.compare_digest(exported.raw, expected):
+                        raise TaskRepositoryError("task_migration.reconstruction_failed")
+                    current_source = _read_source_snapshot(
+                        data_root / "tasks.json",
+                        required_mode=required_source_mode,
+                        cross_process_lock=True,
+                    )
+                    if (
+                        current_source.sha256 != source.sha256
+                        or current_source.identity != source.identity
+                        or current_source.tasks != source.tasks
+                    ):
+                        raise TaskRepositoryConflict("task_migration.source_changed")
+                    result = repository.claim_authority(source)
+    return result
 
 
 def read_authoritative_tasks(data_dir: Path) -> list[dict[str, Any]]:
@@ -2138,6 +2192,7 @@ def _capture_compatible_downgrade(data_root: Path, root_descriptor):
         schema5_excluded_agent_ids,
     )
     from remote_hermes import RemoteHermesError, load_connection_state_read_only
+    from project_repository import ProjectRepositoryError, export_authoritative_projects
 
     exported = export_tasks(data_root, require_authority=True)
     try:
@@ -2147,6 +2202,27 @@ def _capture_compatible_downgrade(data_root: Path, root_descriptor):
                 "task_export.compatible_remote_reconfigure_required"
             )
         documents = _load_compatible_non_task_documents(data_root, root_descriptor)
+        # Schema-5 recovery roots must receive the current canonical Project
+        # document, not the pre-cutover seed. Project IDs are SQLite-only in
+        # this slice, so remove them from the old Task document shape too.
+        try:
+            documents["projects.json"] = export_authoritative_projects(data_root)
+        except ProjectRepositoryError as exc:
+            # Schema-5 source fixtures predate the PT-1A Project receipt.
+            # They remain valid recovery inputs; a claimed receipt never uses
+            # this path because its authoritative export must be available.
+            if exc.code != "project_repository.authority_missing":
+                raise
+        legacy_tasks = [
+            {key: value for key, value in task.items() if key != "project_id"}
+            for task in json.loads(exported.raw.decode("utf-8"))
+        ]
+        legacy_raw = _json_bytes(legacy_tasks, code="task_export.compatible_invalid")
+        exported = TaskExport(
+            raw=legacy_raw,
+            sha256=hashlib.sha256(legacy_raw).hexdigest(),
+            task_count=len(legacy_tasks),
+        )
         source_private_unit = capture_private_console_unit(data_root)
         excluded_agent_ids = schema5_excluded_agent_ids(source_private_unit)
         exported_tasks = json.loads(exported.raw.decode("utf-8"))
@@ -2184,7 +2260,7 @@ def _capture_compatible_downgrade(data_root: Path, root_descriptor):
         confirmation_token = "task_compatible_" + hashlib.sha256(
             _json_bytes(evidence, code="task_export.compatible_preview_invalid")
         ).hexdigest()
-    except TaskRepositoryError:
+    except (TaskRepositoryError, ProjectRepositoryError):
         raise
     except RemoteHermesError as exc:
         raise TaskRepositoryUnavailable("task_export.capture_unavailable") from exc
