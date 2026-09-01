@@ -800,7 +800,7 @@ button {
 .saved-view-navigation { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--border-subtle); }
 .saved-view-navigation > p { margin: 0 0 2px; }
 .saved-view-navigation button { min-height: 31px; padding: 5px 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-secondary); text-align: left; text-transform: capitalize; }
-.saved-view-navigation button[aria-current="page"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
+.saved-view-navigation button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
 .planning-workbench-tools { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
 .planning-workbench-tools label { display: grid; flex: 1 1 150px; gap: 3px; color: var(--text-tertiary); font-size: .68rem; font-weight: 700; }
 .planning-workbench-tools input { width: 100%; min-height: 34px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
