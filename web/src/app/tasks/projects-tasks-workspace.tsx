@@ -210,7 +210,6 @@ export function ProjectsTasksWorkspace() {
     const target = document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(taskId)}"] > button`);
     if (!target) return;
     requestedTaskFocus.current = null;
-    target.dataset.taskSelected = "true";
     target.focus({ preventScroll: true });
     target.scrollIntoView({ block: "center", behavior: "auto" });
     setNotice(`Opened Task ${target.parentElement?.dataset.taskTitle ?? ""}.`);
