@@ -79,3 +79,7 @@ uses two independent defect-first, read-only passes under `review-agent`.
   Python suite passes 74 tests while the web planning suites pass 25 tests.
 - The repeat pre-push browser check navigated Home and Projects & Tasks and
   opened and cancelled both Project and Task creation forms successfully.
+- GitHub's artifact verifier separately pins the same public-module inventory.
+  Its allowlist now includes `project_repository`; local wheel and source
+  artifact verification passes, followed by another successful browser
+  navigation and Project-form check before the correction was published.
