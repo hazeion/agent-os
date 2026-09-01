@@ -132,7 +132,7 @@ test("Projects and Tasks deep-links, validates forms, and preserves failed input
   };
   const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
   await waitFor(() => assert.equal(document.activeElement?.getAttribute("data-planning-task-id"), task.id));
-  assert.match(screen.getByRole("status").textContent ?? "", /Opened Task Ship Alpha/u);
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Opened Task Ship Alpha/u));
   await user.click(screen.getByRole("button", { name: "New" }));
   const name = screen.getByLabelText("Name") as HTMLInputElement; await user.type(name, "New Project"); await user.click(screen.getByRole("button", { name: "Create Project" }));
   await waitFor(() => assert.equal(projectCreateAttempts, 1));
