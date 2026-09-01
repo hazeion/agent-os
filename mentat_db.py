@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1461,6 +1461,57 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             WHERE task_id IS NOT NULL;
         """,
     ),
+    (
+        18,
+        """
+        CREATE TABLE mentat_projects (
+            id TEXT PRIMARY KEY CHECK (
+                length(id) BETWEEN 1 AND 80
+                AND substr(id, 1, 1) GLOB '[A-Za-z0-9]'
+                AND id NOT GLOB '*[^A-Za-z0-9_.:-]*'
+            ),
+            sort_order INTEGER NOT NULL UNIQUE CHECK (sort_order >= 0),
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+            name_key TEXT NOT NULL UNIQUE CHECK (length(name_key) BETWEEN 1 AND 240),
+            type TEXT NOT NULL CHECK (length(type) BETWEEN 1 AND 80),
+            status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'archived')),
+            description TEXT NOT NULL CHECK (length(description) <= 16777216),
+            obsidian_note TEXT,
+            aliases_json TEXT NOT NULL DEFAULT '[]' CHECK (length(aliases_json) <= 4096),
+            extensions_json TEXT NOT NULL DEFAULT '{}' CHECK (length(extensions_json) <= 16777216),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64)
+        );
+
+        CREATE TABLE mentat_project_store_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            authority TEXT NOT NULL CHECK (authority = 'sqlite'),
+            migration_contract TEXT NOT NULL CHECK (
+                migration_contract = 'mentat-project-sqlite-cutover-v1'
+            ),
+            source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+            source_project_count INTEGER NOT NULL CHECK (
+                source_project_count BETWEEN 0 AND 256
+            ),
+            task_source_sha256 TEXT NOT NULL CHECK (length(task_source_sha256) = 64),
+            cutover_at REAL NOT NULL CHECK (cutover_at > 0)
+        );
+
+        ALTER TABLE mentat_tasks ADD COLUMN project_id TEXT CHECK (
+            project_id IS NULL OR (
+                length(project_id) BETWEEN 1 AND 80
+                AND substr(project_id, 1, 1) GLOB '[A-Za-z0-9]'
+                AND project_id NOT GLOB '*[^A-Za-z0-9_.:-]*'
+            )
+        );
+
+        CREATE INDEX idx_mentat_projects_status_order
+            ON mentat_projects(status, sort_order);
+        CREATE INDEX idx_mentat_tasks_project_id_order
+            ON mentat_tasks(project_id, sort_order);
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
@@ -1765,7 +1816,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -1827,6 +1878,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 16 cannot be safely upgraded"
+                    )
+                if (
+                    version == 18
+                    and schema_signature_state(connection, 17) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 17 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

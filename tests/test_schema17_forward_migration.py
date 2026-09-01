@@ -50,14 +50,33 @@ class Schema17ForwardMigrationTests(unittest.TestCase):
         path.chmod(0o600)
         return path
 
+    def _schema17(self, root: Path) -> Path:
+        ensure_private_console_dir(root)
+        path = database_path(root)
+        connection = sqlite3.connect(path)
+        try:
+            for version, script in MIGRATIONS:
+                if version > 17:
+                    break
+                connection.executescript(script)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)",
+                    (version,),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+        path.chmod(0o600)
+        return path
+
     def test_exact_schema16_upgrades_and_stores_nonowning_references(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             self._schema16(root)
             connection = connect(root)
             try:
-                self.assertEqual(SCHEMA_VERSION, 17)
-                self.assertEqual(schema_signature_state(connection, 17), "expected")
+                self.assertEqual(SCHEMA_VERSION, 18)
+                self.assertEqual(schema_signature_state(connection, 18), "expected")
                 self.assertIsNone(connection.execute("PRAGMA foreign_key_check").fetchone())
                 connection.execute(
                     "INSERT INTO mentat_conversation_planning_context "
@@ -105,6 +124,31 @@ class Schema17ForwardMigrationTests(unittest.TestCase):
                 self.assertIsNone(
                     check.execute(
                         "SELECT name FROM sqlite_master WHERE name = 'mentat_conversation_planning_context'"
+                    ).fetchone()
+                )
+            finally:
+                check.close()
+
+    def test_schema17_drift_fails_before_project_authority_tables_are_created(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self._schema17(root)
+            connection = sqlite3.connect(path, isolation_level=None)
+            try:
+                connection.execute("CREATE TABLE unexpected_schema17_drift (id INTEGER)")
+            finally:
+                connection.close()
+            with self.assertRaisesRegex(MentatDatabaseError, "schema 17 cannot be safely upgraded"):
+                connect(root)
+            check = sqlite3.connect(path)
+            try:
+                self.assertEqual(
+                    check.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
+                    17,
+                )
+                self.assertIsNone(
+                    check.execute(
+                        "SELECT name FROM sqlite_master WHERE name = 'mentat_projects'"
                     ).fetchone()
                 )
             finally:

@@ -110,6 +110,15 @@ as a seed does not make every file browser-writable.
 
 ### SQLite Task foundation and source-of-truth transition
 
+PT-1A extends the private SQLite authority to Projects. At startup, after the
+Task receipt exists and before a listener opens, Mentat validates the exact
+bounded `projects.json` source, imports canonical Project records, maps every
+canonical Task to an immutable Project ID, and commits the Project receipt and
+all memberships in one transaction. After that receipt exists, live Project
+reads and writes use SQLite only; `projects.json` remains a seed and recovery
+artifact. Compatible export regenerates it from the SQLite authority for an
+older sibling data root.
+
 Pivot Slice 1C-A added a canonical Task repository to
 `<data-root>/private/console/mentat.sqlite3`, including ordered tags,
 dependency edges, bounded planning metadata, compatibility fields, and

@@ -247,6 +247,12 @@ from task_repository import (
     mutate_authoritative_tasks,
     read_authoritative_tasks,
 )
+from project_repository import (
+    ProjectRepositoryError,
+    ensure_project_sqlite_authority,
+    mutate_authoritative_projects,
+    read_authoritative_projects,
+)
 from runtime_config import (
     AppConfig,
     DEFAULT_APP_NAME,
@@ -442,7 +448,7 @@ CONFIG_DISPLAY_NAME = None
 CONFIG_GREETING_PREFIX = None
 CONFIG_APP_NAME = DEFAULT_APP_NAME
 APP_CONFIG = AppConfig(tuple(), HOST, PORT, DATA_DIR, PUBLIC_DIR, HERMES_HOME, OBSIDIAN_VAULT)
-ALLOWED_DATA_WRITES = {"attention.json", "projects.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json", "context_packs.json"}
+ALLOWED_DATA_WRITES = {"attention.json", "dashboard.json", "calendar.json", "agents.json", "agent_messages.json", "context_packs.json"}
 ALLOWED_DATA_READS = frozenset(SEED_FILE_NAMES) | ALLOWED_DATA_WRITES
 CALENDAR_CACHE_TTL_SECONDS = 300
 CALENDAR_CACHE = {"key": None, "payload": None, "fetched_at": None}
@@ -1061,6 +1067,26 @@ def project_name_lookup() -> dict[str, str]:
     return lookup
 
 
+def project_id_lookup() -> dict[str, str]:
+    """Resolve a safe current Project name or alias to its immutable ID."""
+
+    projects = read_project_snapshot()
+    lookup: dict[str, str] = {}
+    if not isinstance(projects, list):
+        return lookup
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        identifier = compact_text(project.get("id"), max_length=80)
+        name = compact_text(project.get("name"), max_length=120)
+        if not identifier or not name:
+            continue
+        lookup[name.casefold()] = identifier
+        for alias in project_aliases(project):
+            lookup[alias.casefold()] = identifier
+    return lookup
+
+
 def canonical_project_name(value: str) -> str:
     name = compact_text(value, max_length=120)
     if not name:
@@ -1089,6 +1115,11 @@ def validate_task_payload(payload, *, existing: dict | None = None):
 
     if project not in project_names():
         return None, f"Unknown project: {project}"
+    project_id = project_id_lookup().get(project.casefold())
+    if not project_id:
+        return None, "Task Project storage is unavailable"
+    if existing is not None and existing.get("project_id") not in {None, project_id}:
+        return None, "Task Project membership is immutable"
 
     status = compact_text(payload.get("status") or (existing or {}).get("status") or "todo", max_length=32).lower().replace("_", " ") or "todo"
     if status not in TASK_STATUS_VALUES:
@@ -1122,6 +1153,7 @@ def validate_task_payload(payload, *, existing: dict | None = None):
         "title": title,
         "description": description,
         "project": project,
+        "project_id": existing.get("project_id") if isinstance(existing, dict) and existing.get("project_id") else project_id,
         "status": status,
         "priority": priority,
         "assignee": assignee,
@@ -4676,12 +4708,47 @@ def ensure_task_authority():
     )
 
 
+def ensure_project_authority():
+    """Complete Project membership cutover before publishing any listener."""
+
+    return ensure_project_sqlite_authority(
+        DATA_DIR,
+        required_source_mode=task_source_required_mode(),
+    )
+
+
 def read_task_snapshot():
     """Read Tasks from SQLite without consulting the legacy JSON document."""
     try:
         return read_authoritative_tasks(DATA_DIR)
     except TaskRepositoryError as exc:
         return {"error": f"Task storage is unavailable ({exc.code})."}
+
+
+def read_project_snapshot():
+    """Read Projects from SQLite without consulting the legacy JSON document."""
+
+    try:
+        return read_authoritative_projects(DATA_DIR)
+    except ProjectRepositoryError as exc:
+        # This compatibility path exists only before PT-1A has claimed its
+        # Project receipt (for older in-process callers and recovery tests).
+        # Once a receipt exists, read_authoritative_projects either succeeds or
+        # propagates its bounded failure; it never falls back to stale JSON.
+        if exc.code == "project_repository.authority_missing":
+            try:
+                return store_read_json(
+                    dashboard_data_path("projects.json"),
+                    [],
+                    mutation_lock=DATA_MUTATION_LOCK,
+                    maximum_bytes=MAX_PREFLIGHT_JSON_BYTES,
+                    expected_type=list,
+                    required_mode=0o600 if DATA_MUTATION_LOCK else None,
+                    require_existing=DATA_MUTATION_LOCK,
+                )
+            except (OSError, json.JSONDecodeError):
+                pass
+        return {"error": f"Project storage is unavailable ({exc.code})."}
 
 
 def update_task_snapshot(mutator):
@@ -4695,7 +4762,20 @@ def update_task_snapshot(mutator):
         return {"error": f"Task storage is unavailable ({exc.code})."}, 503
 
 
+def update_project_snapshot(mutator):
+    """Mutate canonical Projects while preserving legacy handler result shapes."""
+
+    try:
+        return mutate_authoritative_projects(DATA_DIR, mutator)
+    except ProjectRepositoryError as exc:
+        return {"error": f"Project storage is unavailable ({exc.code})."}, 503
+
+
 def read_json_file(name: str, default):
+    if name == "projects.json":
+        # Compatibility shim for callers that still consume Project records.
+        # The packaged JSON document is never opened after the authority receipt.
+        return read_project_snapshot()
     if name == "tasks.json":
         # Compatibility shim for older internal callers and tests. Runtime
         # workflows use read_task_snapshot() directly so the obsolete JSON
@@ -4728,6 +4808,8 @@ def update_json_file(name: str, default, mutator):
         # Compatibility shim for older internal callers and tests. The JSON
         # document is never opened or written here.
         return update_task_snapshot(mutator)
+    if name == "projects.json":
+        return update_project_snapshot(mutator)
     path = dashboard_data_path(name, write=True)
     durable_policy = DATA_MUTATION_LOCK or _absolute_without_following(
         DATA_DIR
@@ -14753,6 +14835,7 @@ def serve_dashboard() -> None:
         # an older live process cannot keep mutating the legacy Task source.
         # The listener and runtime state are not published until this succeeds.
         ensure_task_authority()
+        ensure_project_authority()
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
         load_agent_console_runs()

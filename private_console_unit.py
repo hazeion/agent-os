@@ -62,6 +62,7 @@ from private_state import (
 )
 from run_repository import MAX_SOURCE_RUNS, RunRepository, RunRepositoryError
 from task_repository import TaskRepositoryError, validate_repository_connection
+from project_repository import ProjectRepositoryError, validate_project_repository_connection
 from vercel_connections import (
     VercelConnectionError,
     validate_provider_connections,
@@ -88,6 +89,7 @@ TERMINAL_FINALIZATION_DATABASE_SCHEMA_VERSION = 13
 ATTEMPT_DATABASE_SCHEMA_VERSION = 14
 ATTACHMENT_DATABASE_SCHEMA_VERSION = 15
 PLANNING_CONTEXT_DATABASE_SCHEMA_VERSION = 17
+PROJECT_DATABASE_SCHEMA_VERSION = 18
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -103,6 +105,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     ATTACHMENT_DATABASE_SCHEMA_VERSION,
     16,
     PLANNING_CONTEXT_DATABASE_SCHEMA_VERSION,
+    PROJECT_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -494,6 +497,8 @@ def _database_task_count(raw: bytes) -> int:
                 connection,
                 require_authority_consistency=version >= TASK_DATABASE_SCHEMA_VERSION,
             )
+            if version >= PROJECT_DATABASE_SCHEMA_VERSION:
+                validate_project_repository_connection(connection)
             _validate_conversation_repository(
                 connection,
                 version,
@@ -504,6 +509,8 @@ def _database_task_count(raw: bytes) -> int:
             return task_count
         except TaskRepositoryError as exc:
             raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+        except ProjectRepositoryError as exc:
+            raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
         except ConversationRepositoryError as exc:
             raise PrivateConsoleUnitError("private_conversation_repository_invalid") from exc
         finally:
@@ -789,8 +796,12 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                         schema_version >= TASK_DATABASE_SCHEMA_VERSION
                     ),
                 )
+                if schema_version >= PROJECT_DATABASE_SCHEMA_VERSION:
+                    validate_project_repository_connection(connection)
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+            except ProjectRepositoryError as exc:
+                raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
             _validate_conversation_repository(
                 connection,
                 schema_version,
@@ -866,8 +877,12 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
                         schema_version >= TASK_DATABASE_SCHEMA_VERSION
                     ),
                 )
+                if schema_version >= PROJECT_DATABASE_SCHEMA_VERSION:
+                    validate_project_repository_connection(connection)
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+            except ProjectRepositoryError as exc:
+                raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
             _validate_conversation_repository(
                 connection,
                 schema_version,
@@ -912,8 +927,12 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
                         schema_version >= TASK_DATABASE_SCHEMA_VERSION
                     ),
                 )
+                if schema_version >= PROJECT_DATABASE_SCHEMA_VERSION:
+                    validate_project_repository_connection(connection)
             except TaskRepositoryError as exc:
                 raise PrivateConsoleUnitError("private_task_repository_invalid") from exc
+            except ProjectRepositoryError as exc:
+                raise PrivateConsoleUnitError("private_project_repository_invalid") from exc
             _validate_conversation_repository(
                 connection,
                 schema_version,
