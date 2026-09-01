@@ -43,14 +43,23 @@ class Repository:
 
 
 class FakePool:
-    def __init__(self, results=None, *, barrier: threading.Event | None = None):
+    def __init__(
+        self,
+        results=None,
+        *,
+        barrier: threading.Event | None = None,
+        started: threading.Event | None = None,
+    ):
         self.results = list(results or [])
         self.barrier = barrier
+        self.started = started
         self.calls: list[tuple[str, str]] = []
         self.closed = False
 
     def execute(self, *, kind: str, normalized_url: str):
         self.calls.append((kind, normalized_url))
+        if self.started is not None:
+            self.started.set()
         if self.barrier is not None:
             self.barrier.wait(timeout=2)
         if not self.results:
@@ -278,13 +287,17 @@ class LinkPreviewServiceTests(unittest.TestCase):
                 offline.close()
 
             barrier = threading.Event()
-            pool = FakePool([page_result()], barrier=barrier)
+            started = threading.Event()
+            pool = FakePool([page_result()], barrier=barrier, started=started)
             service = LinkPreviewService(Repository(message), cache, preferences, worker_factory=lambda: pool)
             try:
                 service.enqueue(conversation_id=message.conversation_id, message_id=message.id, message_revision=1, retry=True)
+                self.assertTrue(started.wait(timeout=2))
+                future = service._pending[(message.id, 1, 1)]
+                self.assertIsNotNone(future)
                 message.revision = 2
                 barrier.set()
-                time.sleep(0.05)
+                future.result(timeout=2)
                 message.revision = 1
                 self.assertEqual(service.read(conversation_id=message.conversation_id, message_id=message.id, message_revision=1)["previews"], [{"candidate_ordinal": 1, "status": "unavailable"}])
                 disabled = service.update_preference(enabled=False, expected_revision=1)
