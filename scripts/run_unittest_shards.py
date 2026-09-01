@@ -20,6 +20,7 @@ SHARD_COUNT = 12
 SHARD_GROUP_COUNT = 12
 MAX_CONCURRENT_SHARDS = 4
 PROCESS_STOP_TIMEOUT_SECONDS = 5
+GROUP_UNIT_TIMEOUT_SECONDS = 15 * 60
 IS_WINDOWS = sys.platform == "win32"
 ISOLATED_PROCESS_GROUP_FLAGS = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 SPLIT_TEST_WEIGHT = 12
@@ -265,7 +266,15 @@ def run_group(group: tuple[tuple[str, ...], ...]) -> int:
         print(f"Running unittest unit: {unit}", flush=True)
         process = _spawn_shard((unit,))
         try:
-            result = process.wait()
+            result = process.wait(timeout=GROUP_UNIT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            print(
+                f"Timed out unittest unit: {unit} after {GROUP_UNIT_TIMEOUT_SECONDS} seconds",
+                flush=True,
+            )
+            _stop_process_tree(process)
+            failed = True
+            continue
         except BaseException:
             try:
                 _stop_process_tree(process)

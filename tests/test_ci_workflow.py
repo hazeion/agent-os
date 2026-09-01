@@ -179,6 +179,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertEqual(namespace["SHARD_GROUP_COUNT"], 12)
         self.assertEqual(namespace["MAX_CONCURRENT_SHARDS"], 4)
         self.assertEqual(namespace["PROCESS_STOP_TIMEOUT_SECONDS"], 5)
+        self.assertEqual(namespace["GROUP_UNIT_TIMEOUT_SECONDS"], 15 * 60)
         self.assertEqual(
             namespace["ISOLATED_PROCESS_GROUP_FLAGS"],
             getattr(namespace["subprocess"], "CREATE_NEW_PROCESS_GROUP", 0),
@@ -408,7 +409,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         original_wait = interrupted.wait
         interrupted.wait = lambda timeout=None: (
             (_ for _ in ()).throw(KeyboardInterrupt())
-            if timeout is None
+            if timeout == namespace["GROUP_UNIT_TIMEOUT_SECONDS"]
             else original_wait(timeout)
         )
         stopped = []
