@@ -263,6 +263,13 @@ from task_repository import (
     read_authoritative_tasks,
     replace_authoritative_task,
 )
+from task_delegation_receipts import (
+    DelegationActionReceiptRepository,
+    DelegationReceiptConflict,
+    DelegationReceiptUnavailable,
+    DelegationReceiptValidationError,
+    idempotency_key_digest,
+)
 from project_repository import (
     ProjectRepositoryConflict,
     ProjectRepositoryError,
@@ -4460,6 +4467,734 @@ def mentat_planning_task_execution_review(
         }, 404 if exc.code == "dispatch.task_not_found" else 409
     except (OrchestrationServiceError, RunRepositoryError, sqlite3.Error, OSError):
         return {"error_code": "planning_execution.unavailable"}, 503
+
+
+_PLANNING_DELEGATION_PREFIX = "planning_delegation"
+
+
+def _planning_delegation_error(code: str, status: int) -> tuple[dict, int]:
+    """Keep the browser delegation contract small and free of adapter detail."""
+
+    return {"error_code": f"{_PLANNING_DELEGATION_PREFIX}.{code}"}, status
+
+
+def _planning_delegation_legacy_error(status: int) -> tuple[dict, int]:
+    """Translate a legacy handler outcome without forwarding its detail."""
+
+    if status == 400:
+        return _planning_delegation_error("invalid", 400)
+    if status == 404:
+        return _planning_delegation_error("not_found", 404)
+    if status == 409:
+        return _planning_delegation_error("conflict", 409)
+    return _planning_delegation_error("unavailable", 503)
+
+
+def _planning_delegation_text(value: object, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    result = compact_text(value, max_length=limit)
+    return result or None
+
+
+def _planning_delegation_public(delegation: object) -> dict:
+    """Project the delegation lifecycle without exposing Hermes references.
+
+    Kanban task IDs, run/session identifiers, board binding IDs, audit details,
+    and artifacts remain private.  The selected Task detail/read bridge owns
+    any separately authorized artifact presentation.
+    """
+
+    if not isinstance(delegation, dict):
+        return {"available": False, "reason": "not_delegated"}
+    state = _planning_delegation_text(delegation.get("state"), 40)
+    if state is None:
+        return {"available": False, "reason": "unavailable"}
+    return {
+        "available": True,
+        "state": state,
+        "sync_state": _planning_delegation_text(
+            delegation.get("sync_state"), 40
+        ) or "pending",
+        "review_state": _planning_delegation_text(
+            delegation.get("review_state"), 40
+        ) or "pending",
+        "summary": _planning_delegation_text(delegation.get("summary"), 4000),
+        "latest_question": _planning_delegation_text(
+            delegation.get("latest_question"), 2000
+        ),
+        "last_outcome": _planning_delegation_text(
+            delegation.get("last_outcome"), 40
+        ),
+        "attempts": (
+            delegation.get("attempts")
+            if type(delegation.get("attempts")) is int
+            and 0 <= delegation["attempts"] <= 1000000
+            else 0
+        ),
+        "updated_at": _planning_delegation_text(delegation.get("updated_at"), 64),
+        "last_synced_at": _planning_delegation_text(
+            delegation.get("last_synced_at"), 64
+        ),
+        "artifact_count": (
+            delegation.get("artifact_count")
+            if type(delegation.get("artifact_count")) is int
+            and 0 <= delegation["artifact_count"] <= 1000000
+            else 0
+        ),
+    }
+
+
+def _planning_delegation_snapshot(task_id: str) -> tuple[dict, int]:
+    """Read the canonical Task plus its exact revision, never a JSON fallback."""
+
+    if not isinstance(task_id, str) or TASK_ID_PATTERN.fullmatch(task_id) is None:
+        raise TaskRepositoryValidationError("task_repository.task_invalid")
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise TaskRepositoryError("task_repository.unavailable")
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            snapshot = TaskRepository(connection).get(task_id)
+            return snapshot.document, snapshot.revision
+        finally:
+            connection.close()
+
+
+def _planning_delegation_payload(task_id: str) -> dict:
+    task, revision = _planning_delegation_snapshot(task_id)
+    return {
+        "schema_version": 1,
+        "task": {"id": task_id, "revision": revision},
+        "delegation": _planning_delegation_public(task.get("delegation")),
+    }
+
+
+def _planning_delegation_current_payload(task_id: str) -> tuple[dict, int]:
+    try:
+        return _planning_delegation_payload(task_id), 200
+    except TaskRepositoryValidationError:
+        return _planning_delegation_error("invalid", 400)
+    except TaskRepositoryConflict:
+        return _planning_delegation_error("not_found", 404)
+    except (TaskRepositoryError, MentatDatabaseError, sqlite3.Error, OSError):
+        return _planning_delegation_error("unavailable", 503)
+
+
+def _planning_delegation_digest(value: object) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _planning_delegation_confirmation_digest(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise DelegationReceiptValidationError("delegation_receipt.confirmation_invalid")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _planning_delegation_receipt_reserve(
+    *,
+    task_id: str,
+    task_revision: int,
+    action: str,
+    idempotency_key: str,
+    confirmation_id: str,
+    request: dict,
+    binding: object,
+    remote_revision: object,
+):
+    """Reserve an exact browser delivery before any Hermes mutation.
+
+    The raw idempotency key, target binding, and remote revision never leave
+    this function.  A non-terminal receipt deliberately blocks a retry: the
+    remote effect is ambiguous until separately reconciled.
+    """
+
+    key_digest = idempotency_key_digest(idempotency_key)
+    connection = connect_mentat_database(DATA_DIR)
+    try:
+        repository = DelegationActionReceiptRepository(connection)
+        receipt = repository.reserve(
+            key_digest=key_digest,
+            request_digest=_planning_delegation_digest(request),
+            task_id=task_id,
+            task_revision=task_revision,
+            action=action,
+            confirmation_digest=_planning_delegation_confirmation_digest(
+                confirmation_id
+            ),
+            delegation_binding_digest=_planning_delegation_digest(binding),
+            remote_revision_digest=_planning_delegation_digest(remote_revision),
+        )
+        return receipt
+    finally:
+        connection.close()
+
+
+def _planning_delegation_receipt_mark(
+    key_digest: str, state: str, result_task_revision: int | None = None
+) -> None:
+    connection = connect_mentat_database(DATA_DIR)
+    try:
+        DelegationActionReceiptRepository(connection).mark_outcome(
+            key_digest=key_digest,
+            state=state,
+            result_task_revision=result_task_revision,
+        )
+    finally:
+        connection.close()
+
+
+def _planning_delegation_receipt_submitting(key_digest: str) -> None:
+    connection = connect_mentat_database(DATA_DIR)
+    try:
+        DelegationActionReceiptRepository(connection).mark_submitting(
+            key_digest=key_digest
+        )
+    finally:
+        connection.close()
+
+
+def _planning_delegation_result_proof(task: dict, revision: int) -> str:
+    """Hash one private canonical result snapshot; never return its contents."""
+
+    return _planning_delegation_digest({"task": task, "revision": revision})
+
+
+def _planning_delegation_stage_verified_result(
+    task_id: str, key_digest: str,
+) -> int:
+    """Bind a completed local effect before marking the receipt accepted."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise TaskRepositoryError("task_repository.unavailable")
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            snapshot = TaskRepository(connection).get(task_id)
+            DelegationActionReceiptRepository(connection).stage_verified_result(
+                key_digest=key_digest,
+                result_task_revision=snapshot.revision,
+                result_proof_digest=_planning_delegation_result_proof(
+                    snapshot.document, snapshot.revision
+                ),
+            )
+            return snapshot.revision
+        finally:
+            connection.close()
+
+
+def _planning_delegation_indeterminate(key_digest: str) -> tuple[dict, int]:
+    """Record that the adapter effect cannot be proved, without retrying it."""
+
+    try:
+        _planning_delegation_receipt_mark(key_digest, "unknown")
+    except Exception:
+        # A submitted record is itself an indeterminate durable receipt.  Do
+        # not let a second persistence fault turn that ambiguity into a retry.
+        pass
+    return _planning_delegation_error("unknown", 409)
+
+
+def _planning_delegation_replay(task_id: str, receipt) -> tuple[dict, int] | None:
+    if receipt.state == "accepted":
+        current, status = _planning_delegation_current_payload(task_id)
+        if status != 200:
+            return current, status
+        return {"schema_version": 1, "action": receipt.action, "duplicate": True, **current}, 200
+    if receipt.state == "rejected":
+        return _planning_delegation_error("confirmation_stale", 409)
+    # A reserved/submitting/unknown/partial record can be a remote effect which
+    # cannot be proven from local state.  Never invoke the adapter again.
+    return _planning_delegation_error("unknown", 409)
+
+
+def _planning_delegation_receipt_lookup(
+    *,
+    task_id: str,
+    task_revision: int,
+    action: str,
+    idempotency_key: str,
+    confirmation_id: str,
+    request: dict,
+) -> tuple[dict, int] | None:
+    """Resolve an exact delivery replay before checking live availability.
+
+    A successful action normally advances the local Task revision, so a retry
+    cannot pass the fresh-action predicate.  The receipt's immutable request
+    fields are compared first; a reused key with any different browser input
+    fails closed rather than becoming a replay.
+    """
+
+    key_digest = idempotency_key_digest(idempotency_key)
+    connection = connect_mentat_database(DATA_DIR)
+    try:
+        receipt = DelegationActionReceiptRepository(connection).get(
+            key_digest=key_digest
+        )
+    finally:
+        connection.close()
+    if receipt is None:
+        return None
+    if (
+        receipt.task_id != task_id
+        or receipt.task_revision != task_revision
+        or receipt.action != action
+        or receipt.request_digest != _planning_delegation_digest(request)
+        or receipt.confirmation_digest
+        != _planning_delegation_confirmation_digest(confirmation_id)
+    ):
+        return _planning_delegation_error("conflict", 409)
+    return _planning_delegation_replay(task_id, receipt)
+
+
+def _planning_delegation_recovery_receipt(
+    task_id: str, payload: object,
+):
+    """Read one exact indeterminate delivery without exposing ledger data."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "confirmation_id", "idempotency_key"
+    }:
+        return None, _planning_delegation_error("invalid", 400)
+    try:
+        key_digest = idempotency_key_digest(payload["idempotency_key"])
+        confirmation_digest = _planning_delegation_confirmation_digest(
+            payload["confirmation_id"]
+        )
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            receipt = DelegationActionReceiptRepository(connection).get(
+                key_digest=key_digest
+            )
+        finally:
+            connection.close()
+    except DelegationReceiptValidationError:
+        return None, _planning_delegation_error("invalid", 400)
+    except (DelegationReceiptUnavailable, MentatDatabaseError, sqlite3.Error, OSError):
+        return None, _planning_delegation_error("unavailable", 503)
+    if (
+        receipt is None
+        or receipt.task_id != task_id
+        or receipt.confirmation_digest != confirmation_digest
+    ):
+        return None, _planning_delegation_error("conflict", 409)
+    return receipt, None
+
+
+def _planning_delegation_recover_staged_result(task_id: str, key_digest: str) -> bool:
+    """Accept only the exact persisted proof, under the task mutation lock."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise TaskRepositoryError("task_repository.unavailable")
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            repository = DelegationActionReceiptRepository(connection)
+            receipt = repository.get(key_digest=key_digest)
+            if (
+                receipt is None
+                or receipt.state not in {"submitting", "unknown", "partial"}
+                or receipt.result_task_revision is None
+                or receipt.result_proof_digest is None
+            ):
+                return False
+            snapshot = TaskRepository(connection).get(task_id)
+            if (
+                snapshot.revision != receipt.result_task_revision
+                or _planning_delegation_result_proof(
+                    snapshot.document, snapshot.revision
+                )
+                != receipt.result_proof_digest
+            ):
+                return False
+            repository.mark_outcome(
+                key_digest=key_digest,
+                state="accepted",
+                result_task_revision=snapshot.revision,
+            )
+            return True
+        finally:
+            connection.close()
+
+
+def mentat_planning_task_delegation_recover(
+    task_id: str, payload: object,
+) -> tuple[dict, int]:
+    """Reconcile one exact indeterminate receipt without repeating Hermes work."""
+
+    receipt, error = _planning_delegation_recovery_receipt(task_id, payload)
+    if error is not None:
+        return error
+    assert receipt is not None
+    replay = _planning_delegation_replay(task_id, receipt)
+    if receipt.state in {"accepted", "rejected"}:
+        assert replay is not None
+        return replay
+    if receipt.state == "reserved":
+        # Submission has not started, so no Hermes mutation could have run.
+        try:
+            connection = connect_mentat_database(DATA_DIR)
+            try:
+                DelegationActionReceiptRepository(connection).reject_unsubmitted(
+                    key_digest=receipt.key_digest
+                )
+            finally:
+                connection.close()
+        except (DelegationReceiptConflict, DelegationReceiptUnavailable, MentatDatabaseError, sqlite3.Error, OSError):
+            return _planning_delegation_error("unknown", 409)
+    else:
+        try:
+            if not _planning_delegation_recover_staged_result(
+                task_id, receipt.key_digest
+            ):
+                return _planning_delegation_error("unknown", 409)
+        except TaskRepositoryConflict:
+            return _planning_delegation_error("not_found", 404)
+        except (DelegationReceiptConflict, DelegationReceiptUnavailable, TaskRepositoryError, MentatDatabaseError, sqlite3.Error, OSError):
+            return _planning_delegation_error("unknown", 409)
+    current, status = _planning_delegation_current_payload(task_id)
+    if status != 200:
+        return current, status
+    return {
+        "schema_version": 1,
+        "action": receipt.action,
+        "recovered": True,
+        **current,
+    }, 200
+
+
+def _planning_delegation_expected_task(
+    task_id: str, expected_revision: object
+) -> tuple[dict | None, int | None, tuple[dict, int] | None]:
+    if type(expected_revision) is not int or expected_revision < 1:
+        return None, None, _planning_delegation_error("invalid", 400)
+    current, status = _planning_delegation_current_payload(task_id)
+    if status != 200:
+        return None, None, (current, status)
+    if current["task"]["revision"] != expected_revision:
+        return None, None, _planning_delegation_error("conflict", 409)
+    try:
+        task, revision = _planning_delegation_snapshot(task_id)
+    except TaskRepositoryConflict:
+        return None, None, _planning_delegation_error("not_found", 404)
+    except (TaskRepositoryError, MentatDatabaseError, sqlite3.Error, OSError):
+        return None, None, _planning_delegation_error("unavailable", 503)
+    if revision != expected_revision:
+        return None, None, _planning_delegation_error("conflict", 409)
+    return task, revision, None
+
+
+def _planning_delegation_delegate_intent(payload: object) -> tuple[dict | None, tuple[dict, int] | None]:
+    required = {
+        "expected_revision", "profile_id", "board_id", "workspace",
+        "instructions", "context_pack_id",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        return None, _planning_delegation_error("invalid", 400)
+    if not all(isinstance(payload.get(key), str) for key in required - {"expected_revision"}):
+        return None, _planning_delegation_error("invalid", 400)
+    return {
+        key: payload[key]
+        for key in ("profile_id", "board_id", "workspace", "instructions", "context_pack_id")
+    }, None
+
+
+def mentat_planning_task_delegation_options_payload(task_id: str) -> tuple[dict, int]:
+    """Read the bounded selectable targets for a new delegation."""
+
+    current, status = _planning_delegation_current_payload(task_id)
+    if status != 200:
+        return current, status
+    if current["delegation"]["available"]:
+        return {"schema_version": 1, **current, "options": {"available": False}}, 200
+    try:
+        adapter = kanban_adapter()
+        capabilities = adapter.detect_capabilities().get("capabilities", {})
+        profiles_payload = hermes_profiles_payload()
+        boards_payload = adapter.list_boards() if capabilities.get("boards.read") else {"ok": False}
+    except (OSError, RemoteHermesError, sqlite3.Error):
+        return _planning_delegation_error("unavailable", 503)
+    if (
+        not capabilities.get("tasks.create")
+        or profiles_payload.get("status") != "available"
+        or not boards_payload.get("ok")
+    ):
+        return {"schema_version": 1, **current, "options": {"available": False}}, 200
+    profiles = []
+    for profile in profiles_payload.get("profiles", [])[:128]:
+        if not isinstance(profile, dict):
+            continue
+        identifier = _planning_delegation_text(profile.get("id"), 80)
+        if identifier is None:
+            continue
+        profiles.append({"id": identifier, "name": _planning_delegation_text(profile.get("name"), 160) or identifier})
+    boards = []
+    for board in boards_payload.get("boards", [])[:128]:
+        if not isinstance(board, dict):
+            continue
+        identifier = _planning_delegation_text(board.get("id"), 64)
+        if identifier is None:
+            continue
+        boards.append({"id": identifier, "name": _planning_delegation_text(board.get("name"), 160) or identifier})
+    return {
+        "schema_version": 1,
+        **current,
+        "options": {
+            "available": bool(profiles and boards),
+            "profiles": profiles,
+            "boards": boards,
+            "workspaces": ["scratch", "worktree"],
+        },
+    }, 200
+
+
+def mentat_planning_task_delegation_preview(task_id: str, payload: object) -> tuple[dict, int]:
+    intent, error = _planning_delegation_delegate_intent(payload)
+    if error is not None:
+        return error
+    assert intent is not None and isinstance(payload, dict)
+    _task, _revision, error = _planning_delegation_expected_task(
+        task_id, payload["expected_revision"]
+    )
+    if error is not None:
+        return error
+    preview, status = preview_task_delegation(task_id, intent)
+    if status != 200:
+        return _planning_delegation_legacy_error(status)
+    current, current_status = _planning_delegation_current_payload(task_id)
+    if current_status != 200:
+        return current, current_status
+    return {
+        "schema_version": 1,
+        "action": "delegate",
+        **current,
+        "requires_confirmation": True,
+        "confirmation_id": preview["confirmation_id"],
+        "target": dict(preview["target"]),
+        "effects": list(preview.get("effects") or [])[:8],
+    }, 200
+
+
+def mentat_planning_task_delegate(task_id: str, payload: object) -> tuple[dict, int]:
+    if not isinstance(payload, dict) or set(payload) != {
+        "expected_revision", "profile_id", "board_id", "workspace", "instructions",
+        "context_pack_id", "confirmation_id", "idempotency_key",
+    } or not isinstance(payload.get("confirmation_id"), str) or not isinstance(payload.get("idempotency_key"), str):
+        return _planning_delegation_error("invalid", 400)
+    intent, error = _planning_delegation_delegate_intent({
+        key: payload.get(key) for key in (
+            "expected_revision", "profile_id", "board_id", "workspace", "instructions", "context_pack_id"
+        )
+    })
+    if error is not None:
+        return error
+    assert intent is not None
+    request = {
+        "action": "delegate",
+        "revision": payload["expected_revision"],
+        "intent": intent,
+    }
+    try:
+        replay = _planning_delegation_receipt_lookup(
+            task_id=task_id,
+            task_revision=payload["expected_revision"],
+            action="delegate",
+            idempotency_key=payload["idempotency_key"],
+            confirmation_id=payload["confirmation_id"],
+            request=request,
+        )
+        if replay is not None:
+            return replay
+    except DelegationReceiptValidationError:
+        return _planning_delegation_error("invalid", 400)
+    except (DelegationReceiptUnavailable, MentatDatabaseError, sqlite3.Error, OSError):
+        return _planning_delegation_error("unavailable", 503)
+    task, revision, error = _planning_delegation_expected_task(task_id, payload["expected_revision"])
+    if error is not None:
+        return error
+    assert task is not None and revision is not None
+    preview, status = preview_task_delegation(task_id, intent)
+    if status != 200:
+        return _planning_delegation_legacy_error(status)
+    if not hmac.compare_digest(payload["confirmation_id"], str(preview.get("confirmation_id") or "")):
+        return _planning_delegation_error("confirmation_stale", 409)
+    try:
+        receipt = _planning_delegation_receipt_reserve(
+            task_id=task_id, task_revision=revision, action="delegate",
+            idempotency_key=payload["idempotency_key"], confirmation_id=payload["confirmation_id"],
+            request=request,
+            binding={
+                "profile_id": intent["profile_id"],
+                "board_id": intent["board_id"],
+                "connection": kanban_adapter_binding(kanban_adapter()),
+            },
+            remote_revision={"kind": "delegate"},
+        )
+        if receipt.duplicate and (replay := _planning_delegation_replay(task_id, receipt)) is not None:
+            return replay
+        _planning_delegation_receipt_submitting(receipt.key_digest)
+    except DelegationReceiptValidationError:
+        return _planning_delegation_error("invalid", 400)
+    except DelegationReceiptConflict:
+        return _planning_delegation_error("conflict", 409)
+    except (DelegationReceiptUnavailable, MentatDatabaseError, sqlite3.Error, OSError):
+        return _planning_delegation_error("unavailable", 503)
+    try:
+        result, result_status = delegate_confirmed_task(task_id, {**intent, "confirmed": True, "confirmation_id": payload["confirmation_id"]})
+        outcome = "partial" if result.get("partial") else ("accepted" if result_status in {200, 201} else "rejected")
+        if outcome == "accepted":
+            result_revision = _planning_delegation_stage_verified_result(
+                task_id, receipt.key_digest
+            )
+            _planning_delegation_receipt_mark(
+                receipt.key_digest, outcome, result_revision
+            )
+        else:
+            _planning_delegation_receipt_mark(receipt.key_digest, outcome)
+    except Exception:
+        return _planning_delegation_indeterminate(receipt.key_digest)
+    if outcome != "accepted":
+        if outcome == "partial":
+            return _planning_delegation_error("partial", 502)
+        return _planning_delegation_legacy_error(result_status)
+    current, current_status = _planning_delegation_current_payload(task_id)
+    if current_status != 200:
+        return current, current_status
+    return {"schema_version": 1, "action": "delegate", "duplicate": False, **current}, 201
+
+
+def _planning_delegation_action_intent(payload: object, *, confirmed: bool) -> tuple[dict | None, tuple[dict, int] | None]:
+    base = {"expected_revision", "action"}
+    suffix = {"confirmation_id", "idempotency_key"} if confirmed else set()
+    if not isinstance(payload, dict) or set(payload) not in (base | suffix, base | suffix | {"note"}):
+        return None, _planning_delegation_error("invalid", 400)
+    if type(payload.get("expected_revision")) is not int or not isinstance(payload.get("action"), str):
+        return None, _planning_delegation_error("invalid", 400)
+    if confirmed and (not isinstance(payload.get("confirmation_id"), str) or not isinstance(payload.get("idempotency_key"), str)):
+        return None, _planning_delegation_error("invalid", 400)
+    action = payload["action"]
+    note = payload.get("note")
+    if note is not None and not isinstance(note, str):
+        return None, _planning_delegation_error("invalid", 400)
+    core = {"action": action}
+    if note is not None:
+        core["note"] = note
+    return core, None
+
+
+def mentat_planning_task_delegation_action_preview(task_id: str, payload: object) -> tuple[dict, int]:
+    intent, error = _planning_delegation_action_intent(payload, confirmed=False)
+    if error is not None:
+        return error
+    assert intent is not None and isinstance(payload, dict)
+    _task, _revision, error = _planning_delegation_expected_task(task_id, payload["expected_revision"])
+    if error is not None:
+        return error
+    preview, status = preview_delegation_action(task_id, intent)
+    if status != 200:
+        return _planning_delegation_legacy_error(status)
+    current, current_status = _planning_delegation_current_payload(task_id)
+    if current_status != 200:
+        return current, current_status
+    return {
+        "schema_version": 1, "action": preview["action"], **current,
+        "requires_confirmation": True, "confirmation_id": preview["confirmation_id"],
+        "effects": list(preview.get("effects") or [])[:4],
+    }, 200
+
+
+def mentat_planning_task_delegation_action(task_id: str, payload: object) -> tuple[dict, int]:
+    intent, error = _planning_delegation_action_intent(payload, confirmed=True)
+    if error is not None:
+        return error
+    assert intent is not None and isinstance(payload, dict)
+    normalized_action = compact_text(payload["action"], max_length=40).lower()
+    request = {
+        "action": normalized_action,
+        "revision": payload["expected_revision"],
+        "note": intent.get("note"),
+    }
+    try:
+        replay = _planning_delegation_receipt_lookup(
+            task_id=task_id,
+            task_revision=payload["expected_revision"],
+            action=normalized_action,
+            idempotency_key=payload["idempotency_key"],
+            confirmation_id=payload["confirmation_id"],
+            request=request,
+        )
+        if replay is not None:
+            return replay
+    except DelegationReceiptValidationError:
+        return _planning_delegation_error("invalid", 400)
+    except (DelegationReceiptUnavailable, MentatDatabaseError, sqlite3.Error, OSError):
+        return _planning_delegation_error("unavailable", 503)
+    task, revision, error = _planning_delegation_expected_task(task_id, payload["expected_revision"])
+    if error is not None:
+        return error
+    assert task is not None and revision is not None
+    preview, status = preview_delegation_action(task_id, intent)
+    if status != 200:
+        return _planning_delegation_legacy_error(status)
+    if not hmac.compare_digest(payload["confirmation_id"], str(preview.get("confirmation_id") or "")):
+        return _planning_delegation_error("confirmation_stale", 409)
+    delegation = task.get("delegation") if isinstance(task.get("delegation"), dict) else {}
+    try:
+        receipt = _planning_delegation_receipt_reserve(
+            task_id=task_id, task_revision=revision, action=preview["action"],
+            idempotency_key=payload["idempotency_key"], confirmation_id=payload["confirmation_id"],
+            request=request,
+            binding=delegation_action_binding(delegation), remote_revision=preview.get("remote_revision"),
+        )
+        if receipt.duplicate and (replay := _planning_delegation_replay(task_id, receipt)) is not None:
+            return replay
+        _planning_delegation_receipt_submitting(receipt.key_digest)
+    except DelegationReceiptValidationError:
+        return _planning_delegation_error("invalid", 400)
+    except DelegationReceiptConflict:
+        return _planning_delegation_error("conflict", 409)
+    except (DelegationReceiptUnavailable, MentatDatabaseError, sqlite3.Error, OSError):
+        return _planning_delegation_error("unavailable", 503)
+    try:
+        result, result_status = execute_confirmed_delegation_action(task_id, {**intent, "confirmed": True, "confirmation_id": payload["confirmation_id"]})
+        outcome = "partial" if result.get("partial") else ("accepted" if result_status == 200 else "rejected")
+        if outcome == "accepted":
+            result_revision = _planning_delegation_stage_verified_result(
+                task_id, receipt.key_digest
+            )
+            _planning_delegation_receipt_mark(
+                receipt.key_digest, outcome, result_revision
+            )
+        else:
+            _planning_delegation_receipt_mark(receipt.key_digest, outcome)
+    except Exception:
+        return _planning_delegation_indeterminate(receipt.key_digest)
+    if outcome != "accepted":
+        if outcome == "partial":
+            return _planning_delegation_error("partial", 502)
+        return _planning_delegation_legacy_error(result_status)
+    current, current_status = _planning_delegation_current_payload(task_id)
+    if current_status != 200:
+        return current, current_status
+    return {"schema_version": 1, "action": preview["action"], "duplicate": False, **current}, 200
+
+
+def mentat_planning_task_delegation_refresh(task_id: str, payload: object) -> tuple[dict, int]:
+    if not isinstance(payload, dict) or set(payload) != {"expected_revision"}:
+        return _planning_delegation_error("invalid", 400)
+    _task, _revision, error = _planning_delegation_expected_task(task_id, payload["expected_revision"])
+    if error is not None:
+        return error
+    _result, status = refresh_task_delegation(task_id)
+    if status != 200:
+        return _planning_delegation_legacy_error(status)
+    current, current_status = _planning_delegation_current_payload(task_id)
+    if current_status != 200:
+        return current, current_status
+    return {"schema_version": 1, "action": "refresh", **current}, 200
 
 
 def reconcile_orchestration_runs(payload=None):

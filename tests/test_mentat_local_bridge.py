@@ -176,6 +176,195 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual((rejected, body), (404, {"error": "bridge_route_not_found"}))
         self.assertEqual(delegation.call_count, 1)
 
+    @staticmethod
+    def _delegation_api_current(*, revision: int = 3) -> dict:
+        return {
+            "schema_version": 1,
+            "task": {"id": "task_delegation", "revision": revision},
+            "delegation": {
+                "available": True,
+                "state": "ready_for_review",
+                "sync_state": "synced",
+                "review_state": "pending",
+                "summary": "A bounded public result",
+                "latest_question": None,
+                "last_outcome": "completed",
+                "attempts": 2,
+                "updated_at": "2026-09-02T12:00:00+00:00",
+                "last_synced_at": "2026-09-02T11:59:00+00:00",
+                "artifact_count": 1,
+            },
+        }
+
+    def test_planning_delegation_options_and_previews_are_fixed_safe_projections(self):
+        current = self._delegation_api_current()
+        options_source = {
+            **current,
+            "options": {
+                "available": True,
+                "profiles": [{"id": "researcher", "name": "Researcher"}],
+                "boards": [{"id": "default", "name": "Default"}],
+                "workspaces": ["scratch", "worktree"],
+            },
+        }
+        with patch.object(
+            server,
+            "mentat_planning_task_delegation_options_payload",
+            return_value=(options_source, 200),
+        ):
+            options, status = local_bridge.bridge_planning_task_delegation_options_payload(
+                "task_delegation"
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(options["task"], current["task"])
+        self.assertEqual(options["options"], options_source["options"])
+        self.assertEqual(options["delegation"]["artifact_count"], 1)
+        with patch.object(
+            server,
+            "mentat_planning_task_delegation_options_payload",
+            return_value=({**options_source, "connection_binding_id": "private-binding"}, 200),
+        ):
+            malformed, malformed_status = (
+                local_bridge.bridge_planning_task_delegation_options_payload(
+                    "task_delegation"
+                )
+            )
+        self.assertEqual((malformed_status, malformed["status"]), (500, "error"))
+        self.assertNotIn("private-binding", json.dumps(malformed))
+
+        preview_source = {
+            **current,
+            "action": "delegate",
+            "requires_confirmation": True,
+            "confirmation_id": "task_delegate_" + "a" * 24,
+            "target": {
+                "profile_id": "researcher", "board_id": "default",
+                "workspace": "scratch",
+            },
+            "effects": ["Create one Hermes task."],
+        }
+        request = {
+            "expected_revision": 3,
+            "profile_id": "researcher",
+            "board_id": "default",
+            "workspace": "scratch",
+            "instructions": "Use primary\nsources.",
+            "context_pack_id": "",
+        }
+        with patch.object(
+            server,
+            "mentat_planning_task_delegation_preview",
+            return_value=(preview_source, 200),
+        ):
+            preview, status = local_bridge.bridge_planning_task_delegation_preview_payload(
+                "task_delegation", request
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["target"], preview_source["target"])
+        self.assertEqual(preview["confirmation_id"], preview_source["confirmation_id"])
+        self.assertNotIn("private", json.dumps(preview))
+
+        action_preview_source = {
+            **current,
+            "action": "accept",
+            "requires_confirmation": True,
+            "confirmation_id": "delegation_action_" + "b" * 24,
+            "effects": ["Accept the result."],
+        }
+        with patch.object(
+            server,
+            "mentat_planning_task_delegation_action_preview",
+            return_value=(action_preview_source, 200),
+        ):
+            action_preview, status = local_bridge.bridge_planning_task_delegation_action_preview_payload(
+                "task_delegation", {"expected_revision": 3, "action": "accept"}
+            )
+        self.assertEqual((status, action_preview["action"]), (200, "accept"))
+        self.assertEqual(action_preview["effects"], ["Accept the result."])
+
+    def test_planning_delegation_actions_routes_and_bad_shapes_fail_closed(self):
+        current = self._delegation_api_current(revision=4)
+        accepted_source = {**current, "action": "accept", "duplicate": False}
+        with patch.object(
+            server,
+            "mentat_planning_task_delegation_action",
+            return_value=(accepted_source, 200),
+        ) as action:
+            payload, status = local_bridge.bridge_planning_task_delegation_action_payload(
+                "task_delegation",
+                {
+                    "expected_revision": 4,
+                    "action": "accept",
+                    "confirmation_id": "delegation_action_" + "c" * 24,
+                    "idempotency_key": "delegation-idempotency-key-0001",
+                },
+            )
+        self.assertEqual((status, payload["action"], payload["duplicate"]), (200, "accept", False))
+        action.assert_called_once()
+        invalid, invalid_status = local_bridge.bridge_planning_task_delegation_action_payload(
+            "task_delegation",
+            {"expected_revision": 4, "action": "accept", "note": "not allowed"},
+        )
+        self.assertEqual((invalid_status, invalid["status"]), (400, "invalid"))
+
+        recovered_source = {
+            **current,
+            "action": "delegate",
+            "recovered": True,
+        }
+        with patch.object(
+            server,
+            "mentat_planning_task_delegation_recover",
+            return_value=(recovered_source, 200),
+        ) as recover:
+            recovered, recovered_status = (
+                local_bridge.bridge_planning_task_delegation_recover_payload(
+                    "task_delegation",
+                    {
+                        "confirmation_id": "task_delegate_" + "d" * 24,
+                        "idempotency_key": "delegation-idempotency-key-0003",
+                    },
+                )
+            )
+        self.assertEqual(
+            (recovered_status, recovered["action"], recovered["recovered"]),
+            (200, "delegate", True),
+        )
+        recover.assert_called_once()
+
+        ready = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "task": current["task"],
+            "delegation": current["delegation"],
+            "action": "refresh",
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_planning_task_delegation_refresh_payload",
+            return_value=(ready, 200),
+        ) as refresh:
+            status, returned, _headers = self.request(
+                method="POST",
+                path=local_bridge.BRIDGE_PLANNING_TASK_DELEGATION_REFRESH_PATH,
+                headers={"Content-Type": "application/json"},
+                body=b'{"task_id":"task_delegation","expected_revision":4}',
+            )
+        self.assertEqual((status, returned), (200, ready))
+        refresh.assert_called_once_with("task_delegation", {"expected_revision": 4})
+        for path, body, expected in (
+            (local_bridge.BRIDGE_PLANNING_TASK_DELEGATION_PREVIEW_PATH, b'{"task_id":"task_delegation","expected_revision":4}', (404, {"error": "bridge_route_not_found"})),
+            (local_bridge.BRIDGE_PLANNING_TASK_DELEGATION_ACTION_PATH, b'{"task_id":"task_delegation","expected_revision":4,"action":["accept"]}', (404, {"error": "bridge_route_not_found"})),
+            (local_bridge.BRIDGE_PLANNING_TASK_DELEGATION_REFRESH_PATH, b'{"task_id":"task_delegation","expected_revision":4,"extra":true}', (404, {"error": "bridge_route_not_found"})),
+            (local_bridge.BRIDGE_PLANNING_TASK_DELEGATION_RECOVER_PATH, b'{"task_id":"task_delegation","confirmation_id":"task_delegate_aaaaaaaaaaaaaaaaaaaaaaaa","idempotency_key":"too-short"}', (400, {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "invalid"})),
+        ):
+            rejected, response, _headers = self.request(
+                method="POST", path=path, headers={"Content-Type": "application/json"}, body=body
+            )
+            self.assertEqual((rejected, response), expected)
+
     def test_planning_execution_projection_and_dynamic_actions_use_the_fixed_contract(self):
         task = {
             "attention_reasons": [], "assigned_agent_id": "agent_main",

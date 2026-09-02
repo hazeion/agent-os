@@ -11,8 +11,10 @@ boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -91,6 +93,7 @@ ATTACHMENT_DATABASE_SCHEMA_VERSION = 15
 PLANNING_CONTEXT_DATABASE_SCHEMA_VERSION = 17
 PROJECT_DATABASE_SCHEMA_VERSION = 18
 TASK_EXECUTION_DATABASE_SCHEMA_VERSION = 19
+TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION = 21
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -108,9 +111,26 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     PLANNING_CONTEXT_DATABASE_SCHEMA_VERSION,
     PROJECT_DATABASE_SCHEMA_VERSION,
     TASK_EXECUTION_DATABASE_SCHEMA_VERSION,
+    TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
+TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
+SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+DELEGATION_RECEIPT_ACTIONS = frozenset(
+    {
+        "delegate",
+        "accept",
+        "reply",
+        "retry",
+        "stop",
+        "request_revision",
+        "mark_blocked",
+    }
+)
+DELEGATION_RECEIPT_STATES = frozenset(
+    {"reserved", "submitting", "accepted", "rejected", "unknown", "partial"}
+)
 
 
 class PrivateConsoleUnitError(OSError):
@@ -773,6 +793,80 @@ def _sqlite_backup(
         destination.chmod(0o600)
 
 
+def _valid_receipt_timestamp(value: object) -> bool:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return False
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is not None
+    except ValueError:
+        return False
+
+
+def _validate_task_delegation_action_receipts(connection: sqlite3.Connection) -> None:
+    """Reject corrupt schema-21 receipts before backup or restore accepts them."""
+
+    rows = connection.execute(
+        "SELECT key_digest, request_digest, task_id, task_revision, action, "
+        "confirmation_digest, delegation_binding_digest, remote_revision_digest, "
+        "state, result_task_revision, result_proof_digest, created_at, updated_at, expires_at "
+        "FROM mentat_task_delegation_action_receipts"
+    ).fetchall()
+    for row in rows:
+        (
+            key_digest,
+            request_digest,
+            task_id,
+            task_revision,
+            action,
+            confirmation_digest,
+            binding_digest,
+            remote_revision_digest,
+            state,
+            result_revision,
+            result_proof_digest,
+            created_at,
+            updated_at,
+            expires_at,
+        ) = row
+        digests = (
+            key_digest,
+            request_digest,
+            confirmation_digest,
+            binding_digest,
+            remote_revision_digest,
+        )
+        terminal = state in {"accepted", "rejected"}
+        if (
+            not all(isinstance(value, str) and SHA256_RE.fullmatch(value) for value in digests)
+            or not isinstance(task_id, str)
+            or TASK_ID_RE.fullmatch(task_id) is None
+            or type(task_revision) is not int
+            or task_revision < 1
+            or action not in DELEGATION_RECEIPT_ACTIONS
+            or state not in DELEGATION_RECEIPT_STATES
+            or result_revision is not None
+            and (type(result_revision) is not int or result_revision < 1)
+            or state == "accepted" and result_revision is None
+            or result_proof_digest is not None
+            and (
+                not isinstance(result_proof_digest, str)
+                or SHA256_RE.fullmatch(result_proof_digest) is None
+            )
+            or state == "accepted" and result_proof_digest is None
+            or not _valid_receipt_timestamp(created_at)
+            or not _valid_receipt_timestamp(updated_at)
+            or terminal
+            and (
+                isinstance(expires_at, bool)
+                or not isinstance(expires_at, (int, float))
+                or not math.isfinite(float(expires_at))
+                or not float(expires_at) > 0
+            )
+            or not terminal and expires_at is not None
+        ):
+            raise PrivateConsoleUnitError("private_delegation_receipt_invalid")
+
+
 def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[tuple[str, str, int], ...]:
     retained = tuple(run_ids)
     connection = sqlite3.connect(path)
@@ -788,6 +882,8 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
         signature_state = _schema_signature_state(connection, schema_version)
         if signature_state == "invalid":
             raise PrivateConsoleUnitError("private_database_schema_invalid")
+        if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
+            _validate_task_delegation_action_receipts(connection)
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
@@ -894,6 +990,8 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             )
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
+        if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
+            _validate_task_delegation_action_receipts(connection)
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _sqlite_run_history(path)
@@ -919,6 +1017,8 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
         signature_state = _schema_signature_state(connection, schema_version)
         if signature_state == "invalid":
             raise PrivateConsoleUnitError("private_database_schema_invalid")
+        if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
+            _validate_task_delegation_action_receipts(connection)
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:

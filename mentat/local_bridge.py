@@ -53,6 +53,13 @@ BRIDGE_PLANNING_TASK_PATH = "/bridge/v1/agent-console/planning-task"
 BRIDGE_PLANNING_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail"
 BRIDGE_PLANNING_TASK_EXECUTION_PATH = "/bridge/v1/agent-console/planning-task-execution"
 BRIDGE_PLANNING_TASK_DELEGATION_PATH = "/bridge/v1/agent-console/planning-task-delegation"
+BRIDGE_PLANNING_TASK_DELEGATION_OPTIONS_PATH = "/bridge/v1/agent-console/planning-task-delegation/options"
+BRIDGE_PLANNING_TASK_DELEGATION_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-delegation/preview"
+BRIDGE_PLANNING_TASK_DELEGATION_DELEGATE_PATH = "/bridge/v1/agent-console/planning-task-delegation/delegate"
+BRIDGE_PLANNING_TASK_DELEGATION_ACTION_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-delegation/action/preview"
+BRIDGE_PLANNING_TASK_DELEGATION_ACTION_PATH = "/bridge/v1/agent-console/planning-task-delegation/action"
+BRIDGE_PLANNING_TASK_DELEGATION_REFRESH_PATH = "/bridge/v1/agent-console/planning-task-delegation/refresh"
+BRIDGE_PLANNING_TASK_DELEGATION_RECOVER_PATH = "/bridge/v1/agent-console/planning-task-delegation/recover"
 BRIDGE_PLANNING_TASK_RUN_ONCE_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once/preview"
 BRIDGE_PLANNING_TASK_RUN_ONCE_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once"
 BRIDGE_PLANNING_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/review"
@@ -108,6 +115,9 @@ _LINK_PREVIEW_IMAGE_ID = re.compile(r"[0-9a-f]{32}\Z")
 _ATTACHMENT_ID = re.compile(r"attachment_[0-9a-f]{32}\Z")
 _CONTEXT_PACK_ID = re.compile(r"pack_[0-9a-f]{16}\Z")
 _CONTEXT_PACK_REVISION = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_PLANNING_DELEGATION_CONFIRMATION = re.compile(
+    r"(?:task_delegate|delegation_action)_[0-9a-f]{24}\Z"
+)
 _SAFE_UPLOAD_CONTENT_TYPES = frozenset({
     "application/json",
     "application/javascript",
@@ -1999,6 +2009,549 @@ def bridge_planning_task_delegation_payload(
         }, 200
     except Exception:
         return _planning_failure("error", 500)
+
+
+_PLANNING_DELEGATION_STATES = frozenset({
+    "queued", "running", "needs_input", "blocked", "ready_for_review",
+    "completed", "failed", "cancelled",
+})
+_PLANNING_DELEGATION_SYNC_STATES = frozenset({"pending", "synced", "stale", "error"})
+_PLANNING_DELEGATION_REVIEW_STATES = frozenset({
+    "pending", "accepted", "revision_requested", "blocked",
+})
+_PLANNING_DELEGATION_OUTCOMES = frozenset({
+    "completed", "blocked", "failed", "cancelled", "timed_out", "reclaimed",
+})
+_PLANNING_DELEGATION_ACTIONS = frozenset({
+    "delegate", "accept", "reply", "retry", "stop", "request_revision",
+    "mark_blocked",
+})
+_PLANNING_DELEGATION_NOTE_ACTIONS = frozenset({
+    "reply", "request_revision", "mark_blocked",
+})
+
+
+def _planning_delegation_failure(status: int) -> tuple[dict[str, object], int]:
+    """Map server-side delegation errors to a fixed public outcome."""
+
+    state, code = {
+        400: ("invalid", 400),
+        404: ("not_found", 404),
+        409: ("conflict", 409),
+        503: ("unavailable", 503),
+    }.get(status, ("unavailable", 503) if status == 502 else ("error", 500))
+    return _planning_failure(state, code)
+
+
+def _planning_delegation_task(value: object, expected_task_id: str) -> dict[str, object]:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"id", "revision"}
+        or value.get("id") != expected_task_id
+        or type(value.get("revision")) is not int
+        or value["revision"] < 1
+    ):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    return {"id": expected_task_id, "revision": value["revision"]}
+
+
+def _planning_delegation_public_state(value: object) -> dict[str, object]:
+    """Validate the bounded delegation lifecycle emitted by the server API."""
+
+    if not isinstance(value, dict) or not isinstance(value.get("available"), bool):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    if value["available"] is False:
+        if set(value) != {"available", "reason"} or value.get("reason") not in {
+            "not_delegated", "unavailable",
+        }:
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        return {"available": False, "reason": value["reason"]}
+    required = {
+        "available", "state", "sync_state", "review_state", "summary",
+        "latest_question", "last_outcome", "attempts", "updated_at",
+        "last_synced_at", "artifact_count",
+    }
+    if (
+        set(value) != required
+        or value.get("state") not in _PLANNING_DELEGATION_STATES
+        or value.get("sync_state") not in _PLANNING_DELEGATION_SYNC_STATES
+        or value.get("review_state") not in _PLANNING_DELEGATION_REVIEW_STATES
+        or value.get("summary") is not None
+        and not _planning_delegation_text(value["summary"], 4000)
+        or value.get("latest_question") is not None
+        and not _planning_delegation_text(value["latest_question"], 2000)
+        or value.get("last_outcome") is not None
+        and value["last_outcome"] not in _PLANNING_DELEGATION_OUTCOMES
+        or type(value.get("attempts")) is not int
+        or not 0 <= value["attempts"] <= 1_000_000
+        or not _valid_timestamp(value.get("updated_at"))
+        or value.get("last_synced_at") is not None
+        and not _valid_timestamp(value["last_synced_at"])
+        or type(value.get("artifact_count")) is not int
+        or not 0 <= value["artifact_count"] <= 1_000_000
+    ):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    return {key: value[key] for key in sorted(required)}
+
+
+def _planning_delegation_current(
+    source: object, expected_task_id: str
+) -> dict[str, object]:
+    if (
+        not isinstance(source, dict)
+        or set(source) != {"schema_version", "task", "delegation"}
+        or source.get("schema_version") != 1
+    ):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    return {
+        "schema_version": 1,
+        "task": _planning_delegation_task(source.get("task"), expected_task_id),
+        "delegation": _planning_delegation_public_state(source.get("delegation")),
+    }
+
+
+def _planning_delegation_identifier(value: object, maximum: int) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= maximum
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value) is not None
+    )
+
+
+def _planning_delegation_input_text(value: object, maximum: int) -> bool:
+    """Accept bounded user-authored multiline input, never C0 controls."""
+
+    return (
+        isinstance(value, str)
+        and len(value) <= maximum
+        and re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", value) is None
+    )
+
+
+def _planning_delegation_options(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or not isinstance(value.get("available"), bool):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    if value["available"] is False:
+        if set(value) != {"available"}:
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        return {"available": False}
+    required = {"available", "profiles", "boards", "workspaces"}
+    profiles = value.get("profiles")
+    boards = value.get("boards")
+    workspaces = value.get("workspaces")
+    if (
+        set(value) != required
+        or not isinstance(profiles, list)
+        or not isinstance(boards, list)
+        or not isinstance(workspaces, list)
+        or not 1 <= len(profiles) <= 128
+        or not 1 <= len(boards) <= 128
+        or workspaces != ["scratch", "worktree"]
+    ):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+
+    def public_targets(items: list[object], maximum: int) -> list[dict[str, str]]:
+        public: list[dict[str, str]] = []
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"id", "name"}
+                or not _planning_delegation_identifier(item.get("id"), maximum)
+                or not _planning_text(item.get("name"), 160)
+            ):
+                raise BridgeConversationProjectionError("planning_delegation_invalid")
+            public.append({"id": item["id"], "name": item["name"]})
+        if len({item["id"] for item in public}) != len(public):
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        return public
+
+    return {
+        "available": True,
+        "profiles": public_targets(profiles, 80),
+        "boards": public_targets(boards, 64),
+        "workspaces": list(workspaces),
+    }
+
+
+def _planning_delegation_confirmation(value: object, *, action: str) -> str:
+    expected_prefix = "task_delegate" if action == "delegate" else "delegation_action"
+    if (
+        not isinstance(value, str)
+        or _PLANNING_DELEGATION_CONFIRMATION.fullmatch(value) is None
+        or not value.startswith(expected_prefix + "_")
+    ):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    return value
+
+
+def _planning_delegation_effects(value: object, maximum: int) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or len(value) > maximum
+        or any(not _planning_text(item, 500) for item in value)
+    ):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    return list(value)
+
+
+def _planning_delegation_ready(
+    source: dict[str, object], *, action: str | None = None, duplicate: bool | None = None
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        **source,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": "ready",
+    }
+    if action is not None:
+        result["action"] = action
+    if duplicate is not None:
+        result["duplicate"] = duplicate
+    return result
+
+
+def bridge_planning_task_delegation_options_payload(
+    task_id: str,
+) -> tuple[dict[str, object], int]:
+    if not isinstance(task_id, str) or _TASK_ID.fullmatch(task_id) is None:
+        return _planning_delegation_failure(400)
+    try:
+        from server import mentat_planning_task_delegation_options_payload
+
+        source, status = mentat_planning_task_delegation_options_payload(task_id)
+        if status != 200:
+            return _planning_delegation_failure(status)
+        if not isinstance(source, dict) or set(source) != {
+            "schema_version", "task", "delegation", "options",
+        }:
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        current = _planning_delegation_current(
+            {key: source[key] for key in ("schema_version", "task", "delegation")},
+            task_id,
+        )
+        return _planning_delegation_ready({
+            **current,
+            "options": _planning_delegation_options(source.get("options")),
+        }), 200
+    except Exception:
+        return _planning_delegation_failure(500)
+
+
+def _planning_delegation_delegate_request(
+    task_id: str, payload: object, *, confirmed: bool
+) -> dict[str, object] | None:
+    required = {
+        "expected_revision", "profile_id", "board_id", "workspace",
+        "instructions", "context_pack_id",
+    }
+    if confirmed:
+        required |= {"confirmation_id", "idempotency_key"}
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != required
+        or type(payload.get("expected_revision")) is not int
+        or payload["expected_revision"] < 1
+        or not _planning_delegation_identifier(payload.get("profile_id"), 80)
+        or not _planning_delegation_identifier(payload.get("board_id"), 64)
+        or payload.get("workspace") not in {"scratch", "worktree"}
+        or not _planning_delegation_input_text(payload.get("instructions"), 8000)
+        or not isinstance(payload.get("context_pack_id"), str)
+        or payload["context_pack_id"]
+        and _CONTEXT_PACK_ID.fullmatch(payload["context_pack_id"]) is None
+    ):
+        return None
+    if confirmed:
+        try:
+            _planning_delegation_confirmation(
+                payload.get("confirmation_id"), action="delegate"
+            )
+            key_bytes = payload["idempotency_key"].encode("utf-8")
+        except (AttributeError, UnicodeEncodeError, BridgeConversationProjectionError):
+            return None
+        if (
+            not 16 <= len(key_bytes) <= 256
+            or re.search(r"[\x00-\x1f\x7f]", payload["idempotency_key"]) is not None
+        ):
+            return None
+    return {key: payload[key] for key in sorted(required)}
+
+
+def _planning_delegation_preview_payload(
+    task_id: str, payload: object, *, action: str
+) -> tuple[dict[str, object], int]:
+    try:
+        if not isinstance(payload, dict):
+            return _planning_delegation_failure(400)
+        from server import (
+            mentat_planning_task_delegation_action_preview,
+            mentat_planning_task_delegation_preview,
+        )
+
+        server_payload, status = (
+            mentat_planning_task_delegation_preview(task_id, payload)
+            if action == "delegate"
+            else mentat_planning_task_delegation_action_preview(task_id, payload)
+        )
+        if status != 200:
+            return _planning_delegation_failure(status)
+        required = {
+            "schema_version", "action", "task", "delegation",
+            "requires_confirmation", "confirmation_id", "effects",
+        }
+        if action == "delegate":
+            required.add("target")
+        if not isinstance(server_payload, dict) or set(server_payload) != required:
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        current = _planning_delegation_current(
+            {key: server_payload[key] for key in ("schema_version", "task", "delegation")},
+            task_id,
+        )
+        source_action = server_payload.get("action")
+        if (
+            source_action != action
+            or server_payload.get("requires_confirmation") is not True
+        ):
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        public: dict[str, object] = {
+            **current,
+            "action": action,
+            "requires_confirmation": True,
+            "confirmation_id": _planning_delegation_confirmation(
+                server_payload.get("confirmation_id"), action=action
+            ),
+            "effects": _planning_delegation_effects(
+                server_payload.get("effects"), 8 if action == "delegate" else 4
+            ),
+        }
+        if action == "delegate":
+            target = server_payload.get("target")
+            if (
+                not isinstance(target, dict)
+                or set(target) != {"profile_id", "board_id", "workspace"}
+                or not _planning_delegation_identifier(target.get("profile_id"), 80)
+                or not _planning_delegation_identifier(target.get("board_id"), 64)
+                or target.get("workspace") not in {"scratch", "worktree"}
+            ):
+                raise BridgeConversationProjectionError("planning_delegation_invalid")
+            public["target"] = dict(target)
+        return _planning_delegation_ready(public, action=action), 200
+    except Exception:
+        return _planning_delegation_failure(500)
+
+
+def bridge_planning_task_delegation_preview_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    request = _planning_delegation_delegate_request(task_id, payload, confirmed=False)
+    if request is None:
+        return _planning_delegation_failure(400)
+    return _planning_delegation_preview_payload(task_id, request, action="delegate")
+
+
+def _planning_delegation_action_request(
+    task_id: str, payload: object, *, confirmed: bool
+) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    action = payload.get("action")
+    if not isinstance(action, str):
+        return None
+    required = {"expected_revision", "action"}
+    if action in _PLANNING_DELEGATION_NOTE_ACTIONS:
+        required.add("note")
+    elif "note" in payload:
+        return None
+    if confirmed:
+        required |= {"confirmation_id", "idempotency_key"}
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or set(payload) != required
+        or type(payload.get("expected_revision")) is not int
+        or payload["expected_revision"] < 1
+        or action not in _PLANNING_DELEGATION_ACTIONS - {"delegate"}
+    ):
+        return None
+    if action in _PLANNING_DELEGATION_NOTE_ACTIONS and (
+        not _planning_delegation_input_text(payload.get("note"), 8000)
+        or not payload["note"].strip()
+    ):
+        return None
+    if confirmed:
+        try:
+            confirmation = _planning_delegation_confirmation(
+                payload.get("confirmation_id"), action=action
+            )
+            key_bytes = payload["idempotency_key"].encode("utf-8")
+        except (AttributeError, UnicodeEncodeError, BridgeConversationProjectionError):
+            return None
+        if (
+            confirmation is None
+            or not 16 <= len(key_bytes) <= 256
+            or re.search(r"[\x00-\x1f\x7f]", payload["idempotency_key"]) is not None
+        ):
+            return None
+    return {key: payload[key] for key in sorted(required)}
+
+
+def bridge_planning_task_delegation_action_preview_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    request = _planning_delegation_action_request(task_id, payload, confirmed=False)
+    if request is None:
+        return _planning_delegation_failure(400)
+    return _planning_delegation_preview_payload(task_id, request, action=request["action"])
+
+
+def _planning_delegation_action_response(
+    task_id: str, source: object, status: int, *, expected_action: str
+) -> tuple[dict[str, object], int]:
+    if status not in {200, 201}:
+        return _planning_delegation_failure(status)
+    if not isinstance(source, dict) or set(source) != {
+        "schema_version", "action", "duplicate", "task", "delegation",
+    }:
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    current = _planning_delegation_current(
+        {key: source[key] for key in ("schema_version", "task", "delegation")},
+        task_id,
+    )
+    if source.get("action") != expected_action or type(source.get("duplicate")) is not bool:
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    return _planning_delegation_ready(
+        current, action=expected_action, duplicate=source["duplicate"]
+    ), status
+
+
+def bridge_planning_task_delegate_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    request = _planning_delegation_delegate_request(task_id, payload, confirmed=True)
+    if request is None:
+        return _planning_delegation_failure(400)
+    try:
+        from server import mentat_planning_task_delegate
+
+        source, status = mentat_planning_task_delegate(task_id, request)
+        return _planning_delegation_action_response(
+            task_id, source, status, expected_action="delegate"
+        )
+    except Exception:
+        return _planning_delegation_failure(500)
+
+
+def bridge_planning_task_delegation_action_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    request = _planning_delegation_action_request(task_id, payload, confirmed=True)
+    if request is None:
+        return _planning_delegation_failure(400)
+    try:
+        from server import mentat_planning_task_delegation_action
+
+        source, status = mentat_planning_task_delegation_action(task_id, request)
+        return _planning_delegation_action_response(
+            task_id, source, status, expected_action=request["action"]
+        )
+    except Exception:
+        return _planning_delegation_failure(500)
+
+
+def bridge_planning_task_delegation_refresh_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_revision"}
+        or type(payload.get("expected_revision")) is not int
+        or payload["expected_revision"] < 1
+    ):
+        return _planning_delegation_failure(400)
+    try:
+        from server import mentat_planning_task_delegation_refresh
+
+        source, status = mentat_planning_task_delegation_refresh(task_id, payload)
+        if status != 200:
+            return _planning_delegation_failure(status)
+        if not isinstance(source, dict) or set(source) != {
+            "schema_version", "action", "task", "delegation",
+        } or source.get("action") != "refresh":
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        current = _planning_delegation_current(
+            {key: source[key] for key in ("schema_version", "task", "delegation")},
+            task_id,
+        )
+        return _planning_delegation_ready(current, action="refresh"), 200
+    except Exception:
+        return _planning_delegation_failure(500)
+
+
+def bridge_planning_task_delegation_recover_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    """Reconcile one receipt without granting the browser a retry capability."""
+
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"confirmation_id", "idempotency_key"}
+    ):
+        return _planning_delegation_failure(400)
+    try:
+        confirmation = payload["confirmation_id"]
+        if (
+            not isinstance(confirmation, str)
+            or _PLANNING_DELEGATION_CONFIRMATION.fullmatch(confirmation) is None
+        ):
+            return _planning_delegation_failure(400)
+        key_bytes = payload["idempotency_key"].encode("utf-8")
+        if (
+            not 16 <= len(key_bytes) <= 256
+            or re.search(r"[\x00-\x1f\x7f]", payload["idempotency_key"]) is not None
+        ):
+            return _planning_delegation_failure(400)
+    except (AttributeError, UnicodeEncodeError):
+        return _planning_delegation_failure(400)
+    try:
+        from server import mentat_planning_task_delegation_recover
+
+        source, status = mentat_planning_task_delegation_recover(task_id, payload)
+        if status != 200:
+            return _planning_delegation_failure(status)
+        if not isinstance(source, dict):
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        action = source.get("action")
+        if action not in _PLANNING_DELEGATION_ACTIONS:
+            raise BridgeConversationProjectionError("planning_delegation_invalid")
+        current = _planning_delegation_current(
+            {
+                key: source[key]
+                for key in ("schema_version", "task", "delegation")
+                if key in source
+            },
+            task_id,
+        )
+        if set(source) == {
+            "schema_version", "action", "recovered", "task", "delegation",
+        } and source.get("recovered") is True:
+            return _planning_delegation_ready(
+                current, action=action, duplicate=False
+            ) | {"recovered": True}, 200
+        if set(source) == {
+            "schema_version", "action", "duplicate", "task", "delegation",
+        } and source.get("duplicate") is True:
+            return _planning_delegation_ready(
+                current, action=action, duplicate=True
+            ) | {"recovered": False}, 200
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    except Exception:
+        return _planning_delegation_failure(500)
 
 
 def bridge_planning_task_run_once_preview_payload(task_id: str, payload: object) -> tuple[dict[str, object], int]:
@@ -5036,6 +5589,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_planning_task_delegation_payload(pairs[0][1])
             self._send_json(payload, status)
             return
+        if parsed.path == BRIDGE_PLANNING_TASK_DELEGATION_OPTIONS_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) != 1 or pairs[0][0] != "task_id" or _TASK_ID.fullmatch(pairs[0][1]) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_task_delegation_options_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH:
             try:
                 pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
@@ -5439,6 +6003,72 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 payload, status = bridge_planning_task_review_payload(
                     task_id,
                     review_body,
+                )
+            self._send_json(payload, status)
+            return
+        planning_delegation_path = {
+            BRIDGE_PLANNING_TASK_DELEGATION_PREVIEW_PATH: "delegate_preview",
+            BRIDGE_PLANNING_TASK_DELEGATION_DELEGATE_PATH: "delegate",
+            BRIDGE_PLANNING_TASK_DELEGATION_ACTION_PREVIEW_PATH: "action_preview",
+            BRIDGE_PLANNING_TASK_DELEGATION_ACTION_PATH: "action",
+            BRIDGE_PLANNING_TASK_DELEGATION_REFRESH_PATH: "refresh",
+            BRIDGE_PLANNING_TASK_DELEGATION_RECOVER_PATH: "recover",
+        }.get(parsed.path)
+        if planning_delegation_path is not None and not parsed.query:
+            body = self._action_json_body(MAXIMUM_BRIDGE_PLANNING_MUTATION_BODY_BYTES)
+            if body is None or not isinstance(body.get("task_id"), str) or _TASK_ID.fullmatch(body["task_id"]) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            task_id = body["task_id"]
+            if planning_delegation_path in {"delegate_preview", "delegate"}:
+                required = {
+                    "task_id", "expected_revision", "profile_id", "board_id",
+                    "workspace", "instructions", "context_pack_id",
+                }
+                if planning_delegation_path == "delegate":
+                    required |= {"confirmation_id", "idempotency_key"}
+                if set(body) != required:
+                    self._send_json({"error": "bridge_route_not_found"}, 404)
+                    return
+                request = {key: body[key] for key in required - {"task_id"}}
+                payload, status = (
+                    bridge_planning_task_delegation_preview_payload(task_id, request)
+                    if planning_delegation_path == "delegate_preview"
+                    else bridge_planning_task_delegate_payload(task_id, request)
+                )
+            elif planning_delegation_path in {"action_preview", "action"}:
+                action = body.get("action")
+                required = {"task_id", "expected_revision", "action"}
+                if isinstance(action, str) and action in _PLANNING_DELEGATION_NOTE_ACTIONS:
+                    required.add("note")
+                if planning_delegation_path == "action":
+                    required |= {"confirmation_id", "idempotency_key"}
+                if set(body) != required:
+                    self._send_json({"error": "bridge_route_not_found"}, 404)
+                    return
+                request = {key: body[key] for key in required - {"task_id"}}
+                payload, status = (
+                    bridge_planning_task_delegation_action_preview_payload(task_id, request)
+                    if planning_delegation_path == "action_preview"
+                    else bridge_planning_task_delegation_action_payload(task_id, request)
+                )
+            elif planning_delegation_path == "refresh":
+                if set(body) != {"task_id", "expected_revision"}:
+                    self._send_json({"error": "bridge_route_not_found"}, 404)
+                    return
+                payload, status = bridge_planning_task_delegation_refresh_payload(
+                    task_id, {"expected_revision": body["expected_revision"]}
+                )
+            else:
+                if set(body) != {"task_id", "confirmation_id", "idempotency_key"}:
+                    self._send_json({"error": "bridge_route_not_found"}, 404)
+                    return
+                payload, status = bridge_planning_task_delegation_recover_payload(
+                    task_id,
+                    {
+                        "confirmation_id": body["confirmation_id"],
+                        "idempotency_key": body["idempotency_key"],
+                    },
                 )
             self._send_json(payload, status)
             return
