@@ -52,8 +52,12 @@ export type PublicPlanningTaskListItem = PublicPlanningTask & {
 
 export type PublicPlanningSubtask = { id: string; title: string; completed: boolean; rank: number };
 export type PublicPlanningRecurrence = { frequency: "daily" | "weekly" | "monthly" | "yearly"; interval: number; weekdays?: Array<"mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun">; ends_on?: string; count?: number };
+export type PublicPlanningScheduledBlock = { start: string; end: string; label?: string; timezone?: string };
+export type PublicPlanningReminder = { id: string; at: string; channel: "browser"; enabled: boolean; notified_at?: string; timezone?: string };
+export type PublicPlanningCalendarLink = { calendar_id: string; event_id: string; label?: string };
+export type PublicPlanningNoteLink = { path: string; title?: string };
 export type PublicPlanningDependencyReference = { id: string; title: string; project_id: string; project_name: string; workflow_stage: typeof WORKFLOW_STAGES[number]; blocked: boolean };
-export type PublicPlanningTaskDetail = PublicPlanningTask & { description: string; tags: string[]; estimated_minutes: number | null; recurrence: PublicPlanningRecurrence | null; subtasks: PublicPlanningSubtask[]; assigned_agent_id: string | null };
+export type PublicPlanningTaskDetail = PublicPlanningTask & { description: string; tags: string[]; estimated_minutes: number | null; scheduled_block: PublicPlanningScheduledBlock | null; recurrence: PublicPlanningRecurrence | null; reminders: PublicPlanningReminder[]; subtasks: PublicPlanningSubtask[]; calendar_links: PublicPlanningCalendarLink[]; note_links: PublicPlanningNoteLink[]; assigned_agent_id: string | null };
 
 export type PublicPlanningOverview = ServiceEnvelope & {
   today: string;
@@ -203,6 +207,35 @@ function validRecurrence(value: unknown): value is PublicPlanningRecurrence {
   return true;
 }
 
+function validTimezone(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 64 && /^[A-Za-z_+-]+(?:\/[A-Za-z_+-]+)*$/u.test(value);
+}
+
+/** Python canonicalizes selected-detail planning times to this portable UTC form. */
+function validPlanningDateTime(value: unknown): value is string { return timestamp(value); }
+
+function validScheduledBlock(value: unknown): value is PublicPlanningScheduledBlock {
+  if (!record(value) || Object.keys(value).some((key) => !new Set(["start", "end", "label", "timezone"]).has(key)) || !validPlanningDateTime(value.start) || !validPlanningDateTime(value.end) || Date.parse(value.end) <= Date.parse(value.start)) return false;
+  return (value.label === undefined || text(value.label, 120)) && (value.timezone === undefined || validTimezone(value.timezone));
+}
+
+function validReminder(value: unknown): value is PublicPlanningReminder {
+  if (!record(value) || Object.keys(value).some((key) => !new Set(["id", "at", "channel", "enabled", "notified_at", "timezone"]).has(key))) return false;
+  return typeof value.id === "string" && TASK_ID.test(value.id) && validPlanningDateTime(value.at) && value.channel === "browser" && typeof value.enabled === "boolean"
+    && (value.notified_at === undefined || validPlanningDateTime(value.notified_at)) && (value.timezone === undefined || validTimezone(value.timezone));
+}
+
+function validCalendarLink(value: unknown): value is PublicPlanningCalendarLink {
+  if (!record(value) || Object.keys(value).some((key) => !new Set(["calendar_id", "event_id", "label"]).has(key))) return false;
+  return typeof value.calendar_id === "string" && TASK_ID.test(value.calendar_id) && typeof value.event_id === "string" && TASK_ID.test(value.event_id) && (value.label === undefined || text(value.label, 160));
+}
+
+function validNoteLink(value: unknown): value is PublicPlanningNoteLink {
+  if (!record(value) || Object.keys(value).some((key) => !new Set(["path", "title"]).has(key)) || typeof value.path !== "string" || !text(value.path, 500) || /\\/u.test(value.path) || /^(?:[~\\/]|[A-Za-z]:|file:|obsidian:)/iu.test(value.path)) return false;
+  const parts = value.path.split("/");
+  return parts.length > 0 && parts.every((part) => !!part && part !== "." && part !== "..") && (value.title === undefined || text(value.title, 240));
+}
+
 function validDependencyReference(value: unknown): value is PublicPlanningDependencyReference {
   return record(value) && keys(value, "blocked,id,project_id,project_name,title,workflow_stage")
     && typeof value.id === "string" && TASK_ID.test(value.id)
@@ -214,13 +247,17 @@ function validDependencyReference(value: unknown): value is PublicPlanningDepend
 }
 
 function validTaskDetail(value: unknown): value is PublicPlanningTaskDetail {
-  if (!record(value) || !keys(value, "assigned_agent_id,attention_reasons,blocked,deferred,description,due_date,estimated_minutes,id,needs_attention,planned_for_today,planning_state,priority,project_id,project_name,recurrence,review_required,revision,status,subtasks,tags,title,updated_at,workflow_stage")) return false;
-  const { description, tags, estimated_minutes: estimate, recurrence, subtasks, assigned_agent_id: agentId, ...task } = value;
+  if (!record(value) || !keys(value, "assigned_agent_id,attention_reasons,blocked,calendar_links,deferred,description,due_date,estimated_minutes,id,needs_attention,note_links,planned_for_today,planning_state,priority,project_id,project_name,recurrence,reminders,review_required,revision,scheduled_block,status,subtasks,tags,title,updated_at,workflow_stage")) return false;
+  const { description, tags, estimated_minutes: estimate, scheduled_block: scheduledBlock, recurrence, reminders, subtasks, calendar_links: calendarLinks, note_links: noteLinks, assigned_agent_id: agentId, ...task } = value;
   return validTask(task) && typeof description === "string" && description.length <= 4000 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(description)
     && Array.isArray(tags) && tags.length <= 12 && tags.every((tag) => text(tag, 48))
     && (estimate === null || Number.isSafeInteger(estimate) && (estimate as number) >= 1 && (estimate as number) <= 10080)
+    && (scheduledBlock === null || validScheduledBlock(scheduledBlock))
     && (recurrence === null || validRecurrence(recurrence))
+    && Array.isArray(reminders) && reminders.length <= 20 && reminders.every(validReminder)
     && Array.isArray(subtasks) && subtasks.length <= 200 && subtasks.every((item) => record(item) && keys(item, "completed,id,rank,title") && typeof item.id === "string" && TASK_ID.test(item.id) && text(item.title, 240) && typeof item.completed === "boolean" && Number.isSafeInteger(item.rank) && (item.rank as number) >= 0 && (item.rank as number) <= 1000000)
+    && Array.isArray(calendarLinks) && calendarLinks.length <= 20 && calendarLinks.every(validCalendarLink)
+    && Array.isArray(noteLinks) && noteLinks.length <= 50 && noteLinks.every(validNoteLink)
     && (agentId === null || typeof agentId === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(agentId));
 }
 

@@ -1459,7 +1459,11 @@ def _planning_task_detail(value: object) -> dict[str, object]:
 
     if not isinstance(value, dict):
         raise BridgeConversationProjectionError("planning_task_invalid")
-    extras = {"description", "tags", "estimated_minutes", "recurrence", "subtasks", "assigned_agent_id"}
+    extras = {
+        "description", "tags", "estimated_minutes", "scheduled_block",
+        "recurrence", "reminders", "subtasks", "calendar_links", "note_links",
+        "assigned_agent_id",
+    }
     base = {key: item for key, item in value.items() if key not in extras}
     if set(value) != set(base) | extras:
         raise BridgeConversationProjectionError("planning_task_invalid")
@@ -1467,7 +1471,11 @@ def _planning_task_detail(value: object) -> dict[str, object]:
     tags = value.get("tags")
     estimate = value.get("estimated_minutes")
     recurrence = value.get("recurrence")
+    scheduled_block = value.get("scheduled_block")
+    reminders = value.get("reminders")
     subtasks = value.get("subtasks")
+    calendar_links = value.get("calendar_links")
+    note_links = value.get("note_links")
     agent_id = value.get("assigned_agent_id")
     if (
         not isinstance(description, str)
@@ -1494,8 +1502,35 @@ def _planning_task_detail(value: object) -> dict[str, object]:
             or not 0 <= item["rank"] <= 1000000
         ):
             raise BridgeConversationProjectionError("planning_task_invalid")
+    planning_metadata = {
+        "reminders": reminders,
+        "calendar_links": calendar_links,
+        "note_links": note_links,
+    }
+    if scheduled_block is not None:
+        planning_metadata["scheduled_block"] = scheduled_block
+    try:
+        from task_planning import TaskPlanningError, normalize_task_planning
+
+        normalized_metadata = normalize_task_planning(planning_metadata)
+    except (TaskPlanningError, TypeError, ValueError):
+        raise BridgeConversationProjectionError("planning_task_invalid") from None
+    if normalized_metadata != planning_metadata:
+        raise BridgeConversationProjectionError("planning_task_invalid")
     task = _planning_task(base)
-    return {**task, "description": description, "tags": list(tags), "estimated_minutes": estimate, "recurrence": recurrence, "subtasks": [dict(item) for item in subtasks], "assigned_agent_id": agent_id}
+    return {
+        **task,
+        "description": description,
+        "tags": list(tags),
+        "estimated_minutes": estimate,
+        "scheduled_block": normalized_metadata.get("scheduled_block"),
+        "recurrence": recurrence,
+        "reminders": normalized_metadata["reminders"],
+        "subtasks": [dict(item) for item in subtasks],
+        "calendar_links": normalized_metadata["calendar_links"],
+        "note_links": normalized_metadata["note_links"],
+        "assigned_agent_id": agent_id,
+    }
 
 
 def _planning_dependency_task(value: object) -> dict[str, object]:

@@ -16,6 +16,7 @@ from conversation_planning import (
     planning_context_projection,
     planning_overview,
     planning_task_locator,
+    planning_task_detail_locator,
     planning_task_page,
     project_registry,
     validate_association_targets,
@@ -81,6 +82,54 @@ def create_test_agent(root: Path) -> str:
 
 
 class ConversationPlanningTests(unittest.TestCase):
+    def test_selected_task_detail_projects_only_safe_existing_planning_metadata(self):
+        with TemporaryDirectory() as temporary:
+            connection = connect(Path(temporary))
+            try:
+                TaskRepository(connection).insert_collection([
+                    task(
+                        "task_metadata",
+                        scheduled_block={
+                            "start": "2026-08-30 09:00:00+05:30:12.5",
+                            "end": "2026-08-30T10:00:00+05:30:12.5",
+                            "label": "Deep work",
+                            "timezone": "America/Los_Angeles",
+                        },
+                        reminders=[{
+                            "id": "reminder_start",
+                            "at": "2026-08-30T08:50:00,1234567+05:30:12.5",
+                            "channel": "browser",
+                            "enabled": True,
+                        }],
+                        calendar_links=[{
+                            "calendar_id": "primary",
+                            "event_id": "event_123",
+                            "label": "Focus block",
+                        }],
+                        note_links=[{
+                            "path": "Projects/Mentat.md",
+                            "title": "Mentat plan",
+                        }],
+                    ),
+                ])
+                detail = planning_task_detail_locator(
+                    connection,
+                    PROJECTS,
+                    task_id="task_metadata",
+                    today=date(2026, 8, 30),
+                )
+            finally:
+                connection.close()
+
+        self.assertEqual(detail["task"]["scheduled_block"]["label"], "Deep work")
+        self.assertTrue(detail["task"]["scheduled_block"]["start"].endswith("Z"))
+        self.assertTrue(detail["task"]["reminders"][0]["at"].endswith("Z"))
+        self.assertEqual(detail["task"]["reminders"][0]["id"], "reminder_start")
+        self.assertEqual(detail["task"]["calendar_links"][0]["event_id"], "event_123")
+        self.assertEqual(detail["task"]["note_links"], [{
+            "path": "Projects/Mentat.md", "title": "Mentat plan",
+        }])
+
     def test_exact_global_task_locator_reads_non_attention_task_without_private_fields(self):
         with TemporaryDirectory() as temporary:
             connection = connect(Path(temporary))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import re
@@ -629,7 +629,19 @@ def planning_task_detail_locator(
     estimated_minutes = task.get("estimated_minutes")
     if estimated_minutes is not None and (type(estimated_minutes) is not int or not 1 <= estimated_minutes <= 10080):
         raise ConversationPlanningError("planning.task_invalid")
+    scheduled_block = task.get("scheduled_block")
+    reminders = task.get("reminders", [])
+    calendar_links = task.get("calendar_links", [])
+    note_links = task.get("note_links", [])
+    planning_metadata = {
+        "reminders": reminders,
+        "calendar_links": calendar_links,
+        "note_links": note_links,
+    }
+    if scheduled_block is not None:
+        planning_metadata["scheduled_block"] = scheduled_block
     try:
+        normalized_metadata = normalize_task_planning(planning_metadata)
         normalized_recurrence = normalize_task_planning({"recurrence": recurrence}).get("recurrence") if recurrence is not None else None
     except TaskPlanningError as exc:
         raise ConversationPlanningError("planning.task_invalid") from exc
@@ -638,13 +650,40 @@ def planning_task_detail_locator(
     assignee = task.get("assigned_agent_id")
     if assignee is not None and (not isinstance(assignee, str) or _TASK_ID.fullmatch(assignee) is None):
         raise ConversationPlanningError("planning.task_invalid")
+    # Task authority accepts the full Python ISO-8601 input grammar for stored
+    # planning datetimes. Public detail output deliberately has one portable
+    # UTC spelling, so a valid legacy offset (including offset seconds) cannot
+    # make the Node boundary reject an otherwise canonical Task.
+    def public_datetime(value: str) -> str:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+    public_metadata = dict(normalized_metadata)
+    if isinstance(public_metadata.get("scheduled_block"), dict):
+        public_metadata["scheduled_block"] = {
+            **public_metadata["scheduled_block"],
+            "start": public_datetime(public_metadata["scheduled_block"]["start"]),
+            "end": public_datetime(public_metadata["scheduled_block"]["end"]),
+        }
+    public_metadata["reminders"] = [
+        {
+            **reminder,
+            "at": public_datetime(reminder["at"]),
+            **({"notified_at": public_datetime(reminder["notified_at"])} if "notified_at" in reminder else {}),
+        }
+        for reminder in normalized_metadata["reminders"]
+    ]
     located["task"] = {
         **located["task"],
         "description": description,
         "tags": list(tags),
         "estimated_minutes": estimated_minutes,
+        "scheduled_block": public_metadata.get("scheduled_block"),
         "recurrence": normalized_recurrence,
+        "reminders": public_metadata["reminders"],
         "subtasks": safe_subtasks,
+        "calendar_links": public_metadata["calendar_links"],
+        "note_links": public_metadata["note_links"],
         "assigned_agent_id": assignee,
     }
     return located
