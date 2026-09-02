@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1613,6 +1613,53 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             );
         """,
     ),
+    (
+        22,
+        """
+        CREATE TABLE mentat_codex_task_create_grants (
+            run_id TEXT PRIMARY KEY REFERENCES mentat_runs(id) ON DELETE RESTRICT,
+            origin_task_id TEXT NOT NULL CHECK (length(origin_task_id) BETWEEN 1 AND 160),
+            origin_task_revision INTEGER NOT NULL CHECK (origin_task_revision >= 1),
+            project_id TEXT NOT NULL CHECK (length(project_id) BETWEEN 1 AND 80),
+            agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128),
+            runtime_binding_digest TEXT NOT NULL CHECK (length(runtime_binding_digest) = 64),
+            state TEXT NOT NULL CHECK (state IN ('preauthorized', 'thread_bound', 'armed')),
+            thread_id TEXT CHECK (thread_id IS NULL OR length(thread_id) BETWEEN 1 AND 128),
+            turn_id TEXT CHECK (turn_id IS NULL OR length(turn_id) BETWEEN 1 AND 128),
+            runtime_run_ref TEXT CHECK (runtime_run_ref IS NULL OR length(runtime_run_ref) BETWEEN 1 AND 128),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            CHECK (
+                (state = 'preauthorized' AND thread_id IS NULL AND turn_id IS NULL AND runtime_run_ref IS NULL)
+                OR (state = 'thread_bound' AND thread_id IS NOT NULL AND turn_id IS NULL AND runtime_run_ref IS NULL)
+                OR (state = 'armed' AND thread_id IS NOT NULL AND turn_id IS NOT NULL AND runtime_run_ref IS NOT NULL)
+            )
+        );
+
+        CREATE UNIQUE INDEX idx_mentat_codex_task_create_grants_thread
+            ON mentat_codex_task_create_grants(thread_id)
+            WHERE thread_id IS NOT NULL;
+
+        CREATE TABLE mentat_codex_task_create_receipts (
+            origin_run_id TEXT PRIMARY KEY REFERENCES mentat_runs(id) ON DELETE RESTRICT,
+            thread_id TEXT NOT NULL CHECK (length(thread_id) BETWEEN 1 AND 128),
+            turn_id TEXT NOT NULL CHECK (length(turn_id) BETWEEN 1 AND 128),
+            call_id TEXT NOT NULL CHECK (length(call_id) BETWEEN 1 AND 128),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            origin_task_id TEXT NOT NULL CHECK (length(origin_task_id) BETWEEN 1 AND 160),
+            project_id TEXT NOT NULL CHECK (length(project_id) BETWEEN 1 AND 80),
+            agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128),
+            created_task_id TEXT NOT NULL CHECK (length(created_task_id) BETWEEN 1 AND 160),
+            created_task_revision INTEGER NOT NULL CHECK (created_task_revision >= 1),
+            result_proof_digest TEXT NOT NULL CHECK (length(result_proof_digest) = 64),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            UNIQUE (thread_id, turn_id, call_id)
+        );
+
+        CREATE INDEX idx_mentat_codex_task_create_receipts_task
+            ON mentat_codex_task_create_receipts(created_task_id, created_at DESC);
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
@@ -1951,7 +1998,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2041,6 +2088,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 20 cannot be safely upgraded"
+                    )
+                if (
+                    version == 22
+                    and schema_signature_state(connection, 21) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 21 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

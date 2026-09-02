@@ -566,6 +566,95 @@ def bridge_agent_attachment_enable_status(
         return _conversation_file_failure(500)
 
 
+def _ready_agent_task_creation_payload(
+    value: object,
+    expected_agent_id: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"schema_version", "agent"}:
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    agent = value.get("agent")
+    if not isinstance(agent, dict) or set(agent) != {
+        "id", "name", "runtime_type", "system_role", "capabilities",
+    }:
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    capabilities = agent.get("capabilities")
+    if (
+        value.get("schema_version") != 1
+        or agent.get("id") != expected_agent_id
+        or not isinstance(agent.get("id"), str)
+        or _OPAQUE_ID.fullmatch(agent["id"]) is None
+        or not isinstance(agent.get("name"), str)
+        or not agent["name"]
+        or agent["name"].strip() != agent["name"]
+        or len(agent["name"]) > 120
+        or agent.get("runtime_type") != "codex"
+        or agent.get("system_role") not in {None, "direct"}
+        or not isinstance(capabilities, list)
+        or len(capabilities) > 64
+        or capabilities != sorted(set(capabilities))
+        or "task.create" not in capabilities
+        or any(not isinstance(value, str) or _CAPABILITY.fullmatch(value) is None for value in capabilities)
+    ):
+        raise BridgeAgentProjectionError("agent_projection_invalid")
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": "ready",
+        "agent": {
+            "id": agent["id"],
+            "name": agent["name"],
+            "runtime_type": "codex",
+            "system_role": agent["system_role"],
+            "capabilities": list(capabilities),
+        },
+    }
+
+
+def bridge_enable_agent_task_creation(
+    agent_id: str,
+    payload: object,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import enable_mentat_agent_task_creation
+
+        source, status = enable_mentat_agent_task_creation(agent_id, payload)
+        if status != 200:
+            return _conversation_file_failure(status)
+        return _ready_agent_task_creation_payload(source, agent_id), 200
+    except Exception:
+        return _conversation_file_failure(500)
+
+
+def bridge_agent_task_creation_enable_status(
+    agent_id: str,
+) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_agent_task_creation_enable_status
+
+        source, status = mentat_agent_task_creation_enable_status(agent_id)
+        if status != 200:
+            return _conversation_file_failure(status)
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"schema_version", "agent_id", "state"}
+            or source.get("schema_version") != 1
+            or source.get("agent_id") != agent_id
+            or source.get("state") not in {"active_run", "available", "enabled", "unsupported"}
+        ):
+            raise BridgeAgentProjectionError("agent_projection_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "agent_id": agent_id,
+            "state": source["state"],
+        }, 200
+    except Exception:
+        return _conversation_file_failure(500)
+
+
 def _configuration_text(value: object, maximum: int) -> bool:
     return (
         isinstance(value, str)
@@ -5567,6 +5656,18 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_planning_task_execution_payload(pairs[0][1])
             self._send_json(payload, status)
             return
+        agent_task_creation_status_match = re.fullmatch(
+            r"/bridge/v1/agents/([^/]+)/task-creation/enable",
+            parsed.path,
+        )
+        if agent_task_creation_status_match is not None and not parsed.query:
+            agent_id = unquote(agent_task_creation_status_match.group(1))
+            if _OPAQUE_ID.fullmatch(agent_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_agent_task_creation_enable_status(agent_id)
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_PLANNING_TASK_DELEGATION_PATH:
             try:
                 pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
@@ -6294,6 +6395,37 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bridge_route_not_found"}, 404)
                 return
             payload, status = bridge_enable_agent_attachments(agent_id, body)
+            self._send_json(payload, status)
+            return
+        agent_task_creation_match = re.fullmatch(
+            r"/bridge/v1/agents/([^/]+)/task-creation/enable",
+            parsed.path,
+        )
+        if agent_task_creation_match is not None:
+            if parsed.query:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            agent_id = unquote(agent_task_creation_match.group(1))
+            if _OPAQUE_ID.fullmatch(agent_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_AGENT_CAPABILITY_BODY_BYTES)
+            expected = None if body is None else body.get("expected_capabilities")
+            if (
+                body is None
+                or set(body) != {"expected_capabilities"}
+                or not isinstance(expected, list)
+                or len(expected) > 64
+                or expected != sorted(set(expected))
+                or any(
+                    not isinstance(capability, str)
+                    or _CAPABILITY.fullmatch(capability) is None
+                    for capability in expected
+                )
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_enable_agent_task_creation(agent_id, body)
             self._send_json(payload, status)
             return
         agent_configuration_match = re.fullmatch(

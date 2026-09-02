@@ -226,6 +226,37 @@ function writeAgentField(card, label, value) {
   card.append(field);
 }
 
+function appendTaskCreationEnable(card, agent) {
+  if (agent.runtime_type !== "codex" || agent.capabilities.includes("task.create")) return;
+  const action = document.createElement("button");
+  action.className = "agent-task-create-enable";
+  action.type = "button";
+  action.textContent = "Enable Inbox task creation";
+  action.addEventListener("click", async () => {
+    if (action.disabled) return;
+    action.disabled = true;
+    action.textContent = "Enabling…";
+    try {
+      const response = await fetch(`/api/agents/${encodeURIComponent(agent.id)}/task-creation/enable`, {
+        method: "POST",
+        cache: "no-store",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_capabilities: agent.capabilities }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload?.status !== "ready" || !payload?.agent?.capabilities?.includes("task.create")) {
+        throw new Error("task_creation_enable_failed");
+      }
+      await refreshAgents();
+    } catch {
+      action.disabled = false;
+      action.textContent = "Inbox task creation unavailable";
+    }
+  });
+  card.append(action);
+}
+
 function renderAgents(agents) {
   const elements = agentsElements();
   if (!elements) return;
@@ -259,6 +290,7 @@ function renderAgents(agents) {
       }
     }
     card.append(capabilityLabel, capabilities);
+    appendTaskCreationEnable(card, agent);
     elements.list.append(card);
   }
 }

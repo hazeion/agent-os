@@ -63,6 +63,7 @@ from run_repository import (
 )
 from task_repository import TaskRepository, TaskRepositoryError
 from task_planning import task_is_deferred, workflow_stage
+from codex_task_creation import CodexTaskCreationService
 
 
 class OrchestrationServiceError(RuntimeError):
@@ -177,6 +178,7 @@ class OrchestrationService:
         conversation_context_guard: object | None = None,
         conversation_attachment_preparer: Callable[[str, tuple[str, ...]], None] | None = None,
         conversation_attachment_cleanup: Callable[[str], None] | None = None,
+        task_creation_service: CodexTaskCreationService | None = None,
     ):
         self.data_dir = Path(data_dir)
         self.runtime_registry = runtime_registry
@@ -192,6 +194,7 @@ class OrchestrationService:
         self.conversation_context_guard = conversation_context_guard
         self.conversation_attachment_preparer = conversation_attachment_preparer
         self.conversation_attachment_cleanup = conversation_attachment_cleanup
+        self.task_creation_service = task_creation_service or CodexTaskCreationService(self.data_dir)
 
     def _conversation_context_is_current(
         self,
@@ -536,7 +539,7 @@ class OrchestrationService:
         reservation: DispatchReservation,
         expected_agent: MentatAgent,
         expected_binding: RuntimeBinding,
-    ) -> RuntimeBinding:
+    ) -> tuple[RuntimeBinding, bool]:
         with private_state_lock(self.data_dir):
             try:
                 current_agent, current_binding = self._agent_and_binding(expected_agent.id)
@@ -568,16 +571,53 @@ class OrchestrationService:
             connection = self._connect()
             try:
                 repository = RunRepository(connection)
+                task_creation_enabled = RuntimeCapability.TASK_CREATE.value in current_agent.capabilities
+                if task_creation_enabled and (
+                    current_binding.runtime_type != "codex"
+                    or current_binding.runtime_agent_ref != "default"
+                ):
+                    run = repository.reject_reserved_dispatch(
+                        dispatch_id=reservation.dispatch_id,
+                        failure_code="dispatch.task_creation_unavailable",
+                    )
+                    raise OrchestrationServiceError(
+                        "dispatch.task_creation_unavailable", run=run
+                    )
+                grant_preparer = None
+                if task_creation_enabled:
+                    snapshot = TaskRepository(connection).get(reservation.task_id)
+                    project_id = snapshot.document.get("project_id")
+                    if not isinstance(project_id, str):
+                        run = repository.reject_reserved_dispatch(
+                            dispatch_id=reservation.dispatch_id,
+                            failure_code="dispatch.task_creation_unavailable",
+                        )
+                        raise OrchestrationServiceError(
+                            "dispatch.task_creation_unavailable", run=run
+                        )
+
+                    def grant_preparer(claimed: DispatchReservation) -> bool:
+                        return self.task_creation_service.preauthorize_claimed(
+                            connection=connection,
+                            run_id=claimed.run_id,
+                            task_id=claimed.task_id,
+                            task_revision=claimed.task_revision,
+                            project_id=project_id,
+                            agent_id=current_agent.id,
+                            runtime_binding_digest=current_digest,
+                        )
+
                 try:
                     repository.claim_dispatch_attempt(
                         dispatch_id=reservation.dispatch_id,
                         expected_binding_digest=current_digest,
+                        grant_preparer=grant_preparer,
                     )
                 except RunRepositoryConflict as exc:
-                    if exc.code == "dispatch.task_changed":
+                    if exc.code in {"dispatch.task_changed", "dispatch.task_creation_unavailable"}:
                         run = repository.reject_reserved_dispatch(
                             dispatch_id=reservation.dispatch_id,
-                            failure_code="dispatch.task_changed",
+                            failure_code=exc.code,
                         )
                         raise OrchestrationServiceError(exc.code, run=run) from exc
                     raise OrchestrationServiceError(exc.code) from exc
@@ -587,7 +627,7 @@ class OrchestrationService:
                     ) from exc
             finally:
                 connection.close()
-            return current_binding
+            return current_binding, task_creation_enabled
 
     def _record_outcome(
         self,
@@ -709,7 +749,7 @@ class OrchestrationService:
         if any(value is None for value in (task, agent, binding, runtime)):
             raise OrchestrationServiceError("dispatch.unavailable")
 
-        current_binding = self._claim_after_binding_revalidation(
+        current_binding, task_creation_enabled = self._claim_after_binding_revalidation(
             reservation, agent, binding
         )
         context = RuntimeContext(
@@ -718,6 +758,7 @@ class OrchestrationService:
             task_id=task.id,
             mentat_run_id=reservation.run_id,
             dispatch_id=reservation.dispatch_id,
+            task_creation_enabled=task_creation_enabled,
         )
         try:
             outcome = runtime.submit_task(task, context)

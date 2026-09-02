@@ -47,6 +47,7 @@ INTERACTIVE_AGENT_CAPABILITIES = (
     "run.stop",
 )
 DIRECT_AGENT_CAPABILITIES = INTERACTIVE_AGENT_CAPABILITIES
+CODEX_TASK_CREATE_CAPABILITY = "task.create"
 
 _SCHEMA = """
 CREATE TABLE registry_schema (
@@ -1138,6 +1139,106 @@ class AgentRegistry:
         finally:
             connection.close()
 
+    def enable_codex_task_creation(
+        self,
+        agent_id: str,
+        *,
+        expected_capabilities: Iterable[str],
+    ) -> CanonicalAgentRecord:
+        """Opt one Codex Agent into the narrow Inbox-Task tool."""
+
+        expected = tuple(sorted(set(str(value) for value in expected_capabilities)))
+        if (
+            not isinstance(agent_id, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", agent_id) is None
+            or isinstance(expected_capabilities, (str, bytes))
+            or len(expected) > 64
+            or any(re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", value) is None for value in expected)
+        ):
+            raise AgentRegistryValidationError("agent.invalid")
+        connection = connect_registry(self.data_dir)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                records = _canonical_agent_records(
+                    connection, supported_runtime_types=self.supported_runtime_types
+                )
+                current = next((record for record in records if record.agent.id == agent_id), None)
+                if current is None:
+                    raise AgentRegistryConflict("agent.not_found")
+                if current.agent.runtime_type != "codex":
+                    raise AgentRegistryValidationError("agent.runtime_unsupported")
+                if tuple(sorted(current.agent.capabilities)) != expected:
+                    raise AgentRegistryConflict("agent.conflict")
+                active = connection.execute(
+                    "SELECT 1 FROM mentat_runs WHERE agent_id = ? AND status IN "
+                    "('reserved','queued','submitting','starting','running','cancelling',"
+                    "'waiting','waiting_for_approval','waiting_for_clarification','unknown') LIMIT 1",
+                    (agent_id,),
+                ).fetchone()
+                if active is not None:
+                    raise AgentRegistryConflict("agent.active_run")
+                if CODEX_TASK_CREATE_CAPABILITY not in current.agent.capabilities:
+                    next_capabilities = tuple(sorted((*expected, CODEX_TASK_CREATE_CAPABILITY)))
+                    updated = connection.execute(
+                        "UPDATE mentat_agents SET capabilities_json = ?, revision = revision + 1, "
+                        "updated_at = ? WHERE id = ? AND capabilities_json = ?",
+                        (
+                            json.dumps(next_capabilities, ensure_ascii=True, separators=(",", ":")),
+                            time.time(),
+                            agent_id,
+                            json.dumps(expected, ensure_ascii=True, separators=(",", ":")),
+                        ),
+                    ).rowcount
+                    if updated != 1:
+                        raise AgentRegistryConflict("agent.conflict")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            records = _canonical_agent_records(
+                connection, supported_runtime_types=self.supported_runtime_types
+            )
+            enabled = next((record for record in records if record.agent.id == agent_id), None)
+            if enabled is None or CODEX_TASK_CREATE_CAPABILITY not in enabled.agent.capabilities:
+                raise AgentRegistryError("agent_registry.corrupt")
+            return enabled
+        except sqlite3.Error as exc:
+            raise _translate_sqlite_error(exc) from exc
+        finally:
+            connection.close()
+
+    def codex_task_creation_enable_state(self, agent_id: str) -> str:
+        """Read the opt-in eligibility without launching the Codex runtime."""
+
+        if not isinstance(agent_id, str) or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", agent_id
+        ) is None:
+            raise AgentRegistryValidationError("agent.invalid")
+        connection = connect_registry(self.data_dir)
+        try:
+            records = _canonical_agent_records(
+                connection, supported_runtime_types=self.supported_runtime_types
+            )
+            current = next((record for record in records if record.agent.id == agent_id), None)
+            if current is None:
+                return "not_found"
+            if CODEX_TASK_CREATE_CAPABILITY in current.agent.capabilities:
+                return "enabled"
+            if current.agent.runtime_type != "codex":
+                return "unsupported"
+            active = connection.execute(
+                "SELECT 1 FROM mentat_runs WHERE agent_id = ? AND status IN "
+                "('reserved','queued','submitting','starting','running','cancelling',"
+                "'waiting','waiting_for_approval','waiting_for_clarification','unknown') LIMIT 1",
+                (agent_id,),
+            ).fetchone()
+            return "active_run" if active is not None else "available"
+        except sqlite3.Error as exc:
+            raise _translate_sqlite_error(exc) from exc
+        finally:
+            connection.close()
+
     def list_agent_records(self) -> tuple[CanonicalAgentRecord, ...]:
         """Return canonical Agent identity metadata for safe Console joins."""
 
@@ -1214,8 +1315,10 @@ class AgentRegistry:
                     or binding["runtime_config_id"] != DIRECT_RUNTIME_CONFIG_ID
                     or binding["runtime_type"] != DIRECT_RUNTIME_TYPE
                     or binding["runtime_agent_ref"] != DIRECT_RUNTIME_AGENT_REF
-                    or json.loads(str(binding["capabilities_json"]))
-                    != sorted(DIRECT_AGENT_CAPABILITIES)
+                    or tuple(sorted(json.loads(str(binding["capabilities_json"])))) not in {
+                        tuple(sorted(DIRECT_AGENT_CAPABILITIES)),
+                        tuple(sorted((*DIRECT_AGENT_CAPABILITIES, CODEX_TASK_CREATE_CAPABILITY))),
+                    }
                 ):
                     connection.rollback()
                     raise AgentRegistryError("agent_registry.corrupt")

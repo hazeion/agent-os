@@ -777,6 +777,37 @@ class TaskRepository:
             for task in normalized:
                 self._insert_children(task)
 
+    def insert(self, task: Mapping[str, Any]) -> TaskSnapshot:
+        """Insert one canonical Task without rewriting unrelated Task rows."""
+
+        normalized = normalize_task_document(task)
+        with self._mutation():
+            self.authority_receipt(required=True)
+            exists = self.connection.execute(
+                "SELECT 1 FROM mentat_tasks WHERE id = ?", (normalized["id"],)
+            ).fetchone()
+            if exists is not None:
+                raise TaskRepositoryConflict("task_repository.conflict")
+            current = self._list_tasks()
+            candidate = [*current, normalized]
+            normalize_task_collection(candidate)
+            self._validate_project_memberships(current, candidate)
+            self.connection.execute(
+                "INSERT INTO mentat_tasks ("
+                "id, sort_order, revision, title, description, project, project_id, status, priority, "
+                "assignee, assigned_agent_id, assigned_agent_id_present, due_date, source, "
+                "review_required, needs_attention, planned_for_today, manual_rank, "
+                "estimated_minutes, recurrence_parent_id, planning_state, depends_on_present, "
+                "nested_planning_json, extensions_json, created_at, updated_at, completed_at"
+                ") VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" ,
+                (normalized["id"], *self._storage_values(normalized, len(current))),
+            )
+            self._insert_children(normalized)
+            stored = self.get(normalized["id"])
+            if stored.revision != 1 or stored.document != normalized:
+                raise TaskRepositoryError("task_repository.reconstruction_failed")
+            return stored
+
     def claim_authority(self, source: TaskSourceSnapshot) -> TaskAuthorityReceipt:
         """Record SQLite authority inside the caller's import transaction."""
 

@@ -300,6 +300,38 @@ class AgentRegistryTests(unittest.TestCase):
             )
             self.assertEqual(repeated.revision, enabled.revision)
 
+    def test_codex_task_creation_permission_requires_exact_explicit_capabilities(self):
+        with TemporaryDirectory() as tmpdir:
+            registry = AgentRegistry(
+                Path(tmpdir), supported_runtime_types={"codex", "hermes"}
+            )
+            registry.create_agent(
+                agent_id="agent_codex",
+                name="Local Codex",
+                runtime_config_id="runtime_config_codex",
+                runtime_type="codex",
+                runtime_agent_ref="default",
+                capabilities=("run.start", "run.status"),
+            )
+            enabled = registry.enable_codex_task_creation(
+                "agent_codex",
+                expected_capabilities=("run.start", "run.status"),
+            )
+            self.assertIn("task.create", enabled.agent.capabilities)
+            self.assertEqual(
+                registry.codex_task_creation_enable_state("agent_codex"), "enabled"
+            )
+            with self.assertRaises(AgentRegistryConflict):
+                registry.enable_codex_task_creation(
+                    "agent_codex",
+                    expected_capabilities=("run.start", "run.status"),
+                )
+            repeated = registry.enable_codex_task_creation(
+                "agent_codex",
+                expected_capabilities=tuple(sorted(enabled.agent.capabilities)),
+            )
+            self.assertEqual(repeated.revision, enabled.revision)
+
     def test_create_and_list_api_are_separate_from_heartbeat_agents(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -407,9 +439,14 @@ class AgentRegistryTests(unittest.TestCase):
                 server, "AGENT_RUNTIME_REGISTRY", registry
             ):
                 created, status = server.create_mentat_agent(payload)
+                bypass, bypass_status = server.create_mentat_agent(
+                    {**payload, "capabilities": ["run.start", "task.create"]}
+                )
                 listed = server.mentat_agents_payload()
 
         self.assertEqual(status, 201)
+        self.assertEqual(bypass_status, 400)
+        self.assertIn("explicitly", bypass["error"])
         self.assertEqual(created["agent"]["runtime_type"], "codex")
         self.assertEqual(
             created["agent"]["capabilities"],
@@ -417,6 +454,57 @@ class AgentRegistryTests(unittest.TestCase):
         )
         self.assertEqual(listed["agents"], [created["agent"]])
         self.assertNotIn("runtime_agent_ref", json.dumps(created))
+
+    def test_codex_task_creation_requires_ready_implemented_runtime_and_exact_state(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ready_client = Mock(
+                request=Mock(
+                    return_value={
+                        "account": {
+                            "type": "chatgpt",
+                            "email": None,
+                            "planType": "plus",
+                        },
+                        "requiresOpenaiAuth": True,
+                    }
+                ),
+                close=Mock(),
+            )
+            runtime = server.CodexRuntime(
+                workspace_root=root,
+                command=server.codex_app_server_command(
+                    str((root / "codex.exe").resolve())
+                ),
+                client=ready_client,
+                task_create_handler=lambda _request: {},
+                task_create_authorizer=object(),
+            )
+            runtimes = server.AgentRuntimeRegistry((server.HERMES_RUNTIME, runtime))
+            payload = {
+                "name": "Local Codex",
+                "runtime_type": "codex",
+                "runtime_agent_ref": "default",
+                "capabilities": ["run.start", "run.status"],
+            }
+            with patch.object(server, "DATA_DIR", root), patch.object(
+                server, "AGENT_RUNTIME_REGISTRY", runtimes
+            ):
+                created, created_status = server.create_mentat_agent(payload)
+                enabled, enabled_status = server.enable_mentat_agent_task_creation(
+                    created["agent"]["id"],
+                    {"expected_capabilities": created["agent"]["capabilities"]},
+                )
+                stale, stale_status = server.enable_mentat_agent_task_creation(
+                    created["agent"]["id"],
+                    {"expected_capabilities": created["agent"]["capabilities"]},
+                )
+
+        self.assertEqual(created_status, 201)
+        self.assertEqual(enabled_status, 200)
+        self.assertIn("task.create", enabled["agent"]["capabilities"])
+        self.assertEqual(stale_status, 409)
+        self.assertEqual(stale["error_code"], "agent_task_creation.conflict")
 
     def test_signed_out_codex_blocks_creation_without_mutating_the_registry(self):
         with TemporaryDirectory() as tmpdir:

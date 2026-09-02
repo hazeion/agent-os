@@ -1029,6 +1029,23 @@ button {
   line-height: 1.35;
 }
 
+.agent-task-create-enable {
+  min-height: 32px;
+  margin-top: 12px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--panel-raised);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 620;
+}
+
+.agent-task-create-enable:hover:not(:disabled) { border-color: var(--accent); }
+.agent-task-create-enable:disabled { cursor: wait; opacity: 0.68; }
+
 .nav-backdrop[hidden] {
   display: none;
 }

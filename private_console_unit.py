@@ -94,6 +94,7 @@ PLANNING_CONTEXT_DATABASE_SCHEMA_VERSION = 17
 PROJECT_DATABASE_SCHEMA_VERSION = 18
 TASK_EXECUTION_DATABASE_SCHEMA_VERSION = 19
 TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION = 21
+CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION = 22
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -112,6 +113,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     PROJECT_DATABASE_SCHEMA_VERSION,
     TASK_EXECUTION_DATABASE_SCHEMA_VERSION,
     TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION,
+    CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -867,6 +869,55 @@ def _validate_task_delegation_action_receipts(connection: sqlite3.Connection) ->
             raise PrivateConsoleUnitError("private_delegation_receipt_invalid")
 
 
+def _validate_codex_task_creation_records(connection: sqlite3.Connection) -> None:
+    """Keep schema-22 transient tool grants and receipts backup-safe."""
+
+    grants = connection.execute(
+        "SELECT run_id, origin_task_id, origin_task_revision, project_id, agent_id, "
+        "runtime_binding_digest, state, thread_id, turn_id, runtime_run_ref, created_at, updated_at "
+        "FROM mentat_codex_task_create_grants"
+    ).fetchall()
+    for row in grants:
+        (
+            run_id, task_id, revision, project_id, agent_id, digest, state,
+            thread_id, turn_id, runtime_ref, created_at, updated_at,
+        ) = row
+        valid_ids = all(
+            isinstance(value, str) and 1 <= len(value) <= 160
+            for value in (run_id, task_id, project_id, agent_id)
+        )
+        valid_digest = isinstance(digest, str) and SHA256_RE.fullmatch(digest)
+        valid_time = _valid_receipt_timestamp(created_at) and _valid_receipt_timestamp(updated_at)
+        bound = (
+            state == "preauthorized" and thread_id is None and turn_id is None and runtime_ref is None
+        ) or (
+            state == "thread_bound" and isinstance(thread_id, str) and turn_id is None and runtime_ref is None
+        ) or (
+            state == "armed" and isinstance(thread_id, str) and isinstance(turn_id, str)
+            and isinstance(runtime_ref, str) and runtime_ref == f"{thread_id}:{turn_id}"
+        )
+        if not (
+            valid_ids and type(revision) is int and revision >= 1 and valid_digest
+            and bound and valid_time
+        ):
+            raise PrivateConsoleUnitError("private_codex_task_creation_invalid")
+    receipts = connection.execute(
+        "SELECT origin_run_id, thread_id, turn_id, call_id, request_digest, origin_task_id, "
+        "project_id, agent_id, created_task_id, created_task_revision, result_proof_digest, created_at "
+        "FROM mentat_codex_task_create_receipts"
+    ).fetchall()
+    for row in receipts:
+        text_values = (row[0], row[1], row[2], row[3], row[5], row[6], row[7], row[8])
+        if (
+            not all(isinstance(value, str) and 1 <= len(value) <= 160 for value in text_values)
+            or type(row[9]) is not int or row[9] < 1
+            or not isinstance(row[4], str) or SHA256_RE.fullmatch(row[4]) is None
+            or not isinstance(row[10], str) or SHA256_RE.fullmatch(row[10]) is None
+            or not _valid_receipt_timestamp(row[11])
+        ):
+            raise PrivateConsoleUnitError("private_codex_task_creation_invalid")
+
+
 def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[tuple[str, str, int], ...]:
     retained = tuple(run_ids)
     connection = sqlite3.connect(path)
@@ -884,6 +935,8 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             raise PrivateConsoleUnitError("private_database_schema_invalid")
         if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
             _validate_task_delegation_action_receipts(connection)
+        if schema_version >= CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION:
+            _validate_codex_task_creation_records(connection)
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
