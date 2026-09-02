@@ -52,6 +52,17 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
         )
 
+    def setUp(self):
+        # Provider-switch tests own the transport and legacy active-run inputs.
+        # Canonical Run storage is separately covered by its repository tests;
+        # consulting a machine-local database here makes those transport
+        # contracts depend on unrelated data-root readiness.
+        canonical_active_run = patch.object(
+            server, "_active_canonical_provider_run", return_value=None
+        )
+        canonical_active_run.start()
+        self.addCleanup(canonical_active_run.stop)
+
     def tearDown(self):
         server.AGENT_CONSOLE_RUNS.clear()
         server.AGENT_CONSOLE_PROCESSES.clear()
