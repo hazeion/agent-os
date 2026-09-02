@@ -202,6 +202,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertEqual(PUBLIC_PACKAGES, {"mentat"})
         self.assertIn("server", PUBLIC_MODULES)
         self.assertIn("orchestration_service", PUBLIC_MODULES)
+        self.assertIn("codex_task_creation", PUBLIC_MODULES)
         self.assertIn("run_repository", PUBLIC_MODULES)
         self.assertIn("hermes_local_control", PUBLIC_MODULES)
         self.assertIn("task_delegation_receipts", PUBLIC_MODULES)
