@@ -2370,7 +2370,8 @@ class PrivateConsoleStateTests(unittest.TestCase):
             shm.write_bytes(b"transient-sidecar")
             if os.name == "posix":
                 shm.chmod(0o600)
-            real_resolve = Path.resolve
+            path_type = type(shm)
+            real_resolve = path_type.resolve
             denied = 0
 
             def deny_sidecar_once(path: Path, *args, **kwargs):
@@ -2381,7 +2382,7 @@ class PrivateConsoleStateTests(unittest.TestCase):
                 return real_resolve(path, *args, **kwargs)
 
             with patch.object(
-                Path,
+                path_type,
                 "resolve",
                 autospec=True,
                 side_effect=deny_sidecar_once,
