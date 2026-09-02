@@ -109,15 +109,6 @@ export function AppShell({ children, homeConsole = false, route: routeHref }: Ap
 
           <div className="utility-actions">
             <BridgeStatus />
-            <label className="contrast-control">
-              <ShellIcon name="contrast" size={18} />
-              <span>Contrast</span>
-              <select aria-label="Contrast" defaultValue="system" data-contrast-select>
-                <option value="system">System</option>
-                <option value="standard">Standard</option>
-                <option value="high">High</option>
-              </select>
-            </label>
           </div>
         </header>
 

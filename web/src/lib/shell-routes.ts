@@ -27,7 +27,7 @@ export const SHELL_ROUTES = [
 
 export type ShellRoute = (typeof SHELL_ROUTES)[number];
 export type ShellRouteHref = ShellRoute["href"];
-export type ShellIconName = ShellRoute["icon"] | "menu" | "close" | "contrast";
+export type ShellIconName = ShellRoute["icon"] | "menu" | "close";
 
 export function getShellRoute(href: ShellRouteHref): ShellRoute {
   const route = SHELL_ROUTES.find((candidate) => candidate.href === href);

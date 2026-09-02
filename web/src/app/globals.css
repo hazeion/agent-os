@@ -28,27 +28,6 @@
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
-:root[data-contrast="high"] {
-  --canvas: #000;
-  --app-bar: #000;
-  --sidebar: #020405;
-  --panel: #090d0f;
-  --panel-raised: #0e1417;
-  --row: #090e10;
-  --row-hover: #172125;
-  --text-primary: #fff;
-  --text-secondary: #d8dfde;
-  --text-tertiary: #b2bfbd;
-  --border-subtle: #4c5a5e;
-  --border-default: #728185;
-  --border-control: #a4b3b6;
-  --accent: #bdf7b9;
-  --accent-soft: rgba(189, 247, 185, 0.18);
-  --warning: #ffc47f;
-  --danger: #ffaaa4;
-  --info: #9bdaf0;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -267,7 +246,6 @@ button {
 
 .utility-context,
 .utility-actions,
-.contrast-control,
 .bridge-status {
   display: flex;
   align-items: center;
@@ -358,27 +336,6 @@ button {
 
 .bridge-status[data-state="unavailable"] .bridge-status-dot {
   background: var(--danger);
-}
-
-.contrast-control {
-  min-height: 38px;
-  gap: 7px;
-  padding: 4px 5px 4px 9px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--panel);
-  color: var(--text-tertiary);
-  font-size: 0.72rem;
-}
-
-.contrast-control select {
-  min-height: 28px;
-  cursor: pointer;
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--row);
-  color: var(--text-secondary);
-  font-size: 0.72rem;
 }
 
 .main-content {
@@ -1181,14 +1138,8 @@ button {
     padding-bottom: 18px;
   }
 
-  .brand,
-  .contrast-control,
-  .contrast-control select {
+  .brand {
     min-height: 44px;
-  }
-
-  .contrast-control {
-    padding-block: 0;
   }
 }
 
@@ -1204,8 +1155,7 @@ button {
     padding-inline: 12px;
   }
 
-  .utility-route,
-  .contrast-control > span {
+  .utility-route {
     display: none;
   }
 
@@ -1233,14 +1183,6 @@ button {
 
   .bridge-status-compact {
     display: inline;
-  }
-
-  .contrast-control {
-    padding-left: 8px;
-  }
-
-  .contrast-control select {
-    max-width: 78px;
   }
 
   .panel-heading,

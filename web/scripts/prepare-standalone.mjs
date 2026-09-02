@@ -51,7 +51,7 @@ for (const route of routes) {
   const shell = readFileSync(renderedRoute, "utf8")
     .replace(scriptPreloadPattern, "")
     .replace(frameworkScriptPattern, (script) => (
-      /data-mentat-(?:preference-preload|shell-runtime)/u.test(
+      /data-mentat-shell-runtime/u.test(
         script.slice(0, script.indexOf(">") + 1),
       )
         ? script
@@ -61,8 +61,8 @@ for (const route of routes) {
   const scripts = shell.match(/<script\b[^>]*\bsrc="[^"]+"[^>]*>/giu) ?? [];
   const scriptPaths = scripts.map((script) => script.match(/\bsrc="([^"]+)"/iu)?.[1]);
   if (
-    scripts.length !== 2
-    || JSON.stringify(scriptPaths) !== JSON.stringify(["/preference-preload.js", "/shell-runtime.js"])
+    scripts.length !== 1
+    || JSON.stringify(scriptPaths) !== JSON.stringify(["/shell-runtime.js"])
     || !shell.includes('data-ui-shell="emerald"')
     || !shell.includes(`aria-current="page"`)
     || !shell.includes(`>${route.currentLabel}</strong>`)
