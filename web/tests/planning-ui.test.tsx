@@ -28,7 +28,7 @@ const envelope = { runtime: "python", schema_version: 1, service: "mentat-local-
 const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "active" as const };
 const task = { attention_reasons: ["overdue" as const], blocked: false, deferred: false, due_date: "2026-08-29", id: "task_alpha", needs_attention: true, planned_for_today: false, planning_state: "planned" as const, priority: "high" as const, project_id: project.id, project_name: project.name, review_required: false, revision: 1, status: "todo" as const, title: "Ship Alpha", updated_at: "2026-08-29T12:00:00Z", workflow_stage: "planned" as const };
 const listTask = { ...task, description_preview: "Ship the reviewed Alpha changes." };
-const taskDetail = { ...task, assigned_agent_id: null, description: "Ship the reviewed Alpha changes.", estimated_minutes: null, recurrence: null, subtasks: [], tags: [] };
+const taskDetail = { ...task, assigned_agent_id: null, calendar_links: [], description: "Ship the reviewed Alpha changes.", estimated_minutes: null, note_links: [], recurrence: null, reminders: [], scheduled_block: null, subtasks: [], tags: [] };
 const dependency = { blocked: false, id: "task_beta", project_id: "project_beta", project_name: "Beta", title: "Prepare Beta", workflow_stage: "planned" as const };
 const dependencies = { ...envelope, dependent_count: 1, dependents: [dependency], dependents_truncated: false, prerequisite_count: 0, prerequisites: [], prerequisites_truncated: false, task_id: task.id, task_revision: task.revision };
 const picker = { ...envelope, candidate_count: 1, candidates: [dependency], match_count: 1, next_cursor: null, query: "", task_id: task.id, truncated: false };
@@ -189,6 +189,50 @@ test("Task inspector presents the bounded delegation summary and an honest not-d
   await within(inspector).findByText("Prepare the Beta changes.");
   await within(inspector).findByText("This Task has not been delegated.");
   assert.equal(within(inspector).queryByText(/The delegated implementation is ready/u), null);
+});
+
+test("Task inspector presents selected Task planning details as bounded, read-only labels", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const detail = {
+    ...taskDetail,
+    calendar_links: [
+      { calendar_id: "calendar_alpha", event_id: "event_alpha", label: "Alpha review" },
+      { calendar_id: "calendar_beta", event_id: "event_beta" },
+    ],
+    note_links: [
+      { path: "planning/alpha-brief.md", title: "Alpha brief" },
+      { path: "planning/release-checklist.md" },
+    ],
+    reminders: [
+      { at: "2026-09-02T09:00:00Z", channel: "browser" as const, enabled: true, id: "reminder_alpha", timezone: "UTC" },
+      { at: "2026-09-02T10:00:00Z", channel: "browser" as const, enabled: false, id: "reminder_beta", notified_at: "2026-09-02T09:55:00Z", timezone: "UTC" },
+    ],
+    scheduled_block: { end: "2026-09-02T10:30:00Z", label: "Focus block", start: "2026-09-02T09:30:00Z", timezone: "UTC" },
+  };
+  const calls: Array<{ method: string; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin); calls.push({ method: init?.method ?? "GET", path: url.pathname });
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: detail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task });
+    if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json({ ...envelope, delegation: { available: false, reason: "not_delegated" }, task: { id: task.id, revision: task.revision } });
+    throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  const planning = await within(inspector).findByLabelText("Planning details");
+  assert.match(within(planning).getByText("Focus block").textContent ?? "", /Focus block/u);
+  assert.equal(planning.querySelectorAll("time").length, 4);
+  assert.match(within(planning).getByLabelText("Browser reminders").textContent ?? "", /On.*Off.*Sent/us);
+  assert.match(within(planning).getByLabelText("Calendar links").textContent ?? "", /Alpha review.*Linked calendar event 2/us);
+  assert.match(within(planning).getByLabelText("Notes").textContent ?? "", /Alpha brief.*release-checklist/us);
+  assert.equal(within(planning).queryAllByRole("button").length, 0);
+  assert.equal(within(planning).queryAllByRole("link").length, 0);
+  assert.ok(calls.every((call) => call.method === "GET"));
 });
 
 test("an indeterminate delegation delivery can only be reconciled, never confirmed again", async () => {

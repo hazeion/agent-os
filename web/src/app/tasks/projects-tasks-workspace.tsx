@@ -93,6 +93,25 @@ function requestedTask(): { projectId: string | null; taskId: string } | null | 
   return { projectId, taskId };
 }
 
+function planningTimestamp(value: string, timezone?: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: timezone ?? "UTC",
+      timeZoneName: "short",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function noteLinkLabel(path: string, title: string | undefined, index: number): string {
+  if (title) return title;
+  const filename = path.split("/").at(-1)?.replace(/\.md$/iu, "");
+  return filename || `Note ${index + 1}`;
+}
+
 async function readAgents(): Promise<PublicAgent[]> {
   const response = await fetch("/api/agents", { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } });
   const payload = await response.json() as Record<string, unknown>;
@@ -616,6 +635,7 @@ export function ProjectsTasksWorkspace() {
   const selectedTaskExecution = taskExecution && selectedTask && taskExecution.task.id === selectedTask.id && taskExecution.task.revision === selectedTask.revision ? taskExecution : null;
   const selectedTaskDelegation = taskDelegation && selectedTask && taskDelegation.task.id === selectedTask.id ? taskDelegation : null;
   const executionOwnsTerminalStages = !!selectedTaskExecution && executionState === "ready" && selectedTaskExecution.execution.attempts.some((attempt) => attempt.state === "dispatched" || attempt.state === "review_ready");
+  const hasPlanningMetadata = !!taskDetail && (!!taskDetail.scheduled_block || !!taskDetail.reminders.length || !!taskDetail.calendar_links.length || !!taskDetail.note_links.length);
   const filteredTasks = tasks.filter((task) => {
     const query = filter.trim().toLowerCase();
     if (query && !`${task.title} ${task.description_preview}`.toLowerCase().includes(query)) return false;
@@ -855,6 +875,13 @@ export function ProjectsTasksWorkspace() {
       {!selectedTask ? <p>Select a Task to review its description, planning details, and lifecycle.</p> : <>
         <p className="planning-description">{(taskDetail?.description ?? selectedTask.description_preview) || "This Task has no description."}</p>
         <dl className="planning-summary"><div><dt>Stage</dt><dd>{selectedTask.workflow_stage.replace("_", " ")}</dd></div><div><dt>Priority</dt><dd>{selectedTask.priority}</dd></div><div><dt>Due</dt><dd>{selectedTask.due_date ?? "Not scheduled"}</dd></div></dl>
+        {taskDetail && hasPlanningMetadata ? <section aria-label="Planning details" className="planning-metadata">
+          <p className="console-kicker">Planning details</p>
+          {taskDetail.scheduled_block ? <dl className="planning-summary"><div><dt>{taskDetail.scheduled_block.label ?? "Schedule"}</dt><dd><time dateTime={taskDetail.scheduled_block.start}>{planningTimestamp(taskDetail.scheduled_block.start, taskDetail.scheduled_block.timezone)}</time> – <time dateTime={taskDetail.scheduled_block.end}>{planningTimestamp(taskDetail.scheduled_block.end, taskDetail.scheduled_block.timezone)}</time></dd></div></dl> : null}
+          {taskDetail.reminders.length ? <section aria-label="Browser reminders"><h3>Browser reminders</h3><ul>{taskDetail.reminders.map((reminder) => <li key={reminder.id}><span>{reminder.enabled ? "On" : "Off"}</span><time dateTime={reminder.at}>{planningTimestamp(reminder.at, reminder.timezone)}</time>{reminder.notified_at ? <small>Sent</small> : null}</li>)}</ul></section> : null}
+          {taskDetail.calendar_links.length ? <section aria-label="Calendar links"><h3>Calendar links</h3><ul>{taskDetail.calendar_links.map((link, index) => <li key={`${link.calendar_id}:${link.event_id}`}>{link.label ?? `Linked calendar event ${index + 1}`}</li>)}</ul></section> : null}
+          {taskDetail.note_links.length ? <section aria-label="Notes"><h3>Notes</h3><ul>{taskDetail.note_links.map((link, index) => <li key={link.path}>{noteLinkLabel(link.path, link.title, index)}</li>)}</ul></section> : null}
+        </section> : null}
         <div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage || executionOwnsTerminalStages && (stage === "review" || stage === "done")} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}{executionOwnsTerminalStages ? <p>Run and review controls own the Review and Done stages until this attempt is resolved.</p> : null}</div>
         <section aria-label="Task execution" className="planning-execution">
           <p className="console-kicker">Execution</p>

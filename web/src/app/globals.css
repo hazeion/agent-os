@@ -806,6 +806,14 @@ button {
 .planning-summary > div { display: flex; justify-content: space-between; gap: 10px; }
 .planning-summary dt { color: var(--text-tertiary); font-size: .7rem; }
 .planning-summary dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); font-size: .74rem; text-transform: capitalize; }
+.planning-metadata { display: grid; gap: 8px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
+.planning-metadata > .console-kicker { margin: 0; }
+.planning-metadata section { display: grid; gap: 4px; }
+.planning-metadata h3 { margin: 0; color: var(--text-secondary); font-size: .72rem; font-weight: 700; }
+.planning-metadata ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.planning-metadata li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 7px; overflow-wrap: anywhere; color: var(--text-secondary); font-size: .72rem; }
+.planning-metadata li span { color: var(--text-primary); font-weight: 700; }
+.planning-metadata li small { color: var(--text-tertiary); font-size: .68rem; }
 .planning-stage-controls,
 .planning-project-lifecycle { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
 .planning-stage-controls > p,
