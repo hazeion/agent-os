@@ -17,12 +17,16 @@ import {
   readPlanningDependencyMap,
   readPlanningTask,
   readPlanningTaskDependencies,
+  readPlanningTaskExecution,
   readPlanningTaskDetail,
   readPlanningDependencyPicker,
   readPlanningOverview,
   readPlanningTasks,
   updatePlanningProject,
   updatePlanningTask,
+  previewPlanningTaskRunOnce,
+  confirmPlanningTaskRunOnce,
+  reviewPlanningTaskExecution,
   type PublicPlanningOverview,
   type PublicPlanningTask,
   type PublicPlanningTaskDetail,
@@ -31,6 +35,8 @@ import {
   type PublicPlanningDependencyReference,
   type PublicPlanningDependencyMap,
   type PublicPlanningTaskDependencies,
+  type PublicPlanningTaskExecution,
+  type PublicPlanningTaskExecutionMutation,
   PublicPlanningError,
 } from "@/lib/public-planning";
 
@@ -77,6 +83,11 @@ export function ProjectsTasksWorkspace() {
   const [taskDetail, setTaskDetail] = useState<PublicPlanningTaskDetail | null>(null);
   const [taskDependencies, setTaskDependencies] = useState<PublicPlanningTaskDependencies | null>(null);
   const [dependenciesState, setDependenciesState] = useState<LoadState>("loading");
+  const [taskExecution, setTaskExecution] = useState<PublicPlanningTaskExecution | null>(null);
+  const [executionState, setExecutionState] = useState<LoadState>("loading");
+  const [runOnceConfirmation, setRunOnceConfirmation] = useState<{ confirmationId: string; idempotencyKey: string; revision: number; taskId: string } | null>(null);
+  const [requestChanges, setRequestChanges] = useState(false);
+  const [reviewNote, setReviewNote] = useState("");
   const [dependencyMap, setDependencyMap] = useState<PublicPlanningDependencyMap | null>(null);
   const [dependencyMapState, setDependencyMapState] = useState<LoadState>("empty");
   const [dependencyMapVersion, setDependencyMapVersion] = useState(0);
@@ -110,8 +121,33 @@ export function ProjectsTasksWorkspace() {
   const projectSelectionGeneration = useRef(0);
   const requestedTaskFocus = useRef<string | null>(null);
   const selectedProjectRef = useRef<string | null>(null);
+  // Selection can change while an execution refresh is in flight. Keep the
+  // current selection and an epoch outside a render closure so late responses
+  // cannot repaint a different Task (or an older read of the same Task).
+  const selectedTaskRef = useRef<string | null>(null);
+  const taskSelectionGeneration = useRef(0);
+  const executionGeneration = useRef(0);
+  const taskDetailGeneration = useRef(0);
   const dependencyPickerGeneration = useRef(0);
   const requested = useMemo(() => typeof window === "undefined" ? null : requestedTask(), []);
+
+  function selectTaskId(taskId: string | null) {
+    if (selectedTaskRef.current !== taskId) {
+      selectedTaskRef.current = taskId;
+      taskSelectionGeneration.current += 1;
+      executionGeneration.current += 1;
+      taskDetailGeneration.current += 1;
+      // Clear execution presentation in this same selection update. Waiting for
+      // the effect below would briefly render the prior Task's controls when
+      // two Tasks have the same revision.
+      setTaskExecution(null);
+      setExecutionState(taskId ? "loading" : "empty");
+      setRunOnceConfirmation(null);
+      setRequestChanges(false);
+      setReviewNote("");
+    }
+    setSelectedTaskId(taskId);
+  }
 
   async function refreshOverview(preferredProjectId: string | null = null) {
     const value = await readPlanningOverview();
@@ -138,7 +174,7 @@ export function ProjectsTasksWorkspace() {
     requestedTaskFocus.current = null;
     selectedProjectRef.current = projectId;
     setSelectedProjectId(projectId);
-    setSelectedTaskId(null);
+    selectTaskId(null);
     setTaskDetail(null);
     setTaskDependencies(null);
     setDependenciesState("loading");
@@ -194,7 +230,7 @@ export function ProjectsTasksWorkspace() {
       let rows = [...page.tasks];
       let cursor = page.next_cursor;
       setTasks(rows);
-      setSelectedTaskId((current) => rows.some((task) => task.id === current) ? current : null);
+      selectTaskId(rows.some((task) => task.id === selectedTaskRef.current) ? selectedTaskRef.current : null);
       setTaskCursor(cursor);
       setTasksState(rows.length ? "ready" : "empty");
       if (requested && typeof requested === "object" && (requested.projectId === null || requested.projectId === projectId)) {
@@ -215,7 +251,7 @@ export function ProjectsTasksWorkspace() {
         }
         if (target) {
           requestedTaskFocus.current = requested.taskId;
-          setSelectedTaskId(requested.taskId); setTaskDetail(null); setEditingTask(false);
+          selectTaskId(requested.taskId); setTaskDetail(null); setEditingTask(false);
           setTasks([...rows]);
         }
         else setNotice("The requested Task could not be found in this Project.");
@@ -227,8 +263,22 @@ export function ProjectsTasksWorkspace() {
 
   useEffect(() => {
     if (!selectedTaskId) return;
+    const taskId = selectedTaskId;
+    const generation = ++taskDetailGeneration.current;
     let cancelled = false;
-    void readPlanningTaskDetail(selectedTaskId).then((result) => { if (!cancelled && result.task.id === selectedTaskId) setTaskDetail(result.task); }).catch(() => { if (!cancelled) setNotice("Task details could not be loaded. The Task list remains available."); });
+    void readPlanningTaskDetail(taskId).then((result) => { if (!cancelled && generation === taskDetailGeneration.current && selectedTaskRef.current === taskId && result.task.id === taskId) setTaskDetail(result.task); }).catch(() => { if (!cancelled && generation === taskDetailGeneration.current && selectedTaskRef.current === taskId) setNotice("Task details could not be loaded. The Task list remains available."); });
+    return () => { cancelled = true; };
+  }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    const taskId = selectedTaskId;
+    const generation = ++executionGeneration.current;
+    let cancelled = false;
+    void readPlanningTaskExecution(taskId).then((result) => {
+      if (cancelled || generation !== executionGeneration.current || selectedTaskRef.current !== taskId || result.task.id !== taskId) return;
+      setTaskExecution(result); setExecutionState("ready");
+    }).catch(() => { if (!cancelled && generation === executionGeneration.current && selectedTaskRef.current === taskId) setExecutionState("unavailable"); });
     return () => { cancelled = true; };
   }, [selectedTaskId]);
 
@@ -323,7 +373,7 @@ export function ProjectsTasksWorkspace() {
       closeTaskForm();
       if (selectedProjectRef.current === projectId) {
         setTasks((current) => [{ ...created, description_preview: "" }, ...current.filter((item) => item.id !== created.id)]);
-        setSelectedTaskId(created.id); setTaskDetail(null);
+        selectTaskId(created.id); setTaskDetail(null);
         setTasksState("ready");
         window.setTimeout(() => document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
       }
@@ -335,6 +385,8 @@ export function ProjectsTasksWorkspace() {
 
   const selectedProject = overview?.projects.find((item) => item.id === selectedProjectId) ?? null;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedTaskExecution = taskExecution && selectedTask && taskExecution.task.id === selectedTask.id && taskExecution.task.revision === selectedTask.revision ? taskExecution : null;
+  const executionOwnsTerminalStages = !!selectedTaskExecution && executionState === "ready" && selectedTaskExecution.execution.attempts.some((attempt) => attempt.state === "dispatched" || attempt.state === "review_ready");
   const filteredTasks = tasks.filter((task) => {
     const query = filter.trim().toLowerCase();
     if (query && !`${task.title} ${task.description_preview}`.toLowerCase().includes(query)) return false;
@@ -364,52 +416,59 @@ export function ProjectsTasksWorkspace() {
     };
   }, [dependencyMap]);
   const selectTask = (task: PublicPlanningTaskListItem) => {
-    setSelectedTaskId(task.id); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
+    selectTaskId(task.id); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
   };
   async function selectMapTask(taskId: string) {
     const loaded = tasks.find((task) => task.id === taskId);
     if (loaded) { selectTask(loaded); return; }
     const projectId = selectedProjectId;
     if (!projectId) return;
+    const selectionGeneration = taskSelectionGeneration.current;
     try {
       const result = await readPlanningTask(taskId);
-      if (selectedProjectRef.current !== projectId || result.project.id !== projectId) return;
+      if (selectedProjectRef.current !== projectId || taskSelectionGeneration.current !== selectionGeneration || result.project.id !== projectId) return;
       const task = { ...result.task, description_preview: "" };
       setTasks((current) => current.some((item) => item.id === task.id) ? current : [task, ...current]);
       selectTask(task);
-    } catch { setNotice("That Task could not be opened. The verified map remains available."); }
+    } catch { if (taskSelectionGeneration.current === selectionGeneration) setNotice("That Task could not be opened. The verified map remains available."); }
   }
   async function editSelected(changes: Record<string, unknown>, success: string): Promise<boolean> {
     if (!selectedTask || busy) return false;
+    const taskId = selectedTask.id;
+    const selectionGeneration = taskSelectionGeneration.current;
+    const isCurrentSelection = () => selectedTaskRef.current === taskId && taskSelectionGeneration.current === selectionGeneration;
     setBusy(true); setNotice("Saving Task…");
     let result: PublicPlanningTaskMutation;
     try {
-      result = await updatePlanningTask(selectedTask.id, selectedTask.revision, changes);
+      result = await updatePlanningTask(taskId, selectedTask.revision, changes);
       setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
       invalidateDependencyMap();
     } catch (error) {
       if (error instanceof PublicPlanningError && error.code === "conflict") {
         try {
-          const [detailed, relationships] = await Promise.all([readPlanningTaskDetail(selectedTask.id), readPlanningTaskDependencies(selectedTask.id)]);
+          const [detailed, relationships] = await Promise.all([readPlanningTaskDetail(taskId), readPlanningTaskDependencies(taskId)]);
+          if (!isCurrentSelection()) { setBusy(false); return false; }
           setTaskDetail(detailed.task); setTaskDependencies(relationships); setDependenciesState("ready");
           const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
-          setTasks((current) => current.map((task) => task.id === selectedTask.id ? { ...task, ...detailed.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+          setTasks((current) => current.map((task) => task.id === taskId ? { ...task, ...detailed.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
           setNotice("Task changed elsewhere; its latest dependencies are shown. Review and save again.");
-        } catch { setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again."); }
-      } else setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again.");
+        } catch { if (isCurrentSelection()) setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again."); }
+      } else if (isCurrentSelection()) setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again.");
       setBusy(false); return false;
     }
     try {
       const detailed = await readPlanningTaskDetail(result.task.id);
+      if (!isCurrentSelection()) { setBusy(false); return false; }
       setTaskDetail(detailed.task);
       const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
       setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
       try {
         const relationships = await readPlanningTaskDependencies(result.task.id);
+        if (!isCurrentSelection()) { setBusy(false); return false; }
         setTaskDependencies(relationships); setDependenciesState("ready");
-      } catch { setDependenciesState("unavailable"); }
+      } catch { if (isCurrentSelection()) setDependenciesState("unavailable"); }
       setNotice(success);
-    } catch { setNotice("Task saved. Its refreshed details are temporarily unavailable."); }
+    } catch { if (isCurrentSelection()) setNotice("Task saved. Its refreshed details are temporarily unavailable."); }
     setBusy(false);
     return true;
   }
@@ -440,7 +499,95 @@ export function ProjectsTasksWorkspace() {
     return `${dependency.title} · Project: ${dependency.project_name} · ${dependency.workflow_stage.replace("_", " ")}${dependency.blocked ? " · blocked" : ""}`;
   }
   async function changeStage(stage: PublicPlanningTask["workflow_stage"]) {
-    await editSelected({ workflow_stage: stage }, `Task moved to ${stage.replace("_", " ")}.`);
+    const taskId = selectedTask?.id;
+    const saved = await editSelected({ workflow_stage: stage }, `Task moved to ${stage.replace("_", " ")}.`);
+    if (!saved || !taskId || selectedTaskRef.current !== taskId) return;
+    try {
+      await refreshExecution(taskId);
+    } catch {
+      if (selectedTaskRef.current === taskId) {
+        setTaskExecution(null);
+        setExecutionState("unavailable");
+      }
+    }
+  }
+  function applyExecutionMutation(result: PublicPlanningTaskExecutionMutation) {
+    setTaskExecution({ execution: result.execution, runtime: result.runtime, schema_version: result.schema_version, service: result.service, status: result.status, task: result.task });
+    setExecutionState("ready");
+    setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
+  }
+  async function refreshExecution(taskId: string) {
+    if (selectedTaskRef.current !== taskId) return;
+    const generation = ++executionGeneration.current;
+    const isCurrent = () => generation === executionGeneration.current && selectedTaskRef.current === taskId;
+    const [execution, task] = await Promise.all([readPlanningTaskExecution(taskId), readPlanningTask(taskId)]);
+    if (!isCurrent()) return;
+    setTaskExecution(execution); setExecutionState("ready");
+    setTasks((current) => current.map((item) => item.id === task.task.id ? { ...item, ...task.task } : item));
+    const detailGeneration = ++taskDetailGeneration.current;
+    try { const detail = await readPlanningTaskDetail(taskId); if (isCurrent() && detailGeneration === taskDetailGeneration.current) setTaskDetail(detail.task); } catch { /* The confirmed Task state remains available from the execution projection. */ }
+  }
+  async function previewRunOnce() {
+    if (!selectedTask || !selectedTaskExecution || busy || !selectedTaskExecution.execution.available || selectedTaskExecution.task.revision !== selectedTask.revision) return;
+    const taskId = selectedTask.id;
+    const taskRevision = selectedTask.revision;
+    const executionEpoch = executionGeneration.current;
+    const isCurrent = () => selectedTaskRef.current === taskId && executionGeneration.current === executionEpoch;
+    setBusy(true); setNotice("Preparing Run once…");
+    try {
+      const preview = await previewPlanningTaskRunOnce(taskId, taskRevision);
+      if (!isCurrent()) return;
+      if (preview.task.id !== taskId) return;
+      setRunOnceConfirmation({ confirmationId: preview.confirmation_id, idempotencyKey: crypto.randomUUID(), revision: preview.task.revision, taskId });
+      setNotice("Review the exact Task revision, then start this Run once.");
+    } catch { if (isCurrent()) setNotice("Run once is unavailable or this Task changed. Refresh and try again."); }
+    finally { setBusy(false); }
+  }
+  async function confirmRunOnce() {
+    if (!selectedTask || !selectedTaskExecution || !runOnceConfirmation || busy || selectedTaskExecution.task.id !== selectedTask.id || selectedTask.id !== runOnceConfirmation.taskId || selectedTask.revision !== runOnceConfirmation.revision) return;
+    const taskId = selectedTask.id;
+    const executionEpoch = executionGeneration.current;
+    const isCurrent = () => selectedTaskRef.current === taskId && executionGeneration.current === executionEpoch;
+    const isSelected = () => selectedTaskRef.current === taskId;
+    setBusy(true); setNotice("Starting Run once…");
+    try {
+      const result = await confirmPlanningTaskRunOnce(taskId, runOnceConfirmation.revision, runOnceConfirmation.idempotencyKey, runOnceConfirmation.confirmationId);
+      if (!isCurrent()) return;
+      applyExecutionMutation(result); setRunOnceConfirmation(null);
+      try {
+        await refreshExecution(taskId);
+        if (isSelected()) setNotice("Run once started.");
+      } catch {
+        if (isSelected()) setNotice("Run once started. Its latest Task details are temporarily unavailable.");
+      }
+    } catch {
+      if (isCurrent()) { setRunOnceConfirmation(null); setNotice("Run once was not started. Refresh the Task before trying again."); }
+    }
+    finally { setBusy(false); }
+  }
+  async function reviewExecution(action: "accept" | "request_changes") {
+    if (!selectedTask || !selectedTaskExecution || busy || !selectedTaskExecution.execution.review.available || selectedTaskExecution.task.id !== selectedTask.id || selectedTaskExecution.task.revision !== selectedTask.revision) return;
+    const taskId = selectedTask.id;
+    const executionEpoch = executionGeneration.current;
+    const isCurrent = () => selectedTaskRef.current === taskId && executionGeneration.current === executionEpoch;
+    const isSelected = () => selectedTaskRef.current === taskId;
+    const note = action === "request_changes" ? reviewNote.trim() : null;
+    if (action === "request_changes" && !note) return;
+    setBusy(true); setNotice(action === "accept" ? "Accepting Task…" : "Requesting changes…");
+    try {
+      const result = await reviewPlanningTaskExecution(taskId, selectedTask.revision, action, note, crypto.randomUUID());
+      if (!isCurrent()) return;
+      applyExecutionMutation(result); setRequestChanges(false); setReviewNote("");
+      try {
+        await refreshExecution(taskId);
+        if (isSelected()) setNotice(action === "accept" ? "Task accepted." : "Changes requested; the Task is planned for another Run.");
+      } catch {
+        if (isSelected()) setNotice(action === "accept" ? "Task accepted. Its latest details are temporarily unavailable." : "Changes requested. Its latest details are temporarily unavailable.");
+      }
+    } catch {
+      if (isCurrent()) setNotice("The Task changed or review is no longer available. Refresh and try again.");
+    }
+    finally { setBusy(false); }
   }
   async function lifecycle(action: "archive" | "restore") {
     if (!selectedProject || busy) return;
@@ -479,7 +626,14 @@ export function ProjectsTasksWorkspace() {
       {!selectedTask ? <p>Select a Task to review its description, planning details, and lifecycle.</p> : <>
         <p className="planning-description">{(taskDetail?.description ?? selectedTask.description_preview) || "This Task has no description."}</p>
         <dl className="planning-summary"><div><dt>Stage</dt><dd>{selectedTask.workflow_stage.replace("_", " ")}</dd></div><div><dt>Priority</dt><dd>{selectedTask.priority}</dd></div><div><dt>Due</dt><dd>{selectedTask.due_date ?? "Not scheduled"}</dd></div></dl>
-        <div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}</div>
+        <div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage || executionOwnsTerminalStages && (stage === "review" || stage === "done")} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}{executionOwnsTerminalStages ? <p>Run and review controls own the Review and Done stages until this attempt is resolved.</p> : null}</div>
+        <section aria-label="Task execution" className="planning-execution">
+          <p className="console-kicker">Execution</p>
+          {executionState === "loading" ? <p>Loading execution status…</p> : executionState === "unavailable" || !selectedTaskExecution ? <p>Run once and review controls are temporarily unavailable.</p> : <>
+            {selectedTaskExecution.execution.attempts.length ? <ul aria-label="Execution attempts">{selectedTaskExecution.execution.attempts.map((attempt) => <li key={attempt.run_id}><span>{attempt.state.replaceAll("_", " ")} · {attempt.status.replaceAll("_", " ")}</span><time dateTime={attempt.updated_at}>{attempt.completed_at ? "Completed" : "Updated"} {attempt.updated_at}</time>{attempt.partial ? <small>Partial evidence</small> : null}</li>)}</ul> : <p>No Run attempts yet.</p>}
+            {selectedTaskExecution.execution.review.available ? <div className="planning-review-actions"><p>This Task is ready for your review.</p><div><button disabled={busy} onClick={() => void reviewExecution("accept")} type="button">Accept</button><button aria-expanded={requestChanges} disabled={busy} onClick={() => setRequestChanges((current) => !current)} type="button">Request changes</button></div>{requestChanges ? <form onSubmit={(event) => { event.preventDefault(); void reviewExecution("request_changes"); }}><label><span>Feedback for changes</span><textarea maxLength={2000} onChange={(event) => setReviewNote(event.target.value)} value={reviewNote} /></label><div><button disabled={busy || !reviewNote.trim()} type="submit">Send change request</button><button disabled={busy} onClick={() => { setRequestChanges(false); setReviewNote(""); }} type="button">Cancel</button></div></form> : null}</div> : selectedTaskExecution.execution.available ? runOnceConfirmation && runOnceConfirmation.taskId === selectedTask.id ? <div className="planning-run-once-confirmation"><p>Start one Run for this exact Task revision?</p><div><button disabled={busy || selectedTask.revision !== runOnceConfirmation.revision} onClick={() => void confirmRunOnce()} type="button">Start Run once</button><button disabled={busy} onClick={() => setRunOnceConfirmation(null)} type="button">Cancel</button></div></div> : <button disabled={busy} onClick={() => void previewRunOnce()} type="button">Run once</button> : <p>Run once is unavailable for this Task.</p>}
+          </>}
+        </section>
         {editingTask && taskDetail ? <form className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}>
           <label><span>Title</span><input maxLength={160} onChange={(event) => setEditTitle(event.target.value)} value={editTitle} /></label>
           <label className="planning-full-field"><span>Description</span><textarea maxLength={4000} onChange={(event) => setEditDescription(event.target.value)} value={editDescription} /></label>

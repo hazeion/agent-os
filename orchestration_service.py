@@ -62,6 +62,7 @@ from run_repository import (
     runtime_binding_digest,
 )
 from task_repository import TaskRepository, TaskRepositoryError
+from task_planning import task_is_deferred, workflow_stage
 
 
 class OrchestrationServiceError(RuntimeError):
@@ -378,12 +379,30 @@ class OrchestrationService:
         if not frozenset(task.required_capabilities).issubset(runtime_capabilities):
             raise OrchestrationServiceError("dispatch.runtime_capability_missing")
 
+    @staticmethod
+    def _require_planning_execution_eligibility(document: dict) -> None:
+        """Keep PT-3A execution scoped to an operator-owned planned Task."""
+
+        try:
+            nested = document.get("delegation")
+            eligible = (
+                document.get("source") == "dashboard"
+                and workflow_stage(document) == "planned"
+                and not task_is_deferred(document)
+                and nested is None
+            )
+        except Exception as exc:
+            raise OrchestrationServiceError("dispatch.task_unavailable") from exc
+        if not eligible:
+            raise OrchestrationServiceError("dispatch.task_unavailable")
+
     def _reserve(
         self,
         *,
         task_id: str,
         expected_revision: int,
         idempotency_key: str,
+        planning_execution: bool = False,
     ) -> tuple[
         DispatchReservation,
         MentatTask | None,
@@ -407,6 +426,8 @@ class OrchestrationService:
                     if snapshot.revision != expected_revision:
                         raise OrchestrationServiceError("dispatch.task_changed")
                     task = self._task_contract(snapshot.document, snapshot.revision)
+                    if planning_execution:
+                        self._require_planning_execution_eligibility(snapshot.document)
                     agent, binding = self._agent_and_binding(
                         task.assigned_agent_id or ""
                     )
@@ -449,6 +470,10 @@ class OrchestrationService:
                         current_snapshot.document,
                         current_snapshot.revision,
                     )
+                    if planning_execution:
+                        self._require_planning_execution_eligibility(
+                            current_snapshot.document
+                        )
                     current_agent, current_binding = self._agent_and_binding(
                         current_task.assigned_agent_id or ""
                     )
@@ -487,6 +512,7 @@ class OrchestrationService:
                         capabilities=current_agent.capabilities,
                         capacity_scope_digest=capacity_scope_digest,
                         capacity_limit=capacity_limit,
+                        planning_execution=planning_execution,
                     )
                     return (
                         reservation,
@@ -631,6 +657,7 @@ class OrchestrationService:
         task_id: str,
         expected_revision: int,
         idempotency_key: str,
+        planning_execution: bool = False,
     ) -> DispatchResult:
         """Dispatch one exact Task revision with at most one adapter invocation."""
 
@@ -659,10 +686,13 @@ class OrchestrationService:
             finally:
                 connection.close()
 
+        if type(planning_execution) is not bool:
+            raise OrchestrationServiceError("dispatch.task_invalid")
         reservation, task, agent, binding, runtime = self._reserve(
             task_id=task_id,
             expected_revision=expected_revision,
             idempotency_key=idempotency_key,
+            planning_execution=planning_execution,
         )
         if reservation.duplicate:
             with private_state_lock(self.data_dir):

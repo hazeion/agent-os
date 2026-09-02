@@ -35,6 +35,7 @@ from run_repository import (
     save_authoritative_run_summaries,
     runtime_binding_digest,
 )
+from task_repository import TaskRepository, TaskRepositoryConflict
 from tests.sqlite_authority_support import ensure_run_sqlite_authority
 
 
@@ -130,7 +131,7 @@ class RunRepositoryTests(unittest.TestCase):
             finally:
                 connection.close()
 
-        self.assertEqual(SCHEMA_VERSION, 18)
+        self.assertEqual(SCHEMA_VERSION, 19)
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue(
             {
@@ -141,6 +142,8 @@ class RunRepositoryTests(unittest.TestCase):
                 "mentat_conversation_submission_results",
                 "mentat_conversation_run_attempts",
                 "mentat_conversation_run_contexts",
+                "mentat_task_execution_attempts",
+                "mentat_task_execution_reviews",
             }.issubset(tables)
         )
 
@@ -2629,6 +2632,137 @@ class RunRepositoryTests(unittest.TestCase):
 
         self.assertEqual(stored.status, "reserved")
         self.assertEqual([event.type for event in events], [AgentEventType.DISPATCH_RESERVED])
+
+    def test_planning_execution_verified_completion_review_and_accept_are_atomic(self):
+        """Only a terminal, accepted planning Run can unlock operator review."""
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task = task_fixture()
+            task.update({
+                "source": "dashboard",
+                "workflow_stage": "planned",
+                "planning_state": "planned",
+            })
+            (root / "tasks.json").write_text(
+                json.dumps([task], sort_keys=True) + "\n", encoding="utf-8"
+            )
+            (root / "tasks.json").chmod(0o600)
+            ensure_run_sqlite_authority(root, history_path(root))
+            digest = runtime_binding_digest(
+                agent_id="agent-main", runtime_type="codex",
+                runtime_config_id="default", runtime_agent_ref="default",
+                capabilities=("run.start",),
+            )
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                reservation = repository.reserve_dispatch(
+                    idempotency_key="planning-completion-key-0001",
+                    dispatch_id="dispatch_planning_completion",
+                    run_id="run_planning_completion",
+                    task=task, task_revision=1, agent_id="agent-main",
+                    runtime_type="codex", runtime_config_id="default",
+                    binding_digest=digest, capabilities=("run.start",),
+                    planning_execution=True, now=timestamp(),
+                )
+                transitioned = TaskRepository(connection).get(task["id"])
+                self.assertEqual((transitioned.revision, transitioned.document["workflow_stage"]), (2, "in_progress"))
+                forged = dict(transitioned.document)
+                forged["workflow_stage"] = "review"
+                with self.assertRaisesRegex(TaskRepositoryConflict, "execution_review_required"):
+                    TaskRepository(connection).replace(forged, expected_revision=2)
+                repository.claim_dispatch_attempt(
+                    dispatch_id=reservation.dispatch_id,
+                    expected_binding_digest=digest,
+                    now=timestamp(1),
+                )
+                repository.record_submission_outcome(
+                    dispatch_id=reservation.dispatch_id,
+                    outcome=SubmissionOutcome(
+                        SubmissionDisposition.ACCEPTED,
+                        run=AgentRun(
+                            id=reservation.run_id, task_id=task["id"],
+                            agent_id="agent-main", runtime_type="codex",
+                            status=RunStatus.COMPLETED,
+                        ),
+                        runtime_run_ref="codex-run-1",
+                    ),
+                    now=timestamp(2),
+                )
+                review_task = TaskRepository(connection).get(task["id"])
+                attempts = repository.task_execution_attempts(task["id"])
+                accepted = repository.review_task_execution(
+                    task_id=task["id"], expected_revision=review_task.revision,
+                    action="accept", note=None,
+                    idempotency_key="planning-review-accept-key-0001", now=timestamp(3),
+                )
+                replay = repository.review_task_execution(
+                    task_id=task["id"], expected_revision=review_task.revision,
+                    action="accept", note=None,
+                    idempotency_key="planning-review-accept-key-0001", now=timestamp(4),
+                )
+                completed_task = TaskRepository(connection).get(task["id"])
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(review_task.document["workflow_stage"], "review")
+        self.assertEqual(attempts[0]["state"], "review_ready")
+        self.assertFalse(accepted.duplicate)
+        self.assertTrue(replay.duplicate)
+        self.assertEqual(completed_task.document["workflow_stage"], "done")
+
+    def test_planning_request_changes_preserves_evidence_and_requires_a_fresh_run(self):
+        """Request changes retains its Run and permits, but never starts, retry work."""
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task = task_fixture()
+            task.update({"source": "dashboard", "workflow_stage": "planned", "planning_state": "planned"})
+            (root / "tasks.json").write_text(json.dumps([task]) + "\n", encoding="utf-8")
+            (root / "tasks.json").chmod(0o600)
+            ensure_run_sqlite_authority(root, history_path(root))
+            digest = runtime_binding_digest(agent_id="agent-main", runtime_type="codex", runtime_config_id="default", runtime_agent_ref="default", capabilities=("run.start",))
+            connection = connect(root)
+            try:
+                repository = RunRepository(connection)
+                first = repository.reserve_dispatch(
+                    idempotency_key="planning-changes-first-key-0001", dispatch_id="dispatch_planning_changes_first",
+                    run_id="run_planning_changes_first", task=task, task_revision=1, agent_id="agent-main",
+                    runtime_type="codex", runtime_config_id="default", binding_digest=digest,
+                    capabilities=("run.start",), planning_execution=True, now=timestamp(),
+                )
+                repository.claim_dispatch_attempt(dispatch_id=first.dispatch_id, expected_binding_digest=digest, now=timestamp(1))
+                repository.record_submission_outcome(
+                    dispatch_id=first.dispatch_id,
+                    outcome=SubmissionOutcome(SubmissionDisposition.ACCEPTED, run=AgentRun(
+                        id=first.run_id, task_id=task["id"], agent_id="agent-main",
+                        runtime_type="codex", status=RunStatus.COMPLETED,
+                    ), runtime_run_ref="codex-run-2"), now=timestamp(2),
+                )
+                review = TaskRepository(connection).get(task["id"])
+                changed = repository.review_task_execution(
+                    task_id=task["id"], expected_revision=review.revision,
+                    action="request_changes", note="Please add the missing validation.",
+                    idempotency_key="planning-request-changes-key-0001", now=timestamp(3),
+                )
+                pending = TaskRepository(connection).get(task["id"])
+                attempts_before = repository.task_execution_attempts(task["id"])
+                second = repository.reserve_dispatch(
+                    idempotency_key="planning-changes-second-key-0001", dispatch_id="dispatch_planning_changes_second",
+                    run_id="run_planning_changes_second", task=pending.document, task_revision=pending.revision,
+                    agent_id="agent-main", runtime_type="codex", runtime_config_id="default",
+                    binding_digest=digest, capabilities=("run.start",), planning_execution=True, now=timestamp(4),
+                )
+                repository.validate()
+            finally:
+                connection.close()
+
+        self.assertEqual(changed.action, "request_changes")
+        self.assertEqual(pending.document["workflow_stage"], "planned")
+        self.assertEqual(attempts_before[0]["state"], "changes_requested")
+        self.assertEqual(second.task_revision, pending.revision)
 
 
 if __name__ == "__main__":

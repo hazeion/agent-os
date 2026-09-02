@@ -40,6 +40,60 @@ def trusted_vercel_message_event_id(run_id: str) -> str:
 
 
 class LocalBridgeTests(unittest.TestCase):
+    def test_planning_execution_projection_and_dynamic_actions_use_the_fixed_contract(self):
+        task = {
+            "attention_reasons": [], "assigned_agent_id": "agent_main",
+            "blocked": False, "deferred": False, "due_date": None,
+            "id": "task_execution", "needs_attention": False,
+            "planned_for_today": False, "planning_state": "review",
+            "priority": "medium", "project_id": "project_mentat",
+            "project_name": "Mentat", "review_required": True,
+            "revision": 3, "status": "needs attention", "title": "Review me",
+            "updated_at": "2026-08-18T12:00:00+00:00", "workflow_stage": "review",
+        }
+        attempt = {
+            "run_id": "run_execution", "task_revision": 1, "agent_id": "agent_main",
+            "state": "review_ready", "review_task_revision": 3,
+            "completion_reason": None, "runtime_type": "codex", "status": "completed",
+            "dispatch_state": "accepted", "partial": False, "terminal_finalized": True,
+            "created_at": "2026-08-18T12:00:00+00:00",
+            "updated_at": "2026-08-18T12:01:00+00:00",
+            "completed_at": "2026-08-18T12:01:00+00:00",
+            "review_action": None, "review_note": None,
+        }
+        source = {
+            "schema_version": 1, "task": task,
+            "execution": {
+                "available": False, "reason": "unavailable", "attempts": [attempt],
+                "attempt_count": 1, "review": {"available": True, "run_id": "run_execution"},
+            },
+        }
+        with patch.object(server, "mentat_planning_task_execution_payload", return_value=source):
+            payload, status = local_bridge.bridge_planning_task_execution_payload("task_execution")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["execution"]["attempts"][0]["run_id"], "run_execution")
+        ready = {**payload, "action": "accept", "duplicate": False}
+        with patch.object(local_bridge, "bridge_planning_task_review_payload", return_value=(ready, 200)) as review:
+            status, returned, _headers = self.request(
+                method="POST",
+                path=local_bridge.BRIDGE_PLANNING_TASK_REVIEW_PATH,
+                headers={"Content-Type": "application/json"},
+                body=b'{"task_id":"task_execution","expected_revision":3,"action":"accept","idempotency_key":"review-idempotency-key-0001"}',
+            )
+        self.assertEqual((status, returned), (200, ready))
+        review.assert_called_once_with("task_execution", {
+            "expected_revision": 3, "action": "accept", "idempotency_key": "review-idempotency-key-0001",
+        })
+
+    def test_planning_execution_run_once_rejects_invalid_idempotency_before_dispatch(self):
+        for key in ("short", "x" * 257, "valid-enough-key\x00but-invalid"):
+            payload, status = server.mentat_planning_task_run_once("task_execution", {
+                "expected_revision": 1,
+                "confirmation_id": "a" * 64,
+                "idempotency_key": key,
+            })
+            self.assertEqual((status, payload), (400, {"error_code": "planning_execution.invalid"}))
+
     def test_exact_planning_task_route_rejects_duplicate_or_extra_query(self):
         ready = {
             "schema_version": 1,

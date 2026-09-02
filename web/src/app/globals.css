@@ -842,6 +842,30 @@ button {
 .planning-project-lifecycle { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
 .planning-stage-controls > p,
 .planning-project-lifecycle > p { width: 100%; margin: 0; }
+.planning-execution { display: grid; gap: 7px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
+.planning-execution > p { margin: 0; color: var(--text-secondary); font-size: .74rem; }
+.planning-execution > .console-kicker { color: var(--text-tertiary); }
+.planning-execution ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.planning-execution li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; padding: 6px 7px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--row); color: var(--text-secondary); font-size: .72rem; }
+.planning-execution li time,
+.planning-execution li small { color: var(--text-tertiary); font-size: .67rem; }
+.planning-execution li small { grid-column: 1 / -1; }
+.planning-execution > button,
+.planning-review-actions button,
+.planning-run-once-confirmation button { min-height: 34px; padding: 5px 9px; border: 1px solid var(--border-subtle); border-radius: 6px; background: color-mix(in srgb, var(--canvas) 78%, var(--panel-raised)); color: var(--text-primary); }
+.planning-execution > button:hover:not(:disabled),
+.planning-review-actions button:hover:not(:disabled),
+.planning-run-once-confirmation button:hover:not(:disabled) { border-color: var(--border-default); background: var(--panel-raised); }
+.planning-review-actions,
+.planning-run-once-confirmation { display: grid; gap: 6px; }
+.planning-review-actions > p,
+.planning-run-once-confirmation > p { margin: 0; color: var(--text-secondary); font-size: .74rem; }
+.planning-review-actions > div,
+.planning-run-once-confirmation > div,
+.planning-review-actions form > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.planning-review-actions form { display: grid; gap: 6px; }
+.planning-review-actions label { display: grid; gap: 3px; color: var(--text-tertiary); font-size: .68rem; font-weight: 700; }
+.planning-review-actions textarea { width: 100%; min-height: 72px; resize: vertical; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
 .planning-edit-form { margin-top: 0; }
 .planning-full-field { grid-column: 1 / -1; }
 .planning-edit-form textarea { width: 100%; min-height: 88px; resize: vertical; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }

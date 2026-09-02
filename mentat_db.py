@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1512,6 +1512,48 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON mentat_tasks(project_id, sort_order);
         """,
     ),
+    (
+        19,
+        """
+        CREATE TABLE mentat_task_execution_attempts (
+            run_id TEXT PRIMARY KEY REFERENCES mentat_runs(id) ON DELETE RESTRICT,
+            task_id TEXT NOT NULL CHECK (length(task_id) BETWEEN 1 AND 160),
+            task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
+            agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128),
+            state TEXT NOT NULL CHECK (
+                state IN ('dispatched', 'review_ready', 'completion_blocked',
+                          'accepted', 'changes_requested')
+            ),
+            review_task_revision INTEGER CHECK (
+                review_task_revision IS NULL OR review_task_revision >= 1
+            ),
+            completion_reason TEXT CHECK (
+                completion_reason IS NULL OR length(completion_reason) BETWEEN 1 AND 64
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64)
+        );
+
+        CREATE TABLE mentat_task_execution_reviews (
+            key_digest TEXT PRIMARY KEY CHECK (length(key_digest) = 64),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            task_id TEXT NOT NULL CHECK (length(task_id) BETWEEN 1 AND 160),
+            task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
+            run_id TEXT NOT NULL UNIQUE REFERENCES mentat_runs(id) ON DELETE RESTRICT,
+            action TEXT NOT NULL CHECK (action IN ('accept', 'request_changes')),
+            note TEXT CHECK (note IS NULL OR length(note) <= 2000),
+            result_task_revision INTEGER NOT NULL CHECK (result_task_revision >= 1),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64)
+        );
+
+        CREATE INDEX idx_mentat_task_execution_attempts_task
+            ON mentat_task_execution_attempts(task_id, task_revision, created_at DESC);
+        CREATE INDEX idx_mentat_task_execution_attempts_review
+            ON mentat_task_execution_attempts(task_id, review_task_revision, state);
+        CREATE INDEX idx_mentat_task_execution_reviews_task
+            ON mentat_task_execution_reviews(task_id, created_at DESC);
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
@@ -1816,7 +1858,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -1885,6 +1927,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 17 cannot be safely upgraded"
+                    )
+                if (
+                    version == 19
+                    and schema_signature_state(connection, 18) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 18 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

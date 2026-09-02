@@ -4110,6 +4110,358 @@ def dispatch_orchestration_task(task_id: str, payload):
     }, 200 if result.duplicate else 202
 
 
+def _planning_execution_confirmation(
+    task: dict,
+    attempts: tuple[dict, ...],
+    binding_state: str,
+) -> str:
+    """Bind a Run once preview to one immutable Task/execution snapshot."""
+
+    payload = {
+        "contract": "mentat-planning-run-once-v1",
+        "task_id": task["id"],
+        "revision": task["revision"],
+        "workflow_stage": task["workflow_stage"],
+        "assigned_agent_id": task.get("assigned_agent_id"),
+        "binding_state": binding_state,
+        "attempts": [
+            {
+                "run_id": item["run_id"],
+                "state": item["state"],
+                "status": item["status"],
+                "dispatch_state": item["dispatch_state"],
+                "review_task_revision": item["review_task_revision"],
+            }
+            for item in attempts
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _planning_execution_binding_state(agent_id: object) -> str:
+    """Return a private binding snapshot for a Run once confirmation."""
+
+    if not isinstance(agent_id, str):
+        raise OrchestrationServiceError("dispatch.agent_required")
+    try:
+        registry = _mentat_agent_registry()
+        record = next(
+            (item for item in registry.list_agent_records() if item.agent.id == agent_id),
+            None,
+        )
+        if record is None:
+            raise OrchestrationServiceError("dispatch.agent_not_found")
+        binding = registry.get_runtime_binding(agent_id)
+        digest = runtime_binding_digest(
+            agent_id=record.agent.id,
+            runtime_type=binding.runtime_type,
+            runtime_config_id=binding.id,
+            runtime_agent_ref=binding.runtime_agent_ref,
+            capabilities=record.agent.capabilities,
+        )
+    except OrchestrationServiceError:
+        raise
+    except (AgentRegistryError, RunRepositoryError, ValueError, OSError) as exc:
+        raise OrchestrationServiceError("dispatch.unavailable") from exc
+    return hashlib.sha256(
+        "\0".join(
+            (
+                record.agent.id,
+                str(record.revision),
+                binding.id,
+                str(binding.revision),
+                digest,
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict]:
+    """Read the exact task, bounded execution history, and safe projection."""
+
+    if not isinstance(task_id, str) or TASK_ID_PATTERN.fullmatch(task_id) is None:
+        raise OrchestrationServiceError("dispatch.task_id_invalid")
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise OrchestrationServiceError("dispatch.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            repository = RunRepository(connection)
+            snapshot = TaskRepository(connection).get(task_id)
+            safe = safe_task_projection(snapshot.document, project_registry(projects), today=date.today())
+            safe["revision"] = snapshot.revision
+            safe["assigned_agent_id"] = snapshot.document.get("assigned_agent_id")
+            attempts = repository.task_execution_attempts(task_id)
+            return snapshot.document, attempts, safe
+        except TaskRepositoryConflict as exc:
+            raise OrchestrationServiceError("dispatch.task_not_found") from exc
+        except (TaskRepositoryError, RunRepositoryError, sqlite3.Error) as exc:
+            raise OrchestrationServiceError("dispatch.unavailable") from exc
+        finally:
+            connection.close()
+
+
+def _planning_execution_public(
+    task: dict,
+    attempts: tuple[dict, ...],
+    safe_task: dict,
+) -> dict:
+    active_attempt = any(
+        item["state"] in {"dispatched", "review_ready"} for item in attempts
+    )
+    latest_attempt = attempts[0] if attempts else None
+    available = (
+        task.get("source") == "dashboard"
+        and workflow_stage(task) == "planned"
+        and not task_is_deferred(task)
+        and task.get("delegation") is None
+        and isinstance(task.get("assigned_agent_id"), str)
+        and len(attempts) < 8
+        and not active_attempt
+        and (
+            latest_attempt is None
+            or latest_attempt["state"] == "changes_requested"
+        )
+    )
+    public_attempts = [
+        {
+            "run_id": item["run_id"],
+            "task_revision": item["task_revision"],
+            "agent_id": item["agent_id"],
+            "state": item["state"],
+            "review_task_revision": item["review_task_revision"],
+            "completion_reason": item["completion_reason"],
+            "runtime_type": item["runtime_type"],
+            "status": item["status"],
+            "dispatch_state": item["dispatch_state"],
+            "partial": item["partial"],
+            "terminal_finalized": item["terminal_finalized"],
+            "created_at": item["created_at"],
+            "updated_at": item["updated_at"],
+            "completed_at": item["completed_at"],
+            "review_action": item["review_action"],
+            "review_note": item["review_note"],
+        }
+        for item in attempts
+    ]
+    review = next((item for item in public_attempts if item["state"] == "review_ready"), None)
+    return {
+        "schema_version": 1,
+        "task": safe_task,
+        "execution": {
+            "available": available,
+            "reason": None if available else "unavailable",
+            "attempts": public_attempts,
+            "attempt_count": len(public_attempts),
+            "review": (
+                {"available": False, "run_id": None}
+                if review is None
+                else {"available": True, "run_id": review["run_id"]}
+            ),
+        },
+    }
+
+
+def mentat_planning_task_execution_payload(task_id: str) -> dict:
+    task, attempts, safe = _planning_execution_snapshot(task_id)
+    return _planning_execution_public(task, attempts, safe)
+
+
+def mentat_planning_task_run_once_preview(
+    task_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    if not isinstance(payload, dict) or set(payload) != {"expected_revision"}:
+        return {"error_code": "planning_execution.invalid"}, 400
+    expected_revision = payload.get("expected_revision")
+    if type(expected_revision) is not int or expected_revision < 1:
+        return {"error_code": "planning_execution.invalid"}, 400
+    try:
+        task, attempts, safe = _planning_execution_snapshot(task_id)
+        binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
+    except RunRepositoryConflict:
+        return {"error_code": "planning_execution.conflict"}, 409
+    except OrchestrationServiceError as exc:
+        return _planning_execution_error(exc)
+    public = _planning_execution_public(task, attempts, safe)
+    if expected_revision != safe["revision"] or not public["execution"]["available"]:
+        return {"error_code": "planning_execution.unavailable"}, 409
+    return {
+        "schema_version": 1,
+        "action": "run_once",
+        "task": safe,
+        "requires_confirmation": True,
+        "confirmation_id": _planning_execution_confirmation(safe, attempts, binding_state),
+    }, 200
+
+
+def _planning_execution_error(exc: OrchestrationServiceError) -> tuple[dict, int]:
+    if exc.code in {"dispatch.task_id_invalid"}:
+        return {"error_code": "planning_execution.invalid"}, 400
+    if exc.code in {"dispatch.task_not_found"}:
+        return {"error_code": "planning_execution.not_found"}, 404
+    if exc.code in {"dispatch.unavailable"}:
+        return {"error_code": "planning_execution.unavailable"}, 503
+    return {"error_code": "planning_execution.unavailable"}, 409
+
+
+def mentat_planning_task_run_once(
+    task_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "idempotency_key", "confirmation_id"}
+        or type(payload.get("expected_revision")) is not int
+        or payload["expected_revision"] < 1
+        or not isinstance(payload.get("idempotency_key"), str)
+        or not isinstance(payload.get("confirmation_id"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", payload["confirmation_id"]) is None
+    ):
+        return {"error_code": "planning_execution.invalid"}, 400
+    try:
+        idempotency_key_bytes = payload["idempotency_key"].encode("utf-8")
+    except UnicodeEncodeError:
+        return {"error_code": "planning_execution.invalid"}, 400
+    if (
+        not 16 <= len(idempotency_key_bytes) <= 256
+        or "\x00" in payload["idempotency_key"]
+    ):
+        return {"error_code": "planning_execution.invalid"}, 400
+    try:
+        # A successful first confirmation advances the Task into In progress,
+        # so an exact delivery retry cannot satisfy the ordinary preview
+        # availability predicate. Resolve only a matching PT-3A receipt before
+        # evaluating a fresh confirmation; it cannot invoke an adapter again.
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise OrchestrationServiceError("dispatch.unavailable")
+            connection = connect_mentat_database(DATA_DIR)
+            try:
+                repository = RunRepository(connection)
+                replay = repository.lookup_dispatch_retry(
+                    idempotency_key=payload["idempotency_key"],
+                    task_id=task_id,
+                    task_revision=payload["expected_revision"],
+                )
+                planning_replay = (
+                    replay is not None
+                    and connection.execute(
+                        "SELECT 1 FROM mentat_task_execution_attempts WHERE run_id = ?",
+                        (replay.run_id,),
+                    ).fetchone()
+                    is not None
+                )
+            finally:
+                connection.close()
+        if planning_replay:
+            result = OrchestrationService(
+                DATA_DIR,
+                runtime_registry=AGENT_RUNTIME_REGISTRY,
+                agent_registry=_mentat_agent_registry(),
+            ).dispatch_task(
+                task_id=task_id,
+                expected_revision=payload["expected_revision"],
+                idempotency_key=payload["idempotency_key"],
+                planning_execution=True,
+            )
+            if not result.duplicate:
+                raise OrchestrationServiceError("dispatch.idempotency_conflict")
+            response = mentat_planning_task_execution_payload(task_id)
+            return {"schema_version": 1, "action": "run_once", "duplicate": True, **response}, 200
+        task, attempts, safe = _planning_execution_snapshot(task_id)
+        binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
+        public = _planning_execution_public(task, attempts, safe)
+        if (
+            payload["expected_revision"] != safe["revision"]
+            or not public["execution"]["available"]
+            or not hmac.compare_digest(
+                payload["confirmation_id"],
+                _planning_execution_confirmation(safe, attempts, binding_state),
+            )
+        ):
+            return {"error_code": "planning_execution.confirmation_stale"}, 409
+        result = OrchestrationService(
+            DATA_DIR,
+            runtime_registry=AGENT_RUNTIME_REGISTRY,
+            agent_registry=_mentat_agent_registry(),
+        ).dispatch_task(
+            task_id=task_id,
+            expected_revision=payload["expected_revision"],
+            idempotency_key=payload["idempotency_key"],
+            planning_execution=True,
+        )
+        response = mentat_planning_task_execution_payload(task_id)
+        return {
+            "schema_version": 1,
+            "action": "run_once",
+            "duplicate": result.duplicate,
+            **response,
+        }, 200 if result.duplicate else 202
+    except RunRepositoryConflict:
+        return {"error_code": "planning_execution.conflict"}, 409
+    except OrchestrationServiceError as exc:
+        return _planning_execution_error(exc)
+
+
+def mentat_planning_task_execution_review(
+    task_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    if (
+        not isinstance(payload, dict)
+        or set(payload) not in (
+            {"expected_revision", "action", "idempotency_key"},
+            {"expected_revision", "action", "note", "idempotency_key"},
+        )
+        or type(payload.get("expected_revision")) is not int
+        or payload["expected_revision"] < 1
+        or payload.get("action") not in {"accept", "request_changes"}
+        or payload.get("note") is not None and not isinstance(payload.get("note"), str)
+        or (payload.get("action") == "accept" and "note" in payload)
+        or (payload.get("action") == "request_changes" and "note" not in payload)
+        or not isinstance(payload.get("idempotency_key"), str)
+    ):
+        return {"error_code": "planning_execution.invalid"}, 400
+    try:
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise OrchestrationServiceError("dispatch.unavailable")
+            connection = connect_mentat_database(DATA_DIR)
+            try:
+                result = RunRepository(connection).review_task_execution(
+                    task_id=task_id,
+                    expected_revision=payload["expected_revision"],
+                    action=payload["action"],
+                    note=payload.get("note"),
+                    idempotency_key=payload["idempotency_key"],
+                )
+            finally:
+                connection.close()
+        response = mentat_planning_task_execution_payload(task_id)
+        return {
+            "schema_version": 1,
+            "action": result.action,
+            "duplicate": result.duplicate,
+            **response,
+        }, 200
+    except RunRepositoryValidationError:
+        return {"error_code": "planning_execution.invalid"}, 400
+    except RunRepositoryConflict as exc:
+        return {
+            "error_code": (
+                "planning_execution.not_found"
+                if exc.code == "dispatch.task_not_found"
+                else "planning_execution.conflict"
+            )
+        }, 404 if exc.code == "dispatch.task_not_found" else 409
+    except (OrchestrationServiceError, RunRepositoryError, sqlite3.Error, OSError):
+        return {"error_code": "planning_execution.unavailable"}, 503
+
+
 def reconcile_orchestration_runs(payload=None):
     if payload not in (None, {}):
         return {"error": "Reconciliation does not accept request fields."}, 400

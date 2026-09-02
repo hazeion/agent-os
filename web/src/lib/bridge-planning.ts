@@ -12,6 +12,9 @@ import {
   parsePlanningTaskCreation,
   parsePlanningProjectMutation,
   parsePlanningTaskMutation,
+  parsePlanningTaskExecution,
+  parsePlanningRunOncePreview,
+  parsePlanningTaskExecutionMutation,
   PublicPlanningError,
   type PublicConversationPlanningContext,
   type PublicConversationPlanningMutation,
@@ -25,6 +28,9 @@ import {
   type PublicPlanningDependencyMap,
   type PublicPlanningProjectMutation,
   type PublicPlanningTaskMutation,
+  type PublicPlanningTaskExecution,
+  type PublicPlanningRunOncePreview,
+  type PublicPlanningTaskExecutionMutation,
   type PublicPlanningDependencyPickerPage,
 } from "./public-planning.ts";
 
@@ -35,6 +41,10 @@ const PRIVATE_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail"
 const PRIVATE_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-dependencies";
 const PRIVATE_DEPENDENCY_MAP_PATH = "/bridge/v1/agent-console/planning-dependency-map";
 const PRIVATE_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker";
+const PRIVATE_TASK_EXECUTION_PATH = "/bridge/v1/agent-console/planning-task-execution";
+const PRIVATE_TASK_RUN_ONCE_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once/preview";
+const PRIVATE_TASK_RUN_ONCE_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once";
+const PRIVATE_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/review";
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
 const PRIVATE_PROJECTS_PATH = "/bridge/v1/projects";
 const PRIVATE_PLANNING_PATH = "/bridge/v1/planning";
@@ -214,5 +224,45 @@ export async function moveBridgePlanningTask(taskId: string, expectedTaskRevisio
   if (!TASK_ID.test(taskId) || !PROJECT_ID.test(projectId) || !Number.isSafeInteger(expectedTaskRevision) || expectedTaskRevision < 1 || !Number.isSafeInteger(expectedProjectRevision) || expectedProjectRevision < 1) throw new BridgePlanningError("planning_request_invalid");
   const { response, payload } = await request(`${PRIVATE_PLANNING_PATH}/tasks/${encodeURIComponent(taskId)}/move`, fetcher, environment, { body: JSON.stringify({ expected_task_revision: expectedTaskRevision, project_id: projectId, expected_project_revision: expectedProjectRevision }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
   if (response.status === 200) return parse(() => parsePlanningTaskMutation(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+function validIdempotencyKey(value: unknown): value is string {
+  if (typeof value !== "string" || value.includes("\x00")) return false;
+  try {
+    const bytes = new TextEncoder().encode(value);
+    return bytes.length >= 16 && bytes.length <= 256
+      && new TextDecoder("utf-8", { fatal: true }).decode(bytes) === value;
+  } catch { return false; }
+}
+
+export async function fetchBridgePlanningTaskExecution(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskExecution> {
+  if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_TASK_EXECUTION_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningTaskExecution(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function previewBridgePlanningTaskRunOnce(taskId: string, expectedRevision: number, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningRunOncePreview> {
+  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(PRIVATE_TASK_RUN_ONCE_PREVIEW_PATH, fetcher, environment, { body: JSON.stringify({ expected_revision: expectedRevision, task_id: taskId }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parse(() => parsePlanningRunOncePreview(payload, taskId, expectedRevision));
+  fixedFailure(response, payload);
+}
+
+export async function confirmBridgePlanningTaskRunOnce(taskId: string, expectedRevision: number, idempotencyKey: string, confirmationId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskExecutionMutation> {
+  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !validIdempotencyKey(idempotencyKey) || !/^[0-9a-f]{64}$/u.test(confirmationId)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(PRIVATE_TASK_RUN_ONCE_PATH, fetcher, environment, { body: JSON.stringify({ confirmation_id: confirmationId, expected_revision: expectedRevision, idempotency_key: idempotencyKey, task_id: taskId }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200 || response.status === 202) return parse(() => parsePlanningTaskExecutionMutation(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function reviewBridgePlanningTaskExecution(taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskExecutionMutation> {
+  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !validIdempotencyKey(idempotencyKey) || action === "accept" && note !== null || action === "request_changes" && (typeof note !== "string" || !note || note.trim() !== note || [...note].length > 2_000 || /\p{C}/u.test(note))) throw new BridgePlanningError("planning_request_invalid");
+  const body = action === "request_changes"
+    ? { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, note, task_id: taskId }
+    : { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, task_id: taskId };
+  const { response, payload } = await request(PRIVATE_TASK_REVIEW_PATH, fetcher, environment, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parse(() => parsePlanningTaskExecutionMutation(payload, taskId));
   fixedFailure(response, payload);
 }
