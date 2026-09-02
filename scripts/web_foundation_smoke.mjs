@@ -342,7 +342,7 @@ async function inspectViewport(client, viewport) {
     healthRequestId = requestId;
   });
   await client.call("Fetch.enable", {
-    patterns: [{ urlPattern: `${baseUrl.origin}/api/bridge/health*`, requestStage: "Request" }],
+    patterns: [{ urlPattern: `${baseUrl.origin}/api/bridge/health*`, requestStage: "Response" }],
   });
 
   try {
@@ -354,7 +354,7 @@ async function inspectViewport(client, viewport) {
     await waitFor(() => healthRequestId, `${viewport.name} held bridge request`);
     const checking = await captureGeometry(client);
 
-    await client.call("Fetch.continueRequest", { requestId: healthRequestId });
+    await client.call("Fetch.continueResponse", { requestId: healthRequestId });
     healthRequestId = "";
     await waitFor(
       () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
@@ -418,7 +418,7 @@ async function inspectViewport(client, viewport) {
     return { viewport, checking, ready, details, geometryShift };
   } finally {
     if (healthRequestId) {
-      await Promise.allSettled([client.call("Fetch.continueRequest", { requestId: healthRequestId })]);
+      await Promise.allSettled([client.call("Fetch.continueResponse", { requestId: healthRequestId })]);
     }
     removePausedHandler();
     await client.call("Fetch.disable");
