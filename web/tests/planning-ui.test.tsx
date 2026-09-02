@@ -134,6 +134,55 @@ test("the read-only dependency-map fallback is deterministic, keyboard-selectabl
   assert.deepEqual(selected, [task.id]);
 });
 
+test("client dependency-map layout remains deterministic and hard-capped when a hostile caller bypasses the route projection", () => {
+  // The server contract permits at most 100 visible references and 250 edges.
+  // Exercise the source-owned renderer's independent ceiling as a second line
+  // of defense: callers of the pure layout cannot accidentally turn a stale or
+  // future projection into an unbounded DOM/canvas workload.
+  const nodes = Array.from({ length: 150 }, (_, index) => ({
+    blocked: false,
+    id: `task_render_${index.toString().padStart(3, "0")}`,
+    project_id: project.id,
+    project_name: project.name,
+    title: `Render Task ${index.toString().padStart(3, "0")}`,
+    workflow_stage: "planned" as const,
+  }));
+  const edges: Array<{ from_task_id: string; to_task_id: string }> = [];
+  for (let source = 0; source < 128 && edges.length < 300; source += 1) {
+    for (let target = source + 1; target < 128 && edges.length < 300; target += 1) {
+      edges.push({
+        from_task_id: `task_render_${source.toString().padStart(3, "0")}`,
+        to_task_id: `task_render_${target.toString().padStart(3, "0")}`,
+      });
+    }
+  }
+  const graph = {
+    edge_count: edges.length,
+    edge_total: edges.length,
+    edges,
+    edges_truncated: true,
+    external_stub_count: 0,
+    external_stub_total: 0,
+    external_stubs: [],
+    external_stubs_truncated: false,
+    node_count: nodes.length,
+    node_total: nodes.length,
+    nodes,
+    nodes_truncated: true,
+    project_id: project.id,
+  };
+  const first = layoutTaskDependencyMap(graph);
+  const second = layoutTaskDependencyMap(graph);
+  assert.deepEqual(first, second);
+  assert.equal(first.nodes.length, 128);
+  assert.equal(first.edges.length, 256);
+  assert.deepEqual(
+    [...first.nodes.map((node) => node.id)].sort(),
+    Array.from({ length: 128 }, (_, index) => `task_render_${index.toString().padStart(3, "0")}`),
+  );
+  assert.deepEqual({ nodes: first.omitted_nodes, edges: first.omitted_edges }, { nodes: 22, edges: 44 });
+});
+
 test("the desktop dependency map includes edge endpoints and activates each Task once", async () => {
   Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: false, removeEventListener: () => undefined }) });
   const selected: string[] = [];

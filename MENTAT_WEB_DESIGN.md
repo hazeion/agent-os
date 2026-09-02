@@ -244,6 +244,19 @@ Keyboard order must match visual order. Icon controls require accessible names.
 Check keyboard use, 200 percent zoom, reduced motion, standard contrast, high
 contrast, and representative desktop, tablet, and mobile widths.
 
+## Planner scale budget
+
+The Projects & Tasks workspace is designed to stay useful at the canonical
+authority limit of 256 Projects and 2,048 Tasks. Ambient planning reads remain
+small: attention exposes at most 50 Tasks, a Project list page exposes at most
+50 Tasks, and navigation search exposes at most 25 Project and 25 Task results.
+The dependency map exposes at most 50 selected-Project Tasks, 50 cross-Project
+references, and 250 edges. Its source-owned renderer independently caps an
+unexpected/stale input at 128 nodes and 256 edges, then discloses omissions
+rather than expanding the DOM. The planner client rejects aggregate responses
+over 768 KiB (navigation search: 64 KiB); these are fixed safety budgets, not
+pagination targets.
+
 ## Route direction
 
 - `/`: prompt-first Agent Console Home.

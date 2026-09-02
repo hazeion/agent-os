@@ -52,3 +52,13 @@ test("public planning search client uses only the named same-origin route", asyn
     assert.equal(path, "/api/agent-console/planning-search?q=Alpha");
   } finally { globalThis.fetch = original; }
 });
+
+test("planning search keeps its smaller dedicated response budget", async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response("{}", { headers: { "Content-Length": String(64 * 1024 + 1), "Content-Type": "application/json" } });
+    await assert.rejects(readPlanningSearch("Alpha"), PublicPlanningSearchError);
+    globalThis.fetch = async () => new Response(" ".repeat(64 * 1024 + 1), { headers: { "Content-Type": "application/json" } });
+    await assert.rejects(readPlanningSearch("Alpha"), PublicPlanningSearchError);
+  } finally { globalThis.fetch = original; }
+});

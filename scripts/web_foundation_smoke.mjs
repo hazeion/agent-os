@@ -981,6 +981,96 @@ async function inspectTasksWorkspace(client) {
   return result;
 }
 
+// This uses only the isolated seed database the production-preview job creates.
+// In particular, it deliberately opens controls and follows navigation without
+// confirming any planner action.  That keeps the production smoke an acceptance
+// read of the real Node/Python boundary rather than a mutation test.
+async function inspectPlannerProductionJourney(client) {
+  const projectId = "project_mentat";
+  const taskId = "task_seed_review_sessions_view";
+  const taskTitle = "Review sessions and replay view";
+  await setViewport(client, viewports[1]);
+  await navigate(client, `/tasks?project=${projectId}&task=${taskId}`, "deep-linked planner Task");
+  await waitFor(
+    () => client.eval(`(() => {
+      const task = document.querySelector('[data-planning-task-id="${taskId}"]');
+      return task?.dataset.taskSelected === "true"
+        && document.querySelector('.planning-inspector h2')?.textContent?.trim() === "Task details"
+        && document.querySelector('[aria-label="Task integrations"]') !== null;
+    })()`),
+    "deep-linked planner inspector",
+  );
+
+  // Record only browser-side requests made after the selected Task is ready.
+  // The interaction below must remain a read/open journey: no POST, PUT,
+  // PATCH, or DELETE request is permitted from this production acceptance pass.
+  await client.eval(`(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.__mentatPlannerReadOnlyRequests = [];
+    window.fetch = (input, init) => {
+      const source = typeof input === "string" ? input : input.url;
+      const requestMethod = init?.method || (typeof input === "string" ? "GET" : input.method) || "GET";
+      const url = new URL(source, location.href);
+      if (url.pathname.startsWith("/api/")) {
+        window.__mentatPlannerReadOnlyRequests.push({ method: requestMethod.toUpperCase(), path: url.pathname });
+      }
+      return nativeFetch(input, init);
+    };
+  })()`);
+
+  await client.eval(`(() => {
+    const input = document.querySelector('input[placeholder="Find a Project or Task"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (!(input instanceof HTMLInputElement) || !setter) throw new Error("Planner search input is unavailable");
+    setter.call(input, "Review sessions");
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "Review sessions", inputType: "insertText" }));
+  })()`);
+  await waitFor(
+    () => client.eval(`document.querySelector('[aria-label="Open Task ${taskTitle}"]') instanceof HTMLButtonElement`),
+    "planner search result",
+  );
+  await client.eval(`document.querySelector('[aria-label="Open Task ${taskTitle}"]')?.click()`);
+  await waitFor(
+    () => client.eval(`(() => {
+      const params = new URLSearchParams(location.search);
+      return params.get("project") === "${projectId}"
+        && params.get("task") === "${taskId}"
+        && document.querySelector('[data-planning-task-id="${taskId}"]')?.dataset.taskSelected === "true"
+        && document.querySelector('[aria-label="Task integrations"]') !== null;
+    })()`),
+    "planner search Task navigation",
+  );
+
+  await waitFor(
+    () => client.eval(`document.querySelector('[aria-label="Browser reminder controls"]') !== null`),
+    "browser reminder integration read",
+  );
+
+  await waitFor(
+    () => client.eval(`document.querySelector('[aria-label="Calendar controls"]') !== null`),
+    "calendar integration surface",
+  );
+  await waitFor(
+    () => client.eval(`document.querySelector('[aria-label="Note controls"]') !== null`),
+    "note integration surface",
+  );
+
+  const result = await client.eval(`(() => ({
+    selectedTask: document.querySelector('[data-planning-task-id="${taskId}"]')?.dataset.taskSelected ?? null,
+    requests: window.__mentatPlannerReadOnlyRequests,
+    overflow: document.documentElement.scrollWidth - innerWidth,
+  }))()`);
+  if (
+    result.selectedTask !== "true"
+    || result.overflow > 1
+    || !result.requests.some((request) => request.path === "/api/agent-console/planning-search")
+    || result.requests.some((request) => request.method !== "GET")
+  ) {
+    throw new Error(`Planner production journey contract failed: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
 async function inspectTaskFailureStates(client) {
   const states = [
     { name: "unsupported", status: 501 },
@@ -1734,6 +1824,7 @@ async function main() {
     const agentProjectionResult = await inspectAgentProjection(client);
     const agentFailureResult = await inspectAgentFailureStates(client);
     const tasksResult = await inspectTasksWorkspace(client);
+    const plannerProductionJourneyResult = await inspectPlannerProductionJourney(client);
     const taskFailureResult = await inspectTaskFailureStates(client);
     const runsResult = await inspectRunsWorkspace(client);
     const runtimeCoexistenceResult = await inspectRuntimeCoexistence(client);
@@ -1765,6 +1856,7 @@ async function main() {
       agentProjection: agentProjectionResult,
       agentFailures: agentFailureResult,
       tasks: tasksResult,
+      plannerProductionJourney: plannerProductionJourneyResult,
       taskFailures: taskFailureResult,
       runs: runsResult,
       runtimeCoexistence: runtimeCoexistenceResult,
