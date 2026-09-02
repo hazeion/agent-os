@@ -50,6 +50,92 @@ CONVERSATION = {
 
 
 class ConversationPlanningBridgeTests(unittest.TestCase):
+    def test_planning_search_is_exact_title_only_navigation_projection(self):
+        source = {
+            "schema_version": 1,
+            "query": "Mentat",
+            "projects": [{"id": "project_mentat", "title": "Mentat", "type": "project"}],
+            "project_count": 1,
+            "tasks": [{"id": "task_1", "title": "Plan Slice 10", "type": "task"}],
+            "task_count": 1,
+            "truncated": False,
+        }
+        with patch.object(server, "mentat_planning_search_payload", return_value=source) as read:
+            payload, status = local_bridge.bridge_planning_search_payload("Mentat")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            set(payload),
+            {
+                "schema_version", "service", "runtime", "status", "query",
+                "projects", "project_count", "tasks", "task_count", "truncated",
+            },
+        )
+        self.assertEqual(payload["projects"], source["projects"])
+        self.assertEqual(payload["tasks"], source["tasks"])
+        self.assertNotIn("description", str(payload))
+        read.assert_called_once_with("Mentat")
+
+        with patch.object(
+            server,
+            "mentat_planning_search_payload",
+            return_value={**source, "tasks": [{**source["tasks"][0], "description": "private"}]},
+        ):
+            rejected, rejected_status = local_bridge.bridge_planning_search_payload("Mentat")
+        self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
+
+    def test_selected_task_detail_exposes_only_validated_planning_metadata(self):
+        detail_task = {
+            **TASK,
+            "description": "Plan the focus block.",
+            "tags": ["planning"],
+            "estimated_minutes": 60,
+            "scheduled_block": {
+                "start": "2026-08-30T09:00:00-07:00",
+                "end": "2026-08-30T10:00:00-07:00",
+                "timezone": "America/Los_Angeles",
+            },
+            "recurrence": None,
+            "reminders": [{
+                "id": "reminder_start",
+                "at": "2026-08-30T08:50:00-07:00",
+                "channel": "browser",
+                "enabled": True,
+            }],
+            "subtasks": [],
+            "calendar_links": [{
+                "calendar_id": "primary",
+                "event_id": "event_123",
+                "label": "Focus block",
+            }],
+            "note_links": [{
+                "path": "Projects/Mentat.md",
+                "title": "Mentat plan",
+            }],
+            "assigned_agent_id": None,
+        }
+        source = {"schema_version": 1, "project": PROJECT, "task": detail_task}
+        with patch.object(server, "mentat_planning_task_detail_payload", return_value=source) as read:
+            payload, status = local_bridge.bridge_planning_task_detail_payload("task_1")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task"]["scheduled_block"], detail_task["scheduled_block"])
+        self.assertEqual(payload["task"]["reminders"], detail_task["reminders"])
+        self.assertEqual(payload["task"]["calendar_links"], detail_task["calendar_links"])
+        self.assertEqual(payload["task"]["note_links"], detail_task["note_links"])
+        self.assertNotIn("C:\\\\", str(payload))
+        read.assert_called_once_with("task_1")
+
+        unsafe_note = {
+            **detail_task,
+            "note_links": [{"path": "C:\\\\private\\\\plan.md"}],
+        }
+        with patch.object(
+            server,
+            "mentat_planning_task_detail_payload",
+            return_value={"schema_version": 1, "project": PROJECT, "task": unsafe_note},
+        ):
+            rejected, rejected_status = local_bridge.bridge_planning_task_detail_payload("task_1")
+        self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
+
     def test_planning_deletion_is_a_count_only_exact_capability(self):
         preview = {
             "schema_version": 1, "target_kind": "task", "target_id": "task_1",

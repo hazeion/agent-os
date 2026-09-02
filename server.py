@@ -73,6 +73,7 @@ from conversation_planning import (
     planning_context_projection,
     planning_dependency_picker,
     planning_dependency_map,
+    planning_navigation_search,
     planning_overview,
     planning_task_dependencies,
     planning_task_detail_locator,
@@ -2670,6 +2671,38 @@ def mentat_planning_overview_payload() -> dict:
             payload = planning_overview(
                 connection,
                 projects,
+                today=date.today(),
+            )
+            connection.commit()
+            return {"schema_version": 1, **payload}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
+def mentat_planning_search_payload(query: object) -> dict:
+    """Read bounded title-only Project and Task navigation matches.
+
+    This named capability is intentionally separate from the legacy dashboard
+    search.  It reads only the canonical SQLite Project and Task authorities.
+    """
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            # Keep this capability on the canonical SQLite authority boundary;
+            # it must never acquire a task list from the legacy JSON seed.
+            TaskRepository(connection).authority_receipt(required=True)
+            payload = planning_navigation_search(
+                connection,
+                projects,
+                query=query,
                 today=date.today(),
             )
             connection.commit()

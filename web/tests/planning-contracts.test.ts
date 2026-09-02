@@ -77,7 +77,7 @@ const overview = { ...envelope, attention: [task], attention_count: 1, project_c
 const taskPage = { ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] };
 const nonAttentionTask = { ...task, attention_reasons: [] as [], due_date: null, id: "task_plain", needs_attention: false, planning_state: "inbox" as const, priority: "medium" as const, review_required: false, title: "Plain task" };
 const taskResult = { ...envelope, project, task: nonAttentionTask };
-const taskDetailResult = { ...envelope, project, task: { ...nonAttentionTask, assigned_agent_id: null, description: "A bounded description.", estimated_minutes: 30, recurrence: null, subtasks: [], tags: [] } };
+const taskDetailResult = { ...envelope, project, task: { ...nonAttentionTask, assigned_agent_id: null, calendar_links: [{ calendar_id: "primary", event_id: "event_alpha", label: "Focus" }], description: "A bounded description.", estimated_minutes: 30, note_links: [{ path: "Projects/Alpha.md", title: "Alpha plan" }], recurrence: null, reminders: [{ at: "2026-08-30T11:50:00Z", channel: "browser" as const, enabled: true, id: "reminder_alpha" }], scheduled_block: { end: "2026-08-30T13:00:00Z", start: "2026-08-30T12:00:00Z" }, subtasks: [], tags: [] } };
 const executionTask = { ...nonAttentionTask, assigned_agent_id: "agent_alpha", workflow_stage: "planned" as const };
 const taskExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: executionTask };
 const taskDelegation = { ...envelope, delegation: { artifact_count: 0, attempts: 2, available: true as const, last_outcome: "completed" as const, last_synced_at: "2026-08-30T11:59:00Z", latest_question: "Confirm the deployment window.", review_state: "pending" as const, state: "ready_for_review" as const, summary: "The delegated implementation is ready for review.", sync_state: "synced" as const, updated_at: "2026-08-30T12:00:00Z" }, task: { id: nonAttentionTask.id, revision: nonAttentionTask.revision } };
@@ -217,6 +217,9 @@ test("dependency-map reads bind one bounded filter and saved view to the fixed P
 test("selected Task details accept editable bounded fields without widening list projections", () => {
   assert.deepEqual(parsePlanningTaskDetailResult(taskDetailResult, nonAttentionTask.id), taskDetailResult);
   assert.throws(() => parsePlanningTaskDetailResult({ ...taskDetailResult, task: { ...taskDetailResult.task, runtime_reference: "private" } }, nonAttentionTask.id), PublicPlanningError);
+  assert.throws(() => parsePlanningTaskDetailResult({ ...taskDetailResult, task: { ...taskDetailResult.task, scheduled_block: { end: "2026-08-30T13:00+00:00", start: "2026-08-30T12:00+00:00" } } }, nonAttentionTask.id), PublicPlanningError);
+  assert.throws(() => parsePlanningTaskDetailResult({ ...taskDetailResult, task: { ...taskDetailResult.task, note_links: [{ path: "../private.md" }] } }, nonAttentionTask.id), PublicPlanningError);
+  assert.throws(() => parsePlanningTaskDetailResult({ ...taskDetailResult, task: { ...taskDetailResult.task, note_links: [{ path: "file:private.md" }] } }, nonAttentionTask.id), PublicPlanningError);
 });
 
 test("detailed planning mutations use named exact routes and bodies", async () => {

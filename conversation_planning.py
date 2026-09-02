@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import re
@@ -32,6 +32,9 @@ MAX_DEPENDENCY_MAP_NODES = 50
 MAX_DEPENDENCY_MAP_EXTERNAL_STUBS = 50
 MAX_DEPENDENCY_MAP_EDGES = 250
 MAX_DEPENDENCY_MAP_QUERY = 160
+MAX_PLANNING_SEARCH_QUERY = 160
+MAX_PLANNING_SEARCH_PROJECTS = 25
+MAX_PLANNING_SEARCH_TASKS = 25
 _PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 _CURSOR = re.compile(r"[A-Za-z0-9_-]{1,512}\Z")
@@ -378,6 +381,24 @@ def _dependency_map_query(value: object) -> str:
     return value
 
 
+def _planning_search_query(value: object) -> str:
+    """Validate one explicit, navigation-only planning search query.
+
+    Search is deliberately not a general text index: descriptions, notes,
+    sessions, and other private Task or Project fields never participate.
+    """
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > MAX_PLANNING_SEARCH_QUERY
+        or any(unicodedata.category(character).startswith("C") for character in value)
+    ):
+        raise ConversationPlanningError("planning.search_query_invalid")
+    return value
+
+
 def _dependency_map_view(value: object) -> str:
     if value is None:
         return "all"
@@ -501,6 +522,56 @@ def _dependency_task_sort_key(task: Mapping[str, Any]) -> tuple[str, str, str]:
         str(task["title"]).casefold(),
         str(task["id"]),
     )
+
+
+def planning_navigation_search(
+    connection: sqlite3.Connection,
+    projects_payload: object,
+    *,
+    query: object,
+    today: date,
+) -> dict[str, Any]:
+    """Return bounded, title-only navigation matches from canonical planning data.
+
+    The intentionally small projection makes this useful only for choosing a
+    Project or Task to open.  It cannot disclose a Task description, Project
+    metadata, a local path, a Run, or any runtime/provider state.
+    """
+
+    normalized_query = _planning_search_query(query)
+    needle = normalized_query.casefold()
+    registry = project_registry(projects_payload)
+
+    all_projects = [
+        {"id": project.id, "title": project.name, "type": "project"}
+        for project in registry.projects
+        if needle in project.name.casefold()
+    ]
+    all_projects.sort(key=lambda item: (item["title"].casefold(), item["id"]))
+
+    # _safe_tasks validates the entire canonical Task projection and verifies
+    # every retained Task has an unambiguous Project association before its
+    # title can be included in this otherwise minimal result.
+    all_tasks = [
+        {"id": task["id"], "title": task["title"], "type": "task"}
+        for task in _safe_tasks(connection, registry, today)
+        if needle in str(task["title"]).casefold()
+    ]
+    all_tasks.sort(key=lambda item: (item["title"].casefold(), item["id"]))
+
+    projects = all_projects[:MAX_PLANNING_SEARCH_PROJECTS]
+    tasks = all_tasks[:MAX_PLANNING_SEARCH_TASKS]
+    return {
+        "query": normalized_query,
+        "projects": projects,
+        "project_count": len(projects),
+        "tasks": tasks,
+        "task_count": len(tasks),
+        "truncated": (
+            len(all_projects) > len(projects)
+            or len(all_tasks) > len(tasks)
+        ),
+    }
 
 
 def planning_task_page(
@@ -629,7 +700,19 @@ def planning_task_detail_locator(
     estimated_minutes = task.get("estimated_minutes")
     if estimated_minutes is not None and (type(estimated_minutes) is not int or not 1 <= estimated_minutes <= 10080):
         raise ConversationPlanningError("planning.task_invalid")
+    scheduled_block = task.get("scheduled_block")
+    reminders = task.get("reminders", [])
+    calendar_links = task.get("calendar_links", [])
+    note_links = task.get("note_links", [])
+    planning_metadata = {
+        "reminders": reminders,
+        "calendar_links": calendar_links,
+        "note_links": note_links,
+    }
+    if scheduled_block is not None:
+        planning_metadata["scheduled_block"] = scheduled_block
     try:
+        normalized_metadata = normalize_task_planning(planning_metadata)
         normalized_recurrence = normalize_task_planning({"recurrence": recurrence}).get("recurrence") if recurrence is not None else None
     except TaskPlanningError as exc:
         raise ConversationPlanningError("planning.task_invalid") from exc
@@ -638,13 +721,40 @@ def planning_task_detail_locator(
     assignee = task.get("assigned_agent_id")
     if assignee is not None and (not isinstance(assignee, str) or _TASK_ID.fullmatch(assignee) is None):
         raise ConversationPlanningError("planning.task_invalid")
+    # Task authority accepts the full Python ISO-8601 input grammar for stored
+    # planning datetimes. Public detail output deliberately has one portable
+    # UTC spelling, so a valid legacy offset (including offset seconds) cannot
+    # make the Node boundary reject an otherwise canonical Task.
+    def public_datetime(value: str) -> str:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+    public_metadata = dict(normalized_metadata)
+    if isinstance(public_metadata.get("scheduled_block"), dict):
+        public_metadata["scheduled_block"] = {
+            **public_metadata["scheduled_block"],
+            "start": public_datetime(public_metadata["scheduled_block"]["start"]),
+            "end": public_datetime(public_metadata["scheduled_block"]["end"]),
+        }
+    public_metadata["reminders"] = [
+        {
+            **reminder,
+            "at": public_datetime(reminder["at"]),
+            **({"notified_at": public_datetime(reminder["notified_at"])} if "notified_at" in reminder else {}),
+        }
+        for reminder in normalized_metadata["reminders"]
+    ]
     located["task"] = {
         **located["task"],
         "description": description,
         "tags": list(tags),
         "estimated_minutes": estimated_minutes,
+        "scheduled_block": public_metadata.get("scheduled_block"),
         "recurrence": normalized_recurrence,
+        "reminders": public_metadata["reminders"],
         "subtasks": safe_subtasks,
+        "calendar_links": public_metadata["calendar_links"],
+        "note_links": public_metadata["note_links"],
         "assigned_agent_id": assignee,
     }
     return located

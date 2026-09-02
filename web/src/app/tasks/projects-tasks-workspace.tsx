@@ -60,8 +60,19 @@ import {
   type PlanningDeletionTargetKind,
   type PublicPlanningDeletionPreview,
 } from "@/lib/public-planning-deletion";
+import {
+  readPlanningSearch,
+  type PublicPlanningSearch,
+  type PublicPlanningSearchResult,
+} from "@/lib/public-planning-search";
 
 type LoadState = "loading" | "ready" | "empty" | "unavailable" | "error";
+type ProjectVisibility = "active" | "all" | "archived";
+
+function projectsForVisibility(projects: PublicPlanningOverview["projects"], visibility: ProjectVisibility) {
+  if (visibility === "all") return projects;
+  return projects.filter((project) => visibility === "archived" ? project.status === "archived" : project.status !== "archived");
+}
 
 type DelegationRecovery = { confirmationId: string; idempotencyKey: string };
 
@@ -82,15 +93,35 @@ function storeDelegationRecovery(taskId: string, value: DelegationRecovery | nul
   } catch { /* Browser persistence is only a recovery convenience. */ }
 }
 
-function requestedTask(): { projectId: string | null; taskId: string } | null | false {
+function requestedTask(): { projectId: string | null; taskId: string | null } | null | false {
   const entries = [...new URL(window.location.href).searchParams.entries()];
   if (!entries.length) return null;
   if (entries.length === 1 && entries[0][0] === "task" && /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u.test(entries[0][1])) return { projectId: null, taskId: entries[0][1] };
+  if (entries.length === 1 && entries[0][0] === "project" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u.test(entries[0][1])) return { projectId: entries[0][1], taskId: null };
   if (entries.length !== 2 || new Set(entries.map(([key]) => key)).size !== 2) return false;
   const projectId = entries.find(([key]) => key === "project")?.[1];
   const taskId = entries.find(([key]) => key === "task")?.[1];
   if (!projectId || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u.test(projectId) || !taskId || !/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u.test(taskId)) return false;
   return { projectId, taskId };
+}
+
+function planningTimestamp(value: string, timezone?: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: timezone ?? "UTC",
+      timeZoneName: "short",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function noteLinkLabel(path: string, title: string | undefined, index: number): string {
+  if (title) return title;
+  const filename = path.split("/").at(-1)?.replace(/\.md$/iu, "");
+  return filename || `Note ${index + 1}`;
 }
 
 async function readAgents(): Promise<PublicAgent[]> {
@@ -109,6 +140,7 @@ export function ProjectsTasksWorkspace() {
   const [tasks, setTasks] = useState<PublicPlanningTaskListItem[]>([]);
   const [tasksState, setTasksState] = useState<LoadState>("loading");
   const [taskCursor, setTaskCursor] = useState<string | null>(null);
+  const [taskPageRefreshVersion, setTaskPageRefreshVersion] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [agents, setAgents] = useState<PublicAgent[]>([]);
   const [agentsState, setAgentsState] = useState<"loading" | "ready" | "empty" | "unavailable">("loading");
@@ -146,7 +178,11 @@ export function ProjectsTasksWorkspace() {
   const [dependencyMapVersion, setDependencyMapVersion] = useState(0);
   const [view, setView] = useState<"list" | "board" | "map">("list");
   const [savedView, setSavedView] = useState<"all" | "today" | "waiting" | "review" | "someday" | "completed">("all");
+  const [projectVisibility, setProjectVisibility] = useState<ProjectVisibility>("active");
   const [filter, setFilter] = useState("");
+  const [planningSearchQuery, setPlanningSearchQuery] = useState("");
+  const [planningSearch, setPlanningSearch] = useState<PublicPlanningSearch | null>(null);
+  const [planningSearchState, setPlanningSearchState] = useState<"idle" | "loading" | "ready" | "empty" | "unavailable">("idle");
   const [editingTask, setEditingTask] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editPriority, setEditPriority] = useState<PublicPlanningTask["priority"]>("medium");
@@ -173,6 +209,7 @@ export function ProjectsTasksWorkspace() {
   const newProjectButton = useRef<HTMLButtonElement>(null);
   const addTaskButton = useRef<HTMLButtonElement>(null);
   const projectSelectionGeneration = useRef(0);
+  const projectVisibilityRef = useRef<ProjectVisibility>("active");
   const requestedTaskFocus = useRef<string | null>(null);
   const selectedProjectRef = useRef<string | null>(null);
   // Selection can change while an execution refresh is in flight. Keep the
@@ -188,6 +225,8 @@ export function ProjectsTasksWorkspace() {
   const delegationRecoveryRef = useRef<DelegationRecovery | null>(null);
   const taskDetailGeneration = useRef(0);
   const dependencyPickerGeneration = useRef(0);
+  const planningSearchGeneration = useRef(0);
+  const pendingSearchTaskOpen = useRef<{ projectId: string; taskId: string } | null>(null);
   const requested = useMemo(() => typeof window === "undefined" ? null : requestedTask(), []);
 
   function selectTaskId(taskId: string | null) {
@@ -221,7 +260,7 @@ export function ProjectsTasksWorkspace() {
     setSelectedTaskId(taskId);
   }
 
-  async function refreshOverview(preferredProjectId: string | null = null) {
+  async function refreshOverview(preferredProjectId: string | null = null, visibility: ProjectVisibility = projectVisibility) {
     const value = await readPlanningOverview();
     setOverview(value);
     setState(value.projects.length ? "ready" : "empty");
@@ -230,11 +269,19 @@ export function ProjectsTasksWorkspace() {
         ? value.projects.some((item) => item.id === requested.projectId) ? requested.projectId : null
         : null
       : null;
+    const visibleProjects = projectsForVisibility(value.projects, visibility);
     setSelectedProjectId((current) => {
-      const next = preferredProjectId ?? requestedProject ?? (current && value.projects.some((item) => item.id === current) ? current : value.projects[0]?.id ?? null);
+      const next = preferredProjectId && visibleProjects.some((item) => item.id === preferredProjectId)
+        ? preferredProjectId
+        : requestedProject && visibleProjects.some((item) => item.id === requestedProject)
+          ? requestedProject
+          : current && visibleProjects.some((item) => item.id === current)
+            ? current
+            : visibleProjects[0]?.id ?? null;
       selectedProjectRef.current = next;
       return next;
     });
+    return value;
   }
 
   function closeTaskForm() {
@@ -255,6 +302,31 @@ export function ProjectsTasksWorkspace() {
     closeTaskForm();
   }
 
+  function changeProjectVisibility(visibility: ProjectVisibility) {
+    projectVisibilityRef.current = visibility;
+    setProjectVisibility(visibility);
+  }
+
+  function selectProjectVisibility(visibility: ProjectVisibility) {
+    if (visibility === projectVisibility) return;
+    changeProjectVisibility(visibility);
+    const visibleProjects = projectsForVisibility(overview?.projects ?? [], visibility);
+    const next = visibleProjects.some((project) => project.id === selectedProjectId)
+      ? selectedProjectId
+      : visibleProjects[0]?.id ?? null;
+    if (next) selectProject(next);
+    else {
+      selectedProjectRef.current = null;
+      setSelectedProjectId(null);
+      selectTaskId(null);
+      setTaskDetail(null);
+      setTaskDependencies(null);
+      setEditingTask(false);
+      setDeletionPreview(null);
+      closeTaskForm();
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     void readPlanningOverview().then((planning) => {
@@ -266,10 +338,15 @@ export function ProjectsTasksWorkspace() {
             ? planning.projects.some((item) => item.id === requested.projectId) ? requested.projectId : null
             : null
           : null;
+        const requestedProjectStatus = requestedProject ? planning.projects.find((item) => item.id === requestedProject)?.status : null;
+        const currentVisibility = projectVisibilityRef.current;
+        const effectiveVisibility = requestedProjectStatus === "archived" && currentVisibility === "active" ? "archived" : currentVisibility;
+        if (effectiveVisibility !== currentVisibility) changeProjectVisibility(effectiveVisibility);
+        const visibleProjects = projectsForVisibility(planning.projects, effectiveVisibility);
         setSelectedProjectId((current) => {
           const selected = requested && typeof requested === "object" && requested.projectId === null
-            ? current
-            : requestedProject ?? planning.projects[0]?.id ?? null;
+            ? current && visibleProjects.some((item) => item.id === current) ? current : visibleProjects[0]?.id ?? null
+            : requestedProject && visibleProjects.some((item) => item.id === requestedProject) ? requestedProject : visibleProjects[0]?.id ?? null;
           selectedProjectRef.current = selected;
           return selected;
         });
@@ -282,7 +359,7 @@ export function ProjectsTasksWorkspace() {
   }, [requested]);
 
   useEffect(() => {
-    if (!requested || requested.projectId !== null) return;
+    if (!requested || requested.projectId !== null || !requested.taskId) return;
     let cancelled = false;
     const selectionGeneration = projectSelectionGeneration.current;
     void readPlanningTask(requested.taskId).then((result) => {
@@ -306,15 +383,20 @@ export function ProjectsTasksWorkspace() {
       selectTaskId(rows.some((task) => task.id === selectedTaskRef.current) ? selectedTaskRef.current : null);
       setTaskCursor(cursor);
       setTasksState(rows.length ? "ready" : "empty");
-      if (requested && typeof requested === "object" && (requested.projectId === null || requested.projectId === projectId)) {
-        let target = rows.find((task) => task.id === requested.taskId) ?? null;
+      const requestedTaskId = requested && typeof requested === "object" && requested.taskId !== null && (requested.projectId === null || requested.projectId === projectId)
+        ? requested.taskId
+        : null;
+      const pendingTaskId = pendingSearchTaskOpen.current?.projectId === projectId ? pendingSearchTaskOpen.current.taskId : null;
+      const targetTaskId = pendingTaskId ?? requestedTaskId;
+      if (targetTaskId) {
+        let target = rows.find((task) => task.id === targetTaskId) ?? null;
         try {
           for (let pageIndex = 1; !target && cursor && pageIndex < 42; pageIndex += 1) {
             const next = await readPlanningTasks(projectId, cursor);
             if (cancelled) return;
             rows = [...rows, ...next.tasks.filter((task) => !rows.some((item) => item.id === task.id))];
             cursor = next.next_cursor;
-            target = rows.find((task) => task.id === requested.taskId) ?? null;
+            target = rows.find((task) => task.id === targetTaskId) ?? null;
             setTasks(rows);
             setTaskCursor(cursor);
           }
@@ -323,8 +405,9 @@ export function ProjectsTasksWorkspace() {
           return;
         }
         if (target) {
-          requestedTaskFocus.current = requested.taskId;
-          selectTaskId(requested.taskId); setTaskDetail(null); setEditingTask(false);
+          if (pendingSearchTaskOpen.current?.projectId === projectId && pendingSearchTaskOpen.current.taskId === targetTaskId) pendingSearchTaskOpen.current = null;
+          requestedTaskFocus.current = targetTaskId;
+          selectTaskId(targetTaskId); setTaskDetail(null); setEditingTask(false);
           setTasks([...rows]);
         }
         else setNotice("The requested Task could not be found in this Project.");
@@ -332,7 +415,7 @@ export function ProjectsTasksWorkspace() {
       else if (requested === false) setNotice("The requested Task link is invalid.");
     }).catch(() => { if (!cancelled) setTasksState("unavailable"); });
     return () => { cancelled = true; };
-  }, [requested, selectedProjectId]);
+  }, [requested, selectedProjectId, taskPageRefreshVersion]);
 
   useEffect(() => {
     if (!selectedTaskId) return;
@@ -413,6 +496,67 @@ export function ProjectsTasksWorkspace() {
     target.scrollIntoView({ block: "center", behavior: "auto" });
     setNotice(`Opened Task ${target.parentElement?.dataset.taskTitle ?? ""}.`);
   }, [tasks]);
+
+  useEffect(() => {
+    const query = planningSearchQuery;
+    const generation = ++planningSearchGeneration.current;
+    if (!query || query.trim() !== query || /\p{C}/u.test(query)) {
+      void Promise.resolve().then(() => {
+        if (generation !== planningSearchGeneration.current) return;
+        setPlanningSearch(null); setPlanningSearchState("idle");
+      });
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      if (!cancelled && generation === planningSearchGeneration.current) setPlanningSearchState("loading");
+      void readPlanningSearch(query, controller.signal).then((result) => {
+      if (cancelled || generation !== planningSearchGeneration.current || result.query !== query) return;
+      setPlanningSearch(result);
+      setPlanningSearchState(result.projects.length || result.tasks.length ? "ready" : "empty");
+      }).catch(() => {
+      if (!cancelled && generation === planningSearchGeneration.current) setPlanningSearchState("unavailable");
+      });
+    }, 180);
+    return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
+  }, [planningSearchQuery]);
+
+  function updatePlanningLocation(projectId: string, taskId: string | null) {
+    const location = new URL(window.location.href);
+    location.pathname = "/tasks";
+    location.search = new URLSearchParams(taskId ? { project: projectId, task: taskId } : { project: projectId }).toString();
+    location.hash = "";
+    window.history.pushState(null, "", `${location.pathname}${location.search}`);
+  }
+
+  async function openPlanningSearchResult(result: PublicPlanningSearchResult) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (result.type === "project") {
+        const current = await readPlanningOverview();
+        if (!current.projects.some((project) => project.id === result.id)) { setNotice("That search result is no longer available. Nothing changed."); return; }
+        setOverview(current); setState(current.projects.length ? "ready" : "empty");
+        changeProjectVisibility("all");
+        selectProject(result.id);
+        updatePlanningLocation(result.id, null);
+        setNotice(`Opened Project ${result.title}.`);
+        return;
+      }
+      const current = await readPlanningOverview();
+      const located = await readPlanningTask(result.id);
+      if (located.task.id !== result.id || !current.projects.some((project) => project.id === located.project.id)) { setNotice("That search result is no longer available. Nothing changed."); return; }
+      setOverview(current); setState(current.projects.length ? "ready" : "empty");
+      pendingSearchTaskOpen.current = { projectId: located.project.id, taskId: result.id };
+      changeProjectVisibility("all");
+      selectProject(located.project.id);
+      setTaskPageRefreshVersion((current) => current + 1);
+      updatePlanningLocation(located.project.id, result.id);
+      setNotice(`Opening Task ${result.title}.`);
+    } catch { setNotice("That search result is no longer available. Nothing changed."); }
+    finally { setBusy(false); }
+  }
 
   async function loadMoreTasks() {
     if (!selectedProjectId || !taskCursor || loadingMore) return;
@@ -532,7 +676,8 @@ export function ProjectsTasksWorkspace() {
     try {
       const created = await createProject(name);
       setProjectName(""); setProjectForm(false);
-      await refreshOverview(created.id);
+      changeProjectVisibility("active");
+      await refreshOverview(created.id, "active");
       setNotice(`Project ${created.name} created.`);
       window.setTimeout(() => document.querySelector<HTMLElement>(`[data-project-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
     } catch { setNotice("Project could not be created. Your name was kept."); projectInput.current?.focus(); }
@@ -612,10 +757,12 @@ export function ProjectsTasksWorkspace() {
   }
 
   const selectedProject = overview?.projects.find((item) => item.id === selectedProjectId) ?? null;
+  const visibleProjects = projectsForVisibility(overview?.projects ?? [], projectVisibility);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedTaskExecution = taskExecution && selectedTask && taskExecution.task.id === selectedTask.id && taskExecution.task.revision === selectedTask.revision ? taskExecution : null;
   const selectedTaskDelegation = taskDelegation && selectedTask && taskDelegation.task.id === selectedTask.id ? taskDelegation : null;
   const executionOwnsTerminalStages = !!selectedTaskExecution && executionState === "ready" && selectedTaskExecution.execution.attempts.some((attempt) => attempt.state === "dispatched" || attempt.state === "review_ready");
+  const hasPlanningMetadata = !!taskDetail && (!!taskDetail.scheduled_block || !!taskDetail.reminders.length || !!taskDetail.calendar_links.length || !!taskDetail.note_links.length);
   const filteredTasks = tasks.filter((task) => {
     const query = filter.trim().toLowerCase();
     if (query && !`${task.title} ${task.description_preview}`.toLowerCase().includes(query)) return false;
@@ -821,7 +968,13 @@ export function ProjectsTasksWorkspace() {
   async function lifecycle(action: "archive" | "restore") {
     if (!selectedProject || busy) return;
     setBusy(true); setNotice(`${action === "archive" ? "Archiving" : "Restoring"} Project…`);
-    try { const result = await updatePlanningProject(selectedProject.id, selectedProject.revision, action, null); await refreshOverview(result.project.id); setNotice(`Project ${action}d.`); }
+    try {
+      const result = await updatePlanningProject(selectedProject.id, selectedProject.revision, action, null);
+      const visibility: ProjectVisibility = action === "archive" ? "archived" : "active";
+      changeProjectVisibility(visibility);
+      await refreshOverview(result.project.id, visibility);
+      setNotice(`Project ${action}d.`);
+    }
     catch { setNotice("Project changed elsewhere or could not be updated."); }
     finally { setBusy(false); }
   }
@@ -840,12 +993,24 @@ export function ProjectsTasksWorkspace() {
     <nav aria-label="Project and saved view navigation" className="projects-pane planning-navigation">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Projects</p><h2>Projects</h2></div><button disabled={busy} onClick={() => { closeTaskForm(); setProjectForm(true); window.setTimeout(() => projectInput.current?.focus(), 0); }} ref={newProjectButton} type="button">New</button></div>
       {projectForm ? <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void submitProject(); }}><label><span>Name</span><input onChange={(event) => { if ([...event.target.value].length <= 121) setProjectName(event.target.value); }} ref={projectInput} value={projectName} /></label><div><button aria-label="Create Project" disabled={busy || !projectName.trim() || [...projectName.trim()].length > 120} type="submit">Create</button><button aria-label="Cancel Project" disabled={busy} onClick={() => { setProjectForm(false); setProjectName(""); window.setTimeout(() => newProjectButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
-      {state === "loading" ? <p>Loading Projects…</p> : state === "unavailable" || state === "error" ? <p>Projects are temporarily unavailable.</p> : overview?.projects.length ? <ul>{overview.projects.map((project) => <li key={project.id}><button aria-current={project.id === selectedProjectId ? "true" : undefined} aria-label={`Select ${project.name} Project`} data-project-id={project.id} disabled={busy} onClick={() => selectProject(project.id)} type="button"><strong>{project.name}</strong><span>{project.status}</span></button></li>)}</ul> : <p>No Projects yet.</p>}
+      <div aria-label="Project visibility" className="saved-view-navigation"><p className="console-kicker">Project view</p>{(["active", "all", "archived"] as const).map((visibility) => <button aria-pressed={projectVisibility === visibility} disabled={busy} key={visibility} onClick={() => selectProjectVisibility(visibility)} type="button">{visibility === "all" ? "All Projects" : visibility === "active" ? "Active Projects" : "Archived Projects"}</button>)}</div>
+      {state === "loading" ? <p>Loading Projects…</p> : state === "unavailable" || state === "error" ? <p>Projects are temporarily unavailable.</p> : visibleProjects.length ? <ul>{visibleProjects.map((project) => <li key={project.id}><button aria-current={project.id === selectedProjectId ? "true" : undefined} aria-label={`Select ${project.name} Project`} data-project-id={project.id} disabled={busy} onClick={() => selectProject(project.id)} type="button"><strong>{project.name}</strong><span>{project.status}</span></button></li>)}</ul> : overview?.projects.length ? projectVisibility === "archived" ? <section aria-label="Archived Project recovery"><p>No archived Projects.</p><p>Archived Projects can be restored here when needed.</p><button disabled={busy} onClick={() => selectProjectVisibility("active")} type="button">Show active Projects</button></section> : projectVisibility === "active" ? <section aria-label="Archived Project recovery"><p>No active Projects.</p><p>Open Archived Projects to restore one.</p><button disabled={busy} onClick={() => selectProjectVisibility("archived")} type="button">View archived Projects</button></section> : <p>No Projects match this view.</p> : <p>No Projects yet.</p>}
       <div className="saved-view-navigation"><p className="console-kicker">Saved view</p>{(["all", "today", "waiting", "review", "someday", "completed"] as const).map((item) => <button aria-pressed={savedView === item} disabled={busy} key={item} onClick={() => setSavedView(item)} type="button">{item === "all" ? "All tasks" : item}</button>)}</div>
     </nav>
     <div className="project-tasks-pane planning-task-pane">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Tasks</p><h2>{selectedProject?.name ?? "Tasks"}</h2></div><button disabled={busy || !selectedProjectId || selectedProject?.status !== "active"} onClick={() => { setProjectForm(false); setProjectName(""); setTaskFormProjectId(selectedProjectId); setTaskForm(true); window.setTimeout(() => taskInput.current?.focus(), 0); }} ref={addTaskButton} type="button">Add</button></div>
       {taskForm ? <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void submitTask(); }}><label><span>Title</span><input onChange={(event) => { if ([...event.target.value].length <= 161) setTaskTitle(event.target.value); }} ref={taskInput} value={taskTitle} /></label><label><span>Agent</span><select aria-describedby="task-agent-state" disabled={agentsState === "loading" || agentsState === "empty" || agentsState === "unavailable"} onChange={(event) => setTaskAgent(event.target.value)} value={taskAgent}><option value="">{agentsState === "loading" ? "Loading" : agentsState === "unavailable" ? "Unavailable" : agentsState === "empty" ? "No Agents" : "Unassigned"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><p className="task-agent-state" id="task-agent-state">{agentsState === "unavailable" ? "Agent assignment is unavailable; Create will leave this Task unassigned." : agentsState === "empty" ? "No Agents are available; Create will leave this Task unassigned." : "Assignment is optional."}</p><label><span>Due</span><input onChange={(event) => setTaskDue(event.target.value)} type="date" value={taskDue} /></label><div><button aria-label="Create Task" disabled={busy || !taskTitle.trim() || [...taskTitle.trim()].length > 160} type="submit">Create</button><button aria-label="Cancel Task" disabled={busy} onClick={() => { closeTaskForm(); window.setTimeout(() => addTaskButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
+      <section aria-label="Search Projects and Tasks" className="planning-navigation-search">
+        <label><span>Search Projects and Tasks</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setPlanningSearchQuery(event.target.value); }} placeholder="Find a Project or Task" type="search" value={planningSearchQuery} /></label>
+        {planningSearchState === "loading" ? <p aria-live="polite" role="status">Searching Projects and Tasks…</p> : null}
+        {planningSearchState === "unavailable" ? <p role="status">Search is temporarily unavailable. Your current selection did not change.</p> : null}
+        {planningSearchState === "empty" ? <p>No Projects or Tasks match this search.</p> : null}
+        {planningSearchState === "ready" && planningSearch ? <div className="planning-navigation-search-results">
+          {planningSearch.projects.length ? <section aria-label="Project search results"><h3>Projects</h3><ul>{planningSearch.projects.map((result) => <li key={`project:${result.id}`}><span>{result.title}</span><button aria-label={`Open Project ${result.title}`} disabled={busy} onClick={() => void openPlanningSearchResult(result)} type="button">Open</button></li>)}</ul></section> : null}
+          {planningSearch.tasks.length ? <section aria-label="Task search results"><h3>Tasks</h3><ul>{planningSearch.tasks.map((result) => <li key={`task:${result.id}`}><span>{result.title}</span><button aria-label={`Open Task ${result.title}`} disabled={busy} onClick={() => void openPlanningSearchResult(result)} type="button">Open</button></li>)}</ul></section> : null}
+          {planningSearch.truncated ? <p>More matching results are available. Refine your search.</p> : null}
+        </div> : null}
+      </section>
       <div className="planning-workbench-tools"><label><span>Filter</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setFilter(event.target.value); }} placeholder="Find a task" type="search" value={filter} /></label><div aria-label="Display mode" className="planning-mode-toggle"><button aria-pressed={view === "list"} onClick={() => setView("list")} type="button">List</button><button aria-pressed={view === "board"} onClick={() => setView("board")} type="button">Board</button><button aria-pressed={view === "map"} onClick={() => setView("map")} type="button">Map</button></div></div>
       {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : view === "map" ? dependencyMapState === "loading" ? <p aria-live="polite" role="status">Loading the dependency map…</p> : dependencyMapState === "unavailable" || dependencyMapState === "error" ? <p role="status">The dependency map is temporarily unavailable. List and Board remain available.</p> : dependencyMapGraph ? <TaskDependencyMap graph={dependencyMapGraph} onSelectedTaskIdChange={(taskId) => void selectMapTask(taskId)} selectedTaskId={selectedTaskId} /> : <p role="status">No dependency map is available for this Project.</p> : filteredTasks.length ? view === "list" ? <ul className="project-task-list">{filteredTasks.map(taskCard)}</ul> : <div aria-label="Task board" className="planning-board">{stages.map((stage) => <section key={stage}><h3>{stage.replace("_", " ")}</h3><ul className="project-task-list">{filteredTasks.filter((task) => task.workflow_stage === stage).map(taskCard)}</ul></section>)}</div> : <p>{tasks.length ? "No Tasks match this view." : "No Tasks in this Project."}</p>}
       {taskCursor ? <button className="project-tasks-more" disabled={loadingMore} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
@@ -855,6 +1020,13 @@ export function ProjectsTasksWorkspace() {
       {!selectedTask ? <p>Select a Task to review its description, planning details, and lifecycle.</p> : <>
         <p className="planning-description">{(taskDetail?.description ?? selectedTask.description_preview) || "This Task has no description."}</p>
         <dl className="planning-summary"><div><dt>Stage</dt><dd>{selectedTask.workflow_stage.replace("_", " ")}</dd></div><div><dt>Priority</dt><dd>{selectedTask.priority}</dd></div><div><dt>Due</dt><dd>{selectedTask.due_date ?? "Not scheduled"}</dd></div></dl>
+        {taskDetail && hasPlanningMetadata ? <section aria-label="Planning details" className="planning-metadata">
+          <p className="console-kicker">Planning details</p>
+          {taskDetail.scheduled_block ? <dl className="planning-summary"><div><dt>{taskDetail.scheduled_block.label ?? "Schedule"}</dt><dd><time dateTime={taskDetail.scheduled_block.start}>{planningTimestamp(taskDetail.scheduled_block.start, taskDetail.scheduled_block.timezone)}</time> – <time dateTime={taskDetail.scheduled_block.end}>{planningTimestamp(taskDetail.scheduled_block.end, taskDetail.scheduled_block.timezone)}</time></dd></div></dl> : null}
+          {taskDetail.reminders.length ? <section aria-label="Browser reminders"><h3>Browser reminders</h3><ul>{taskDetail.reminders.map((reminder) => <li key={reminder.id}><span>{reminder.enabled ? "On" : "Off"}</span><time dateTime={reminder.at}>{planningTimestamp(reminder.at, reminder.timezone)}</time>{reminder.notified_at ? <small>Sent</small> : null}</li>)}</ul></section> : null}
+          {taskDetail.calendar_links.length ? <section aria-label="Calendar links"><h3>Calendar links</h3><ul>{taskDetail.calendar_links.map((link, index) => <li key={`${link.calendar_id}:${link.event_id}`}>{link.label ?? `Linked calendar event ${index + 1}`}</li>)}</ul></section> : null}
+          {taskDetail.note_links.length ? <section aria-label="Notes"><h3>Notes</h3><ul>{taskDetail.note_links.map((link, index) => <li key={link.path}>{noteLinkLabel(link.path, link.title, index)}</li>)}</ul></section> : null}
+        </section> : null}
         <div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage || executionOwnsTerminalStages && (stage === "review" || stage === "done")} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}{executionOwnsTerminalStages ? <p>Run and review controls own the Review and Done stages until this attempt is resolved.</p> : null}</div>
         <section aria-label="Task execution" className="planning-execution">
           <p className="console-kicker">Execution</p>
