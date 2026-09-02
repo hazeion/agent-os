@@ -40,6 +40,142 @@ def trusted_vercel_message_event_id(run_id: str) -> str:
 
 
 class LocalBridgeTests(unittest.TestCase):
+    def test_planning_task_delegation_is_a_safe_selected_task_projection(self):
+        task = {
+            "id": "task_delegation",
+            "delegation": {
+                "profile_id": "profile_private",
+                "board_id": "board_private",
+                "kanban_task_id": "kanban_private",
+                "run_id": "run_private",
+                "session_id": "session_private",
+                "connection_binding_id": "connection_private",
+                "reservation_id": "reservation_private",
+                "audit": [{"event": "private_audit"}],
+                "state": "ready_for_review",
+                "sync_state": "synced",
+                "review_state": "pending",
+                "summary": "A bounded review summary",
+                "latest_question": None,
+                "last_outcome": "completed",
+                "attempts": 2,
+                "updated_at": "2026-09-02T12:00:00+00:00",
+                "last_synced_at": "2026-09-02T11:59:00+00:00",
+            },
+        }
+        with patch.object(server, "read_task_snapshot", return_value=[task]):
+            payload, status = local_bridge.bridge_planning_task_delegation_payload(
+                "task_delegation"
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task_id"], "task_delegation")
+        self.assertEqual(
+            payload["delegation"],
+            {
+                "available": True,
+                "state": "ready_for_review",
+                "sync_state": "synced",
+                "review_state": "pending",
+                "summary": "A bounded review summary",
+                "latest_question": None,
+                "last_outcome": "completed",
+                "attempts": 2,
+                "updated_at": "2026-09-02T12:00:00+00:00",
+                "last_synced_at": "2026-09-02T11:59:00+00:00",
+            },
+        )
+        serialized = json.dumps(payload)
+        for private_value in (
+            "profile_private", "board_private", "kanban_private", "run_private",
+            "session_private", "connection_private", "reservation_private", "private_audit",
+        ):
+            self.assertNotIn(private_value, serialized)
+
+    def test_planning_task_delegation_maps_absence_authority_failure_and_invalid_data(self):
+        with patch.object(server, "read_task_snapshot", return_value=[{"id": "task_delegation"}]):
+            absent, absent_status = local_bridge.bridge_planning_task_delegation_payload(
+                "task_delegation"
+            )
+        self.assertEqual((absent_status, absent["delegation"]), (200, {"available": False, "reason": "not_delegated"}))
+        with patch.object(server, "read_task_snapshot", return_value={"error": "private"}):
+            unavailable, unavailable_status = local_bridge.bridge_planning_task_delegation_payload(
+                "task_delegation"
+            )
+        self.assertEqual((unavailable_status, unavailable["status"]), (503, "unavailable"))
+        with patch.object(server, "read_task_snapshot", return_value=[{"id": "task_delegation", "delegation": {}}]):
+            malformed, malformed_status = local_bridge.bridge_planning_task_delegation_payload(
+                "task_delegation"
+            )
+        self.assertEqual((malformed_status, malformed["status"]), (500, "error"))
+
+    def test_planning_task_delegation_projects_an_in_flight_reservation(self):
+        """A reserved delegation has not yet accumulated optional lifecycle fields."""
+
+        task = {
+            "id": "task_delegation",
+            "updated_at": "2026-09-02T12:00:00+00:00",
+            "delegation": {
+                "profile_id": "profile_private",
+                "state": "queued",
+                "reservation_id": "reservation_private",
+            },
+        }
+        with patch.object(server, "read_task_snapshot", return_value=[task]):
+            payload, status = local_bridge.bridge_planning_task_delegation_payload(
+                "task_delegation"
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["delegation"],
+            {
+                "available": True,
+                "state": "queued",
+                "sync_state": "pending",
+                "review_state": "pending",
+                "summary": None,
+                "latest_question": None,
+                "last_outcome": None,
+                "attempts": 0,
+                "updated_at": "2026-09-02T12:00:00+00:00",
+                "last_synced_at": None,
+            },
+        )
+        self.assertNotIn("reservation_private", json.dumps(payload))
+
+    def test_planning_task_delegation_route_requires_one_exact_task_id(self):
+        ready = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "task_id": "task_delegation",
+            "delegation": {"available": False, "reason": "not_delegated"},
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_planning_task_delegation_payload",
+            return_value=(ready, 200),
+        ) as delegation:
+            status, payload, _headers = self.request(
+                path=(
+                    f"{local_bridge.BRIDGE_PLANNING_TASK_DELEGATION_PATH}"
+                    "?task_id=task_delegation"
+                )
+            )
+            self.assertEqual((status, payload), (200, ready))
+            delegation.assert_called_once_with("task_delegation")
+            for query in (
+                "",
+                "?task_id=task_delegation&task_id=task_other",
+                "?task_id=task_delegation&extra=1",
+                "?task_id=bad%2Fid",
+            ):
+                rejected, body, _headers = self.request(
+                    path=f"{local_bridge.BRIDGE_PLANNING_TASK_DELEGATION_PATH}{query}"
+                )
+                self.assertEqual((rejected, body), (404, {"error": "bridge_route_not_found"}))
+        self.assertEqual(delegation.call_count, 1)
+
     def test_planning_execution_projection_and_dynamic_actions_use_the_fixed_contract(self):
         task = {
             "attention_reasons": [], "assigned_agent_id": "agent_main",

@@ -52,6 +52,7 @@ BRIDGE_PLANNING_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks"
 BRIDGE_PLANNING_TASK_PATH = "/bridge/v1/agent-console/planning-task"
 BRIDGE_PLANNING_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail"
 BRIDGE_PLANNING_TASK_EXECUTION_PATH = "/bridge/v1/agent-console/planning-task-execution"
+BRIDGE_PLANNING_TASK_DELEGATION_PATH = "/bridge/v1/agent-console/planning-task-delegation"
 BRIDGE_PLANNING_TASK_RUN_ONCE_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once/preview"
 BRIDGE_PLANNING_TASK_RUN_ONCE_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once"
 BRIDGE_PLANNING_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/review"
@@ -1899,6 +1900,105 @@ def bridge_planning_task_execution_payload(task_id: str) -> tuple[dict[str, obje
         return _planning_execution_failure(404 if exc.code == "dispatch.task_not_found" else 503 if exc.code == "dispatch.unavailable" else 400)
     except Exception:
         return _planning_execution_failure(500)
+
+
+def _planning_delegation_text(value: object, maximum: int) -> bool:
+    """Accept one bounded display string without admitting control content."""
+
+    return (
+        isinstance(value, str)
+        and value.strip() == value
+        and len(value) <= maximum
+        and re.search(r"[\x00-\x1f\x7f]", value) is None
+    )
+
+
+def _planning_task_delegation_summary(
+    task_id: str, source: object
+) -> dict[str, object]:
+    """Project only the selected Task's safe delegated-work state.
+
+    Runtime-owned task, run, session, connection, and audit references never
+    cross this read boundary. This is intentionally distinct from the legacy
+    dashboard Task projection.
+    """
+
+    if not isinstance(source, dict) or source.get("id") != task_id:
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    delegation = source.get("delegation")
+    if delegation is None:
+        return {"available": False, "reason": "not_delegated"}
+    if not isinstance(delegation, dict):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    state = delegation.get("state")
+    sync_state = delegation.get("sync_state", "pending")
+    review_state = delegation.get("review_state", "pending")
+    attempts = delegation.get("attempts", 0)
+    summary = delegation.get("summary")
+    question = delegation.get("latest_question")
+    outcome = delegation.get("last_outcome")
+    updated_at = delegation.get("updated_at") or source.get("updated_at")
+    last_synced_at = delegation.get("last_synced_at")
+    if (
+        state not in {
+            "queued", "running", "needs_input", "blocked", "ready_for_review",
+            "completed", "failed", "cancelled",
+        }
+        or sync_state not in {"pending", "synced", "stale", "error"}
+        or review_state not in {"pending", "accepted", "revision_requested", "blocked"}
+        or type(attempts) is not int
+        or not 0 <= attempts <= 1000
+        or summary is not None and not _planning_delegation_text(summary, 4000)
+        or question is not None and not _planning_delegation_text(question, 2000)
+        or outcome is not None
+        and outcome not in {"completed", "blocked", "failed", "cancelled", "timed_out", "reclaimed"}
+        or not _valid_timestamp(updated_at)
+        or last_synced_at is not None and not _valid_timestamp(last_synced_at)
+    ):
+        raise BridgeConversationProjectionError("planning_delegation_invalid")
+    return {
+        "available": True,
+        "state": state,
+        "sync_state": sync_state,
+        "review_state": review_state,
+        "summary": summary,
+        "latest_question": question,
+        "last_outcome": outcome,
+        "attempts": attempts,
+        "updated_at": updated_at,
+        "last_synced_at": last_synced_at,
+    }
+
+
+def bridge_planning_task_delegation_payload(
+    task_id: str,
+) -> tuple[dict[str, object], int]:
+    """Return a bounded selected-Task delegation state from canonical Tasks."""
+
+    if not isinstance(task_id, str) or _TASK_ID.fullmatch(task_id) is None:
+        return _planning_failure("invalid", 400)
+    try:
+        from server import read_task_snapshot
+
+        tasks = read_task_snapshot()
+        if not isinstance(tasks, list):
+            return _planning_failure("unavailable", 503)
+        matches = [
+            task for task in tasks
+            if isinstance(task, dict) and task.get("id") == task_id
+        ]
+        if len(matches) != 1:
+            return _planning_failure("not_found", 404)
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "task_id": task_id,
+            "delegation": _planning_task_delegation_summary(task_id, matches[0]),
+        }, 200
+    except Exception:
+        return _planning_failure("error", 500)
 
 
 def bridge_planning_task_run_once_preview_payload(task_id: str, payload: object) -> tuple[dict[str, object], int]:
@@ -4923,6 +5023,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bridge_route_not_found"}, 404)
                 return
             payload, status = bridge_planning_task_execution_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_TASK_DELEGATION_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) != 1 or pairs[0][0] != "task_id" or _TASK_ID.fullmatch(pairs[0][1]) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_task_delegation_payload(pairs[0][1])
             self._send_json(payload, status)
             return
         if parsed.path == BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH:
