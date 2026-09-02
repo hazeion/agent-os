@@ -8302,7 +8302,11 @@ def _delegate_confirmed_task_locked(task_id: str, payload):
         saved, save_error = persist_task_delegation(
             task_id,
             delegation,
-            task_updates={"assignee": intent["profile_id"], "planning_state": "waiting"},
+            task_updates={
+                "assignee": intent["profile_id"],
+                "planning_state": "waiting",
+                "workflow_stage": "waiting",
+            },
             expected_reservation_id=reservation_id,
         )
         if save_error:
@@ -8345,13 +8349,17 @@ def refresh_task_delegation(task_id: str, payload=None):
         if synchronized.get("state") == "ready_for_review":
             updates = {
                 "planning_state": "review",
+                "workflow_stage": "review",
                 "review_required": True,
                 "needs_attention": True,
             }
         elif synchronized.get("state") == "needs_input":
-            updates = {"planning_state": "blocked", "needs_attention": True}
+            updates = {
+                "planning_state": "blocked", "workflow_stage": "waiting",
+                "needs_attention": True,
+            }
         elif synchronized.get("state") in {"queued", "running"}:
-            updates = {"planning_state": "waiting"}
+            updates = {"planning_state": "waiting", "workflow_stage": "waiting"}
         saved, error = persist_task_delegation(
             task_id,
             synchronized,
@@ -8832,7 +8840,10 @@ def execute_confirmed_delegation_action(task_id: str, payload):
             return {"error": "Hermes task or run state changed after preview; preview the action again."}, 409
         if action == "accept":
             delegation.update({"state": "completed", "review_state": "accepted", "updated_at": now_iso()})
-            task_updates = {"status": "completed", "planning_state": "done", "needs_attention": False, "review_required": False, "completed_at": now_iso()}
+            task_updates = {
+                "status": "completed", "planning_state": "done", "workflow_stage": "done",
+                "needs_attention": False, "review_required": False, "completed_at": now_iso(),
+            }
         else:
             remote_revision = latest_remote.get("revision")
             remote_key = f"mentat-{task_id}-{uuid4().hex[:20]}"
@@ -8850,10 +8861,10 @@ def execute_confirmed_delegation_action(task_id: str, payload):
                 result = adapter.terminate_task(board, remote_id)
             elif action == "mark_blocked" and isinstance(adapter, RemoteHermesKanbanAdapter):
                 result = adapter.mutate_task(board, remote_id, "block", expected_revision=remote_revision, idempotency_key=remote_key, reason=note, kind="needs_input")
-                task_updates = {"planning_state": "blocked", "needs_attention": True}
+                task_updates = {"planning_state": "blocked", "workflow_stage": "waiting", "needs_attention": True}
             elif action == "mark_blocked":
                 result = adapter.block_task(board, remote_id, note)
-                task_updates = {"planning_state": "blocked", "needs_attention": True}
+                task_updates = {"planning_state": "blocked", "workflow_stage": "waiting", "needs_attention": True}
             else:
                 if isinstance(adapter, RemoteHermesKanbanAdapter):
                     commented = adapter.mutate_task(board, remote_id, "comment", expected_revision=remote_revision, idempotency_key=remote_key, body=f"Revision requested from Mentat: {note}", author="mentat")
@@ -8874,7 +8885,7 @@ def execute_confirmed_delegation_action(task_id: str, payload):
                     if result.get("ok"):
                         delegation["kanban_task_id"] = result["task"]["id"]
                         remote_id = result["task"]["id"]
-                        task_updates = {"status": "in progress", "planning_state": "waiting", "needs_attention": False, "review_required": True}
+                        task_updates = {"status": "in progress", "planning_state": "waiting", "workflow_stage": "waiting", "needs_attention": False, "review_required": True}
             if not result.get("ok"):
                 partial = action == "request_revision" and 'commented' in locals() and commented.get("ok")
                 return {

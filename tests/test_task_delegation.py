@@ -131,6 +131,7 @@ class TaskDelegationTests(unittest.TestCase):
         self.assertEqual(payload["task"]["delegation"]["kanban_task_id"], "t-hermes-1")
         self.assertEqual(payload["task"]["delegation"]["run_id"], "7")
         self.assertEqual(payload["task"]["planning_state"], "waiting")
+        self.assertEqual(payload["task"]["workflow_stage"], "waiting")
         self.assertEqual(self.adapter.calls[0][0], "create")
         self.assertTrue(self.adapter.calls[0][2]["idempotency_key"].startswith("mentat-task-1-"))
         self.assertEqual(self.adapter.calls[1], ("show", "default", "t-hermes-1"))
@@ -202,6 +203,7 @@ class TaskDelegationTests(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         self.assertEqual(payload["task"]["status"], "completed")
+        self.assertEqual(payload["task"]["workflow_stage"], "done")
         self.assertEqual(payload["delegation"]["review_state"], "accepted")
 
     def test_review_actions_reject_incompatible_remote_state(self):
@@ -288,11 +290,14 @@ class TaskDelegationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertIsNotNone(payload["task"])
+        self.assertEqual(payload["delegation"]["state"], "ready_for_review")
+        self.assertEqual(payload["task"]["workflow_stage"], "review")
         self.assertEqual(payload["delegation"]["artifact_sync_state"], "synced")
         self.assertEqual(payload["delegation"]["artifact_count"], 2)
         stored = self.read_tasks()[0]
         self.assertEqual(stored["delegation"]["artifact_sync_state"], "synced")
         self.assertEqual(stored["delegation"]["artifact_count"], 2)
+        self.assertEqual(stored["workflow_stage"], "review")
         importer.assert_called_once()
 
     def test_archived_remote_task_can_import_files_on_first_refresh(self):
@@ -568,6 +573,7 @@ class TaskDelegationTests(unittest.TestCase):
 
         self.assertEqual(action_status, 200)
         self.assertEqual(result["delegation"]["kanban_task_id"], "t-hermes-2")
+        self.assertEqual(result["task"]["workflow_stage"], "waiting")
         for key in (
             "artifact_sync_state",
             "artifact_count",
