@@ -332,6 +332,30 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn("Keep tests green.", prompt["text"])
         self.assertNotIn(str(root), prompt["text"])
 
+    def test_submit_never_exceeds_the_fixed_operation_timeout(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            client = FakeClient(thread_start(root), turn_start())
+            clock = [100.0]
+            runtime = self.runtime(root, client)
+            with patch("codex_runtime.time", wraps=time) as codex_time:
+                # Reproduce a clock representation where subtracting the
+                # deadline produces a value microscopically above its budget.
+                codex_time.monotonic.side_effect = [
+                    10.0,
+                    10.0,
+                    10.0,
+                    clock[0],
+                    clock[0] - 0.000000000000057,
+                    clock[0] + 1.0,
+                ]
+                outcome = runtime.submit_task(task(), context())
+
+        self.assertEqual(outcome.disposition, SubmissionDisposition.ACCEPTED)
+        self.assertEqual(
+            client.calls[1][2], START_TASK_OPERATION_TIMEOUT_SECONDS
+        )
+
     def test_submit_continues_only_an_exact_completed_private_thread(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
