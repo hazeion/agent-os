@@ -218,7 +218,10 @@ async function inspectRoutes(client) {
       currentCount: document.querySelectorAll('[aria-current="page"]').length,
       scriptPaths: [...document.scripts].map((script) => new URL(script.src, location.href).pathname),
       hasFlightPayload: document.documentElement.innerHTML.includes('self.__next_f'),
-      hasLogo: document.querySelector('.brand-mark')?.getAttribute('src') === '/mentat-mark-emerald.png',
+      hasBrandMark: (() => {
+        const mark = document.querySelector('.brand-mark');
+        return mark?.tagName === 'SPAN' && mark.getAttribute('aria-hidden') === 'true';
+      })(),
       overflow: document.documentElement.scrollWidth - innerWidth,
     }))()`);
     const staticRoute = route.path !== "/" && route.path !== "/tasks";
@@ -230,7 +233,7 @@ async function inspectRoutes(client) {
       || result.headingCount !== 1
       || result.mainCount !== 1
       || result.currentCount !== 1
-      || !result.hasLogo
+      || !result.hasBrandMark
       || result.overflow > 1
       || staticRoute && (
         JSON.stringify(result.scriptPaths) !== JSON.stringify(["/shell-runtime.js"])
