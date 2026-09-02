@@ -54,6 +54,7 @@ py-modules = [
   "conversation_repository",
   "conversation_attachments",
   "codex_runtime",
+  "codex_task_creation",
   "data_backup_restore",
   "data_layout",
   "data_migration",
