@@ -7,10 +7,16 @@ import {
   createProject,
   createProjectTask,
   readPlanningTask,
+  readPlanningTaskDetail,
   readPlanningOverview,
   readPlanningTasks,
+  updatePlanningProject,
+  updatePlanningTask,
   type PublicPlanningOverview,
+  type PublicPlanningTask,
+  type PublicPlanningTaskDetail,
   type PublicPlanningTaskListItem,
+  type PublicPlanningTaskMutation,
 } from "@/lib/public-planning";
 
 type LoadState = "loading" | "ready" | "empty" | "unavailable" | "error";
@@ -52,6 +58,24 @@ export function ProjectsTasksWorkspace() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskAgent, setTaskAgent] = useState("");
   const [taskDue, setTaskDue] = useState("");
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [taskDetail, setTaskDetail] = useState<PublicPlanningTaskDetail | null>(null);
+  const [view, setView] = useState<"list" | "board">("list");
+  const [savedView, setSavedView] = useState<"all" | "today" | "waiting" | "review" | "someday" | "completed">("all");
+  const [filter, setFilter] = useState("");
+  const [editingTask, setEditingTask] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editPriority, setEditPriority] = useState<PublicPlanningTask["priority"]>("medium");
+  const [editDue, setEditDue] = useState("");
+  const [editToday, setEditToday] = useState(false);
+  const [editDescription, setEditDescription] = useState("");
+  const [editTags, setEditTags] = useState("");
+  const [editEstimate, setEditEstimate] = useState("");
+  const [editRecurrence, setEditRecurrence] = useState<"" | "daily" | "weekly" | "monthly" | "yearly">("");
+  const [editSubtasks, setEditSubtasks] = useState<PublicPlanningTaskDetail["subtasks"]>([]);
+  const [editAgent, setEditAgent] = useState("");
+  const [renameProject, setRenameProject] = useState(false);
+  const [projectRename, setProjectRename] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const projectInput = useRef<HTMLInputElement>(null);
@@ -88,6 +112,9 @@ export function ProjectsTasksWorkspace() {
     requestedTaskFocus.current = null;
     selectedProjectRef.current = projectId;
     setSelectedProjectId(projectId);
+    setSelectedTaskId(null);
+    setTaskDetail(null);
+    setEditingTask(false);
     closeTaskForm();
   }
 
@@ -139,6 +166,7 @@ export function ProjectsTasksWorkspace() {
       let rows = [...page.tasks];
       let cursor = page.next_cursor;
       setTasks(rows);
+      setSelectedTaskId((current) => rows.some((task) => task.id === current) ? current : null);
       setTaskCursor(cursor);
       setTasksState(rows.length ? "ready" : "empty");
       if (requested && typeof requested === "object" && (requested.projectId === null || requested.projectId === projectId)) {
@@ -159,6 +187,7 @@ export function ProjectsTasksWorkspace() {
         }
         if (target) {
           requestedTaskFocus.current = requested.taskId;
+          setSelectedTaskId(requested.taskId); setTaskDetail(null); setEditingTask(false);
           setTasks([...rows]);
         }
         else setNotice("The requested Task could not be found in this Project.");
@@ -169,15 +198,21 @@ export function ProjectsTasksWorkspace() {
   }, [requested, selectedProjectId]);
 
   useEffect(() => {
+    if (!selectedTaskId) return;
+    let cancelled = false;
+    void readPlanningTaskDetail(selectedTaskId).then((result) => { if (!cancelled && result.task.id === selectedTaskId) setTaskDetail(result.task); }).catch(() => { if (!cancelled) setNotice("Task details could not be loaded. The Task list remains available."); });
+    return () => { cancelled = true; };
+  }, [selectedTaskId]);
+
+  useEffect(() => {
     const taskId = requestedTaskFocus.current;
     if (!taskId) return;
-    const target = document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(taskId)}"]`);
+    const target = document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(taskId)}"] > button`);
     if (!target) return;
     requestedTaskFocus.current = null;
-    target.dataset.taskSelected = "true";
     target.focus({ preventScroll: true });
     target.scrollIntoView({ block: "center", behavior: "auto" });
-    setNotice(`Opened Task ${target.dataset.taskTitle}.`);
+    setNotice(`Opened Task ${target.parentElement?.dataset.taskTitle ?? ""}.`);
   }, [tasks]);
 
   async function loadMoreTasks() {
@@ -218,6 +253,7 @@ export function ProjectsTasksWorkspace() {
       closeTaskForm();
       if (selectedProjectRef.current === projectId) {
         setTasks((current) => [{ ...created, description_preview: "" }, ...current.filter((item) => item.id !== created.id)]);
+        setSelectedTaskId(created.id); setTaskDetail(null);
         setTasksState("ready");
         window.setTimeout(() => document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
       }
@@ -227,18 +263,85 @@ export function ProjectsTasksWorkspace() {
   }
 
   const selectedProject = overview?.projects.find((item) => item.id === selectedProjectId) ?? null;
-  return <section aria-label="Projects and Tasks" className="projects-tasks-workspace">
-    <div className="projects-pane">
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const filteredTasks = tasks.filter((task) => {
+    const query = filter.trim().toLocaleLowerCase();
+    if (query && !`${task.title} ${task.description_preview}`.toLocaleLowerCase().includes(query)) return false;
+    if (savedView === "all") return true;
+    if (savedView === "today") return task.planned_for_today;
+    if (savedView === "waiting") return task.workflow_stage === "waiting";
+    if (savedView === "review") return task.workflow_stage === "review";
+    if (savedView === "someday") return task.deferred;
+    return task.workflow_stage === "done";
+  });
+  const selectTask = (task: PublicPlanningTaskListItem) => {
+    setSelectedTaskId(task.id); setTaskDetail(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
+  };
+  async function editSelected(changes: Record<string, unknown>, success: string): Promise<boolean> {
+    if (!selectedTask || busy) return false;
+    setBusy(true); setNotice("Saving Task…");
+    let result: PublicPlanningTaskMutation;
+    try {
+      result = await updatePlanningTask(selectedTask.id, selectedTask.revision, changes);
+      setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
+    } catch { setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again."); setBusy(false); return false; }
+    try {
+      const detailed = await readPlanningTaskDetail(result.task.id);
+      setTaskDetail(detailed.task);
+      const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
+      setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+      setNotice(success);
+    } catch { setNotice("Task saved. Its refreshed details are temporarily unavailable."); }
+    setBusy(false);
+    return true;
+  }
+  async function saveTaskDetails() {
+    if (!selectedTask || !editTitle.trim()) return;
+    const existingRecurrence = taskDetail?.recurrence ?? null;
+    const recurrenceChange = editRecurrence === (existingRecurrence?.frequency ?? "") ? undefined : editRecurrence ? { frequency: editRecurrence, interval: 1 } : null;
+    const saved = await editSelected({ title: editTitle.trim(), description: editDescription, priority: editPriority, due_date: editDue || null, planned_for_today: editToday, tags: editTags.split(",").map((tag) => tag.trim()).filter(Boolean), estimated_minutes: editEstimate ? Number(editEstimate) : null, ...(recurrenceChange === undefined ? {} : { recurrence: recurrenceChange }), subtasks: editSubtasks, assigned_agent_id: editAgent || null }, "Task details saved.");
+    if (saved) setEditingTask(false);
+  }
+  async function changeStage(stage: PublicPlanningTask["workflow_stage"]) {
+    await editSelected({ workflow_stage: stage }, `Task moved to ${stage.replace("_", " ")}.`);
+  }
+  async function lifecycle(action: "archive" | "restore") {
+    if (!selectedProject || busy) return;
+    setBusy(true); setNotice(`${action === "archive" ? "Archiving" : "Restoring"} Project…`);
+    try { const result = await updatePlanningProject(selectedProject.id, selectedProject.revision, action, null); await refreshOverview(result.project.id); setNotice(`Project ${action}d.`); }
+    catch { setNotice("Project changed elsewhere or could not be updated."); }
+    finally { setBusy(false); }
+  }
+  async function saveProjectName() {
+    if (!selectedProject || !projectRename.trim() || busy) return;
+    setBusy(true); setNotice("Renaming Project…");
+    try { const result = await updatePlanningProject(selectedProject.id, selectedProject.revision, "rename", projectRename.trim()); setRenameProject(false); await refreshOverview(result.project.id); setNotice("Project renamed."); }
+    catch { setNotice("Project changed elsewhere or could not be renamed."); }
+    finally { setBusy(false); }
+  }
+  const taskCard = (task: PublicPlanningTaskListItem) => <li className="planning-task-card" data-planning-task-id={task.id} data-task-selected={task.id === selectedTaskId ? "true" : undefined} data-task-title={task.title} key={task.id} tabIndex={-1}>
+    <button aria-pressed={task.id === selectedTaskId} data-planning-task-id={task.id} disabled={busy} onClick={() => selectTask(task)} type="button"><span><strong>{task.title}</strong>{task.description_preview ? <small>{task.description_preview}</small> : <small>No description</small>}<em>{task.workflow_stage.replace("_", " ")} · {task.priority}{task.planned_for_today ? " · today" : ""}</em></span>{task.due_date ? <time dateTime={task.due_date}>Due {task.due_date}</time> : null}</button>
+  </li>;
+  const stages: PublicPlanningTask["workflow_stage"][] = ["inbox", "planned", "in_progress", "waiting", "review", "done"];
+  return <section aria-label="Projects and Tasks" className="projects-tasks-workspace planning-workbench">
+    <nav aria-label="Project and saved view navigation" className="projects-pane planning-navigation">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Projects</p><h2>Projects</h2></div><button disabled={busy} onClick={() => { closeTaskForm(); setProjectForm(true); window.setTimeout(() => projectInput.current?.focus(), 0); }} ref={newProjectButton} type="button">New</button></div>
       {projectForm ? <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void submitProject(); }}><label><span>Name</span><input onChange={(event) => { if ([...event.target.value].length <= 121) setProjectName(event.target.value); }} ref={projectInput} value={projectName} /></label><div><button aria-label="Create Project" disabled={busy || !projectName.trim() || [...projectName.trim()].length > 120} type="submit">Create</button><button aria-label="Cancel Project" disabled={busy} onClick={() => { setProjectForm(false); setProjectName(""); window.setTimeout(() => newProjectButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
       {state === "loading" ? <p>Loading Projects…</p> : state === "unavailable" || state === "error" ? <p>Projects are temporarily unavailable.</p> : overview?.projects.length ? <ul>{overview.projects.map((project) => <li key={project.id}><button aria-current={project.id === selectedProjectId ? "true" : undefined} aria-label={`Select ${project.name} Project`} data-project-id={project.id} disabled={busy} onClick={() => selectProject(project.id)} type="button"><strong>{project.name}</strong><span>{project.status}</span></button></li>)}</ul> : <p>No Projects yet.</p>}
-    </div>
-    <div className="project-tasks-pane">
+      <div className="saved-view-navigation"><p className="console-kicker">Saved view</p>{(["all", "today", "waiting", "review", "someday", "completed"] as const).map((item) => <button aria-pressed={savedView === item} disabled={busy} key={item} onClick={() => setSavedView(item)} type="button">{item === "all" ? "All tasks" : item}</button>)}</div>
+    </nav>
+    <div className="project-tasks-pane planning-task-pane">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Tasks</p><h2>{selectedProject?.name ?? "Tasks"}</h2></div><button disabled={busy || !selectedProjectId || selectedProject?.status !== "active"} onClick={() => { setProjectForm(false); setProjectName(""); setTaskFormProjectId(selectedProjectId); setTaskForm(true); window.setTimeout(() => taskInput.current?.focus(), 0); }} ref={addTaskButton} type="button">Add</button></div>
       {taskForm ? <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void submitTask(); }}><label><span>Title</span><input onChange={(event) => { if ([...event.target.value].length <= 161) setTaskTitle(event.target.value); }} ref={taskInput} value={taskTitle} /></label><label><span>Agent</span><select aria-describedby="task-agent-state" disabled={agentsState === "loading" || agentsState === "empty" || agentsState === "unavailable"} onChange={(event) => setTaskAgent(event.target.value)} value={taskAgent}><option value="">{agentsState === "loading" ? "Loading" : agentsState === "unavailable" ? "Unavailable" : agentsState === "empty" ? "No Agents" : "Unassigned"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><p className="task-agent-state" id="task-agent-state">{agentsState === "unavailable" ? "Agent assignment is unavailable; Create will leave this Task unassigned." : agentsState === "empty" ? "No Agents are available; Create will leave this Task unassigned." : "Assignment is optional."}</p><label><span>Due</span><input onChange={(event) => setTaskDue(event.target.value)} type="date" value={taskDue} /></label><div><button aria-label="Create Task" disabled={busy || !taskTitle.trim() || [...taskTitle.trim()].length > 160} type="submit">Create</button><button aria-label="Cancel Task" disabled={busy} onClick={() => { closeTaskForm(); window.setTimeout(() => addTaskButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
-      {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : tasks.length ? <ul className="project-task-list">{tasks.map((task) => <li data-planning-task-id={task.id} data-task-title={task.title} key={task.id} tabIndex={-1}><div><strong>{task.title}</strong>{task.description_preview ? <p>{task.description_preview}</p> : null}<span>{task.status} · {task.priority}</span></div>{task.due_date ? <time dateTime={task.due_date}>Due {task.due_date}</time> : null}</li>)}</ul> : <p>No Tasks in this Project.</p>}
+      <div className="planning-workbench-tools"><label><span>Filter</span><input onChange={(event) => setFilter(event.target.value)} placeholder="Find a task" type="search" value={filter} /></label><div aria-label="Display mode" className="planning-mode-toggle"><button aria-pressed={view === "list"} onClick={() => setView("list")} type="button">List</button><button aria-pressed={view === "board"} onClick={() => setView("board")} type="button">Board</button></div></div>
+      {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : filteredTasks.length ? view === "list" ? <ul className="project-task-list">{filteredTasks.map(taskCard)}</ul> : <div aria-label="Task board" className="planning-board">{stages.map((stage) => <section key={stage}><h3>{stage.replace("_", " ")}</h3><ul className="project-task-list">{filteredTasks.filter((task) => task.workflow_stage === stage).map(taskCard)}</ul></section>)}</div> : <p>{tasks.length ? "No Tasks match this view." : "No Tasks in this Project."}</p>}
       {taskCursor ? <button className="project-tasks-more" disabled={loadingMore} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
     </div>
+    <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector">
+      <div className="projects-tasks-heading"><div><p className="console-kicker">Inspector</p><h2>{selectedTask ? "Task details" : "Select a Task"}</h2></div></div>
+      {!selectedTask ? <p>Select a Task to review its description, planning details, and lifecycle.</p> : <><p className="planning-description">{(taskDetail?.description ?? selectedTask.description_preview) || "This Task has no description."}</p><dl className="planning-summary"><div><dt>Stage</dt><dd>{selectedTask.workflow_stage.replace("_", " ")}</dd></div><div><dt>Priority</dt><dd>{selectedTask.priority}</dd></div><div><dt>Due</dt><dd>{selectedTask.due_date ?? "Not scheduled"}</dd></div></dl><div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}</div>{editingTask && taskDetail ? <form className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}><label><span>Title</span><input maxLength={160} onChange={(event) => setEditTitle(event.target.value)} value={editTitle} /></label><label className="planning-full-field"><span>Description</span><textarea maxLength={4000} onChange={(event) => setEditDescription(event.target.value)} value={editDescription} /></label><label><span>Priority</span><select onChange={(event) => setEditPriority(event.target.value as PublicPlanningTask["priority"])} value={editPriority}><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label><label><span>Due</span><input onChange={(event) => setEditDue(event.target.value)} type="date" value={editDue} /></label><label><span>Estimate (minutes)</span><input max="10080" min="1" onChange={(event) => setEditEstimate(event.target.value)} type="number" value={editEstimate} /></label><label><span>Recurrence</span><select onChange={(event) => setEditRecurrence(event.target.value as typeof editRecurrence)} value={editRecurrence}><option value="">None</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label><label className="planning-full-field"><span>Tags (comma separated)</span><input onChange={(event) => setEditTags(event.target.value)} value={editTags} /></label><label className="planning-full-field"><span>Assigned Agent</span><select disabled={agentsState !== "ready"} onChange={(event) => setEditAgent(event.target.value)} value={editAgent}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><div className="planning-checklist"><span>Checklist</span>{editSubtasks.map((item, index) => <label key={item.id}><input checked={item.completed} onChange={(event) => setEditSubtasks((current) => current.map((entry, position) => position === index ? { ...entry, completed: event.target.checked } : entry))} type="checkbox" />{item.title}<button onClick={() => setEditSubtasks((current) => current.filter((_, position) => position !== index))} type="button">Remove</button></label>)}<button onClick={() => setEditSubtasks((current) => [...current, { id: `check_${crypto.randomUUID().replaceAll("-", "")}`, title: "New checklist item", completed: false, rank: current.length }])} type="button">Add checklist item</button></div><label className="planning-checkbox"><input checked={editToday} onChange={(event) => setEditToday(event.target.checked)} type="checkbox" />Today</label><div><button disabled={busy || !editTitle.trim()} type="submit">Save details</button><button disabled={busy} onClick={() => setEditingTask(false)} type="button">Cancel</button></div></form> : <button disabled={busy || !taskDetail} onClick={() => { if (!taskDetail) return; setEditTitle(taskDetail.title); setEditDescription(taskDetail.description); setEditPriority(taskDetail.priority); setEditDue(taskDetail.due_date ?? ""); setEditToday(taskDetail.planned_for_today); setEditTags(taskDetail.tags.join(", ")); setEditEstimate(taskDetail.estimated_minutes?.toString() ?? ""); setEditRecurrence(taskDetail.recurrence?.frequency ?? ""); setEditSubtasks(taskDetail.subtasks); setEditAgent(taskDetail.assigned_agent_id ?? ""); setEditingTask(true); }} type="button">{taskDetail ? "Edit details" : "Loading details…"}</button>}</>}
+      {selectedProject ? <section className="planning-project-lifecycle"><p className="console-kicker">Project lifecycle</p>{renameProject ? <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void saveProjectName(); }}><label><span>Name</span><input maxLength={120} onChange={(event) => setProjectRename(event.target.value)} value={projectRename} /></label><div><button disabled={busy || !projectRename.trim()} type="submit">Save name</button><button disabled={busy} onClick={() => setRenameProject(false)} type="button">Cancel</button></div></form> : <button disabled={busy} onClick={() => { setProjectRename(selectedProject.name); setRenameProject(true); }} type="button">Rename Project</button>}{selectedProject.status === "archived" ? <button disabled={busy} onClick={() => void lifecycle("restore")} type="button">Restore Project</button> : <button disabled={busy} onClick={() => void lifecycle("archive")} type="button">Archive Project</button>}</section> : null}
+    </aside>
     <p aria-live="polite" className="projects-tasks-notice" role="status">{notice}</p>
   </section>;
 }

@@ -72,6 +72,7 @@ from conversation_planning import (
     ConversationPlanningError,
     planning_context_projection,
     planning_overview,
+    planning_task_detail_locator,
     planning_task_locator,
     planning_task_page,
     project_registry,
@@ -2623,6 +2624,31 @@ def mentat_planning_task_payload(task_id: str) -> dict:
         try:
             connection.execute("BEGIN")
             payload = planning_task_locator(
+                connection,
+                projects,
+                task_id=task_id,
+                today=date.today(),
+            )
+            connection.commit()
+            return {"schema_version": 1, **payload}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
+def mentat_planning_task_detail_payload(task_id: str) -> dict:
+    """Return the selected Task editor projection, never a list projection."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            payload = planning_task_detail_locator(
                 connection,
                 projects,
                 task_id=task_id,

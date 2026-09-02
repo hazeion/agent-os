@@ -24,6 +24,7 @@ const envelope = { runtime: "python", schema_version: 1, service: "mentat-local-
 const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "active" as const };
 const task = { attention_reasons: ["overdue" as const], blocked: false, deferred: false, due_date: "2026-08-29", id: "task_alpha", needs_attention: true, planned_for_today: false, planning_state: "planned" as const, priority: "high" as const, project_id: project.id, project_name: project.name, review_required: false, revision: 1, status: "todo" as const, title: "Ship Alpha", updated_at: "2026-08-29T12:00:00Z", workflow_stage: "planned" as const };
 const listTask = { ...task, description_preview: "Ship the reviewed Alpha changes." };
+const taskDetail = { ...task, assigned_agent_id: null, description: "Ship the reviewed Alpha changes.", estimated_minutes: null, recurrence: null, subtasks: [], tags: [] };
 const overview = { ...envelope, attention: [task], attention_count: 1, project_count: 1, projects: [project], today: "2026-08-30", truncated: false };
 const emptyContext = { ...envelope, association: null, conversation_id: "conv_plan", conversation_revision: 1, project: null, state: "empty" as const, task: null };
 const readyContext = { ...envelope, association: { project_id: project.id, task_id: task.id }, conversation_id: "conv_plan", conversation_revision: 2, project, state: "ready" as const, task };
@@ -123,6 +124,7 @@ test("Projects and Tasks deep-links, validates forms, and preserves failed input
     const url = new URL(input.toString(), origin); const method = init?.method ?? "GET"; calls.push({ body: init?.body?.toString(), method, path: url.pathname });
     if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
     if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: { ...task, attention_reasons: [] } });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
     if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [{ capabilities: [], id: "agent_alpha", name: "Alpha Agent", runtime_config_id: "config_alpha", runtime_type: "hermes" }], count: 1 });
     if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
     if (url.pathname === "/api/projects" && method === "POST") { projectCreateAttempts += 1; return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 }); }
@@ -130,7 +132,7 @@ test("Projects and Tasks deep-links, validates forms, and preserves failed input
   };
   const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
   await waitFor(() => assert.equal(document.activeElement?.getAttribute("data-planning-task-id"), task.id));
-  assert.match(screen.getByRole("status").textContent ?? "", /Opened Task Ship Alpha/u);
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Opened Task Ship Alpha/u));
   await user.click(screen.getByRole("button", { name: "New" }));
   const name = screen.getByLabelText("Name") as HTMLInputElement; await user.type(name, "New Project"); await user.click(screen.getByRole("button", { name: "Create Project" }));
   await waitFor(() => assert.equal(projectCreateAttempts, 1));

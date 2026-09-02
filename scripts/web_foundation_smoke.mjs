@@ -1015,10 +1015,11 @@ async function inspectTasksWorkspace(client) {
   const result = await client.eval(`(() => ({
     projects: document.querySelectorAll('.projects-pane li button').length,
     tasks: document.querySelectorAll('.project-task-list li').length,
+    taskDescriptionsVisible: [...document.querySelectorAll('.planning-task-card')].every((task) => Boolean(task.querySelector('small')?.textContent?.trim())),
     rendered: document.querySelector('.projects-tasks-workspace')?.textContent || '',
     overflow: document.documentElement.scrollWidth - innerWidth,
   }))()`);
-  if (result.projects < 1 || result.overflow > 1 || result.rendered.includes("description") || result.rendered.includes("delegation")) throw new Error(`Projects and Tasks workspace contract failed: ${JSON.stringify(result)}`);
+  if (result.projects < 1 || result.overflow > 1 || !result.taskDescriptionsVisible || result.rendered.includes("delegation")) throw new Error(`Projects and Tasks workspace contract failed: ${JSON.stringify(result)}`);
   return result;
 }
 
