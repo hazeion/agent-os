@@ -4,6 +4,7 @@ import { afterEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { useState } from "react";
 import type { PublicConversationPlanningContext } from "../src/lib/public-planning.ts";
+import { nextBrowserTaskReminderDelay } from "../src/lib/browser-task-reminders.ts";
 
 const origin = "http://127.0.0.1:8890";
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true, url: `${origin}/tasks` });
@@ -55,6 +56,66 @@ const dependencyMap = {
 } as const;
 
 afterEach(() => { cleanup(); window.localStorage.clear(); });
+
+test("Task integrations use dedicated exact mutations and request notification permission only after a user action", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const requests: Array<{ body: Record<string, unknown>; path: string }> = [];
+  let permissionCalls = 0;
+  const delivered: Array<{ body: string; title: string }> = [];
+  class BrowserNotification {
+    static permission: NotificationPermission = "default";
+    static async requestPermission() { permissionCalls += 1; BrowserNotification.permission = "granted"; return BrowserNotification.permission; }
+    constructor(title: string, options?: NotificationOptions) { delivered.push({ body: options?.body ?? "", title }); }
+  }
+  Object.defineProperty(globalThis, "Notification", { configurable: true, value: BrowserNotification });
+  Object.defineProperty(window, "Notification", { configurable: true, value: BrowserNotification });
+  const detailed = { ...taskDetail, revision: 1 };
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [{ ...listTask, revision: 1 }] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: detailed });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_revision: 1 });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: null, revision: 1 } });
+    if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json({ ...envelope, delegation: { available: false, reason: "not_delegated" }, task: { id: task.id, revision: 1 } });
+    if (url.pathname === "/api/agent-console/planning-calendar") { const start = url.searchParams.get("week_start")!; const end = new Date(`${start}T00:00:00Z`); end.setUTCDate(end.getUTCDate() + 7); return Response.json({ ...envelope, calendar_id: "primary", event_count: 1, events: [{ all_day: false, end: "2026-09-08T21:00:00Z", id: "event_alpha", start: "2026-09-08T20:00:00Z", title: "Focus" }], label: "This week", read_only: true, timezone: url.searchParams.get("timezone"), week_end: end.toISOString().slice(0, 10), week_start: start }); }
+    if (url.pathname === "/api/agent-console/planning-note-picker") return Response.json({ ...envelope, available: true, count: 1, notes: [{ path: "Plans/Alpha.md", title: "Alpha" }], query: url.searchParams.get("q") ?? "", truncated: false });
+    if (url.pathname.includes("/integrations/")) {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>; requests.push({ body, path: url.pathname });
+      const action = url.pathname.endsWith("/reminders") ? "replace_reminders" : url.pathname.endsWith("/notes/attach") ? "attach_note" : "calendar_link";
+      const nextRevision = Number(body.expected_revision) + 1;
+      const next = { ...detailed, revision: nextRevision, reminders: action === "replace_reminders" ? (body.reminders as Array<{ at: string; enabled: boolean; id: string; timezone?: string }>).map((reminder) => ({ ...reminder, channel: "browser" as const })) : detailed.reminders, note_links: action === "attach_note" ? [{ path: "Plans/Alpha.md", title: "Alpha" }] : detailed.note_links, calendar_links: action === "calendar_link" ? [{ calendar_id: "primary", event_id: "event_alpha", label: "Focus" }] : detailed.calendar_links };
+      return Response.json({ ...envelope, action, project, task: next });
+    }
+    throw new Error(`unexpected ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await screen.findByRole("button", { name: "Manage reminders" });
+  assert.equal(permissionCalls, 0);
+  await user.click(screen.getByRole("button", { name: "Enable browser notifications" }));
+  await waitFor(() => assert.equal(permissionCalls, 1));
+  await user.click(screen.getByRole("button", { name: "Manage reminders" }));
+  await user.click(screen.getByRole("button", { name: "Add reminder" }));
+  fireEvent.change(screen.getByLabelText("Reminder 1 time"), { target: { value: "2020-09-03T09:00" } });
+  await user.click(screen.getByRole("button", { name: "Save reminders" }));
+  await waitFor(() => assert.equal(requests[0]?.path, `/api/planning/tasks/${task.id}/integrations/reminders`));
+  assert.deepEqual(Object.keys(requests[0]!.body).sort(), ["expected_revision", "reminders"]);
+  await waitFor(() => assert.deepEqual(delivered, [{ body: task.title, title: "Mentat reminder" }]));
+  await user.click(screen.getByRole("button", { name: "Link calendar event" }));
+  await screen.findByText("Focus");
+  await user.click(screen.getByRole("button", { name: "Link" }));
+  await waitFor(() => assert.equal(requests[1]?.path, `/api/planning/tasks/${task.id}/integrations/calendar/link`));
+  await waitFor(() => assert.equal((screen.getByRole("button", { name: "Attach note" }) as HTMLButtonElement).disabled, false));
+  await user.click(screen.getByRole("button", { name: "Attach note" }));
+  await user.type(screen.getByRole("searchbox", { name: "Find a note" }), "Alpha");
+  await screen.findByRole("button", { name: "Attach" });
+  await user.click(screen.getByRole("button", { name: "Attach" }));
+  await waitFor(() => assert.equal(requests[2]?.path, `/api/planning/tasks/${task.id}/integrations/notes/attach`));
+  assert.equal(permissionCalls, 1);
+});
 
 test("the read-only dependency-map fallback is deterministic, keyboard-selectable, and keeps external stubs noninteractive", () => {
   const first = layoutTaskDependencyMap(dependencyMap);
@@ -1148,6 +1209,7 @@ test("dependency editor prevents saves beyond the 100-prerequisite boundary", as
 
 test("Task deletion shows only count effects, then confirms the exact preview before refreshing authority", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
+  const reminderDetail = { ...taskDetail, reminders: [{ at: "2030-09-03T09:00:00Z", channel: "browser" as const, enabled: true, id: "reminder_delete" }] };
   const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 1, projects: 0, runs: 1, tasks: 2 }, confirmation_id: "a".repeat(64), has_active_runs: true, target_id: task.id, target_kind: "task" as const };
   const deletion = { ...envelope, action: "delete" as const, deletion: deletionPreview.affected, target_id: task.id, target_kind: "task" as const };
   const calls: Array<{ body: unknown; path: string }> = [];
@@ -1158,7 +1220,7 @@ test("Task deletion shows only count effects, then confirms the exact preview be
     if (url.pathname === "/api/agent-console/planning-overview") return Response.json(deleted ? { ...overview, attention: [], attention_count: 0, project_count: 0, projects: [] } : { ...overview, attention: [], attention_count: 0 });
     if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
     if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
-    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: reminderDetail });
     if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
     if (url.pathname === `/api/planning/tasks/${task.id}/delete/preview`) return Response.json(deletionPreview);
     if (url.pathname === `/api/planning/tasks/${task.id}/delete`) { deleted = true; return Response.json(deletion); }
@@ -1166,15 +1228,44 @@ test("Task deletion shows only count effects, then confirms the exact preview be
   };
   const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
   await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await waitFor(() => assert.notEqual(nextBrowserTaskReminderDelay(Date.parse("2026-09-02T12:00:00Z")), null));
   await user.click(await screen.findByRole("button", { name: "Delete Task" }));
   await screen.findByText(/Delete 0 Projects, 2 Tasks, 1 Conversation, 1 Run, 0 artifacts/u);
   assert.match(screen.getByText(/Affected active Runs will be stopped/u).textContent ?? "", /nothing is removed/u);
   await user.click(screen.getByRole("button", { name: "Confirm delete Task" }));
   await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Deleted 0 Projects, 2 Tasks/u));
+  assert.equal(nextBrowserTaskReminderDelay(Date.parse("2026-09-02T12:00:00Z")), null);
   assert.deepEqual(calls.filter((call) => call.path.includes("/delete")), [
     { body: {}, path: `/api/planning/tasks/${task.id}/delete/preview` },
     { body: { confirmation_id: deletionPreview.confirmation_id, confirmed: true }, path: `/api/planning/tasks/${task.id}/delete` },
   ]);
+});
+
+test("Project deletion clears every local reminder schedule because a count-only cascade can span dependent Tasks", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const reminderDetail = { ...taskDetail, reminders: [{ at: "2030-09-03T09:00:00Z", channel: "browser" as const, enabled: true, id: "reminder_project_delete" }] };
+  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 0, projects: 1, runs: 0, tasks: 2 }, confirmation_id: "b".repeat(64), has_active_runs: false, target_id: project.id, target_kind: "project" as const };
+  const deletion = { ...envelope, action: "delete" as const, deletion: deletionPreview.affected, target_id: project.id, target_kind: "project" as const };
+  let deleted = false;
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json(deleted ? { ...overview, attention: [], attention_count: 0, project_count: 0, projects: [] } : { ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: reminderDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === `/api/planning/projects/${project.id}/delete/preview`) return Response.json(deletionPreview);
+    if (url.pathname === `/api/planning/projects/${project.id}/delete`) { deleted = true; return Response.json(deletion); }
+    return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 });
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await waitFor(() => assert.notEqual(nextBrowserTaskReminderDelay(Date.parse("2026-09-02T12:00:00Z")), null));
+  await user.click(screen.getByRole("button", { name: "Delete Project" }));
+  await screen.findByText(/Delete 1 Project, 2 Tasks, 0 Conversations, 0 Runs, 0 artifacts/u);
+  await user.click(screen.getByRole("button", { name: "Confirm delete Project" }));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Deleted 1 Project, 2 Tasks/u));
+  assert.equal(nextBrowserTaskReminderDelay(Date.parse("2026-09-02T12:00:00Z")), null);
 });
 
 test("planning navigation search debounces typing and leaves selection unchanged until its uniquely named Open action", async () => {
