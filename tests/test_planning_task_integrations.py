@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -53,6 +54,9 @@ class PlanningTaskIntegrationTests(unittest.TestCase):
     def _authority_root(self, root: Path) -> None:
         (root / "tasks.json").write_text(json.dumps([TASK]), encoding="utf-8")
         (root / "projects.json").write_text(json.dumps([PROJECT]), encoding="utf-8")
+        if os.name != "nt":
+            (root / "tasks.json").chmod(0o600)
+            (root / "projects.json").chmod(0o600)
         ensure_task_sqlite_authority(root)
         ensure_project_sqlite_authority(root)
 
