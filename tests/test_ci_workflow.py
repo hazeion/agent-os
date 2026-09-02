@@ -424,12 +424,17 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertEqual(FakeProcess.active, 0)
 
         interrupted = FakeProcess()
-        original_wait = interrupted.wait
-        interrupted.wait = lambda timeout=None: (
-            (_ for _ in ()).throw(KeyboardInterrupt())
-            if 0 < timeout <= namespace["GROUP_UNIT_TIMEOUT_SECONDS"]
-            else original_wait(timeout)
-        )
+        original_monotonic = namespace["time"].monotonic
+        interrupted_clock_values = iter((100.0, 101.0))
+        namespace["time"].monotonic = lambda: next(interrupted_clock_values)
+
+        def interrupt_wait(timeout=None):
+            self.assertIsNotNone(timeout)
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, namespace["GROUP_UNIT_TIMEOUT_SECONDS"])
+            raise KeyboardInterrupt()
+
+        interrupted.wait = interrupt_wait
         stopped = []
         original_stop = namespace["_stop_process_tree"]
         namespace["_spawn_shard"] = lambda _shard: interrupted
@@ -443,6 +448,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         finally:
             namespace["_spawn_shard"] = original_spawn
             namespace["_stop_process_tree"] = original_stop
+            namespace["time"].monotonic = original_monotonic
         self.assertEqual(stopped, [interrupted])
         interrupted.terminate()
         self.assertEqual(FakeProcess.active, 0)
