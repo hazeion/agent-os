@@ -261,20 +261,27 @@ def run_group(group: tuple[tuple[str, ...], ...]) -> int:
 
     if not group or any(not shard for shard in group):
         raise ValueError("invalid unittest shard group")
+    deadline = time.monotonic() + GROUP_UNIT_TIMEOUT_SECONDS
     failed = False
     for unit in (unit for shard in group for unit in shard):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print(
+                f"Timed out unittest group after {GROUP_UNIT_TIMEOUT_SECONDS} seconds",
+                flush=True,
+            )
+            return 1
         print(f"Running unittest unit: {unit}", flush=True)
         process = _spawn_shard((unit,))
         try:
-            result = process.wait(timeout=GROUP_UNIT_TIMEOUT_SECONDS)
+            result = process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
             print(
-                f"Timed out unittest unit: {unit} after {GROUP_UNIT_TIMEOUT_SECONDS} seconds",
+                f"Timed out unittest group while running {unit} after {GROUP_UNIT_TIMEOUT_SECONDS} seconds",
                 flush=True,
             )
             _stop_process_tree(process)
-            failed = True
-            continue
+            return 1
         except BaseException:
             try:
                 _stop_process_tree(process)

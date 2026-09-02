@@ -405,11 +405,29 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertTrue(all(process.waited for process in group_spawned))
         self.assertEqual(FakeProcess.active, 0)
 
+        expired_group_spawned = []
+        original_monotonic = namespace["time"].monotonic
+        clock_values = iter((100.0, 100.0, 100.0 + namespace["GROUP_UNIT_TIMEOUT_SECONDS"]))
+        namespace["time"].monotonic = lambda: next(clock_values)
+        namespace["_spawn_shard"] = (
+            lambda shard: expired_group_spawned.append(FakeProcess()) or expired_group_spawned[-1]
+        )
+        try:
+            self.assertEqual(
+                namespace["run_group"](((shards[0][0],), (shards[0][1],))),
+                1,
+            )
+        finally:
+            namespace["time"].monotonic = original_monotonic
+            namespace["_spawn_shard"] = original_spawn
+        self.assertEqual(len(expired_group_spawned), 1)
+        self.assertEqual(FakeProcess.active, 0)
+
         interrupted = FakeProcess()
         original_wait = interrupted.wait
         interrupted.wait = lambda timeout=None: (
             (_ for _ in ()).throw(KeyboardInterrupt())
-            if timeout == namespace["GROUP_UNIT_TIMEOUT_SECONDS"]
+            if 0 < timeout <= namespace["GROUP_UNIT_TIMEOUT_SECONDS"]
             else original_wait(timeout)
         )
         stopped = []
