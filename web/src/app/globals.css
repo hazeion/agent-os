@@ -853,6 +853,16 @@ button {
 .planning-checklist > button { justify-self: start; min-height: 30px; padding: 4px 7px; }
 .planning-checkbox { display: flex !important; align-items: center; grid-column: 1 / -1; gap: 6px !important; }
 .planning-checkbox input { width: 16px !important; min-height: 16px !important; }
+.planning-dependencies { display: grid; grid-column: 1 / -1; gap: 8px; min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--panel-raised); }
+.planning-dependencies legend { padding: 0 3px; color: var(--text-tertiary); font-size: .7rem; font-weight: 700; }
+.planning-dependencies section { display: grid; gap: 5px; min-width: 0; }
+.planning-dependencies h3 { margin: 0; color: var(--text-secondary); font-size: .72rem; font-weight: 700; }
+.planning-dependencies p { margin: 0; color: var(--text-tertiary); font-size: .72rem; }
+.planning-dependencies ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.planning-dependencies li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; min-width: 0; padding: 5px 6px; border: 1px solid var(--border-subtle); border-radius: 5px; color: var(--text-secondary); font-size: .72rem; }
+.planning-dependencies li > span { min-width: 0; overflow-wrap: anywhere; }
+.planning-dependencies li button { min-height: 30px; padding: 3px 7px; }
+.planning-dependencies > button { justify-self: start; }
 
 @media (max-width: 900px) and (min-width: 521px) {
   .planning-workbench { grid-template-columns: minmax(180px, .3fr) minmax(0, 1fr); }
@@ -959,6 +969,8 @@ button {
   .planning-inspector > button,
   .planning-project-lifecycle > button { min-height: 44px; }
   .planning-board { grid-template-columns: repeat(6, minmax(220px, 1fr)); }
+  .planning-dependencies li { grid-template-columns: minmax(0, 1fr); }
+  .planning-dependencies li button { width: 100%; }
   .tasks-toolbar,
   .runs-toolbar { align-items: stretch; flex-direction: column; }
   .task-refresh,

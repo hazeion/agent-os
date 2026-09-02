@@ -1166,7 +1166,10 @@ class CodexRuntime:
                     "codex.request_timeout",
                     uncertain=False,
                 )
-            return remaining
+            # A monotonic-clock subtraction may exceed the original budget by
+            # a tiny floating-point rounding error.  Keep the timeout passed
+            # to the App Server inside the fixed operation budget.
+            return min(remaining, START_TASK_OPERATION_TIMEOUT_SECONDS)
 
         continuation = context.continuation_runtime_run_ref
         try:

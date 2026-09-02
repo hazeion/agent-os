@@ -5,6 +5,8 @@ import {
   parsePlanningProjectCreation,
   parsePlanningTaskPage,
   parsePlanningTaskDetailResult,
+  parsePlanningTaskDependencies,
+  parsePlanningDependencyPickerPage,
   parsePlanningTaskResult,
   parsePlanningTaskCreation,
   parsePlanningProjectMutation,
@@ -18,14 +20,18 @@ import {
   type PublicPlanningTaskDetailResult,
   type PublicPlanningTaskResult,
   type PublicPlanningTaskCreation,
+  type PublicPlanningTaskDependencies,
   type PublicPlanningProjectMutation,
   type PublicPlanningTaskMutation,
+  type PublicPlanningDependencyPickerPage,
 } from "./public-planning.ts";
 
 const PRIVATE_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview";
 const PRIVATE_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks";
 const PRIVATE_TASK_PATH = "/bridge/v1/agent-console/planning-task";
 const PRIVATE_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail";
+const PRIVATE_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-dependencies";
+const PRIVATE_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker";
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
 const PRIVATE_PROJECTS_PATH = "/bridge/v1/projects";
 const PRIVATE_PLANNING_PATH = "/bridge/v1/planning";
@@ -158,6 +164,22 @@ export async function fetchBridgePlanningTaskDetail(taskId: string, fetcher: Fet
   const parameters = new URLSearchParams({ task_id: taskId });
   const { response, payload } = await request(`${PRIVATE_TASK_DETAIL_PATH}?${parameters.toString()}`, fetcher, environment);
   if (response.status === 200) return parse(() => parsePlanningTaskDetailResult(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function fetchBridgePlanningTaskDependencies(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDependencies> {
+  if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
+  const parameters = new URLSearchParams({ task_id: taskId });
+  const { response, payload } = await request(`${PRIVATE_TASK_DEPENDENCIES_PATH}?${parameters.toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningTaskDependencies(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function fetchBridgePlanningDependencyPicker(taskId: string, query: string, cursor: string | null = null, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningDependencyPickerPage> {
+  if (!TASK_ID.test(taskId) || typeof query !== "string" || [...query].length > 160 || query.trim() !== query || /\p{C}/u.test(query) || cursor !== null && !CURSOR.test(cursor)) throw new BridgePlanningError("planning_request_invalid");
+  const parameters = new URLSearchParams({ task_id: taskId }); if (query) parameters.set("q", query); if (cursor !== null) parameters.set("cursor", cursor);
+  const { response, payload } = await request(`${PRIVATE_DEPENDENCY_PICKER_PATH}?${parameters.toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningDependencyPickerPage(payload, taskId, query));
   fixedFailure(response, payload);
 }
 

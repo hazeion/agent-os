@@ -25,11 +25,14 @@ const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "acti
 const task = { attention_reasons: ["overdue" as const], blocked: false, deferred: false, due_date: "2026-08-29", id: "task_alpha", needs_attention: true, planned_for_today: false, planning_state: "planned" as const, priority: "high" as const, project_id: project.id, project_name: project.name, review_required: false, revision: 1, status: "todo" as const, title: "Ship Alpha", updated_at: "2026-08-29T12:00:00Z", workflow_stage: "planned" as const };
 const listTask = { ...task, description_preview: "Ship the reviewed Alpha changes." };
 const taskDetail = { ...task, assigned_agent_id: null, description: "Ship the reviewed Alpha changes.", estimated_minutes: null, recurrence: null, subtasks: [], tags: [] };
+const dependency = { blocked: false, id: "task_beta", project_id: "project_beta", project_name: "Beta", title: "Prepare Beta", workflow_stage: "planned" as const };
+const dependencies = { ...envelope, dependent_count: 1, dependents: [dependency], dependents_truncated: false, prerequisite_count: 0, prerequisites: [], prerequisites_truncated: false, task_id: task.id, task_revision: task.revision };
+const picker = { ...envelope, candidate_count: 1, candidates: [dependency], match_count: 1, next_cursor: null, query: "", task_id: task.id, truncated: false };
 const overview = { ...envelope, attention: [task], attention_count: 1, project_count: 1, projects: [project], today: "2026-08-30", truncated: false };
 const emptyContext = { ...envelope, association: null, conversation_id: "conv_plan", conversation_revision: 1, project: null, state: "empty" as const, task: null };
 const readyContext = { ...envelope, association: { project_id: project.id, task_id: task.id }, conversation_id: "conv_plan", conversation_revision: 2, project, state: "ready" as const, task };
 const conversation = { agent_id: "agent_alpha", archived_at: null, created_at: "2026-08-29T12:00:00Z", id: "conv_plan", revision: 2, state: "active" as const, title: "Plan", title_source: "manual" as const, updated_at: "2026-08-29T12:01:00Z" };
-function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
+function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 
 afterEach(() => cleanup());
 
@@ -276,4 +279,98 @@ test("switching Projects closes a staged Task form before submission", async () 
   await user.click(screen.getByRole("button", { name: "Select Beta Project" }));
   assert.equal(screen.queryByLabelText("Title"), null);
   assert.equal(screen.queryByRole("button", { name: "Create Task" }), null);
+});
+
+test("Task detail editing stages accessible cross-Project dependencies in one save", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const calls: Array<{ body?: string; method: string; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin); const method = init?.method ?? "GET"; calls.push({ body: init?.body?.toString(), method, path: url.pathname });
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === "/api/agent-console/planning-dependency-picker") return Response.json(picker);
+    if (url.pathname === `/api/planning/tasks/${task.id}/edit` && method === "POST") return Response.json({ ...envelope, action: "edit", project, task: { ...task, revision: 2 } });
+    throw new Error(`${method} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await screen.findByRole("button", { name: "Edit details" }); await user.click(screen.getByRole("button", { name: "Edit details" }));
+  await screen.findByText("Dependents (1)");
+  assert.match(screen.getAllByText(/Prepare Beta · Project: Beta/u)[0]?.textContent ?? "", /planned/u);
+  await user.click(screen.getByRole("button", { name: "Add prerequisite Prepare Beta" }));
+  await user.click(screen.getByRole("button", { name: "Save details" }));
+  await waitFor(() => assert.equal(calls.filter((call) => call.method === "POST").length, 1));
+  const mutation = calls.find((call) => call.method === "POST");
+  assert.deepEqual(JSON.parse(mutation?.body ?? "{}").changes.depends_on, [dependency.id]);
+});
+
+test("stale dependency picker pages cannot replace the current search", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const alphaMore = deferred<Response>();
+  const rejectedAlphaMore = deferred<Response>();
+  let alphaMoreRequests = 0;
+  const alpha = { ...dependency, id: "task_alpha_choice", project_name: "Alpha", title: "Alpha prerequisite" };
+  const laterAlpha = { ...dependency, id: "task_later_alpha", project_name: "Alpha", title: "Later Alpha prerequisite" };
+  const beta = { ...dependency, id: "task_beta_choice", title: "Beta prerequisite" };
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === "/api/agent-console/planning-dependency-picker") {
+      const query = url.searchParams.get("q") ?? "";
+      const cursor = url.searchParams.get("cursor");
+      if (query === "Alpha" && cursor === "cursor_alpha") { alphaMoreRequests += 1; return alphaMoreRequests === 1 ? alphaMore.promise : rejectedAlphaMore.promise; }
+      if (query === "Alpha") return Response.json({ ...picker, candidates: [alpha], match_count: 2, next_cursor: "cursor_alpha", query, truncated: true });
+      if (query === "Beta") return Response.json({ ...picker, candidates: [beta], match_count: 1, next_cursor: null, query, truncated: false });
+      return Response.json(picker);
+    }
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await user.click(await screen.findByRole("button", { name: "Edit details" }));
+  const search = await screen.findByPlaceholderText("Search Tasks");
+  await user.type(search, "Alpha");
+  await screen.findByText(/Alpha prerequisite/u);
+  await user.click(screen.getByRole("button", { name: "More Task choices" }));
+  await user.clear(search); await user.type(search, "Beta");
+  await screen.findByText(/Beta prerequisite/u);
+  alphaMore.resolve(Response.json({ ...picker, candidates: [laterAlpha], match_count: 2, next_cursor: null, query: "Alpha", truncated: false }));
+  await waitFor(() => assert.equal(screen.queryByText(/Later Alpha prerequisite/u), null));
+  assert.equal(screen.queryByRole("button", { name: "More Task choices" }), null);
+  await user.clear(search); await user.type(search, "Alpha");
+  await screen.findByText(/Alpha prerequisite/u);
+  await user.click(screen.getByRole("button", { name: "More Task choices" }));
+  await user.clear(search); await user.type(search, "Beta");
+  await screen.findByText(/Beta prerequisite/u);
+  rejectedAlphaMore.reject(new Error("stale request"));
+  await waitFor(() => assert.equal(screen.queryByText("Task choices are temporarily unavailable."), null));
+  assert.notEqual(screen.queryByText(/Beta prerequisite/u), null);
+});
+
+test("dependency editor prevents saves beyond the 100-prerequisite boundary", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const prerequisites = Array.from({ length: 100 }, (_, index) => ({ ...dependency, id: `task_dependency_${index}`, title: `Prerequisite ${index}` }));
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, prerequisite_count: 100, prerequisites });
+    if (url.pathname === "/api/agent-console/planning-dependency-picker") return Response.json(picker);
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await user.click(await screen.findByRole("button", { name: "Edit details" }));
+  await screen.findByText(/Maximum of 100 prerequisites reached/u);
+  assert.equal((screen.getByRole("button", { name: "Add prerequisite Prepare Beta" }) as HTMLButtonElement).disabled, true);
+  assert.equal((screen.getByPlaceholderText("Search Tasks") as HTMLInputElement).maxLength, 160);
 });

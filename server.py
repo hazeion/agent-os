@@ -71,7 +71,9 @@ from conversation_repository import (
 from conversation_planning import (
     ConversationPlanningError,
     planning_context_projection,
+    planning_dependency_picker,
     planning_overview,
+    planning_task_dependencies,
     planning_task_detail_locator,
     planning_task_locator,
     planning_task_page,
@@ -2663,6 +2665,57 @@ def mentat_planning_task_detail_payload(task_id: str) -> dict:
             connection.close()
 
 
+def mentat_planning_task_dependencies_payload(task_id: str) -> dict:
+    """Return only direct prerequisite/dependent summaries for one Task."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            payload = planning_task_dependencies(
+                connection, projects, task_id=task_id, today=date.today()
+            )
+            connection.commit()
+            return {"schema_version": 1, **payload}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
+def mentat_planning_dependency_picker_payload(
+    *, task_id: str, query: object = None, cursor: object = None
+) -> dict:
+    """Return one bounded page of global dependency candidates for a Task."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            payload = planning_dependency_picker(
+                connection,
+                projects,
+                task_id=task_id,
+                query=query,
+                cursor=cursor,
+                today=date.today(),
+            )
+            connection.commit()
+            return {"schema_version": 1, **payload}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
 def mentat_conversation_planning_context_payload(conversation_id: str) -> dict:
     """Resolve one stored association without following stale targets."""
 
@@ -2903,6 +2956,31 @@ def _planning_expected_revision(payload: object) -> int | None:
     return revision if type(revision) is int and revision >= 1 else None
 
 
+def _planning_dependency_edit_is_unique(task_id: str, changes: dict) -> bool:
+    """Reject duplicate/self logical IDs before legacy normalization de-duplicates."""
+
+    if "depends_on" not in changes:
+        return True
+    dependencies = changes["depends_on"]
+    if not isinstance(dependencies, list) or len(dependencies) > 100:
+        return False
+    seen: set[str] = set()
+    for raw in dependencies:
+        if not isinstance(raw, str):
+            return False
+        identifier = raw.strip()
+        if (
+            identifier != raw
+            or TASK_ID_PATTERN.fullmatch(identifier) is None
+            or identifier == task_id
+        ):
+            return False
+        if identifier in seen:
+            return False
+        seen.add(identifier)
+    return True
+
+
 def _planning_assignee(agent_id: object) -> tuple[str | None, str | None, str | None]:
     if agent_id is None:
         return None, None, None
@@ -2940,6 +3018,8 @@ def update_mentat_planning_task(task_id: str, payload: object) -> tuple[dict, in
     expected_revision = _planning_expected_revision(payload)
     assert expected_revision is not None
     changes = payload["changes"]
+    if not _planning_dependency_edit_is_unique(task_id, changes):
+        return {"error_code": "planning.task_invalid"}, 400
     assignment_override: tuple[str | None, str | None] | None = None
     try:
         snapshot = read_authoritative_task_snapshot(DATA_DIR, task_id)

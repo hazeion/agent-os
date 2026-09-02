@@ -205,6 +205,8 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         ), patch.object(
             server, "hermes_console_transport", return_value=self.local_console()
         ), patch.object(
+            server, "_provider_mutation_active_run", return_value=(None, None)
+        ), patch.object(
             server, "agent_console_provider_inventory", side_effect=[before, verified]
         ), patch.object(
             server, "apply_provider_switch", return_value=({"ok": True}, "")

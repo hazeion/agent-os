@@ -28,6 +28,14 @@ TASK = {
     "updated_at": "2026-08-30T12:00:00Z",
 }
 TASK_LIST = {**TASK, "description_preview": "Set the scope and sequence for Slice 10."}
+DEPENDENCY_TASK = {
+    "id": "task_other",
+    "title": "Other task",
+    "project_id": "project_other",
+    "project_name": "Other",
+    "workflow_stage": "planned",
+    "blocked": False,
+}
 CONVERSATION = {
     "id": "conv_planning",
     "agent_id": "agent_direct",
@@ -171,6 +179,61 @@ class ConversationPlanningBridgeTests(unittest.TestCase):
                 "conv_planning"
             )
         self.assertEqual((status, payload["status"]), (500, "error"))
+
+    def test_dependency_projections_are_narrow_bounded_and_exact(self):
+        dependencies = {
+            "schema_version": 1,
+            "task_id": "task_1",
+            "task_revision": 3,
+            "prerequisites": [DEPENDENCY_TASK],
+            "prerequisite_count": 1,
+            "prerequisites_truncated": False,
+            "dependents": [],
+            "dependent_count": 0,
+            "dependents_truncated": False,
+        }
+        with patch.object(
+            server, "mentat_planning_task_dependencies_payload", return_value=dependencies
+        ) as read:
+            payload, status = local_bridge.bridge_planning_task_dependencies_payload("task_1")
+        self.assertEqual((status, payload["prerequisites"]), (200, [DEPENDENCY_TASK]))
+        read.assert_called_once_with("task_1")
+        self.assertNotIn("description", str(payload))
+        with patch.object(
+            server,
+            "mentat_planning_task_dependencies_payload",
+            return_value={**dependencies, "prerequisites": [{**DEPENDENCY_TASK, "description": "private"}]},
+        ):
+            rejected, rejected_status = local_bridge.bridge_planning_task_dependencies_payload("task_1")
+        self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
+
+        picker = {
+            "schema_version": 1,
+            "task_id": "task_1",
+            "query": "Other",
+            "candidates": [DEPENDENCY_TASK],
+            "candidate_count": 1,
+            "match_count": 1,
+            "next_cursor": None,
+            "truncated": False,
+        }
+        with patch.object(
+            server, "mentat_planning_dependency_picker_payload", return_value=picker
+        ) as search:
+            payload, status = local_bridge.bridge_planning_dependency_picker_payload(
+                "task_1", "Other", None
+            )
+        self.assertEqual((status, payload["candidates"]), (200, [DEPENDENCY_TASK]))
+        search.assert_called_once_with(task_id="task_1", query="Other", cursor=None)
+        with patch.object(
+            server,
+            "mentat_planning_dependency_picker_payload",
+            return_value={**picker, "candidate_count": 2},
+        ):
+            rejected, rejected_status = local_bridge.bridge_planning_dependency_picker_payload(
+                "task_1", "Other", None
+            )
+        self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
 
     def test_minimal_create_envelopes_reject_private_or_cross_target_results(self):
         with patch.object(
