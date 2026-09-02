@@ -12,7 +12,7 @@ const ATTENTION_REASONS = ["overdue", "due_today", "review", "needs_attention", 
 const PLANNING_STATES = ["inbox", "planned", "in_progress", "waiting", "review", "someday", "blocked", "done"] as const;
 const WORKFLOW_STAGES = ["inbox", "planned", "in_progress", "waiting", "review", "done"] as const;
 
-type ServiceEnvelope = {
+export type ServiceEnvelope = {
   schema_version: 1;
   service: "mentat-local-bridge";
   runtime: "python";
@@ -141,15 +141,15 @@ export class PublicPlanningError extends Error {
   constructor(code: string) { super(code); this.code = code; this.name = "PublicPlanningError"; }
 }
 
-function record(value: unknown): value is Record<string, unknown> {
+export function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function keys(value: Record<string, unknown>, expected: string): boolean {
+export function keys(value: Record<string, unknown>, expected: string): boolean {
   return Object.keys(value).sort().join(",") === expected;
 }
 
-function text(value: unknown, maximum: number): value is string {
+export function text(value: unknown, maximum: number): value is string {
   return typeof value === "string" && !!value && value.trim() === value && [...value].length <= maximum && !/\p{C}/u.test(value);
 }
 
@@ -159,7 +159,7 @@ function date(value: unknown): value is string {
   return year! >= 1 && month! >= 1 && month! <= 12 && day! >= 1 && day! <= days[month!]!;
 }
 
-function timestamp(value: unknown): value is string {
+export function timestamp(value: unknown): value is string {
   return typeof value === "string" && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value) && !Number.isNaN(Date.parse(value));
 }
 
@@ -168,7 +168,7 @@ function validProject(value: unknown): value is PublicPlanningProject {
     && text(value.name, 120) && ["active", "paused", "archived"].includes(String(value.status)) && Number.isSafeInteger(value.revision) && (value.revision as number) >= 1;
 }
 
-function validTask(value: unknown): value is PublicPlanningTask {
+export function validTask(value: unknown): value is PublicPlanningTask {
   if (!record(value) || !keys(value, "attention_reasons,blocked,deferred,due_date,id,needs_attention,planned_for_today,planning_state,priority,project_id,project_name,review_required,revision,status,title,updated_at,workflow_stage")) return false;
   if (!Array.isArray(value.attention_reasons) || value.attention_reasons.length > ATTENTION_REASONS.length) return false;
   const indexes = value.attention_reasons.map((reason) => ATTENTION_REASONS.indexOf(reason as typeof ATTENTION_REASONS[number]));
@@ -224,42 +224,7 @@ function validTaskDetail(value: unknown): value is PublicPlanningTaskDetail {
     && (agentId === null || typeof agentId === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(agentId));
 }
 
-function safeIdentifier(value: unknown, maximum: number): value is string {
-  return typeof value === "string" && new RegExp(`^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,${maximum - 1}}$`, "u").test(value);
-}
-
-function validExecutionTask(value: unknown): value is PublicPlanningExecutionTask {
-  if (!record(value)) return false;
-  const { assigned_agent_id: agentId, ...task } = value;
-  return validTask(task) && (agentId === null || safeIdentifier(agentId, 128));
-}
-
-function validExecutionAttempt(value: unknown): value is PublicPlanningExecutionAttempt {
-  return record(value) && keys(value, "agent_id,completed_at,completion_reason,created_at,dispatch_state,partial,review_action,review_note,review_task_revision,run_id,runtime_type,state,status,task_revision,terminal_finalized,updated_at")
-    && typeof value.run_id === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(value.run_id)
-    && Number.isSafeInteger(value.task_revision) && (value.task_revision as number) >= 1
-    && safeIdentifier(value.agent_id, 128)
-    && ["dispatched", "review_ready", "completion_blocked", "accepted", "changes_requested"].includes(String(value.state))
-    && (value.review_task_revision === null || Number.isSafeInteger(value.review_task_revision) && (value.review_task_revision as number) >= 1)
-    && (value.completion_reason === null || value.completion_reason === "task_changed")
-    && typeof value.runtime_type === "string" && /^[a-z][a-z0-9_-]{0,31}$/u.test(value.runtime_type)
-    && typeof value.status === "string" && ["reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "unknown", "completed", "failed", "cancelled", "stopped", "interrupted"].includes(value.status)
-    && typeof value.dispatch_state === "string" && ["legacy", "reserved", "submitting", "accepted", "rejected", "unknown"].includes(value.dispatch_state)
-    && typeof value.partial === "boolean" && typeof value.terminal_finalized === "boolean" && timestamp(value.created_at) && timestamp(value.updated_at)
-    && (value.completed_at === null || timestamp(value.completed_at))
-    && (value.review_action === null || value.review_action === "accept" || value.review_action === "request_changes")
-    && (value.review_note === null || text(value.review_note, 2_000));
-}
-
-function validTaskExecution(value: unknown): value is PublicPlanningTaskExecution["execution"] {
-  if (!record(value) || !keys(value, "attempt_count,attempts,available,reason,review") || typeof value.available !== "boolean" || value.reason !== null && value.reason !== "unavailable" || !Array.isArray(value.attempts) || value.attempts.length > 8 || !value.attempts.every(validExecutionAttempt) || new Set(value.attempts.map((attempt) => attempt.run_id)).size !== value.attempts.length || !Number.isSafeInteger(value.attempt_count) || value.attempt_count !== value.attempts.length || !record(value.review) || !keys(value.review, "available,run_id")) return false;
-  const review = value.review;
-  return typeof review.available === "boolean"
-    && (review.run_id === null || typeof review.run_id === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(review.run_id))
-    && (review.available ? review.run_id !== null && value.attempts.some((attempt) => attempt.run_id === review.run_id && attempt.state === "review_ready") : review.run_id === null);
-}
-
-function validEnvelope(value: Record<string, unknown>): boolean {
+export function validEnvelope(value: Record<string, unknown>): boolean {
   return value.schema_version === 1 && value.service === "mentat-local-bridge" && value.runtime === "python" && value.status === "ready";
 }
 
@@ -395,21 +360,6 @@ export function parsePlanningDependencyPickerPage(value: unknown, taskId?: strin
   return structuredClone(value) as PublicPlanningDependencyPickerPage;
 }
 
-export function parsePlanningTaskExecution(value: unknown, taskId?: string): PublicPlanningTaskExecution {
-  if (!record(value) || !keys(value, "execution,runtime,schema_version,service,status,task") || !validEnvelope(value) || !validExecutionTask(value.task) || !validTaskExecution(value.execution) || taskId !== undefined && value.task.id !== taskId) throw new PublicPlanningError("response_invalid");
-  return structuredClone(value) as PublicPlanningTaskExecution;
-}
-
-export function parsePlanningRunOncePreview(value: unknown, taskId?: string, expectedRevision?: number): PublicPlanningRunOncePreview {
-  if (!record(value) || !keys(value, "action,confirmation_id,requires_confirmation,runtime,schema_version,service,status,task") || !validEnvelope(value) || value.action !== "run_once" || !validExecutionTask(value.task) || taskId !== undefined && value.task.id !== taskId || expectedRevision !== undefined && value.task.revision !== expectedRevision || value.requires_confirmation !== true || typeof value.confirmation_id !== "string" || !/^[0-9a-f]{64}$/u.test(value.confirmation_id)) throw new PublicPlanningError("response_invalid");
-  return structuredClone(value) as PublicPlanningRunOncePreview;
-}
-
-export function parsePlanningTaskExecutionMutation(value: unknown, taskId?: string): PublicPlanningTaskExecutionMutation {
-  if (!record(value) || !keys(value, "action,duplicate,execution,runtime,schema_version,service,status,task") || !validEnvelope(value) || !["run_once", "accept", "request_changes"].includes(String(value.action)) || typeof value.duplicate !== "boolean" || !validExecutionTask(value.task) || !validTaskExecution(value.execution) || taskId !== undefined && value.task.id !== taskId) throw new PublicPlanningError("response_invalid");
-  return structuredClone(value) as PublicPlanningTaskExecutionMutation;
-}
-
 export function parsePlanningProjectMutation(value: unknown, projectId?: string): PublicPlanningProjectMutation {
   if (!record(value) || !keys(value, "action,project,runtime,schema_version,service,status") || !validEnvelope(value) || !validProject(value.project) || !["rename", "archive", "restore"].includes(String(value.action)) || projectId !== undefined && value.project.id !== projectId) throw new PublicPlanningError("response_invalid");
   return structuredClone(value) as PublicPlanningProjectMutation;
@@ -429,13 +379,13 @@ async function boundedJson(response: Response): Promise<unknown> {
   try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown; } catch { throw new PublicPlanningError("response_invalid"); }
 }
 
-function failure(payload: unknown, response: Response): never {
+export function failure(payload: unknown, response: Response): never {
   if (!record(payload) || !keys(payload, "schema_version,status") || payload.schema_version !== 1) throw new PublicPlanningError("response_invalid");
   const mapped: Record<string, string> = { "400:invalid": "invalid", "404:not_found": "not_found", "409:conflict": "conflict", "409:active_run": "active_run", "409:queue_active": "queue_active", "500:partial": "partial", "500:error": "error", "501:unsupported": "unsupported", "503:unavailable": "unavailable" };
   throw new PublicPlanningError(mapped[`${response.status}:${payload.status}`] ?? "response_invalid");
 }
 
-async function request(path: string, init: RequestInit = {}, timeout = READ_TIMEOUT_MILLISECONDS): Promise<{ payload: unknown; response: Response }> {
+export async function request(path: string, init: RequestInit = {}, timeout = READ_TIMEOUT_MILLISECONDS): Promise<{ payload: unknown; response: Response }> {
   try {
     const response = await fetch(path, { ...init, cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeout) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new PublicPlanningError("response_invalid");
@@ -549,43 +499,5 @@ export async function updatePlanningTask(taskId: string, expectedRevision: numbe
   if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !record(changes) || Object.keys(changes).length === 0) throw new PublicPlanningError("invalid");
   const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/edit`, { body: JSON.stringify({ expected_revision: expectedRevision, changes }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
   if (response.status === 200) return parsePlanningTaskMutation(payload, taskId);
-  failure(payload, response);
-}
-
-function validIdempotencyKey(value: unknown): value is string {
-  if (typeof value !== "string" || value.includes("\x00")) return false;
-  try {
-    const bytes = new TextEncoder().encode(value);
-    return bytes.length >= 16 && bytes.length <= 256
-      && new TextDecoder("utf-8", { fatal: true }).decode(bytes) === value;
-  } catch { return false; }
-}
-
-export async function readPlanningTaskExecution(taskId: string): Promise<PublicPlanningTaskExecution> {
-  if (!TASK_ID.test(taskId)) throw new PublicPlanningError("invalid");
-  const parameters = new URLSearchParams({ task_id: taskId });
-  const { response, payload } = await request(`/api/agent-console/planning-task-execution?${parameters.toString()}`);
-  if (response.status === 200) return parsePlanningTaskExecution(payload, taskId);
-  failure(payload, response);
-}
-
-export async function previewPlanningTaskRunOnce(taskId: string, expectedRevision: number): Promise<PublicPlanningRunOncePreview> {
-  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new PublicPlanningError("invalid");
-  const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/execution/run-once/preview`, { body: JSON.stringify({ expected_revision: expectedRevision }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
-  if (response.status === 200) return parsePlanningRunOncePreview(payload, taskId, expectedRevision);
-  failure(payload, response);
-}
-
-export async function confirmPlanningTaskRunOnce(taskId: string, expectedRevision: number, idempotencyKey: string, confirmationId: string): Promise<PublicPlanningTaskExecutionMutation> {
-  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !validIdempotencyKey(idempotencyKey) || !/^[0-9a-f]{64}$/u.test(confirmationId)) throw new PublicPlanningError("invalid");
-  const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/execution/run-once`, { body: JSON.stringify({ confirmation_id: confirmationId, expected_revision: expectedRevision, idempotency_key: idempotencyKey }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
-  if (response.status === 200 || response.status === 202) return parsePlanningTaskExecutionMutation(payload, taskId);
-  failure(payload, response);
-}
-
-export async function reviewPlanningTaskExecution(taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string): Promise<PublicPlanningTaskExecutionMutation> {
-  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !["accept", "request_changes"].includes(action) || !validIdempotencyKey(idempotencyKey) || action === "accept" && note !== null || action === "request_changes" && !text(note, 2_000)) throw new PublicPlanningError("invalid");
-  const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/execution/review`, { body: JSON.stringify(action === "accept" ? { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey } : { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, note }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
-  if (response.status === 200) return parsePlanningTaskExecutionMutation(payload, taskId);
   failure(payload, response);
 }
