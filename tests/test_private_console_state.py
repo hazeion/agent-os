@@ -2360,30 +2360,26 @@ class PrivateConsoleStateTests(unittest.TestCase):
             with self.assertRaises(MentatDatabaseError):
                 connect(root)
 
-    def test_sqlite_retries_a_transient_sidecar_resolution_failure_during_open(self):
+    def test_sqlite_retries_a_transient_sidecar_validation_failure_during_open(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"
             initial = connect(root)
             initial.close()
-            database = root / "private" / "console" / "mentat.sqlite3"
-            shm = Path(f"{database}-shm")
-            shm.write_bytes(b"transient-sidecar")
-            if os.name == "posix":
-                shm.chmod(0o600)
-            path_type = type(shm)
-            real_resolve = path_type.resolve
+            real_connect_once = mentat_db._connect_with_identity_once
             denied = 0
 
-            def deny_sidecar_once(path: Path, *args, **kwargs):
+            def deny_sidecar_once(*args, **kwargs):
                 nonlocal denied
-                if path == shm and denied == 0:
+                if denied == 0:
                     denied += 1
-                    raise PermissionError("simulated transient SQLite sidecar lock")
-                return real_resolve(path, *args, **kwargs)
+                    raise mentat_db._TransientDatabaseSidecarRace(
+                        "simulated transient SQLite sidecar lock"
+                    )
+                return real_connect_once(*args, **kwargs)
 
             with patch.object(
-                path_type,
-                "resolve",
+                mentat_db,
+                "_connect_with_identity_once",
                 autospec=True,
                 side_effect=deny_sidecar_once,
             ):
