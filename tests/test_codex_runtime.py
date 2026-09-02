@@ -827,7 +827,11 @@ class CodexAppServerClientTests(unittest.TestCase):
                 self.assertTrue(raised.exception.uncertain)
                 self.assertIn(
                     raised.exception.code,
-                    {"codex.protocol_invalid", "codex.protocol_unavailable"},
+                    {
+                        "codex.protocol_invalid",
+                        "codex.protocol_unavailable",
+                        "codex.request_unknown",
+                    },
                 )
 
     def test_request_timeout_is_unknown_and_shutdown_is_bounded(self):

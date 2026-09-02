@@ -18,7 +18,7 @@ Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value:
 Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: (handle: number) => dom.window.clearTimeout(handle) });
 Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: (callback: FrameRequestCallback) => dom.window.setTimeout(() => callback(Date.now()), 0) });
 
-const { cleanup, fireEvent, render, screen, waitFor } = await import("@testing-library/react");
+const { cleanup, fireEvent, render, screen, waitFor, within } = await import("@testing-library/react");
 const { default: userEvent } = await import("@testing-library/user-event");
 const { ConversationPlanningControls, PlanningAttention, PlanningSuggestions } = await import("../src/app/conversation-planning.tsx");
 const { ProjectsTasksWorkspace } = await import("../src/app/tasks/projects-tasks-workspace.tsx");
@@ -121,6 +121,504 @@ test("Map is opt-in, follows the shared filter, and selects through the existing
   await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /refreshed details are temporarily unavailable/u));
   await user.type(screen.getByLabelText("Filter"), "no matching task");
   await screen.findByText("No dependency map is available for this Project.");
+});
+
+test("Task execution stays unavailable until its safe projection arrives, then previews and starts one exact Run", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const executionTask = { ...task, assigned_agent_id: "agent_alpha", workflow_stage: "planned" as const };
+  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: executionTask };
+  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: executionTask };
+  const started = { ...envelope, action: "run_once" as const, duplicate: false, execution: { attempt_count: 1, attempts: [{ agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched" as const, status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" }], available: false, reason: "unavailable" as const, review: { available: false, run_id: null } }, task: { ...executionTask, revision: 2, workflow_stage: "in_progress" as const, planning_state: "in_progress" as const, status: "in progress" as const } };
+  const calls: Array<{ body: unknown; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin); calls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, path: `${url.pathname}${url.search}` });
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(calls.some((call) => call.path.endsWith("/execution/run-once")) ? { ...envelope, execution: started.execution, task: started.task } : execution);
+    if (url.pathname.endsWith("/execution/run-once/preview")) return Response.json(preview);
+    if (url.pathname.endsWith("/execution/run-once")) return Response.json(started, { status: 202 });
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: { ...task, revision: 2, workflow_stage: "in_progress", status: "in progress", planning_state: "in_progress" } });
+    throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await screen.findByRole("button", { name: "Run once" });
+  await user.click(screen.getByRole("button", { name: "Run once" }));
+  await screen.findByRole("button", { name: "Start Run once" });
+  await user.click(screen.getByRole("button", { name: "Start Run once" }));
+  await screen.findByText("Run once started.");
+  const inspector = screen.getByLabelText("Task inspector");
+  assert.equal((within(inspector).getByRole("button", { name: "review" }) as HTMLButtonElement).disabled, true);
+  assert.equal((within(inspector).getByRole("button", { name: "done" }) as HTMLButtonElement).disabled, true);
+  assert.match(within(inspector).getByText(/Run and review controls own/u).textContent ?? "", /Review and Done/u);
+  const previewCall = calls.find((call) => call.path.endsWith("/execution/run-once/preview"));
+  const confirmCall = calls.find((call) => call.path.endsWith("/execution/run-once"));
+  assert.deepEqual(previewCall?.body, { expected_revision: 1 });
+  assert.equal(typeof (confirmCall?.body as { idempotency_key?: unknown } | undefined)?.idempotency_key, "string");
+  assert.deepEqual({ ...(confirmCall?.body as Record<string, unknown>), idempotency_key: "opaque" }, { confirmation_id: preview.confirmation_id, expected_revision: 1, idempotency_key: "opaque" });
+});
+
+test("List selection clears a same-revision Task's pending Run-once confirmation", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha" };
+  const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
+  const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: alpha };
+  const betaExecution = deferred<Response>();
+  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: alpha };
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, betaList] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : { ...taskDetail, ...alpha } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? alpha.id });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return taskId === beta.id ? betaExecution.promise : Response.json(alphaExecution);
+    if (url.pathname.endsWith("/execution/run-once/preview")) return Response.json(preview);
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await user.click(await screen.findByRole("button", { name: "Run once" }));
+  await screen.findByRole("button", { name: "Start Run once" });
+  await user.click(screen.getByRole("button", { name: /Prepare Beta/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  await within(inspector).findByText("Prepare the Beta changes.");
+  assert.equal(within(inspector).queryByRole("button", { name: "Start Run once" }), null);
+  assert.equal(within(inspector).queryByRole("button", { name: "Accept" }), null);
+  betaExecution.resolve(Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta }));
+  await within(inspector).findByRole("button", { name: "Run once" });
+});
+
+test("Map selection clears a same-revision Task's review controls before its execution projection arrives", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: true, removeEventListener: () => undefined }) });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha", workflow_stage: "review" as const };
+  const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
+  const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
+  const reviewAttempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "review_ready" as const, status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: true, run_id: "run_alpha" } }, task: alpha };
+  const betaExecution = deferred<Response>();
+  const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [{ ...dependencyMap.nodes[0], workflow_stage: "review" as const }, { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, betaList] });
+    if (url.pathname === "/api/agent-console/planning-dependency-map") { const { project_id, ...payload } = map; void project_id; return Response.json({ ...envelope, ...payload, project }); }
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : { ...taskDetail, ...alpha } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? alpha.id });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return taskId === beta.id ? betaExecution.promise : Response.json(alphaExecution);
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await screen.findByRole("button", { name: "Accept" });
+  await user.click(screen.getByRole("button", { name: "Map" }));
+  await user.click(await screen.findByRole("button", { name: /Prepare Beta, Task, planned/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  await within(inspector).findByText("Prepare the Beta changes.");
+  assert.equal(within(inspector).queryByRole("button", { name: "Accept" }), null);
+  assert.equal(within(inspector).queryByRole("button", { name: "Start Run once" }), null);
+  betaExecution.resolve(Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta }));
+  await within(inspector).findByRole("button", { name: "Run once" });
+});
+
+test("a delayed off-page Map lookup cannot replace a newer List selection", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: true, removeEventListener: () => undefined }) });
+  const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
+  const gamma = { ...task, assigned_agent_id: "agent_alpha", id: "task_gamma", title: "Investigate Gamma" };
+  const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
+  const gammaLookup = deferred<Response>();
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: task.id, to_task_id: gamma.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 3, node_total: 3, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }, { blocked: false, id: gamma.id, project_id: project.id, project_name: project.name, title: gamma.title, workflow_stage: "planned" as const }] };
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, betaList] });
+    if (url.pathname === "/api/agent-console/planning-dependency-map") { const { project_id, ...payload } = map; void project_id; return Response.json({ ...envelope, ...payload, project }); }
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : { ...taskDetail, ...task } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? task.id });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(taskId === beta.id ? betaExecution : alphaExecution);
+    if (url.pathname === "/api/agent-console/planning-task") return taskId === gamma.id ? gammaLookup.promise : Response.json({ ...envelope, project, task: task });
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(screen.getByRole("button", { name: "Map" }));
+  await user.click(await screen.findByRole("button", { name: /Investigate Gamma, Task, planned/u }));
+  await user.click(screen.getByRole("button", { name: "List" }));
+  await user.click(screen.getByRole("button", { name: /Prepare Beta/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  await within(inspector).findByText("Prepare the Beta changes.");
+  gammaLookup.resolve(Response.json({ ...envelope, project, task: gamma }));
+  await waitFor(() => {
+    assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Beta changes/u);
+    assert.doesNotMatch(screen.getByRole("status").textContent ?? "", /Selected Task Investigate Gamma/u);
+  });
+});
+
+test("a late Run once preview cannot confirm a Task selected from the dependency map", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: true, removeEventListener: () => undefined }) });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha" };
+  const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
+  const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: alpha };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const latePreview = deferred<Response>();
+  const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, betaList] });
+    if (url.pathname === "/api/agent-console/planning-dependency-map") { const { project_id, ...payload } = map; void project_id; return Response.json({ ...envelope, ...payload, project }); }
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : { ...taskDetail, ...alpha } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? alpha.id });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(taskId === beta.id ? betaExecution : alphaExecution);
+    if (url.pathname.endsWith("/execution/run-once/preview")) return latePreview.promise;
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: alpha });
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await user.click(await screen.findByRole("button", { name: "Run once" }));
+  await user.click(screen.getByRole("button", { name: "Map" }));
+  await user.click(await screen.findByRole("button", { name: /Prepare Beta, Task, planned/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  await within(inspector).findByText("Prepare the Beta changes.");
+  await within(inspector).findByRole("button", { name: "Run once" });
+  latePreview.resolve(Response.json({ ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: alpha }));
+  await waitFor(() => {
+    assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Beta changes/u);
+    assert.ok(within(inspector).getByRole("button", { name: "Run once" }));
+    assert.equal(within(inspector).queryByRole("button", { name: "Start Run once" }), null);
+    assert.doesNotMatch(screen.getByRole("status").textContent ?? "", /Review the exact Task revision/u);
+  });
+});
+
+test("a late Run once mutation cannot overwrite a Task selected from the dependency map", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: true, removeEventListener: () => undefined }) });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha" };
+  const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
+  const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: alpha };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: alpha };
+  const lateMutation = deferred<Response>();
+  const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, betaList] });
+    if (url.pathname === "/api/agent-console/planning-dependency-map") { const { project_id, ...payload } = map; void project_id; return Response.json({ ...envelope, ...payload, project }); }
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : { ...taskDetail, ...alpha } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? alpha.id });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(taskId === beta.id ? betaExecution : alphaExecution);
+    if (url.pathname.endsWith("/execution/run-once/preview")) return Response.json(preview);
+    if (url.pathname.endsWith("/execution/run-once")) return lateMutation.promise;
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: alpha });
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await user.click(await screen.findByRole("button", { name: "Run once" }));
+  await user.click(await screen.findByRole("button", { name: "Start Run once" }));
+  await user.click(screen.getByRole("button", { name: "Map" }));
+  await user.click(await screen.findByRole("button", { name: /Prepare Beta, Task, planned/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  await within(inspector).findByText("Prepare the Beta changes.");
+  await within(inspector).findByRole("button", { name: "Run once" });
+  lateMutation.resolve(Response.json({ ...envelope, action: "run_once", duplicate: false, execution: { attempt_count: 1, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...alpha, revision: 2, workflow_stage: "in_progress", planning_state: "in_progress", status: "in progress" } }, { status: 202 }));
+  await waitFor(() => {
+    assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Beta changes/u);
+    assert.ok(within(inspector).getByRole("button", { name: "Run once" }));
+    assert.doesNotMatch(screen.getByRole("status").textContent ?? "", /Run once started/u);
+  });
+});
+
+test("a delayed stage save cannot overwrite a Task selected from the dependency map", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: true, removeEventListener: () => undefined }) });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha" };
+  const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
+  const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: alpha };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const stageSave = deferred<Response>();
+  const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, betaList] });
+    if (url.pathname === "/api/agent-console/planning-dependency-map") { const { project_id, ...payload } = map; void project_id; return Response.json({ ...envelope, ...payload, project }); }
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : { ...taskDetail, ...alpha } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? alpha.id });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(taskId === beta.id ? betaExecution : alphaExecution);
+    if (url.pathname === `/api/planning/tasks/${alpha.id}/edit`) { assert.equal(init?.method, "POST"); return stageSave.promise; }
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await screen.findByRole("button", { name: "Run once" });
+  await user.click(screen.getByRole("button", { name: "Map" }));
+  const inspector = screen.getByLabelText("Task inspector");
+  const moveToWaiting = within(inspector).getByRole("button", { name: "waiting" });
+  await user.click(moveToWaiting);
+  await user.click(await screen.findByRole("button", { name: /Prepare Beta, Task, planned/u }));
+  await within(inspector).findByText("Prepare the Beta changes.");
+  stageSave.resolve(Response.json({ ...envelope, action: "edit", project, task: { ...alpha, revision: 2, workflow_stage: "waiting" as const } }));
+  await waitFor(() => {
+    assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Beta changes/u);
+    assert.doesNotMatch(screen.getByRole("status").textContent ?? "", /Task moved to waiting/u);
+  });
+});
+
+test("a stage revision change hides stale review actions until its execution refresh arrives", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha", workflow_stage: "review" as const };
+  const updatedTask = { ...task, revision: 2, workflow_stage: "waiting" as const };
+  const updated = { ...updatedTask, assigned_agent_id: "agent_alpha" };
+  const reviewAttempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "review_ready" as const, status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
+  const reviewExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: true, run_id: "run_alpha" } }, task: alpha };
+  const refreshedExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: false, run_id: null } }, task: updated };
+  const staleDetail = deferred<Response>();
+  let stageSaved = false;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [{ ...listTask, workflow_stage: "review" }] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return stageSaved ? staleDetail.promise : Response.json({ ...envelope, project, task: { ...taskDetail, ...alpha } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_revision: stageSaved ? updated.revision : alpha.revision });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(stageSaved ? refreshedExecution : reviewExecution);
+    if (url.pathname === `/api/planning/tasks/${alpha.id}/edit`) { assert.equal(init?.method, "POST"); stageSaved = true; return Response.json({ ...envelope, action: "edit", project, task: updatedTask }); }
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: stageSaved ? updatedTask : alpha });
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await screen.findByRole("button", { name: "Accept" });
+  const inspector = screen.getByLabelText("Task inspector");
+  await user.click(within(inspector).getByRole("button", { name: "waiting" }));
+  await waitFor(() => {
+    if (within(inspector).queryByRole("button", { name: "Accept" })) throw new Error(`Accept remains visible: ${screen.getByRole("status").textContent ?? "no status"}`);
+  });
+  assert.match(within(inspector).getByText("Run once and review controls are temporarily unavailable.").textContent ?? "", /temporarily unavailable/u);
+  staleDetail.resolve(Response.json({ ...envelope, project, task: { ...taskDetail, ...updatedTask } }));
+  await waitFor(() => assert.equal(Boolean(within(inspector).queryByRole("button", { name: "Accept" })), false));
+});
+
+test("Request changes submits one bounded review note and resets the review editor", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha", workflow_stage: "review" as const };
+  const updatedTask = { ...task, revision: 2, workflow_stage: "planned" as const, planning_state: "planned" as const };
+  const updated = { ...updatedTask, assigned_agent_id: "agent_alpha" };
+  const reviewAttempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "review_ready" as const, status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
+  const initialExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: true, run_id: "run_alpha" } }, task: alpha };
+  const changedAttempt = { ...reviewAttempt, review_action: "request_changes" as const, review_note: "Please add the missing acceptance criteria.", review_task_revision: 1, state: "changes_requested" as const, task_revision: 2 };
+  const changedExecution = { ...envelope, execution: { attempt_count: 1, attempts: [changedAttempt], available: true, reason: null, review: { available: false, run_id: null } }, task: updated };
+  const reviewBodies: unknown[] = [];
+  let changed = false;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: { ...taskDetail, ...(changed ? updated : alpha) } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_revision: changed ? updated.revision : alpha.revision });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(changed ? changedExecution : initialExecution);
+    if (url.pathname.endsWith("/execution/review")) { reviewBodies.push(JSON.parse(String(init?.body))); changed = true; return Response.json({ ...changedExecution, action: "request_changes", duplicate: false }); }
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: updatedTask });
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await user.click(await screen.findByRole("button", { name: "Request changes" }));
+  const note = "Please add the missing acceptance criteria.";
+  await user.type(screen.getByLabelText("Feedback for changes"), note);
+  await user.click(screen.getByRole("button", { name: "Send change request" }));
+  await screen.findByText(/Changes requested; the Task is planned for another Run\./u);
+  assert.equal(screen.queryByLabelText("Feedback for changes"), null);
+  assert.equal(reviewBodies.length, 1);
+  const body = reviewBodies[0] as Record<string, unknown>;
+  assert.equal(body.action, "request_changes");
+  assert.equal(body.expected_revision, 1);
+  assert.equal(body.note, note);
+  assert.equal(typeof body.idempotency_key, "string");
+});
+
+test("a late review mutation cannot overwrite a Task selected from the dependency map", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: true, removeEventListener: () => undefined }) });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha", workflow_stage: "review" as const };
+  const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
+  const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
+  const reviewAttempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "review_ready" as const, status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: true, run_id: "run_alpha" } }, task: alpha };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const lateMutation = deferred<Response>();
+  const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [{ ...dependencyMap.nodes[0], workflow_stage: "review" as const }, { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, betaList] });
+    if (url.pathname === "/api/agent-console/planning-dependency-map") { const { project_id, ...payload } = map; void project_id; return Response.json({ ...envelope, ...payload, project }); }
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : { ...taskDetail, ...alpha } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? alpha.id });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(taskId === beta.id ? betaExecution : alphaExecution);
+    if (url.pathname.endsWith("/execution/review")) return lateMutation.promise;
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: alpha });
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await user.click(await screen.findByRole("button", { name: "Accept" }));
+  await user.click(screen.getByRole("button", { name: "Map" }));
+  await user.click(await screen.findByRole("button", { name: /Prepare Beta, Task, planned/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  await within(inspector).findByText("Prepare the Beta changes.");
+  await within(inspector).findByRole("button", { name: "Run once" });
+  lateMutation.resolve(Response.json({ ...envelope, action: "accept", duplicate: false, execution: { attempt_count: 1, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...alpha, revision: 2, workflow_stage: "done", planning_state: "done", status: "completed" } }));
+  await waitFor(() => {
+    assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Beta changes/u);
+    assert.ok(within(inspector).getByRole("button", { name: "Run once" }));
+    assert.doesNotMatch(screen.getByRole("status").textContent ?? "", /Task accepted/u);
+  });
+});
+
+test("moving an assigned Task to planned refreshes Run once availability", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const inboxTask = { ...task, planning_state: "inbox" as const, status: "todo" as const, workflow_stage: "inbox" as const };
+  const inboxDetail = { ...taskDetail, ...inboxTask, assigned_agent_id: "agent_alpha" };
+  const plannedTask = { ...inboxTask, planning_state: "planned" as const, revision: 2, workflow_stage: "planned" as const };
+  const plannedDetail = { ...inboxDetail, ...plannedTask };
+  const unavailableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...inboxTask, assigned_agent_id: "agent_alpha" } };
+  const availableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...plannedTask, assigned_agent_id: "agent_alpha" } };
+  let moved = false;
+  let executionReads = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [{ ...inboxTask, description_preview: listTask.description_preview }] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: moved ? plannedDetail : inboxDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_revision: moved ? plannedTask.revision : inboxTask.revision });
+    if (url.pathname === "/api/agent-console/planning-task-execution") { executionReads += 1; return Response.json(moved ? availableExecution : unavailableExecution); }
+    if (url.pathname === `/api/planning/tasks/${task.id}/edit`) {
+      assert.equal(init?.method, "POST");
+      moved = true;
+      return Response.json({ ...envelope, action: "edit", project, task: plannedTask });
+    }
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: plannedTask });
+    throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await screen.findByText("Run once is unavailable for this Task.");
+  const inspector = screen.getByLabelText("Task inspector");
+  await user.click(within(inspector).getByRole("button", { name: "planned" }));
+  await screen.findByRole("button", { name: "Run once" });
+  assert.equal(executionReads, 2);
+});
+
+test("a late initial execution read cannot replace a newer stage refresh for the same Task", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const inboxTask = { ...task, planning_state: "inbox" as const, status: "todo" as const, workflow_stage: "inbox" as const };
+  const plannedTask = { ...inboxTask, planning_state: "planned" as const, revision: 2, workflow_stage: "planned" as const };
+  const unavailableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...inboxTask, assigned_agent_id: "agent_alpha" } };
+  const availableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...plannedTask, assigned_agent_id: "agent_alpha" } };
+  const initialExecution = deferred<Response>();
+  let executionReads = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [{ ...inboxTask, description_preview: listTask.description_preview }] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: { ...taskDetail, ...(executionReads > 1 ? plannedTask : inboxTask), assigned_agent_id: "agent_alpha" } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_revision: executionReads > 1 ? plannedTask.revision : inboxTask.revision });
+    if (url.pathname === "/api/agent-console/planning-task-execution") { executionReads += 1; return executionReads === 1 ? initialExecution.promise : Response.json(availableExecution); }
+    if (url.pathname === `/api/planning/tasks/${task.id}/edit`) { assert.equal(init?.method, "POST"); return Response.json({ ...envelope, action: "edit", project, task: plannedTask }); }
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: plannedTask });
+    throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  await user.click(within(inspector).getByRole("button", { name: "planned" }));
+  await screen.findByRole("button", { name: "Run once" });
+  initialExecution.resolve(Response.json(unavailableExecution));
+  await waitFor(() => assert.ok(within(inspector).getByRole("button", { name: "Run once" })));
+});
+
+test("a late execution refresh cannot overwrite a newly selected Task", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const beta = { ...task, id: "task_beta", project_name: project.name, revision: 1, title: "Prepare Beta", workflow_stage: "planned" as const };
+  const alphaPlanned = { ...task, revision: 2, workflow_stage: "planned" as const };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...beta, assigned_agent_id: "agent_alpha" } };
+  const lateAlphaRefresh = deferred<Response>();
+  let alphaExecutionReads = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, { ...beta, description_preview: "Prepare the Beta changes." }] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, assigned_agent_id: "agent_alpha", description: "Prepare the Beta changes." } : { ...taskDetail, ...(alphaExecutionReads > 1 ? alphaPlanned : task), assigned_agent_id: "agent_alpha" } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? task.id, task_revision: taskId === beta.id ? beta.revision : alphaExecutionReads > 1 ? alphaPlanned.revision : task.revision });
+    if (url.pathname === "/api/agent-console/planning-task-execution") {
+      if (taskId === beta.id) return Response.json(betaExecution);
+      alphaExecutionReads += 1;
+      return alphaExecutionReads === 1 ? Response.json(alphaExecution) : lateAlphaRefresh.promise;
+    }
+    if (url.pathname === `/api/planning/tasks/${task.id}/edit`) { assert.equal(init?.method, "POST"); return Response.json({ ...envelope, action: "edit", project, task: alphaPlanned }); }
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: alphaPlanned });
+    throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await screen.findByText("Run once is unavailable for this Task.");
+  const inspector = screen.getByLabelText("Task inspector");
+  await user.click(within(inspector).getByRole("button", { name: "inbox" }));
+  await waitFor(() => assert.equal(alphaExecutionReads, 2));
+  await user.click(screen.getByRole("button", { name: /Prepare Beta/u }));
+  await within(inspector).findByText("Prepare the Beta changes.");
+  await within(inspector).findByRole("button", { name: "Run once" });
+  lateAlphaRefresh.resolve(Response.json({ ...envelope, execution: { ...alphaExecution.execution, available: false }, task: alphaPlanned }));
+  await waitFor(() => {
+    assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Prepare the Beta/u);
+    assert.ok(within(inspector).getByRole("button", { name: "Run once" }));
+  });
 });
 
 test("planning selectors stage locally and Apply is the only context mutation", async () => {

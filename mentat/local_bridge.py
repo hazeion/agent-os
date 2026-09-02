@@ -51,6 +51,10 @@ BRIDGE_PLANNING_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview"
 BRIDGE_PLANNING_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks"
 BRIDGE_PLANNING_TASK_PATH = "/bridge/v1/agent-console/planning-task"
 BRIDGE_PLANNING_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail"
+BRIDGE_PLANNING_TASK_EXECUTION_PATH = "/bridge/v1/agent-console/planning-task-execution"
+BRIDGE_PLANNING_TASK_RUN_ONCE_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once/preview"
+BRIDGE_PLANNING_TASK_RUN_ONCE_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once"
+BRIDGE_PLANNING_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/review"
 BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-dependencies"
 BRIDGE_PLANNING_DEPENDENCY_MAP_PATH = "/bridge/v1/agent-console/planning-dependency-map"
 BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker"
@@ -1779,6 +1783,170 @@ def bridge_planning_task_detail_payload(task_id: str) -> tuple[dict[str, object]
         return _planning_failure("error", 500)
     except Exception:
         return _planning_failure("error", 500)
+
+
+def _planning_execution_task(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "attention_reasons", "assigned_agent_id", "blocked", "deferred",
+        "due_date", "id", "needs_attention", "planned_for_today",
+        "planning_state", "priority", "project_id", "project_name",
+        "review_required", "revision", "status", "title", "updated_at",
+        "workflow_stage",
+    }:
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    agent_id = value.get("assigned_agent_id")
+    if agent_id is not None and (
+        not isinstance(agent_id, str) or _OPAQUE_ID.fullmatch(agent_id) is None
+    ):
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    base = _planning_task({key: item for key, item in value.items() if key != "assigned_agent_id"})
+    return {**base, "assigned_agent_id": agent_id}
+
+
+def _planning_execution_payload(source: object) -> dict[str, object]:
+    if not isinstance(source, dict) or set(source) != {"schema_version", "task", "execution"}:
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    task = _planning_execution_task(source.get("task"))
+    execution = source.get("execution")
+    if not isinstance(execution, dict) or set(execution) != {
+        "available", "reason", "attempts", "attempt_count", "review"
+    }:
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    attempts = execution.get("attempts")
+    review = execution.get("review")
+    if (
+        source.get("schema_version") != 1
+        or type(execution.get("available")) is not bool
+        or execution.get("reason") is not None and execution.get("reason") != "unavailable"
+        or not isinstance(attempts, list)
+        or len(attempts) > 8
+        or execution.get("attempt_count") != len(attempts)
+        or not isinstance(review, dict)
+        or set(review) != {"available", "run_id"}
+        or type(review.get("available")) is not bool
+        or review.get("run_id") is not None and (
+            not isinstance(review["run_id"], str) or _RUN_ID.fullmatch(review["run_id"]) is None
+        )
+    ):
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    public_attempts: list[dict[str, object]] = []
+    for item in attempts:
+        required = {
+            "run_id", "task_revision", "agent_id", "state", "review_task_revision",
+            "completion_reason", "runtime_type", "status", "dispatch_state", "partial",
+            "terminal_finalized", "created_at", "updated_at", "completed_at",
+            "review_action", "review_note",
+        }
+        if (
+            not isinstance(item, dict)
+            or set(item) != required
+            or not isinstance(item.get("run_id"), str)
+            or _RUN_ID.fullmatch(item["run_id"]) is None
+            or type(item.get("task_revision")) is not int
+            or item["task_revision"] < 1
+            or not isinstance(item.get("agent_id"), str)
+            or _OPAQUE_ID.fullmatch(item["agent_id"]) is None
+            or item.get("state") not in {"dispatched", "review_ready", "completion_blocked", "accepted", "changes_requested"}
+            or item.get("review_task_revision") is not None and (
+                type(item["review_task_revision"]) is not int or item["review_task_revision"] < 1
+            )
+            or item.get("completion_reason") is not None and item["completion_reason"] != "task_changed"
+            or not isinstance(item.get("runtime_type"), str)
+            or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", item["runtime_type"])
+            or item.get("status") not in {"reserved", "queued", "submitting", "starting", "running", "cancelling", "waiting", "waiting_for_approval", "waiting_for_clarification", "completed", "failed", "cancelled", "stopped", "interrupted", "unknown"}
+            or item.get("dispatch_state") not in {"legacy", "reserved", "submitting", "accepted", "rejected", "unknown"}
+            or type(item.get("partial")) is not bool
+            or type(item.get("terminal_finalized")) is not bool
+            or not _valid_timestamp(item.get("created_at"))
+            or not _valid_timestamp(item.get("updated_at"))
+            or item.get("completed_at") is not None and not _valid_timestamp(item["completed_at"])
+            or item.get("review_action") is not None and item["review_action"] not in {"accept", "request_changes"}
+            or item.get("review_note") is not None and (
+                not _planning_text(item["review_note"], 2000)
+            )
+        ):
+            raise BridgeConversationProjectionError("planning_execution_invalid")
+        public_attempts.append(dict(item))
+    if (
+        len({item["run_id"] for item in public_attempts}) != len(public_attempts)
+        or review["available"] != any(item["state"] == "review_ready" for item in public_attempts)
+        or review["available"] and review["run_id"] not in {item["run_id"] for item in public_attempts if item["state"] == "review_ready"}
+        or not review["available"] and review["run_id"] is not None
+    ):
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    return {"schema_version": 1, "task": task, "execution": {**execution, "attempts": public_attempts}}
+
+
+def _planning_execution_failure(status: int) -> tuple[dict[str, object], int]:
+    state = {400: "invalid", 404: "not_found", 409: "conflict", 503: "unavailable"}.get(status, "error")
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": state,
+    }, status if status in {400, 404, 409, 503} else 500
+
+
+def bridge_planning_task_execution_payload(task_id: str) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_planning_task_execution_payload
+
+        source = _planning_execution_payload(mentat_planning_task_execution_payload(task_id))
+        if source["task"]["id"] != task_id:
+            raise BridgeConversationProjectionError("planning_execution_invalid")
+        return {**source, "service": "mentat-local-bridge", "runtime": "python", "status": "ready"}, 200
+    except OrchestrationServiceError as exc:
+        return _planning_execution_failure(404 if exc.code == "dispatch.task_not_found" else 503 if exc.code == "dispatch.unavailable" else 400)
+    except Exception:
+        return _planning_execution_failure(500)
+
+
+def bridge_planning_task_run_once_preview_payload(task_id: str, payload: object) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_planning_task_run_once_preview
+
+        source, status = mentat_planning_task_run_once_preview(task_id, payload)
+        if status != 200:
+            return _planning_execution_failure(status)
+        if not isinstance(source, dict) or set(source) != {"schema_version", "action", "task", "requires_confirmation", "confirmation_id"}:
+            raise BridgeConversationProjectionError("planning_execution_invalid")
+        task = _planning_execution_task(source.get("task"))
+        if source.get("schema_version") != 1 or source.get("action") != "run_once" or task["id"] != task_id or source.get("requires_confirmation") is not True or not isinstance(source.get("confirmation_id"), str) or re.fullmatch(r"[0-9a-f]{64}", source["confirmation_id"]) is None:
+            raise BridgeConversationProjectionError("planning_execution_invalid")
+        return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "action": "run_once", "task": task, "requires_confirmation": True, "confirmation_id": source["confirmation_id"]}, 200
+    except Exception:
+        return _planning_execution_failure(500)
+
+
+def _bridge_planning_execution_action(
+    task_id: str, source: object, status: int, *, expected_action: set[str]
+) -> tuple[dict[str, object], int]:
+    if status not in {200, 202}:
+        return _planning_execution_failure(status)
+    if not isinstance(source, dict) or set(source) != {"schema_version", "action", "duplicate", "task", "execution"}:
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    public = _planning_execution_payload({key: source[key] for key in ("schema_version", "task", "execution")})
+    if source.get("action") not in expected_action or public["task"]["id"] != task_id or type(source.get("duplicate")) is not bool:
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    return {**public, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "action": source["action"], "duplicate": source["duplicate"]}, status
+
+
+def bridge_planning_task_run_once_payload(task_id: str, payload: object) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_planning_task_run_once
+        source, status = mentat_planning_task_run_once(task_id, payload)
+        return _bridge_planning_execution_action(task_id, source, status, expected_action={"run_once"})
+    except Exception:
+        return _planning_execution_failure(500)
+
+
+def bridge_planning_task_review_payload(task_id: str, payload: object) -> tuple[dict[str, object], int]:
+    try:
+        from server import mentat_planning_task_execution_review
+        source, status = mentat_planning_task_execution_review(task_id, payload)
+        return _bridge_planning_execution_action(task_id, source, status, expected_action={"accept", "request_changes"})
+    except Exception:
+        return _planning_execution_failure(500)
 
 
 def bridge_planning_task_dependencies_payload(
@@ -4746,6 +4914,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             payload, status = bridge_planning_task_detail_payload(pairs[0][1])
             self._send_json(payload, status)
             return
+        if parsed.path == BRIDGE_PLANNING_TASK_EXECUTION_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) != 1 or pairs[0][0] != "task_id" or _TASK_ID.fullmatch(pairs[0][1]) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_task_execution_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH:
             try:
                 pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
@@ -5105,6 +5284,51 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 if action == "edit"
                 else bridge_move_planning_task_payload(task_id, body)
             )
+            self._send_json(payload, status)
+            return
+        planning_execution_path = {
+            BRIDGE_PLANNING_TASK_RUN_ONCE_PREVIEW_PATH: "preview",
+            BRIDGE_PLANNING_TASK_RUN_ONCE_PATH: "run_once",
+            BRIDGE_PLANNING_TASK_REVIEW_PATH: "review",
+        }.get(parsed.path)
+        if planning_execution_path is not None and not parsed.query:
+            body = self._action_json_body(MAXIMUM_BRIDGE_PLANNING_MUTATION_BODY_BYTES)
+            if body is None or not isinstance(body.get("task_id"), str) or _TASK_ID.fullmatch(body["task_id"]) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            task_id = body["task_id"]
+            if planning_execution_path == "preview":
+                if set(body) != {"task_id", "expected_revision"}:
+                    self._send_json({"error": "bridge_route_not_found"}, 404)
+                    return
+                payload, status = bridge_planning_task_run_once_preview_payload(
+                    task_id, {"expected_revision": body["expected_revision"]}
+                )
+            elif planning_execution_path == "run_once":
+                if set(body) != {"task_id", "expected_revision", "idempotency_key", "confirmation_id"}:
+                    self._send_json({"error": "bridge_route_not_found"}, 404)
+                    return
+                payload, status = bridge_planning_task_run_once_payload(
+                    task_id,
+                    {key: body[key] for key in ("expected_revision", "idempotency_key", "confirmation_id")},
+                )
+            else:
+                expected = {"task_id", "expected_revision", "action", "idempotency_key"}
+                if body.get("action") == "request_changes":
+                    expected.add("note")
+                if set(body) != expected:
+                    self._send_json({"error": "bridge_route_not_found"}, 404)
+                    return
+                review_body = {
+                    key: body[key]
+                    for key in ("expected_revision", "action", "idempotency_key")
+                }
+                if body["action"] == "request_changes":
+                    review_body["note"] = body["note"]
+                payload, status = bridge_planning_task_review_payload(
+                    task_id,
+                    review_body,
+                )
             self._send_json(payload, status)
             return
         conversation_planning_match = re.fullmatch(

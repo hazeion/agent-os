@@ -12,7 +12,7 @@ const ATTENTION_REASONS = ["overdue", "due_today", "review", "needs_attention", 
 const PLANNING_STATES = ["inbox", "planned", "in_progress", "waiting", "review", "someday", "blocked", "done"] as const;
 const WORKFLOW_STAGES = ["inbox", "planned", "in_progress", "waiting", "review", "done"] as const;
 
-type ServiceEnvelope = {
+export type ServiceEnvelope = {
   schema_version: 1;
   service: "mentat-local-bridge";
   runtime: "python";
@@ -82,6 +82,39 @@ export type PublicPlanningDependencyMap = ServiceEnvelope & { project: PublicPla
 export type PublicPlanningSavedView = typeof SAVED_VIEWS[number];
 export type PublicPlanningDependencyPickerPage = ServiceEnvelope & { task_id: string; query: string; candidates: PublicPlanningDependencyReference[]; candidate_count: number; match_count: number; next_cursor: string | null; truncated: boolean };
 
+/** A bounded, safe record of one Task-owned dispatch. It is not a runtime handle. */
+export type PublicPlanningExecutionAttempt = {
+  run_id: string;
+  task_revision: number;
+  agent_id: string;
+  state: "dispatched" | "review_ready" | "completion_blocked" | "accepted" | "changes_requested";
+  review_task_revision: number | null;
+  completion_reason: "task_changed" | null;
+  runtime_type: string;
+  status: string;
+  dispatch_state: string;
+  partial: boolean;
+  terminal_finalized: boolean;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  review_action: "accept" | "request_changes" | null;
+  review_note: string | null;
+};
+export type PublicPlanningExecutionTask = PublicPlanningTask & { assigned_agent_id: string | null };
+export type PublicPlanningTaskExecution = ServiceEnvelope & {
+  task: PublicPlanningExecutionTask;
+  execution: {
+    available: boolean;
+    reason: string | null;
+    attempts: PublicPlanningExecutionAttempt[];
+    attempt_count: number;
+    review: { available: boolean; run_id: string | null };
+  };
+};
+export type PublicPlanningRunOncePreview = ServiceEnvelope & { action: "run_once"; task: PublicPlanningExecutionTask; requires_confirmation: true; confirmation_id: string };
+export type PublicPlanningTaskExecutionMutation = PublicPlanningTaskExecution & { action: "run_once" | "accept" | "request_changes"; duplicate: boolean };
+
 export type PublicPlanningAssociation = { project_id: string; task_id: string | null };
 
 export type PublicConversationPlanningContext = ServiceEnvelope & {
@@ -108,15 +141,15 @@ export class PublicPlanningError extends Error {
   constructor(code: string) { super(code); this.code = code; this.name = "PublicPlanningError"; }
 }
 
-function record(value: unknown): value is Record<string, unknown> {
+export function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function keys(value: Record<string, unknown>, expected: string): boolean {
+export function keys(value: Record<string, unknown>, expected: string): boolean {
   return Object.keys(value).sort().join(",") === expected;
 }
 
-function text(value: unknown, maximum: number): value is string {
+export function text(value: unknown, maximum: number): value is string {
   return typeof value === "string" && !!value && value.trim() === value && [...value].length <= maximum && !/\p{C}/u.test(value);
 }
 
@@ -126,7 +159,7 @@ function date(value: unknown): value is string {
   return year! >= 1 && month! >= 1 && month! <= 12 && day! >= 1 && day! <= days[month!]!;
 }
 
-function timestamp(value: unknown): value is string {
+export function timestamp(value: unknown): value is string {
   return typeof value === "string" && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value) && !Number.isNaN(Date.parse(value));
 }
 
@@ -135,7 +168,7 @@ function validProject(value: unknown): value is PublicPlanningProject {
     && text(value.name, 120) && ["active", "paused", "archived"].includes(String(value.status)) && Number.isSafeInteger(value.revision) && (value.revision as number) >= 1;
 }
 
-function validTask(value: unknown): value is PublicPlanningTask {
+export function validTask(value: unknown): value is PublicPlanningTask {
   if (!record(value) || !keys(value, "attention_reasons,blocked,deferred,due_date,id,needs_attention,planned_for_today,planning_state,priority,project_id,project_name,review_required,revision,status,title,updated_at,workflow_stage")) return false;
   if (!Array.isArray(value.attention_reasons) || value.attention_reasons.length > ATTENTION_REASONS.length) return false;
   const indexes = value.attention_reasons.map((reason) => ATTENTION_REASONS.indexOf(reason as typeof ATTENTION_REASONS[number]));
@@ -191,7 +224,7 @@ function validTaskDetail(value: unknown): value is PublicPlanningTaskDetail {
     && (agentId === null || typeof agentId === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(agentId));
 }
 
-function validEnvelope(value: Record<string, unknown>): boolean {
+export function validEnvelope(value: Record<string, unknown>): boolean {
   return value.schema_version === 1 && value.service === "mentat-local-bridge" && value.runtime === "python" && value.status === "ready";
 }
 
@@ -346,13 +379,13 @@ async function boundedJson(response: Response): Promise<unknown> {
   try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown; } catch { throw new PublicPlanningError("response_invalid"); }
 }
 
-function failure(payload: unknown, response: Response): never {
+export function failure(payload: unknown, response: Response): never {
   if (!record(payload) || !keys(payload, "schema_version,status") || payload.schema_version !== 1) throw new PublicPlanningError("response_invalid");
-  const mapped: Record<string, string> = { "400:invalid": "invalid", "404:not_found": "not_found", "409:conflict": "conflict", "409:active_run": "active_run", "409:queue_active": "queue_active", "501:unsupported": "unsupported", "503:unavailable": "unavailable" };
+  const mapped: Record<string, string> = { "400:invalid": "invalid", "404:not_found": "not_found", "409:conflict": "conflict", "409:active_run": "active_run", "409:queue_active": "queue_active", "500:partial": "partial", "500:error": "error", "501:unsupported": "unsupported", "503:unavailable": "unavailable" };
   throw new PublicPlanningError(mapped[`${response.status}:${payload.status}`] ?? "response_invalid");
 }
 
-async function request(path: string, init: RequestInit = {}, timeout = READ_TIMEOUT_MILLISECONDS): Promise<{ payload: unknown; response: Response }> {
+export async function request(path: string, init: RequestInit = {}, timeout = READ_TIMEOUT_MILLISECONDS): Promise<{ payload: unknown; response: Response }> {
   try {
     const response = await fetch(path, { ...init, cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json", ...init.headers }, redirect: "error", signal: AbortSignal.timeout(timeout) });
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new PublicPlanningError("response_invalid");

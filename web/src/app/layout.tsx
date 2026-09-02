@@ -16,10 +16,6 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html data-ui-shell="emerald" lang="en" suppressHydrationWarning>
-      <head>
-        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
-        <script data-mentat-preference-preload src="/preference-preload.js" />
-      </head>
       <body>
         {children}
         <ShellRuntimeSignal />

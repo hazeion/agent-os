@@ -41,7 +41,12 @@ from mentat_db import (
     transaction,
 )
 from private_state import private_state_lock
-from task_planning import TASK_PLANNING_FIELDS, TaskPlanningError, normalize_task_planning
+from task_planning import (
+    TASK_PLANNING_FIELDS,
+    TaskPlanningError,
+    normalize_task_planning,
+    workflow_stage,
+)
 
 
 MAX_TASKS = 2_048
@@ -927,12 +932,15 @@ class TaskRepository:
         *,
         expected_revision: int,
         allow_project_move: bool = False,
+        allow_execution_review_transition: bool = False,
         successor: Mapping[str, Any] | None = None,
     ) -> TaskSnapshot:
         """Atomically replace one Task when its internal revision still matches."""
 
         if type(expected_revision) is not int or expected_revision < 1:
             raise TaskRepositoryValidationError("task_repository.revision_invalid")
+        if type(allow_execution_review_transition) is not bool:
+            raise TaskRepositoryValidationError("task_repository.execution_invalid")
         replacement = normalize_task_document(task)
         identifier = replacement["id"]
         normalized_successor = (
@@ -950,6 +958,23 @@ class TaskRepository:
                 raise TaskRepositoryConflict("task_repository.not_found")
             if int(current["revision"]) != expected_revision:
                 raise TaskRepositoryConflict("task_repository.revision_conflict")
+            has_execution_attempts = self.connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'mentat_task_execution_attempts'"
+            ).fetchone() is not None
+            if (
+                has_execution_attempts
+                and not allow_execution_review_transition
+                and workflow_stage(replacement) in {"review", "done"}
+                and self.connection.execute(
+                    "SELECT 1 FROM mentat_task_execution_attempts "
+                    "WHERE task_id = ? AND state IN ('dispatched', 'review_ready') "
+                    "LIMIT 1",
+                    (identifier,),
+                ).fetchone()
+                is not None
+            ):
+                raise TaskRepositoryConflict("task_repository.execution_review_required")
             documents = self.list_tasks()
             candidates = [
                 replacement if item["id"] == identifier else item

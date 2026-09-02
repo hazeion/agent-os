@@ -25,6 +25,7 @@ import agent_console_attachments
 import data_layout
 import data_schema
 import json_store
+import mentat_db
 import private_console_migration
 import private_console_unit
 import run_repository
@@ -2358,6 +2359,36 @@ class PrivateConsoleStateTests(unittest.TestCase):
             os.link(wal, base / "wal-link")
             with self.assertRaises(MentatDatabaseError):
                 connect(root)
+
+    def test_sqlite_retries_a_transient_sidecar_validation_failure_during_open(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "data"
+            initial = connect(root)
+            initial.close()
+            real_connect_once = mentat_db._connect_with_identity_once
+            denied = 0
+
+            def deny_sidecar_once(*args, **kwargs):
+                nonlocal denied
+                if denied == 0:
+                    denied += 1
+                    raise mentat_db._TransientDatabaseSidecarRace(
+                        "simulated transient SQLite sidecar lock"
+                    )
+                return real_connect_once(*args, **kwargs)
+
+            with patch.object(
+                mentat_db,
+                "_connect_with_identity_once",
+                autospec=True,
+                side_effect=deny_sidecar_once,
+            ):
+                connection = connect(root)
+            try:
+                self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            finally:
+                connection.close()
+            self.assertEqual(denied, 1)
 
     def test_waiting_private_writer_rechecks_restore_reservation(self):
         with TemporaryDirectory() as temporary:

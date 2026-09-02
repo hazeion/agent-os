@@ -1,9 +1,6 @@
 const root = document.documentElement;
-const storageKey = "mentat-contrast-v1";
-const contrastMedia = window.matchMedia("(prefers-contrast: more)");
 const mobileNavigation = window.matchMedia("(max-width: 900px)");
 const compactNavigation = window.matchMedia("(min-width: 901px) and (max-width: 1199px)");
-const supportedContrast = new Set(["system", "standard", "high"]);
 
 let bridgeRequest = 0;
 let bridgeState = "checking";
@@ -24,29 +21,6 @@ let pendingRunsSummaryNotice = "";
 let navigationOwnsFocus = false;
 let observedPath = "";
 let runtimeStarted = false;
-
-function storedContrast() {
-  try {
-    const value = window.localStorage.getItem(storageKey);
-    return value === "standard" || value === "high" ? value : "system";
-  } catch {
-    return "system";
-  }
-}
-
-function applyContrast(preference) {
-  const safePreference = preference === "standard" || preference === "high" ? preference : "system";
-  root.dataset.contrastPreference = safePreference;
-  root.dataset.contrast = safePreference === "high" || (safePreference === "system" && contrastMedia.matches)
-    ? "high"
-    : "standard";
-
-  document.querySelectorAll("[data-contrast-select]").forEach((select) => {
-    if (select instanceof HTMLSelectElement && select.value !== safePreference) {
-      select.value = safePreference;
-    }
-  });
-}
 
 function shellElements() {
   const shell = document.querySelector(".app-shell");
@@ -869,7 +843,6 @@ function openRunTimeline(run, card, trigger) {
 
 function synchronizeShell() {
   if (!document.querySelector(".app-shell")) return;
-  applyContrast(root.dataset.contrastPreference || storedContrast());
   setSidebarAvailability(Boolean(root.dataset.navOpen));
   synchronizeSidebarToggle();
   applyBridgeState();
@@ -892,25 +865,6 @@ function synchronizeShell() {
     if (runsElements()) requestAnimationFrame(() => requestAnimationFrame(refreshRuns)); else clearRunRequest();
   }
 }
-
-document.addEventListener("change", (event) => {
-  if (!runtimeStarted) return;
-  const select = event.target;
-  if (!(select instanceof HTMLSelectElement) || !select.matches("[data-contrast-select]")) return;
-  const preference = select.value;
-  if (!supportedContrast.has(preference)) return;
-
-  try {
-    if (preference === "system") {
-      window.localStorage.removeItem(storageKey);
-    } else {
-      window.localStorage.setItem(storageKey, preference);
-    }
-  } catch {
-    // The current page can still honor the choice when storage is unavailable.
-  }
-  applyContrast(preference);
-});
 
 document.addEventListener("click", (event) => {
   if (!runtimeStarted) return;
@@ -1038,10 +992,6 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-contrastMedia.addEventListener("change", () => {
-  if (runtimeStarted && root.dataset.contrastPreference === "system") applyContrast("system");
-});
-
 compactNavigation.addEventListener("change", () => {
   if (runtimeStarted) hideNavigationTooltip();
 });
@@ -1064,7 +1014,6 @@ function startShellRuntime() {
   if (runtimeStarted) return;
   runtimeStarted = true;
   root.dataset.shellRuntime = "ready";
-  applyContrast(root.dataset.contrastPreference || storedContrast());
   synchronizeShell();
   new MutationObserver(synchronizeShell).observe(document.body, {
     childList: true,

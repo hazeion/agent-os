@@ -76,16 +76,26 @@ jobs:
             fi
             wait "$launcher_pid" 2>/dev/null || true
           }
+          export PYTHONUNBUFFERED=1
           setsid "$PIPX_BIN_DIR/mentat" start --data-dir "$smoke_root/data" --port 8894 >"$RUNNER_TEMP/mentat-package.log" 2>&1 &
           launcher_pid=$!
           trap cleanup_launcher_group EXIT
+          ready=false
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null; then
+            if curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8894/api/bridge/health >/dev/null; then
+              ready=true
               break
+            fi
+            if ! kill -0 "$launcher_pid" 2>/dev/null; then
+              tail -n 200 "$RUNNER_TEMP/mentat-package.log" >&2 || true
+              exit 1
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null
+          if [ "$ready" != true ]; then
+            tail -n 200 "$RUNNER_TEMP/mentat-package.log" >&2 || true
+            exit 1
+          fi
           curl --fail --silent http://127.0.0.1:8894/ >/dev/null
           CHROME_PATH=/usr/bin/google-chrome \
             MENTAT_WEB_BASE_URL=http://127.0.0.1:8894 \
@@ -171,20 +181,29 @@ jobs:
           MENTAT_BROWSER_RUNTIME_DIR: ${{ runner.temp }}/browser-smoke-runtime
         run: |
           export MENTAT_DATA_DIR="$RUNNER_TEMP/mentat-browser-data"
-          python server.py --data-dir "$MENTAT_DATA_DIR" --port 8895 >"$RUNNER_TEMP/mentat-browser.log" 2>&1 &
+          python -u server.py --data-dir "$MENTAT_DATA_DIR" --port 8895 >"$RUNNER_TEMP/mentat-browser.log" 2>&1 &
           server_pid=$!
           cleanup() {
             python -m mentat stop --data-dir "$MENTAT_DATA_DIR" --port 8895 >/dev/null 2>&1 || true
             wait "$server_pid" 2>/dev/null || true
           }
           trap cleanup EXIT
+          ready=false
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8895/api/health >/dev/null; then
+            if curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8895/api/health >/dev/null; then
+              ready=true
               break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              tail -n 200 "$RUNNER_TEMP/mentat-browser.log" >&2 || true
+              exit 1
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8895/api/health >/dev/null
+          if [ "$ready" != true ]; then
+            tail -n 200 "$RUNNER_TEMP/mentat-browser.log" >&2 || true
+            exit 1
+          fi
           node scripts/browser_smoke.mjs
           git diff --exit-code -- data/agents.json
 
@@ -258,16 +277,26 @@ jobs:
           trap cleanup EXIT
           timeout --preserve-status --signal=INT --kill-after=10s 10s env MENTAT_DATA_DIR="$preview_data_dir" python server.py --port "$bootstrap_port" >"$RUNNER_TEMP/mentat-web-bootstrap.log" 2>&1
           test -f "$preview_data_dir/private/console/mentat.sqlite3"
-          MENTAT_DATA_DIR="$preview_data_dir" python scripts/mentat_web_preview.py --port 8896 >"$RUNNER_TEMP/mentat-web-preview.log" 2>&1 &
+          PYTHONUNBUFFERED=1 MENTAT_DATA_DIR="$preview_data_dir" python scripts/mentat_web_preview.py --port 8896 >"$RUNNER_TEMP/mentat-web-preview.log" 2>&1 &
           preview_pid=$!
+          ready=false
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null; then
+            if curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8896/api/bridge/health >/dev/null; then
+              ready=true
               break
+            fi
+            if ! kill -0 "$preview_pid" 2>/dev/null; then
+              tail -n 200 "$RUNNER_TEMP/mentat-web-preview.log" >&2 || true
+              exit 1
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8896/ >/dev/null
-          curl --fail --silent http://127.0.0.1:8896/api/bridge/health >/dev/null
+          if [ "$ready" != true ]; then
+            tail -n 200 "$RUNNER_TEMP/mentat-web-preview.log" >&2 || true
+            exit 1
+          fi
+          curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8896/ >/dev/null
+          curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8896/api/bridge/health >/dev/null
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Host: attacker.example' http://127.0.0.1:8896/)" = 403
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Origin: https://attacker.example' --header 'Sec-Fetch-Site: cross-site' http://127.0.0.1:8896/)" = 403
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Sec-Fetch-Site: bogus' http://127.0.0.1:8896/)" = 403

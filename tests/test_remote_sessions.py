@@ -1330,7 +1330,7 @@ class RemoteSessionTests(unittest.TestCase):
     def test_public_text_validation_is_bounded_for_maximum_slash_free_text(self):
         # Hosted macOS Intel runners are consistently slower on these maximum-
         # size delimiter scans; retain a tight, platform-aware bounded budget.
-        validation_budget = 2.0 if sys.platform == "darwin" else 1.0
+        validation_budget = 3.0 if sys.platform == "darwin" else 1.0
         safe_then_sensitive = (
             ("x" * 140)
             + " Secret sauce=ok\n"

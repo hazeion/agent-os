@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import vm from "node:vm";
 
 import { SHELL_ROUTES } from "../src/lib/shell-routes.ts";
 
@@ -10,19 +9,6 @@ const webRoot = resolve(import.meta.dirname, "..");
 
 function source(path: string): string {
   return readFileSync(resolve(webRoot, path), "utf8");
-}
-
-function runPreferencePreload(stored: string | null, systemHigh: boolean) {
-  const dataset: Record<string, string> = {};
-  const preloader = source("public/preference-preload.js");
-  vm.runInNewContext(preloader, {
-    document: { documentElement: { dataset } },
-    window: {
-      localStorage: { getItem: () => stored },
-      matchMedia: () => ({ matches: systemHigh }),
-    },
-  });
-  return dataset;
 }
 
 test("the Emerald shell exposes exactly the approved migration routes", () => {
@@ -167,29 +153,6 @@ test("Agent Console layout polish stays balanced and content-led", () => {
   );
 });
 
-test("contrast preference is applied before paint with safe system fallback", () => {
-  assert.deepEqual(runPreferencePreload(null, false), {
-    uiShell: "emerald",
-    contrastPreference: "system",
-    contrast: "standard",
-  });
-  assert.deepEqual(runPreferencePreload(null, true), {
-    uiShell: "emerald",
-    contrastPreference: "system",
-    contrast: "high",
-  });
-  assert.deepEqual(runPreferencePreload("high", false), {
-    uiShell: "emerald",
-    contrastPreference: "high",
-    contrast: "high",
-  });
-  assert.deepEqual(runPreferencePreload("invalid", true), {
-    uiShell: "emerald",
-    contrastPreference: "system",
-    contrast: "high",
-  });
-});
-
 test("responsive shell contracts retain the completed Emerald tokens", () => {
   const css = source("src/app/globals.css");
   const shell = source("src/app/app-shell.tsx");
@@ -213,14 +176,20 @@ test("responsive shell contracts retain the completed Emerald tokens", () => {
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(css, /\.sidebar \{[\s\S]*overflow-y: auto/);
   assert.match(css, /\.icon-button \{[\s\S]*width: 44px;[\s\S]*height: 44px/);
-  assert.match(
-    css,
-    /@media \(max-width: 900px\)[\s\S]*\.brand,\s*\.contrast-control,\s*\.contrast-control select \{\s*min-height: 44px/,
-  );
-  assert.doesNotMatch(css, /\.contrast-control select \{[^}]*outline:\s*0/su);
+  assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.brand \{\s*min-height: 44px/);
   assert.match(shell, /from "next\/link"/);
+  assert.doesNotMatch(shell, /next\/image/);
   assert.match(shell, /<Link[\s\S]*data-nav-link/);
   assert.match(shell, /className="brand" data-nav-link href="\/"/);
+  assert.match(shell, /<span aria-hidden="true" className="brand-mark" \/>/);
+  assert.match(
+    css,
+    /@media \(min-width: 901px\) \{[\s\S]*\.brand-mark \{[\s\S]*mentat-mark-emerald\.png/,
+  );
+  assert.match(
+    css,
+    /@media \(max-width: 900px\) \{[\s\S]*:root\[data-nav-open\] \.brand-mark \{[\s\S]*mentat-mark-emerald\.png/,
+  );
   assert.match(shell, /aria-label=\{item\.label\}/);
   assert.match(css, /\.primary-nav \{[\s\S]*overflow-y: auto/);
   assert.match(css, /\.nav-tooltip \{[\s\S]*position: fixed/);
@@ -287,9 +256,9 @@ test("the small runtime enhances the shell without exposing bridge authority", (
   assert.match(runtime, /new MutationObserver\(synchronizeShell\)/);
   assert.match(runtime, /mentat:shell-hydrated/);
   assert.match(runtime, /frameworkRuntime[\s\S]*window\.addEventListener/);
-  assert.match(source("src/app/app-shell.tsx"), /<select aria-label="Contrast"/);
+  assert.doesNotMatch(source("src/app/app-shell.tsx"), /Contrast|data-contrast-select/);
   assert.doesNotMatch(source("src/app/app-shell.tsx"), /data-mentat-shell-runtime/);
-  assert.match(source("src/app/layout.tsx"), /data-mentat-preference-preload/);
+  assert.doesNotMatch(source("src/app/layout.tsx"), /data-mentat-preference-preload/);
   assert.match(source("src/app/layout.tsx"), /data-mentat-shell-runtime/);
   assert.match(source("src/app/layout.tsx"), /<ShellRuntimeSignal \/>/);
   assert.match(source("src/app/shell-runtime-signal.tsx"), /useEffect/);
@@ -305,8 +274,8 @@ test("production keeps two script-light static routes and hydrates Home and Proj
   ]) {
     assert.ok(config.includes(`destination: "${destination}"`));
   }
-  assert.match(compiler, /scripts\.length !== 2/);
-  assert.match(compiler, /"\/preference-preload\.js", "\/shell-runtime\.js"/);
+  assert.match(compiler, /scripts\.length !== 1/);
+  assert.match(compiler, /"\/shell-runtime\.js"/);
   assert.match(compiler, /shell\.includes\("self\.__next_f"\)/);
   assert.match(compiler, /failed its no-hydration contract/);
   assert.doesNotMatch(config, /shell\/home\.html/);

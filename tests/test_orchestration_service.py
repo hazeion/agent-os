@@ -1657,15 +1657,19 @@ class OrchestrationServiceTests(unittest.TestCase):
 
             worker = threading.Thread(target=submit_rejected)
             worker.start()
-            self.assertTrue(runtime.submit_entered.wait(timeout=5))
-            blocked = service.submit_conversation_turn(
-                conversation_id=conversation_id,
-                text="This exact head must stay first",
-                idempotency_key="conversation-blocked-fifo-key-2",
-            )
-            runtime.submit_release.set()
-            worker.join(timeout=5)
+            entered = runtime.submit_entered.wait(timeout=15)
+            try:
+                if entered:
+                    blocked = service.submit_conversation_turn(
+                        conversation_id=conversation_id,
+                        text="This exact head must stay first",
+                        idempotency_key="conversation-blocked-fifo-key-2",
+                    )
+            finally:
+                runtime.submit_release.set()
+                worker.join(timeout=15)
             self.assertFalse(worker.is_alive())
+            self.assertTrue(entered)
             if failures:
                 raise failures[0]
             appended = service.submit_conversation_turn(

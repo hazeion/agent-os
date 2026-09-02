@@ -43,12 +43,6 @@ export function ShellIcon({ name, size = 20 }: ShellIconProps) {
         <path d="m6 6 12 12M18 6 6 18" />
       </>
     ),
-    contrast: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 3a9 9 0 0 1 0 18Z" />
-      </>
-    ),
   };
 
   return (

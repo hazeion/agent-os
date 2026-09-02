@@ -57,9 +57,6 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         shell_runtime = (ROOT / "web" / "public" / "shell-runtime.js").read_text(
             encoding="utf-8"
         )
-        preference_preload = (
-            ROOT / "web" / "public" / "preference-preload.js"
-        ).read_text(encoding="utf-8")
         lighthouse_gate = (
             ROOT / "web" / "scripts" / "lighthouse-gate.mjs"
         ).read_text(encoding="utf-8")
@@ -104,10 +101,10 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn("document.querySelector('h1')?.textContent === 'What can Mentat help with?'", foundation_smoke)
         self.assertNotIn('source: "tasks.html"', standalone)
         self.assertIn(
-            "data-mentat-(?:preference-preload|shell-runtime)", standalone
+            "data-mentat-shell-runtime", standalone
         )
         self.assertIn(
-            '["/preference-preload.js", "/shell-runtime.js"]', standalone
+            '["/shell-runtime.js"]', standalone
         )
         self.assertIn("static Emerald shell", standalone)
         self.assertIn("no-hydration contract", standalone)
@@ -116,7 +113,7 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn('fetch("/api/bridge/health"', shell_runtime)
         self.assertIn("AbortSignal.timeout(3500)", shell_runtime)
         self.assertNotIn("MENTAT_BRIDGE_TOKEN", shell_runtime)
-        self.assertIn('storageKey = "mentat-contrast-v1"', preference_preload)
+        self.assertFalse((ROOT / "web" / "public" / "preference-preload.js").exists())
         self.assertFalse((ROOT / "web" / "public" / "foundation-status.js").exists())
         self.assertIn('matcher: ["/:path*"]', proxy)
         self.assertIn("contentSecurityPolicy(nonce)", proxy)

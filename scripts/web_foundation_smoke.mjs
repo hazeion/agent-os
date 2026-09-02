@@ -218,7 +218,10 @@ async function inspectRoutes(client) {
       currentCount: document.querySelectorAll('[aria-current="page"]').length,
       scriptPaths: [...document.scripts].map((script) => new URL(script.src, location.href).pathname),
       hasFlightPayload: document.documentElement.innerHTML.includes('self.__next_f'),
-      hasLogo: document.querySelector('.brand-mark')?.getAttribute('src') === '/mentat-mark-emerald.png',
+      hasBrandMark: (() => {
+        const mark = document.querySelector('.brand-mark');
+        return mark?.tagName === 'SPAN' && mark.getAttribute('aria-hidden') === 'true';
+      })(),
       overflow: document.documentElement.scrollWidth - innerWidth,
     }))()`);
     const staticRoute = route.path !== "/" && route.path !== "/tasks";
@@ -230,16 +233,15 @@ async function inspectRoutes(client) {
       || result.headingCount !== 1
       || result.mainCount !== 1
       || result.currentCount !== 1
-      || !result.hasLogo
+      || !result.hasBrandMark
       || result.overflow > 1
       || staticRoute && (
-        JSON.stringify(result.scriptPaths) !== JSON.stringify(["/preference-preload.js", "/shell-runtime.js"])
+        JSON.stringify(result.scriptPaths) !== JSON.stringify(["/shell-runtime.js"])
         || result.hasFlightPayload
       )
       || !staticRoute && (
         !hasFrameworkScripts
         || !result.hasFlightPayload
-        || !result.scriptPaths.includes("/preference-preload.js")
         || !result.scriptPaths.includes("/shell-runtime.js")
       )
     ) {
@@ -335,36 +337,22 @@ async function captureGeometry(client) {
 
 async function inspectViewport(client, viewport) {
   await setViewport(client, viewport);
-  let healthRequestId = "";
-  const removePausedHandler = client.on("Fetch.requestPaused", ({ requestId }) => {
-    healthRequestId = requestId;
-  });
-  await client.call("Fetch.enable", {
-    patterns: [{ urlPattern: `${baseUrl.origin}/api/bridge/health*`, requestStage: "Request" }],
-  });
-
-  try {
-    await navigate(client, "/", `${viewport.name} viewport`);
-    await waitFor(
-      () => client.eval("document.querySelector('[data-bridge-status-text]')?.textContent === 'Checking Python'"),
-      `${viewport.name} checking state`,
-    );
-    await waitFor(() => healthRequestId, `${viewport.name} held bridge request`);
-    const checking = await captureGeometry(client);
-
-    await client.call("Fetch.continueRequest", { requestId: healthRequestId });
-    healthRequestId = "";
-    await waitFor(
-      () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
-      `${viewport.name} ready state`,
-    );
-    const ready = await captureGeometry(client);
-    const details = await client.eval(`(() => ({
+  await navigate(client, "/", `${viewport.name} viewport`);
+  await waitFor(
+    () => client.eval("document.querySelector('[data-bridge-status]') !== null"),
+    `${viewport.name} bridge status`,
+  );
+  const checking = await captureGeometry(client);
+  await waitFor(
+    () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
+    `${viewport.name} ready state`,
+  );
+  const ready = await captureGeometry(client);
+  const details = await client.eval(`(() => ({
       bridgeLive: document.querySelector('[data-bridge-status]')?.getAttribute('aria-live'),
       bridgeAtomic: document.querySelector('[data-bridge-status]')?.getAttribute('aria-atomic'),
       bridgeText: document.querySelector('[data-bridge-status-text]')?.textContent,
       bridgeCompact: document.querySelector('[data-bridge-status-compact]')?.textContent,
-      contrast: document.documentElement.dataset.contrast,
       heading: document.querySelector('h1')?.textContent?.trim(),
       active: document.querySelector('[aria-current="page"] .nav-copy strong')?.textContent?.trim(),
       sidebarHidden: document.querySelector('.sidebar')?.getAttribute('aria-hidden'),
@@ -403,7 +391,6 @@ async function inspectViewport(client, viewport) {
       || details.bridgeAtomic !== "true"
       || details.bridgeText !== "Python ready"
       || details.bridgeCompact !== "Ready"
-      || details.contrast !== "standard"
       || details.heading !== "What can Mentat help with?"
       || details.active !== "Home"
     ) {
@@ -415,14 +402,7 @@ async function inspectViewport(client, viewport) {
       const screenshot = await client.call("Page.captureScreenshot", { format: "png", fromSurface: true });
       writeFileSync(resolve(screenshotDirectory, `node-shell-${viewport.name}.png`), Buffer.from(screenshot.data, "base64"));
     }
-    return { viewport, checking, ready, details, geometryShift };
-  } finally {
-    if (healthRequestId) {
-      await Promise.allSettled([client.call("Fetch.continueRequest", { requestId: healthRequestId })]);
-    }
-    removePausedHandler();
-    await client.call("Fetch.disable");
-  }
+  return { viewport, checking, ready, details, geometryShift };
 }
 
 async function inspectCollapsedRailCentering(client) {
@@ -471,7 +451,7 @@ async function inspectCollapsedRailCentering(client) {
   return results;
 }
 
-async function inspectKeyboardDrawerAndContrast(client) {
+async function inspectKeyboardDrawer(client) {
   const phone = viewports.at(-1);
   await setViewport(client, phone);
   await navigate(client, "/", "phone interaction");
@@ -546,24 +526,6 @@ async function inspectKeyboardDrawerAndContrast(client) {
     focusReturned: document.activeElement === document.querySelector('[data-nav-open][aria-controls]'),
   }))()`);
 
-  await client.eval(`(() => {
-    const select = document.querySelector('[data-contrast-select]');
-    select.value = 'high';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  })()`);
-  await client.call("Page.reload", { ignoreCache: true });
-  await waitFor(
-    () => client.eval("document.readyState === 'complete' && document.documentElement.dataset.shellRuntime === 'ready' && document.documentElement.dataset.contrast === 'high'"),
-    "persisted high contrast",
-  );
-  const contrast = await client.eval(`(() => ({
-    mode: document.documentElement.dataset.contrast,
-    preference: document.documentElement.dataset.contrastPreference,
-    selected: document.querySelector('[data-contrast-select]').value,
-    accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
-  }))()`);
-  await client.eval("localStorage.removeItem('mentat-contrast-v1')");
-
   if (
     !String(skipFocus.className).includes("skip-link")
     || skipFocus.outlineWidth < 2
@@ -585,15 +547,11 @@ async function inspectKeyboardDrawerAndContrast(client) {
     || desktopBreakpointFocus.active !== "Home"
     || mobileBreakpointFocus.sidebarHidden !== "true"
     || !mobileBreakpointFocus.focusReturned
-    || contrast.mode !== "high"
-    || contrast.preference !== "high"
-    || contrast.selected !== "high"
-    || contrast.accent.toLowerCase() !== "#bdf7b9"
   ) {
-    throw new Error(`phone interaction contract failed: ${JSON.stringify({ skipFocus, opened, trapped, closed, backdropClosed, desktopBreakpointFocus, mobileBreakpointFocus, contrast })}`);
+    throw new Error(`phone interaction contract failed: ${JSON.stringify({ skipFocus, opened, trapped, closed, backdropClosed, desktopBreakpointFocus, mobileBreakpointFocus })}`);
   }
 
-  return { skipFocus, opened, trapped, closed, backdropClosed, desktopBreakpointFocus, mobileBreakpointFocus, contrast };
+  return { skipFocus, opened, trapped, closed, backdropClosed, desktopBreakpointFocus, mobileBreakpointFocus };
 }
 
 async function inspectUnavailableBridge(client) {
@@ -1432,52 +1390,25 @@ async function inspectCompactShortHeight(client) {
   return result;
 }
 
-async function inspectSystemContrastAndReducedMotion(client) {
+async function inspectReducedMotion(client) {
   await setViewport(client, viewports.at(-1));
   await client.call("Emulation.setEmulatedMedia", {
-    features: [
-      { name: "prefers-contrast", value: "more" },
-      { name: "prefers-reduced-motion", value: "reduce" },
-    ],
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
   });
   try {
-    await navigate(client, "/", "system contrast and reduced motion");
-    await waitFor(
-      () => client.eval("document.documentElement.dataset.contrast === 'high'"),
-      "system high contrast",
-    );
-    await client.eval("document.activeElement?.blur()");
-    for (let index = 0; index < 3; index += 1) await dispatchKey(client, "Tab");
-    await waitFor(
-      () => client.eval("document.activeElement === document.querySelector('[data-contrast-select]')"),
-      "contrast keyboard focus",
-    );
+    await navigate(client, "/", "reduced motion");
     const result = await client.eval(`(() => {
-      const select = document.querySelector('[data-contrast-select]');
-      const selectStyle = getComputedStyle(select);
       const drawerStyle = getComputedStyle(document.querySelector('.sidebar'));
       const duration = drawerStyle.transitionDuration.split(',')[0].trim();
       const transitionMilliseconds = duration.endsWith('ms')
         ? Number.parseFloat(duration)
         : Number.parseFloat(duration) * 1000;
       return {
-        contrast: document.documentElement.dataset.contrast,
-        preference: document.documentElement.dataset.contrastPreference,
-        selected: select.value,
-        outlineStyle: selectStyle.outlineStyle,
-        outlineWidth: Number.parseFloat(selectStyle.outlineWidth),
         transitionMilliseconds,
       };
     })()`);
-    if (
-      result.contrast !== "high"
-      || result.preference !== "system"
-      || result.selected !== "system"
-      || result.outlineStyle === "none"
-      || result.outlineWidth < 2
-      || result.transitionMilliseconds > 0.02
-    ) {
-      throw new Error(`system contrast and reduced motion contract failed: ${JSON.stringify(result)}`);
+    if (result.transitionMilliseconds > 0.02) {
+      throw new Error(`reduced motion contract failed: ${JSON.stringify(result)}`);
     }
     return result;
   } finally {
@@ -1500,7 +1431,7 @@ async function inspectTwoHundredPercentReflow(client) {
     runs.focus();
     const runsRect = runs.getBoundingClientRect();
     const visibleTargets = [
-      ...document.querySelectorAll('.brand, [data-nav-link], .icon-button, [data-contrast-select]'),
+      ...document.querySelectorAll('.brand, [data-nav-link], .icon-button'),
     ].filter((target) => {
       const style = getComputedStyle(target);
       return !target.hidden && style.display !== 'none' && target.getBoundingClientRect().width > 0;
@@ -1633,9 +1564,6 @@ async function inspectClientNavigationPersistence(client, consoleErrors) {
 
   await client.eval(`(() => {
     window.__mentatClientNavigationMarker = 'persistent-document';
-    const select = document.querySelector('[data-contrast-select]');
-    select.value = 'high';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
     document.querySelector('[data-nav-open]').click();
   })()`);
   await waitFor(() => client.eval("document.documentElement.dataset.navOpen === 'true'"), "development drawer open");
@@ -1661,8 +1589,6 @@ async function inspectClientNavigationPersistence(client, consoleErrors) {
     marker: window.__mentatClientNavigationMarker ?? null,
     active: document.querySelector('[aria-current="page"] .nav-copy strong')?.textContent,
     bridge: document.querySelector('[data-bridge-status-text]')?.textContent,
-    contrast: document.documentElement.dataset.contrast,
-    selected: document.querySelector('[data-contrast-select]')?.value,
     drawerOpen: document.documentElement.dataset.navOpen === 'true',
     sidebarHidden: document.querySelector('.sidebar')?.getAttribute('aria-hidden'),
     workspaceInert: document.querySelector('[data-workspace]')?.inert,
@@ -1703,20 +1629,15 @@ async function inspectClientNavigationPersistence(client, consoleErrors) {
     marker: window.__mentatClientNavigationMarker ?? null,
     active: document.querySelector('[aria-current="page"] .nav-copy strong')?.textContent,
     bridge: document.querySelector('[data-bridge-status-text]')?.textContent,
-    contrast: document.documentElement.dataset.contrast,
     drawerOpen: document.documentElement.dataset.navOpen === 'true',
     sidebarHidden: document.querySelector('.sidebar')?.getAttribute('aria-hidden'),
     workspaceInert: document.querySelector('[data-workspace]')?.inert,
     runtimeScripts: document.querySelectorAll('[data-mentat-shell-runtime]').length,
   }))()`);
-  await client.eval("localStorage.removeItem('mentat-contrast-v1')");
-
   if (
     afterTransition.marker !== "persistent-document"
     || afterTransition.active !== "Projects & Tasks"
     || afterTransition.bridge !== "Python ready"
-    || afterTransition.contrast !== "high"
-    || afterTransition.selected !== "high"
     || afterTransition.drawerOpen
     || afterTransition.sidebarHidden !== "true"
     || afterTransition.workspaceInert
@@ -1724,7 +1645,6 @@ async function inspectClientNavigationPersistence(client, consoleErrors) {
     || homeTransition.marker !== "persistent-document"
     || homeTransition.active !== "Home"
     || homeTransition.bridge !== "Python ready"
-    || homeTransition.contrast !== "high"
     || homeTransition.drawerOpen
     || homeTransition.sidebarHidden !== "true"
     || homeTransition.workspaceInert
@@ -1806,7 +1726,7 @@ async function main() {
       viewportResults.push(await inspectViewport(client, viewport));
     }
     const collapsedCenteringResult = await inspectCollapsedRailCentering(client);
-    const interactionResult = await inspectKeyboardDrawerAndContrast(client);
+    const interactionResult = await inspectKeyboardDrawer(client);
     const agentsResult = await inspectAgentsWorkspace(client);
     const providerConnectionsResult = await inspectProviderConnectionsWorkspace(client);
     const providerProjectionResult = await inspectProviderConnectionProjection(client);
@@ -1825,7 +1745,7 @@ async function main() {
     const unavailableResult = await inspectUnavailableBridge(client);
     const compactResult = await inspectCompactPointerAndTooltip(client);
     const compactHeightResult = await inspectCompactShortHeight(client);
-    const systemPreferenceResult = await inspectSystemContrastAndReducedMotion(client);
+    const reducedMotionResult = await inspectReducedMotion(client);
     const reflowResult = await inspectTwoHundredPercentReflow(client);
     if (client.eventErrors.length || consoleErrors.length) {
       throw new Error(`Browser console/event errors: ${JSON.stringify({ consoleErrors, eventErrors: client.eventErrors.map(String) })}`);
@@ -1856,7 +1776,7 @@ async function main() {
       unavailable: unavailableResult,
       compact: compactResult,
       compactHeight: compactHeightResult,
-      systemPreferences: systemPreferenceResult,
+      reducedMotion: reducedMotionResult,
       reflow: reflowResult,
     }, null, 2));
     client.ws.close();

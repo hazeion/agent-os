@@ -12,6 +12,10 @@ import {
   fetchBridgePlanningTaskDependencies,
   fetchBridgePlanningDependencyMap,
   fetchBridgePlanningDependencyPicker,
+  fetchBridgePlanningTaskExecution,
+  previewBridgePlanningTaskRunOnce,
+  confirmBridgePlanningTaskRunOnce,
+  reviewBridgePlanningTaskExecution,
   fetchBridgePlanningTasks,
   moveBridgePlanningTask,
   updateBridgePlanningProject,
@@ -26,6 +30,7 @@ import { createPlanningTaskDependenciesHandler } from "../src/lib/planning-task-
 import { createPlanningDependencyMapHandler } from "../src/lib/planning-dependency-map-route.ts";
 import { createPlanningDependencyPickerHandler } from "../src/lib/planning-dependency-picker-route.ts";
 import { createPlanningMutationHandler } from "../src/lib/planning-mutation-route.ts";
+import { createPlanningTaskExecutionGetHandler, createPlanningTaskRunOncePreviewHandler, createPlanningTaskRunOnceConfirmHandler, createPlanningTaskExecutionReviewHandler } from "../src/lib/planning-task-execution-route.ts";
 import { createProjectHandler, createProjectTaskHandler } from "../src/lib/project-creation-route.ts";
 import {
   createProject,
@@ -50,6 +55,15 @@ import {
   readPlanningTasks,
   updateConversationPlanningContext,
 } from "../src/lib/public-planning.ts";
+import {
+  confirmPlanningTaskRunOnce,
+  parsePlanningRunOncePreview,
+  parsePlanningTaskExecution,
+  parsePlanningTaskExecutionMutation,
+  previewPlanningTaskRunOnce,
+  readPlanningTaskExecution,
+  reviewPlanningTaskExecution,
+} from "../src/lib/public-planning-task-execution.ts";
 
 const envelope = { runtime: "python" as const, schema_version: 1 as const, service: "mentat-local-bridge" as const, status: "ready" as const };
 const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "active" as const };
@@ -61,6 +75,12 @@ const taskPage = { ...envelope, count: 1, next_cursor: null, project, tasks: [li
 const nonAttentionTask = { ...task, attention_reasons: [] as [], due_date: null, id: "task_plain", needs_attention: false, planning_state: "inbox" as const, priority: "medium" as const, review_required: false, title: "Plain task" };
 const taskResult = { ...envelope, project, task: nonAttentionTask };
 const taskDetailResult = { ...envelope, project, task: { ...nonAttentionTask, assigned_agent_id: null, description: "A bounded description.", estimated_minutes: 30, recurrence: null, subtasks: [], tags: [] } };
+const executionTask = { ...nonAttentionTask, assigned_agent_id: "agent_alpha", workflow_stage: "planned" as const };
+const taskExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: executionTask };
+const runOncePreview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: executionTask };
+const executionAttempt = { agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched" as const, status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" };
+const runOnceMutation = { ...envelope, action: "run_once" as const, duplicate: false, execution: { attempt_count: 1, attempts: [executionAttempt], available: false, reason: "unavailable" as const, review: { available: false, run_id: null } }, task: { ...executionTask, workflow_stage: "in_progress" as const } };
+const acceptMutation = { ...runOnceMutation, action: "accept" as const, execution: { ...runOnceMutation.execution, review: { available: false, run_id: null } }, task: { ...executionTask, revision: 2, workflow_stage: "done" as const } };
 const dependencyReference = { blocked: false, id: "task_dependency", project_id: "project_beta", project_name: "Beta", title: "Prepare Beta", workflow_stage: "planned" as const };
 const dependencies = { ...envelope, dependent_count: 0, dependents: [], dependents_truncated: false, prerequisite_count: 1, prerequisites: [dependencyReference], prerequisites_truncated: false, task_id: nonAttentionTask.id, task_revision: 1 };
 const picker = { ...envelope, candidate_count: 1, candidates: [dependencyReference], match_count: 1, next_cursor: null, query: "Beta", task_id: nonAttentionTask.id, truncated: false };
@@ -342,4 +362,79 @@ test("planning routes map only fixed bridge failures without leaking details", a
     const response = await handler(new Request("http://127.0.0.1:8890/api/agent-console/planning-overview", { headers: browserHeaders }));
     assert.equal(response.status, status); assert.deepEqual(await response.json(), { schema_version: 1, status: state });
   }
+});
+
+test("Task execution uses fixed bounded projections and exact run-once and review bodies", async () => {
+  assert.deepEqual(parsePlanningTaskExecution(taskExecution, nonAttentionTask.id), taskExecution);
+  assert.deepEqual(parsePlanningRunOncePreview(runOncePreview, nonAttentionTask.id, 1), runOncePreview);
+  assert.deepEqual(parsePlanningTaskExecutionMutation(runOnceMutation, nonAttentionTask.id), runOnceMutation);
+  assert.throws(() => parsePlanningTaskExecution({ ...taskExecution, execution: { ...taskExecution.execution, attempts: [{ ...runOnceMutation.execution.attempts[0], private_reference: "no" }] } }, nonAttentionTask.id), PublicPlanningError);
+  const calls: Array<{ body: unknown; url: string }> = [];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, url: input.toString() });
+    const url = input.toString();
+    if (url.endsWith("/preview")) return json(runOncePreview);
+    if (url.endsWith("/run-once")) return json(runOnceMutation, 202);
+    if (url.endsWith("/review")) return json(acceptMutation);
+    if (url.includes("planning-task-execution")) return json(taskExecution);
+    return json(taskExecution);
+  };
+  assert.deepEqual(await fetchBridgePlanningTaskExecution(nonAttentionTask.id, fetcher, environment), taskExecution);
+  assert.deepEqual(await previewBridgePlanningTaskRunOnce(nonAttentionTask.id, 1, fetcher, environment), runOncePreview);
+  assert.deepEqual(await confirmBridgePlanningTaskRunOnce(nonAttentionTask.id, 1, "key_alpha_123456", runOncePreview.confirmation_id, fetcher, environment), runOnceMutation);
+  assert.deepEqual(await confirmBridgePlanningTaskRunOnce(nonAttentionTask.id, 1, "key_replay_12345", runOncePreview.confirmation_id, async () => json(runOnceMutation, 200), environment), runOnceMutation);
+  assert.deepEqual(await reviewBridgePlanningTaskExecution(nonAttentionTask.id, 1, "accept", null, "key_beta_1234567", fetcher, environment), acceptMutation);
+  assert.deepEqual(calls, [
+    { body: null, url: "http://127.0.0.1:49152/bridge/v1/agent-console/planning-task-execution?task_id=task_plain" },
+    { body: { expected_revision: 1, task_id: nonAttentionTask.id }, url: "http://127.0.0.1:49152/bridge/v1/agent-console/planning-task-execution/run-once/preview" },
+    { body: { confirmation_id: runOncePreview.confirmation_id, expected_revision: 1, idempotency_key: "key_alpha_123456", task_id: nonAttentionTask.id }, url: "http://127.0.0.1:49152/bridge/v1/agent-console/planning-task-execution/run-once" },
+    { body: { action: "accept", expected_revision: 1, idempotency_key: "key_beta_1234567", task_id: nonAttentionTask.id }, url: "http://127.0.0.1:49152/bridge/v1/agent-console/planning-task-execution/review" },
+  ]);
+});
+
+test("Task execution routes keep all browser input exact and same-origin", async () => {
+  const get = createPlanningTaskExecutionGetHandler({ gatewayPort: "8890", readExecution: async () => taskExecution });
+  const preview = createPlanningTaskRunOncePreviewHandler({ gatewayPort: "8890", preview: async () => runOncePreview });
+  const confirm = createPlanningTaskRunOnceConfirmHandler({ gatewayPort: "8890", confirm: async () => runOnceMutation });
+  const review = createPlanningTaskExecutionReviewHandler({ gatewayPort: "8890", review: async () => acceptMutation });
+  const params = { params: Promise.resolve({ taskId: nonAttentionTask.id }) };
+  const post = (url: string, value: unknown) => new Request(url, { body: JSON.stringify(value), headers: { ...browserHeaders, "Content-Type": "application/json" }, method: "POST" });
+  assert.equal((await get(new Request(`http://127.0.0.1:8890/api/agent-console/planning-task-execution?task_id=${nonAttentionTask.id}`, { headers: browserHeaders }))).status, 200);
+  assert.equal((await preview(post(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/run-once/preview`, { expected_revision: 1 }), params)).status, 200);
+  assert.equal((await confirm(post(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/run-once`, { confirmation_id: runOncePreview.confirmation_id, expected_revision: 1, idempotency_key: "key_alpha_123456" }), params)).status, 202);
+  assert.equal((await review(post(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/review`, { action: "request_changes", expected_revision: 1, idempotency_key: "key_beta_1234567", note: "Please revise the summary." }), params)).status, 200);
+  assert.equal((await preview(post(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/run-once/preview`, { expected_revision: 1, extra: true }), params)).status, 400);
+  assert.equal((await review(post(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/review`, { action: "accept", expected_revision: 1, idempotency_key: "key_beta_1234567", note: "not allowed" }), params)).status, 400);
+  assert.equal((await confirm(post(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/run-once`, { confirmation_id: runOncePreview.confirmation_id, expected_revision: 1, idempotency_key: "short_key" }), params)).status, 400);
+  assert.equal((await get(new Request(`http://127.0.0.1:8890/api/agent-console/planning-task-execution?task_id=${nonAttentionTask.id}&extra=1`, { headers: browserHeaders }))).status, 400);
+});
+
+test("public Task execution clients use only named same-origin routes", async () => {
+  const original = globalThis.fetch; const calls: Array<{ body: unknown; method: string; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), "http://127.0.0.1:8890"); calls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, method: init?.method ?? "GET", path: `${url.pathname}${url.search}` });
+    if (url.pathname.endsWith("/preview")) return json(runOncePreview);
+    if (url.pathname.endsWith("/run-once")) return json(runOnceMutation, 202);
+    if (url.pathname.endsWith("/review")) return json(acceptMutation);
+    if (url.pathname.includes("planning-task-execution")) return json(taskExecution);
+    return json(taskExecution);
+  };
+  try {
+    assert.deepEqual(await readPlanningTaskExecution(nonAttentionTask.id), taskExecution);
+    assert.deepEqual(await previewPlanningTaskRunOnce(nonAttentionTask.id, 1), runOncePreview);
+    assert.deepEqual(await confirmPlanningTaskRunOnce(nonAttentionTask.id, 1, "key_alpha_123456", runOncePreview.confirmation_id), runOnceMutation);
+    globalThis.fetch = async () => json(runOnceMutation, 200);
+    assert.deepEqual(await confirmPlanningTaskRunOnce(nonAttentionTask.id, 1, "key_replay_12345", runOncePreview.confirmation_id), runOnceMutation);
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString(), "http://127.0.0.1:8890"); calls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, method: init?.method ?? "GET", path: `${url.pathname}${url.search}` });
+      return json(acceptMutation);
+    };
+    assert.deepEqual(await reviewPlanningTaskExecution(nonAttentionTask.id, 1, "accept", null, "key_beta_1234567"), acceptMutation);
+    assert.deepEqual(calls, [
+      { body: null, method: "GET", path: "/api/agent-console/planning-task-execution?task_id=task_plain" },
+      { body: { expected_revision: 1 }, method: "POST", path: "/api/planning/tasks/task_plain/execution/run-once/preview" },
+      { body: { confirmation_id: runOncePreview.confirmation_id, expected_revision: 1, idempotency_key: "key_alpha_123456" }, method: "POST", path: "/api/planning/tasks/task_plain/execution/run-once" },
+      { body: { action: "accept", expected_revision: 1, idempotency_key: "key_beta_1234567" }, method: "POST", path: "/api/planning/tasks/task_plain/execution/review" },
+    ]);
+  } finally { globalThis.fetch = original; }
 });

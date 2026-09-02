@@ -27,6 +27,7 @@ SPLIT_TEST_WEIGHT = 12
 SPLITTABLE_MODULES = frozenset(
     {
         "tests.test_data_backup_restore",
+        "tests.test_data_schema",
         "tests.test_private_console_state",
     }
 )
