@@ -217,6 +217,176 @@ class PlanningModelTests(unittest.TestCase):
                         task_id="task_a", query="Other", cursor=first["next_cursor"]
                     )
 
+    def test_selected_project_dependency_map_is_safe_deterministic_and_bounded(self):
+        with TemporaryDirectory() as temporary:
+            tasks = [
+                {**task("task_a", "Alpha"), "title": "A", "depends_on": ["task_b", "task_external"]},
+                {**task("task_b", "Alpha"), "title": "B"},
+                {**task("task_external", "Bravo"), "title": "External", "depends_on": ["task_b"]},
+            ]
+            root = self.root(temporary, tasks)
+            with patch.object(server, "DATA_DIR", root):
+                projection = server.mentat_planning_dependency_map_payload(
+                    project_id="project_a"
+                )
+                self.assertEqual(projection["project"]["id"], "project_a")
+                self.assertEqual(
+                    [item["id"] for item in projection["nodes"]], ["task_a", "task_b"]
+                )
+                self.assertEqual(
+                    [item["id"] for item in projection["external_stubs"]], ["task_external"]
+                )
+                self.assertEqual(
+                    projection["edges"],
+                    [
+                        {"from_task_id": "task_a", "to_task_id": "task_b"},
+                        {"from_task_id": "task_a", "to_task_id": "task_external"},
+                        {"from_task_id": "task_external", "to_task_id": "task_b"},
+                    ],
+                )
+                self.assertEqual(
+                    {
+                        key: projection[key]
+                        for key in (
+                            "node_count", "node_total", "nodes_truncated",
+                            "external_stub_count", "external_stub_total", "external_stubs_truncated",
+                            "edge_count", "edge_total", "edges_truncated",
+                        )
+                    },
+                    {
+                        "node_count": 2, "node_total": 2, "nodes_truncated": False,
+                        "external_stub_count": 1, "external_stub_total": 1,
+                        "external_stubs_truncated": False,
+                        "edge_count": 3, "edge_total": 3, "edges_truncated": False,
+                    },
+                )
+                self.assertNotIn("description", str(projection))
+                self.assertEqual(
+                    projection,
+                    server.mentat_planning_dependency_map_payload(project_id="project_a"),
+                )
+
+    def test_selected_project_dependency_map_discloses_all_fixed_caps(self):
+        with TemporaryDirectory() as temporary:
+            external_ids = [f"task_external_{index:03d}" for index in range(51)]
+            tasks = [
+                {**task(f"task_selected_{index:03d}", "Alpha"), "depends_on": external_ids}
+                for index in range(50)
+            ]
+            tasks.append(task("task_selected_999", "Alpha"))
+            tasks.extend(task(identifier, "Bravo") for identifier in external_ids)
+            root = self.root(temporary, tasks)
+            with patch.object(server, "DATA_DIR", root):
+                projection = server.mentat_planning_dependency_map_payload(
+                    project_id="project_a"
+                )
+            self.assertEqual((projection["node_count"], projection["node_total"]), (50, 51))
+            self.assertTrue(projection["nodes_truncated"])
+            self.assertEqual(
+                (projection["external_stub_count"], projection["external_stub_total"]),
+                (50, 51),
+            )
+            self.assertTrue(projection["external_stubs_truncated"])
+            self.assertEqual((projection["edge_count"], projection["edge_total"]), (250, 2550))
+            self.assertTrue(projection["edges_truncated"])
+            visible_ids = {
+                *(item["id"] for item in projection["nodes"]),
+                *(item["id"] for item in projection["external_stubs"]),
+            }
+            self.assertTrue(
+                all(
+                    edge["from_task_id"] in visible_ids
+                    and edge["to_task_id"] in visible_ids
+                    for edge in projection["edges"]
+                )
+            )
+
+    def test_selected_project_dependency_map_filters_before_its_node_cap(self):
+        with TemporaryDirectory() as temporary:
+            tasks = [
+                {**task(f"task_before_{index:03d}", "Alpha"), "title": f"A {index:03d}"}
+                for index in range(50)
+            ]
+            tasks.append(
+                {
+                    **task("task_match", "Alpha"),
+                    "title": "Z later task",
+                    "description": "Needle only in the complete description",
+                }
+            )
+            tasks.append(
+                {
+                    **task("task_outside_preview", "Alpha"),
+                    "title": "Z preview boundary",
+                    "description": "x" * 300 + " outside-preview",
+                }
+            )
+            tasks.append(
+                {
+                    **task("task_unicode", "Alpha"),
+                    "title": "Straße",
+                }
+            )
+            root = self.root(temporary, tasks)
+            with patch.object(server, "DATA_DIR", root):
+                unfiltered = server.mentat_planning_dependency_map_payload(
+                    project_id="project_a"
+                )
+                matched = server.mentat_planning_dependency_map_payload(
+                    project_id="project_a", query="needle", view="all"
+                )
+                defaults = server.mentat_planning_dependency_map_payload(
+                    project_id="project_a", query="", view="all"
+                )
+                outside_preview = server.mentat_planning_dependency_map_payload(
+                    project_id="project_a", query="outside-preview", view="all"
+                )
+                unicode_nonmatch = server.mentat_planning_dependency_map_payload(
+                    project_id="project_a", query="ss", view="all"
+                )
+            self.assertNotIn("task_match", {item["id"] for item in unfiltered["nodes"]})
+            self.assertEqual(
+                ([item["id"] for item in matched["nodes"]], matched["node_total"]),
+                (["task_match"], 1),
+            )
+            self.assertEqual(unfiltered, defaults)
+            self.assertEqual((outside_preview["nodes"], outside_preview["node_total"]), ([], 0))
+            self.assertEqual((unicode_nonmatch["nodes"], unicode_nonmatch["node_total"]), ([], 0))
+
+    def test_selected_project_dependency_map_uses_exact_saved_view_semantics(self):
+        with TemporaryDirectory() as temporary:
+            tasks = [
+                {**task("task_today", "Alpha"), "planned_for_today": True},
+                {**task("task_waiting", "Alpha"), "planning_state": "waiting"},
+                {**task("task_review", "Alpha"), "planning_state": "review"},
+                {**task("task_someday", "Alpha"), "deferred": True},
+                {**task("task_completed", "Alpha"), "planning_state": "done"},
+                task("task_other", "Alpha"),
+            ]
+            root = self.root(temporary, tasks)
+            with patch.object(server, "DATA_DIR", root):
+                for view, expected in {
+                    "today": "task_today",
+                    "waiting": "task_waiting",
+                    "review": "task_review",
+                    "someday": "task_someday",
+                    "completed": "task_completed",
+                }.items():
+                    with self.subTest(view=view):
+                        projection = server.mentat_planning_dependency_map_payload(
+                            project_id="project_a", view=view
+                        )
+                        self.assertEqual(
+                            [item["id"] for item in projection["nodes"]], [expected]
+                        )
+                for query, view in ((" needle", "all"), ("x" * 161, "all"), (None, "blocked")):
+                    with self.subTest(query=query, view=view), self.assertRaisesRegex(
+                        Exception, "planning.dependency_map_(query|view)_invalid"
+                    ):
+                        server.mentat_planning_dependency_map_payload(
+                            project_id="project_a", query=query, view=view
+                        )
+
     def test_dependency_edit_rejects_raw_duplicate_and_self_without_mutating(self):
         with TemporaryDirectory() as temporary:
             root = self.root(temporary)

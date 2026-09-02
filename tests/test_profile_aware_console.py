@@ -52,6 +52,17 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             TransportBinding("local", "Local Hermes", "local-default"), command_path="/tmp/hermes"
         )
 
+    def setUp(self):
+        # Provider-switch tests own the transport and legacy active-run inputs.
+        # Canonical Run storage is separately covered by its repository tests;
+        # consulting a machine-local database here makes those transport
+        # contracts depend on unrelated data-root readiness.
+        canonical_active_run = patch.object(
+            server, "_active_canonical_provider_run", return_value=None
+        )
+        canonical_active_run.start()
+        self.addCleanup(canonical_active_run.stop)
+
     def tearDown(self):
         server.AGENT_CONSOLE_RUNS.clear()
         server.AGENT_CONSOLE_PROCESSES.clear()
@@ -87,7 +98,16 @@ class ProfileAwareConsoleTests(unittest.TestCase):
             TransportBinding("local", "Local Hermes", "local-default"),
             command_path="/tmp/hermes",
         )
-        with patch.object(transport, "revalidate"), patch.object(
+        # This test owns the legacy CLI launch contract, not shared runtime
+        # telemetry/artifact storage. Keep its fixed run ID isolated from
+        # leftovers produced by other console tests on the same runner.
+        with patch(
+            "hermes_transport.local_control_dependencies_available", return_value=False
+        ), patch.object(transport, "revalidate"), patch.object(
+            server,
+            "prepare_local_telemetry_paths",
+            return_value=(ROOT / "unused-progress.jsonl", ROOT / "unused-usage.json"),
+        ), patch.object(server, "collect_agent_console_artifacts"), patch.object(
             server.subprocess, "Popen", return_value=CompletedHermesProcess()
         ) as popen, patch.object(
             server, "persist_agent_console_runs", return_value=True

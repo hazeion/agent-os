@@ -52,6 +52,7 @@ BRIDGE_PLANNING_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks"
 BRIDGE_PLANNING_TASK_PATH = "/bridge/v1/agent-console/planning-task"
 BRIDGE_PLANNING_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail"
 BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-dependencies"
+BRIDGE_PLANNING_DEPENDENCY_MAP_PATH = "/bridge/v1/agent-console/planning-dependency-map"
 BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker"
 BRIDGE_PROJECTS_PATH = "/bridge/v1/projects"
 BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
@@ -67,6 +68,10 @@ SUPPORTED_BRIDGE_HOSTS = frozenset({"127.0.0.1", "::1"})
 MAXIMUM_BRIDGE_AGENTS = 128
 MAXIMUM_BRIDGE_PROVIDER_CONNECTIONS = 1
 MAXIMUM_BRIDGE_TASKS = 2048
+MAXIMUM_BRIDGE_DEPENDENCY_MAP_NODES = 50
+MAXIMUM_BRIDGE_DEPENDENCY_MAP_EXTERNAL_STUBS = 50
+MAXIMUM_BRIDGE_DEPENDENCY_MAP_EDGES = 250
+MAXIMUM_BRIDGE_DEPENDENCY_MAP_EDGE_TOTAL = MAXIMUM_BRIDGE_TASKS * 100
 MAXIMUM_BRIDGE_RUNS = 50
 MAXIMUM_BRIDGE_RUN_EVENTS = 100
 MAXIMUM_BRIDGE_CONVERSATIONS = 50
@@ -1416,6 +1421,20 @@ def _planning_picker_query(value: object) -> bool:
     )
 
 
+def _planning_dependency_map_query(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.strip() == value
+        and len(value) <= 160
+        and not any(unicodedata.category(character).startswith("C") for character in value)
+    )
+
+
+_PLANNING_DEPENDENCY_MAP_VIEWS = frozenset({
+    "all", "today", "waiting", "review", "someday", "completed",
+})
+
+
 def _planning_failure(state: str, status: int) -> tuple[dict[str, object], int]:
     return {
         "schema_version": 1,
@@ -1827,6 +1846,145 @@ def bridge_planning_task_dependencies_payload(
         }, 200
     except ConversationPlanningError as exc:
         if exc.code == "planning.task_not_found":
+            return _planning_failure("not_found", 404)
+        if exc.code.endswith("_invalid"):
+            return _planning_failure("invalid", 400)
+        if exc.code in {"planning.unavailable", "planning.tasks_unavailable"}:
+            return _planning_failure("unavailable", 503)
+        return _planning_failure("error", 500)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_planning_dependency_map_payload(
+    project_id: str,
+    query: str | None = None,
+    view: str | None = None,
+) -> tuple[dict[str, object], int]:
+    """Return one fixed, bounded selected-Project dependency-map projection."""
+
+    from conversation_planning import ConversationPlanningError
+
+    try:
+        from server import mentat_planning_dependency_map_payload
+
+        source = mentat_planning_dependency_map_payload(
+            project_id=project_id,
+            query=query,
+            view=view,
+        )
+        required = {
+            "schema_version", "project", "nodes", "node_count", "node_total",
+            "nodes_truncated", "external_stubs", "external_stub_count",
+            "external_stub_total", "external_stubs_truncated", "edges",
+            "edge_count", "edge_total", "edges_truncated",
+        }
+        if not isinstance(source, dict) or set(source) != required:
+            raise BridgeConversationProjectionError("planning_dependency_map_invalid")
+        project = _planning_project(source.get("project"))
+        nodes = source.get("nodes")
+        external_stubs = source.get("external_stubs")
+        edges = source.get("edges")
+        if (
+            source.get("schema_version") != 1
+            or project["id"] != project_id
+            or not isinstance(nodes, list)
+            or len(nodes) > MAXIMUM_BRIDGE_DEPENDENCY_MAP_NODES
+            or not isinstance(external_stubs, list)
+            or len(external_stubs) > MAXIMUM_BRIDGE_DEPENDENCY_MAP_EXTERNAL_STUBS
+            or not isinstance(edges, list)
+            or len(edges) > MAXIMUM_BRIDGE_DEPENDENCY_MAP_EDGES
+        ):
+            raise BridgeConversationProjectionError("planning_dependency_map_invalid")
+        count_specs = (
+            ("node_count", "node_total", "nodes_truncated", nodes, MAXIMUM_BRIDGE_TASKS),
+            ("external_stub_count", "external_stub_total", "external_stubs_truncated", external_stubs, MAXIMUM_BRIDGE_TASKS),
+            ("edge_count", "edge_total", "edges_truncated", edges, MAXIMUM_BRIDGE_DEPENDENCY_MAP_EDGE_TOTAL),
+        )
+        for count_key, total_key, truncated_key, items, total_limit in count_specs:
+            count = source.get(count_key)
+            total = source.get(total_key)
+            truncated = source.get(truncated_key)
+            if (
+                type(count) is not int
+                or count != len(items)
+                or type(total) is not int
+                or not count <= total <= total_limit
+                or type(truncated) is not bool
+                or truncated != (total > count)
+            ):
+                raise BridgeConversationProjectionError("planning_dependency_map_invalid")
+        if source["node_total"] + source["external_stub_total"] > MAXIMUM_BRIDGE_TASKS:
+            raise BridgeConversationProjectionError("planning_dependency_map_invalid")
+        public_nodes = [_planning_dependency_task(item) for item in nodes]
+        public_stubs = [_planning_dependency_task(item) for item in external_stubs]
+        node_ids = {item["id"] for item in public_nodes}
+        stub_ids = {item["id"] for item in public_stubs}
+        summary_sort_key = lambda item: (
+            item["project_name"].casefold(), item["title"].casefold(), item["id"]
+        )
+        if (
+            len(node_ids) != len(public_nodes)
+            or len(stub_ids) != len(public_stubs)
+            or node_ids & stub_ids
+            or any(item["project_id"] != project_id for item in public_nodes)
+            or any(item["project_id"] == project_id for item in public_stubs)
+            or public_nodes != sorted(public_nodes, key=summary_sort_key)
+            or public_stubs != sorted(public_stubs, key=summary_sort_key)
+        ):
+            raise BridgeConversationProjectionError("planning_dependency_map_invalid")
+        public_edges: list[dict[str, str]] = []
+        edge_pairs: set[tuple[str, str]] = set()
+        visible_ids = node_ids | stub_ids
+        for edge in edges:
+            if not isinstance(edge, dict) or set(edge) != {"from_task_id", "to_task_id"}:
+                raise BridgeConversationProjectionError("planning_dependency_map_invalid")
+            source_id = edge.get("from_task_id")
+            target_id = edge.get("to_task_id")
+            if (
+                not isinstance(source_id, str)
+                or _TASK_ID.fullmatch(source_id) is None
+                or not isinstance(target_id, str)
+                or _TASK_ID.fullmatch(target_id) is None
+                or source_id == target_id
+                or source_id not in visible_ids
+                or target_id not in visible_ids
+                or (source_id not in node_ids and target_id not in node_ids)
+                or (source_id, target_id) in edge_pairs
+            ):
+                raise BridgeConversationProjectionError("planning_dependency_map_invalid")
+            edge_pairs.add((source_id, target_id))
+            public_edges.append({"from_task_id": source_id, "to_task_id": target_id})
+        summaries = {item["id"]: item for item in public_nodes + public_stubs}
+        if public_edges != sorted(
+            public_edges,
+            key=lambda edge: (
+                summary_sort_key(summaries[edge["from_task_id"]]),
+                summary_sort_key(summaries[edge["to_task_id"]]),
+            ),
+        ):
+            raise BridgeConversationProjectionError("planning_dependency_map_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "project": project,
+            "nodes": public_nodes,
+            "node_count": source["node_count"],
+            "node_total": source["node_total"],
+            "nodes_truncated": source["nodes_truncated"],
+            "external_stubs": public_stubs,
+            "external_stub_count": source["external_stub_count"],
+            "external_stub_total": source["external_stub_total"],
+            "external_stubs_truncated": source["external_stubs_truncated"],
+            "edges": public_edges,
+            "edge_count": source["edge_count"],
+            "edge_total": source["edge_total"],
+            "edges_truncated": source["edges_truncated"],
+        }, 200
+    except ConversationPlanningError as exc:
+        if exc.code == "planning.project_not_found":
             return _planning_failure("not_found", 404)
         if exc.code.endswith("_invalid"):
             return _planning_failure("invalid", 400)
@@ -4597,6 +4755,27 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bridge_route_not_found"}, 404)
                 return
             payload, status = bridge_planning_task_dependencies_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_DEPENDENCY_MAP_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            values = {key: value for key, value in pairs}
+            if (
+                not pairs
+                or len(values) != len(pairs)
+                or set(values) - {"project_id", "q", "view"}
+                or _PROJECT_ID.fullmatch(values.get("project_id", "")) is None
+                or "q" in values and not _planning_dependency_map_query(values["q"])
+                or "view" in values and values["view"] not in _PLANNING_DEPENDENCY_MAP_VIEWS
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_dependency_map_payload(
+                values["project_id"], values.get("q"), values.get("view")
+            )
             self._send_json(payload, status)
             return
         if parsed.path == BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH:

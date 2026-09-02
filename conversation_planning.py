@@ -28,6 +28,10 @@ MAX_TASK_DESCRIPTION_PREVIEW = 280
 MAX_DIRECT_DEPENDENCY_ITEMS = 100
 MAX_DEPENDENCY_PICKER_PAGE = 50
 MAX_DEPENDENCY_PICKER_QUERY = 160
+MAX_DEPENDENCY_MAP_NODES = 50
+MAX_DEPENDENCY_MAP_EXTERNAL_STUBS = 50
+MAX_DEPENDENCY_MAP_EDGES = 250
+MAX_DEPENDENCY_MAP_QUERY = 160
 _PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 _CURSOR = re.compile(r"[A-Za-z0-9_-]{1,512}\Z")
@@ -42,6 +46,9 @@ _ATTENTION_ORDER = (
 )
 _ATTENTION_RANK = {reason: index for index, reason in enumerate(_ATTENTION_ORDER)}
 _PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+_DEPENDENCY_MAP_VIEWS = frozenset({
+    "all", "today", "waiting", "review", "someday", "completed",
+})
 
 
 class ConversationPlanningError(RuntimeError):
@@ -356,6 +363,58 @@ def _dependency_picker_query(value: object) -> str:
     return value
 
 
+def _dependency_map_query(value: object) -> str:
+    """Normalize the optional selected-Project map filter without echoing it."""
+
+    if value is None:
+        return ""
+    if (
+        not isinstance(value, str)
+        or value.strip() != value
+        or len(value) > MAX_DEPENDENCY_MAP_QUERY
+        or any(unicodedata.category(character).startswith("C") for character in value)
+    ):
+        raise ConversationPlanningError("planning.dependency_map_query_invalid")
+    return value
+
+
+def _dependency_map_view(value: object) -> str:
+    if value is None:
+        return "all"
+    if not isinstance(value, str) or value not in _DEPENDENCY_MAP_VIEWS:
+        raise ConversationPlanningError("planning.dependency_map_view_invalid")
+    return value
+
+
+def _dependency_map_matches(
+    task: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    *,
+    query: str,
+    view: str,
+) -> bool:
+    """Apply the existing list filters before the dependency-map node cap."""
+
+    description = task.get("description")
+    if not isinstance(description, str):
+        raise ConversationPlanningError("planning.tasks_invalid")
+    if query and query.lower() not in (
+        str(summary["title"]) + "\n" + _task_description_preview(task)
+    ).lower():
+        return False
+    if view == "all":
+        return True
+    if view == "today":
+        return task.get("planned_for_today") is True
+    if view == "waiting":
+        return summary["workflow_stage"] == "waiting"
+    if view == "review":
+        return summary["workflow_stage"] == "review"
+    if view == "someday":
+        return task_is_deferred(task)
+    return summary["workflow_stage"] == "done"
+
+
 def _dependency_picker_cursor_digest(task_id: str, query: str) -> str:
     return hashlib.sha256(
         (task_id + "\x00" + query).encode("utf-8")
@@ -661,6 +720,115 @@ def planning_task_dependencies(
         "dependents": dependents[:MAX_DIRECT_DEPENDENCY_ITEMS],
         "dependent_count": len(dependents),
         "dependents_truncated": len(dependents) > MAX_DIRECT_DEPENDENCY_ITEMS,
+    }
+
+
+def planning_dependency_map(
+    connection: sqlite3.Connection,
+    projects_payload: object,
+    *,
+    project_id: str,
+    query: object = None,
+    view: object = None,
+    today: date,
+) -> dict[str, Any]:
+    """Return one bounded, read-only Project dependency-map projection.
+
+    ``nodes`` are Tasks owned by the selected Project.  ``external_stubs`` are
+    only the cross-Project endpoints of edges incident to retained nodes.  The
+    lists are independently capped before edges are retained, so every visible
+    edge always has two visible endpoints and omitted topology is disclosed by
+    its exact source totals.
+    """
+
+    if not isinstance(project_id, str) or _PROJECT_ID.fullmatch(project_id) is None:
+        raise ConversationPlanningError("planning.project_id_invalid")
+    registry = project_registry(projects_payload)
+    project = registry.by_id.get(project_id)
+    if project is None:
+        raise ConversationPlanningError("planning.project_not_found")
+    normalized_query = _dependency_map_query(query)
+    normalized_view = _dependency_map_view(view)
+    try:
+        tasks = TaskRepository(connection).list_tasks()
+    except TaskRepositoryError as exc:
+        raise ConversationPlanningError("planning.tasks_unavailable") from exc
+    task_map = {str(task["id"]): task for task in tasks}
+    if len(task_map) != len(tasks):
+        raise ConversationPlanningError("planning.tasks_unavailable")
+
+    summaries = {
+        identifier: _dependency_task_summary(task, registry, task_map, today=today)
+        for identifier, task in task_map.items()
+    }
+    selected_all = sorted(
+        (
+            summary
+            for identifier, summary in summaries.items()
+            if summary["project_id"] == project_id
+            and _dependency_map_matches(
+                task_map[identifier],
+                summary,
+                query=normalized_query,
+                view=normalized_view,
+            )
+        ),
+        key=_dependency_task_sort_key,
+    )
+    nodes = selected_all[:MAX_DEPENDENCY_MAP_NODES]
+    node_ids = {node["id"] for node in nodes}
+
+    # The graph edge direction is dependent -> prerequisite.  A cross-Project
+    # edge may therefore originate on either side of the selected Project.
+    candidate_edges: list[tuple[str, str]] = []
+    external_ids: set[str] = set()
+    for dependent_id, dependent in task_map.items():
+        dependencies = dependent.get("depends_on") or []
+        if not isinstance(dependencies, list) or len(dependencies) > MAX_DIRECT_DEPENDENCY_ITEMS:
+            raise ConversationPlanningError("planning.tasks_invalid")
+        for prerequisite_id in dependencies:
+            if not isinstance(prerequisite_id, str) or prerequisite_id not in task_map:
+                raise ConversationPlanningError("planning.tasks_invalid")
+            if dependent_id not in node_ids and prerequisite_id not in node_ids:
+                continue
+            other_id = prerequisite_id if dependent_id in node_ids else dependent_id
+            other = summaries[other_id]
+            if other["project_id"] != project_id:
+                external_ids.add(other_id)
+            candidate_edges.append((dependent_id, prerequisite_id))
+
+    external_all = sorted(
+        (summaries[identifier] for identifier in external_ids),
+        key=_dependency_task_sort_key,
+    )
+    external_stubs = external_all[:MAX_DEPENDENCY_MAP_EXTERNAL_STUBS]
+    visible_ids = node_ids | {stub["id"] for stub in external_stubs}
+    candidate_edges.sort(
+        key=lambda edge: (
+            _dependency_task_sort_key(summaries[edge[0]]),
+            _dependency_task_sort_key(summaries[edge[1]]),
+        )
+    )
+    edges = [
+        {"from_task_id": dependent_id, "to_task_id": prerequisite_id}
+        for dependent_id, prerequisite_id in candidate_edges
+        if dependent_id in visible_ids and prerequisite_id in visible_ids
+    ][:MAX_DEPENDENCY_MAP_EDGES]
+
+    return {
+        "project": project.public(),
+        "nodes": nodes,
+        "node_count": len(nodes),
+        "node_total": len(selected_all),
+        "nodes_truncated": len(selected_all) > len(nodes),
+        "external_stubs": external_stubs,
+        "external_stub_count": len(external_stubs),
+        "external_stub_total": len(external_all),
+        "external_stubs_truncated": len(external_all) > len(external_stubs),
+        "edges": edges,
+        "edge_count": len(edges),
+        "edge_total": len(candidate_edges),
+        "edges_truncated": len(candidate_edges) > len(edges),
     }
 
 

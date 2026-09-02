@@ -7,6 +7,7 @@ const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const CONVERSATION_ID = /^conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
 const CURSOR = /^[A-Za-z0-9_-]{1,512}$/u;
+const SAVED_VIEWS = ["all", "today", "waiting", "review", "someday", "completed"] as const;
 const ATTENTION_REASONS = ["overdue", "due_today", "review", "needs_attention", "planned_today", "due_soon"] as const;
 const PLANNING_STATES = ["inbox", "planned", "in_progress", "waiting", "review", "someday", "blocked", "done"] as const;
 const WORKFLOW_STAGES = ["inbox", "planned", "in_progress", "waiting", "review", "done"] as const;
@@ -76,6 +77,9 @@ export type PublicPlanningTaskResult = ServiceEnvelope & {
 };
 export type PublicPlanningTaskDetailResult = ServiceEnvelope & { project: PublicPlanningProject; task: PublicPlanningTaskDetail };
 export type PublicPlanningTaskDependencies = ServiceEnvelope & { task_id: string; task_revision: number; prerequisites: PublicPlanningDependencyReference[]; prerequisite_count: number; prerequisites_truncated: boolean; dependents: PublicPlanningDependencyReference[]; dependent_count: number; dependents_truncated: boolean };
+export type PublicPlanningDependencyMapEdge = { from_task_id: string; to_task_id: string };
+export type PublicPlanningDependencyMap = ServiceEnvelope & { project: PublicPlanningProject; nodes: PublicPlanningDependencyReference[]; node_count: number; node_total: number; nodes_truncated: boolean; external_stubs: PublicPlanningDependencyReference[]; external_stub_count: number; external_stub_total: number; external_stubs_truncated: boolean; edges: PublicPlanningDependencyMapEdge[]; edge_count: number; edge_total: number; edges_truncated: boolean };
+export type PublicPlanningSavedView = typeof SAVED_VIEWS[number];
 export type PublicPlanningDependencyPickerPage = ServiceEnvelope & { task_id: string; query: string; candidates: PublicPlanningDependencyReference[]; candidate_count: number; match_count: number; next_cursor: string | null; truncated: boolean };
 
 export type PublicPlanningAssociation = { project_id: string; task_id: string | null };
@@ -284,6 +288,31 @@ export function parsePlanningTaskDependencies(value: unknown, taskId?: string): 
   return structuredClone(value) as PublicPlanningTaskDependencies;
 }
 
+export function parsePlanningDependencyMap(value: unknown, projectId?: string): PublicPlanningDependencyMap {
+  if (!record(value) || !keys(value, "edge_count,edge_total,edges,edges_truncated,external_stub_count,external_stub_total,external_stubs,external_stubs_truncated,node_count,node_total,nodes,nodes_truncated,project,runtime,schema_version,service,status") || !validEnvelope(value) || !validProject(value.project)) throw new PublicPlanningError("response_invalid");
+  const project = value.project;
+  if (projectId !== undefined && project.id !== projectId
+    || !Array.isArray(value.nodes) || value.nodes.length > 50 || !value.nodes.every(validDependencyReference)
+    || !Array.isArray(value.external_stubs) || value.external_stubs.length > 50 || !value.external_stubs.every(validDependencyReference)
+    || !Array.isArray(value.edges) || value.edges.length > 250
+    || !Number.isSafeInteger(value.node_count) || value.node_count !== value.nodes.length || !Number.isSafeInteger(value.node_total) || (value.node_total as number) < value.node_count || (value.node_total as number) > 2048 || typeof value.nodes_truncated !== "boolean" || value.nodes_truncated !== ((value.node_total as number) > value.node_count)
+    || !Number.isSafeInteger(value.external_stub_count) || value.external_stub_count !== value.external_stubs.length || !Number.isSafeInteger(value.external_stub_total) || (value.external_stub_total as number) < value.external_stub_count || (value.external_stub_total as number) > 2048 || typeof value.external_stubs_truncated !== "boolean" || value.external_stubs_truncated !== ((value.external_stub_total as number) > value.external_stub_count)
+    || !Number.isSafeInteger(value.edge_count) || value.edge_count !== value.edges.length || !Number.isSafeInteger(value.edge_total) || (value.edge_total as number) < value.edge_count || (value.edge_total as number) > 204800 || typeof value.edges_truncated !== "boolean" || value.edges_truncated !== ((value.edge_total as number) > value.edge_count)) throw new PublicPlanningError("response_invalid");
+  const nodes = value.nodes as PublicPlanningDependencyReference[];
+  const stubs = value.external_stubs as PublicPlanningDependencyReference[];
+  const nodeIds = new Set(nodes.map((item) => item.id));
+  const stubIds = new Set(stubs.map((item) => item.id));
+  if (nodeIds.size !== nodes.length || stubIds.size !== stubs.length || [...nodeIds].some((id) => stubIds.has(id))
+    || nodes.some((item) => item.project_id !== project.id || item.project_name !== project.name)
+    || stubs.some((item) => item.project_id === project.id)
+    || (value.node_total as number) + (value.external_stub_total as number) > 2048) throw new PublicPlanningError("response_invalid");
+  const visibleIds = new Set([...nodeIds, ...stubIds]);
+  const edgePairs = new Set<string>();
+  const edges = value.edges as unknown[];
+  if (!edges.every((edge) => record(edge) && keys(edge, "from_task_id,to_task_id") && typeof edge.from_task_id === "string" && TASK_ID.test(edge.from_task_id) && typeof edge.to_task_id === "string" && TASK_ID.test(edge.to_task_id) && edge.from_task_id !== edge.to_task_id && visibleIds.has(edge.from_task_id) && visibleIds.has(edge.to_task_id) && (nodeIds.has(edge.from_task_id) || nodeIds.has(edge.to_task_id)) && !edgePairs.has(`${edge.from_task_id}\u0000${edge.to_task_id}`) && (edgePairs.add(`${edge.from_task_id}\u0000${edge.to_task_id}`), true))) throw new PublicPlanningError("response_invalid");
+  return structuredClone(value) as PublicPlanningDependencyMap;
+}
+
 export function parsePlanningDependencyPickerPage(value: unknown, taskId?: string, query?: string): PublicPlanningDependencyPickerPage {
   if (!record(value) || !keys(value, "candidate_count,candidates,match_count,next_cursor,query,runtime,schema_version,service,status,task_id,truncated") || !validEnvelope(value)
     || typeof value.task_id !== "string" || !TASK_ID.test(value.task_id) || taskId !== undefined && value.task_id !== taskId
@@ -414,6 +443,15 @@ export async function readPlanningTaskDependencies(taskId: string): Promise<Publ
   const parameters = new URLSearchParams({ task_id: taskId });
   const { response, payload } = await request(`/api/agent-console/planning-task-dependencies?${parameters.toString()}`);
   if (response.status === 200) return parsePlanningTaskDependencies(payload, taskId);
+  failure(payload, response);
+}
+
+export async function readPlanningDependencyMap(projectId: string, query: string = "", savedView: PublicPlanningSavedView = "all"): Promise<PublicPlanningDependencyMap> {
+  if (!PROJECT_ID.test(projectId) || typeof query !== "string" || [...query].length > 160 || query.trim() !== query || /\p{C}/u.test(query) || !SAVED_VIEWS.includes(savedView)) throw new PublicPlanningError("invalid");
+  const parameters = new URLSearchParams({ project_id: projectId });
+  if (query) parameters.set("q", query); if (savedView !== "all") parameters.set("view", savedView);
+  const { response, payload } = await request(`/api/agent-console/planning-dependency-map?${parameters.toString()}`);
+  if (response.status === 200) return parsePlanningDependencyMap(payload, projectId);
   failure(payload, response);
 }
 
