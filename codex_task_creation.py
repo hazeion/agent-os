@@ -126,7 +126,7 @@ class CodexTaskCreationService:
 
     @staticmethod
     def _require_schema(connection: sqlite3.Connection) -> None:
-        if SCHEMA_VERSION != 22 or schema_signature_state(connection, SCHEMA_VERSION) != "expected":
+        if SCHEMA_VERSION < 22 or schema_signature_state(connection, SCHEMA_VERSION) != "expected":
             raise CodexTaskCreationError("unavailable")
         names = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if not {"mentat_codex_task_create_grants", "mentat_codex_task_create_receipts"}.issubset(names):

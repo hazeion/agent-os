@@ -50,6 +50,39 @@ CONVERSATION = {
 
 
 class ConversationPlanningBridgeTests(unittest.TestCase):
+    def test_planning_deletion_is_a_count_only_exact_capability(self):
+        preview = {
+            "schema_version": 1, "target_kind": "task", "target_id": "task_1",
+            "confirmation_id": "a" * 64,
+            "affected": {"projects": 0, "tasks": 2, "conversations": 1, "runs": 1, "artifacts": 3},
+            "has_active_runs": True,
+        }
+        with patch.object(server, "preview_mentat_planning_deletion", return_value=(preview, 200)) as call:
+            payload, status = local_bridge.bridge_planning_deletion_preview_payload(
+                {"target_kind": "task", "target_id": "task_1"}
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(set(payload), {"schema_version", "service", "runtime", "status", "target_kind", "target_id", "confirmation_id", "affected", "has_active_runs"})
+        self.assertNotIn("title", str(payload))
+        call.assert_called_once_with({"target_kind": "task", "target_id": "task_1"})
+
+        mutation = {
+            "schema_version": 1, "action": "delete", "target_kind": "task", "target_id": "task_1",
+            "deletion": {"projects": 0, "tasks": 2, "conversations": 1, "runs": 1, "artifacts": 3},
+        }
+        request = {"target_kind": "task", "target_id": "task_1", "confirmed": True, "confirmation_id": "a" * 64}
+        with patch.object(server, "confirm_mentat_planning_deletion", return_value=(mutation, 200)) as call:
+            payload, status = local_bridge.bridge_planning_deletion_confirm_payload(request)
+        self.assertEqual((status, payload["action"], payload["deletion"]), (200, "delete", mutation["deletion"]))
+        call.assert_called_once_with(request)
+
+        widened = {**preview, "task_title": "private"}
+        with patch.object(server, "preview_mentat_planning_deletion", return_value=(widened, 200)):
+            rejected, rejected_status = local_bridge.bridge_planning_deletion_preview_payload(
+                {"target_kind": "task", "target_id": "task_1"}
+            )
+        self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
+
     def test_exact_global_task_locator_is_safe_and_maps_missing(self):
         source = {"schema_version": 1, "project": PROJECT, "task": {**TASK, "attention_reasons": []}}
         with patch.object(server, "mentat_planning_task_payload", return_value=source) as read:

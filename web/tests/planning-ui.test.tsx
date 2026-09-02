@@ -1052,3 +1052,34 @@ test("dependency editor prevents saves beyond the 100-prerequisite boundary", as
   assert.equal((screen.getByRole("button", { name: "Add prerequisite Prepare Beta" }) as HTMLButtonElement).disabled, true);
   assert.equal((screen.getByPlaceholderText("Search Tasks") as HTMLInputElement).maxLength, 160);
 });
+
+test("Task deletion shows only count effects, then confirms the exact preview before refreshing authority", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const deletionPreview = { ...envelope, affected: { artifacts: 0, conversations: 1, projects: 0, runs: 1, tasks: 2 }, confirmation_id: "a".repeat(64), has_active_runs: true, target_id: task.id, target_kind: "task" as const };
+  const deletion = { ...envelope, action: "delete" as const, deletion: deletionPreview.affected, target_id: task.id, target_kind: "task" as const };
+  const calls: Array<{ body: unknown; path: string }> = [];
+  let deleted = false;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin); const path = `${url.pathname}${url.search}`;
+    calls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, path });
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json(deleted ? { ...overview, attention: [], attention_count: 0, project_count: 0, projects: [] } : { ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === `/api/planning/tasks/${task.id}/delete/preview`) return Response.json(deletionPreview);
+    if (url.pathname === `/api/planning/tasks/${task.id}/delete`) { deleted = true; return Response.json(deletion); }
+    return Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 });
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await user.click(await screen.findByRole("button", { name: "Delete Task" }));
+  await screen.findByText(/Delete 0 Projects, 2 Tasks, 1 Conversation, 1 Run, 0 artifacts/u);
+  assert.match(screen.getByText(/Affected active Runs will be stopped/u).textContent ?? "", /nothing is removed/u);
+  await user.click(screen.getByRole("button", { name: "Confirm delete Task" }));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Deleted 0 Projects, 2 Tasks/u));
+  assert.deepEqual(calls.filter((call) => call.path.includes("/delete")), [
+    { body: {}, path: `/api/planning/tasks/${task.id}/delete/preview` },
+    { body: { confirmation_id: deletionPreview.confirmation_id, confirmed: true }, path: `/api/planning/tasks/${task.id}/delete` },
+  ]);
+});

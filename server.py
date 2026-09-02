@@ -160,6 +160,7 @@ from delegation_artifacts import (
     reconcile_task_artifact_bindings,
     remove_task_artifacts,
 )
+from planning_deletion import PlanningDeletionError, PlanningDeletionService
 from command_manifest import command_manifest_payload
 from json_store import (
     _durable_mutation_lock,
@@ -3303,6 +3304,160 @@ def update_mentat_planning_project(project_id: str, payload: object) -> tuple[di
         return {"error_code": "planning.unavailable"}, 503
     project = {"id": result.document["id"], "name": result.document["name"], "status": result.document["status"], "revision": result.revision}
     return {"schema_version": 1, "action": action, "project": project}, 200
+
+
+def _planning_deletion_failure(code: str) -> tuple[dict, int]:
+    """Project a deletion failure without exposing private closure details."""
+
+    if code in {"planning.deletion_invalid", "planning.deletion_confirmation_invalid"}:
+        return {"error_code": code}, 400
+    if code == "planning.deletion_not_found":
+        return {"error_code": code}, 404
+    if code in {
+        "planning.deletion_stale", "planning.deletion_graph_invalid",
+        "planning.deletion_stop_unverified", "planning.deletion_stop_failed",
+    }:
+        return {"error_code": code}, 409
+    return {"error_code": "planning.deletion_unavailable"}, 503
+
+
+def _stop_planning_deletion_runs(plan) -> None:
+    """Stop every active selected Run and require terminal durable readback.
+
+    The deletion service records no private runtime reference.  This coordinator
+    therefore reuses the fixed Run Stop capability for each exact canonical Run
+    before a later transaction may erase any planning authority.
+    """
+
+    for run_id in plan.active_run_ids:
+        try:
+            current = _load_run_for_action(run_id)
+            if current.status not in {
+                "queued", "submitting", "starting", "running", "waiting",
+                "waiting_for_approval", "waiting_for_clarification",
+            }:
+                raise PlanningDeletionError("planning.deletion_stop_unverified")
+            preview = mentat_run_stop_preview_payload(run_id)
+            mentat_confirm_run_stop(run_id, preview["confirmation_id"])
+            # A Stop request can first persist as cancelling. Reconcile under
+            # the existing bounded service until the exact Run becomes final;
+            # a nonterminal, partial, or unavailable result is never deleted.
+            for _attempt in range(5):
+                current = _load_run_for_action(run_id)
+                if (
+                    current.status in {"completed", "failed", "cancelled", "stopped", "interrupted"}
+                    and current.terminal_finalized
+                    and not current.partial
+                ):
+                    break
+                service = OrchestrationService(
+                    DATA_DIR,
+                    runtime_registry=AGENT_RUNTIME_REGISTRY,
+                    agent_registry=_mentat_agent_registry(),
+                    conversation_continuation_handler=_dispatch_reserved_agent_console_continuation,
+                )
+                service.reconcile_run(
+                    run_id=run_id,
+                    owner=f"planning_delete_stop_{uuid4().hex}",
+                )
+            current = _load_run_for_action(run_id)
+            if (
+                current.status not in {"completed", "failed", "cancelled", "stopped", "interrupted"}
+                or not current.terminal_finalized
+                or current.partial
+            ):
+                raise PlanningDeletionError("planning.deletion_stop_unverified")
+        except PlanningDeletionError:
+            raise
+        except (
+            OrchestrationRunActionError, OrchestrationServiceError,
+            RunRepositoryError, AgentRegistryError, AgentRuntimeError,
+            OSError, sqlite3.Error,
+        ) as exc:
+            raise PlanningDeletionError("planning.deletion_stop_failed") from exc
+
+
+def preview_mentat_planning_deletion(payload: object) -> tuple[dict, int]:
+    """Preview a single task or project deletion; the browser names no closure."""
+
+    if not isinstance(payload, dict) or set(payload) != {"target_kind", "target_id"}:
+        return _planning_deletion_failure("planning.deletion_invalid")
+    try:
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise PlanningDeletionError("planning.deletion_unavailable")
+            plan = PlanningDeletionService(DATA_DIR).preview(
+                payload["target_kind"], payload["target_id"]
+            )
+        return {
+            "schema_version": 1,
+            "target_kind": plan.target_kind,
+            "target_id": plan.target_id,
+            "confirmation_id": plan.confirmation_id,
+            "affected": plan.counts.public(),
+            "has_active_runs": bool(plan.active_run_ids),
+        }, 200
+    except PlanningDeletionError as exc:
+        return _planning_deletion_failure(exc.code)
+
+
+def confirm_mentat_planning_deletion(payload: object) -> tuple[dict, int]:
+    """Confirm one frozen deletion, stopping verified active Runs first."""
+
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"target_kind", "target_id", "confirmed", "confirmation_id"}
+        or payload.get("confirmed") is not True
+    ):
+        return _planning_deletion_failure("planning.deletion_invalid")
+    try:
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise PlanningDeletionError("planning.deletion_unavailable")
+            deletion = PlanningDeletionService(DATA_DIR)
+            # Remote artifact import has a multi-step attachment/binding write
+            # path.  Keeping its shared lock across the frozen snapshot and
+            # erase prevents a late synthetic delegation binding from surviving
+            # after its Task has gone away.
+            with artifact_operation_lock():
+                completed = deletion.completed_receipt(
+                    payload["target_kind"], payload["target_id"], payload["confirmation_id"]
+                )
+                if completed is not None:
+                    return {
+                        "schema_version": 1,
+                        "action": "delete",
+                        "target_kind": payload["target_kind"],
+                        "target_id": payload["target_id"],
+                        "deletion": completed.public(),
+                    }, 200
+                plan = deletion.begin_confirmation(
+                    payload["target_kind"], payload["target_id"], payload["confirmation_id"]
+                )
+                _stop_planning_deletion_runs(plan)
+                counts = deletion.finalize(plan)
+        # Runtime directories and blobs are no longer reachable after the
+        # commit. Their secure cleanup is deliberately retryable, never part of
+        # the authority decision above.
+        for run_id in plan.run_ids:
+            try:
+                cleanup_run_input_directory(DATA_DIR, run_id)
+                cleanup_run_export_directory(DATA_DIR, run_id)
+            except (OSError, ConsoleArtifactValidationError):
+                pass
+        try:
+            garbage_collect_console_attachments(DATA_DIR)
+        except (AttachmentError, OSError, sqlite3.Error):
+            pass
+        return {
+            "schema_version": 1,
+            "action": "delete",
+            "target_kind": plan.target_kind,
+            "target_id": plan.target_id,
+            "deletion": counts.public(),
+        }, 200
+    except PlanningDeletionError as exc:
+        return _planning_deletion_failure(exc.code)
 
 
 def _mentat_conversation_run_action(

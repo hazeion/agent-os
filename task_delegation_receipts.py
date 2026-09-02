@@ -174,7 +174,7 @@ class DelegationActionReceiptRepository:
         # would allow two concurrent actions.  Require the complete current
         # database shape before touching any receipt.
         if (
-            DATABASE_SCHEMA_VERSION != 22
+            DATABASE_SCHEMA_VERSION < 22
             or schema_signature_state(self.connection, DATABASE_SCHEMA_VERSION)
             != "expected"
         ):
