@@ -4581,6 +4581,12 @@ def _planning_delegation_current_payload(task_id: str) -> tuple[dict, int]:
         return _planning_delegation_error("unavailable", 503)
 
 
+def mentat_planning_task_delegation_payload(task_id: str) -> tuple[dict, int]:
+    """Read the versioned, safe delegation projection for one exact Task."""
+
+    return _planning_delegation_current_payload(task_id)
+
+
 def _planning_delegation_digest(value: object) -> str:
     encoded = json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False

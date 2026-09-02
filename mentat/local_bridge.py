@@ -1983,30 +1983,19 @@ def _planning_task_delegation_summary(
 def bridge_planning_task_delegation_payload(
     task_id: str,
 ) -> tuple[dict[str, object], int]:
-    """Return a bounded selected-Task delegation state from canonical Tasks."""
+    """Return the fixed current delegation projection for one selected Task."""
 
     if not isinstance(task_id, str) or _TASK_ID.fullmatch(task_id) is None:
         return _planning_failure("invalid", 400)
     try:
-        from server import read_task_snapshot
+        from server import mentat_planning_task_delegation_payload
 
-        tasks = read_task_snapshot()
-        if not isinstance(tasks, list):
-            return _planning_failure("unavailable", 503)
-        matches = [
-            task for task in tasks
-            if isinstance(task, dict) and task.get("id") == task_id
-        ]
-        if len(matches) != 1:
-            return _planning_failure("not_found", 404)
-        return {
-            "schema_version": 1,
-            "service": "mentat-local-bridge",
-            "runtime": "python",
-            "status": "ready",
-            "task_id": task_id,
-            "delegation": _planning_task_delegation_summary(task_id, matches[0]),
-        }, 200
+        source, status = mentat_planning_task_delegation_payload(task_id)
+        if status != 200:
+            return _planning_delegation_failure(status)
+        return _planning_delegation_ready(
+            _planning_delegation_current(source, task_id)
+        ), 200
     except Exception:
         return _planning_failure("error", 500)
 

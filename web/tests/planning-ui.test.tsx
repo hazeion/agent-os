@@ -54,7 +54,7 @@ const dependencyMap = {
   project_id: project.id,
 } as const;
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); window.localStorage.clear(); });
 
 test("the read-only dependency-map fallback is deterministic, keyboard-selectable, and keeps external stubs noninteractive", () => {
   const first = layoutTaskDependencyMap(dependencyMap);
@@ -166,7 +166,7 @@ test("Task inspector presents the bounded delegation summary and an honest not-d
   const beta = { ...task, id: "task_beta", title: "Prepare Beta" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
   const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
-  const delegation = { ...envelope, delegation: { attempts: 2, available: true as const, last_outcome: "completed" as const, last_synced_at: "2026-08-30T11:59:00Z", latest_question: "Confirm the deployment window.", review_state: "pending" as const, state: "ready_for_review" as const, summary: "The delegated implementation is ready for review.", sync_state: "synced" as const, updated_at: "2026-08-30T12:00:00Z" }, task_id: task.id };
+  const delegation = { ...envelope, delegation: { artifact_count: 0, attempts: 2, available: true as const, last_outcome: "completed" as const, last_synced_at: "2026-08-30T11:59:00Z", latest_question: "Confirm the deployment window.", review_state: "pending" as const, state: "ready_for_review" as const, summary: "The delegated implementation is ready for review.", sync_state: "synced" as const, updated_at: "2026-08-30T12:00:00Z" }, task: { id: task.id, revision: task.revision } };
   globalThis.fetch = async (input) => {
     const url = new URL(input.toString(), origin); const taskId = url.searchParams.get("task_id");
     if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
@@ -175,7 +175,7 @@ test("Task inspector presents the bounded delegation summary and an honest not-d
     if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : taskDetail });
     if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? task.id });
     if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json({ ...execution, task: taskId === beta.id ? { ...execution.task, ...beta } : execution.task });
-    if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json(taskId === beta.id ? { ...envelope, delegation: { available: false, reason: "not_delegated" }, task_id: beta.id } : delegation);
+    if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json(taskId === beta.id ? { ...envelope, delegation: { available: false, reason: "not_delegated" }, task: { id: beta.id, revision: beta.revision } } : delegation);
     throw new Error(`GET ${url.pathname}`);
   };
   const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
@@ -189,6 +189,69 @@ test("Task inspector presents the bounded delegation summary and an honest not-d
   await within(inspector).findByText("Prepare the Beta changes.");
   await within(inspector).findByText("This Task has not been delegated.");
   assert.equal(within(inspector).queryByText(/The delegated implementation is ready/u), null);
+});
+
+test("an indeterminate delegation delivery can only be reconciled, never confirmed again", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task };
+  const current = { ...envelope, delegation: { available: false as const, reason: "not_delegated" as const }, task: { id: task.id, revision: task.revision } };
+  const options = { ...current, options: { available: true as const, boards: [{ id: "default", name: "Default" }], profiles: [{ id: "researcher", name: "Researcher" }], workspaces: ["scratch", "worktree"] as ["scratch", "worktree"] } };
+  const preview = { ...current, action: "delegate" as const, confirmation_id: `task_delegate_${"a".repeat(24)}`, effects: ["Create one Hermes Task."], requires_confirmation: true as const, target: { board_id: "default", profile_id: "researcher", workspace: "scratch" as const } };
+  const calls: Array<{ body: unknown; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin); calls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, path: url.pathname });
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(execution);
+    if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json(current);
+    if (url.pathname.endsWith("/planning-task-delegation/options")) return Response.json(options);
+    if (url.pathname.endsWith("/delegation/preview")) return Response.json(preview);
+    if (url.pathname.endsWith("/delegation/delegate")) return Response.json({ error: "unavailable" }, { status: 503 });
+    throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await user.click(await screen.findByRole("button", { name: "Delegate" }));
+  await user.click(await screen.findByRole("button", { name: "Preview delegation" }));
+  const confirm = await screen.findByRole("button", { name: "Confirm delegation" });
+  await user.dblClick(confirm);
+  await screen.findByRole("button", { name: "Reconcile prior delivery" });
+  assert.equal(calls.filter((call) => call.path.endsWith("/delegation/delegate")).length, 1);
+  assert.equal(screen.queryByRole("button", { name: "Confirm delegation" }), null);
+  assert.equal(screen.queryByRole("button", { name: "Delegate" }), null);
+});
+
+test("an indeterminate delegation action can only be reconciled, never confirmed again", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task };
+  const current = { ...envelope, delegation: { artifact_count: 0, attempts: 1, available: true as const, last_outcome: null, last_synced_at: null, latest_question: null, review_state: "pending" as const, state: "ready_for_review" as const, summary: null, sync_state: "synced" as const, updated_at: "2026-09-02T12:00:00Z" }, task: { id: task.id, revision: task.revision } };
+  const preview = { ...current, action: "accept" as const, confirmation_id: `delegation_action_${"b".repeat(24)}`, effects: ["Accept the delegated result."], requires_confirmation: true as const };
+  const calls: Array<{ body: unknown; path: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin); calls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, path: url.pathname });
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(execution);
+    if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json(current);
+    if (url.pathname.endsWith("/delegation/action/preview")) return Response.json(preview);
+    if (url.pathname.endsWith("/delegation/action")) return Response.json({ error: "unavailable" }, { status: 503 });
+    throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await user.click(await screen.findByRole("button", { name: "Accept" }));
+  const confirm = await screen.findByRole("button", { name: "Confirm action" });
+  await user.dblClick(confirm);
+  await screen.findByRole("button", { name: "Reconcile prior delivery" });
+  assert.equal(calls.filter((call) => call.path.endsWith("/delegation/action")).length, 1);
+  assert.equal(screen.queryByRole("button", { name: "Confirm action" }), null);
+  assert.equal(screen.queryByRole("button", { name: "Accept" }), null);
 });
 
 test("List selection clears a same-revision Task's pending Run-once confirmation", async () => {

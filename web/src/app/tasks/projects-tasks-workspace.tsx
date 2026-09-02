@@ -42,8 +42,39 @@ import {
   reviewPlanningTaskExecution,
 } from "@/lib/public-planning-task-execution";
 import { readPlanningTaskDelegation, type PublicPlanningTaskDelegation } from "@/lib/public-planning-task-delegation";
+import {
+  confirmPlanningTaskDelegation,
+  confirmPlanningTaskDelegationAction,
+  previewPlanningTaskDelegation,
+  previewPlanningTaskDelegationAction,
+  readPlanningTaskDelegationOptions,
+  recoverPlanningTaskDelegation,
+  refreshPlanningTaskDelegation,
+  type DelegationAction,
+  type PublicPlanningTaskDelegationOptions,
+  type PublicPlanningTaskDelegationPreview,
+} from "@/lib/public-planning-task-delegation-actions";
 
 type LoadState = "loading" | "ready" | "empty" | "unavailable" | "error";
+
+type DelegationRecovery = { confirmationId: string; idempotencyKey: string };
+
+function delegationRecoveryKey(taskId: string) { return `mentat.delegation-recovery.v1.${taskId}`; }
+function loadDelegationRecovery(taskId: string): DelegationRecovery | null {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(delegationRecoveryKey(taskId)) ?? "null");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record.confirmationId !== "string" || !/^(?:task_delegate|delegation_action)_[0-9a-f]{24}$/u.test(record.confirmationId) || typeof record.idempotencyKey !== "string" || new TextEncoder().encode(record.idempotencyKey).byteLength < 16 || new TextEncoder().encode(record.idempotencyKey).byteLength > 256) return null;
+    return { confirmationId: record.confirmationId, idempotencyKey: record.idempotencyKey };
+  } catch { return null; }
+}
+function storeDelegationRecovery(taskId: string, value: DelegationRecovery | null) {
+  try {
+    if (value) window.localStorage.setItem(delegationRecoveryKey(taskId), JSON.stringify(value));
+    else window.localStorage.removeItem(delegationRecoveryKey(taskId));
+  } catch { /* Browser persistence is only a recovery convenience. */ }
+}
 
 function requestedTask(): { projectId: string | null; taskId: string } | null | false {
   const entries = [...new URL(window.location.href).searchParams.entries()];
@@ -90,6 +121,17 @@ export function ProjectsTasksWorkspace() {
   const [executionState, setExecutionState] = useState<LoadState>("loading");
   const [taskDelegation, setTaskDelegation] = useState<PublicPlanningTaskDelegation | null>(null);
   const [delegationState, setDelegationState] = useState<LoadState>("loading");
+  const [delegationOptions, setDelegationOptions] = useState<PublicPlanningTaskDelegationOptions | null>(null);
+  const [delegationForm, setDelegationForm] = useState(false);
+  const [delegationProfile, setDelegationProfile] = useState("");
+  const [delegationBoard, setDelegationBoard] = useState("");
+  const [delegationWorkspace, setDelegationWorkspace] = useState<"scratch" | "worktree">("scratch");
+  const [delegationInstructions, setDelegationInstructions] = useState("");
+  const [delegationPreview, setDelegationPreview] = useState<PublicPlanningTaskDelegationPreview | null>(null);
+  const [delegationAction, setDelegationAction] = useState<Exclude<DelegationAction, "delegate"> | null>(null);
+  const [delegationActionNote, setDelegationActionNote] = useState("");
+  const [delegationActionPreview, setDelegationActionPreview] = useState<PublicPlanningTaskDelegationPreview | null>(null);
+  const [delegationRecovery, setDelegationRecovery] = useState<DelegationRecovery | null>(null);
   const [runOnceConfirmation, setRunOnceConfirmation] = useState<{ confirmationId: string; idempotencyKey: string; revision: number; taskId: string } | null>(null);
   const [requestChanges, setRequestChanges] = useState(false);
   const [reviewNote, setReviewNote] = useState("");
@@ -133,6 +175,10 @@ export function ProjectsTasksWorkspace() {
   const taskSelectionGeneration = useRef(0);
   const executionGeneration = useRef(0);
   const delegationGeneration = useRef(0);
+  // An ambiguous delegation delivery is an external mutation boundary. Keep the
+  // exact receipt outside render state too, so a rapid second click cannot mint
+  // a new key before React has repainted the recovery-only presentation.
+  const delegationRecoveryRef = useRef<DelegationRecovery | null>(null);
   const taskDetailGeneration = useRef(0);
   const dependencyPickerGeneration = useRef(0);
   const requested = useMemo(() => typeof window === "undefined" ? null : requestedTask(), []);
@@ -151,6 +197,15 @@ export function ProjectsTasksWorkspace() {
       setExecutionState(taskId ? "loading" : "empty");
       setTaskDelegation(null);
       setDelegationState(taskId ? "loading" : "empty");
+      setDelegationOptions(null);
+      setDelegationForm(false);
+      setDelegationPreview(null);
+      setDelegationAction(null);
+      setDelegationActionPreview(null);
+      setDelegationActionNote("");
+      const recovery = taskId ? loadDelegationRecovery(taskId) : null;
+      delegationRecoveryRef.current = recovery;
+      setDelegationRecovery(recovery);
       setRunOnceConfirmation(null);
       setRequestChanges(false);
       setReviewNote("");
@@ -285,7 +340,7 @@ export function ProjectsTasksWorkspace() {
     const generation = ++delegationGeneration.current;
     let cancelled = false;
     void readPlanningTaskDelegation(taskId).then((result) => {
-      if (cancelled || generation !== delegationGeneration.current || selectedTaskRef.current !== taskId || result.task_id !== taskId) return;
+      if (cancelled || generation !== delegationGeneration.current || selectedTaskRef.current !== taskId || result.task.id !== taskId) return;
       setTaskDelegation(result); setDelegationState("ready");
     }).catch(() => { if (!cancelled && generation === delegationGeneration.current && selectedTaskRef.current === taskId) setDelegationState("unavailable"); });
     return () => { cancelled = true; };
@@ -364,6 +419,103 @@ export function ProjectsTasksWorkspace() {
     finally { setLoadingMore(false); }
   }
 
+  function applyDelegationResult(result: PublicPlanningTaskDelegation) {
+    if (selectedTaskRef.current !== result.task.id) return;
+    setTaskDelegation(result);
+    setDelegationState("ready");
+    setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, revision: result.task.revision } : task));
+  }
+
+  async function openDelegationForm() {
+    if (!selectedTask || busy) return;
+    setBusy(true); setNotice("Checking delegation options…");
+    try {
+      const options = await readPlanningTaskDelegationOptions(selectedTask.id);
+      if (selectedTaskRef.current !== selectedTask.id || options.task.revision !== selectedTask.revision) return;
+      setDelegationOptions(options);
+      if (options.options.available) {
+        setDelegationProfile(options.options.profiles[0]?.id ?? "");
+        setDelegationBoard(options.options.boards[0]?.id ?? "");
+        setDelegationWorkspace(options.options.workspaces[0]);
+        setDelegationForm(true);
+        setNotice("Choose the Hermes target, then preview the delegation.");
+      } else setNotice("Delegation is unavailable for this Task right now.");
+    } catch { setNotice("Delegation options are temporarily unavailable."); }
+    finally { setBusy(false); }
+  }
+
+  async function previewDelegation() {
+    if (!selectedTask || !delegationProfile || !delegationBoard || busy) return;
+    setBusy(true); setNotice("Preparing delegation preview…");
+    try {
+      const preview = await previewPlanningTaskDelegation(selectedTask.id, selectedTask.revision, delegationProfile, delegationBoard, delegationWorkspace, delegationInstructions, "");
+      if (selectedTaskRef.current !== selectedTask.id || preview.task.revision !== selectedTask.revision) return;
+      setDelegationPreview(preview); setNotice("Review the exact delegation before confirming.");
+    } catch { setNotice("Delegation preview could not be prepared. Your choices were kept."); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmDelegation() {
+    if (!selectedTask || !delegationPreview || delegationPreview.action !== "delegate" || busy || delegationRecoveryRef.current) return;
+    const key = `delegation-${crypto.randomUUID()}`;
+    const recovery = { confirmationId: delegationPreview.confirmation_id, idempotencyKey: key };
+    delegationRecoveryRef.current = recovery;
+    setDelegationRecovery(recovery); storeDelegationRecovery(selectedTask.id, recovery);
+    setBusy(true); setNotice("Creating the delegated Task…");
+    try {
+      const result = await confirmPlanningTaskDelegation(selectedTask.id, delegationPreview.task.revision, delegationProfile, delegationBoard, delegationWorkspace, delegationInstructions, "", delegationPreview.confirmation_id, key);
+      applyDelegationResult(result); setDelegationForm(false); setDelegationPreview(null); delegationRecoveryRef.current = null; setDelegationRecovery(null); storeDelegationRecovery(selectedTask.id, null); setNotice(result.duplicate ? "The existing delegation was confirmed." : "Task delegated.");
+    } catch (error) {
+      setNotice("Delegation delivery is uncertain. Reconcile it before trying anything else.");
+      setDelegationPreview({ ...delegationPreview, confirmation_id: delegationPreview.confirmation_id, action: "delegate" });
+      void error;
+    } finally { setBusy(false); }
+  }
+
+  async function previewDelegationAction(action: Exclude<DelegationAction, "delegate">, note: string | null) {
+    if (!selectedTask || busy) return;
+    setBusy(true); setNotice("Preparing delegation action…");
+    try {
+      const preview = await previewPlanningTaskDelegationAction(selectedTask.id, selectedTask.revision, action, note);
+      if (selectedTaskRef.current !== selectedTask.id || preview.task.revision !== selectedTask.revision) return;
+      setDelegationActionPreview(preview); setDelegationAction(action); setNotice("Review the exact action before confirming.");
+    } catch { setNotice("That delegation action is not available for the current Task state."); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmDelegationAction() {
+    if (!selectedTask || !delegationAction || !delegationActionPreview || busy || delegationRecoveryRef.current) return;
+    const key = `delegation-${crypto.randomUUID()}`;
+    const note = ["reply", "request_revision", "mark_blocked"].includes(delegationAction) ? delegationActionNote : null;
+    setBusy(true); setNotice("Applying delegation action…");
+    const recovery = { confirmationId: delegationActionPreview.confirmation_id, idempotencyKey: key };
+    delegationRecoveryRef.current = recovery;
+    setDelegationRecovery(recovery); storeDelegationRecovery(selectedTask.id, recovery);
+    try {
+      const result = await confirmPlanningTaskDelegationAction(selectedTask.id, delegationActionPreview.task.revision, delegationAction, note, delegationActionPreview.confirmation_id, key);
+      applyDelegationResult(result); setDelegationAction(null); setDelegationActionPreview(null); setDelegationActionNote(""); delegationRecoveryRef.current = null; setDelegationRecovery(null); storeDelegationRecovery(selectedTask.id, null); setNotice(result.duplicate ? "The existing action was confirmed." : "Delegation updated.");
+    } catch { setNotice("Action delivery is uncertain. Reconcile it before trying anything else."); }
+    finally { setBusy(false); }
+  }
+
+  async function refreshDelegation() {
+    if (!selectedTask || busy) return;
+    setBusy(true); setNotice("Refreshing delegated work…");
+    try { applyDelegationResult(await refreshPlanningTaskDelegation(selectedTask.id, selectedTask.revision)); setNotice("Delegated work refreshed."); }
+    catch { setNotice("Delegated work could not be refreshed."); }
+    finally { setBusy(false); }
+  }
+
+  async function recoverDelegation() {
+    if (!selectedTask || !delegationRecovery || busy) return;
+    setBusy(true); setNotice("Reconciling the prior delivery without retrying it…");
+    try {
+      const result = await recoverPlanningTaskDelegation(selectedTask.id, delegationRecovery.confirmationId, delegationRecovery.idempotencyKey);
+      applyDelegationResult(result); setDelegationPreview(null); setDelegationActionPreview(null); delegationRecoveryRef.current = null; setDelegationRecovery(null); storeDelegationRecovery(selectedTask.id, null); setNotice(result.recovered ? "Prior delivery reconciled." : "Prior delivery was already confirmed.");
+    } catch { setNotice("The prior delivery is still indeterminate; no action was retried."); }
+    finally { setBusy(false); }
+  }
+
   async function submitProject() {
     const name = projectName.trim();
     if (!name || busy) return;
@@ -407,7 +559,7 @@ export function ProjectsTasksWorkspace() {
   const selectedProject = overview?.projects.find((item) => item.id === selectedProjectId) ?? null;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedTaskExecution = taskExecution && selectedTask && taskExecution.task.id === selectedTask.id && taskExecution.task.revision === selectedTask.revision ? taskExecution : null;
-  const selectedTaskDelegation = taskDelegation && selectedTask && taskDelegation.task_id === selectedTask.id ? taskDelegation : null;
+  const selectedTaskDelegation = taskDelegation && selectedTask && taskDelegation.task.id === selectedTask.id ? taskDelegation : null;
   const executionOwnsTerminalStages = !!selectedTaskExecution && executionState === "ready" && selectedTaskExecution.execution.attempts.some((attempt) => attempt.state === "dispatched" || attempt.state === "review_ready");
   const filteredTasks = tasks.filter((task) => {
     const query = filter.trim().toLowerCase();
@@ -658,10 +810,23 @@ export function ProjectsTasksWorkspace() {
         </section>
         <section aria-label="Task delegation" className="planning-execution">
           <p className="console-kicker">Delegation</p>
-          {delegationState === "loading" ? <p>Loading delegation status…</p> : delegationState === "unavailable" || !selectedTaskDelegation ? <p>Delegation status is temporarily unavailable.</p> : selectedTaskDelegation.delegation.available === false ? <p>This Task has not been delegated.</p> : <>
-            <dl className="planning-summary"><div><dt>State</dt><dd>{selectedTaskDelegation.delegation.state.replaceAll("_", " ")}</dd></div><div><dt>Sync</dt><dd>{selectedTaskDelegation.delegation.sync_state}</dd></div><div><dt>Review</dt><dd>{selectedTaskDelegation.delegation.review_state.replaceAll("_", " ")}</dd></div><div><dt>Attempts</dt><dd>{selectedTaskDelegation.delegation.attempts}</dd></div>{selectedTaskDelegation.delegation.last_outcome ? <div><dt>Outcome</dt><dd>{selectedTaskDelegation.delegation.last_outcome.replaceAll("_", " ")}</dd></div> : null}</dl>
+          {delegationRecovery ? <div className="planning-run-once-confirmation"><p>The prior delivery is indeterminate. Reconcile it without sending it again.</p><button disabled={busy} onClick={() => void recoverDelegation()} type="button">Reconcile prior delivery</button></div> : delegationState === "loading" ? <p>Loading delegation status…</p> : delegationState === "unavailable" || !selectedTaskDelegation ? <p>Delegation status is temporarily unavailable.</p> : selectedTaskDelegation.delegation.available === false ? <>
+            <p>This Task has not been delegated.</p>
+            {!delegationForm ? <button disabled={busy} onClick={() => void openDelegationForm()} type="button">Delegate</button> : delegationOptions?.options.available ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void previewDelegation(); }}>
+              <label><span>Agent</span><select disabled={busy} onChange={(event) => setDelegationProfile(event.target.value)} value={delegationProfile}>{delegationOptions.options.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
+              <label><span>Board</span><select disabled={busy} onChange={(event) => setDelegationBoard(event.target.value)} value={delegationBoard}>{delegationOptions.options.boards.map((board) => <option key={board.id} value={board.id}>{board.name}</option>)}</select></label>
+              <label><span>Workspace</span><select disabled={busy} onChange={(event) => setDelegationWorkspace(event.target.value as "scratch" | "worktree")} value={delegationWorkspace}>{delegationOptions.options.workspaces.map((workspace) => <option key={workspace} value={workspace}>{workspace}</option>)}</select></label>
+              <label><span>Instructions (optional)</span><textarea maxLength={8000} onChange={(event) => setDelegationInstructions(event.target.value)} value={delegationInstructions} /></label>
+              <div><button disabled={busy || !delegationProfile || !delegationBoard} type="submit">Preview delegation</button><button disabled={busy} onClick={() => { setDelegationForm(false); setDelegationPreview(null); }} type="button">Cancel</button></div>
+            </form> : <p>Delegation options are unavailable for this Task.</p>}
+            {delegationPreview?.action === "delegate" ? <div className="planning-run-once-confirmation"><p>{delegationPreview.effects.join(" ")}</p><div><button disabled={busy} onClick={() => void confirmDelegation()} type="button">Confirm delegation</button><button disabled={busy} onClick={() => setDelegationPreview(null)} type="button">Back</button></div></div> : null}
+          </> : <>
+            <dl className="planning-summary"><div><dt>State</dt><dd>{selectedTaskDelegation.delegation.state.replaceAll("_", " ")}</dd></div><div><dt>Sync</dt><dd>{selectedTaskDelegation.delegation.sync_state}</dd></div><div><dt>Review</dt><dd>{selectedTaskDelegation.delegation.review_state.replaceAll("_", " ")}</dd></div><div><dt>Attempts</dt><dd>{selectedTaskDelegation.delegation.attempts}</dd></div><div><dt>Files</dt><dd>{selectedTaskDelegation.delegation.artifact_count}</dd></div>{selectedTaskDelegation.delegation.last_outcome ? <div><dt>Outcome</dt><dd>{selectedTaskDelegation.delegation.last_outcome.replaceAll("_", " ")}</dd></div> : null}</dl>
             {selectedTaskDelegation.delegation.summary ? <p><strong>Summary</strong> {selectedTaskDelegation.delegation.summary}</p> : null}
             {selectedTaskDelegation.delegation.latest_question ? <p><strong>Needs input</strong> {selectedTaskDelegation.delegation.latest_question}</p> : null}
+            <div className="planning-review-actions"><button disabled={busy} onClick={() => void refreshDelegation()} type="button">Refresh</button>{selectedTaskDelegation.delegation.state === "ready_for_review" ? <><button disabled={busy} onClick={() => void previewDelegationAction("accept", null)} type="button">Accept</button><button disabled={busy} onClick={() => { setDelegationAction("request_revision"); setDelegationActionNote(""); }} type="button">Request revision</button></> : null}{["needs_input", "blocked", "failed", "cancelled"].includes(selectedTaskDelegation.delegation.state) ? <><button disabled={busy} onClick={() => { setDelegationAction("reply"); setDelegationActionNote(""); }} type="button">Reply</button><button disabled={busy} onClick={() => void previewDelegationAction("retry", null)} type="button">Retry</button></> : null}{selectedTaskDelegation.delegation.state === "running" ? <button disabled={busy} onClick={() => void previewDelegationAction("stop", null)} type="button">Stop</button> : null}{selectedTaskDelegation.delegation.state !== "completed" ? <button disabled={busy} onClick={() => { setDelegationAction("mark_blocked"); setDelegationActionNote(""); }} type="button">Mark blocked</button> : null}</div>
+            {delegationAction && ["reply", "request_revision", "mark_blocked"].includes(delegationAction) && !delegationActionPreview ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void previewDelegationAction(delegationAction, delegationActionNote); }}><label><span>{delegationAction.replaceAll("_", " ")} note</span><textarea maxLength={8000} onChange={(event) => setDelegationActionNote(event.target.value)} value={delegationActionNote} /></label><div><button disabled={busy || !delegationActionNote.trim()} type="submit">Preview action</button><button disabled={busy} onClick={() => { setDelegationAction(null); setDelegationActionNote(""); }} type="button">Cancel</button></div></form> : null}
+            {delegationActionPreview ? <div className="planning-run-once-confirmation"><p>{delegationActionPreview.effects.join(" ")}</p><div><button disabled={busy} onClick={() => void confirmDelegationAction()} type="button">Confirm action</button><button disabled={busy} onClick={() => setDelegationActionPreview(null)} type="button">Back</button></div></div> : null}
           </>}
         </section>
         {editingTask && taskDetail ? <form className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}>
