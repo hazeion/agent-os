@@ -8,7 +8,10 @@ from unittest.mock import patch
 
 import server
 from project_repository import ensure_project_sqlite_authority
-from task_repository import ensure_task_sqlite_authority, read_authoritative_tasks
+from task_repository import (
+    ensure_task_sqlite_authority,
+    read_authoritative_tasks,
+)
 
 
 def project(identifier: str, name: str) -> dict:
@@ -31,14 +34,14 @@ def task(identifier: str, project_name: str) -> dict:
 
 
 class PlanningModelTests(unittest.TestCase):
-    def root(self, temporary: str) -> Path:
+    def root(self, temporary: str, task_records: list[dict] | None = None) -> Path:
         root = Path(temporary)
         (root / "projects.json").write_text(
             json.dumps([project("project_a", "Alpha"), project("project_b", "Bravo")]),
             encoding="utf-8",
         )
         (root / "tasks.json").write_text(
-            json.dumps([task("task_a", "Alpha"), task("task_b", "Alpha")]),
+            json.dumps(task_records if task_records is not None else [task("task_a", "Alpha"), task("task_b", "Alpha")]),
             encoding="utf-8",
         )
         ensure_task_sqlite_authority(root, required_source_mode=None)
@@ -168,6 +171,64 @@ class PlanningModelTests(unittest.TestCase):
                 self.assertEqual(stored["assignee"], "Planner")
                 self.assertEqual(stored["manual_rank"], 7)
                 self.assertEqual(stored["subtasks"][0]["title"], "First")
+
+    def test_dependency_reads_are_bounded_cross_project_and_cursor_bound(self):
+        with TemporaryDirectory() as temporary:
+            tasks = [task("task_a", "Alpha"), task("task_b", "Alpha")]
+            tasks[0]["depends_on"] = ["task_b"]
+            for index in range(101):
+                dependent = task(f"task_dependent_{index:03d}", "Bravo")
+                dependent["depends_on"] = ["task_a"]
+                tasks.append(dependent)
+            root = self.root(temporary, tasks)
+            with patch.object(server, "DATA_DIR", root):
+                related = server.mentat_planning_task_dependencies_payload("task_a")
+                self.assertEqual(related["task_id"], "task_a")
+                self.assertEqual(related["task_revision"], 1)
+                self.assertEqual(
+                    related["prerequisites"],
+                    [{
+                        "id": "task_b", "title": "task_b", "project_id": "project_a",
+                        "project_name": "Alpha", "workflow_stage": "inbox", "blocked": False,
+                    }],
+                )
+                self.assertEqual((related["dependent_count"], len(related["dependents"])), (101, 100))
+                self.assertTrue(related["dependents_truncated"])
+                self.assertNotIn("description", str(related))
+
+                first = server.mentat_planning_dependency_picker_payload(task_id="task_a")
+                self.assertEqual((first["candidate_count"], first["match_count"]), (50, 102))
+                self.assertTrue(first["truncated"])
+                self.assertNotIn("task_a", {item["id"] for item in first["candidates"]})
+                second = server.mentat_planning_dependency_picker_payload(
+                    task_id="task_a", cursor=first["next_cursor"]
+                )
+                self.assertEqual(second["candidate_count"], 50)
+                self.assertNotEqual(
+                    {item["id"] for item in first["candidates"]},
+                    {item["id"] for item in second["candidates"]},
+                )
+                bravo = server.mentat_planning_dependency_picker_payload(
+                    task_id="task_a", query="Bravo"
+                )
+                self.assertEqual(bravo["match_count"], 101)
+                with self.assertRaisesRegex(Exception, "planning.cursor_invalid"):
+                    server.mentat_planning_dependency_picker_payload(
+                        task_id="task_a", query="Other", cursor=first["next_cursor"]
+                    )
+
+    def test_dependency_edit_rejects_raw_duplicate_and_self_without_mutating(self):
+        with TemporaryDirectory() as temporary:
+            root = self.root(temporary)
+            with patch.object(server, "DATA_DIR", root):
+                for dependencies in (["task_a"], [" task_b "], ["task_b", " task_b "]):
+                    with self.subTest(dependencies=dependencies):
+                        rejected, status = server.update_mentat_planning_task(
+                            "task_a", {"expected_revision": 1, "changes": {"depends_on": dependencies}}
+                        )
+                        self.assertEqual((rejected, status), ({"error_code": "planning.task_invalid"}, 400))
+                        stored = next(item for item in read_authoritative_tasks(root) if item["id"] == "task_a")
+                        self.assertNotIn("depends_on", stored)
 
 
 if __name__ == "__main__":

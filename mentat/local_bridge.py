@@ -22,6 +22,7 @@ from socketserver import TCPServer
 import sys
 import threading
 import time
+import unicodedata
 from urllib.parse import parse_qsl, quote, unquote, unquote_to_bytes, urlsplit
 
 from conversation_repository import (
@@ -50,6 +51,8 @@ BRIDGE_PLANNING_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview"
 BRIDGE_PLANNING_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks"
 BRIDGE_PLANNING_TASK_PATH = "/bridge/v1/agent-console/planning-task"
 BRIDGE_PLANNING_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail"
+BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-dependencies"
+BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker"
 BRIDGE_PROJECTS_PATH = "/bridge/v1/projects"
 BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
 BRIDGE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness"
@@ -1383,6 +1386,36 @@ def _planning_task_detail(value: object) -> dict[str, object]:
     return {**task, "description": description, "tags": list(tags), "estimated_minutes": estimate, "recurrence": recurrence, "subtasks": [dict(item) for item in subtasks], "assigned_agent_id": agent_id}
 
 
+def _planning_dependency_task(value: object) -> dict[str, object]:
+    """Validate the narrow, relationship-only Task summary."""
+
+    required = {"id", "title", "project_id", "project_name", "workflow_stage", "blocked"}
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or not isinstance(value.get("id"), str)
+        or _TASK_ID.fullmatch(value["id"]) is None
+        or not _planning_text(value.get("title"), 160)
+        or not isinstance(value.get("project_id"), str)
+        or _PROJECT_ID.fullmatch(value["project_id"]) is None
+        or not _planning_text(value.get("project_name"), 120)
+        or value.get("workflow_stage") not in {"inbox", "planned", "in_progress", "waiting", "review", "done"}
+        or type(value.get("blocked")) is not bool
+    ):
+        raise BridgeConversationProjectionError("planning_dependency_task_invalid")
+    return {key: value[key] for key in sorted(required)}
+
+
+def _planning_picker_query(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.strip() == value
+        and bool(value)
+        and len(value) <= 160
+        and not any(unicodedata.category(character).startswith("C") for character in value)
+    )
+
+
 def _planning_failure(state: str, status: int) -> tuple[dict[str, object], int]:
     return {
         "schema_version": 1,
@@ -1717,6 +1750,151 @@ def bridge_planning_task_detail_payload(task_id: str) -> tuple[dict[str, object]
         if source.get("schema_version") != 1 or task["id"] != task_id or task["project_id"] != project["id"]:
             raise BridgeConversationProjectionError("planning_task_locator_invalid")
         return {"schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready", "project": project, "task": task}, 200
+    except ConversationPlanningError as exc:
+        if exc.code == "planning.task_not_found":
+            return _planning_failure("not_found", 404)
+        if exc.code.endswith("_invalid"):
+            return _planning_failure("invalid", 400)
+        if exc.code in {"planning.unavailable", "planning.tasks_unavailable"}:
+            return _planning_failure("unavailable", 503)
+        return _planning_failure("error", 500)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_planning_task_dependencies_payload(
+    task_id: str,
+) -> tuple[dict[str, object], int]:
+    """Return fixed direct dependency lists without widening the Task detail."""
+
+    from conversation_planning import ConversationPlanningError
+
+    try:
+        from server import mentat_planning_task_dependencies_payload
+
+        source = mentat_planning_task_dependencies_payload(task_id)
+        required = {
+            "schema_version", "task_id", "task_revision", "prerequisites",
+            "prerequisite_count", "prerequisites_truncated", "dependents",
+            "dependent_count", "dependents_truncated",
+        }
+        if not isinstance(source, dict) or set(source) != required:
+            raise BridgeConversationProjectionError("planning_dependencies_invalid")
+        prerequisites = source.get("prerequisites")
+        dependents = source.get("dependents")
+        if (
+            source.get("schema_version") != 1
+            or source.get("task_id") != task_id
+            or type(source.get("task_revision")) is not int
+            or source["task_revision"] < 1
+            or not isinstance(prerequisites, list)
+            or not isinstance(dependents, list)
+            or len(prerequisites) > 100
+            or len(dependents) > 100
+            or type(source.get("prerequisite_count")) is not int
+            or type(source.get("dependent_count")) is not int
+            or not 0 <= source["prerequisite_count"] <= 100
+            or not 0 <= source["dependent_count"] <= MAXIMUM_BRIDGE_TASKS - 1
+            or type(source.get("prerequisites_truncated")) is not bool
+            or type(source.get("dependents_truncated")) is not bool
+            or source["prerequisites_truncated"] != (source["prerequisite_count"] > len(prerequisites))
+            or source["dependents_truncated"] != (source["dependent_count"] > len(dependents))
+        ):
+            raise BridgeConversationProjectionError("planning_dependencies_invalid")
+        public_prerequisites = [_planning_dependency_task(item) for item in prerequisites]
+        public_dependents = [_planning_dependency_task(item) for item in dependents]
+        related = public_prerequisites + public_dependents
+        if (
+            len({item["id"] for item in public_prerequisites}) != len(public_prerequisites)
+            or len({item["id"] for item in public_dependents}) != len(public_dependents)
+            or any(item["id"] == task_id for item in related)
+            or {item["id"] for item in public_prerequisites} & {item["id"] for item in public_dependents}
+        ):
+            raise BridgeConversationProjectionError("planning_dependencies_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "task_id": task_id,
+            "task_revision": source["task_revision"],
+            "prerequisites": public_prerequisites,
+            "prerequisite_count": source["prerequisite_count"],
+            "prerequisites_truncated": source["prerequisites_truncated"],
+            "dependents": public_dependents,
+            "dependent_count": source["dependent_count"],
+            "dependents_truncated": source["dependents_truncated"],
+        }, 200
+    except ConversationPlanningError as exc:
+        if exc.code == "planning.task_not_found":
+            return _planning_failure("not_found", 404)
+        if exc.code.endswith("_invalid"):
+            return _planning_failure("invalid", 400)
+        if exc.code in {"planning.unavailable", "planning.tasks_unavailable"}:
+            return _planning_failure("unavailable", 503)
+        return _planning_failure("error", 500)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_planning_dependency_picker_payload(
+    task_id: str,
+    query: str | None,
+    cursor: str | None,
+) -> tuple[dict[str, object], int]:
+    """Return one fixed bounded page of dependency candidates."""
+
+    from conversation_planning import ConversationPlanningError
+
+    try:
+        from server import mentat_planning_dependency_picker_payload
+
+        source = mentat_planning_dependency_picker_payload(
+            task_id=task_id, query=query, cursor=cursor
+        )
+        required = {
+            "schema_version", "task_id", "query", "candidates", "candidate_count",
+            "match_count", "next_cursor", "truncated",
+        }
+        if not isinstance(source, dict) or set(source) != required:
+            raise BridgeConversationProjectionError("planning_picker_invalid")
+        candidates = source.get("candidates")
+        next_cursor = source.get("next_cursor")
+        if (
+            source.get("schema_version") != 1
+            or source.get("task_id") != task_id
+            or source.get("query") != (query or "")
+            or source["query"] and not _planning_picker_query(source["query"])
+            or not isinstance(candidates, list)
+            or len(candidates) > 50
+            or type(source.get("candidate_count")) is not int
+            or source["candidate_count"] != len(candidates)
+            or type(source.get("match_count")) is not int
+            or not len(candidates) <= source["match_count"] <= MAXIMUM_BRIDGE_TASKS - 1
+            or next_cursor is not None and (not isinstance(next_cursor, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,512}", next_cursor) is None)
+            or type(source.get("truncated")) is not bool
+            or source["truncated"] != (next_cursor is not None)
+        ):
+            raise BridgeConversationProjectionError("planning_picker_invalid")
+        public_candidates = [_planning_dependency_task(item) for item in candidates]
+        if (
+            len({item["id"] for item in public_candidates}) != len(public_candidates)
+            or any(item["id"] == task_id for item in public_candidates)
+        ):
+            raise BridgeConversationProjectionError("planning_picker_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "task_id": task_id,
+            "query": source["query"],
+            "candidates": public_candidates,
+            "candidate_count": source["candidate_count"],
+            "match_count": source["match_count"],
+            "next_cursor": next_cursor,
+            "truncated": source["truncated"],
+        }, 200
     except ConversationPlanningError as exc:
         if exc.code == "planning.task_not_found":
             return _planning_failure("not_found", 404)
@@ -4408,6 +4586,38 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bridge_route_not_found"}, 404)
                 return
             payload, status = bridge_planning_task_detail_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if len(pairs) != 1 or pairs[0][0] != "task_id" or _TASK_ID.fullmatch(pairs[0][1]) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_task_dependencies_payload(pairs[0][1])
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            values = {key: value for key, value in pairs}
+            if (
+                not pairs
+                or len(values) != len(pairs)
+                or set(values) - {"task_id", "q", "cursor"}
+                or _TASK_ID.fullmatch(values.get("task_id", "")) is None
+                or "q" in values and not _planning_picker_query(values["q"])
+                or "cursor" in values and re.fullmatch(r"[A-Za-z0-9_-]{1,512}", values["cursor"]) is None
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_dependency_picker_payload(
+                values["task_id"], values.get("q"), values.get("cursor")
+            )
             self._send_json(payload, status)
             return
         if parsed.path == BRIDGE_CONVERSATION_HISTORY_PATH:

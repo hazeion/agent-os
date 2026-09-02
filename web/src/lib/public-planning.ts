@@ -51,6 +51,7 @@ export type PublicPlanningTaskListItem = PublicPlanningTask & {
 
 export type PublicPlanningSubtask = { id: string; title: string; completed: boolean; rank: number };
 export type PublicPlanningRecurrence = { frequency: "daily" | "weekly" | "monthly" | "yearly"; interval: number; weekdays?: Array<"mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun">; ends_on?: string; count?: number };
+export type PublicPlanningDependencyReference = { id: string; title: string; project_id: string; project_name: string; workflow_stage: typeof WORKFLOW_STAGES[number]; blocked: boolean };
 export type PublicPlanningTaskDetail = PublicPlanningTask & { description: string; tags: string[]; estimated_minutes: number | null; recurrence: PublicPlanningRecurrence | null; subtasks: PublicPlanningSubtask[]; assigned_agent_id: string | null };
 
 export type PublicPlanningOverview = ServiceEnvelope & {
@@ -74,6 +75,8 @@ export type PublicPlanningTaskResult = ServiceEnvelope & {
   task: PublicPlanningTask;
 };
 export type PublicPlanningTaskDetailResult = ServiceEnvelope & { project: PublicPlanningProject; task: PublicPlanningTaskDetail };
+export type PublicPlanningTaskDependencies = ServiceEnvelope & { task_id: string; task_revision: number; prerequisites: PublicPlanningDependencyReference[]; prerequisite_count: number; prerequisites_truncated: boolean; dependents: PublicPlanningDependencyReference[]; dependent_count: number; dependents_truncated: boolean };
+export type PublicPlanningDependencyPickerPage = ServiceEnvelope & { task_id: string; query: string; candidates: PublicPlanningDependencyReference[]; candidate_count: number; match_count: number; next_cursor: string | null; truncated: boolean };
 
 export type PublicPlanningAssociation = { project_id: string; task_id: string | null };
 
@@ -161,6 +164,16 @@ function validRecurrence(value: unknown): value is PublicPlanningRecurrence {
   const allowed = new Set(["frequency", "interval", "weekdays", "ends_on", "count"]);
   if (Object.keys(value).some((key) => !allowed.has(key)) || value.weekdays !== undefined && (!Array.isArray(value.weekdays) || !value.weekdays.length || value.weekdays.length > 7 || !value.weekdays.every((day) => ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].includes(String(day))) || value.frequency !== "weekly") || value.ends_on !== undefined && !date(value.ends_on) || value.count !== undefined && (!Number.isSafeInteger(value.count) || (value.count as number) < 1 || (value.count as number) > 10000) || value.ends_on !== undefined && value.count !== undefined) return false;
   return true;
+}
+
+function validDependencyReference(value: unknown): value is PublicPlanningDependencyReference {
+  return record(value) && keys(value, "blocked,id,project_id,project_name,title,workflow_stage")
+    && typeof value.id === "string" && TASK_ID.test(value.id)
+    && text(value.title, 160)
+    && typeof value.project_id === "string" && PROJECT_ID.test(value.project_id)
+    && text(value.project_name, 120)
+    && WORKFLOW_STAGES.includes(value.workflow_stage as typeof WORKFLOW_STAGES[number])
+    && typeof value.blocked === "boolean";
 }
 
 function validTaskDetail(value: unknown): value is PublicPlanningTaskDetail {
@@ -254,6 +267,35 @@ export function parsePlanningTaskDetailResult(value: unknown, taskId?: string): 
   if (!record(value) || !keys(value, "project,runtime,schema_version,service,status,task") || !validEnvelope(value) || !validProject(value.project) || !validTaskDetail(value.task)) throw new PublicPlanningError("response_invalid");
   if (taskId !== undefined && value.task.id !== taskId || value.task.project_id !== value.project.id || value.task.project_name !== value.project.name) throw new PublicPlanningError("response_invalid");
   return structuredClone(value) as PublicPlanningTaskDetailResult;
+}
+
+export function parsePlanningTaskDependencies(value: unknown, taskId?: string): PublicPlanningTaskDependencies {
+  if (!record(value) || !keys(value, "dependent_count,dependents,dependents_truncated,prerequisite_count,prerequisites,prerequisites_truncated,runtime,schema_version,service,status,task_id,task_revision") || !validEnvelope(value)
+    || typeof value.task_id !== "string" || !TASK_ID.test(value.task_id) || taskId !== undefined && value.task_id !== taskId
+    || !Number.isSafeInteger(value.task_revision) || (value.task_revision as number) < 1
+    || !Array.isArray(value.prerequisites) || value.prerequisites.length > 100 || !value.prerequisites.every(validDependencyReference)
+    || !Array.isArray(value.dependents) || value.dependents.length > 100 || !value.dependents.every(validDependencyReference)
+    || !Number.isSafeInteger(value.prerequisite_count) || (value.prerequisite_count as number) < value.prerequisites.length || (value.prerequisite_count as number) > 100
+    || !Number.isSafeInteger(value.dependent_count) || (value.dependent_count as number) < value.dependents.length || (value.dependent_count as number) > 2047
+    || typeof value.prerequisites_truncated !== "boolean" || value.prerequisites_truncated !== ((value.prerequisite_count as number) > value.prerequisites.length)
+    || typeof value.dependents_truncated !== "boolean" || value.dependents_truncated !== ((value.dependent_count as number) > value.dependents.length)) throw new PublicPlanningError("response_invalid");
+  const identifiers = new Set<string>();
+  if (![...value.prerequisites, ...value.dependents].every((item) => !identifiers.has(item.id) && (identifiers.add(item.id), true))) throw new PublicPlanningError("response_invalid");
+  return structuredClone(value) as PublicPlanningTaskDependencies;
+}
+
+export function parsePlanningDependencyPickerPage(value: unknown, taskId?: string, query?: string): PublicPlanningDependencyPickerPage {
+  if (!record(value) || !keys(value, "candidate_count,candidates,match_count,next_cursor,query,runtime,schema_version,service,status,task_id,truncated") || !validEnvelope(value)
+    || typeof value.task_id !== "string" || !TASK_ID.test(value.task_id) || taskId !== undefined && value.task_id !== taskId
+    || typeof value.query !== "string" || [...value.query].length > 160 || value.query.trim() !== value.query || /\p{C}/u.test(value.query) || query !== undefined && value.query !== query
+    || !Array.isArray(value.candidates) || value.candidates.length > 50 || !value.candidates.every(validDependencyReference)
+    || !Number.isSafeInteger(value.candidate_count) || value.candidate_count !== value.candidates.length
+    || !Number.isSafeInteger(value.match_count) || (value.match_count as number) < value.candidate_count || (value.match_count as number) > 2047
+    || typeof value.truncated !== "boolean" || value.truncated !== (value.next_cursor !== null)
+    || value.next_cursor !== null && (typeof value.next_cursor !== "string" || !CURSOR.test(value.next_cursor))) throw new PublicPlanningError("response_invalid");
+  const identifiers = new Set<string>();
+  if (!value.candidates.every((item) => !identifiers.has(item.id) && (identifiers.add(item.id), true))) throw new PublicPlanningError("response_invalid");
+  return structuredClone(value) as PublicPlanningDependencyPickerPage;
 }
 
 export function parsePlanningProjectMutation(value: unknown, projectId?: string): PublicPlanningProjectMutation {
@@ -356,6 +398,22 @@ export async function readPlanningTaskDetail(taskId: string): Promise<PublicPlan
   const parameters = new URLSearchParams({ task_id: taskId });
   const { response, payload } = await request(`/api/agent-console/planning-task-detail?${parameters.toString()}`);
   if (response.status === 200) return parsePlanningTaskDetailResult(payload, taskId);
+  failure(payload, response);
+}
+
+export async function readPlanningDependencyPicker(taskId: string, query: string, cursor: string | null = null): Promise<PublicPlanningDependencyPickerPage> {
+  if (!TASK_ID.test(taskId) || typeof query !== "string" || [...query].length > 160 || query.trim() !== query || /\p{C}/u.test(query) || cursor !== null && !CURSOR.test(cursor)) throw new PublicPlanningError("invalid");
+  const parameters = new URLSearchParams({ task_id: taskId }); if (query) parameters.set("q", query); if (cursor !== null) parameters.set("cursor", cursor);
+  const { response, payload } = await request(`/api/agent-console/planning-dependency-picker?${parameters.toString()}`);
+  if (response.status === 200) return parsePlanningDependencyPickerPage(payload, taskId, query);
+  failure(payload, response);
+}
+
+export async function readPlanningTaskDependencies(taskId: string): Promise<PublicPlanningTaskDependencies> {
+  if (!TASK_ID.test(taskId)) throw new PublicPlanningError("invalid");
+  const parameters = new URLSearchParams({ task_id: taskId });
+  const { response, payload } = await request(`/api/agent-console/planning-task-dependencies?${parameters.toString()}`);
+  if (response.status === 200) return parsePlanningTaskDependencies(payload, taskId);
   failure(payload, response);
 }
 

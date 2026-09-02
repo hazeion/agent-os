@@ -25,6 +25,9 @@ MAX_PROJECTS = 256
 MAX_ATTENTION = 50
 MAX_TASK_PAGE = 50
 MAX_TASK_DESCRIPTION_PREVIEW = 280
+MAX_DIRECT_DEPENDENCY_ITEMS = 100
+MAX_DEPENDENCY_PICKER_PAGE = 50
+MAX_DEPENDENCY_PICKER_QUERY = 160
 _PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 _CURSOR = re.compile(r"[A-Za-z0-9_-]{1,512}\Z")
@@ -337,6 +340,110 @@ def _decode_cursor(project_id: str, cursor: object) -> tuple[int, str, str]:
     return value[1], value[2], value[3]
 
 
+def _dependency_picker_query(value: object) -> str:
+    """Normalize the optional, display-only dependency-picker query."""
+
+    if value is None:
+        return ""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > MAX_DEPENDENCY_PICKER_QUERY
+        or any(unicodedata.category(character).startswith("C") for character in value)
+    ):
+        raise ConversationPlanningError("planning.picker_query_invalid")
+    return value
+
+
+def _dependency_picker_cursor_digest(task_id: str, query: str) -> str:
+    return hashlib.sha256(
+        (task_id + "\x00" + query).encode("utf-8")
+    ).hexdigest()
+
+
+def _dependency_picker_boundary(task: Mapping[str, Any]) -> str:
+    """Bind a compact cursor to the exact last sortable picker result."""
+
+    raw = json.dumps(
+        [task["project_name"], task["title"], task["id"]],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _encode_dependency_picker_cursor(
+    task_id: str, query: str, task: Mapping[str, Any]
+) -> str:
+    raw = json.dumps(
+        [
+            _dependency_picker_cursor_digest(task_id, query),
+            task["id"],
+            _dependency_picker_boundary(task),
+        ],
+        separators=(",", ":"),
+    ).encode("ascii")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_dependency_picker_cursor(
+    task_id: str, query: str, cursor: object
+) -> tuple[str, str]:
+    if not isinstance(cursor, str) or _CURSOR.fullmatch(cursor) is None:
+        raise ConversationPlanningError("planning.cursor_invalid")
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        if base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != cursor:
+            raise ValueError("noncanonical")
+        value = json.loads(raw.decode("ascii"))
+    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ConversationPlanningError("planning.cursor_invalid") from exc
+    if (
+        not isinstance(value, list)
+        or len(value) != 3
+        or value[0] != _dependency_picker_cursor_digest(task_id, query)
+        or not isinstance(value[1], str)
+        or _TASK_ID.fullmatch(value[1]) is None
+        or not isinstance(value[2], str)
+        or re.fullmatch(r"[0-9a-f]{64}", value[2]) is None
+    ):
+        raise ConversationPlanningError("planning.cursor_invalid")
+    return value[1], value[2]
+
+
+def _dependency_task_summary(
+    task: Mapping[str, Any],
+    registry: ProjectRegistry,
+    all_tasks: Mapping[str, Mapping[str, Any]],
+    *,
+    today: date,
+) -> dict[str, Any]:
+    """Return the intentionally narrow relationship/picker Task projection."""
+
+    projected = safe_task_projection(task, registry, today=today)
+    projected["blocked"] = _task_is_blocked(task, all_tasks)
+    return {
+        key: projected[key]
+        for key in (
+            "id",
+            "title",
+            "project_id",
+            "project_name",
+            "workflow_stage",
+            "blocked",
+        )
+    }
+
+
+def _dependency_task_sort_key(task: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(task["project_name"]).casefold(),
+        str(task["title"]).casefold(),
+        str(task["id"]),
+    )
+
+
 def planning_task_page(
     connection: sqlite3.Connection,
     projects_payload: object,
@@ -484,6 +591,135 @@ def planning_task_detail_locator(
     return located
 
 
+def _dependency_snapshot(
+    connection: sqlite3.Connection,
+    projects_payload: object,
+    *,
+    task_id: str,
+    today: date,
+) -> tuple[ProjectRegistry, dict[str, Mapping[str, Any]], Mapping[str, Any], int]:
+    """Load one bounded canonical Task graph for dependency-only readers."""
+
+    if not isinstance(task_id, str) or _TASK_ID.fullmatch(task_id) is None:
+        raise ConversationPlanningError("planning.task_id_invalid")
+    registry = project_registry(projects_payload)
+    try:
+        repository = TaskRepository(connection)
+        snapshot = repository.get(task_id)
+        tasks = repository.list_tasks()
+    except TaskRepositoryConflict as exc:
+        if exc.code == "task_repository.not_found":
+            raise ConversationPlanningError("planning.task_not_found") from exc
+        raise ConversationPlanningError("planning.tasks_unavailable") from exc
+    except TaskRepositoryError as exc:
+        raise ConversationPlanningError("planning.tasks_unavailable") from exc
+    task_map = {str(task["id"]): task for task in tasks}
+    selected = task_map.get(task_id)
+    if selected is None or selected != snapshot.document:
+        raise ConversationPlanningError("planning.tasks_unavailable")
+    # Resolve the selected project here, so a Project mismatch fails closed even
+    # when the task has no relationship rows to project below.
+    safe_task_projection(selected, registry, today=today)
+    return registry, task_map, selected, snapshot.revision
+
+
+def planning_task_dependencies(
+    connection: sqlite3.Connection,
+    projects_payload: object,
+    *,
+    task_id: str,
+    today: date,
+) -> dict[str, Any]:
+    """Project only the selected Task's direct prerequisite and dependent edges."""
+
+    registry, tasks, selected, revision = _dependency_snapshot(
+        connection, projects_payload, task_id=task_id, today=today
+    )
+    dependency_ids = selected.get("depends_on") or []
+    if not isinstance(dependency_ids, list) or len(dependency_ids) > MAX_DIRECT_DEPENDENCY_ITEMS:
+        raise ConversationPlanningError("planning.tasks_invalid")
+    prerequisites: list[dict[str, Any]] = []
+    for dependency_id in dependency_ids:
+        dependency = tasks.get(str(dependency_id))
+        if dependency is None:
+            raise ConversationPlanningError("planning.tasks_invalid")
+        prerequisites.append(
+            _dependency_task_summary(dependency, registry, tasks, today=today)
+        )
+    dependents = [
+        _dependency_task_summary(task, registry, tasks, today=today)
+        for task in tasks.values()
+        if task_id in (task.get("depends_on") or [])
+    ]
+    dependents.sort(key=_dependency_task_sort_key)
+    return {
+        "task_id": task_id,
+        "task_revision": revision,
+        "prerequisites": prerequisites[:MAX_DIRECT_DEPENDENCY_ITEMS],
+        "prerequisite_count": len(prerequisites),
+        "prerequisites_truncated": len(prerequisites) > MAX_DIRECT_DEPENDENCY_ITEMS,
+        "dependents": dependents[:MAX_DIRECT_DEPENDENCY_ITEMS],
+        "dependent_count": len(dependents),
+        "dependents_truncated": len(dependents) > MAX_DIRECT_DEPENDENCY_ITEMS,
+    }
+
+
+def planning_dependency_picker(
+    connection: sqlite3.Connection,
+    projects_payload: object,
+    *,
+    task_id: str,
+    query: object = None,
+    cursor: object = None,
+    today: date,
+) -> dict[str, Any]:
+    """Return a bounded, paginated candidate list without asserting eligibility."""
+
+    normalized_query = _dependency_picker_query(query)
+    registry, tasks, _selected, _revision = _dependency_snapshot(
+        connection, projects_payload, task_id=task_id, today=today
+    )
+    needle = normalized_query.casefold()
+    candidates = []
+    for identifier, task in tasks.items():
+        if identifier == task_id:
+            continue
+        summary = _dependency_task_summary(task, registry, tasks, today=today)
+        haystack = "\n".join(
+            (summary["id"], summary["title"], summary["project_name"])
+        ).casefold()
+        if not needle or needle in haystack:
+            candidates.append(summary)
+    candidates.sort(key=_dependency_task_sort_key)
+    match_count = len(candidates)
+    if cursor is not None:
+        cursor_id, cursor_boundary = _decode_dependency_picker_cursor(
+            task_id, normalized_query, cursor
+        )
+        index = next(
+            (index for index, item in enumerate(candidates) if item["id"] == cursor_id),
+            None,
+        )
+        if index is None or _dependency_picker_boundary(candidates[index]) != cursor_boundary:
+            raise ConversationPlanningError("planning.cursor_invalid")
+        candidates = candidates[index + 1 :]
+    page = candidates[:MAX_DEPENDENCY_PICKER_PAGE]
+    next_cursor = (
+        _encode_dependency_picker_cursor(task_id, normalized_query, page[-1])
+        if len(candidates) > MAX_DEPENDENCY_PICKER_PAGE
+        else None
+    )
+    return {
+        "task_id": task_id,
+        "query": normalized_query,
+        "candidates": page,
+        "candidate_count": len(page),
+        "match_count": match_count,
+        "next_cursor": next_cursor,
+        "truncated": next_cursor is not None,
+    }
+
+
 def validate_association_targets(
     connection: sqlite3.Connection,
     registry: ProjectRegistry,
@@ -563,10 +799,14 @@ def planning_context_projection(
 __all__ = [
     "ConversationPlanningError",
     "MAX_ATTENTION",
+    "MAX_DEPENDENCY_PICKER_PAGE",
+    "MAX_DIRECT_DEPENDENCY_ITEMS",
     "MAX_PROJECTS",
     "MAX_TASK_PAGE",
     "planning_context_projection",
+    "planning_dependency_picker",
     "planning_overview",
+    "planning_task_dependencies",
     "planning_task_page",
     "planning_task_locator",
     "project_registry",

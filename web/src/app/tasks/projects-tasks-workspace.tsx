@@ -7,7 +7,9 @@ import {
   createProject,
   createProjectTask,
   readPlanningTask,
+  readPlanningTaskDependencies,
   readPlanningTaskDetail,
+  readPlanningDependencyPicker,
   readPlanningOverview,
   readPlanningTasks,
   updatePlanningProject,
@@ -17,6 +19,9 @@ import {
   type PublicPlanningTaskDetail,
   type PublicPlanningTaskListItem,
   type PublicPlanningTaskMutation,
+  type PublicPlanningDependencyReference,
+  type PublicPlanningTaskDependencies,
+  PublicPlanningError,
 } from "@/lib/public-planning";
 
 type LoadState = "loading" | "ready" | "empty" | "unavailable" | "error";
@@ -60,6 +65,8 @@ export function ProjectsTasksWorkspace() {
   const [taskDue, setTaskDue] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [taskDetail, setTaskDetail] = useState<PublicPlanningTaskDetail | null>(null);
+  const [taskDependencies, setTaskDependencies] = useState<PublicPlanningTaskDependencies | null>(null);
+  const [dependenciesState, setDependenciesState] = useState<LoadState>("loading");
   const [view, setView] = useState<"list" | "board">("list");
   const [savedView, setSavedView] = useState<"all" | "today" | "waiting" | "review" | "someday" | "completed">("all");
   const [filter, setFilter] = useState("");
@@ -74,6 +81,11 @@ export function ProjectsTasksWorkspace() {
   const [editRecurrence, setEditRecurrence] = useState<"" | "daily" | "weekly" | "monthly" | "yearly">("");
   const [editSubtasks, setEditSubtasks] = useState<PublicPlanningTaskDetail["subtasks"]>([]);
   const [editAgent, setEditAgent] = useState("");
+  const [editDependencies, setEditDependencies] = useState<PublicPlanningDependencyReference[]>([]);
+  const [dependencyQuery, setDependencyQuery] = useState("");
+  const [dependencyCandidates, setDependencyCandidates] = useState<PublicPlanningDependencyReference[]>([]);
+  const [dependencyCursor, setDependencyCursor] = useState<string | null>(null);
+  const [dependencyPickerState, setDependencyPickerState] = useState<LoadState>("empty");
   const [renameProject, setRenameProject] = useState(false);
   const [projectRename, setProjectRename] = useState("");
   const [busy, setBusy] = useState(false);
@@ -85,6 +97,7 @@ export function ProjectsTasksWorkspace() {
   const projectSelectionGeneration = useRef(0);
   const requestedTaskFocus = useRef<string | null>(null);
   const selectedProjectRef = useRef<string | null>(null);
+  const dependencyPickerGeneration = useRef(0);
   const requested = useMemo(() => typeof window === "undefined" ? null : requestedTask(), []);
 
   async function refreshOverview(preferredProjectId: string | null = null) {
@@ -114,6 +127,8 @@ export function ProjectsTasksWorkspace() {
     setSelectedProjectId(projectId);
     setSelectedTaskId(null);
     setTaskDetail(null);
+    setTaskDependencies(null);
+    setDependenciesState("loading");
     setEditingTask(false);
     closeTaskForm();
   }
@@ -205,6 +220,29 @@ export function ProjectsTasksWorkspace() {
   }, [selectedTaskId]);
 
   useEffect(() => {
+    if (!selectedTaskId) return;
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) { setDependenciesState("loading"); setTaskDependencies(null); } });
+    void readPlanningTaskDependencies(selectedTaskId).then((result) => {
+      if (cancelled || result.task_id !== selectedTaskId) return;
+      setTaskDependencies(result); setDependenciesState("ready");
+    }).catch(() => { if (!cancelled) setDependenciesState("unavailable"); });
+    return () => { cancelled = true; };
+  }, [selectedTaskId]);
+
+  useEffect(() => {
+    const generation = ++dependencyPickerGeneration.current;
+    if (!editingTask || !selectedTaskId || dependenciesState !== "ready") return;
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) { setDependencyPickerState("loading"); setDependencyCandidates([]); setDependencyCursor(null); } });
+    void readPlanningDependencyPicker(selectedTaskId, dependencyQuery).then((result) => {
+      if (cancelled || generation !== dependencyPickerGeneration.current || result.task_id !== selectedTaskId || result.query !== dependencyQuery) return;
+      setDependencyCandidates(result.candidates); setDependencyCursor(result.next_cursor); setDependencyPickerState(result.candidates.length ? "ready" : "empty");
+    }).catch(() => { if (!cancelled) setDependencyPickerState("unavailable"); });
+    return () => { cancelled = true; };
+  }, [dependencyQuery, dependenciesState, editingTask, selectedTaskId]);
+
+  useEffect(() => {
     const taskId = requestedTaskFocus.current;
     if (!taskId) return;
     const target = document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(taskId)}"] > button`);
@@ -275,7 +313,7 @@ export function ProjectsTasksWorkspace() {
     return task.workflow_stage === "done";
   });
   const selectTask = (task: PublicPlanningTaskListItem) => {
-    setSelectedTaskId(task.id); setTaskDetail(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
+    setSelectedTaskId(task.id); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
   };
   async function editSelected(changes: Record<string, unknown>, success: string): Promise<boolean> {
     if (!selectedTask || busy) return false;
@@ -284,12 +322,27 @@ export function ProjectsTasksWorkspace() {
     try {
       result = await updatePlanningTask(selectedTask.id, selectedTask.revision, changes);
       setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
-    } catch { setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again."); setBusy(false); return false; }
+    } catch (error) {
+      if (error instanceof PublicPlanningError && error.code === "conflict") {
+        try {
+          const [detailed, relationships] = await Promise.all([readPlanningTaskDetail(selectedTask.id), readPlanningTaskDependencies(selectedTask.id)]);
+          setTaskDetail(detailed.task); setTaskDependencies(relationships); setDependenciesState("ready");
+          const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
+          setTasks((current) => current.map((task) => task.id === selectedTask.id ? { ...task, ...detailed.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+          setNotice("Task changed elsewhere; its latest dependencies are shown. Review and save again.");
+        } catch { setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again."); }
+      } else setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again.");
+      setBusy(false); return false;
+    }
     try {
       const detailed = await readPlanningTaskDetail(result.task.id);
       setTaskDetail(detailed.task);
       const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
       setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+      try {
+        const relationships = await readPlanningTaskDependencies(result.task.id);
+        setTaskDependencies(relationships); setDependenciesState("ready");
+      } catch { setDependenciesState("unavailable"); }
       setNotice(success);
     } catch { setNotice("Task saved. Its refreshed details are temporarily unavailable."); }
     setBusy(false);
@@ -299,8 +352,27 @@ export function ProjectsTasksWorkspace() {
     if (!selectedTask || !editTitle.trim()) return;
     const existingRecurrence = taskDetail?.recurrence ?? null;
     const recurrenceChange = editRecurrence === (existingRecurrence?.frequency ?? "") ? undefined : editRecurrence ? { frequency: editRecurrence, interval: 1 } : null;
-    const saved = await editSelected({ title: editTitle.trim(), description: editDescription, priority: editPriority, due_date: editDue || null, planned_for_today: editToday, tags: editTags.split(",").map((tag) => tag.trim()).filter(Boolean), estimated_minutes: editEstimate ? Number(editEstimate) : null, ...(recurrenceChange === undefined ? {} : { recurrence: recurrenceChange }), subtasks: editSubtasks, assigned_agent_id: editAgent || null }, "Task details saved.");
+    const saved = await editSelected({ title: editTitle.trim(), description: editDescription, priority: editPriority, due_date: editDue || null, planned_for_today: editToday, tags: editTags.split(",").map((tag) => tag.trim()).filter(Boolean), estimated_minutes: editEstimate ? Number(editEstimate) : null, ...(recurrenceChange === undefined ? {} : { recurrence: recurrenceChange }), subtasks: editSubtasks, assigned_agent_id: editAgent || null, ...(dependenciesState === "ready" ? { depends_on: editDependencies.map((dependency) => dependency.id) } : {}) }, "Task details saved.");
     if (saved) setEditingTask(false);
+  }
+  async function loadMoreDependencyCandidates() {
+    if (!selectedTaskId || !dependencyCursor || dependencyPickerState === "loading") return;
+    const taskId = selectedTaskId;
+    const query = dependencyQuery;
+    const cursor = dependencyCursor;
+    const generation = dependencyPickerGeneration.current;
+    setDependencyPickerState("loading");
+    try {
+      const page = await readPlanningDependencyPicker(taskId, query, cursor);
+      if (generation !== dependencyPickerGeneration.current || page.task_id !== taskId || page.query !== query) return;
+      setDependencyCandidates((current) => [...current, ...page.candidates.filter((candidate) => !current.some((item) => item.id === candidate.id))]);
+      setDependencyCursor(page.next_cursor); setDependencyPickerState("ready");
+    } catch {
+      if (generation === dependencyPickerGeneration.current) setDependencyPickerState("unavailable");
+    }
+  }
+  function dependencyText(dependency: PublicPlanningDependencyReference) {
+    return `${dependency.title} · Project: ${dependency.project_name} · ${dependency.workflow_stage.replace("_", " ")}${dependency.blocked ? " · blocked" : ""}`;
   }
   async function changeStage(stage: PublicPlanningTask["workflow_stage"]) {
     await editSelected({ workflow_stage: stage }, `Task moved to ${stage.replace("_", " ")}.`);
@@ -339,7 +411,31 @@ export function ProjectsTasksWorkspace() {
     </div>
     <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Inspector</p><h2>{selectedTask ? "Task details" : "Select a Task"}</h2></div></div>
-      {!selectedTask ? <p>Select a Task to review its description, planning details, and lifecycle.</p> : <><p className="planning-description">{(taskDetail?.description ?? selectedTask.description_preview) || "This Task has no description."}</p><dl className="planning-summary"><div><dt>Stage</dt><dd>{selectedTask.workflow_stage.replace("_", " ")}</dd></div><div><dt>Priority</dt><dd>{selectedTask.priority}</dd></div><div><dt>Due</dt><dd>{selectedTask.due_date ?? "Not scheduled"}</dd></div></dl><div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}</div>{editingTask && taskDetail ? <form className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}><label><span>Title</span><input maxLength={160} onChange={(event) => setEditTitle(event.target.value)} value={editTitle} /></label><label className="planning-full-field"><span>Description</span><textarea maxLength={4000} onChange={(event) => setEditDescription(event.target.value)} value={editDescription} /></label><label><span>Priority</span><select onChange={(event) => setEditPriority(event.target.value as PublicPlanningTask["priority"])} value={editPriority}><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label><label><span>Due</span><input onChange={(event) => setEditDue(event.target.value)} type="date" value={editDue} /></label><label><span>Estimate (minutes)</span><input max="10080" min="1" onChange={(event) => setEditEstimate(event.target.value)} type="number" value={editEstimate} /></label><label><span>Recurrence</span><select onChange={(event) => setEditRecurrence(event.target.value as typeof editRecurrence)} value={editRecurrence}><option value="">None</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label><label className="planning-full-field"><span>Tags (comma separated)</span><input onChange={(event) => setEditTags(event.target.value)} value={editTags} /></label><label className="planning-full-field"><span>Assigned Agent</span><select disabled={agentsState !== "ready"} onChange={(event) => setEditAgent(event.target.value)} value={editAgent}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><div className="planning-checklist"><span>Checklist</span>{editSubtasks.map((item, index) => <label key={item.id}><input checked={item.completed} onChange={(event) => setEditSubtasks((current) => current.map((entry, position) => position === index ? { ...entry, completed: event.target.checked } : entry))} type="checkbox" />{item.title}<button onClick={() => setEditSubtasks((current) => current.filter((_, position) => position !== index))} type="button">Remove</button></label>)}<button onClick={() => setEditSubtasks((current) => [...current, { id: `check_${crypto.randomUUID().replaceAll("-", "")}`, title: "New checklist item", completed: false, rank: current.length }])} type="button">Add checklist item</button></div><label className="planning-checkbox"><input checked={editToday} onChange={(event) => setEditToday(event.target.checked)} type="checkbox" />Today</label><div><button disabled={busy || !editTitle.trim()} type="submit">Save details</button><button disabled={busy} onClick={() => setEditingTask(false)} type="button">Cancel</button></div></form> : <button disabled={busy || !taskDetail} onClick={() => { if (!taskDetail) return; setEditTitle(taskDetail.title); setEditDescription(taskDetail.description); setEditPriority(taskDetail.priority); setEditDue(taskDetail.due_date ?? ""); setEditToday(taskDetail.planned_for_today); setEditTags(taskDetail.tags.join(", ")); setEditEstimate(taskDetail.estimated_minutes?.toString() ?? ""); setEditRecurrence(taskDetail.recurrence?.frequency ?? ""); setEditSubtasks(taskDetail.subtasks); setEditAgent(taskDetail.assigned_agent_id ?? ""); setEditingTask(true); }} type="button">{taskDetail ? "Edit details" : "Loading details…"}</button>}</>}
+      {!selectedTask ? <p>Select a Task to review its description, planning details, and lifecycle.</p> : <>
+        <p className="planning-description">{(taskDetail?.description ?? selectedTask.description_preview) || "This Task has no description."}</p>
+        <dl className="planning-summary"><div><dt>Stage</dt><dd>{selectedTask.workflow_stage.replace("_", " ")}</dd></div><div><dt>Priority</dt><dd>{selectedTask.priority}</dd></div><div><dt>Due</dt><dd>{selectedTask.due_date ?? "Not scheduled"}</dd></div></dl>
+        <div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}</div>
+        {editingTask && taskDetail ? <form className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}>
+          <label><span>Title</span><input maxLength={160} onChange={(event) => setEditTitle(event.target.value)} value={editTitle} /></label>
+          <label className="planning-full-field"><span>Description</span><textarea maxLength={4000} onChange={(event) => setEditDescription(event.target.value)} value={editDescription} /></label>
+          <label><span>Priority</span><select onChange={(event) => setEditPriority(event.target.value as PublicPlanningTask["priority"])} value={editPriority}><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+          <label><span>Due</span><input onChange={(event) => setEditDue(event.target.value)} type="date" value={editDue} /></label>
+          <label><span>Estimate (minutes)</span><input max="10080" min="1" onChange={(event) => setEditEstimate(event.target.value)} type="number" value={editEstimate} /></label>
+          <label><span>Recurrence</span><select onChange={(event) => setEditRecurrence(event.target.value as typeof editRecurrence)} value={editRecurrence}><option value="">None</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label>
+          <label className="planning-full-field"><span>Tags (comma separated)</span><input onChange={(event) => setEditTags(event.target.value)} value={editTags} /></label>
+          <label className="planning-full-field"><span>Assigned Agent</span><select disabled={agentsState !== "ready"} onChange={(event) => setEditAgent(event.target.value)} value={editAgent}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
+          <fieldset className="planning-dependencies"><legend>Dependencies</legend>
+            <section><h3>Prerequisites ({taskDependencies?.prerequisite_count ?? 0})</h3>{dependenciesState === "unavailable" ? <p>Dependencies are temporarily unavailable.</p> : editDependencies.length ? <ul>{editDependencies.map((dependency) => <li key={dependency.id}><span>{dependencyText(dependency)}</span><button aria-label={`Remove prerequisite ${dependency.title}`} disabled={busy || dependenciesState !== "ready"} onClick={() => setEditDependencies((current) => current.filter((item) => item.id !== dependency.id))} type="button">Remove</button></li>)}</ul> : <p>No prerequisites.</p>}{taskDependencies?.prerequisites_truncated ? <p>Some prerequisites are not shown.</p> : null}</section>
+            <label><span>Find a prerequisite</span><input disabled={busy || dependenciesState !== "ready"} maxLength={160} onChange={(event) => setDependencyQuery(event.target.value.trim())} placeholder="Search Tasks" type="search" value={dependencyQuery} /></label>
+            {editDependencies.length >= 100 ? <p>Maximum of 100 prerequisites reached. Remove one before adding another.</p> : null}
+            {dependencyPickerState === "loading" ? <p>Finding Tasks…</p> : dependencyPickerState === "unavailable" ? <p>Task choices are temporarily unavailable.</p> : dependencyCandidates.length ? <ul aria-label="Prerequisite choices" className="planning-dependency-picker">{dependencyCandidates.map((candidate) => <li key={candidate.id}><span>{dependencyText(candidate)}</span><button aria-label={`Add prerequisite ${candidate.title}`} disabled={busy || editDependencies.length >= 100 || editDependencies.some((item) => item.id === candidate.id)} onClick={() => setEditDependencies((current) => current.length >= 100 || current.some((item) => item.id === candidate.id) ? current : [...current, candidate])} type="button">Add</button></li>)}</ul> : <p>No matching Tasks.</p>}
+            {dependencyCursor ? <button disabled={busy || dependencyPickerState === "loading"} onClick={() => void loadMoreDependencyCandidates()} type="button">More Task choices</button> : null}
+            <section><h3>Dependents ({taskDependencies?.dependent_count ?? 0})</h3>{taskDependencies?.dependents.length ? <ul>{taskDependencies.dependents.map((dependency) => <li key={dependency.id}>{dependencyText(dependency)}</li>)}</ul> : <p>No Tasks depend on this Task.</p>}{taskDependencies?.dependents_truncated ? <p>Some dependents are not shown.</p> : null}</section>
+          </fieldset>
+          <div className="planning-checklist"><span>Checklist</span>{editSubtasks.map((item, index) => <label key={item.id}><input checked={item.completed} onChange={(event) => setEditSubtasks((current) => current.map((entry, position) => position === index ? { ...entry, completed: event.target.checked } : entry))} type="checkbox" />{item.title}<button onClick={() => setEditSubtasks((current) => current.filter((_, position) => position !== index))} type="button">Remove</button></label>)}<button onClick={() => setEditSubtasks((current) => [...current, { id: `check_${crypto.randomUUID().replaceAll("-", "")}`, title: "New checklist item", completed: false, rank: current.length }])} type="button">Add checklist item</button></div>
+          <label className="planning-checkbox"><input checked={editToday} onChange={(event) => setEditToday(event.target.checked)} type="checkbox" />Today</label><div><button disabled={busy || !editTitle.trim()} type="submit">Save details</button><button disabled={busy} onClick={() => setEditingTask(false)} type="button">Cancel</button></div>
+        </form> : <button disabled={busy || !taskDetail || dependenciesState === "loading"} onClick={() => { if (!taskDetail) return; setEditTitle(taskDetail.title); setEditDescription(taskDetail.description); setEditPriority(taskDetail.priority); setEditDue(taskDetail.due_date ?? ""); setEditToday(taskDetail.planned_for_today); setEditTags(taskDetail.tags.join(", ")); setEditEstimate(taskDetail.estimated_minutes?.toString() ?? ""); setEditRecurrence(taskDetail.recurrence?.frequency ?? ""); setEditSubtasks(taskDetail.subtasks); setEditAgent(taskDetail.assigned_agent_id ?? ""); setEditDependencies(taskDependencies?.prerequisites ?? []); setDependencyQuery(""); setDependencyCandidates([]); setDependencyCursor(null); setEditingTask(true); }} type="button">{taskDetail && dependenciesState !== "loading" ? "Edit details" : "Loading details…"}</button>}
+      </>}
       {selectedProject ? <section className="planning-project-lifecycle"><p className="console-kicker">Project lifecycle</p>{renameProject ? <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void saveProjectName(); }}><label><span>Name</span><input maxLength={120} onChange={(event) => setProjectRename(event.target.value)} value={projectRename} /></label><div><button disabled={busy || !projectRename.trim()} type="submit">Save name</button><button disabled={busy} onClick={() => setRenameProject(false)} type="button">Cancel</button></div></form> : <button disabled={busy} onClick={() => { setProjectRename(selectedProject.name); setRenameProject(true); }} type="button">Rename Project</button>}{selectedProject.status === "archived" ? <button disabled={busy} onClick={() => void lifecycle("restore")} type="button">Restore Project</button> : <button disabled={busy} onClick={() => void lifecycle("archive")} type="button">Archive Project</button>}</section> : null}
     </aside>
     <p aria-live="polite" className="projects-tasks-notice" role="status">{notice}</p>

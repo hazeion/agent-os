@@ -264,6 +264,28 @@ class LocalBridgeTests(unittest.TestCase):
         self.assertEqual(status, 200)
         tasks.assert_called_once_with("project_mentat", "cursor_1")
 
+        with patch.object(
+            local_bridge,
+            "bridge_planning_task_dependencies_payload",
+            return_value=({**ready, "prerequisites": [], "dependents": []}, 200),
+        ) as dependencies:
+            status, _payload, _headers = self.request(
+                path=f"{local_bridge.BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH}?task_id=task_planning"
+            )
+        self.assertEqual(status, 200)
+        dependencies.assert_called_once_with("task_planning")
+
+        with patch.object(
+            local_bridge,
+            "bridge_planning_dependency_picker_payload",
+            return_value=({**ready, "candidates": []}, 200),
+        ) as picker:
+            status, _payload, _headers = self.request(
+                path=f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH}?task_id=task_planning&q=Mentat&cursor=cursor_1"
+            )
+        self.assertEqual(status, 200)
+        picker.assert_called_once_with("task_planning", "Mentat", "cursor_1")
+
         context_path = "/bridge/v1/conversations/conv_planning/planning-context"
         with patch.object(
             local_bridge,
@@ -328,6 +350,9 @@ class LocalBridgeTests(unittest.TestCase):
 
         for path in (
             f"{local_bridge.BRIDGE_PLANNING_OVERVIEW_PATH}?extra=1",
+            f"{local_bridge.BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH}?task_id=task_planning&task_id=task_other",
+            f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH}?task_id=task_planning&q=",
+            f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH}?task_id=task_planning&extra=1",
             f"{local_bridge.BRIDGE_PLANNING_TASKS_PATH}?project_id=project_mentat&project_id=project_other",
             f"{local_bridge.BRIDGE_PLANNING_TASKS_PATH}?project_id=../bad",
         ):
