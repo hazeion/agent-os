@@ -48,6 +48,7 @@ BRIDGE_CONVERSATIONS_PATH = "/bridge/v1/conversations"
 BRIDGE_CONVERSATION_HISTORY_PATH = "/bridge/v1/conversation-history"
 BRIDGE_COMMAND_MANIFEST_PATH = "/bridge/v1/agent-console/commands"
 BRIDGE_PLANNING_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview"
+BRIDGE_PLANNING_SEARCH_PATH = "/bridge/v1/agent-console/planning-search"
 BRIDGE_PLANNING_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks"
 BRIDGE_PLANNING_TASK_PATH = "/bridge/v1/agent-console/planning-task"
 BRIDGE_PLANNING_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail"
@@ -86,6 +87,8 @@ MAXIMUM_BRIDGE_DEPENDENCY_MAP_NODES = 50
 MAXIMUM_BRIDGE_DEPENDENCY_MAP_EXTERNAL_STUBS = 50
 MAXIMUM_BRIDGE_DEPENDENCY_MAP_EDGES = 250
 MAXIMUM_BRIDGE_DEPENDENCY_MAP_EDGE_TOTAL = MAXIMUM_BRIDGE_TASKS * 100
+MAXIMUM_BRIDGE_PLANNING_SEARCH_PROJECTS = 25
+MAXIMUM_BRIDGE_PLANNING_SEARCH_TASKS = 25
 MAXIMUM_BRIDGE_RUNS = 50
 MAXIMUM_BRIDGE_RUN_EVENTS = 100
 MAXIMUM_BRIDGE_CONVERSATIONS = 50
@@ -1563,6 +1566,16 @@ def _planning_picker_query(value: object) -> bool:
     )
 
 
+def _planning_search_query(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.strip() == value
+        and bool(value)
+        and len(value) <= 160
+        and not any(unicodedata.category(character).startswith("C") for character in value)
+    )
+
+
 def _planning_dependency_map_query(value: object) -> bool:
     return (
         isinstance(value, str)
@@ -1625,6 +1638,81 @@ def bridge_planning_overview_payload() -> tuple[dict[str, object], int]:
             "runtime": "python",
             "status": "ready",
         }, 200
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def _planning_search_result(value: object, result_type: str) -> dict[str, object]:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"id", "title", "type"}
+        or value.get("type") != result_type
+        or not isinstance(value.get("id"), str)
+        or (result_type == "project" and _PROJECT_ID.fullmatch(value["id"]) is None)
+        or (result_type == "task" and _TASK_ID.fullmatch(value["id"]) is None)
+        or not _planning_text(value.get("title"), 160 if result_type == "task" else 120)
+    ):
+        raise BridgeConversationProjectionError("planning_search_invalid")
+    return {"id": value["id"], "title": value["title"], "type": result_type}
+
+
+def bridge_planning_search_payload(query: str) -> tuple[dict[str, object], int]:
+    """Return only bounded title-and-ID planning navigation matches."""
+
+    from conversation_planning import ConversationPlanningError
+
+    try:
+        from server import mentat_planning_search_payload
+
+        source = mentat_planning_search_payload(query)
+        required = {
+            "schema_version", "query", "projects", "project_count", "tasks",
+            "task_count", "truncated",
+        }
+        if not isinstance(source, dict) or set(source) != required:
+            raise BridgeConversationProjectionError("planning_search_invalid")
+        projects = source.get("projects")
+        tasks = source.get("tasks")
+        if (
+            source.get("schema_version") != 1
+            or source.get("query") != query
+            or not _planning_search_query(source.get("query"))
+            or not isinstance(projects, list)
+            or len(projects) > MAXIMUM_BRIDGE_PLANNING_SEARCH_PROJECTS
+            or type(source.get("project_count")) is not int
+            or source["project_count"] != len(projects)
+            or not isinstance(tasks, list)
+            or len(tasks) > MAXIMUM_BRIDGE_PLANNING_SEARCH_TASKS
+            or type(source.get("task_count")) is not int
+            or source["task_count"] != len(tasks)
+            or type(source.get("truncated")) is not bool
+        ):
+            raise BridgeConversationProjectionError("planning_search_invalid")
+        public_projects = [_planning_search_result(item, "project") for item in projects]
+        public_tasks = [_planning_search_result(item, "task") for item in tasks]
+        if (
+            len({item["id"] for item in public_projects}) != len(public_projects)
+            or len({item["id"] for item in public_tasks}) != len(public_tasks)
+        ):
+            raise BridgeConversationProjectionError("planning_search_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "query": query,
+            "projects": public_projects,
+            "project_count": len(public_projects),
+            "tasks": public_tasks,
+            "task_count": len(public_tasks),
+            "truncated": source["truncated"],
+        }, 200
+    except ConversationPlanningError as exc:
+        if exc.code == "planning.search_query_invalid":
+            return _planning_failure("invalid", 400)
+        if exc.code == "planning.unavailable":
+            return _planning_failure("unavailable", 503)
+        return _planning_failure("error", 500)
     except Exception:
         return _planning_failure("error", 500)
 
@@ -5710,6 +5798,21 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == BRIDGE_PLANNING_OVERVIEW_PATH and not parsed.query:
             payload, status = bridge_planning_overview_payload()
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_SEARCH_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if (
+                len(pairs) != 1
+                or pairs[0][0] != "q"
+                or not _planning_search_query(pairs[0][1])
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_search_payload(pairs[0][1])
             self._send_json(payload, status)
             return
         if parsed.path == BRIDGE_PLANNING_TASKS_PATH:

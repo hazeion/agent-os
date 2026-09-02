@@ -14,6 +14,7 @@ from agent_registry import AgentRegistry
 from conversation_planning import (
     ConversationPlanningError,
     planning_context_projection,
+    planning_navigation_search,
     planning_overview,
     planning_task_locator,
     planning_task_detail_locator,
@@ -82,6 +83,68 @@ def create_test_agent(root: Path) -> str:
 
 
 class ConversationPlanningTests(unittest.TestCase):
+    def test_navigation_search_is_title_only_grouped_and_bounded(self):
+        projects = [
+            {
+                "id": f"project_search_{index:02d}",
+                "name": f"Search Project {index:02d}",
+                "status": "active",
+                "description": "project secret must not cross",
+                "obsidian_note": "Private/Search.md",
+            }
+            for index in range(26)
+        ]
+        tasks = [
+            task(
+                f"task_search_{index:02d}",
+                project="Search Project 00",
+                title=f"Search Task {index:02d}",
+                description="task secret must not cross",
+            )
+            for index in range(27)
+        ]
+        with TemporaryDirectory() as temporary:
+            connection = connect(Path(temporary))
+            try:
+                TaskRepository(connection).insert_collection(tasks)
+                payload = planning_navigation_search(
+                    connection,
+                    projects,
+                    query="Search",
+                    today=date(2026, 8, 30),
+                )
+            finally:
+                connection.close()
+
+        self.assertEqual(payload["query"], "Search")
+        self.assertEqual((payload["project_count"], payload["task_count"]), (25, 25))
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(
+            payload["projects"][0],
+            {"id": "project_search_00", "title": "Search Project 00", "type": "project"},
+        )
+        self.assertEqual(
+            payload["tasks"][0],
+            {"id": "task_search_00", "title": "Search Task 00", "type": "task"},
+        )
+        self.assertNotIn("secret", str(payload))
+        self.assertNotIn("Private/Search.md", str(payload))
+        for invalid in (None, "", " Search", "Search ", "bad\x01query", "x" * 161):
+            with self.subTest(invalid=invalid), TemporaryDirectory() as temporary:
+                connection = connect(Path(temporary))
+                try:
+                    with self.assertRaisesRegex(
+                        ConversationPlanningError, "planning.search_query_invalid"
+                    ):
+                        planning_navigation_search(
+                            connection,
+                            [],
+                            query=invalid,
+                            today=date(2026, 8, 30),
+                        )
+                finally:
+                    connection.close()
+
     def test_selected_task_detail_projects_only_safe_existing_planning_metadata(self):
         with TemporaryDirectory() as temporary:
             connection = connect(Path(temporary))
@@ -247,6 +310,53 @@ class ConversationPlanningTests(unittest.TestCase):
             self.assertNotIn("assigned_agent_id", stored[0])
             self.assertEqual(stored[1]["assignee"], "Planner")
             self.assertEqual(stored[1]["assigned_agent_id"], "agent_planner")
+
+    def test_server_navigation_search_uses_sqlite_not_the_legacy_task_seed(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projects = [{
+                "id": "project_canonical",
+                "name": "Canonical Project",
+                "status": "active",
+                "type": "project",
+                "description": "",
+                "obsidian_note": "",
+                "aliases": [],
+                "created_at": NOW,
+                "updated_at": NOW,
+            }]
+            canonical_tasks = [task(
+                "task_canonical",
+                project="Canonical Project",
+                title="Canonical Task",
+            )]
+            for name, value in (("projects.json", projects), ("tasks.json", canonical_tasks)):
+                path = root / name
+                path.write_text(json.dumps(value), encoding="utf-8")
+                path.chmod(0o600)
+            ensure_task_sqlite_authority(root)
+            ensure_project_sqlite_authority(root)
+            # A source-seed change after cutover must not affect this named
+            # capability; live planning reads only the SQLite authority.
+            legacy_seed = [task(
+                "task_legacy_only",
+                project="Canonical Project",
+                title="Legacy Only",
+            )]
+            (root / "tasks.json").write_text(json.dumps(legacy_seed), encoding="utf-8")
+            (root / "tasks.json").chmod(0o600)
+            with (
+                patch.object(server, "DATA_DIR", root),
+                patch.object(server, "CONFIGURED_DATA_DIR", root),
+                patch.object(server, "DATA_MUTATION_LOCK", True),
+            ):
+                canonical = server.mentat_planning_search_payload("Canonical")
+                legacy = server.mentat_planning_search_payload("Legacy")
+            self.assertEqual(
+                canonical["tasks"],
+                [{"id": "task_canonical", "title": "Canonical Task", "type": "task"}],
+            )
+            self.assertEqual(legacy["tasks"], [])
 
     def test_overview_is_bounded_safe_and_uses_fixed_attention_rules(self):
         with TemporaryDirectory() as temporary:

@@ -627,6 +627,17 @@ class LocalBridgeTests(unittest.TestCase):
 
         with patch.object(
             local_bridge,
+            "bridge_planning_search_payload",
+            return_value=({**ready, "query": "Mentat", "projects": [], "tasks": []}, 200),
+        ) as search:
+            status, _payload, _headers = self.request(
+                path=f"{local_bridge.BRIDGE_PLANNING_SEARCH_PATH}?q=Mentat"
+            )
+        self.assertEqual(status, 200)
+        search.assert_called_once_with("Mentat")
+
+        with patch.object(
+            local_bridge,
             "bridge_planning_tasks_payload",
             return_value=({**ready, "tasks": []}, 200),
         ) as tasks:
@@ -744,6 +755,11 @@ class LocalBridgeTests(unittest.TestCase):
 
         for path in (
             f"{local_bridge.BRIDGE_PLANNING_OVERVIEW_PATH}?extra=1",
+            f"{local_bridge.BRIDGE_PLANNING_SEARCH_PATH}",
+            f"{local_bridge.BRIDGE_PLANNING_SEARCH_PATH}?q=",
+            f"{local_bridge.BRIDGE_PLANNING_SEARCH_PATH}?q=%20Mentat",
+            f"{local_bridge.BRIDGE_PLANNING_SEARCH_PATH}?q=Mentat&extra=1",
+            f"{local_bridge.BRIDGE_PLANNING_SEARCH_PATH}?q=Mentat&q=Other",
             f"{local_bridge.BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH}?task_id=task_planning&task_id=task_other",
             f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&extra=1",
             f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&project_id=project_other",

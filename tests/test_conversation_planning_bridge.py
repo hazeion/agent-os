@@ -50,6 +50,39 @@ CONVERSATION = {
 
 
 class ConversationPlanningBridgeTests(unittest.TestCase):
+    def test_planning_search_is_exact_title_only_navigation_projection(self):
+        source = {
+            "schema_version": 1,
+            "query": "Mentat",
+            "projects": [{"id": "project_mentat", "title": "Mentat", "type": "project"}],
+            "project_count": 1,
+            "tasks": [{"id": "task_1", "title": "Plan Slice 10", "type": "task"}],
+            "task_count": 1,
+            "truncated": False,
+        }
+        with patch.object(server, "mentat_planning_search_payload", return_value=source) as read:
+            payload, status = local_bridge.bridge_planning_search_payload("Mentat")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            set(payload),
+            {
+                "schema_version", "service", "runtime", "status", "query",
+                "projects", "project_count", "tasks", "task_count", "truncated",
+            },
+        )
+        self.assertEqual(payload["projects"], source["projects"])
+        self.assertEqual(payload["tasks"], source["tasks"])
+        self.assertNotIn("description", str(payload))
+        read.assert_called_once_with("Mentat")
+
+        with patch.object(
+            server,
+            "mentat_planning_search_payload",
+            return_value={**source, "tasks": [{**source["tasks"][0], "description": "private"}]},
+        ):
+            rejected, rejected_status = local_bridge.bridge_planning_search_payload("Mentat")
+        self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
+
     def test_selected_task_detail_exposes_only_validated_planning_metadata(self):
         detail_task = {
             **TASK,

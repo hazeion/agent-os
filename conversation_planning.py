@@ -32,6 +32,9 @@ MAX_DEPENDENCY_MAP_NODES = 50
 MAX_DEPENDENCY_MAP_EXTERNAL_STUBS = 50
 MAX_DEPENDENCY_MAP_EDGES = 250
 MAX_DEPENDENCY_MAP_QUERY = 160
+MAX_PLANNING_SEARCH_QUERY = 160
+MAX_PLANNING_SEARCH_PROJECTS = 25
+MAX_PLANNING_SEARCH_TASKS = 25
 _PROJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}\Z")
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}\Z")
 _CURSOR = re.compile(r"[A-Za-z0-9_-]{1,512}\Z")
@@ -378,6 +381,24 @@ def _dependency_map_query(value: object) -> str:
     return value
 
 
+def _planning_search_query(value: object) -> str:
+    """Validate one explicit, navigation-only planning search query.
+
+    Search is deliberately not a general text index: descriptions, notes,
+    sessions, and other private Task or Project fields never participate.
+    """
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > MAX_PLANNING_SEARCH_QUERY
+        or any(unicodedata.category(character).startswith("C") for character in value)
+    ):
+        raise ConversationPlanningError("planning.search_query_invalid")
+    return value
+
+
 def _dependency_map_view(value: object) -> str:
     if value is None:
         return "all"
@@ -501,6 +522,56 @@ def _dependency_task_sort_key(task: Mapping[str, Any]) -> tuple[str, str, str]:
         str(task["title"]).casefold(),
         str(task["id"]),
     )
+
+
+def planning_navigation_search(
+    connection: sqlite3.Connection,
+    projects_payload: object,
+    *,
+    query: object,
+    today: date,
+) -> dict[str, Any]:
+    """Return bounded, title-only navigation matches from canonical planning data.
+
+    The intentionally small projection makes this useful only for choosing a
+    Project or Task to open.  It cannot disclose a Task description, Project
+    metadata, a local path, a Run, or any runtime/provider state.
+    """
+
+    normalized_query = _planning_search_query(query)
+    needle = normalized_query.casefold()
+    registry = project_registry(projects_payload)
+
+    all_projects = [
+        {"id": project.id, "title": project.name, "type": "project"}
+        for project in registry.projects
+        if needle in project.name.casefold()
+    ]
+    all_projects.sort(key=lambda item: (item["title"].casefold(), item["id"]))
+
+    # _safe_tasks validates the entire canonical Task projection and verifies
+    # every retained Task has an unambiguous Project association before its
+    # title can be included in this otherwise minimal result.
+    all_tasks = [
+        {"id": task["id"], "title": task["title"], "type": "task"}
+        for task in _safe_tasks(connection, registry, today)
+        if needle in str(task["title"]).casefold()
+    ]
+    all_tasks.sort(key=lambda item: (item["title"].casefold(), item["id"]))
+
+    projects = all_projects[:MAX_PLANNING_SEARCH_PROJECTS]
+    tasks = all_tasks[:MAX_PLANNING_SEARCH_TASKS]
+    return {
+        "query": normalized_query,
+        "projects": projects,
+        "project_count": len(projects),
+        "tasks": tasks,
+        "task_count": len(tasks),
+        "truncated": (
+            len(all_projects) > len(projects)
+            or len(all_tasks) > len(tasks)
+        ),
+    }
 
 
 def planning_task_page(

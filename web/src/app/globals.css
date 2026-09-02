@@ -772,6 +772,17 @@ button {
 .planning-workbench-tools { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
 .planning-workbench-tools label { display: grid; flex: 1 1 150px; gap: 3px; color: var(--text-tertiary); font-size: .68rem; font-weight: 700; }
 .planning-workbench-tools input { width: 100%; min-height: 34px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
+.planning-navigation-search { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--border-subtle); border-radius: 7px; background: var(--row); }
+.planning-navigation-search > label { display: grid; gap: 3px; color: var(--text-tertiary); font-size: .68rem; font-weight: 700; }
+.planning-navigation-search input { width: 100%; min-height: 34px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); }
+.planning-navigation-search > p { margin: 0; color: var(--text-secondary); font-size: .74rem; }
+.planning-navigation-search-results { display: grid; gap: 7px; }
+.planning-navigation-search-results section { display: grid; gap: 4px; }
+.planning-navigation-search-results h3 { margin: 0; color: var(--text-secondary); font-size: .72rem; }
+.planning-navigation-search-results ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.planning-navigation-search-results li { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.planning-navigation-search-results li span { flex: 1; min-width: 0; overflow: hidden; color: var(--text-primary); font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.planning-navigation-search-results button { min-height: 30px; padding: 4px 8px; }
 .planning-mode-toggle { display: flex; gap: 4px; }
 .planning-mode-toggle button,
 .planning-stage-controls button,

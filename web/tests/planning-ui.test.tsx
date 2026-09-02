@@ -1003,6 +1003,55 @@ test("switching Projects closes a staged Task form before submission", async () 
   assert.equal(screen.queryByRole("button", { name: "Create Task" }), null);
 });
 
+test("archived Projects are an explicit planner view with a deliberate restore path", async () => {
+  const archived = { id: "project_archive", name: "Archive", revision: 3, status: "archived" as const };
+  let restored = false;
+  dom.reconfigure({ url: `${origin}/tasks` });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    const visibleArchive = restored ? { ...archived, revision: 4, status: "active" as const } : archived;
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0, project_count: 2, projects: [project, visibleArchive] });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") {
+      const selected = url.searchParams.get("project_id") === archived.id ? visibleArchive : project;
+      return Response.json({ ...envelope, count: 0, next_cursor: null, project: selected, tasks: [] });
+    }
+    if (url.pathname === `/api/planning/projects/${archived.id}/restore` && init?.method === "POST") {
+      restored = true;
+      return Response.json({ ...envelope, action: "restore", project: { ...archived, revision: 4, status: "active" } });
+    }
+    throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await screen.findByRole("button", { name: "Select Alpha Project" });
+  assert.equal(screen.queryByRole("button", { name: "Select Archive Project" }), null);
+  await user.click(screen.getByRole("button", { name: "Archived Projects" }));
+  await screen.findByRole("button", { name: "Select Archive Project" });
+  assert.equal(screen.queryByRole("button", { name: "Select Alpha Project" }), null);
+  await user.click(screen.getByRole("button", { name: "Restore Project" }));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Project restored/u));
+  assert.equal((screen.getByRole("button", { name: "Active Projects" }) as HTMLButtonElement).getAttribute("aria-pressed"), "true");
+  assert.equal(screen.getByRole("button", { name: "Select Archive Project" }).getAttribute("aria-current"), "true");
+});
+
+test("an empty archived Project view gives the planner a recovery action", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 0, next_cursor: null, project, tasks: [] });
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await screen.findByRole("button", { name: "Select Alpha Project" });
+  await user.click(screen.getByRole("button", { name: "Archived Projects" }));
+  await screen.findByText("No archived Projects.");
+  await user.click(screen.getByRole("button", { name: "Show active Projects" }));
+  await screen.findByRole("button", { name: "Select Alpha Project" });
+  assert.equal((screen.getByRole("button", { name: "Active Projects" }) as HTMLButtonElement).getAttribute("aria-pressed"), "true");
+});
+
 test("Task detail editing stages accessible cross-Project dependencies in one save", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   const calls: Array<{ body?: string; method: string; path: string }> = [];
@@ -1126,4 +1175,57 @@ test("Task deletion shows only count effects, then confirms the exact preview be
     { body: {}, path: `/api/planning/tasks/${task.id}/delete/preview` },
     { body: { confirmation_id: deletionPreview.confirmation_id, confirmed: true }, path: `/api/planning/tasks/${task.id}/delete` },
   ]);
+});
+
+test("planning navigation search debounces typing and leaves selection unchanged until its uniquely named Open action", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const betaProject = { id: "project_beta", name: "Beta", revision: 1, status: "active" as const };
+  const searches: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0, project_count: 2, projects: [project, betaProject] });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-search") {
+      const query = url.searchParams.get("q") ?? ""; searches.push(query);
+      return Response.json({ ...envelope, project_count: 1, projects: [{ id: betaProject.id, title: betaProject.name, type: "project" as const }], query, task_count: 1, tasks: [{ id: "task_beta", title: "Prepare Beta", type: "task" as const }], truncated: false });
+    }
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await screen.findByText("Ship Alpha");
+  const search = screen.getByPlaceholderText("Find a Project or Task");
+  await user.type(search, "Be"); await user.type(search, "ta");
+  await screen.findByRole("button", { name: "Open Project Beta" });
+  assert.deepEqual(searches, ["Beta"]);
+  assert.ok(screen.getByRole("button", { name: "Open Task Prepare Beta" }));
+  assert.equal(screen.getByRole("button", { name: "Select Alpha Project" }).getAttribute("aria-current"), "true");
+  assert.equal(window.location.search, "");
+});
+
+test("a stale planning search Project result retains the selected Project and URL", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const betaProject = { id: "project_beta", name: "Beta", revision: 1, status: "active" as const };
+  let overviewReads = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") {
+      overviewReads += 1;
+      return Response.json(overviewReads === 1 ? { ...overview, attention: [], attention_count: 0 } : { ...overview, attention: [], attention_count: 0 });
+    }
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-search") {
+      const query = url.searchParams.get("q") ?? "";
+      return Response.json({ ...envelope, project_count: 1, projects: [{ id: betaProject.id, title: betaProject.name, type: "project" as const }], query, task_count: 0, tasks: [], truncated: false });
+    }
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await screen.findByText("Ship Alpha");
+  await user.type(screen.getByPlaceholderText("Find a Project or Task"), "Beta");
+  await user.click(await screen.findByRole("button", { name: "Open Project Beta" }));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /no longer available/u));
+  assert.equal(screen.getByRole("button", { name: "Select Alpha Project" }).getAttribute("aria-current"), "true");
+  assert.equal(window.location.search, "");
 });
