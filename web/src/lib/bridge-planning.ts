@@ -6,6 +6,7 @@ import {
   parsePlanningTaskPage,
   parsePlanningTaskDetailResult,
   parsePlanningTaskDependencies,
+  parsePlanningDependencyMap,
   parsePlanningDependencyPickerPage,
   parsePlanningTaskResult,
   parsePlanningTaskCreation,
@@ -21,6 +22,7 @@ import {
   type PublicPlanningTaskResult,
   type PublicPlanningTaskCreation,
   type PublicPlanningTaskDependencies,
+  type PublicPlanningDependencyMap,
   type PublicPlanningProjectMutation,
   type PublicPlanningTaskMutation,
   type PublicPlanningDependencyPickerPage,
@@ -31,6 +33,7 @@ const PRIVATE_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks";
 const PRIVATE_TASK_PATH = "/bridge/v1/agent-console/planning-task";
 const PRIVATE_TASK_DETAIL_PATH = "/bridge/v1/agent-console/planning-task-detail";
 const PRIVATE_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-dependencies";
+const PRIVATE_DEPENDENCY_MAP_PATH = "/bridge/v1/agent-console/planning-dependency-map";
 const PRIVATE_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker";
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
 const PRIVATE_PROJECTS_PATH = "/bridge/v1/projects";
@@ -42,6 +45,7 @@ const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const CONVERSATION_ID = /^conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
 const CURSOR = /^[A-Za-z0-9_-]{1,512}$/u;
+const SAVED_VIEWS = ["all", "today", "waiting", "review", "someday", "completed"] as const;
 function exactDate(value: string) { if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false; const [year, month, day] = value.split("-").map(Number); const leap = year! % 4 === 0 && (year! % 100 !== 0 || year! % 400 === 0); const days = [0, 31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; return year! >= 1 && month! >= 1 && month! <= 12 && day! >= 1 && day! <= days[month!]!; }
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -172,6 +176,15 @@ export async function fetchBridgePlanningTaskDependencies(taskId: string, fetche
   const parameters = new URLSearchParams({ task_id: taskId });
   const { response, payload } = await request(`${PRIVATE_TASK_DEPENDENCIES_PATH}?${parameters.toString()}`, fetcher, environment);
   if (response.status === 200) return parse(() => parsePlanningTaskDependencies(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function fetchBridgePlanningDependencyMap(projectId: string, query: string = "", savedView: typeof SAVED_VIEWS[number] = "all", fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningDependencyMap> {
+  if (!PROJECT_ID.test(projectId) || typeof query !== "string" || [...query].length > 160 || query.trim() !== query || /\p{C}/u.test(query) || !SAVED_VIEWS.includes(savedView)) throw new BridgePlanningError("planning_request_invalid");
+  const parameters = new URLSearchParams({ project_id: projectId });
+  if (query) parameters.set("q", query); if (savedView !== "all") parameters.set("view", savedView);
+  const { response, payload } = await request(`${PRIVATE_DEPENDENCY_MAP_PATH}?${parameters.toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningDependencyMap(payload, projectId));
   fixedFailure(response, payload);
 }
 

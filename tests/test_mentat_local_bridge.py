@@ -277,6 +277,28 @@ class LocalBridgeTests(unittest.TestCase):
 
         with patch.object(
             local_bridge,
+            "bridge_planning_dependency_map_payload",
+            return_value=({**ready, "nodes": [], "external_stubs": [], "edges": []}, 200),
+        ) as dependency_map:
+            status, _payload, _headers = self.request(
+                path=f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&q=needle&view=today"
+            )
+        self.assertEqual(status, 200)
+        dependency_map.assert_called_once_with("project_mentat", "needle", "today")
+
+        with patch.object(
+            local_bridge,
+            "bridge_planning_dependency_map_payload",
+            return_value=({**ready, "nodes": [], "external_stubs": [], "edges": []}, 200),
+        ) as default_dependency_map:
+            status, _payload, _headers = self.request(
+                path=f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&q=&view=all"
+            )
+        self.assertEqual(status, 200)
+        default_dependency_map.assert_called_once_with("project_mentat", "", "all")
+
+        with patch.object(
+            local_bridge,
             "bridge_planning_dependency_picker_payload",
             return_value=({**ready, "candidates": []}, 200),
         ) as picker:
@@ -351,6 +373,12 @@ class LocalBridgeTests(unittest.TestCase):
         for path in (
             f"{local_bridge.BRIDGE_PLANNING_OVERVIEW_PATH}?extra=1",
             f"{local_bridge.BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH}?task_id=task_planning&task_id=task_other",
+            f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&extra=1",
+            f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&project_id=project_other",
+            f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=bad%2Fid",
+            f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&q=%20needle",
+            f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&q={'x' * 161}",
+            f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_MAP_PATH}?project_id=project_mentat&view=blocked",
             f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH}?task_id=task_planning&q=",
             f"{local_bridge.BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH}?task_id=task_planning&extra=1",
             f"{local_bridge.BRIDGE_PLANNING_TASKS_PATH}?project_id=project_mentat&project_id=project_other",

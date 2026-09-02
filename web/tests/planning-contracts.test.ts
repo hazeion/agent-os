@@ -10,6 +10,7 @@ import {
   fetchBridgePlanningOverview,
   fetchBridgePlanningTask,
   fetchBridgePlanningTaskDependencies,
+  fetchBridgePlanningDependencyMap,
   fetchBridgePlanningDependencyPicker,
   fetchBridgePlanningTasks,
   moveBridgePlanningTask,
@@ -22,6 +23,7 @@ import { createPlanningOverviewHandler } from "../src/lib/planning-overview-rout
 import { createPlanningTasksHandler } from "../src/lib/planning-tasks-route.ts";
 import { createPlanningTaskHandler } from "../src/lib/planning-task-route.ts";
 import { createPlanningTaskDependenciesHandler } from "../src/lib/planning-task-dependencies-route.ts";
+import { createPlanningDependencyMapHandler } from "../src/lib/planning-dependency-map-route.ts";
 import { createPlanningDependencyPickerHandler } from "../src/lib/planning-dependency-picker-route.ts";
 import { createPlanningMutationHandler } from "../src/lib/planning-mutation-route.ts";
 import { createProjectHandler, createProjectTaskHandler } from "../src/lib/project-creation-route.ts";
@@ -34,6 +36,7 @@ import {
   parsePlanningTaskPage,
   parsePlanningTaskDetailResult,
   parsePlanningTaskDependencies,
+  parsePlanningDependencyMap,
   parsePlanningDependencyPickerPage,
   parsePlanningTaskResult,
   PublicPlanningError,
@@ -42,6 +45,7 @@ import {
   readPlanningOverview,
   readPlanningTask,
   readPlanningTaskDependencies,
+  readPlanningDependencyMap,
   readPlanningDependencyPicker,
   readPlanningTasks,
   updateConversationPlanningContext,
@@ -60,6 +64,10 @@ const taskDetailResult = { ...envelope, project, task: { ...nonAttentionTask, as
 const dependencyReference = { blocked: false, id: "task_dependency", project_id: "project_beta", project_name: "Beta", title: "Prepare Beta", workflow_stage: "planned" as const };
 const dependencies = { ...envelope, dependent_count: 0, dependents: [], dependents_truncated: false, prerequisite_count: 1, prerequisites: [dependencyReference], prerequisites_truncated: false, task_id: nonAttentionTask.id, task_revision: 1 };
 const picker = { ...envelope, candidate_count: 1, candidates: [dependencyReference], match_count: 1, next_cursor: null, query: "Beta", task_id: nonAttentionTask.id, truncated: false };
+const dependencyMap = { ...envelope, edge_count: 2, edge_total: 2, edges: [{ from_task_id: nonAttentionTask.id, to_task_id: dependencyReference.id }, { from_task_id: "task_dependent", to_task_id: nonAttentionTask.id }], edges_truncated: false, external_stub_count: 1, external_stub_total: 1, external_stubs: [dependencyReference], external_stubs_truncated: false, node_count: 2, node_total: 2, nodes: [
+  { blocked: false, id: nonAttentionTask.id, project_id: project.id, project_name: project.name, title: nonAttentionTask.title, workflow_stage: nonAttentionTask.workflow_stage },
+  { blocked: false, id: "task_dependent", project_id: project.id, project_name: project.name, title: "Dependent", workflow_stage: "planned" as const },
+], nodes_truncated: false, project };
 const context = { ...envelope, association: { project_id: project.id, task_id: task.id }, conversation_id: "conv_alpha", conversation_revision: 4, project, state: "ready" as const, task };
 const conversation = { agent_id: "agent_alpha", archived_at: null, created_at: "2026-08-30T12:00:00Z", id: "conv_alpha", revision: 5, state: "active" as const, title: "Alpha", title_source: "manual" as const, updated_at: "2026-08-30T12:01:00Z" };
 const mutation = { ...context, action: "set" as const, conversation, conversation_revision: 5 };
@@ -159,6 +167,28 @@ test("dependency reads use fixed targets and reject widened or cross-task projec
   await assert.rejects(fetchBridgePlanningDependencyPicker(nonAttentionTask.id, "Beta", null, async () => json({ ...picker, candidates: [{ ...dependencyReference, private_path: "x" }] }), environment), BridgePlanningError);
 });
 
+test("dependency-map reads use one fixed selected-Project target and reject widened topology", async () => {
+  let mapPath = "";
+  assert.deepEqual(await fetchBridgePlanningDependencyMap(project.id, "", "all", async (input) => { mapPath = input.toString(); return json(dependencyMap); }, environment), dependencyMap);
+  assert.equal(mapPath, "http://127.0.0.1:49152/bridge/v1/agent-console/planning-dependency-map?project_id=project_alpha");
+  assert.deepEqual(parsePlanningDependencyMap(dependencyMap, project.id), dependencyMap);
+  for (const hostile of [
+    { ...dependencyMap, project: { ...project, id: "project_other" } },
+    { ...dependencyMap, nodes: [{ ...dependencyMap.nodes[0], description: "private" }, dependencyMap.nodes[1]] },
+    { ...dependencyMap, external_stubs: [{ ...dependencyReference, project_id: project.id, project_name: project.name }] },
+    { ...dependencyMap, edges: [{ from_task_id: "task_private", to_task_id: nonAttentionTask.id }] },
+    { ...dependencyMap, edge_count: 3 },
+  ]) await assert.rejects(fetchBridgePlanningDependencyMap(project.id, "", "all", async () => json(hostile), environment), BridgePlanningError);
+});
+
+test("dependency-map reads bind one bounded filter and saved view to the fixed Project route", async () => {
+  let path = "";
+  assert.deepEqual(await fetchBridgePlanningDependencyMap(project.id, "Alpha", "review", async (input) => { path = input.toString(); return json(dependencyMap); }, environment), dependencyMap);
+  assert.equal(path, "http://127.0.0.1:49152/bridge/v1/agent-console/planning-dependency-map?project_id=project_alpha&q=Alpha&view=review");
+  await assert.rejects(fetchBridgePlanningDependencyMap(project.id, " Alpha", "all", async () => json(dependencyMap), environment), BridgePlanningError);
+  await assert.rejects(fetchBridgePlanningDependencyMap(project.id, "Alpha", "not-a-view" as "all", async () => json(dependencyMap), environment), BridgePlanningError);
+});
+
 test("selected Task details accept editable bounded fields without widening list projections", () => {
   assert.deepEqual(parsePlanningTaskDetailResult(taskDetailResult, nonAttentionTask.id), taskDetailResult);
   assert.throws(() => parsePlanningTaskDetailResult({ ...taskDetailResult, task: { ...taskDetailResult.task, runtime_reference: "private" } }, nonAttentionTask.id), PublicPlanningError);
@@ -228,6 +258,17 @@ test("dependency read routes require exact canonical queries", async () => {
   assert.equal((await pickerHandler(pickerRequest(`?task_id=${nonAttentionTask.id}&extra=x`))).status, 400);
 });
 
+test("dependency-map route requires exactly one canonical project_id query", async () => {
+  const received: Array<[string, string, string]> = [];
+  const handler = createPlanningDependencyMapHandler({ fetchDependencyMap: async (projectId, query, savedView) => { received.push([projectId, query, savedView]); return dependencyMap; }, gatewayPort: "8890" });
+  const request = (query: string) => new Request(`http://127.0.0.1:8890/api/agent-console/planning-dependency-map${query}`, { headers: browserHeaders });
+  assert.equal((await handler(request(`?project_id=${project.id}`))).status, 200);
+  assert.equal((await handler(request(`?project_id=${project.id}&q=Alpha&view=review`))).status, 200);
+  assert.deepEqual(received, [[project.id, "", "all"], [project.id, "Alpha", "review"]]);
+  for (const query of ["", "?project_id=", `?project_id=${project.id}&project_id=${project.id}`, `?project_id=${project.id}&task_id=${task.id}`, `?project_id=${project.id}&q=`, `?project_id=${project.id}&q=%20Alpha`, `?project_id=${project.id}&view=all`, `?project_id=${project.id}&view=blocked`, "?project_id=../private"]) assert.equal((await handler(request(query))).status, 400);
+  assert.equal((await handler(new Request(`http://127.0.0.1:8890/api/agent-console/planning-dependency-map?project_id=${project.id}`, { headers: { Host: "127.0.0.1:8890", Origin: "http://evil.test", "Sec-Fetch-Site": "cross-site" } }))).status, 403);
+});
+
 test("detailed planning mutation route keeps the gateway same-origin, bounded, and named", async () => {
   const calls: unknown[] = [];
   const handler = createPlanningMutationHandler({
@@ -264,6 +305,16 @@ test("public dependency clients use only named same-origin routes", async () => 
     assert.deepEqual(await readPlanningTaskDependencies(nonAttentionTask.id), dependencies);
     assert.deepEqual(await readPlanningDependencyPicker(nonAttentionTask.id, "Beta"), picker);
     assert.deepEqual(paths, ["/api/agent-console/planning-task-dependencies?task_id=task_plain", "/api/agent-console/planning-dependency-picker?task_id=task_plain&q=Beta"]);
+  } finally { globalThis.fetch = original; }
+});
+
+test("public dependency-map client uses only its named same-origin route", async () => {
+  const original = globalThis.fetch; const paths: string[] = [];
+  globalThis.fetch = async (input) => { const url = new URL(input.toString(), "http://127.0.0.1:8890"); paths.push(`${url.pathname}${url.search}`); return json(dependencyMap); };
+  try {
+    assert.deepEqual(await readPlanningDependencyMap(project.id), dependencyMap);
+    assert.deepEqual(await readPlanningDependencyMap(project.id, "Alpha", "review"), dependencyMap);
+    assert.deepEqual(paths, ["/api/agent-console/planning-dependency-map?project_id=project_alpha", "/api/agent-console/planning-dependency-map?project_id=project_alpha&q=Alpha&view=review"]);
   } finally { globalThis.fetch = original; }
 });
 

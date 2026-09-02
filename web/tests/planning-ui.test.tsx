@@ -14,11 +14,15 @@ Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: tr
 if (!globalThis.CSS) Object.defineProperty(globalThis, "CSS", { configurable: true, value: { escape: (value: string) => value.replace(/[^A-Za-z0-9_-]/gu, "_") } });
 else if (!globalThis.CSS.escape) globalThis.CSS.escape = (value) => value.replace(/[^A-Za-z0-9_-]/gu, "_");
 HTMLElement.prototype.scrollIntoView = () => undefined;
+Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: class { disconnect() {} observe() {} unobserve() {} } });
+Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: (handle: number) => dom.window.clearTimeout(handle) });
+Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: (callback: FrameRequestCallback) => dom.window.setTimeout(() => callback(Date.now()), 0) });
 
 const { cleanup, fireEvent, render, screen, waitFor } = await import("@testing-library/react");
 const { default: userEvent } = await import("@testing-library/user-event");
 const { ConversationPlanningControls, PlanningAttention, PlanningSuggestions } = await import("../src/app/conversation-planning.tsx");
 const { ProjectsTasksWorkspace } = await import("../src/app/tasks/projects-tasks-workspace.tsx");
+const { default: TaskDependencyMap, TaskDependencyMapFallback, layoutTaskDependencyMap } = await import("../src/app/tasks/task-dependency-map.tsx");
 
 const envelope = { runtime: "python", schema_version: 1, service: "mentat-local-bridge", status: "ready" } as const;
 const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "active" as const };
@@ -34,7 +38,90 @@ const readyContext = { ...envelope, association: { project_id: project.id, task_
 const conversation = { agent_id: "agent_alpha", archived_at: null, created_at: "2026-08-29T12:00:00Z", id: "conv_plan", revision: 2, state: "active" as const, title: "Plan", title_source: "manual" as const, updated_at: "2026-08-29T12:01:00Z" };
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 
+const dependencyMap = {
+  edge_count: 1,
+  edge_total: 1,
+  edges: [{ from_task_id: task.id, to_task_id: dependency.id }],
+  edges_truncated: false,
+  external_stub_count: 1,
+  external_stub_total: 1,
+  external_stubs: [dependency],
+  external_stubs_truncated: false,
+  node_count: 1,
+  node_total: 1,
+  nodes: [{ ...dependency, id: task.id, project_id: project.id, project_name: project.name, title: task.title }],
+  nodes_truncated: false,
+  project_id: project.id,
+} as const;
+
 afterEach(() => cleanup());
+
+test("the read-only dependency-map fallback is deterministic, keyboard-selectable, and keeps external stubs noninteractive", () => {
+  const first = layoutTaskDependencyMap(dependencyMap);
+  const second = layoutTaskDependencyMap(dependencyMap);
+  assert.deepEqual(first, second);
+  assert.equal(first.nodes.find((node) => node.id === task.id)?.layer, 0);
+  assert.equal(first.nodes.find((node) => node.id === dependency.id)?.layer, 1);
+  const selected: string[] = [];
+  render(<TaskDependencyMapFallback graph={dependencyMap} onSelectedTaskIdChange={(taskId) => selected.push(taskId)} selectedTaskId={null} />);
+  const source = screen.getByRole("button", { name: /Ship Alpha, Task, planned/u });
+  fireEvent.keyDown(source, { key: "Enter" });
+  assert.deepEqual(selected, [task.id]);
+  const external = screen.getByRole("img", { name: /Prepare Beta, cross-project reference/u });
+  fireEvent.click(external);
+  fireEvent.keyDown(external, { key: "Enter" });
+  assert.deepEqual(selected, [task.id]);
+});
+
+test("the desktop dependency map includes edge endpoints and activates each Task once", async () => {
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: false, removeEventListener: () => undefined }) });
+  const selected: string[] = [];
+  render(<TaskDependencyMap graph={dependencyMap} onSelectedTaskIdChange={(taskId) => selected.push(taskId)} selectedTaskId={null} />);
+  await screen.findByRole("application", { name: "Interactive task dependency map" });
+  await waitFor(() => assert.equal(document.querySelectorAll(".react-flow__handle").length, 4));
+  const source = document.querySelector<HTMLButtonElement>('button[aria-label="Ship Alpha, Task, planned"]');
+  assert.ok(source);
+  fireEvent.click(source);
+  assert.deepEqual(selected, [task.id]);
+});
+
+test("Map is opt-in, follows the shared filter, and selects through the existing Task inspector", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: true, removeEventListener: () => undefined }) });
+  let mapReads = 0;
+  let failDetailAfterUpdate = false;
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin);
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-dependency-map") {
+      const { project_id, ...mapPayload } = dependencyMap; void project_id; mapReads += 1;
+      if (url.searchParams.has("q")) return Response.json({ ...envelope, ...mapPayload, edge_count: 0, edge_total: 0, edges: [], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 0, node_total: 0, nodes: [], project });
+      return Response.json({ ...envelope, ...mapPayload, project });
+    }
+    if (url.pathname === "/api/agent-console/planning-task-detail") return failDetailAfterUpdate ? Response.json({ schema_version: 1, status: "unavailable" }, { status: 503 }) : Response.json({ ...envelope, project, task: taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
+    if (url.pathname === `/api/planning/tasks/${task.id}/edit`) { failDetailAfterUpdate = true; return Response.json({ ...envelope, action: "edit", project, task: { ...task, revision: 2, workflow_stage: "waiting" } }); }
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await screen.findByText("Ship Alpha");
+  assert.equal(mapReads, 0);
+  await user.click(screen.getByRole("button", { name: "Map" }));
+  const source = await screen.findByRole("button", { name: /Ship Alpha, Task, planned/u });
+  assert.equal(mapReads, 1);
+  await user.click(source);
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /Selected Task Ship Alpha/u));
+  const moveToWaiting = screen.getAllByRole("button", { name: "waiting" }).find((button) => button.closest('[aria-label="Task inspector"]'));
+  assert.ok(moveToWaiting);
+  await user.click(moveToWaiting);
+  await waitFor(() => assert.equal(mapReads, 2));
+  await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /refreshed details are temporarily unavailable/u));
+  await user.type(screen.getByLabelText("Filter"), "no matching task");
+  await screen.findByText("No dependency map is available for this Project.");
+});
 
 test("planning selectors stage locally and Apply is the only context mutation", async () => {
   const calls: Array<{ body?: string; method: string; path: string }> = [];

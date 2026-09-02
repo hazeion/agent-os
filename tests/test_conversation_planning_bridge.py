@@ -235,6 +235,82 @@ class ConversationPlanningBridgeTests(unittest.TestCase):
             )
         self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
 
+    def test_dependency_map_projection_is_exact_bounded_and_endpoint_safe(self):
+        selected_node = {
+            **DEPENDENCY_TASK,
+            "id": "task_1",
+            "title": "Project task",
+            "project_id": "project_mentat",
+            "project_name": "Mentat",
+        }
+        map_payload = {
+            "schema_version": 1,
+            "project": PROJECT,
+            "nodes": [selected_node],
+            "node_count": 1,
+            "node_total": 1,
+            "nodes_truncated": False,
+            "external_stubs": [DEPENDENCY_TASK],
+            "external_stub_count": 1,
+            "external_stub_total": 1,
+            "external_stubs_truncated": False,
+            "edges": [{"from_task_id": "task_1", "to_task_id": "task_other"}],
+            "edge_count": 1,
+            "edge_total": 1,
+            "edges_truncated": False,
+        }
+        with patch.object(
+            server, "mentat_planning_dependency_map_payload", return_value=map_payload
+        ) as read:
+            payload, status = local_bridge.bridge_planning_dependency_map_payload(
+                "project_mentat", "needle", "today"
+            )
+        self.assertEqual((status, payload["edges"]), (200, map_payload["edges"]))
+        read.assert_called_once_with(
+            project_id="project_mentat", query="needle", view="today"
+        )
+        self.assertNotIn("description", str(payload))
+
+        second_stub = {
+            **DEPENDENCY_TASK,
+            "id": "task_other_2",
+            "title": "Other two",
+        }
+        hostile_external_edge = {
+            **map_payload,
+            "external_stubs": [DEPENDENCY_TASK, second_stub],
+            "external_stub_count": 2,
+            "external_stub_total": 2,
+            "edges": [{"from_task_id": "task_other", "to_task_id": "task_other_2"}],
+        }
+
+        for invalid in (
+            {**map_payload, "private_path": "/tmp/private"},
+            {**map_payload, "nodes": [{**selected_node, "description": "private"}]},
+            {**map_payload, "edges": [{"from_task_id": "task_1", "to_task_id": "task_missing"}]},
+            {**map_payload, "external_stubs": [{**DEPENDENCY_TASK, "project_id": "project_mentat"}]},
+            hostile_external_edge,
+            {**map_payload, "edge_count": 2},
+        ):
+            with self.subTest(invalid=invalid), patch.object(
+                server, "mentat_planning_dependency_map_payload", return_value=invalid
+            ):
+                rejected, rejected_status = local_bridge.bridge_planning_dependency_map_payload(
+                    "project_mentat"
+                )
+            self.assertEqual((rejected_status, rejected["status"]), (500, "error"))
+
+        from conversation_planning import ConversationPlanningError
+        with patch.object(
+            server,
+            "mentat_planning_dependency_map_payload",
+            side_effect=ConversationPlanningError("planning.project_not_found"),
+        ):
+            missing, missing_status = local_bridge.bridge_planning_dependency_map_payload(
+                "project_missing"
+            )
+        self.assertEqual((missing_status, missing["status"]), (404, "not_found"))
+
     def test_minimal_create_envelopes_reject_private_or_cross_target_results(self):
         with patch.object(
             server,

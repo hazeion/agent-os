@@ -1,11 +1,20 @@
 "use client";
 
+import dynamic from "next/dynamic.js";
 import { useEffect, useMemo, useRef, useState } from "react";
+
+import type { TaskDependencyMapProps } from "./task-dependency-map";
+
+const TaskDependencyMap = dynamic<TaskDependencyMapProps>(
+  () => import("./task-dependency-map"),
+  { loading: () => <p aria-live="polite" role="status">Loading the dependency map…</p>, ssr: false },
+);
 
 import type { PublicAgent } from "@/lib/bridge-agents";
 import {
   createProject,
   createProjectTask,
+  readPlanningDependencyMap,
   readPlanningTask,
   readPlanningTaskDependencies,
   readPlanningTaskDetail,
@@ -20,6 +29,7 @@ import {
   type PublicPlanningTaskListItem,
   type PublicPlanningTaskMutation,
   type PublicPlanningDependencyReference,
+  type PublicPlanningDependencyMap,
   type PublicPlanningTaskDependencies,
   PublicPlanningError,
 } from "@/lib/public-planning";
@@ -67,7 +77,10 @@ export function ProjectsTasksWorkspace() {
   const [taskDetail, setTaskDetail] = useState<PublicPlanningTaskDetail | null>(null);
   const [taskDependencies, setTaskDependencies] = useState<PublicPlanningTaskDependencies | null>(null);
   const [dependenciesState, setDependenciesState] = useState<LoadState>("loading");
-  const [view, setView] = useState<"list" | "board">("list");
+  const [dependencyMap, setDependencyMap] = useState<PublicPlanningDependencyMap | null>(null);
+  const [dependencyMapState, setDependencyMapState] = useState<LoadState>("empty");
+  const [dependencyMapVersion, setDependencyMapVersion] = useState(0);
+  const [view, setView] = useState<"list" | "board" | "map">("list");
   const [savedView, setSavedView] = useState<"all" | "today" | "waiting" | "review" | "someday" | "completed">("all");
   const [filter, setFilter] = useState("");
   const [editingTask, setEditingTask] = useState(false);
@@ -220,6 +233,19 @@ export function ProjectsTasksWorkspace() {
   }, [selectedTaskId]);
 
   useEffect(() => {
+    if (!selectedProjectId || view !== "map") return;
+    const projectId = selectedProjectId;
+    const query = filter.trim();
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) { setDependencyMap(null); setDependencyMapState("loading"); } });
+    void readPlanningDependencyMap(projectId, query, savedView).then((result) => {
+      if (cancelled || result.project.id !== projectId || selectedProjectRef.current !== projectId) return;
+      setDependencyMap(result); setDependencyMapState("ready");
+    }).catch(() => { if (!cancelled) setDependencyMapState("unavailable"); });
+    return () => { cancelled = true; };
+  }, [dependencyMapVersion, filter, savedView, selectedProjectId, view]);
+
+  useEffect(() => {
     if (!selectedTaskId) return;
     let cancelled = false;
     void Promise.resolve().then(() => { if (!cancelled) { setDependenciesState("loading"); setTaskDependencies(null); } });
@@ -281,6 +307,12 @@ export function ProjectsTasksWorkspace() {
     finally { setBusy(false); }
   }
 
+  function invalidateDependencyMap() {
+    setDependencyMap(null);
+    setDependencyMapState("empty");
+    setDependencyMapVersion((current) => current + 1);
+  }
+
   async function submitTask() {
     const title = taskTitle.trim();
     if (!taskFormProjectId || taskFormProjectId !== selectedProjectRef.current || !title || busy) return;
@@ -295,6 +327,7 @@ export function ProjectsTasksWorkspace() {
         setTasksState("ready");
         window.setTimeout(() => document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
       }
+      invalidateDependencyMap();
       setNotice(`Task ${created.title} created.`);
     } catch { setNotice("Task could not be created. Your details were kept."); taskInput.current?.focus(); }
     finally { setBusy(false); }
@@ -303,8 +336,8 @@ export function ProjectsTasksWorkspace() {
   const selectedProject = overview?.projects.find((item) => item.id === selectedProjectId) ?? null;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const filteredTasks = tasks.filter((task) => {
-    const query = filter.trim().toLocaleLowerCase();
-    if (query && !`${task.title} ${task.description_preview}`.toLocaleLowerCase().includes(query)) return false;
+    const query = filter.trim().toLowerCase();
+    if (query && !`${task.title} ${task.description_preview}`.toLowerCase().includes(query)) return false;
     if (savedView === "all") return true;
     if (savedView === "today") return task.planned_for_today;
     if (savedView === "waiting") return task.workflow_stage === "waiting";
@@ -312,9 +345,40 @@ export function ProjectsTasksWorkspace() {
     if (savedView === "someday") return task.deferred;
     return task.workflow_stage === "done";
   });
+  const dependencyMapGraph = useMemo<TaskDependencyMapProps["graph"] | null>(() => {
+    if (!dependencyMap) return null;
+    return {
+      edge_count: dependencyMap.edge_count,
+      edge_total: dependencyMap.edge_total,
+      edges: dependencyMap.edges,
+      edges_truncated: dependencyMap.edges_truncated,
+      external_stub_count: dependencyMap.external_stub_count,
+      external_stub_total: dependencyMap.external_stub_total,
+      external_stubs: dependencyMap.external_stubs,
+      external_stubs_truncated: dependencyMap.external_stubs_truncated,
+      node_count: dependencyMap.node_count,
+      node_total: dependencyMap.node_total,
+      nodes: dependencyMap.nodes,
+      nodes_truncated: dependencyMap.nodes_truncated,
+      project_id: dependencyMap.project.id,
+    };
+  }, [dependencyMap]);
   const selectTask = (task: PublicPlanningTaskListItem) => {
     setSelectedTaskId(task.id); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
   };
+  async function selectMapTask(taskId: string) {
+    const loaded = tasks.find((task) => task.id === taskId);
+    if (loaded) { selectTask(loaded); return; }
+    const projectId = selectedProjectId;
+    if (!projectId) return;
+    try {
+      const result = await readPlanningTask(taskId);
+      if (selectedProjectRef.current !== projectId || result.project.id !== projectId) return;
+      const task = { ...result.task, description_preview: "" };
+      setTasks((current) => current.some((item) => item.id === task.id) ? current : [task, ...current]);
+      selectTask(task);
+    } catch { setNotice("That Task could not be opened. The verified map remains available."); }
+  }
   async function editSelected(changes: Record<string, unknown>, success: string): Promise<boolean> {
     if (!selectedTask || busy) return false;
     setBusy(true); setNotice("Saving Task…");
@@ -322,6 +386,7 @@ export function ProjectsTasksWorkspace() {
     try {
       result = await updatePlanningTask(selectedTask.id, selectedTask.revision, changes);
       setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
+      invalidateDependencyMap();
     } catch (error) {
       if (error instanceof PublicPlanningError && error.code === "conflict") {
         try {
@@ -405,8 +470,8 @@ export function ProjectsTasksWorkspace() {
     <div className="project-tasks-pane planning-task-pane">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Tasks</p><h2>{selectedProject?.name ?? "Tasks"}</h2></div><button disabled={busy || !selectedProjectId || selectedProject?.status !== "active"} onClick={() => { setProjectForm(false); setProjectName(""); setTaskFormProjectId(selectedProjectId); setTaskForm(true); window.setTimeout(() => taskInput.current?.focus(), 0); }} ref={addTaskButton} type="button">Add</button></div>
       {taskForm ? <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void submitTask(); }}><label><span>Title</span><input onChange={(event) => { if ([...event.target.value].length <= 161) setTaskTitle(event.target.value); }} ref={taskInput} value={taskTitle} /></label><label><span>Agent</span><select aria-describedby="task-agent-state" disabled={agentsState === "loading" || agentsState === "empty" || agentsState === "unavailable"} onChange={(event) => setTaskAgent(event.target.value)} value={taskAgent}><option value="">{agentsState === "loading" ? "Loading" : agentsState === "unavailable" ? "Unavailable" : agentsState === "empty" ? "No Agents" : "Unassigned"}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><p className="task-agent-state" id="task-agent-state">{agentsState === "unavailable" ? "Agent assignment is unavailable; Create will leave this Task unassigned." : agentsState === "empty" ? "No Agents are available; Create will leave this Task unassigned." : "Assignment is optional."}</p><label><span>Due</span><input onChange={(event) => setTaskDue(event.target.value)} type="date" value={taskDue} /></label><div><button aria-label="Create Task" disabled={busy || !taskTitle.trim() || [...taskTitle.trim()].length > 160} type="submit">Create</button><button aria-label="Cancel Task" disabled={busy} onClick={() => { closeTaskForm(); window.setTimeout(() => addTaskButton.current?.focus(), 0); }} type="button">Cancel</button></div></form> : null}
-      <div className="planning-workbench-tools"><label><span>Filter</span><input onChange={(event) => setFilter(event.target.value)} placeholder="Find a task" type="search" value={filter} /></label><div aria-label="Display mode" className="planning-mode-toggle"><button aria-pressed={view === "list"} onClick={() => setView("list")} type="button">List</button><button aria-pressed={view === "board"} onClick={() => setView("board")} type="button">Board</button></div></div>
-      {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : filteredTasks.length ? view === "list" ? <ul className="project-task-list">{filteredTasks.map(taskCard)}</ul> : <div aria-label="Task board" className="planning-board">{stages.map((stage) => <section key={stage}><h3>{stage.replace("_", " ")}</h3><ul className="project-task-list">{filteredTasks.filter((task) => task.workflow_stage === stage).map(taskCard)}</ul></section>)}</div> : <p>{tasks.length ? "No Tasks match this view." : "No Tasks in this Project."}</p>}
+      <div className="planning-workbench-tools"><label><span>Filter</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setFilter(event.target.value); }} placeholder="Find a task" type="search" value={filter} /></label><div aria-label="Display mode" className="planning-mode-toggle"><button aria-pressed={view === "list"} onClick={() => setView("list")} type="button">List</button><button aria-pressed={view === "board"} onClick={() => setView("board")} type="button">Board</button><button aria-pressed={view === "map"} onClick={() => setView("map")} type="button">Map</button></div></div>
+      {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : view === "map" ? dependencyMapState === "loading" ? <p aria-live="polite" role="status">Loading the dependency map…</p> : dependencyMapState === "unavailable" || dependencyMapState === "error" ? <p role="status">The dependency map is temporarily unavailable. List and Board remain available.</p> : dependencyMapGraph ? <TaskDependencyMap graph={dependencyMapGraph} onSelectedTaskIdChange={(taskId) => void selectMapTask(taskId)} selectedTaskId={selectedTaskId} /> : <p role="status">No dependency map is available for this Project.</p> : filteredTasks.length ? view === "list" ? <ul className="project-task-list">{filteredTasks.map(taskCard)}</ul> : <div aria-label="Task board" className="planning-board">{stages.map((stage) => <section key={stage}><h3>{stage.replace("_", " ")}</h3><ul className="project-task-list">{filteredTasks.filter((task) => task.workflow_stage === stage).map(taskCard)}</ul></section>)}</div> : <p>{tasks.length ? "No Tasks match this view." : "No Tasks in this Project."}</p>}
       {taskCursor ? <button className="project-tasks-more" disabled={loadingMore} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
     </div>
     <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector">

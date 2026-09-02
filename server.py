@@ -72,6 +72,7 @@ from conversation_planning import (
     ConversationPlanningError,
     planning_context_projection,
     planning_dependency_picker,
+    planning_dependency_map,
     planning_overview,
     planning_task_dependencies,
     planning_task_detail_locator,
@@ -2677,6 +2678,35 @@ def mentat_planning_task_dependencies_payload(task_id: str) -> dict:
             connection.execute("BEGIN")
             payload = planning_task_dependencies(
                 connection, projects, task_id=task_id, today=date.today()
+            )
+            connection.commit()
+            return {"schema_version": 1, **payload}
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
+def mentat_planning_dependency_map_payload(
+    *, project_id: str, query: object = None, view: object = None
+) -> dict:
+    """Return a bounded, selected-Project dependency-map projection."""
+
+    with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+            raise ConversationPlanningError("planning.unavailable")
+        projects = _planning_projects_under_lock()
+        connection = connect_mentat_database(DATA_DIR)
+        try:
+            connection.execute("BEGIN")
+            payload = planning_dependency_map(
+                connection,
+                projects,
+                project_id=project_id,
+                query=query,
+                view=view,
+                today=date.today(),
             )
             connection.commit()
             return {"schema_version": 1, **payload}
