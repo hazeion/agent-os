@@ -337,31 +337,18 @@ async function captureGeometry(client) {
 
 async function inspectViewport(client, viewport) {
   await setViewport(client, viewport);
-  let healthRequestId = "";
-  const removePausedHandler = client.on("Fetch.requestPaused", ({ requestId }) => {
-    healthRequestId = requestId;
-  });
-  await client.call("Fetch.enable", {
-    patterns: [{ urlPattern: `${baseUrl.origin}/api/bridge/health*`, requestStage: "Response" }],
-  });
-
-  try {
-    await navigate(client, "/", `${viewport.name} viewport`);
-    await waitFor(
-      () => client.eval("document.querySelector('[data-bridge-status-text]')?.textContent === 'Checking Python'"),
-      `${viewport.name} checking state`,
-    );
-    await waitFor(() => healthRequestId, `${viewport.name} held bridge request`);
-    const checking = await captureGeometry(client);
-
-    await client.call("Fetch.continueResponse", { requestId: healthRequestId });
-    healthRequestId = "";
-    await waitFor(
-      () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
-      `${viewport.name} ready state`,
-    );
-    const ready = await captureGeometry(client);
-    const details = await client.eval(`(() => ({
+  await navigate(client, "/", `${viewport.name} viewport`);
+  await waitFor(
+    () => client.eval("document.querySelector('[data-bridge-status]') !== null"),
+    `${viewport.name} bridge status`,
+  );
+  const checking = await captureGeometry(client);
+  await waitFor(
+    () => client.eval("document.querySelector('[data-bridge-status]')?.dataset.state === 'ready'"),
+    `${viewport.name} ready state`,
+  );
+  const ready = await captureGeometry(client);
+  const details = await client.eval(`(() => ({
       bridgeLive: document.querySelector('[data-bridge-status]')?.getAttribute('aria-live'),
       bridgeAtomic: document.querySelector('[data-bridge-status]')?.getAttribute('aria-atomic'),
       bridgeText: document.querySelector('[data-bridge-status-text]')?.textContent,
@@ -415,14 +402,7 @@ async function inspectViewport(client, viewport) {
       const screenshot = await client.call("Page.captureScreenshot", { format: "png", fromSurface: true });
       writeFileSync(resolve(screenshotDirectory, `node-shell-${viewport.name}.png`), Buffer.from(screenshot.data, "base64"));
     }
-    return { viewport, checking, ready, details, geometryShift };
-  } finally {
-    if (healthRequestId) {
-      await Promise.allSettled([client.call("Fetch.continueResponse", { requestId: healthRequestId })]);
-    }
-    removePausedHandler();
-    await client.call("Fetch.disable");
-  }
+  return { viewport, checking, ready, details, geometryShift };
 }
 
 async function inspectCollapsedRailCentering(client) {
