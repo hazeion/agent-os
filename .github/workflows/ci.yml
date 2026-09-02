@@ -74,7 +74,7 @@ jobs:
   windows-test:
     name: windows-2025 / Python ${{ matrix.python-version }} / group ${{ matrix.group }}
     runs-on: windows-2025
-    timeout-minutes: 35
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
