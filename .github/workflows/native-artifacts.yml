@@ -267,9 +267,12 @@ jobs:
           if ($upgradeInstall.ExitCode -ne 0) { throw "Upgrade install failed: $($upgradeInstall.ExitCode)" }
           if (-not (Test-Path "$env:MENTAT_DATA_DIR/upgrade-sentinel.txt")) { throw 'Upgrade removed Mentat data' }
           if (Test-Path "$installDir/stale-from-baseline.txt") { throw 'Upgrade retained stale application files' }
-          $upgradedLauncher = Start-Process -FilePath "$installDir/mentat.exe" -ArgumentList @('start', '--port', '8896') -PassThru
+          $launcherStdout = Join-Path $env:RUNNER_TEMP 'mentat-native-upgrade.stdout.log'
+          $launcherStderr = Join-Path $env:RUNNER_TEMP 'mentat-native-upgrade.stderr.log'
+          $upgradedLauncher = Start-Process -FilePath "$installDir/mentat.exe" -ArgumentList @('start', '--port', '8896') -PassThru -RedirectStandardOutput $launcherStdout -RedirectStandardError $launcherStderr
           $upgradedHealthy = $false
           for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            if ($upgradedLauncher.HasExited) { break }
             try {
               Invoke-RestMethod -Uri 'http://127.0.0.1:8896/api/bridge/health' | Out-Null
               $upgradedHealthy = $true
@@ -278,7 +281,33 @@ jobs:
               Start-Sleep -Seconds 1
             }
           }
-          if (-not $upgradedHealthy) { throw 'Upgraded Mentat did not become healthy' }
+          if (-not $upgradedHealthy) {
+            $launcherState = if ($upgradedLauncher.HasExited) { "exited with code $($upgradedLauncher.ExitCode)" } else { 'was still running' }
+            Write-Host "Upgraded Mentat launcher $launcherState after health polling."
+            function Write-RedactedLogTail([string]$path) {
+              if (-not (Test-Path -LiteralPath $path)) { return }
+              $bytes = [byte[]](Get-Content -LiteralPath $path -AsByteStream -Tail 4096)
+              if ($bytes.Length -eq 0) { return }
+              $tail = [Text.Encoding]::UTF8.GetString($bytes)
+              $tail = $tail -replace '[A-Za-z0-9_-]{32,}', '[redacted]'
+              $tail = $tail -replace '(?i)((token|authorization|secret|password)\s*[:=]\s*)\S+', '$1[redacted]'
+              Write-Host $tail
+            }
+            foreach ($log in @($launcherStdout, $launcherStderr)) {
+              if (Test-Path -LiteralPath $log) {
+                Write-Host "--- Last 4 KiB of $log ---"
+                Write-RedactedLogTail $log
+              }
+            }
+            Get-ChildItem -Path "$env:MENTAT_DATA_DIR/runtime" -Filter 'node-gateway-startup-*.log' -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 2 |
+              ForEach-Object {
+                Write-Host "--- Last 4 KiB of $($_.FullName) ---"
+                Write-RedactedLogTail $_.FullName
+              }
+            throw 'Upgraded Mentat did not become healthy'
+          }
           & "$installDir/mentat.exe" stop --port 8896
           if (-not $upgradedLauncher.WaitForExit(15000)) { throw 'Upgraded Mentat launcher did not stop' }
           $uninstall = Start-Process -FilePath "$installDir/unins000.exe" -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
