@@ -58,6 +58,10 @@ class PackagingContractTests(unittest.TestCase):
             document["tool"]["setuptools"]["py-modules"],
         )
         self.assertIn(
+            "task_delegation_receipts",
+            document["tool"]["setuptools"]["py-modules"],
+        )
+        self.assertIn(
             "conversation_planning",
             document["tool"]["setuptools"]["py-modules"],
         )
