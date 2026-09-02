@@ -204,6 +204,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("orchestration_service", PUBLIC_MODULES)
         self.assertIn("run_repository", PUBLIC_MODULES)
         self.assertIn("hermes_local_control", PUBLIC_MODULES)
+        self.assertIn("task_delegation_receipts", PUBLIC_MODULES)
         self.assertEqual(set(PUBLIC_DATA_FILES), {"share/mentat/public", "share/mentat/data"})
         for names in (_source_files(), _wheel_files()):
             self.assertFalse(any(name.startswith("tests/") for name in names))

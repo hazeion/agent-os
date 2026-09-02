@@ -48,7 +48,7 @@ PUBLIC_MODULES = {
     "link_preview_workers",
     "mentat_db", "mentat_lifecycle", "orchestration_service", "private_console_migration",
     "private_console_unit", "private_state", "project_repository", "remote_hermes", "runtime_config",
-    "run_repository", "server", "task_planning", "task_repository",
+    "run_repository", "server", "task_delegation_receipts", "task_planning", "task_repository",
     "vercel_connections", "vercel_infrastructure", "vercel_runtime",
 }
 PUBLIC_PACKAGES = {"mentat"}
