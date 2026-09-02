@@ -90,7 +90,9 @@ class ProfileAwareConsoleTests(unittest.TestCase):
         # This test owns the legacy CLI launch contract, not shared runtime
         # telemetry/artifact storage. Keep its fixed run ID isolated from
         # leftovers produced by other console tests on the same runner.
-        with patch.object(transport, "revalidate"), patch.object(
+        with patch(
+            "hermes_transport.local_control_dependencies_available", return_value=False
+        ), patch.object(transport, "revalidate"), patch.object(
             server,
             "prepare_local_telemetry_paths",
             return_value=(ROOT / "unused-progress.jsonl", ROOT / "unused-usage.json"),
