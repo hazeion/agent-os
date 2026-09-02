@@ -35,6 +35,10 @@ import {
   parsePlanningTaskExecution,
   parsePlanningTaskExecutionMutation,
 } from "./public-planning-task-execution.ts";
+import {
+  parsePlanningTaskDelegation,
+  type PublicPlanningTaskDelegation,
+} from "./public-planning-task-delegation.ts";
 
 const PRIVATE_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview";
 const PRIVATE_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks";
@@ -44,6 +48,7 @@ const PRIVATE_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-d
 const PRIVATE_DEPENDENCY_MAP_PATH = "/bridge/v1/agent-console/planning-dependency-map";
 const PRIVATE_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker";
 const PRIVATE_TASK_EXECUTION_PATH = "/bridge/v1/agent-console/planning-task-execution";
+const PRIVATE_TASK_DELEGATION_PATH = "/bridge/v1/agent-console/planning-task-delegation";
 const PRIVATE_TASK_RUN_ONCE_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once/preview";
 const PRIVATE_TASK_RUN_ONCE_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once";
 const PRIVATE_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/review";
@@ -242,6 +247,14 @@ export async function fetchBridgePlanningTaskExecution(taskId: string, fetcher: 
   if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
   const { response, payload } = await request(`${PRIVATE_TASK_EXECUTION_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
   if (response.status === 200) return parse(() => parsePlanningTaskExecution(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+/** Read the fixed, safe delegation summary for one selected Planning Task. */
+export async function fetchBridgePlanningTaskDelegation(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegation> {
+  if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_TASK_DELEGATION_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningTaskDelegation(payload, taskId));
   fixedFailure(response, payload);
 }
 

@@ -41,6 +41,7 @@ import {
   readPlanningTaskExecution,
   reviewPlanningTaskExecution,
 } from "@/lib/public-planning-task-execution";
+import { readPlanningTaskDelegation, type PublicPlanningTaskDelegation } from "@/lib/public-planning-task-delegation";
 
 type LoadState = "loading" | "ready" | "empty" | "unavailable" | "error";
 
@@ -87,6 +88,8 @@ export function ProjectsTasksWorkspace() {
   const [dependenciesState, setDependenciesState] = useState<LoadState>("loading");
   const [taskExecution, setTaskExecution] = useState<PublicPlanningTaskExecution | null>(null);
   const [executionState, setExecutionState] = useState<LoadState>("loading");
+  const [taskDelegation, setTaskDelegation] = useState<PublicPlanningTaskDelegation | null>(null);
+  const [delegationState, setDelegationState] = useState<LoadState>("loading");
   const [runOnceConfirmation, setRunOnceConfirmation] = useState<{ confirmationId: string; idempotencyKey: string; revision: number; taskId: string } | null>(null);
   const [requestChanges, setRequestChanges] = useState(false);
   const [reviewNote, setReviewNote] = useState("");
@@ -129,6 +132,7 @@ export function ProjectsTasksWorkspace() {
   const selectedTaskRef = useRef<string | null>(null);
   const taskSelectionGeneration = useRef(0);
   const executionGeneration = useRef(0);
+  const delegationGeneration = useRef(0);
   const taskDetailGeneration = useRef(0);
   const dependencyPickerGeneration = useRef(0);
   const requested = useMemo(() => typeof window === "undefined" ? null : requestedTask(), []);
@@ -138,12 +142,15 @@ export function ProjectsTasksWorkspace() {
       selectedTaskRef.current = taskId;
       taskSelectionGeneration.current += 1;
       executionGeneration.current += 1;
+      delegationGeneration.current += 1;
       taskDetailGeneration.current += 1;
       // Clear execution presentation in this same selection update. Waiting for
       // the effect below would briefly render the prior Task's controls when
       // two Tasks have the same revision.
       setTaskExecution(null);
       setExecutionState(taskId ? "loading" : "empty");
+      setTaskDelegation(null);
+      setDelegationState(taskId ? "loading" : "empty");
       setRunOnceConfirmation(null);
       setRequestChanges(false);
       setReviewNote("");
@@ -275,6 +282,18 @@ export function ProjectsTasksWorkspace() {
   useEffect(() => {
     if (!selectedTaskId) return;
     const taskId = selectedTaskId;
+    const generation = ++delegationGeneration.current;
+    let cancelled = false;
+    void readPlanningTaskDelegation(taskId).then((result) => {
+      if (cancelled || generation !== delegationGeneration.current || selectedTaskRef.current !== taskId || result.task_id !== taskId) return;
+      setTaskDelegation(result); setDelegationState("ready");
+    }).catch(() => { if (!cancelled && generation === delegationGeneration.current && selectedTaskRef.current === taskId) setDelegationState("unavailable"); });
+    return () => { cancelled = true; };
+  }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    const taskId = selectedTaskId;
     const generation = ++executionGeneration.current;
     let cancelled = false;
     void readPlanningTaskExecution(taskId).then((result) => {
@@ -388,6 +407,7 @@ export function ProjectsTasksWorkspace() {
   const selectedProject = overview?.projects.find((item) => item.id === selectedProjectId) ?? null;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedTaskExecution = taskExecution && selectedTask && taskExecution.task.id === selectedTask.id && taskExecution.task.revision === selectedTask.revision ? taskExecution : null;
+  const selectedTaskDelegation = taskDelegation && selectedTask && taskDelegation.task_id === selectedTask.id ? taskDelegation : null;
   const executionOwnsTerminalStages = !!selectedTaskExecution && executionState === "ready" && selectedTaskExecution.execution.attempts.some((attempt) => attempt.state === "dispatched" || attempt.state === "review_ready");
   const filteredTasks = tasks.filter((task) => {
     const query = filter.trim().toLowerCase();
@@ -634,6 +654,14 @@ export function ProjectsTasksWorkspace() {
           {executionState === "loading" ? <p>Loading execution status…</p> : executionState === "unavailable" || !selectedTaskExecution ? <p>Run once and review controls are temporarily unavailable.</p> : <>
             {selectedTaskExecution.execution.attempts.length ? <ul aria-label="Execution attempts">{selectedTaskExecution.execution.attempts.map((attempt) => <li key={attempt.run_id}><span>{attempt.state.replaceAll("_", " ")} · {attempt.status.replaceAll("_", " ")}</span><time dateTime={attempt.updated_at}>{attempt.completed_at ? "Completed" : "Updated"} {attempt.updated_at}</time>{attempt.partial ? <small>Partial evidence</small> : null}</li>)}</ul> : <p>No Run attempts yet.</p>}
             {selectedTaskExecution.execution.review.available ? <div className="planning-review-actions"><p>This Task is ready for your review.</p><div><button disabled={busy} onClick={() => void reviewExecution("accept")} type="button">Accept</button><button aria-expanded={requestChanges} disabled={busy} onClick={() => setRequestChanges((current) => !current)} type="button">Request changes</button></div>{requestChanges ? <form onSubmit={(event) => { event.preventDefault(); void reviewExecution("request_changes"); }}><label><span>Feedback for changes</span><textarea maxLength={2000} onChange={(event) => setReviewNote(event.target.value)} value={reviewNote} /></label><div><button disabled={busy || !reviewNote.trim()} type="submit">Send change request</button><button disabled={busy} onClick={() => { setRequestChanges(false); setReviewNote(""); }} type="button">Cancel</button></div></form> : null}</div> : selectedTaskExecution.execution.available ? runOnceConfirmation && runOnceConfirmation.taskId === selectedTask.id ? <div className="planning-run-once-confirmation"><p>Start one Run for this exact Task revision?</p><div><button disabled={busy || selectedTask.revision !== runOnceConfirmation.revision} onClick={() => void confirmRunOnce()} type="button">Start Run once</button><button disabled={busy} onClick={() => setRunOnceConfirmation(null)} type="button">Cancel</button></div></div> : <button disabled={busy} onClick={() => void previewRunOnce()} type="button">Run once</button> : <p>Run once is unavailable for this Task.</p>}
+          </>}
+        </section>
+        <section aria-label="Task delegation" className="planning-execution">
+          <p className="console-kicker">Delegation</p>
+          {delegationState === "loading" ? <p>Loading delegation status…</p> : delegationState === "unavailable" || !selectedTaskDelegation ? <p>Delegation status is temporarily unavailable.</p> : selectedTaskDelegation.delegation.available === false ? <p>This Task has not been delegated.</p> : <>
+            <dl className="planning-summary"><div><dt>State</dt><dd>{selectedTaskDelegation.delegation.state.replaceAll("_", " ")}</dd></div><div><dt>Sync</dt><dd>{selectedTaskDelegation.delegation.sync_state}</dd></div><div><dt>Review</dt><dd>{selectedTaskDelegation.delegation.review_state.replaceAll("_", " ")}</dd></div><div><dt>Attempts</dt><dd>{selectedTaskDelegation.delegation.attempts}</dd></div>{selectedTaskDelegation.delegation.last_outcome ? <div><dt>Outcome</dt><dd>{selectedTaskDelegation.delegation.last_outcome.replaceAll("_", " ")}</dd></div> : null}</dl>
+            {selectedTaskDelegation.delegation.summary ? <p><strong>Summary</strong> {selectedTaskDelegation.delegation.summary}</p> : null}
+            {selectedTaskDelegation.delegation.latest_question ? <p><strong>Needs input</strong> {selectedTaskDelegation.delegation.latest_question}</p> : null}
           </>}
         </section>
         {editingTask && taskDetail ? <form className="task-create-form planning-edit-form" onSubmit={(event) => { event.preventDefault(); void saveTaskDetails(); }}>

@@ -161,6 +161,36 @@ test("Task execution stays unavailable until its safe projection arrives, then p
   assert.deepEqual({ ...(confirmCall?.body as Record<string, unknown>), idempotency_key: "opaque" }, { confirmation_id: preview.confirmation_id, expected_revision: 1, idempotency_key: "opaque" });
 });
 
+test("Task inspector presents the bounded delegation summary and an honest not-delegated state", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const beta = { ...task, id: "task_beta", title: "Prepare Beta" };
+  const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
+  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
+  const delegation = { ...envelope, delegation: { attempts: 2, available: true as const, last_outcome: "completed" as const, last_synced_at: "2026-08-30T11:59:00Z", latest_question: "Confirm the deployment window.", review_state: "pending" as const, state: "ready_for_review" as const, summary: "The delegated implementation is ready for review.", sync_state: "synced" as const, updated_at: "2026-08-30T12:00:00Z" }, task_id: task.id };
+  globalThis.fetch = async (input) => {
+    const url = new URL(input.toString(), origin); const taskId = url.searchParams.get("task_id");
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 2, next_cursor: null, project, tasks: [listTask, betaList] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: taskId === beta.id ? { ...taskDetail, ...beta, description: "Prepare the Beta changes." } : taskDetail });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_id: taskId ?? task.id });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json({ ...execution, task: taskId === beta.id ? { ...execution.task, ...beta } : execution.task });
+    if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json(taskId === beta.id ? { ...envelope, delegation: { available: false, reason: "not_delegated" }, task_id: beta.id } : delegation);
+    throw new Error(`GET ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  const inspector = screen.getByLabelText("Task inspector");
+  const delegationPanel = await within(inspector).findByLabelText("Task delegation");
+  assert.match(within(delegationPanel).getByText("ready for review").textContent ?? "", /ready for review/u);
+  assert.match(within(delegationPanel).getByText(/The delegated implementation/u).textContent ?? "", /Summary/u);
+  assert.match(within(delegationPanel).getByText(/Confirm the deployment window/u).textContent ?? "", /Needs input/u);
+  await user.click(screen.getByRole("button", { name: /Prepare Beta/u }));
+  await within(inspector).findByText("Prepare the Beta changes.");
+  await within(inspector).findByText("This Task has not been delegated.");
+  assert.equal(within(inspector).queryByText(/The delegated implementation is ready/u), null);
+});
+
 test("List selection clears a same-revision Task's pending Run-once confirmation", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   const alpha = { ...task, assigned_agent_id: "agent_alpha" };
