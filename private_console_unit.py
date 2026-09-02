@@ -95,6 +95,7 @@ PROJECT_DATABASE_SCHEMA_VERSION = 18
 TASK_EXECUTION_DATABASE_SCHEMA_VERSION = 19
 TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION = 21
 CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION = 22
+PLANNING_DELETION_DATABASE_SCHEMA_VERSION = 23
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -114,6 +115,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     TASK_EXECUTION_DATABASE_SCHEMA_VERSION,
     TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION,
     CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION,
+    PLANNING_DELETION_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -901,6 +903,8 @@ def _validate_codex_task_creation_records(connection: sqlite3.Connection) -> Non
             and bound and valid_time
         ):
             raise PrivateConsoleUnitError("private_codex_task_creation_invalid")
+
+
     receipts = connection.execute(
         "SELECT origin_run_id, thread_id, turn_id, call_id, request_digest, origin_task_id, "
         "project_id, agent_id, created_task_id, created_task_revision, result_proof_digest, created_at "
@@ -916,6 +920,32 @@ def _validate_codex_task_creation_records(connection: sqlite3.Connection) -> Non
             or not _valid_receipt_timestamp(row[11])
         ):
             raise PrivateConsoleUnitError("private_codex_task_creation_invalid")
+
+
+def _validate_planning_deletion_receipts(connection: sqlite3.Connection) -> None:
+    """Accept only the bounded content-free schema-23 deletion tombstones."""
+
+    rows = connection.execute(
+        "SELECT confirmation_digest, target_kind, target_digest, closure_digest, "
+        "project_count, task_count, conversation_count, run_count, artifact_count, state, created_at "
+        "FROM mentat_planning_deletion_receipts"
+    ).fetchall()
+    if len(rows) > 256:
+        raise PrivateConsoleUnitError("private_planning_deletion_receipt_invalid")
+    for row in rows:
+        confirmation, kind, target, closure, projects, tasks, conversations, runs, artifacts, state, created_at = row
+        if (
+            not all(isinstance(value, str) and SHA256_RE.fullmatch(value) for value in (confirmation, target, closure))
+            or kind not in {"task", "project"}
+            or type(projects) is not int or not 0 <= projects <= 256
+            or type(tasks) is not int or not 0 <= tasks <= 2048
+            or type(conversations) is not int or not 0 <= conversations <= 1024
+            or type(runs) is not int or not 0 <= runs <= 10000
+            or type(artifacts) is not int or not 0 <= artifacts <= 10000
+            or state != "deleted"
+            or not _valid_receipt_timestamp(created_at)
+        ):
+            raise PrivateConsoleUnitError("private_planning_deletion_receipt_invalid")
 
 
 def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[tuple[str, str, int], ...]:
@@ -937,6 +967,8 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             _validate_task_delegation_action_receipts(connection)
         if schema_version >= CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION:
             _validate_codex_task_creation_records(connection)
+        if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
+            _validate_planning_deletion_receipts(connection)
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
@@ -1045,6 +1077,10 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             _validate_embedded_registry(connection)
         if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
             _validate_task_delegation_action_receipts(connection)
+        if schema_version >= CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION:
+            _validate_codex_task_creation_records(connection)
+        if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
+            _validate_planning_deletion_receipts(connection)
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _sqlite_run_history(path)
@@ -1072,6 +1108,10 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             raise PrivateConsoleUnitError("private_database_schema_invalid")
         if schema_version >= TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION:
             _validate_task_delegation_action_receipts(connection)
+        if schema_version >= CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION:
+            _validate_codex_task_creation_records(connection)
+        if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
+            _validate_planning_deletion_receipts(connection)
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:

@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1660,6 +1660,29 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON mentat_codex_task_create_receipts(created_task_id, created_at DESC);
         """,
     ),
+    (
+        23,
+        """
+        -- This is a tombstone, not a historical copy of deleted planning data.
+        -- It deliberately carries only a confirmation proof and count-only result.
+        CREATE TABLE mentat_planning_deletion_receipts (
+            confirmation_digest TEXT PRIMARY KEY CHECK (length(confirmation_digest) = 64),
+            target_kind TEXT NOT NULL CHECK (target_kind IN ('task', 'project')),
+            target_digest TEXT NOT NULL CHECK (length(target_digest) = 64),
+            closure_digest TEXT NOT NULL CHECK (length(closure_digest) = 64),
+            project_count INTEGER NOT NULL CHECK (project_count BETWEEN 0 AND 256),
+            task_count INTEGER NOT NULL CHECK (task_count BETWEEN 0 AND 2048),
+            conversation_count INTEGER NOT NULL CHECK (conversation_count BETWEEN 0 AND 1024),
+            run_count INTEGER NOT NULL CHECK (run_count BETWEEN 0 AND 10000),
+            artifact_count INTEGER NOT NULL CHECK (artifact_count BETWEEN 0 AND 10000),
+            state TEXT NOT NULL CHECK (state = 'deleted'),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64)
+        );
+
+        CREATE INDEX idx_mentat_planning_deletion_receipts_created
+            ON mentat_planning_deletion_receipts(created_at DESC);
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
@@ -1998,7 +2021,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -2095,6 +2118,13 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 21 cannot be safely upgraded"
+                    )
+                if (
+                    version == 23
+                    and schema_signature_state(connection, 22) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 22 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

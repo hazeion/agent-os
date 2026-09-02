@@ -66,6 +66,8 @@ BRIDGE_PLANNING_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execu
 BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-dependencies"
 BRIDGE_PLANNING_DEPENDENCY_MAP_PATH = "/bridge/v1/agent-console/planning-dependency-map"
 BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker"
+BRIDGE_PLANNING_DELETION_PREVIEW_PATH = "/bridge/v1/agent-console/planning-deletion/preview"
+BRIDGE_PLANNING_DELETION_CONFIRM_PATH = "/bridge/v1/agent-console/planning-deletion/confirm"
 BRIDGE_PROJECTS_PATH = "/bridge/v1/projects"
 BRIDGE_AGENT_ACTIVITY_PATH = "/bridge/v1/agent-activity"
 BRIDGE_CODEX_READINESS_PATH = "/bridge/v1/codex-readiness"
@@ -118,6 +120,7 @@ _CONTEXT_PACK_REVISION = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _PLANNING_DELEGATION_CONFIRMATION = re.compile(
     r"(?:task_delegate|delegation_action)_[0-9a-f]{24}\Z"
 )
+_PLANNING_DELETION_CONFIRMATION = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_UPLOAD_CONTENT_TYPES = frozenset({
     "application/json",
     "application/javascript",
@@ -3011,6 +3014,82 @@ def bridge_move_planning_task_payload(task_id: str, payload: object) -> tuple[di
         from server import move_mentat_planning_task
         source, status = move_mentat_planning_task(task_id, payload)
         return _bridge_planning_task_mutation("move", task_id, source, status)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def _planning_deletion_counts(value: object) -> dict[str, int]:
+    if not isinstance(value, dict) or set(value) != {"projects", "tasks", "conversations", "runs", "artifacts"}:
+        raise BridgeConversationProjectionError("planning_deletion_invalid")
+    if any(type(value[key]) is not int or not 0 <= value[key] <= limit for key, limit in {
+        "projects": 256, "tasks": MAXIMUM_BRIDGE_TASKS, "conversations": 1024,
+        "runs": 10000, "artifacts": 10000,
+    }.items()):
+        raise BridgeConversationProjectionError("planning_deletion_invalid")
+    return {key: int(value[key]) for key in ("projects", "tasks", "conversations", "runs", "artifacts")}
+
+
+def _planning_deletion_target(kind: object, identifier: object) -> tuple[str, str]:
+    if kind == "task" and isinstance(identifier, str) and _TASK_ID.fullmatch(identifier):
+        return "task", identifier
+    if kind == "project" and isinstance(identifier, str) and _PROJECT_ID.fullmatch(identifier):
+        return "project", identifier
+    raise BridgeConversationProjectionError("planning_deletion_invalid")
+
+
+def bridge_planning_deletion_preview_payload(payload: object) -> tuple[dict[str, object], int]:
+    try:
+        kind, identifier = _planning_deletion_target(
+            payload.get("target_kind") if isinstance(payload, dict) else None,
+            payload.get("target_id") if isinstance(payload, dict) else None,
+        )
+        if not isinstance(payload, dict) or set(payload) != {"target_kind", "target_id"}:
+            return _planning_failure("invalid", 400)
+        from server import preview_mentat_planning_deletion
+        source, status = preview_mentat_planning_deletion(payload)
+        if status != 200:
+            return _planning_failure("conflict" if status == 409 else "invalid" if status == 400 else "not_found" if status == 404 else "unavailable", status)
+        if not isinstance(source, dict) or set(source) != {"schema_version", "target_kind", "target_id", "confirmation_id", "affected", "has_active_runs"}:
+            raise BridgeConversationProjectionError("planning_deletion_invalid")
+        source_kind, source_identifier = _planning_deletion_target(source.get("target_kind"), source.get("target_id"))
+        if source.get("schema_version") != 1 or (source_kind, source_identifier) != (kind, identifier) or not isinstance(source.get("confirmation_id"), str) or _PLANNING_DELETION_CONFIRMATION.fullmatch(source["confirmation_id"]) is None or type(source.get("has_active_runs")) is not bool:
+            raise BridgeConversationProjectionError("planning_deletion_invalid")
+        return {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready",
+            "target_kind": source_kind, "target_id": source_identifier,
+            "confirmation_id": source["confirmation_id"], "affected": _planning_deletion_counts(source.get("affected")),
+            "has_active_runs": source["has_active_runs"],
+        }, 200
+    except BridgeConversationProjectionError:
+        return _planning_failure("error", 500)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_planning_deletion_confirm_payload(payload: object) -> tuple[dict[str, object], int]:
+    try:
+        kind, identifier = _planning_deletion_target(
+            payload.get("target_kind") if isinstance(payload, dict) else None,
+            payload.get("target_id") if isinstance(payload, dict) else None,
+        )
+        if not isinstance(payload, dict) or set(payload) != {"target_kind", "target_id", "confirmed", "confirmation_id"} or payload.get("confirmed") is not True or not isinstance(payload.get("confirmation_id"), str) or _PLANNING_DELETION_CONFIRMATION.fullmatch(payload["confirmation_id"]) is None:
+            return _planning_failure("invalid", 400)
+        from server import confirm_mentat_planning_deletion
+        source, status = confirm_mentat_planning_deletion(payload)
+        if status != 200:
+            return _planning_failure("conflict" if status == 409 else "invalid" if status == 400 else "not_found" if status == 404 else "unavailable", status)
+        if not isinstance(source, dict) or set(source) != {"schema_version", "action", "target_kind", "target_id", "deletion"}:
+            raise BridgeConversationProjectionError("planning_deletion_invalid")
+        source_kind, source_identifier = _planning_deletion_target(source.get("target_kind"), source.get("target_id"))
+        if source.get("schema_version") != 1 or source.get("action") != "delete" or (source_kind, source_identifier) != (kind, identifier):
+            raise BridgeConversationProjectionError("planning_deletion_invalid")
+        return {
+            "schema_version": 1, "service": "mentat-local-bridge", "runtime": "python", "status": "ready",
+            "action": "delete", "target_kind": source_kind, "target_id": source_identifier,
+            "deletion": _planning_deletion_counts(source.get("deletion")),
+        }, 200
+    except BridgeConversationProjectionError:
+        return _planning_failure("error", 500)
     except Exception:
         return _planning_failure("error", 500)
 
@@ -6048,6 +6127,25 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 bridge_update_planning_task_payload(task_id, body)
                 if action == "edit"
                 else bridge_move_planning_task_payload(task_id, body)
+            )
+            self._send_json(payload, status)
+            return
+        planning_deletion_path = {
+            BRIDGE_PLANNING_DELETION_PREVIEW_PATH: "preview",
+            BRIDGE_PLANNING_DELETION_CONFIRM_PATH: "confirm",
+        }.get(parsed.path)
+        if planning_deletion_path is not None and not parsed.query:
+            body = self._action_json_body(MAXIMUM_BRIDGE_ACTION_BODY_BYTES)
+            required = {"target_kind", "target_id"}
+            if planning_deletion_path == "confirm":
+                required |= {"confirmed", "confirmation_id"}
+            if body is None or set(body) != required:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = (
+                bridge_planning_deletion_preview_payload(body)
+                if planning_deletion_path == "preview"
+                else bridge_planning_deletion_confirm_payload(body)
             )
             self._send_json(payload, status)
             return

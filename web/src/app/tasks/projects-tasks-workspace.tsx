@@ -54,6 +54,12 @@ import {
   type PublicPlanningTaskDelegationOptions,
   type PublicPlanningTaskDelegationPreview,
 } from "@/lib/public-planning-task-delegation-actions";
+import {
+  confirmPlanningDeletion,
+  previewPlanningDeletion,
+  type PlanningDeletionTargetKind,
+  type PublicPlanningDeletionPreview,
+} from "@/lib/public-planning-deletion";
 
 type LoadState = "loading" | "ready" | "empty" | "unavailable" | "error";
 
@@ -159,6 +165,7 @@ export function ProjectsTasksWorkspace() {
   const [dependencyPickerState, setDependencyPickerState] = useState<LoadState>("empty");
   const [renameProject, setRenameProject] = useState(false);
   const [projectRename, setProjectRename] = useState("");
+  const [deletionPreview, setDeletionPreview] = useState<PublicPlanningDeletionPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const projectInput = useRef<HTMLInputElement>(null);
@@ -207,6 +214,7 @@ export function ProjectsTasksWorkspace() {
       delegationRecoveryRef.current = recovery;
       setDelegationRecovery(recovery);
       setRunOnceConfirmation(null);
+      setDeletionPreview((current) => current?.target_kind === "task" ? null : current);
       setRequestChanges(false);
       setReviewNote("");
     }
@@ -243,6 +251,7 @@ export function ProjectsTasksWorkspace() {
     setTaskDependencies(null);
     setDependenciesState("loading");
     setEditingTask(false);
+    setDeletionPreview(null);
     closeTaskForm();
   }
 
@@ -556,6 +565,52 @@ export function ProjectsTasksWorkspace() {
     finally { setBusy(false); }
   }
 
+  function deletionSummary(counts: { artifacts: number; conversations: number; projects: number; runs: number; tasks: number }) {
+    const parts = [
+      `${counts.projects} Project${counts.projects === 1 ? "" : "s"}`,
+      `${counts.tasks} Task${counts.tasks === 1 ? "" : "s"}`,
+      `${counts.conversations} Conversation${counts.conversations === 1 ? "" : "s"}`,
+      `${counts.runs} Run${counts.runs === 1 ? "" : "s"}`,
+      `${counts.artifacts} artifact${counts.artifacts === 1 ? "" : "s"}`,
+    ];
+    return parts.join(", ");
+  }
+
+  function deletionTargetIsSelected(kind: PlanningDeletionTargetKind, targetId: string) {
+    return kind === "task" ? selectedTaskRef.current === targetId : selectedProjectRef.current === targetId;
+  }
+
+  async function reviewDeletion(kind: PlanningDeletionTargetKind) {
+    const target = kind === "task" ? selectedTask : selectedProject;
+    if (!target || busy) return;
+    const targetId = target.id;
+    setBusy(true); setNotice("Preparing the exact deletion preview…"); setDeletionPreview(null);
+    try {
+      const preview = await previewPlanningDeletion(kind, targetId);
+      if (!deletionTargetIsSelected(kind, targetId)) return;
+      setDeletionPreview(preview);
+      setNotice("Review the affected work before confirming deletion.");
+    } catch {
+      if (deletionTargetIsSelected(kind, targetId)) setNotice("Deletion could not be safely reviewed. Nothing was removed.");
+    } finally { setBusy(false); }
+  }
+
+  async function confirmDeletion() {
+    if (!deletionPreview || busy || !deletionTargetIsSelected(deletionPreview.target_kind, deletionPreview.target_id)) return;
+    const preview = deletionPreview;
+    setBusy(true); setNotice("Stopping affected work and verifying deletion…");
+    try {
+      const result = await confirmPlanningDeletion(preview.target_kind, preview.target_id, preview.confirmation_id);
+      if (!deletionTargetIsSelected(preview.target_kind, preview.target_id)) return;
+      selectTaskId(null); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setDeletionPreview(null); setRenameProject(false);
+      await refreshOverview();
+      invalidateDependencyMap();
+      setNotice(`Deleted ${deletionSummary(result.deletion)}.`);
+    } catch {
+      if (deletionTargetIsSelected(preview.target_kind, preview.target_id)) setNotice("Deletion was not verified. Nothing was removed; refresh and review it again.");
+    } finally { setBusy(false); }
+  }
+
   const selectedProject = overview?.projects.find((item) => item.id === selectedProjectId) ?? null;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedTaskExecution = taskExecution && selectedTask && taskExecution.task.id === selectedTask.id && taskExecution.task.revision === selectedTask.revision ? taskExecution : null;
@@ -849,8 +904,16 @@ export function ProjectsTasksWorkspace() {
           <div className="planning-checklist"><span>Checklist</span>{editSubtasks.map((item, index) => <label key={item.id}><input checked={item.completed} onChange={(event) => setEditSubtasks((current) => current.map((entry, position) => position === index ? { ...entry, completed: event.target.checked } : entry))} type="checkbox" />{item.title}<button onClick={() => setEditSubtasks((current) => current.filter((_, position) => position !== index))} type="button">Remove</button></label>)}<button onClick={() => setEditSubtasks((current) => [...current, { id: `check_${crypto.randomUUID().replaceAll("-", "")}`, title: "New checklist item", completed: false, rank: current.length }])} type="button">Add checklist item</button></div>
           <label className="planning-checkbox"><input checked={editToday} onChange={(event) => setEditToday(event.target.checked)} type="checkbox" />Today</label><div><button disabled={busy || !editTitle.trim()} type="submit">Save details</button><button disabled={busy} onClick={() => setEditingTask(false)} type="button">Cancel</button></div>
         </form> : <button disabled={busy || !taskDetail || dependenciesState === "loading"} onClick={() => { if (!taskDetail) return; setEditTitle(taskDetail.title); setEditDescription(taskDetail.description); setEditPriority(taskDetail.priority); setEditDue(taskDetail.due_date ?? ""); setEditToday(taskDetail.planned_for_today); setEditTags(taskDetail.tags.join(", ")); setEditEstimate(taskDetail.estimated_minutes?.toString() ?? ""); setEditRecurrence(taskDetail.recurrence?.frequency ?? ""); setEditSubtasks(taskDetail.subtasks); setEditAgent(taskDetail.assigned_agent_id ?? ""); setEditDependencies(taskDependencies?.prerequisites ?? []); setDependencyQuery(""); setDependencyCandidates([]); setDependencyCursor(null); setEditingTask(true); }} type="button">{taskDetail && dependenciesState !== "loading" ? "Edit details" : "Loading details…"}</button>}
+        <section aria-label="Task deletion" className="planning-project-lifecycle">
+          <p className="console-kicker">Task lifecycle</p>
+          {deletionPreview?.target_kind === "task" && deletionPreview.target_id === selectedTask.id ? <div className="planning-run-once-confirmation">
+            <p>Delete {deletionSummary(deletionPreview.affected)}. This cannot be undone.</p>
+            {deletionPreview.has_active_runs ? <p>Affected active Runs will be stopped and re-read first. If that cannot be verified, nothing is removed.</p> : null}
+            <div><button disabled={busy} onClick={() => void confirmDeletion()} type="button">Confirm delete Task</button><button disabled={busy} onClick={() => setDeletionPreview(null)} type="button">Cancel</button></div>
+          </div> : <button disabled={busy} onClick={() => void reviewDeletion("task")} type="button">Delete Task</button>}
+        </section>
       </>}
-      {selectedProject ? <section className="planning-project-lifecycle"><p className="console-kicker">Project lifecycle</p>{renameProject ? <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void saveProjectName(); }}><label><span>Name</span><input maxLength={120} onChange={(event) => setProjectRename(event.target.value)} value={projectRename} /></label><div><button disabled={busy || !projectRename.trim()} type="submit">Save name</button><button disabled={busy} onClick={() => setRenameProject(false)} type="button">Cancel</button></div></form> : <button disabled={busy} onClick={() => { setProjectRename(selectedProject.name); setRenameProject(true); }} type="button">Rename Project</button>}{selectedProject.status === "archived" ? <button disabled={busy} onClick={() => void lifecycle("restore")} type="button">Restore Project</button> : <button disabled={busy} onClick={() => void lifecycle("archive")} type="button">Archive Project</button>}</section> : null}
+      {selectedProject ? <section className="planning-project-lifecycle"><p className="console-kicker">Project lifecycle</p>{renameProject ? <form className="project-create-form" onSubmit={(event) => { event.preventDefault(); void saveProjectName(); }}><label><span>Name</span><input maxLength={120} onChange={(event) => setProjectRename(event.target.value)} value={projectRename} /></label><div><button disabled={busy || !projectRename.trim()} type="submit">Save name</button><button disabled={busy} onClick={() => setRenameProject(false)} type="button">Cancel</button></div></form> : <button disabled={busy} onClick={() => { setProjectRename(selectedProject.name); setRenameProject(true); }} type="button">Rename Project</button>}{selectedProject.status === "archived" ? <button disabled={busy} onClick={() => void lifecycle("restore")} type="button">Restore Project</button> : <button disabled={busy} onClick={() => void lifecycle("archive")} type="button">Archive Project</button>}{deletionPreview?.target_kind === "project" && deletionPreview.target_id === selectedProject.id ? <div className="planning-run-once-confirmation"><p>Delete {deletionSummary(deletionPreview.affected)}. This cannot be undone.</p>{deletionPreview.has_active_runs ? <p>Affected active Runs will be stopped and re-read first. If that cannot be verified, nothing is removed.</p> : null}<div><button disabled={busy} onClick={() => void confirmDeletion()} type="button">Confirm delete Project</button><button disabled={busy} onClick={() => setDeletionPreview(null)} type="button">Cancel</button></div></div> : <button disabled={busy} onClick={() => void reviewDeletion("project")} type="button">Delete Project</button>}</section> : null}
     </aside>
     <p aria-live="polite" className="projects-tasks-notice" role="status">{notice}</p>
   </section>;

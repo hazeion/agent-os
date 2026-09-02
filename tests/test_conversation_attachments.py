@@ -58,7 +58,7 @@ class ConversationAttachmentTests(unittest.TestCase):
             item = staged["attachments"][0]
 
             self.assertEqual(schema_version(root), SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 22)
+            self.assertEqual(SCHEMA_VERSION, 23)
             self.assertEqual(staged["conversation_id"], first)
             self.assertEqual(item["source"], "upload")
             self.assertTrue(item["available"])
