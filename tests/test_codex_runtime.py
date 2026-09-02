@@ -75,7 +75,7 @@ def task() -> MentatTask:
     )
 
 
-def context(*, runtime_run_ref=None, continuation_runtime_run_ref=None) -> RuntimeContext:
+def context(*, runtime_run_ref=None, continuation_runtime_run_ref=None, task_creation_enabled=False) -> RuntimeContext:
     return RuntimeContext(
         agent_id="agent_codex",
         runtime_agent_ref=CODEX_DEFAULT_BINDING,
@@ -84,6 +84,7 @@ def context(*, runtime_run_ref=None, continuation_runtime_run_ref=None) -> Runti
         dispatch_id="dispatch_codex",
         runtime_run_ref=runtime_run_ref,
         continuation_runtime_run_ref=continuation_runtime_run_ref,
+        task_creation_enabled=task_creation_enabled,
     )
 
 
@@ -331,6 +332,73 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn(task().objective, prompt["text"])
         self.assertIn("Keep tests green.", prompt["text"])
         self.assertNotIn(str(root), prompt["text"])
+
+    def test_task_creation_tool_requires_a_grant_and_binds_exact_thread_and_turn(self):
+        class Grant:
+            def __init__(self):
+                self.calls = []
+
+            def has_preauthorization(self, *, run_id):
+                self.calls.append(("check", run_id))
+                return run_id == "run_codex"
+
+            def bind_thread(self, *, run_id, thread_id):
+                self.calls.append(("thread", run_id, thread_id))
+                return True
+
+            def arm(self, *, run_id, thread_id, turn_id):
+                self.calls.append(("turn", run_id, thread_id, turn_id))
+                return True
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            client = FakeClient(thread_start(root), turn_start())
+            grant = Grant()
+            runtime = CodexRuntime(
+                workspace_root=root,
+                command=codex_app_server_command(str((root / "codex.exe").resolve())),
+                client=client,
+                task_create_handler=lambda _request: {"success": False, "message": "unused"},
+                task_create_authorizer=grant,
+            )
+            outcome = runtime.submit_task(task(), context(task_creation_enabled=True))
+
+        self.assertEqual(outcome.disposition, SubmissionDisposition.ACCEPTED)
+        self.assertEqual(grant.calls, [
+            ("check", "run_codex"),
+            ("thread", "run_codex", THREAD_ID),
+            ("turn", "run_codex", THREAD_ID, TURN_ID),
+        ])
+        dynamic_tools = client.calls[1][1]["dynamicTools"]
+        self.assertEqual(len(dynamic_tools), 1)
+        tool = dynamic_tools[0]
+        self.assertEqual(tool["name"], "mentat_tasks_create_inbox")
+        self.assertEqual(tool["inputSchema"]["additionalProperties"], False)
+        self.assertEqual(set(tool["inputSchema"]["properties"]), {
+            "title", "description", "acceptance_criteria", "reason",
+            "assign_to_self", "depends_on_origin",
+        })
+
+    def test_task_creation_grant_failure_never_starts_a_turn(self):
+        class Grant:
+            def has_preauthorization(self, *, run_id): return True
+            def bind_thread(self, *, run_id, thread_id): return False
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            client = FakeClient(thread_start(root))
+            runtime = CodexRuntime(
+                workspace_root=root,
+                command=codex_app_server_command(str((root / "codex.exe").resolve())),
+                client=client,
+                task_create_handler=lambda _request: {"success": False, "message": "unused"},
+                task_create_authorizer=Grant(),
+            )
+            outcome = runtime.submit_task(task(), context(task_creation_enabled=True))
+
+        self.assertEqual(outcome.disposition, SubmissionDisposition.UNKNOWN)
+        self.assertEqual(outcome.failure_code, "runtime.task_create_unverified")
+        self.assertEqual([call[0] for call in client.calls], ["account/read", "thread/start"])
 
     def test_submit_never_exceeds_the_fixed_operation_timeout(self):
         with TemporaryDirectory() as temporary:

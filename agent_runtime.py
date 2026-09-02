@@ -94,6 +94,7 @@ class RuntimeCapability(StrEnum):
     APPROVAL_RESPONSE = "run.approval_response"
     RESUME = "run.resume"
     MODEL_GENERATE = "model.generate"
+    TASK_CREATE = "task.create"
 
 
 class AgentRuntimeError(RuntimeError):
@@ -561,6 +562,7 @@ class RuntimeContext:
     attachment_ids: tuple[str, ...] = ()
     context_pack_id: str | None = None
     context_pack_revision: str | None = None
+    task_creation_enabled: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "agent_id", _require_id(self.agent_id, "agent id"))
@@ -621,6 +623,8 @@ class RuntimeContext:
                 or re.fullmatch(r"sha256:[0-9a-f]{64}", revision) is None
             ):
                 raise ValueError("runtime Context Pack revision is invalid")
+        if type(self.task_creation_enabled) is not bool:
+            raise ValueError("runtime task creation capability is invalid")
 
 
 @runtime_checkable

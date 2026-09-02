@@ -263,6 +263,7 @@ from task_repository import (
     read_authoritative_tasks,
     replace_authoritative_task,
 )
+from codex_task_creation import CodexTaskCreationService
 from task_delegation_receipts import (
     DelegationActionReceiptRepository,
     DelegationReceiptConflict,
@@ -1895,6 +1896,92 @@ def mentat_agent_attachment_enable_status(agent_id: str) -> tuple[dict, int]:
         return {"error_code": "agent_attachment.invalid"}, 400
     except (AgentRegistryError, AgentRuntimeError, OSError, sqlite3.Error):
         return {"error_code": "agent_attachment.unavailable"}, 503
+
+
+def enable_mentat_agent_task_creation(
+    agent_id: str,
+    payload: object,
+) -> tuple[dict, int]:
+    """Explicitly enable the fixed Inbox Task tool for one Codex Agent."""
+
+    if not isinstance(payload, dict) or set(payload) != {"expected_capabilities"}:
+        return {"error_code": "agent_task_creation.invalid"}, 400
+    expected = payload.get("expected_capabilities")
+    if (
+        not isinstance(expected, list)
+        or len(expected) > 64
+        or expected != sorted(set(expected))
+        or any(
+            not isinstance(capability, str)
+            or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", capability) is None
+            for capability in expected
+        )
+    ):
+        return {"error_code": "agent_task_creation.invalid"}, 400
+    try:
+        runtime = AGENT_RUNTIME_REGISTRY.require("codex")
+        if (
+            not isinstance(runtime, CodexRuntime)
+            or runtime.readiness_status(force=True) != "ready"
+            or RuntimeCapability.TASK_CREATE.value not in runtime.capabilities
+        ):
+            raise AgentRegistryValidationError("agent.runtime_unsupported")
+        with _durable_mutation_lock(
+            DATA_DIR,
+            cross_process_lock=True,
+        ) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise AgentRegistryError("agent_registry.restore_in_progress")
+            registry = _mentat_agent_registry()
+            binding = registry.get_runtime_binding(agent_id)
+            if binding.runtime_type != "codex" or binding.runtime_agent_ref != "default":
+                raise AgentRegistryValidationError("agent.runtime_unsupported")
+            enabled = registry.enable_codex_task_creation(
+                agent_id,
+                expected_capabilities=tuple(expected),
+            )
+        return {
+            "schema_version": 1,
+            "agent": {
+                "id": enabled.agent.id,
+                "name": enabled.agent.name,
+                "runtime_type": enabled.agent.runtime_type,
+                "system_role": enabled.system_role,
+                "capabilities": sorted(enabled.agent.capabilities),
+            },
+        }, 200
+    except AgentRegistryConflict as exc:
+        return {
+            "error_code": (
+                "agent_task_creation.not_found"
+                if exc.code == "agent.not_found"
+                else "agent_task_creation.conflict"
+            )
+        }, 404 if exc.code == "agent.not_found" else 409
+    except AgentRegistryValidationError as exc:
+        return {
+            "error_code": (
+                "agent_task_creation.unsupported"
+                if exc.code == "agent.runtime_unsupported"
+                else "agent_task_creation.invalid"
+            )
+        }, 415 if exc.code == "agent.runtime_unsupported" else 400
+    except (AgentRegistryError, AgentRuntimeError, OSError, sqlite3.Error):
+        return {"error_code": "agent_task_creation.unavailable"}, 503
+
+
+def mentat_agent_task_creation_enable_status(agent_id: str) -> tuple[dict, int]:
+    """Read one safe Codex Inbox Task opt-in state without probing Codex."""
+
+    try:
+        state = _mentat_agent_registry().codex_task_creation_enable_state(agent_id)
+        if state == "not_found":
+            return {"error_code": "agent_task_creation.not_found"}, 404
+        return {"schema_version": 1, "agent_id": agent_id, "state": state}, 200
+    except AgentRegistryValidationError:
+        return {"error_code": "agent_task_creation.invalid"}, 400
+    except (AgentRegistryError, OSError, sqlite3.Error):
+        return {"error_code": "agent_task_creation.unavailable"}, 503
 
 
 def _conversation_repository() -> ConversationRepository:
@@ -3911,6 +3998,10 @@ def create_mentat_agent(payload):
         not isinstance(capability, str) for capability in capabilities
     ):
         return {"error": "Agent capabilities must be a list."}, 400
+    if RuntimeCapability.TASK_CREATE.value in capabilities:
+        return {
+            "error": "Inbox Task creation must be enabled explicitly after Agent creation."
+        }, 400
     runtime_type = payload.get("runtime_type")
     if not isinstance(runtime_type, str):
         return {"error": "Agent runtime type is invalid."}, 400
@@ -10696,6 +10787,7 @@ HERMES_RUNTIME = HermesRuntime(
     submission_lock=HERMES_CONNECTION_OPERATION_LOCK,
 )
 _CODEX_COMMAND_PATH = find_codex_command()
+CODEX_TASK_CREATION = CodexTaskCreationService(DATA_DIR)
 CODEX_RUNTIME = CodexRuntime(
     workspace_root=BASE_DIR,
     command=(
@@ -10703,6 +10795,8 @@ CODEX_RUNTIME = CodexRuntime(
         if _CODEX_COMMAND_PATH is not None
         else None
     ),
+    task_create_handler=CODEX_TASK_CREATION.handle,
+    task_create_authorizer=CODEX_TASK_CREATION,
 )
 VERCEL_RUNTIME = VercelRuntime(DATA_DIR)
 AGENT_RUNTIME_REGISTRY = AgentRuntimeRegistry(

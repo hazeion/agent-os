@@ -86,6 +86,10 @@ class PackagingContractTests(unittest.TestCase):
             document["tool"]["setuptools"]["py-modules"],
         )
         self.assertIn(
+            "codex_task_creation",
+            document["tool"]["setuptools"]["py-modules"],
+        )
+        self.assertIn(
             "run_repository",
             document["tool"]["setuptools"]["py-modules"],
         )

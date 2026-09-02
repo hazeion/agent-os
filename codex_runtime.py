@@ -52,6 +52,8 @@ READINESS_CACHE_SECONDS = 5.0
 MAXIMUM_TURN_ITEMS = 4096
 MAXIMUM_TASK_PROMPT_BYTES = 40_000
 CODEX_ADMISSION_LIMIT = 2
+CODEX_TASK_CREATE_TOOL = "mentat_tasks_create_inbox"
+MAXIMUM_DYNAMIC_TOOL_ARGUMENT_BYTES = 16 * 1024
 
 _ACCOUNT_TYPES = frozenset({"apiKey", "chatgpt", "amazonBedrock"})
 _CHATGPT_PLAN_TYPES = frozenset(
@@ -90,6 +92,7 @@ _ACTIVE_CAPABILITIES = frozenset(
         RuntimeCapability.EVENTS.value,
         RuntimeCapability.SEND_MESSAGE.value,
         RuntimeCapability.STOP.value,
+        RuntimeCapability.TASK_CREATE.value,
     }
 )
 _TERMINAL_CAPABILITIES = frozenset(
@@ -350,6 +353,7 @@ class CodexAppServerClient:
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         maximum_line_bytes: int = MAXIMUM_PROTOCOL_LINE_BYTES,
         process_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+        dynamic_tool_handler: Callable[[Mapping[str, object]], Mapping[str, object]] | None = None,
     ):
         normalized_command = tuple(str(value) for value in command)
         root = Path(cwd).resolve()
@@ -379,6 +383,8 @@ class CodexAppServerClient:
         self._ready = False
         self._starting = False
         self._closed = False
+        self._dynamic_tool_handler = dynamic_tool_handler
+        self._dynamic_tool_slots = threading.BoundedSemaphore(2)
 
     @staticmethod
     def _terminate(process: subprocess.Popen | None) -> None:
@@ -471,8 +477,25 @@ class CodexAppServerClient:
                 "name": "mentat",
                 "title": "Mentat",
                 "version": "1",
-            }
+            },
+            # Dynamic tools are an explicit experimental App Server feature.
+            # Mentat still registers none unless one exact task Run has a
+            # durable, user-enabled grant.
+            "capabilities": {"experimentalApi": True},
         }
+
+    def set_dynamic_tool_handler(
+        self,
+        handler: Callable[[Mapping[str, object]], Mapping[str, object]] | None,
+    ) -> None:
+        """Install the one fixed private callback; no generic RPC dispatch."""
+
+        if handler is not None and not callable(handler):
+            raise ValueError("Codex dynamic tool handler is invalid")
+        with self._condition:
+            if self._closed:
+                raise CodexAppServerClientError("codex.unavailable", uncertain=False)
+            self._dynamic_tool_handler = handler
 
     def _ensure_ready(self, *, timeout: float | None = None) -> None:
         startup_timeout = self.request_timeout if timeout is None else float(timeout)
@@ -685,6 +708,127 @@ class CodexAppServerClient:
             return False
         return True
 
+    @staticmethod
+    def _dynamic_tool_request(message: Mapping[str, Any]) -> tuple[int | str, dict[str, object]] | None:
+        """Accept only the generated-schema shape for Mentat's one tool."""
+
+        request_id = message.get("id")
+        params = message.get("params")
+        if (
+            message.get("method") != "item/tool/call"
+            or not (type(request_id) is int or isinstance(request_id, str))
+            or isinstance(request_id, str) and len(request_id) > 128
+            or not isinstance(params, Mapping)
+            or set(params) - {"threadId", "turnId", "callId", "tool", "arguments", "namespace"}
+            or not {"threadId", "turnId", "callId", "tool", "arguments"}.issubset(params)
+            or params.get("tool") != CODEX_TASK_CREATE_TOOL
+        ):
+            return None
+        thread_id = params.get("threadId")
+        turn_id = params.get("turnId")
+        call_id = params.get("callId")
+        arguments = params.get("arguments")
+        namespace = params.get("namespace")
+        if (
+            not isinstance(thread_id, str)
+            or _RUNTIME_ID_PART.fullmatch(thread_id) is None
+            or not isinstance(turn_id, str)
+            or _RUNTIME_ID_PART.fullmatch(turn_id) is None
+            or not isinstance(call_id, str)
+            or _ITEM_ID.fullmatch(call_id) is None
+            or not isinstance(arguments, str)
+            or not arguments
+            or len(arguments.encode("utf-8")) > MAXIMUM_DYNAMIC_TOOL_ARGUMENT_BYTES
+            or namespace is not None and namespace != "mentat"
+        ):
+            return None
+        return request_id, {
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "call_id": call_id,
+            "tool": CODEX_TASK_CREATE_TOOL,
+            "arguments": arguments,
+        }
+
+    @staticmethod
+    def _dynamic_tool_result(value: object) -> dict[str, object] | None:
+        if not isinstance(value, Mapping) or set(value) != {"success", "message"}:
+            return None
+        success = value.get("success")
+        message = value.get("message")
+        if (
+            type(success) is not bool
+            or not isinstance(message, str)
+            or not message
+            or message.strip() != message
+            or "\x00" in message
+            or len(message) > 500
+        ):
+            return None
+        return {"success": success, "message": message}
+
+    def _handle_dynamic_tool_request(
+        self,
+        message: Mapping[str, Any],
+        generation: int,
+    ) -> bool:
+        parsed = self._dynamic_tool_request(message)
+        if parsed is None:
+            return self._deny_server_request(message, generation)
+        request_id, request = parsed
+        if not self._dynamic_tool_slots.acquire(blocking=False):
+            return self._write_dynamic_tool_result(
+                request_id,
+                {"success": False, "message": "Task creation is busy."},
+                generation,
+            )
+
+        def respond() -> None:
+            try:
+                with self._condition:
+                    handler = self._dynamic_tool_handler
+                result: dict[str, object] | None = None
+                if handler is not None:
+                    try:
+                        result = self._dynamic_tool_result(handler(request))
+                    except Exception:
+                        result = None
+                if result is None:
+                    result = {"success": False, "message": "Task creation is unavailable."}
+                self._write_dynamic_tool_result(request_id, result, generation)
+            finally:
+                self._dynamic_tool_slots.release()
+
+        threading.Thread(
+            target=respond,
+            name="mentat-codex-task-create",
+            daemon=True,
+        ).start()
+        return True
+
+    def _write_dynamic_tool_result(
+        self,
+        request_id: int | str,
+        result: Mapping[str, object],
+        generation: int,
+    ) -> bool:
+        try:
+            self._write_message(
+                {
+                    "id": request_id,
+                    "result": {
+                        "success": result["success"],
+                        "contentItems": [
+                            {"type": "inputText", "text": result["message"]}
+                        ],
+                    },
+                },
+                generation=generation,
+            )
+        except (CodexAppServerClientError, KeyError):
+            return False
+        return True
+
     def _reader_loop(self, process: subprocess.Popen, generation: int) -> None:
         stream = process.stdout
         if stream is None:
@@ -718,7 +862,7 @@ class CodexAppServerClient:
                     self._terminate(process)
                     return
             elif "id" in message and "method" in message:
-                if not self._deny_server_request(message, generation):
+                if not self._handle_dynamic_tool_request(message, generation):
                     self._mark_broken(generation, "codex.protocol_invalid")
                     self._terminate(process)
                     return
@@ -815,6 +959,8 @@ class CodexRuntime:
         command: Sequence[str] | None,
         client: Any | None = None,
         client_factory: Callable[..., CodexAppServerClient] = CodexAppServerClient,
+        task_create_handler: Callable[[Mapping[str, object]], Mapping[str, object]] | None = None,
+        task_create_authorizer: object | None = None,
     ):
         root = Path(workspace_root).resolve()
         if not root.is_dir():
@@ -829,6 +975,10 @@ class CodexRuntime:
         self.command = normalized_command
         self._client = client
         self._client_factory = client_factory
+        if task_create_handler is not None and not callable(task_create_handler):
+            raise ValueError("Codex task creation handler is invalid")
+        self._task_create_handler = task_create_handler
+        self._task_create_authorizer = task_create_authorizer
         self._client_lock = threading.Lock()
         self._readiness_lock = threading.Lock()
         self._readiness_checked_at = 0.0
@@ -929,11 +1079,11 @@ class CodexRuntime:
             return state
 
     def _readiness_capabilities(self, *, force: bool) -> frozenset[str]:
-        return (
-            _ACTIVE_CAPABILITIES
-            if self.readiness_status(force=force) == "ready"
-            else frozenset()
-        )
+        if self.readiness_status(force=force) != "ready":
+            return frozenset()
+        if self._task_create_handler is None or self._task_create_authorizer is None:
+            return _ACTIVE_CAPABILITIES - {RuntimeCapability.TASK_CREATE.value}
+        return _ACTIVE_CAPABILITIES
 
     @property
     def capabilities(self) -> frozenset[str]:
@@ -978,6 +1128,7 @@ class CodexRuntime:
                     command=self.command,
                     cwd=self.workspace_root,
                     environment=codex_child_environment(),
+                    dynamic_tool_handler=self._task_create_handler,
                 )
             return self._client
 
@@ -1034,6 +1185,50 @@ class CodexRuntime:
             and context.dispatch_id is not None
             and (task.assigned_agent_id is None or task.assigned_agent_id == context.agent_id)
         )
+
+    def _dynamic_tools_for_task(
+        self,
+        task: MentatTask,
+        context: RuntimeContext,
+    ) -> list[dict[str, object]]:
+        """Return the sole task-scoped tool, never for continuation Runs."""
+
+        if (
+            not context.task_creation_enabled
+            or context.continuation_runtime_run_ref is not None
+            or self._task_create_handler is None
+            or self._task_create_authorizer is None
+            or context.mentat_run_id is None
+            or task.assigned_agent_id != context.agent_id
+        ):
+            return []
+        preauthorized = getattr(self._task_create_authorizer, "has_preauthorization", None)
+        try:
+            if not callable(preauthorized) or not preauthorized(run_id=context.mentat_run_id):
+                return []
+        except Exception:
+            return []
+        return [{
+            "type": "function",
+            "name": CODEX_TASK_CREATE_TOOL,
+            "description": "Create one operator-owned Inbox Task in this Task's Project.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["title"],
+                "properties": {
+                    "title": {"type": "string", "minLength": 1, "maxLength": 160},
+                    "description": {"type": "string", "maxLength": 2000},
+                    "acceptance_criteria": {
+                        "type": "array", "maxItems": 8,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 240},
+                    },
+                    "reason": {"type": "string", "maxLength": 500},
+                    "assign_to_self": {"type": "boolean"},
+                    "depends_on_origin": {"type": "boolean"},
+                },
+            },
+        }]
 
     def _verified_thread(
         self,
@@ -1181,15 +1376,19 @@ class CodexRuntime:
         execution_identity = None
         if continuation is None:
             try:
+                dynamic_tools = self._dynamic_tools_for_task(task, context)
+                thread_params: dict[str, object] = {
+                    "approvalPolicy": "never",
+                    "cwd": str(self.workspace_root),
+                    "ephemeral": False,
+                    "sandbox": "workspace-write",
+                    "serviceName": "mentat",
+                }
+                if dynamic_tools:
+                    thread_params["dynamicTools"] = dynamic_tools
                 thread_response = client.request(
                     "thread/start",
-                    {
-                        "approvalPolicy": "never",
-                        "cwd": str(self.workspace_root),
-                        "ephemeral": False,
-                        "sandbox": "workspace-write",
-                        "serviceName": "mentat",
-                    },
+                    thread_params,
                     timeout=remaining_timeout(),
                 )
             except CodexAppServerClientError as exc:
@@ -1204,6 +1403,16 @@ class CodexRuntime:
                 # App Server may already have created this thread. Treat an
                 # unsafe or incomplete echo as ambiguous, never as retryable.
                 return self._unknown("runtime.start_unverified")
+            if dynamic_tools:
+                bind = getattr(self._task_create_authorizer, "bind_thread", None)
+                try:
+                    if not callable(bind) or not bind(
+                        run_id=context.mentat_run_id,
+                        thread_id=thread_id,
+                    ):
+                        return self._unknown("runtime.task_create_unverified")
+                except Exception:
+                    return self._unknown("runtime.task_create_unverified")
         else:
             try:
                 prior_thread_id, prior_turn_id = _split_runtime_reference(
@@ -1254,6 +1463,17 @@ class CodexRuntime:
                 "runtime.start_unverified",
                 execution_identity=execution_identity,
             )
+        if continuation is None and dynamic_tools:
+            arm = getattr(self._task_create_authorizer, "arm", None)
+            try:
+                if not callable(arm) or not arm(
+                    run_id=context.mentat_run_id,
+                    thread_id=thread_id,
+                    turn_id=str(turn["id"]),
+                ):
+                    return self._unknown("runtime.task_create_unverified")
+            except Exception:
+                return self._unknown("runtime.task_create_unverified")
         run = AgentRun(
             id=context.mentat_run_id or "",
             task_id=task.id,

@@ -143,7 +143,7 @@ def _now_timestamp() -> str:
 
 
 class DelegationActionReceiptRepository:
-    """Transaction-capable repository for schema-21 receipt rows.
+    """Transaction-capable repository for the current receipt rows.
 
     The caller may put receipt mutations in its own SQLite transaction.  When
     it does not, each mutating operation obtains a short ``BEGIN IMMEDIATE``
@@ -174,7 +174,7 @@ class DelegationActionReceiptRepository:
         # would allow two concurrent actions.  Require the complete current
         # database shape before touching any receipt.
         if (
-            DATABASE_SCHEMA_VERSION != 21
+            DATABASE_SCHEMA_VERSION != 22
             or schema_signature_state(self.connection, DATABASE_SCHEMA_VERSION)
             != "expected"
         ):

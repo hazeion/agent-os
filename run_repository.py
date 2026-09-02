@@ -15,7 +15,7 @@ import re
 import sqlite3
 import stat
 import time
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from agent_run_history import (
     LEGACY_SCHEMA_VERSIONS,
@@ -373,6 +373,12 @@ _CONVERSATION_ATTEMPT_SCHEMA_OBJECTS = frozenset(
 _TASK_EXECUTION_SCHEMA_OBJECTS = frozenset(
     {"mentat_task_execution_attempts", "mentat_task_execution_reviews"}
 )
+_CODEX_TASK_CREATE_SCHEMA_OBJECTS = frozenset(
+    {
+        "mentat_codex_task_create_grants",
+        "mentat_codex_task_create_receipts",
+    }
+)
 
 
 def _run_schema_objects(schema_version: int) -> frozenset[str]:
@@ -385,6 +391,8 @@ def _run_schema_objects(schema_version: int) -> frozenset[str]:
         objects |= frozenset({"mentat_conversation_run_contexts"})
     if schema_version >= 19:
         objects |= _TASK_EXECUTION_SCHEMA_OBJECTS
+    if schema_version >= 22:
+        objects |= _CODEX_TASK_CREATE_SCHEMA_OBJECTS
     return objects
 
 
@@ -4636,6 +4644,7 @@ class RunRepository:
         *,
         dispatch_id: str,
         expected_binding_digest: str,
+        grant_preparer: Callable[[DispatchReservation], bool] | None = None,
         now: str | None = None,
     ) -> DispatchReservation:
         occurred_at = _timestamp(now or _now_iso())
@@ -4708,7 +4717,15 @@ class RunRepository:
                 "SELECT * FROM mentat_dispatch_reservations WHERE dispatch_id = ?",
                 (dispatch_id,),
             ).fetchone()
-            return self._reservation(claimed)
+            reservation = self._reservation(claimed)
+            if grant_preparer is not None:
+                try:
+                    prepared = grant_preparer(reservation)
+                except Exception as exc:
+                    raise RunRepositoryConflict("dispatch.task_creation_unavailable") from exc
+                if prepared is not True:
+                    raise RunRepositoryConflict("dispatch.task_creation_unavailable")
+            return reservation
 
     def reject_reserved_dispatch(
         self,
