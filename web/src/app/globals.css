@@ -131,7 +131,18 @@ button {
   width: 42px;
   height: 42px;
   flex: 0 0 auto;
-  object-fit: contain;
+}
+
+@media (min-width: 901px) {
+  .brand-mark {
+    background: center / contain no-repeat url("/mentat-mark-emerald.png");
+  }
+}
+
+@media (max-width: 900px) {
+  :root[data-nav-open] .brand-mark {
+    background: center / contain no-repeat url("/mentat-mark-emerald.png");
+  }
 }
 
 .brand-copy,

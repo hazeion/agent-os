@@ -178,8 +178,18 @@ test("responsive shell contracts retain the completed Emerald tokens", () => {
   assert.match(css, /\.icon-button \{[\s\S]*width: 44px;[\s\S]*height: 44px/);
   assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.brand \{\s*min-height: 44px/);
   assert.match(shell, /from "next\/link"/);
+  assert.doesNotMatch(shell, /next\/image/);
   assert.match(shell, /<Link[\s\S]*data-nav-link/);
   assert.match(shell, /className="brand" data-nav-link href="\/"/);
+  assert.match(shell, /<span aria-hidden="true" className="brand-mark" \/>/);
+  assert.match(
+    css,
+    /@media \(min-width: 901px\) \{[\s\S]*\.brand-mark \{[\s\S]*mentat-mark-emerald\.png/,
+  );
+  assert.match(
+    css,
+    /@media \(max-width: 900px\) \{[\s\S]*:root\[data-nav-open\] \.brand-mark \{[\s\S]*mentat-mark-emerald\.png/,
+  );
   assert.match(shell, /aria-label=\{item\.label\}/);
   assert.match(css, /\.primary-nav \{[\s\S]*overflow-y: auto/);
   assert.match(css, /\.nav-tooltip \{[\s\S]*position: fixed/);

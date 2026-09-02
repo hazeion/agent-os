@@ -35,6 +35,8 @@ MAX_READONLY_SNAPSHOT_BYTES = 96 * 1024 * 1024
 # must not overlap a webhook delivery transaction on Windows. Ordinary queries
 # release this process-wide boundary as soon as their connection is ready.
 DATABASE_OPEN_BARRIER = threading.RLock()
+DATABASE_OPEN_ATTEMPTS = 3
+DATABASE_OPEN_RETRY_SECONDS = 0.01
 
 
 def legacy_agent_registry_artifacts_present_at(parent: Path) -> bool:
@@ -1712,6 +1714,10 @@ class MentatDatabaseError(RuntimeError):
     """Raised when Mentat's private database boundary is unsafe."""
 
 
+class _TransientDatabaseSidecarRace(MentatDatabaseError):
+    """A SQLite sidecar disappeared after its initial safe inspection."""
+
+
 def runtime_dir(data_dir: Path) -> Path:
     return Path(data_dir) / "runtime"
 
@@ -1764,6 +1770,29 @@ def _validate_database_file(path: Path, runtime: Path) -> tuple[int, int] | None
         details = path.lstat()
     except FileNotFoundError:
         return None
+    identity = int(details.st_dev), int(details.st_ino)
+    unsafe = (
+        stat.S_ISLNK(details.st_mode)
+        or _is_reparse_point(details)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_nlink != 1
+        or (
+            os.name == "posix"
+            and (
+                details.st_uid != os.getuid()
+                or stat.S_IMODE(details.st_mode) != 0o600
+            )
+        )
+    )
+    if unsafe:
+        if path.name in {f"{DATABASE_NAME}-wal", f"{DATABASE_NAME}-shm"}:
+            try:
+                path.lstat()
+            except FileNotFoundError as exc:
+                raise _TransientDatabaseSidecarRace(
+                    "Mentat database sidecar changed during validation"
+                ) from exc
+        raise MentatDatabaseError("Mentat database path is not a safe regular file")
     try:
         resolved_parent = path.resolve(strict=True).parent
     except FileNotFoundError:
@@ -1772,22 +1801,29 @@ def _validate_database_file(path: Path, runtime: Path) -> tuple[int, int] | None
         except FileNotFoundError:
             return None
         raise MentatDatabaseError("Mentat database path changed during validation")
-    if (
-        stat.S_ISLNK(details.st_mode)
-        or _is_reparse_point(details)
-        or not stat.S_ISREG(details.st_mode)
-        or details.st_nlink != 1
-        or resolved_parent != runtime
-        or (
-            os.name == "posix"
-            and (
-                details.st_uid != os.getuid()
-                or stat.S_IMODE(details.st_mode) != 0o600
-            )
-        )
-    ):
+    except PermissionError as exc:
+        if path.name in {f"{DATABASE_NAME}-wal", f"{DATABASE_NAME}-shm"}:
+            try:
+                latest = path.lstat()
+            except FileNotFoundError as missing:
+                raise _TransientDatabaseSidecarRace(
+                    "Mentat database sidecar changed during validation"
+                ) from missing
+            if (int(latest.st_dev), int(latest.st_ino)) == identity:
+                raise _TransientDatabaseSidecarRace(
+                    "Mentat database sidecar changed during validation"
+                ) from exc
+        raise MentatDatabaseError("Mentat database path changed during validation") from exc
+    if resolved_parent != runtime:
+        if path.name in {f"{DATABASE_NAME}-wal", f"{DATABASE_NAME}-shm"}:
+            try:
+                path.lstat()
+            except FileNotFoundError as exc:
+                raise _TransientDatabaseSidecarRace(
+                    "Mentat database sidecar changed during validation"
+                ) from exc
         raise MentatDatabaseError("Mentat database path is not a safe regular file")
-    return int(details.st_dev), int(details.st_ino)
+    return identity
 
 
 def _validate_database_set(path: Path, runtime: Path) -> dict[Path, tuple[int, int] | None]:
@@ -2077,6 +2113,26 @@ def _remove_exact_fresh_authority_if_unchanged(
 
 
 def _connect_with_identity_locked(
+    data_dir: Path,
+    *,
+    claim_fresh_agent_authority: bool = True,
+) -> tuple[sqlite3.Connection, dict[Path, tuple[int, int] | None]]:
+    for attempt in range(DATABASE_OPEN_ATTEMPTS):
+        try:
+            return _connect_with_identity_once(
+                data_dir,
+                claim_fresh_agent_authority=claim_fresh_agent_authority,
+            )
+        except _TransientDatabaseSidecarRace as exc:
+            if attempt + 1 == DATABASE_OPEN_ATTEMPTS:
+                raise MentatDatabaseError(
+                    "Mentat database sidecar changed during validation"
+                ) from exc
+            time.sleep(DATABASE_OPEN_RETRY_SECONDS)
+    raise AssertionError("database open retry loop exhausted")
+
+
+def _connect_with_identity_once(
     data_dir: Path,
     *,
     claim_fresh_agent_authority: bool = True,

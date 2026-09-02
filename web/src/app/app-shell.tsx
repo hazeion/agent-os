@@ -1,4 +1,3 @@
-import Image from "next/image";
 import Link from "next/link";
 
 import { SHELL_ROUTES, getShellRoute, type ShellRouteHref } from "@/lib/shell-routes";
@@ -24,14 +23,7 @@ export function AppShell({ children, homeConsole = false, route: routeHref }: Ap
       <aside className="sidebar" id="primary-navigation" aria-label="Primary navigation">
         <div className="sidebar-heading">
           <Link aria-label="Mentat home" className="brand" data-nav-link href="/">
-            <Image
-              alt=""
-              className="brand-mark"
-              height={42}
-              src="/mentat-mark-emerald.png"
-              unoptimized
-              width={42}
-            />
+            <span aria-hidden="true" className="brand-mark" />
             <span className="brand-copy">
               <strong>Mentat</strong>
               <span>Planning workspace</span>
