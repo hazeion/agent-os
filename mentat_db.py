@@ -24,7 +24,7 @@ from private_state import (
 
 DATABASE_NAME = "mentat.sqlite3"
 LEGACY_AGENT_REGISTRY_DATABASE_NAME = "agent-registry.sqlite3"
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 21
 AGENT_REGISTRY_AUTHORITY_CONTRACT = "mentat-agent-registry-convergence-v1"
 EMPTY_AGENT_REGISTRY_SOURCE_SHA256 = hashlib.sha256(b"").hexdigest()
 MAX_READONLY_DATABASE_BYTES = 64 * 1024 * 1024
@@ -1556,6 +1556,63 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON mentat_task_execution_reviews(task_id, created_at DESC);
         """,
     ),
+    (
+        20,
+        """
+        CREATE TABLE mentat_task_delegation_action_receipts (
+            key_digest TEXT PRIMARY KEY CHECK (length(key_digest) = 64),
+            request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+            task_id TEXT NOT NULL CHECK (length(task_id) BETWEEN 1 AND 160),
+            task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
+            action TEXT NOT NULL CHECK (
+                action IN (
+                    'delegate', 'accept', 'reply', 'retry', 'stop',
+                    'request_revision', 'mark_blocked'
+                )
+            ),
+            confirmation_digest TEXT NOT NULL CHECK (length(confirmation_digest) = 64),
+            delegation_binding_digest TEXT NOT NULL CHECK (
+                length(delegation_binding_digest) = 64
+            ),
+            remote_revision_digest TEXT NOT NULL CHECK (
+                length(remote_revision_digest) = 64
+            ),
+            state TEXT NOT NULL CHECK (
+                state IN (
+                    'reserved', 'submitting', 'accepted', 'rejected',
+                    'unknown', 'partial'
+                )
+            ),
+            result_task_revision INTEGER CHECK (
+                result_task_revision IS NULL OR result_task_revision >= 1
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) BETWEEN 1 AND 64),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) BETWEEN 1 AND 64),
+            expires_at REAL CHECK (
+                (state IN ('accepted', 'rejected') AND expires_at IS NOT NULL AND expires_at > 0)
+                OR (state IN ('reserved', 'submitting', 'unknown', 'partial') AND expires_at IS NULL)
+            )
+        );
+
+        CREATE UNIQUE INDEX idx_mentat_task_delegation_action_receipts_active_task
+            ON mentat_task_delegation_action_receipts(task_id)
+            WHERE state IN ('reserved', 'submitting', 'unknown', 'partial');
+        CREATE INDEX idx_mentat_task_delegation_action_receipts_expires
+            ON mentat_task_delegation_action_receipts(expires_at)
+            WHERE expires_at IS NOT NULL;
+        CREATE INDEX idx_mentat_task_delegation_action_receipts_task
+            ON mentat_task_delegation_action_receipts(task_id, created_at DESC);
+        """,
+    ),
+    (
+        21,
+        """
+        ALTER TABLE mentat_task_delegation_action_receipts
+            ADD COLUMN result_proof_digest TEXT CHECK (
+                result_proof_digest IS NULL OR length(result_proof_digest) = 64
+            );
+        """,
+    ),
 )
 
 MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS = frozenset({12, 16})
@@ -1894,7 +1951,7 @@ def migrate(
         requires_disabled_foreign_keys = (
             version in MIGRATIONS_REQUIRING_DISABLED_FOREIGN_KEYS
         )
-        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19}
+        requires_exact_source_gate = version in {12, 13, 14, 15, 16, 17, 18, 19, 20, 21}
         if requires_exact_source_gate and connection.in_transaction:
             raise MentatDatabaseError(
                 "Mentat database migration started inside a transaction"
@@ -1970,6 +2027,20 @@ def migrate(
                 ):
                     raise MentatDatabaseError(
                         "Mentat schema 18 cannot be safely upgraded"
+                    )
+                if (
+                    version == 20
+                    and schema_signature_state(connection, 19) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 19 cannot be safely upgraded"
+                    )
+                if (
+                    version == 21
+                    and schema_signature_state(connection, 20) != "expected"
+                ):
+                    raise MentatDatabaseError(
+                        "Mentat schema 20 cannot be safely upgraded"
                     )
                 _execute_script_in_active_transaction(connection, script)
             else:

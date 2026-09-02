@@ -99,6 +99,7 @@ py-modules = [
   "runtime_config",
   "server",
   "task_planning",
+  "task_delegation_receipts",
   "task_repository",
   "vercel_connections",
   "vercel_infrastructure",

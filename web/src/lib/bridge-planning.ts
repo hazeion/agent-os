@@ -35,6 +35,23 @@ import {
   parsePlanningTaskExecution,
   parsePlanningTaskExecutionMutation,
 } from "./public-planning-task-execution.ts";
+import {
+  parsePlanningTaskDelegation,
+  type PublicPlanningTaskDelegation,
+} from "./public-planning-task-delegation.ts";
+import {
+  parsePlanningTaskDelegationMutation,
+  parsePlanningTaskDelegationOptions,
+  parsePlanningTaskDelegationPreview,
+  parsePlanningTaskDelegationRefresh,
+  parsePlanningTaskDelegationRecovery,
+  type DelegationAction,
+  type PublicPlanningTaskDelegationMutation,
+  type PublicPlanningTaskDelegationOptions,
+  type PublicPlanningTaskDelegationPreview,
+  type PublicPlanningTaskDelegationRefresh,
+  type PublicPlanningTaskDelegationRecovery,
+} from "./public-planning-task-delegation-actions.ts";
 
 const PRIVATE_OVERVIEW_PATH = "/bridge/v1/agent-console/planning-overview";
 const PRIVATE_TASKS_PATH = "/bridge/v1/agent-console/planning-tasks";
@@ -44,6 +61,14 @@ const PRIVATE_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-d
 const PRIVATE_DEPENDENCY_MAP_PATH = "/bridge/v1/agent-console/planning-dependency-map";
 const PRIVATE_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker";
 const PRIVATE_TASK_EXECUTION_PATH = "/bridge/v1/agent-console/planning-task-execution";
+const PRIVATE_TASK_DELEGATION_PATH = "/bridge/v1/agent-console/planning-task-delegation";
+const PRIVATE_TASK_DELEGATION_OPTIONS_PATH = "/bridge/v1/agent-console/planning-task-delegation/options";
+const PRIVATE_TASK_DELEGATION_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-delegation/preview";
+const PRIVATE_TASK_DELEGATION_DELEGATE_PATH = "/bridge/v1/agent-console/planning-task-delegation/delegate";
+const PRIVATE_TASK_DELEGATION_ACTION_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-delegation/action/preview";
+const PRIVATE_TASK_DELEGATION_ACTION_PATH = "/bridge/v1/agent-console/planning-task-delegation/action";
+const PRIVATE_TASK_DELEGATION_REFRESH_PATH = "/bridge/v1/agent-console/planning-task-delegation/refresh";
+const PRIVATE_TASK_DELEGATION_RECOVER_PATH = "/bridge/v1/agent-console/planning-task-delegation/recover";
 const PRIVATE_TASK_RUN_ONCE_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once/preview";
 const PRIVATE_TASK_RUN_ONCE_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once";
 const PRIVATE_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/review";
@@ -242,6 +267,74 @@ export async function fetchBridgePlanningTaskExecution(taskId: string, fetcher: 
   if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
   const { response, payload } = await request(`${PRIVATE_TASK_EXECUTION_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
   if (response.status === 200) return parse(() => parsePlanningTaskExecution(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+/** Read the fixed, safe delegation summary for one selected Planning Task. */
+export async function fetchBridgePlanningTaskDelegation(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegation> {
+  if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_TASK_DELEGATION_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningTaskDelegation(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+function delegationTarget(value: unknown, maximum: number): value is string { return typeof value === "string" && value.length <= maximum && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(value); }
+function delegationInput(value: unknown, maximum: number): value is string { return typeof value === "string" && [...value].length <= maximum && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(value); }
+function delegationConfirmation(value: unknown, action: DelegationAction): value is string { return typeof value === "string" && (action === "delegate" ? /^task_delegate_[0-9a-f]{24}$/u : /^delegation_action_[0-9a-f]{24}$/u).test(value); }
+function delegationRevision(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 1; }
+
+export async function fetchBridgePlanningTaskDelegationOptions(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationOptions> {
+  if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_TASK_DELEGATION_OPTIONS_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningTaskDelegationOptions(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function previewBridgePlanningTaskDelegation(taskId: string, expectedRevision: number, profileId: string, boardId: string, workspace: "scratch" | "worktree", instructions: string, contextPackId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationPreview> {
+  if (!TASK_ID.test(taskId) || !delegationRevision(expectedRevision) || !delegationTarget(profileId, 80) || !delegationTarget(boardId, 64) || !["scratch", "worktree"].includes(workspace) || !delegationInput(instructions, 8_000) || !(contextPackId === "" || /^pack_[0-9a-f]{16}$/u.test(contextPackId))) throw new BridgePlanningError("planning_request_invalid");
+  const body = { task_id: taskId, expected_revision: expectedRevision, profile_id: profileId, board_id: boardId, workspace, instructions, context_pack_id: contextPackId };
+  const { response, payload } = await request(PRIVATE_TASK_DELEGATION_PREVIEW_PATH, fetcher, environment, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) { const result = parse(() => parsePlanningTaskDelegationPreview(payload, taskId)); if (result.action !== "delegate") throw new BridgePlanningError("bridge_response_invalid"); return result; }
+  fixedFailure(response, payload);
+}
+
+export async function confirmBridgePlanningTaskDelegation(taskId: string, expectedRevision: number, profileId: string, boardId: string, workspace: "scratch" | "worktree", instructions: string, contextPackId: string, confirmationId: string, idempotencyKey: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationMutation> {
+  if (!TASK_ID.test(taskId) || !delegationRevision(expectedRevision) || !delegationTarget(profileId, 80) || !delegationTarget(boardId, 64) || !["scratch", "worktree"].includes(workspace) || !delegationInput(instructions, 8_000) || !(contextPackId === "" || /^pack_[0-9a-f]{16}$/u.test(contextPackId)) || !delegationConfirmation(confirmationId, "delegate") || !validIdempotencyKey(idempotencyKey)) throw new BridgePlanningError("planning_request_invalid");
+  const body = { task_id: taskId, expected_revision: expectedRevision, profile_id: profileId, board_id: boardId, workspace, instructions, context_pack_id: contextPackId, confirmation_id: confirmationId, idempotency_key: idempotencyKey };
+  const { response, payload } = await request(PRIVATE_TASK_DELEGATION_DELEGATE_PATH, fetcher, environment, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200 || response.status === 201) { const result = parse(() => parsePlanningTaskDelegationMutation(payload, taskId)); if (result.action !== "delegate") throw new BridgePlanningError("bridge_response_invalid"); return result; }
+  fixedFailure(response, payload);
+}
+
+export async function previewBridgePlanningTaskDelegationAction(taskId: string, expectedRevision: number, action: Exclude<DelegationAction, "delegate">, note: string | null, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationPreview> {
+  const noteRequired = ["reply", "request_revision", "mark_blocked"].includes(action);
+  if (!TASK_ID.test(taskId) || !delegationRevision(expectedRevision) || !["accept", "reply", "retry", "stop", "request_revision", "mark_blocked"].includes(action) || noteRequired !== (note !== null) || note !== null && (!delegationInput(note, 8_000) || !note.trim())) throw new BridgePlanningError("planning_request_invalid");
+  const body = note === null ? { task_id: taskId, expected_revision: expectedRevision, action } : { task_id: taskId, expected_revision: expectedRevision, action, note };
+  const { response, payload } = await request(PRIVATE_TASK_DELEGATION_ACTION_PREVIEW_PATH, fetcher, environment, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) { const result = parse(() => parsePlanningTaskDelegationPreview(payload, taskId)); if (result.action !== action) throw new BridgePlanningError("bridge_response_invalid"); return result; }
+  fixedFailure(response, payload);
+}
+
+export async function confirmBridgePlanningTaskDelegationAction(taskId: string, expectedRevision: number, action: Exclude<DelegationAction, "delegate">, note: string | null, confirmationId: string, idempotencyKey: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationMutation> {
+  const noteRequired = ["reply", "request_revision", "mark_blocked"].includes(action);
+  if (!TASK_ID.test(taskId) || !delegationRevision(expectedRevision) || !["accept", "reply", "retry", "stop", "request_revision", "mark_blocked"].includes(action) || noteRequired !== (note !== null) || note !== null && (!delegationInput(note, 8_000) || !note.trim()) || !delegationConfirmation(confirmationId, action) || !validIdempotencyKey(idempotencyKey)) throw new BridgePlanningError("planning_request_invalid");
+  const body = note === null ? { task_id: taskId, expected_revision: expectedRevision, action, confirmation_id: confirmationId, idempotency_key: idempotencyKey } : { task_id: taskId, expected_revision: expectedRevision, action, note, confirmation_id: confirmationId, idempotency_key: idempotencyKey };
+  const { response, payload } = await request(PRIVATE_TASK_DELEGATION_ACTION_PATH, fetcher, environment, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) { const result = parse(() => parsePlanningTaskDelegationMutation(payload, taskId)); if (result.action !== action) throw new BridgePlanningError("bridge_response_invalid"); return result; }
+  fixedFailure(response, payload);
+}
+
+export async function refreshBridgePlanningTaskDelegation(taskId: string, expectedRevision: number, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationRefresh> {
+  if (!TASK_ID.test(taskId) || !delegationRevision(expectedRevision)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(PRIVATE_TASK_DELEGATION_REFRESH_PATH, fetcher, environment, { body: JSON.stringify({ task_id: taskId, expected_revision: expectedRevision }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parse(() => parsePlanningTaskDelegationRefresh(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function recoverBridgePlanningTaskDelegation(taskId: string, confirmationId: string, idempotencyKey: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationRecovery> {
+  if (!TASK_ID.test(taskId) || !/^(?:task_delegate|delegation_action)_[0-9a-f]{24}$/u.test(confirmationId) || !validIdempotencyKey(idempotencyKey)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(PRIVATE_TASK_DELEGATION_RECOVER_PATH, fetcher, environment, { body: JSON.stringify({ task_id: taskId, confirmation_id: confirmationId, idempotency_key: idempotencyKey }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parse(() => parsePlanningTaskDelegationRecovery(payload, taskId));
   fixedFailure(response, payload);
 }
 

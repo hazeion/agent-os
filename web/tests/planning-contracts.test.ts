@@ -13,6 +13,7 @@ import {
   fetchBridgePlanningDependencyMap,
   fetchBridgePlanningDependencyPicker,
   fetchBridgePlanningTaskExecution,
+  fetchBridgePlanningTaskDelegation,
   previewBridgePlanningTaskRunOnce,
   confirmBridgePlanningTaskRunOnce,
   reviewBridgePlanningTaskExecution,
@@ -31,6 +32,7 @@ import { createPlanningDependencyMapHandler } from "../src/lib/planning-dependen
 import { createPlanningDependencyPickerHandler } from "../src/lib/planning-dependency-picker-route.ts";
 import { createPlanningMutationHandler } from "../src/lib/planning-mutation-route.ts";
 import { createPlanningTaskExecutionGetHandler, createPlanningTaskRunOncePreviewHandler, createPlanningTaskRunOnceConfirmHandler, createPlanningTaskExecutionReviewHandler } from "../src/lib/planning-task-execution-route.ts";
+import { createPlanningTaskDelegationGetHandler } from "../src/lib/planning-task-delegation-route.ts";
 import { createProjectHandler, createProjectTaskHandler } from "../src/lib/project-creation-route.ts";
 import {
   createProject,
@@ -64,6 +66,7 @@ import {
   readPlanningTaskExecution,
   reviewPlanningTaskExecution,
 } from "../src/lib/public-planning-task-execution.ts";
+import { parsePlanningTaskDelegation, readPlanningTaskDelegation } from "../src/lib/public-planning-task-delegation.ts";
 
 const envelope = { runtime: "python" as const, schema_version: 1 as const, service: "mentat-local-bridge" as const, status: "ready" as const };
 const project = { id: "project_alpha", name: "Alpha", revision: 1, status: "active" as const };
@@ -77,6 +80,8 @@ const taskResult = { ...envelope, project, task: nonAttentionTask };
 const taskDetailResult = { ...envelope, project, task: { ...nonAttentionTask, assigned_agent_id: null, description: "A bounded description.", estimated_minutes: 30, recurrence: null, subtasks: [], tags: [] } };
 const executionTask = { ...nonAttentionTask, assigned_agent_id: "agent_alpha", workflow_stage: "planned" as const };
 const taskExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: executionTask };
+const taskDelegation = { ...envelope, delegation: { artifact_count: 0, attempts: 2, available: true as const, last_outcome: "completed" as const, last_synced_at: "2026-08-30T11:59:00Z", latest_question: "Confirm the deployment window.", review_state: "pending" as const, state: "ready_for_review" as const, summary: "The delegated implementation is ready for review.", sync_state: "synced" as const, updated_at: "2026-08-30T12:00:00Z" }, task: { id: nonAttentionTask.id, revision: nonAttentionTask.revision } };
+const notDelegated = { ...envelope, delegation: { available: false as const, reason: "not_delegated" as const }, task: { id: nonAttentionTask.id, revision: nonAttentionTask.revision } };
 const runOncePreview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: executionTask };
 const executionAttempt = { agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched" as const, status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" };
 const runOnceMutation = { ...envelope, action: "run_once" as const, duplicate: false, execution: { attempt_count: 1, attempts: [executionAttempt], available: false, reason: "unavailable" as const, review: { available: false, run_id: null } }, task: { ...executionTask, workflow_stage: "in_progress" as const } };
@@ -390,6 +395,27 @@ test("Task execution uses fixed bounded projections and exact run-once and revie
     { body: { confirmation_id: runOncePreview.confirmation_id, expected_revision: 1, idempotency_key: "key_alpha_123456", task_id: nonAttentionTask.id }, url: "http://127.0.0.1:49152/bridge/v1/agent-console/planning-task-execution/run-once" },
     { body: { action: "accept", expected_revision: 1, idempotency_key: "key_beta_1234567", task_id: nonAttentionTask.id }, url: "http://127.0.0.1:49152/bridge/v1/agent-console/planning-task-execution/review" },
   ]);
+});
+
+test("Task delegation uses only the selected Task's fixed safe summary", async () => {
+  assert.deepEqual(parsePlanningTaskDelegation(taskDelegation, nonAttentionTask.id), taskDelegation);
+  assert.deepEqual(parsePlanningTaskDelegation(notDelegated, nonAttentionTask.id), notDelegated);
+  assert.throws(() => parsePlanningTaskDelegation({ ...taskDelegation, delegation: { ...taskDelegation.delegation, private_reference: "no" } }, nonAttentionTask.id), PublicPlanningError);
+  assert.throws(() => parsePlanningTaskDelegation({ ...taskDelegation, task: { ...taskDelegation.task, id: "task_other" } }, nonAttentionTask.id), PublicPlanningError);
+  const calls: string[] = [];
+  const fetcher = async (input: string | URL | Request) => { calls.push(input.toString()); return json(taskDelegation); };
+  assert.deepEqual(await fetchBridgePlanningTaskDelegation(nonAttentionTask.id, fetcher, environment), taskDelegation);
+  assert.deepEqual(calls, ["http://127.0.0.1:49152/bridge/v1/agent-console/planning-task-delegation?task_id=task_plain"]);
+  const get = createPlanningTaskDelegationGetHandler({ gatewayPort: "8890", readDelegation: async () => taskDelegation });
+  assert.equal((await get(new Request(`http://127.0.0.1:8890/api/agent-console/planning-task-delegation?task_id=${nonAttentionTask.id}`, { headers: browserHeaders }))).status, 200);
+  assert.equal((await get(new Request(`http://127.0.0.1:8890/api/agent-console/planning-task-delegation?task_id=${nonAttentionTask.id}&extra=1`, { headers: browserHeaders }))).status, 400);
+  const original = globalThis.fetch;
+  const publicCalls: string[] = [];
+  globalThis.fetch = async (input) => { publicCalls.push(input.toString()); return json(notDelegated); };
+  try {
+    assert.deepEqual(await readPlanningTaskDelegation(nonAttentionTask.id), notDelegated);
+    assert.deepEqual(publicCalls, ["/api/agent-console/planning-task-delegation?task_id=task_plain"]);
+  } finally { globalThis.fetch = original; }
 });
 
 test("Task execution routes keep all browser input exact and same-origin", async () => {
