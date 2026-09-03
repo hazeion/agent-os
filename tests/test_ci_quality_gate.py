@@ -41,10 +41,12 @@ class CiQualityGateTests(unittest.TestCase):
             "actions/setup-node@v",
         ):
             self.assertNotIn(floating, workflow)
-        self.assertEqual(workflow.count("actions/checkout@8e8c483"), 2)
-        self.assertEqual(workflow.count("actions/setup-python@a309ff8"), 2)
+        self.assertEqual(workflow.count("actions/checkout@8e8c483"), 3)
+        self.assertEqual(workflow.count("actions/setup-python@a309ff8"), 3)
         self.assertEqual(workflow.count("actions/setup-node@53b8394"), 2)
         self.assertEqual(workflow.count("node-version: 24.19.0"), 2)
+        self.assertIn("sigstore/cosign-installer@b4da77e", workflow)
+        self.assertIn("name: Linux disposable Caddy integration", workflow)
         self.assertNotIn("pip install --upgrade pip", workflow)
 
     def test_main_matrix_keeps_read_only_permissions_and_safe_triggers(self):

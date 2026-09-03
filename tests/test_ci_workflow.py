@@ -64,6 +64,10 @@ class CiWorkflowContractTests(unittest.TestCase):
             "uses: actions/setup-node@"
             "53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0"
         )
+        cosign_installer = (
+            "uses: sigstore/cosign-installer@"
+            "b4da77ecad80ff9afe572690e3ce4a55a58e629c # v3.9.1"
+        )
         self.assertIn(checkout, workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn(setup_python, workflow)
@@ -84,6 +88,9 @@ class CiWorkflowContractTests(unittest.TestCase):
                 checkout,
                 setup_python,
                 setup_node,
+                checkout,
+                setup_python,
+                cosign_installer,
             ],
         )
 

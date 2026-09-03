@@ -49,11 +49,13 @@ production packaging, Codex adapter, runtime coexistence, Agent registry
 convergence, and optional Vercel capability adapters are complete through Slice
 4A.
 
-Authenticated multi-device work is complete through MDA-4B: durable owner-auth
+Authenticated multi-device foundation work is complete through MDA-4C: durable owner-auth
 authority remains behind a disabled remote profile, and the local Node gateway
 now uses one process-owned authority, an exhaustive source-checked route/static
-manifest, and one handler wrapper while preserving local behavior. MDA-4C is
-the next approved frontier; remote serving remains disabled.
+manifest, and one handler wrapper while preserving local behavior. The checked-in
+Linux Caddy profile is version-pinned and executable only through an explicit
+disposable loopback harness; normal launch paths remain unchanged and remote
+serving remains disabled pending a separate activation slice.
 
 Agent Console Slices 1 through 10 are complete. Slice 10 shipped through PR
 #160 with schema-17 non-owning Conversation planning context, bounded planning
@@ -92,6 +94,7 @@ is currently approved. Choose the next frontier through the Wayfinder.
 | Console 10 | Project and planning context. |
 | MDA 4A | Durable owner-auth authority behind disabled remote mode. |
 | MDA 4B | Central manifest-backed Gateway Authority with local parity. |
+| MDA 4C | Disabled, version-pinned Caddy profile and disposable Linux lifecycle gates. |
 
 ## Working rules
 

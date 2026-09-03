@@ -77,6 +77,26 @@ rejects legacy boundary imports or unwrapped handlers. Route-specific local
 failure envelopes remain authoritative where they differ from the shared
 fixed forbidden response.
 
+MDA-4C adds a disabled Linux-only `remote-caddy-v1` deployment profile under
+`deploy/caddy/`. It is not referenced by the local launcher, lifecycle manager,
+preview supervisor, or CLI. The renderer accepts one canonical non-local DNS
+name and the literal `127.0.0.1:8888` Node upstream, pins Caddy 2.11.4 release
+and signature material for amd64 and arm64, rejects custom modules, and gives
+every validation subprocess a credential-free environment. No profile code
+downloads or installs Caddy, creates production certificates, changes a
+firewall, or enables remote serving.
+
+The required Linux CI job verifies both architecture inventories before
+extracting the amd64 binary, validates the exact version and empty custom-module
+inventory, and runs Caddy only on ephemeral loopback ports with an injected
+test certificate. Its capture upstream proves exact forwarding-header
+replacement. TLS/SNI/Host and canonical HTTP behavior, TCP/UDP listener
+inventory, external-address isolation, atomic failed-reload rollback,
+no-store maintenance, backend loss/recovery, and live SSE keepalive, reconnect,
+closure, cancellation, and bounded drain behavior must all pass. Production
+listener, service-account, certificate, and firewall activation remains a
+separate future approval.
+
 The browser can call only the fixed same-origin routes in that manifest. Node
 builds each private request on the server, checks its bounded response, and
 returns only the route's safe public fields. The Agent route exposes canonical

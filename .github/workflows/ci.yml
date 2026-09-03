@@ -139,18 +139,88 @@ jobs:
       - name: Run bounded Windows test group
         run: python scripts/run_unittest_shards.py --run-group ${{ matrix.group }}
 
+  caddy-disposable:
+    name: Linux disposable Caddy integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned Cosign verifier
+        uses: sigstore/cosign-installer@b4da77ecad80ff9afe572690e3ce4a55a58e629c # v3.9.1
+
+      - name: Verify and exercise the disabled Caddy profile on loopback
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_root="$(mktemp -d)"
+          trap 'rm -rf "$fixture_root"' EXIT
+          release_dir="$fixture_root/release"
+          binary_dir="$fixture_root/bin"
+          mkdir -p "$release_dir" "$binary_dir"
+          release_url='https://github.com/caddyserver/caddy/releases/download/v2.11.4'
+          for asset in \
+            caddy_2.11.4_linux_amd64.tar.gz \
+            caddy_2.11.4_linux_amd64.sbom \
+            caddy_2.11.4_linux_arm64.tar.gz \
+            caddy_2.11.4_linux_arm64.sbom \
+            caddy_2.11.4_checksums.txt \
+            caddy_2.11.4_checksums.txt.sig \
+            caddy_2.11.4_checksums.txt.pem; do
+            curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+              --output "$release_dir/$asset" "$release_url/$asset"
+          done
+          # Never unpack a network archive until its signed checksum manifest
+          # and locked archive/SBOM identities have been verified.
+          python - "$release_dir" "$(command -v cosign)" <<'PY'
+          import sys
+          from pathlib import Path
+          from deploy.caddy.profile import verify_signed_checksums, verify_downloaded_release
+          release_dir, cosign = sys.argv[1:]
+          release = Path(release_dir)
+          verify_signed_checksums(release, Path(cosign))
+          verify_downloaded_release(release, "amd64")
+          verify_downloaded_release(release, "arm64")
+          PY
+          tar --extract --gzip --file "$release_dir/caddy_2.11.4_linux_amd64.tar.gz" --directory "$binary_dir" --no-same-owner --no-same-permissions
+          test -x "$binary_dir/caddy"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=mentat.example.test' \
+            -addext 'subjectAltName=DNS:mentat.example.test' \
+            -keyout "$fixture_root/test-key.pem" -out "$fixture_root/test-cert.pem" >/dev/null 2>&1
+          python -m deploy.caddy.linux_harness \
+            --release-dir "$release_dir" \
+            --architecture amd64 \
+            --caddy-bin "$binary_dir/caddy" \
+            --cosign-bin "$(command -v cosign)" \
+            --host mentat.example.test \
+            --run-disposable \
+            --test-cert "$fixture_root/test-cert.pem" \
+            --test-key "$fixture_root/test-key.pem"
+
   required:
     name: CI required
     if: ${{ always() }}
     needs:
       - test
       - windows-test
+      - caddy-disposable
     runs-on: ubuntu-24.04
     steps:
       - name: Verify required matrix
         env:
           TEST_RESULT: ${{ needs.test.result }}
           WINDOWS_RESULT: ${{ needs.windows-test.result }}
+          CADDY_RESULT: ${{ needs.caddy-disposable.result }}
         run: |
           test "$TEST_RESULT" = success
           test "$WINDOWS_RESULT" = success
+          test "$CADDY_RESULT" = success

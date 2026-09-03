@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "profile": "remote-caddy-v1",
+  "version": "2.11.4",
+  "release_base_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/",
+  "signed_checksums": {
+    "file": "caddy_2.11.4_checksums.txt",
+    "sha256": "7bfa272f3ece3ac987c1e06cd3c0acf126749d88110c20d7b83dcea3caaf0080",
+    "signature": "caddy_2.11.4_checksums.txt.sig",
+    "signature_sha256": "8d9cbad73b412de3fe1cafe2cd8bf99d40d27965b98b217a9a3b8fe7fe687002",
+    "certificate": "caddy_2.11.4_checksums.txt.pem",
+    "certificate_sha256": "438fc6a07e129eb89b30ef3aec8385038c3ddd82eb6019885c75a1cea9039b48",
+    "certificate_identity": "https://github.com/caddyserver/caddy/.github/workflows/release.yml@refs/tags/v2.11.4",
+    "certificate_oidc_issuer": "https://token.actions.githubusercontent.com"
+  },
+  "architectures": {
+    "amd64": {
+      "archive": "caddy_2.11.4_linux_amd64.tar.gz",
+      "archive_sha256": "527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9",
+      "official_checksum_sha512": "8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777ccc8fd0b6e6f2486ce3a33fe389fbb7db12d05baa474f4587509fb4f5ebf1c9",
+      "sbom": "caddy_2.11.4_linux_amd64.sbom",
+      "sbom_sha256": "69f953cec4c2309c17c3f3ae6a578ae63c6a000814c3e4cad7bda7757ba8c606"
+    },
+    "arm64": {
+      "archive": "caddy_2.11.4_linux_arm64.tar.gz",
+      "archive_sha256": "52d42ae12b3462097e9868da6dfed3c9648ae12edd3b3638102312af84cb6904",
+      "official_checksum_sha512": "d5a7c423853c24a799765e0e8210d5c7c22a8f56ed37a3cae2fb9f58be138853c02b4efd6b59d576e6d8c7c0d30b9c1592deeaa6a536ff69bcca23b8c1ea709c",
+      "sbom": "caddy_2.11.4_linux_arm64.sbom",
+      "sbom_sha256": "c87db1f7e36724db65726c64eb7ba860d220891afa40d53240ae94d6a9506739"
+    }
+  },
+  "module_inventory": {
+    "command": ["list-modules", "--skip-standard", "--versions"],
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "meaning": "exactly no non-standard or custom modules"
+  }
+}
