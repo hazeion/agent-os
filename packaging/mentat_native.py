@@ -6,6 +6,13 @@ import runpy
 import subprocess
 import sys
 
+# Frozen builds need explicit roots for the owner-auth runtime.  PyInstaller
+# sees these static imports, while source-mode packaging tests stay independent
+# of optional native runtime dependencies.
+if bool(getattr(sys, "frozen", False)):
+    import argon2  # noqa: F401
+    import fido2  # noqa: F401
+
 from mentat.cli import main
 from mentat.web_runtime import application_root, require_node_24
 

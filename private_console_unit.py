@@ -96,6 +96,7 @@ TASK_EXECUTION_DATABASE_SCHEMA_VERSION = 19
 TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION = 21
 CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION = 22
 PLANNING_DELETION_DATABASE_SCHEMA_VERSION = 23
+OWNER_AUTH_DATABASE_SCHEMA_VERSION = 24
 SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     LEGACY_DATABASE_SCHEMA_VERSION,
     PREVIOUS_DATABASE_SCHEMA_VERSION,
@@ -116,6 +117,7 @@ SUPPORTED_DATABASE_SCHEMA_VERSIONS = {
     TASK_DELEGATION_ACTION_RECEIPT_DATABASE_SCHEMA_VERSION,
     CODEX_TASK_CREATION_DATABASE_SCHEMA_VERSION,
     PLANNING_DELETION_DATABASE_SCHEMA_VERSION,
+    OWNER_AUTH_DATABASE_SCHEMA_VERSION,
 }
 STORAGE_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})\Z")
 RUN_ID_RE = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}\Z")
@@ -969,6 +971,12 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             _validate_codex_task_creation_records(connection)
         if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
             _validate_planning_deletion_receipts(connection)
+        if schema_version >= OWNER_AUTH_DATABASE_SCHEMA_VERSION:
+            from owner_auth import OwnerAuthError, validate_owner_auth_connection
+            try:
+                validate_owner_auth_connection(connection)
+            except OwnerAuthError as exc:
+                raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
@@ -1081,6 +1089,12 @@ def _validate_and_filter_database(path: Path, run_ids: Iterable[str]) -> tuple[t
             _validate_codex_task_creation_records(connection)
         if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
             _validate_planning_deletion_receipts(connection)
+        if schema_version >= OWNER_AUTH_DATABASE_SCHEMA_VERSION:
+            from owner_auth import OwnerAuthError, validate_owner_auth_connection
+            try:
+                validate_owner_auth_connection(connection)
+            except OwnerAuthError as exc:
+                raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
         if schema_version >= RUN_DATABASE_SCHEMA_VERSION:
             if _sqlite_run_authority_claimed(path):
                 _sqlite_run_history(path)
@@ -1112,6 +1126,12 @@ def _inspect_filtered_database(path: Path, run_ids: Iterable[str]) -> tuple[tupl
             _validate_codex_task_creation_records(connection)
         if schema_version >= PLANNING_DELETION_DATABASE_SCHEMA_VERSION:
             _validate_planning_deletion_receipts(connection)
+        if schema_version >= OWNER_AUTH_DATABASE_SCHEMA_VERSION:
+            from owner_auth import OwnerAuthError, validate_owner_auth_connection
+            try:
+                validate_owner_auth_connection(connection)
+            except OwnerAuthError as exc:
+                raise PrivateConsoleUnitError("private_owner_auth_invalid") from exc
         if schema_version >= AGENT_DATABASE_SCHEMA_VERSION:
             _validate_embedded_registry(connection)
         if schema_version >= PREVIOUS_DATABASE_SCHEMA_VERSION:
@@ -1521,6 +1541,50 @@ def validate_private_console_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUni
         if len(blob.raw) != size or blob.sha256 != digest:
             raise PrivateConsoleUnitError("private_blob_content_invalid")
     return unit
+
+
+def sanitize_owner_auth_restore_unit(unit: PrivateConsoleUnit) -> PrivateConsoleUnit:
+    """Return a restored private unit with live owner-auth grants invalidated.
+
+    A pristine migrated authority is byte-for-byte unchanged, preserving the
+    exact legacy backup/restore receipts.  A configured authority receives the
+    required session/bootstrap/ceremony sanitization before publication.
+    """
+
+    with TemporaryDirectory(prefix="mentat-owner-auth-restore-") as temporary:
+        database = Path(temporary) / "mentat.sqlite3"
+        database.write_bytes(unit.database_raw)
+        connection = sqlite3.connect(database)
+        try:
+            version = int(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0)
+            if version < OWNER_AUTH_DATABASE_SCHEMA_VERSION:
+                return unit
+            state = connection.execute("SELECT state FROM mentat_owner_auth_state WHERE singleton = 1").fetchone()
+            live = (
+                state is not None and state[0] != "unbootstrapped"
+                or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_sessions WHERE state = 'active'").fetchone()[0])
+                or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_ceremonies WHERE state = 'pending'").fetchone()[0])
+                or int(connection.execute("SELECT COUNT(*) FROM mentat_owner_auth_recovery_codes WHERE state = 'reserved'").fetchone()[0])
+            )
+            if not live:
+                return unit
+            from owner_auth import sanitize_after_restore
+            connection.execute("BEGIN IMMEDIATE")
+            sanitize_after_restore(connection)
+            connection.commit()
+        except (sqlite3.Error, RuntimeError) as exc:
+            connection.rollback()
+            raise PrivateConsoleUnitError("private_owner_auth_restore_invalid") from exc
+        finally:
+            connection.close()
+        return validate_private_console_unit(
+            PrivateConsoleUnit(
+                history_raw=unit.history_raw,
+                database_raw=database.read_bytes(),
+                registry_database_raw=unit.registry_database_raw,
+                blobs=unit.blobs,
+            )
+        )
 
 
 def private_console_unit_digest(unit: PrivateConsoleUnit) -> str:

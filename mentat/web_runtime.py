@@ -489,6 +489,12 @@ def run_gateway(*, host: str, port: int, data_dir: Path, standalone_root: Path |
             reserved = True
         except PrivateStateError as exc:
             raise WebRuntimeError("mentat_server_already_active") from exc
+        try:
+            from owner_auth import OwnerAuthError, cleanup_owner_auth_at_startup
+
+            cleanup_owner_auth_at_startup(data_dir)
+        except OwnerAuthError as exc:
+            raise WebRuntimeError("owner_auth_startup_cleanup_unavailable") from exc
         establish_task_authority(data_dir)
         establish_project_authority(data_dir)
         establish_run_authority(data_dir)
