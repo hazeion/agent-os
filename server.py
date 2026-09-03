@@ -17061,6 +17061,12 @@ def serve_dashboard() -> None:
     server = None
     refresh_coordinator = None
     try:
+        try:
+            from owner_auth import OwnerAuthError, cleanup_owner_auth_at_startup
+
+            cleanup_owner_auth_at_startup(DATA_DIR)
+        except OwnerAuthError:
+            raise RuntimeError("owner_auth_startup_cleanup_unavailable")
         # Hold the exclusive server reservation across the authority cutover so
         # an older live process cannot keep mutating the legacy Task source.
         # The listener and runtime state are not published until this succeeds.
