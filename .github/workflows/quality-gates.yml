@@ -127,8 +127,57 @@ jobs:
             exit 1
           fi
           wait "$launcher_pid" || true
-          if curl --fail --silent http://127.0.0.1:8894/api/bridge/health >/dev/null; then
-            echo 'Installed Mentat remained healthy after stop' >&2
+          if curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8894/api/bridge/health >/dev/null \
+            || curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8894/ >/dev/null; then
+            echo 'Installed Node dashboard remained reachable after stop' >&2
+            exit 1
+          fi
+          launcher_pid=""
+
+          # Roll back only after the default dashboard and root document have
+          # both withdrawn. The compatibility server uses a separate loopback
+          # port but the same installed entry point and project-owned data.
+          setsid "$PIPX_BIN_DIR/mentat" start --legacy-ui --data-dir "$smoke_root/data" --port 8895 >"$RUNNER_TEMP/mentat-package-legacy.log" 2>&1 &
+          launcher_pid=$!
+          legacy_ready=false
+          for attempt in {1..30}; do
+            if curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8895/api/overview >/dev/null; then
+              legacy_ready=true
+              break
+            fi
+            if ! kill -0 "$launcher_pid" 2>/dev/null; then
+              tail -n 200 "$RUNNER_TEMP/mentat-package-legacy.log" >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$legacy_ready" != true ]; then
+            tail -n 200 "$RUNNER_TEMP/mentat-package-legacy.log" >&2 || true
+            exit 1
+          fi
+          curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8895/ >/dev/null
+          if ! "$PIPX_BIN_DIR/mentat" stop --data-dir "$smoke_root/data" --port 8895; then
+            tail -c 8192 "$RUNNER_TEMP/mentat-package-legacy.log" >&2 || true
+            echo 'Installed legacy Mentat stop command failed' >&2
+            exit 1
+          fi
+          legacy_exited=false
+          for attempt in {1..75}; do
+            if ! kill -0 "$launcher_pid" 2>/dev/null; then
+              legacy_exited=true
+              break
+            fi
+            sleep 0.2
+          done
+          if [ "$legacy_exited" != true ]; then
+            tail -c 8192 "$RUNNER_TEMP/mentat-package-legacy.log" >&2 || true
+            echo 'Installed legacy Mentat launcher did not exit after stop' >&2
+            exit 1
+          fi
+          wait "$launcher_pid" || true
+          if curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8895/api/overview >/dev/null \
+            || curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8895/ >/dev/null; then
+            echo 'Installed legacy Mentat remained reachable after stop' >&2
             exit 1
           fi
           test -f "$smoke_root/data/tasks.json"

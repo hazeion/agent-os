@@ -74,7 +74,7 @@ class CiQualityGateTests(unittest.TestCase):
         self.assertIn("mentat-package-smoke", workflow)
         self.assertIn("python -m pipx install dist/*.whl", workflow)
         self.assertIn('PIPX_BIN_DIR="$smoke_root/bin"', workflow)
-        self.assertIn("Installed Mentat remained healthy after stop", workflow)
+        self.assertIn("Installed Node dashboard remained reachable after stop", workflow)
         self.assertIn("Installed Mentat launcher did not exit after stop", workflow)
         self.assertIn("Installed Mentat stop command failed", workflow)
         self.assertIn('stop_succeeded=true\n          if ! "$PIPX_BIN_DIR/mentat" stop', workflow)
@@ -90,6 +90,27 @@ class CiQualityGateTests(unittest.TestCase):
                 '\n          wait "$launcher_pid" || true\n          if curl',
                 workflow.index("Exercise pipx installed lifecycle"),
             ),
+        )
+        self.assertIn("--legacy-ui --data-dir \"$smoke_root/data\" --port 8895", workflow)
+        self.assertIn("http://127.0.0.1:8895/api/overview", workflow)
+        self.assertIn("Installed legacy Mentat stop command failed", workflow)
+        self.assertIn("Installed legacy Mentat launcher did not exit after stop", workflow)
+        self.assertIn("Installed legacy Mentat remained reachable after stop", workflow)
+        self.assertIn(
+            "|| curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8894/ >/dev/null; then",
+            workflow,
+        )
+        self.assertIn(
+            "|| curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:8895/ >/dev/null; then",
+            workflow,
+        )
+        self.assertLess(
+            workflow.index("Installed Node dashboard remained reachable after stop"),
+            workflow.index("--legacy-ui --data-dir \"$smoke_root/data\" --port 8895"),
+        )
+        self.assertLess(
+            workflow.index("http://127.0.0.1:8895/api/overview"),
+            workflow.index("Installed legacy Mentat remained reachable after stop"),
         )
         self.assertIn("MENTAT_WEB_BASE_URL=http://127.0.0.1:8894", workflow)
         self.assertIn('MENTAT_WEB_BROWSER_RUNTIME_DIR="$RUNNER_TEMP/web-foundation-smoke-runtime"', workflow)

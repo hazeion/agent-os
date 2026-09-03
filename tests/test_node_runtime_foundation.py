@@ -99,6 +99,15 @@ class NodeRuntimeFoundationContractTests(unittest.TestCase):
         self.assertIn("document.querySelector('h1')?.textContent === 'Projects & Tasks'", foundation_smoke)
         self.assertIn('afterTransition.active !== "Projects & Tasks"', foundation_smoke)
         self.assertIn("document.querySelector('h1')?.textContent === 'What can Mentat help with?'", foundation_smoke)
+        self.assertIn('async function inspectPlannerProductionJourney(client)', foundation_smoke)
+        self.assertIn('`/tasks?project=${projectId}&task=${taskId}`', foundation_smoke)
+        self.assertIn('"planner search Task navigation"', foundation_smoke)
+        self.assertIn('"browser reminder integration read"', foundation_smoke)
+        self.assertIn('"calendar integration surface"', foundation_smoke)
+        self.assertIn('"note integration surface"', foundation_smoke)
+        self.assertIn("[aria-label=\"Task integrations\"]", foundation_smoke)
+        self.assertIn('plannerProductionJourney: plannerProductionJourneyResult', foundation_smoke)
+        self.assertIn('result.requests.some((request) => request.method !== "GET")', foundation_smoke)
         self.assertNotIn('source: "tasks.html"', standalone)
         self.assertIn(
             "data-mentat-shell-runtime", standalone

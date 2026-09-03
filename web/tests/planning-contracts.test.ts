@@ -349,8 +349,20 @@ test("public dependency-map client uses only its named same-origin route", async
 test("planning clients map only fixed errors and bound declared or streamed bytes", async () => {
   await assert.rejects(fetchBridgePlanningOverview(async () => json({ ...envelope, status: "unavailable" }, 503), environment), (error: unknown) => error instanceof BridgePlanningError && error.code === "bridge_unavailable");
   await assert.rejects(fetchBridgePlanningOverview(async () => new Response("{}", { headers: { "Content-Length": "9999999", "Content-Type": "application/json" } }), environment), BridgePlanningError);
-  const original = globalThis.fetch; globalThis.fetch = async () => json({ schema_version: 1, status: "conflict" }, 409);
-  try { await assert.rejects(updateConversationPlanningContext("conv_alpha", 4, null, null), (error: unknown) => error instanceof PublicPlanningError && error.code === "conflict"); } finally { globalThis.fetch = original; }
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => json({ schema_version: 1, status: "conflict" }, 409);
+    await assert.rejects(updateConversationPlanningContext("conv_alpha", 4, null, null), (error: unknown) => error instanceof PublicPlanningError && error.code === "conflict");
+
+    // The planner's aggregate client budget is deliberately enforced both
+    // before reading a claimed oversize body and while streaming a body with
+    // no declared length. This is the route budget supporting max-scale
+    // Project/Task and dependency-map fixtures.
+    globalThis.fetch = async () => new Response("{}", { headers: { "Content-Length": String(768 * 1024 + 1), "Content-Type": "application/json" } });
+    await assert.rejects(readPlanningDependencyMap(project.id), PublicPlanningError);
+    globalThis.fetch = async () => new Response(" ".repeat(768 * 1024 + 1), { headers: { "Content-Type": "application/json" } });
+    await assert.rejects(readPlanningDependencyMap(project.id), PublicPlanningError);
+  } finally { globalThis.fetch = original; }
   await assert.rejects(createProjectTask(project.id, "Task", null, "2026-02-31"), (error: unknown) => error instanceof PublicPlanningError && error.code === "invalid");
 });
 
