@@ -139,6 +139,11 @@ export type PublicPlanningProjectCreation = ServiceEnvelope & { action: "create"
 export type PublicPlanningTaskCreation = ServiceEnvelope & { action: "create"; project: PublicPlanningProject; task: PublicPlanningTask };
 export type PublicPlanningProjectMutation = ServiceEnvelope & { action: "rename" | "archive" | "restore"; project: PublicPlanningProject };
 export type PublicPlanningTaskMutation = ServiceEnvelope & { action: "edit" | "move"; project: PublicPlanningProject; task: PublicPlanningTask };
+export type PublicPlanningTaskIntegrationAction = "replace_reminders" | "attach_note" | "detach_note" | "calendar_link" | "calendar_unlink";
+export type PublicPlanningTaskIntegrationMutation = ServiceEnvelope & { action: PublicPlanningTaskIntegrationAction; project: PublicPlanningProject; task: PublicPlanningTaskDetail };
+export type PublicPlanningNotePicker = ServiceEnvelope & { query: string; notes: PublicPlanningNoteLink[]; count: number; truncated: boolean; available: boolean };
+export type PublicPlanningCalendarEvent = { id: string; title: string; start: string; end: string; all_day: boolean };
+export type PublicPlanningCalendarWindow = ServiceEnvelope & { calendar_id: "primary"; week_start: string; week_end: string; timezone: string; label: string; events: PublicPlanningCalendarEvent[]; event_count: number; read_only: true };
 
 export class PublicPlanningError extends Error {
   readonly code: string;
@@ -343,6 +348,38 @@ export function parsePlanningTaskDetailResult(value: unknown, taskId?: string): 
   return structuredClone(value) as PublicPlanningTaskDetailResult;
 }
 
+export function parsePlanningTaskIntegrationMutation(value: unknown, taskId?: string): PublicPlanningTaskIntegrationMutation {
+  if (!record(value) || !keys(value, "action,project,runtime,schema_version,service,status,task") || !["replace_reminders", "attach_note", "detach_note", "calendar_link", "calendar_unlink"].includes(String(value.action))) throw new PublicPlanningError("response_invalid");
+  const { action, ...detail } = value;
+  const parsed = parsePlanningTaskDetailResult(detail, taskId);
+  return { ...parsed, action: action as PublicPlanningTaskIntegrationAction };
+}
+
+export function parsePlanningNotePicker(value: unknown, query?: string): PublicPlanningNotePicker {
+  if (!record(value) || !keys(value, "available,count,notes,query,runtime,schema_version,service,status,truncated") || !validEnvelope(value)
+    || typeof value.query !== "string" || value.query.trim() !== value.query || [...value.query].length > 120 || /\p{C}/u.test(value.query) || query !== undefined && value.query !== query
+    || !Array.isArray(value.notes) || value.notes.length > 50 || !value.notes.every(validNoteLink) || new Set(value.notes.map((note) => note.path)).size !== value.notes.length
+    || !Number.isSafeInteger(value.count) || value.count !== value.notes.length || typeof value.truncated !== "boolean" || typeof value.available !== "boolean"
+    || !value.available && (value.notes.length !== 0 || value.count !== 0 || value.truncated)) throw new PublicPlanningError("response_invalid");
+  return structuredClone(value) as PublicPlanningNotePicker;
+}
+
+function validCalendarEvent(value: unknown): value is PublicPlanningCalendarEvent {
+  if (!record(value) || !keys(value, "all_day,end,id,start,title") || typeof value.id !== "string" || !TASK_ID.test(value.id) || !text(value.title, 160) || typeof value.all_day !== "boolean") return false;
+  if (value.all_day) return date(value.start) && date(value.end) && value.end > value.start;
+  return timestamp(value.start) && timestamp(value.end) && Date.parse(value.end) > Date.parse(value.start);
+}
+
+export function parsePlanningCalendarWindow(value: unknown, weekStart?: string, timezone?: string): PublicPlanningCalendarWindow {
+  if (!record(value) || !keys(value, "calendar_id,event_count,events,label,read_only,runtime,schema_version,service,status,timezone,week_end,week_start") || !validEnvelope(value)
+    || value.calendar_id !== "primary" || !date(value.week_start) || !date(value.week_end) || !validTimezone(value.timezone) || !text(value.label, 120)
+    || value.read_only !== true || !Array.isArray(value.events) || value.events.length > 250 || !value.events.every(validCalendarEvent) || new Set(value.events.map((event) => event.id)).size !== value.events.length
+    || !Number.isSafeInteger(value.event_count) || value.event_count !== value.events.length || weekStart !== undefined && value.week_start !== weekStart || timezone !== undefined && value.timezone !== timezone) throw new PublicPlanningError("response_invalid");
+  const start = new Date(`${value.week_start}T00:00:00Z`); start.setUTCDate(start.getUTCDate() + 7);
+  if (value.week_end !== start.toISOString().slice(0, 10)) throw new PublicPlanningError("response_invalid");
+  return structuredClone(value) as PublicPlanningCalendarWindow;
+}
+
 export function parsePlanningTaskDependencies(value: unknown, taskId?: string): PublicPlanningTaskDependencies {
   if (!record(value) || !keys(value, "dependent_count,dependents,dependents_truncated,prerequisite_count,prerequisites,prerequisites_truncated,runtime,schema_version,service,status,task_id,task_revision") || !validEnvelope(value)
     || typeof value.task_id !== "string" || !TASK_ID.test(value.task_id) || taskId !== undefined && value.task_id !== taskId
@@ -497,6 +534,73 @@ export async function readPlanningTaskDetail(taskId: string): Promise<PublicPlan
   const parameters = new URLSearchParams({ task_id: taskId });
   const { response, payload } = await request(`/api/agent-console/planning-task-detail?${parameters.toString()}`);
   if (response.status === 200) return parsePlanningTaskDetailResult(payload, taskId);
+  failure(payload, response);
+}
+
+function publicIntegrationMutation(action: PublicPlanningTaskIntegrationAction, taskId: string, expectedRevision: number, body: Record<string, unknown>) {
+  if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new PublicPlanningError("invalid");
+  return request(`/api/planning/tasks/${encodeURIComponent(taskId)}/integrations/${action === "replace_reminders" ? "reminders" : action === "attach_note" ? "notes/attach" : action === "detach_note" ? "notes/detach" : action === "calendar_link" ? "calendar/link" : "calendar/unlink"}`, { body: JSON.stringify({ expected_revision: expectedRevision, ...body }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
+}
+
+function validReminderReplacement(value: unknown): value is Omit<PublicPlanningReminder, "channel" | "notified_at"> {
+  if (!record(value) || Object.keys(value).some((key) => !new Set(["id", "at", "enabled", "timezone"]).has(key))) return false;
+  return typeof value.id === "string" && TASK_ID.test(value.id) && timestamp(value.at) && typeof value.enabled === "boolean" && (value.timezone === undefined || validTimezone(value.timezone));
+}
+
+export async function replacePlanningTaskReminders(taskId: string, expectedRevision: number, reminders: Array<Omit<PublicPlanningReminder, "channel" | "notified_at">>): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!Array.isArray(reminders) || reminders.length > 20 || !reminders.every(validReminderReplacement) || new Set(reminders.map((reminder) => reminder.id)).size !== reminders.length) throw new PublicPlanningError("invalid");
+  const { response, payload } = await publicIntegrationMutation("replace_reminders", taskId, expectedRevision, { reminders });
+  if (response.status === 200) { const result = parsePlanningTaskIntegrationMutation(payload, taskId); if (result.action !== "replace_reminders") throw new PublicPlanningError("response_invalid"); return result; }
+  failure(payload, response);
+}
+
+export async function attachPlanningTaskNote(taskId: string, expectedRevision: number, path: string): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!validNoteLink({ path })) throw new PublicPlanningError("invalid");
+  const { response, payload } = await publicIntegrationMutation("attach_note", taskId, expectedRevision, { path });
+  if (response.status === 200) { const result = parsePlanningTaskIntegrationMutation(payload, taskId); if (result.action !== "attach_note") throw new PublicPlanningError("response_invalid"); return result; }
+  failure(payload, response);
+}
+
+export async function detachPlanningTaskNote(taskId: string, expectedRevision: number, path: string): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!validNoteLink({ path })) throw new PublicPlanningError("invalid");
+  const { response, payload } = await publicIntegrationMutation("detach_note", taskId, expectedRevision, { path });
+  if (response.status === 200) { const result = parsePlanningTaskIntegrationMutation(payload, taskId); if (result.action !== "detach_note") throw new PublicPlanningError("response_invalid"); return result; }
+  failure(payload, response);
+}
+
+export async function readPlanningNotePicker(query: string = ""): Promise<PublicPlanningNotePicker> {
+  if (typeof query !== "string" || query.trim() !== query || [...query].length > 120 || /\p{C}/u.test(query)) throw new PublicPlanningError("invalid");
+  const parameters = new URLSearchParams(); if (query) parameters.set("q", query);
+  const { response, payload } = await request(`/api/agent-console/planning-note-picker${parameters.size ? `?${parameters.toString()}` : ""}`);
+  if (response.status === 200) return parsePlanningNotePicker(payload, query);
+  failure(payload, response);
+}
+
+function validCalendarInput(weekStart: string, timezoneName: string) {
+  if (!date(weekStart) || !validTimezone(timezoneName)) return false;
+  const weekday = new Date(`${weekStart}T00:00:00Z`).getUTCDay();
+  return weekday === 0;
+}
+
+export async function readPlanningCalendarWindow(weekStart: string, timezoneName: string): Promise<PublicPlanningCalendarWindow> {
+  if (!validCalendarInput(weekStart, timezoneName)) throw new PublicPlanningError("invalid");
+  const parameters = new URLSearchParams({ week_start: weekStart, timezone: timezoneName });
+  const { response, payload } = await request(`/api/agent-console/planning-calendar?${parameters.toString()}`);
+  if (response.status === 200) return parsePlanningCalendarWindow(payload, weekStart, timezoneName);
+  failure(payload, response);
+}
+
+export async function linkPlanningTaskCalendarEvent(taskId: string, expectedRevision: number, eventId: string, weekStart: string, timezoneName: string): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!TASK_ID.test(eventId) || !validCalendarInput(weekStart, timezoneName)) throw new PublicPlanningError("invalid");
+  const { response, payload } = await publicIntegrationMutation("calendar_link", taskId, expectedRevision, { event_id: eventId, week_start: weekStart, timezone: timezoneName });
+  if (response.status === 200) { const result = parsePlanningTaskIntegrationMutation(payload, taskId); if (result.action !== "calendar_link") throw new PublicPlanningError("response_invalid"); return result; }
+  failure(payload, response);
+}
+
+export async function unlinkPlanningTaskCalendarEvent(taskId: string, expectedRevision: number, calendarId: "primary", eventId: string): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (calendarId !== "primary" || !TASK_ID.test(eventId)) throw new PublicPlanningError("invalid");
+  const { response, payload } = await publicIntegrationMutation("calendar_unlink", taskId, expectedRevision, { calendar_id: calendarId, event_id: eventId });
+  if (response.status === 200) { const result = parsePlanningTaskIntegrationMutation(payload, taskId); if (result.action !== "calendar_unlink") throw new PublicPlanningError("response_invalid"); return result; }
   failure(payload, response);
 }
 

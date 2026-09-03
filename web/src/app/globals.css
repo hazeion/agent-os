@@ -825,6 +825,24 @@ button {
 .planning-metadata li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 7px; overflow-wrap: anywhere; color: var(--text-secondary); font-size: .72rem; }
 .planning-metadata li span { color: var(--text-primary); font-weight: 700; }
 .planning-metadata li small { color: var(--text-tertiary); font-size: .68rem; }
+.planning-integrations { gap: 12px; }
+.planning-integrations > section { padding-top: 8px; border-top: 1px solid var(--border-subtle); }
+.planning-integrations > section:first-of-type { padding-top: 0; border-top: 0; }
+.planning-section-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.planning-section-actions > button,
+.planning-metadata li > button { min-height: 30px; padding: 4px 8px; border: 1px solid var(--border-subtle); border-radius: 6px; background: color-mix(in srgb, var(--canvas) 78%, var(--panel-raised)); color: var(--text-primary); }
+.planning-section-actions > button:hover:not(:disabled),
+.planning-metadata li > button:hover:not(:disabled) { border-color: var(--border-default); background: var(--panel-raised); }
+.planning-integrations p { margin: 0; color: var(--text-secondary); font-size: .72rem; }
+.planning-integrations .planning-checkbox { display: flex; align-items: center; gap: 5px; }
+.planning-integrations .planning-checkbox input { inline-size: auto; }
+.planning-integrations .planning-review-actions > ul > li { align-items: end; }
+.planning-integrations .planning-review-actions > ul label { min-inline-size: min(100%, 180px); }
+.planning-calendar-picker,
+.planning-note-picker { display: grid; gap: 7px; padding: 8px; border: 1px solid var(--border-subtle); border-radius: 7px; background: color-mix(in srgb, var(--canvas) 82%, var(--panel-raised)); }
+.planning-calendar-picker .planning-section-actions { justify-content: flex-start; }
+.planning-calendar-picker .planning-section-actions span { flex: 1 1 110px; color: var(--text-secondary); font-size: .72rem; text-align: center; }
+.planning-note-picker > label { display: grid; gap: 3px; color: var(--text-tertiary); font-size: .68rem; font-weight: 700; }
 .planning-stage-controls,
 .planning-project-lifecycle { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
 .planning-stage-controls > p,

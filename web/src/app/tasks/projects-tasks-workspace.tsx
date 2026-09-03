@@ -33,6 +33,16 @@ import {
   type PublicPlanningTaskDependencies,
   type PublicPlanningTaskExecution,
   type PublicPlanningTaskExecutionMutation,
+  type PublicPlanningCalendarWindow,
+  type PublicPlanningNotePicker,
+  type PublicPlanningTaskIntegrationMutation,
+  attachPlanningTaskNote,
+  detachPlanningTaskNote,
+  linkPlanningTaskCalendarEvent,
+  readPlanningCalendarWindow,
+  readPlanningNotePicker,
+  replacePlanningTaskReminders,
+  unlinkPlanningTaskCalendarEvent,
   PublicPlanningError,
 } from "@/lib/public-planning";
 import {
@@ -65,6 +75,7 @@ import {
   type PublicPlanningSearch,
   type PublicPlanningSearchResult,
 } from "@/lib/public-planning-search";
+import { clearBrowserTaskReminderSchedules, deliverDueBrowserTaskReminders, nextBrowserTaskReminderDelay, syncBrowserTaskReminderSchedule } from "@/lib/browser-task-reminders";
 
 type LoadState = "loading" | "ready" | "empty" | "unavailable" | "error";
 type ProjectVisibility = "active" | "all" | "archived";
@@ -123,6 +134,13 @@ function noteLinkLabel(path: string, title: string | undefined, index: number): 
   const filename = path.split("/").at(-1)?.replace(/\.md$/iu, "");
   return filename || `Note ${index + 1}`;
 }
+
+type ReminderDraft = { id: string; at: string; enabled: boolean; timezone?: string };
+function browserTimezone(): string { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } }
+function localInputTimestamp(value: string): string { const parsed = new Date(value); return Number.isNaN(parsed.valueOf()) ? "" : parsed.toISOString(); }
+function inputTimestamp(value: string): string { const parsed = new Date(value); if (Number.isNaN(parsed.valueOf())) return ""; const offset = parsed.getTimezoneOffset() * 60_000; return new Date(parsed.valueOf() - offset).toISOString().slice(0, 16); }
+function sundayFor(value: Date): string { const local = new Date(value.getFullYear(), value.getMonth(), value.getDate()); local.setDate(local.getDate() - local.getDay()); return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`; }
+function shiftSunday(weekStart: string, weeks: number): string { const date = new Date(`${weekStart}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + weeks * 7); return date.toISOString().slice(0, 10); }
 
 async function readAgents(): Promise<PublicAgent[]> {
   const response = await fetch("/api/agents", { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } });
@@ -202,6 +220,17 @@ export function ProjectsTasksWorkspace() {
   const [renameProject, setRenameProject] = useState(false);
   const [projectRename, setProjectRename] = useState("");
   const [deletionPreview, setDeletionPreview] = useState<PublicPlanningDeletionPreview | null>(null);
+  const [reminderEditor, setReminderEditor] = useState(false);
+  const [reminderDrafts, setReminderDrafts] = useState<ReminderDraft[]>([]);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(() => typeof Notification === "undefined" ? "unsupported" : Notification.permission);
+  const [calendarEditor, setCalendarEditor] = useState(false);
+  const [calendarWeekStart, setCalendarWeekStart] = useState(() => sundayFor(new Date()));
+  const [calendarWindow, setCalendarWindow] = useState<PublicPlanningCalendarWindow | null>(null);
+  const [calendarState, setCalendarState] = useState<LoadState>("empty");
+  const [noteEditor, setNoteEditor] = useState(false);
+  const [noteQuery, setNoteQuery] = useState("");
+  const [notePicker, setNotePicker] = useState<PublicPlanningNotePicker | null>(null);
+  const [notePickerState, setNotePickerState] = useState<LoadState>("empty");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const projectInput = useRef<HTMLInputElement>(null);
@@ -226,6 +255,8 @@ export function ProjectsTasksWorkspace() {
   const taskDetailGeneration = useRef(0);
   const dependencyPickerGeneration = useRef(0);
   const planningSearchGeneration = useRef(0);
+  const calendarGeneration = useRef(0);
+  const notePickerGeneration = useRef(0);
   const pendingSearchTaskOpen = useRef<{ projectId: string; taskId: string } | null>(null);
   const requested = useMemo(() => typeof window === "undefined" ? null : requestedTask(), []);
 
@@ -254,6 +285,9 @@ export function ProjectsTasksWorkspace() {
       setDelegationRecovery(recovery);
       setRunOnceConfirmation(null);
       setDeletionPreview((current) => current?.target_kind === "task" ? null : current);
+      setReminderEditor(false); setReminderDrafts([]);
+      setCalendarEditor(false); setCalendarWindow(null); setCalendarState("empty");
+      setNoteEditor(false); setNotePicker(null); setNotePickerState("empty"); setNoteQuery("");
       setRequestChanges(false);
       setReviewNote("");
     }
@@ -437,6 +471,49 @@ export function ProjectsTasksWorkspace() {
     }).catch(() => { if (!cancelled && generation === delegationGeneration.current && selectedTaskRef.current === taskId) setDelegationState("unavailable"); });
     return () => { cancelled = true; };
   }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (!taskDetail) return;
+    syncBrowserTaskReminderSchedule(taskDetail.id, taskDetail.title, taskDetail.reminders);
+  }, [taskDetail]);
+
+  useEffect(() => {
+    if (notificationPermission !== "granted") return;
+    let timer: number | null = null;
+    const schedule = () => {
+      deliverDueBrowserTaskReminders();
+      const delay = nextBrowserTaskReminderDelay();
+      if (delay !== null) timer = window.setTimeout(schedule, Math.max(delay, 1_000));
+    };
+    schedule();
+    return () => { if (timer !== null) window.clearTimeout(timer); };
+  }, [notificationPermission, taskDetail]);
+
+  useEffect(() => {
+    if (!calendarEditor || !selectedTaskId) return;
+    const taskId = selectedTaskId;
+    const generation = ++calendarGeneration.current;
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) { setCalendarState("loading"); setCalendarWindow(null); } });
+    void readPlanningCalendarWindow(calendarWeekStart, browserTimezone()).then((window) => {
+      if (!cancelled && generation === calendarGeneration.current && selectedTaskRef.current === taskId) { setCalendarWindow(window); setCalendarState("ready"); }
+    }).catch(() => { if (!cancelled && generation === calendarGeneration.current && selectedTaskRef.current === taskId) setCalendarState("unavailable"); });
+    return () => { cancelled = true; };
+  }, [calendarEditor, calendarWeekStart, selectedTaskId]);
+
+  useEffect(() => {
+    if (!noteEditor || !selectedTaskId) return;
+    const taskId = selectedTaskId;
+    const generation = ++notePickerGeneration.current;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!cancelled) setNotePickerState("loading");
+      void readPlanningNotePicker(noteQuery).then((picker) => {
+        if (!cancelled && generation === notePickerGeneration.current && selectedTaskRef.current === taskId) { setNotePicker(picker); setNotePickerState(picker.available ? picker.notes.length ? "ready" : "empty" : "unavailable"); }
+      }).catch(() => { if (!cancelled && generation === notePickerGeneration.current && selectedTaskRef.current === taskId) setNotePickerState("unavailable"); });
+    }, 180);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [noteEditor, noteQuery, selectedTaskId]);
 
   useEffect(() => {
     if (!selectedTaskId) return;
@@ -747,6 +824,10 @@ export function ProjectsTasksWorkspace() {
     try {
       const result = await confirmPlanningDeletion(preview.target_kind, preview.target_id, preview.confirmation_id);
       if (!deletionTargetIsSelected(preview.target_kind, preview.target_id)) return;
+      // Deletion previews deliberately disclose counts, never every cascaded
+      // dependent Task ID. Clear the browser-only scheduler instead of risking
+      // a later alert for a Task removed by that content-free cascade.
+      clearBrowserTaskReminderSchedules();
       selectTaskId(null); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setDeletionPreview(null); setRenameProject(false);
       await refreshOverview();
       invalidateDependencyMap();
@@ -847,6 +928,76 @@ export function ProjectsTasksWorkspace() {
     } catch { if (isCurrentSelection()) setNotice("Task saved. Its refreshed details are temporarily unavailable."); }
     setBusy(false);
     return true;
+  }
+  function applyIntegrationMutation(result: PublicPlanningTaskIntegrationMutation) {
+    const preview = result.task.description.replace(/\s+/gu, " ").trim();
+    setTaskDetail(result.task);
+    setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+    setTaskExecution(null); setExecutionState("loading");
+    setTaskDelegation(null); setDelegationState("loading");
+    invalidateDependencyMap();
+  }
+  async function refreshIntegrationConflict(taskId: string, selectionGeneration: number) {
+    try {
+      const detailed = await readPlanningTaskDetail(taskId);
+      if (selectedTaskRef.current !== taskId || taskSelectionGeneration.current !== selectionGeneration) return;
+      const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
+      setTaskDetail(detailed.task);
+      setTasks((current) => current.map((task) => task.id === taskId ? { ...task, ...detailed.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+      setNotice("Task changed elsewhere. Latest details are shown; your integration draft was kept.");
+    } catch { if (selectedTaskRef.current === taskId && taskSelectionGeneration.current === selectionGeneration) setNotice("Task changed elsewhere or could not be updated. Your integration draft was kept."); }
+  }
+  async function applyIntegration(operation: () => Promise<PublicPlanningTaskIntegrationMutation>, success: string) {
+    const taskId = selectedTask?.id;
+    if (!taskId || busy) return false;
+    const selectionGeneration = taskSelectionGeneration.current;
+    setBusy(true); setNotice("Saving Task integration…");
+    try {
+      const result = await operation();
+      if (selectedTaskRef.current !== taskId || taskSelectionGeneration.current !== selectionGeneration || result.task.id !== taskId) return false;
+      applyIntegrationMutation(result); setNotice(success);
+      return true;
+    } catch (error) {
+      if (error instanceof PublicPlanningError && error.code === "conflict") await refreshIntegrationConflict(taskId, selectionGeneration);
+      else if (selectedTaskRef.current === taskId && taskSelectionGeneration.current === selectionGeneration) setNotice("This integration could not be saved. Your draft was kept.");
+      return false;
+    } finally { setBusy(false); }
+  }
+  function openReminderEditor() {
+    if (!taskDetail) return;
+    setReminderDrafts(taskDetail.reminders.map((item) => ({ id: item.id, at: inputTimestamp(item.at), enabled: item.enabled, ...(item.timezone ? { timezone: item.timezone } : {}) })));
+    setReminderEditor(true);
+  }
+  async function saveReminders() {
+    if (!selectedTask || reminderDrafts.some((item) => !item.at || !localInputTimestamp(item.at))) { setNotice("Each browser reminder needs a date and time."); return; }
+    const reminders = reminderDrafts.map((item) => ({ id: item.id, at: localInputTimestamp(item.at), enabled: item.enabled, timezone: item.timezone ?? browserTimezone() }));
+    const saved = await applyIntegration(() => replacePlanningTaskReminders(selectedTask.id, selectedTask.revision, reminders), "Browser reminders saved.");
+    if (saved) setReminderEditor(false);
+  }
+  async function requestBrowserNotifications() {
+    if (typeof Notification === "undefined") { setNotificationPermission("unsupported"); setNotice("Browser notifications are not supported here."); return; }
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      setNotice(permission === "granted" ? "Browser notifications enabled." : "Browser notification permission was not granted.");
+    } catch { setNotice("Browser notification permission could not be requested."); }
+  }
+  async function linkCalendarEvent(eventId: string) {
+    if (!selectedTask) return;
+    await applyIntegration(() => linkPlanningTaskCalendarEvent(selectedTask.id, selectedTask.revision, eventId, calendarWeekStart, browserTimezone()), "Calendar event linked.");
+  }
+  async function unlinkCalendarEvent(calendarId: string, eventId: string) {
+    if (!selectedTask || calendarId !== "primary") return;
+    await applyIntegration(() => unlinkPlanningTaskCalendarEvent(selectedTask.id, selectedTask.revision, "primary", eventId), "Calendar event unlinked.");
+  }
+  async function attachNote(path: string) {
+    if (!selectedTask) return;
+    const saved = await applyIntegration(() => attachPlanningTaskNote(selectedTask.id, selectedTask.revision, path), "Note attached.");
+    if (saved) setNoteQuery("");
+  }
+  async function detachNote(path: string) {
+    if (!selectedTask) return;
+    await applyIntegration(() => detachPlanningTaskNote(selectedTask.id, selectedTask.revision, path), "Note detached.");
   }
   async function saveTaskDetails() {
     if (!selectedTask || !editTitle.trim()) return;
@@ -1026,6 +1177,28 @@ export function ProjectsTasksWorkspace() {
           {taskDetail.reminders.length ? <section aria-label="Browser reminders"><h3>Browser reminders</h3><ul>{taskDetail.reminders.map((reminder) => <li key={reminder.id}><span>{reminder.enabled ? "On" : "Off"}</span><time dateTime={reminder.at}>{planningTimestamp(reminder.at, reminder.timezone)}</time>{reminder.notified_at ? <small>Sent</small> : null}</li>)}</ul></section> : null}
           {taskDetail.calendar_links.length ? <section aria-label="Calendar links"><h3>Calendar links</h3><ul>{taskDetail.calendar_links.map((link, index) => <li key={`${link.calendar_id}:${link.event_id}`}>{link.label ?? `Linked calendar event ${index + 1}`}</li>)}</ul></section> : null}
           {taskDetail.note_links.length ? <section aria-label="Notes"><h3>Notes</h3><ul>{taskDetail.note_links.map((link, index) => <li key={link.path}>{noteLinkLabel(link.path, link.title, index)}</li>)}</ul></section> : null}
+        </section> : null}
+        {taskDetail ? <section aria-label="Task integrations" className="planning-metadata planning-integrations">
+          <p className="console-kicker">Integrations</p>
+          <section aria-label="Browser reminder controls">
+            <div className="planning-section-actions"><h3>Browser reminders</h3><button aria-expanded={reminderEditor} disabled={busy} onClick={() => reminderEditor ? setReminderEditor(false) : openReminderEditor()} type="button">{reminderEditor ? "Close reminders" : "Manage reminders"}</button></div>
+            <p>{notificationPermission === "unsupported" ? "Notifications are unavailable in this browser." : notificationPermission === "granted" ? "Browser notifications are enabled." : notificationPermission === "denied" ? "Browser notifications are blocked by this browser." : "Browser notification permission has not been requested."}</p>
+            {notificationPermission !== "unsupported" && notificationPermission !== "granted" ? <button disabled={busy} onClick={() => void requestBrowserNotifications()} type="button">Enable browser notifications</button> : null}
+            {reminderEditor ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void saveReminders(); }}>
+              {reminderDrafts.length ? <ul aria-label="Reminder schedule">{reminderDrafts.map((reminder, index) => <li key={reminder.id}><label><span>Reminder {index + 1}</span><input aria-label={`Reminder ${index + 1} time`} disabled={busy} onChange={(event) => setReminderDrafts((current) => current.map((item) => item.id === reminder.id ? { ...item, at: event.target.value } : item))} required type="datetime-local" value={reminder.at} /></label><label className="planning-checkbox"><input checked={reminder.enabled} disabled={busy} onChange={(event) => setReminderDrafts((current) => current.map((item) => item.id === reminder.id ? { ...item, enabled: event.target.checked } : item))} type="checkbox" />Enabled</label><button aria-label={`Remove reminder ${index + 1}`} disabled={busy} onClick={() => setReminderDrafts((current) => current.filter((item) => item.id !== reminder.id))} type="button">Remove</button></li>)}</ul> : <p>No browser reminders are scheduled.</p>}
+              <div><button disabled={busy || reminderDrafts.length >= 20} onClick={() => setReminderDrafts((current) => [...current, { id: `reminder_${crypto.randomUUID().replaceAll("-", "")}`, at: "", enabled: true, timezone: browserTimezone() }])} type="button">Add reminder</button><button disabled={busy} type="submit">Save reminders</button><button disabled={busy} onClick={() => setReminderEditor(false)} type="button">Cancel</button></div>
+            </form> : null}
+          </section>
+          <section aria-label="Calendar controls">
+            <div className="planning-section-actions"><h3>Calendar</h3><button aria-expanded={calendarEditor} disabled={busy} onClick={() => { if (!calendarEditor) setCalendarWeekStart(sundayFor(new Date())); setCalendarEditor((current) => !current); }} type="button">{calendarEditor ? "Close calendar" : "Link calendar event"}</button></div>
+            {taskDetail.calendar_links.length ? <ul aria-label="Linked calendar events">{taskDetail.calendar_links.map((link, index) => <li key={`${link.calendar_id}:${link.event_id}`}><span>{link.label ?? `Linked calendar event ${index + 1}`}</span><button aria-label={`Unlink ${link.label ?? `calendar event ${index + 1}`}`} disabled={busy || link.calendar_id !== "primary"} onClick={() => void unlinkCalendarEvent(link.calendar_id, link.event_id)} type="button">Unlink</button></li>)}</ul> : <p>No linked calendar events.</p>}
+            {calendarEditor ? <div className="planning-calendar-picker"><div className="planning-section-actions"><button aria-label="Previous calendar week" disabled={busy} onClick={() => setCalendarWeekStart((current) => shiftSunday(current, -1))} type="button">Previous week</button><span>{calendarWindow?.label ?? calendarWeekStart}</span><button aria-label="Next calendar week" disabled={busy} onClick={() => setCalendarWeekStart((current) => shiftSunday(current, 1))} type="button">Next week</button></div>{calendarState === "loading" ? <p>Loading Calendar…</p> : calendarState === "unavailable" ? <p>Calendar is unavailable. Nothing can be linked until a fresh read succeeds.</p> : calendarWindow?.events.length ? <ul aria-label="Calendar events">{calendarWindow.events.map((event) => { const linked = taskDetail.calendar_links.some((link) => link.calendar_id === "primary" && link.event_id === event.id); return <li key={event.id}><span><strong>{event.title}</strong><small>{event.all_day ? event.start : planningTimestamp(event.start, calendarWindow.timezone)}</small></span><button disabled={busy || linked} onClick={() => void linkCalendarEvent(event.id)} type="button">{linked ? "Linked" : "Link"}</button></li>; })}</ul> : <p>No Calendar events this week.</p>}</div> : null}
+          </section>
+          <section aria-label="Note controls">
+            <div className="planning-section-actions"><h3>Notes</h3><button aria-expanded={noteEditor} disabled={busy} onClick={() => setNoteEditor((current) => !current)} type="button">{noteEditor ? "Close notes" : "Attach note"}</button></div>
+            {taskDetail.note_links.length ? <ul aria-label="Attached notes">{taskDetail.note_links.map((link, index) => <li key={link.path}><span>{noteLinkLabel(link.path, link.title, index)}</span><button aria-label={`Detach ${noteLinkLabel(link.path, link.title, index)}`} disabled={busy} onClick={() => void detachNote(link.path)} type="button">Detach</button></li>)}</ul> : <p>No notes attached.</p>}
+            {noteEditor ? <div className="planning-note-picker"><label><span>Find a note</span><input disabled={busy} maxLength={120} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setNoteQuery(event.target.value.trim()); }} placeholder="Search your notes" type="search" value={noteQuery} /></label>{notePickerState === "loading" ? <p>Finding notes…</p> : notePickerState === "unavailable" ? <p>Notes are unavailable.</p> : notePickerState === "empty" ? <p>No matching notes.</p> : notePicker?.notes.length ? <ul aria-label="Note choices">{notePicker.notes.map((note) => { const attached = taskDetail.note_links.some((link) => link.path === note.path); return <li key={note.path}><span>{note.title ?? noteLinkLabel(note.path, undefined, 0)}</span><button disabled={busy || attached} onClick={() => void attachNote(note.path)} type="button">{attached ? "Attached" : "Attach"}</button></li>; })}</ul> : null}{notePicker?.truncated ? <p>More notes are available. Refine your search.</p> : null}</div> : null}
+          </section>
         </section> : null}
         <div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage || executionOwnsTerminalStages && (stage === "review" || stage === "done")} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}{executionOwnsTerminalStages ? <p>Run and review controls own the Review and Done stages until this attempt is resolved.</p> : null}</div>
         <section aria-label="Task execution" className="planning-execution">

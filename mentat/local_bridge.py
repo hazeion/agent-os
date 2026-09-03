@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +24,7 @@ import threading
 import time
 import unicodedata
 from urllib.parse import parse_qsl, quote, unquote, unquote_to_bytes, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from conversation_repository import (
     ConversationRepositoryConflict,
@@ -67,6 +68,8 @@ BRIDGE_PLANNING_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execu
 BRIDGE_PLANNING_TASK_DEPENDENCIES_PATH = "/bridge/v1/agent-console/planning-task-dependencies"
 BRIDGE_PLANNING_DEPENDENCY_MAP_PATH = "/bridge/v1/agent-console/planning-dependency-map"
 BRIDGE_PLANNING_DEPENDENCY_PICKER_PATH = "/bridge/v1/agent-console/planning-dependency-picker"
+BRIDGE_PLANNING_NOTE_PICKER_PATH = "/bridge/v1/agent-console/planning-note-picker"
+BRIDGE_PLANNING_CALENDAR_PATH = "/bridge/v1/agent-console/planning-calendar"
 BRIDGE_PLANNING_DELETION_PREVIEW_PATH = "/bridge/v1/agent-console/planning-deletion/preview"
 BRIDGE_PLANNING_DELETION_CONFIRM_PATH = "/bridge/v1/agent-console/planning-deletion/confirm"
 BRIDGE_PROJECTS_PATH = "/bridge/v1/projects"
@@ -3141,6 +3144,341 @@ def bridge_move_planning_task_payload(task_id: str, payload: object) -> tuple[di
         return _planning_failure("error", 500)
 
 
+def _planning_note_reference(value: object, *, title_required: bool = False) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) - {"path", "title"}:
+        raise BridgeConversationProjectionError("planning_note_invalid")
+    try:
+        from task_planning import TaskPlanningError, normalize_task_planning
+
+        normalized = normalize_task_planning({"note_links": [value]})["note_links"]
+    except (KeyError, TaskPlanningError, TypeError, ValueError):
+        raise BridgeConversationProjectionError("planning_note_invalid") from None
+    if (
+        len(normalized) != 1
+        or not normalized[0]["path"].lower().endswith(".md")
+        or (title_required and "title" not in normalized[0])
+    ):
+        raise BridgeConversationProjectionError("planning_note_invalid")
+    return dict(normalized[0])
+
+
+def bridge_planning_note_picker_payload(query: str = "") -> tuple[dict[str, object], int]:
+    """Project the dedicated note picker without path or note-content escape."""
+
+    if (
+        not isinstance(query, str)
+        or query != query.strip()
+        or len(query) > 120
+        or re.search(r"[\x00-\x1f\x7f]", query) is not None
+    ):
+        return _planning_failure("invalid", 400)
+    try:
+        from server import mentat_planning_note_picker_payload
+
+        source = mentat_planning_note_picker_payload(query)
+        required = {"schema_version", "query", "notes", "count", "truncated", "available"}
+        if (
+            not isinstance(source, dict)
+            or set(source) != required
+            or source.get("schema_version") != 1
+            or source.get("query") != query
+            or not isinstance(source.get("notes"), list)
+            or len(source["notes"]) > 50
+            or type(source.get("count")) is not int
+            or source["count"] != len(source["notes"])
+            or type(source.get("truncated")) is not bool
+            or type(source.get("available")) is not bool
+            or not source["available"] and (source["notes"] or source["count"] or source["truncated"])
+        ):
+            raise BridgeConversationProjectionError("planning_note_invalid")
+        notes = [_planning_note_reference(item, title_required=True) for item in source["notes"]]
+        if len({item["path"] for item in notes}) != len(notes):
+            raise BridgeConversationProjectionError("planning_note_invalid")
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "query": query,
+            "notes": notes,
+            "count": source["count"],
+            "truncated": source["truncated"],
+            "available": source["available"],
+        }, 200
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def _bridge_planning_task_detail_mutation(
+    action: str, task_id: str, source: object, status: int
+) -> tuple[dict[str, object], int]:
+    if status != 200 or not isinstance(source, dict) or set(source) != {
+        "schema_version", "action", "project", "task",
+    }:
+        if status in {400, 404, 409, 503}:
+            return _planning_failure(
+                "conflict" if status == 409 else "invalid" if status == 400 else "not_found" if status == 404 else "unavailable",
+                status,
+            )
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    project = _planning_project(source.get("project"))
+    task = _planning_task_detail(source.get("task"))
+    if (
+        source.get("schema_version") != 1
+        or source.get("action") != action
+        or task["id"] != task_id
+        or task["project_id"] != project["id"]
+    ):
+        raise BridgeConversationProjectionError("planning_task_invalid")
+    return {
+        "schema_version": 1,
+        "service": "mentat-local-bridge",
+        "runtime": "python",
+        "status": "ready",
+        "action": action,
+        "project": project,
+        "task": task,
+    }, 200
+
+
+def bridge_replace_planning_task_reminders_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "reminders"}
+    ):
+        return _planning_failure("invalid", 400)
+    try:
+        from server import replace_mentat_planning_task_reminders
+
+        source, status = replace_mentat_planning_task_reminders(task_id, payload)
+        return _bridge_planning_task_detail_mutation(
+            "replace_reminders", task_id, source, status
+        )
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_attach_planning_task_note_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "path"}
+    ):
+        return _planning_failure("invalid", 400)
+    try:
+        from server import attach_mentat_planning_task_note
+
+        source, status = attach_mentat_planning_task_note(task_id, payload)
+        return _bridge_planning_task_detail_mutation("attach_note", task_id, source, status)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_detach_planning_task_note_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "path"}
+    ):
+        return _planning_failure("invalid", 400)
+    try:
+        from server import detach_mentat_planning_task_note
+
+        source, status = detach_mentat_planning_task_note(task_id, payload)
+        return _bridge_planning_task_detail_mutation("detach_note", task_id, source, status)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def _planning_calendar_request(value: object) -> dict[str, str]:
+    """Validate the one explicit Sunday-to-Sunday Calendar read request."""
+
+    if not isinstance(value, dict) or set(value) != {"week_start", "timezone"}:
+        raise BridgeConversationProjectionError("planning_calendar_invalid")
+    week_start = value.get("week_start")
+    timezone_name = value.get("timezone")
+    if (
+        not isinstance(week_start, str)
+        or not isinstance(timezone_name, str)
+        or week_start.strip() != week_start
+        or timezone_name.strip() != timezone_name
+        or len(timezone_name) > 80
+        or not _valid_iso_date(week_start)
+    ):
+        raise BridgeConversationProjectionError("planning_calendar_invalid")
+    try:
+        if date.fromisoformat(week_start).weekday() != 6:
+            raise ValueError("week must begin on Sunday")
+        ZoneInfo(timezone_name)
+    except (ValueError, ZoneInfoNotFoundError):
+        raise BridgeConversationProjectionError("planning_calendar_invalid") from None
+    return {"week_start": week_start, "timezone": timezone_name}
+
+
+def _planning_calendar_event(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"id", "title", "start", "end", "all_day"}:
+        raise BridgeConversationProjectionError("planning_calendar_invalid")
+    identifier = value.get("id")
+    title = value.get("title")
+    start = value.get("start")
+    end = value.get("end")
+    all_day = value.get("all_day")
+    if (
+        not isinstance(identifier, str)
+        or _TASK_ID.fullmatch(identifier) is None
+        or not _planning_text(title, 160)
+        or type(all_day) is not bool
+        or not isinstance(start, str)
+        or not isinstance(end, str)
+    ):
+        raise BridgeConversationProjectionError("planning_calendar_invalid")
+    if all_day:
+        if not _valid_iso_date(start) or not _valid_iso_date(end) or end <= start:
+            raise BridgeConversationProjectionError("planning_calendar_invalid")
+    else:
+        if not _valid_timestamp(start) or not _valid_timestamp(end):
+            raise BridgeConversationProjectionError("planning_calendar_invalid")
+        try:
+            if datetime.fromisoformat(end.replace("Z", "+00:00")) <= datetime.fromisoformat(start.replace("Z", "+00:00")):
+                raise ValueError("event order")
+        except ValueError:
+            raise BridgeConversationProjectionError("planning_calendar_invalid") from None
+    return {
+        "id": identifier,
+        "title": title,
+        "start": start,
+        "end": end,
+        "all_day": all_day,
+    }
+
+
+def _planning_calendar_projection(value: object, request: dict[str, str]) -> dict[str, object]:
+    required = {
+        "schema_version", "calendar_id", "week_start", "week_end", "timezone",
+        "label", "events", "event_count", "read_only",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise BridgeConversationProjectionError("planning_calendar_invalid")
+    events = value.get("events")
+    expected_end = (date.fromisoformat(request["week_start"]) + timedelta(days=7)).isoformat()
+    if (
+        value.get("schema_version") != 1
+        or value.get("calendar_id") != "primary"
+        or value.get("week_start") != request["week_start"]
+        or value.get("week_end") != expected_end
+        or value.get("timezone") != request["timezone"]
+        or not _planning_text(value.get("label"), 120)
+        or not isinstance(events, list)
+        or len(events) > 250
+        or type(value.get("event_count")) is not int
+        or value["event_count"] != len(events)
+        or value.get("read_only") is not True
+    ):
+        raise BridgeConversationProjectionError("planning_calendar_invalid")
+    projected = [_planning_calendar_event(item) for item in events]
+    if len({item["id"] for item in projected}) != len(projected):
+        raise BridgeConversationProjectionError("planning_calendar_invalid")
+    return {
+        "calendar_id": "primary",
+        "week_start": request["week_start"],
+        "week_end": expected_end,
+        "timezone": request["timezone"],
+        "label": value["label"],
+        "events": projected,
+        "event_count": len(projected),
+        "read_only": True,
+    }
+
+
+def bridge_planning_calendar_window_payload(payload: object) -> tuple[dict[str, object], int]:
+    """Expose only a verified, fixed-primary read-only Calendar week."""
+
+    try:
+        request = _planning_calendar_request(payload)
+    except BridgeConversationProjectionError:
+        return _planning_failure("invalid", 400)
+    try:
+        from server import mentat_planning_calendar_window_payload
+
+        source, status = mentat_planning_calendar_window_payload(request)
+        if status != 200:
+            return _planning_failure(
+                "invalid" if status == 400 else "unavailable" if status == 503 else "error",
+                status,
+            )
+        return {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            **_planning_calendar_projection(source, request),
+        }, 200
+    except BridgeConversationProjectionError:
+        return _planning_failure("error", 500)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_link_planning_task_calendar_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "event_id", "week_start", "timezone"}
+    ):
+        return _planning_failure("invalid", 400)
+    try:
+        _planning_calendar_request({
+            "week_start": payload["week_start"], "timezone": payload["timezone"],
+        })
+        if type(payload.get("expected_revision")) is not int or payload["expected_revision"] < 1 or not isinstance(payload.get("event_id"), str) or _TASK_ID.fullmatch(payload["event_id"]) is None:
+            return _planning_failure("invalid", 400)
+        from server import link_mentat_planning_task_calendar_event
+
+        source, status = link_mentat_planning_task_calendar_event(task_id, payload)
+        return _bridge_planning_task_detail_mutation("calendar_link", task_id, source, status)
+    except BridgeConversationProjectionError:
+        return _planning_failure("invalid", 400)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
+def bridge_unlink_planning_task_calendar_payload(
+    task_id: str, payload: object
+) -> tuple[dict[str, object], int]:
+    if (
+        not isinstance(task_id, str)
+        or _TASK_ID.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "calendar_id", "event_id"}
+        or type(payload.get("expected_revision")) is not int
+        or payload["expected_revision"] < 1
+        or payload.get("calendar_id") != "primary"
+        or not isinstance(payload.get("event_id"), str)
+        or _TASK_ID.fullmatch(payload["event_id"]) is None
+    ):
+        return _planning_failure("invalid", 400)
+    try:
+        from server import unlink_mentat_planning_task_calendar_event
+
+        source, status = unlink_mentat_planning_task_calendar_event(task_id, payload)
+        return _bridge_planning_task_detail_mutation("calendar_unlink", task_id, source, status)
+    except Exception:
+        return _planning_failure("error", 500)
+
+
 def _planning_deletion_counts(value: object) -> dict[str, int]:
     if not isinstance(value, dict) or set(value) != {"projects", "tasks", "conversations", "runs", "artifacts"}:
         raise BridgeConversationProjectionError("planning_deletion_invalid")
@@ -5960,6 +6298,43 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json(payload, status)
             return
+        if parsed.path == BRIDGE_PLANNING_NOTE_PICKER_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            if (
+                len(pairs) > 1
+                or pairs and pairs[0][0] != "q"
+                or pairs and (
+                    pairs[0][1] != pairs[0][1].strip()
+                    or len(pairs[0][1]) > 120
+                    or re.search(r"[\x00-\x1f\x7f]", pairs[0][1]) is not None
+                )
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_note_picker_payload(
+                pairs[0][1] if pairs else ""
+            )
+            self._send_json(payload, status)
+            return
+        if parsed.path == BRIDGE_PLANNING_CALENDAR_PATH:
+            try:
+                pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            except ValueError:
+                pairs = []
+            values = {key: value for key, value in pairs}
+            if (
+                len(pairs) != 2
+                or len(values) != 2
+                or set(values) != {"week_start", "timezone"}
+            ):
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = bridge_planning_calendar_window_payload(values)
+            self._send_json(payload, status)
+            return
         if parsed.path == BRIDGE_CONVERSATION_HISTORY_PATH:
             try:
                 pairs = parse_qsl(
@@ -6265,6 +6640,42 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 bridge_update_planning_task_payload(task_id, body)
                 if action == "edit"
                 else bridge_move_planning_task_payload(task_id, body)
+            )
+            self._send_json(payload, status)
+            return
+        planning_integration_match = re.fullmatch(
+            r"/bridge/v1/planning/tasks/([^/]+)/integrations/(reminders|notes/attach|notes/detach|calendar/link|calendar/unlink)",
+            parsed.path,
+        )
+        if planning_integration_match is not None and not parsed.query:
+            task_id = unquote(planning_integration_match.group(1))
+            action = planning_integration_match.group(2)
+            if _TASK_ID.fullmatch(task_id) is None:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            body = self._action_json_body(MAXIMUM_BRIDGE_PLANNING_MUTATION_BODY_BYTES)
+            required = (
+                {"expected_revision", "reminders"}
+                if action == "reminders"
+                else {"expected_revision", "path"}
+                if action in {"notes/attach", "notes/detach"}
+                else {"expected_revision", "event_id", "week_start", "timezone"}
+                if action == "calendar/link"
+                else {"expected_revision", "calendar_id", "event_id"}
+            )
+            if body is None or set(body) != required:
+                self._send_json({"error": "bridge_route_not_found"}, 404)
+                return
+            payload, status = (
+                bridge_replace_planning_task_reminders_payload(task_id, body)
+                if action == "reminders"
+                else bridge_attach_planning_task_note_payload(task_id, body)
+                if action == "notes/attach"
+                else bridge_detach_planning_task_note_payload(task_id, body)
+                if action == "notes/detach"
+                else bridge_link_planning_task_calendar_payload(task_id, body)
+                if action == "calendar/link"
+                else bridge_unlink_planning_task_calendar_payload(task_id, body)
             )
             self._send_json(payload, status)
             return

@@ -12,6 +12,9 @@ import {
   parsePlanningTaskCreation,
   parsePlanningProjectMutation,
   parsePlanningTaskMutation,
+  parsePlanningTaskIntegrationMutation,
+  parsePlanningNotePicker,
+  parsePlanningCalendarWindow,
   PublicPlanningError,
   type PublicConversationPlanningContext,
   type PublicConversationPlanningMutation,
@@ -25,6 +28,10 @@ import {
   type PublicPlanningDependencyMap,
   type PublicPlanningProjectMutation,
   type PublicPlanningTaskMutation,
+  type PublicPlanningTaskIntegrationMutation,
+  type PublicPlanningNotePicker,
+  type PublicPlanningCalendarWindow,
+  type PublicPlanningReminder,
   type PublicPlanningTaskExecution,
   type PublicPlanningRunOncePreview,
   type PublicPlanningTaskExecutionMutation,
@@ -72,6 +79,9 @@ const PRIVATE_TASK_DELEGATION_RECOVER_PATH = "/bridge/v1/agent-console/planning-
 const PRIVATE_TASK_RUN_ONCE_PREVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once/preview";
 const PRIVATE_TASK_RUN_ONCE_PATH = "/bridge/v1/agent-console/planning-task-execution/run-once";
 const PRIVATE_TASK_REVIEW_PATH = "/bridge/v1/agent-console/planning-task-execution/review";
+const PRIVATE_NOTE_PICKER_PATH = "/bridge/v1/agent-console/planning-note-picker";
+const PRIVATE_CALENDAR_PATH = "/bridge/v1/agent-console/planning-calendar";
+const PRIVATE_TASK_INTEGRATIONS_PATH = "/bridge/v1/planning/tasks";
 const PRIVATE_CONVERSATIONS_PATH = "/bridge/v1/conversations";
 const PRIVATE_PROJECTS_PATH = "/bridge/v1/projects";
 const PRIVATE_PLANNING_PATH = "/bridge/v1/planning";
@@ -276,6 +286,71 @@ export async function fetchBridgePlanningTaskDelegation(taskId: string, fetcher:
   const { response, payload } = await request(`${PRIVATE_TASK_DELEGATION_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
   if (response.status === 200) return parse(() => parsePlanningTaskDelegation(payload, taskId));
   fixedFailure(response, payload);
+}
+
+function integrationRevision(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 1; }
+function integrationTimezone(value: unknown): value is string { return typeof value === "string" && value.length <= 64 && /^[A-Za-z_+-]+(?:\/[A-Za-z_+-]+)*$/u.test(value); }
+function integrationDate(value: unknown): value is string { if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false; const parsed = new Date(`${value}T00:00:00Z`); return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value; }
+function integrationTimestamp(value: unknown): value is string { return typeof value === "string" && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value) && !Number.isNaN(Date.parse(value)); }
+function integrationCalendarInput(weekStart: string, timezoneName: string) { return integrationDate(weekStart) && new Date(`${weekStart}T00:00:00Z`).getUTCDay() === 0 && integrationTimezone(timezoneName); }
+function integrationPath(value: unknown): value is string { if (typeof value !== "string" || !value || value.trim() !== value || [...value].length > 500 || /[\\\p{C}]/u.test(value) || /^(?:[~\/]|[A-Za-z]:|file:|obsidian:)/iu.test(value) || !value.toLowerCase().endsWith(".md")) return false; return value.split("/").every((part) => !!part && part !== "." && part !== ".."); }
+function integrationReminder(value: unknown): value is Omit<PublicPlanningReminder, "channel" | "notified_at"> { if (!record(value) || Object.keys(value).some((key) => !new Set(["id", "at", "enabled", "timezone"]).has(key))) return false; return typeof value.id === "string" && TASK_ID.test(value.id) && integrationTimestamp(value.at) && typeof value.enabled === "boolean" && (value.timezone === undefined || integrationTimezone(value.timezone)); }
+
+export async function fetchBridgePlanningNotePicker(query: string = "", fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningNotePicker> {
+  if (typeof query !== "string" || query.trim() !== query || [...query].length > 120 || /\p{C}/u.test(query)) throw new BridgePlanningError("planning_request_invalid");
+  const suffix = query ? `?${new URLSearchParams({ q: query }).toString()}` : "";
+  const { response, payload } = await request(`${PRIVATE_NOTE_PICKER_PATH}${suffix}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningNotePicker(payload, query));
+  fixedFailure(response, payload);
+}
+
+export async function fetchBridgePlanningCalendarWindow(weekStart: string, timezoneName: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningCalendarWindow> {
+  if (!integrationCalendarInput(weekStart, timezoneName)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_CALENDAR_PATH}?${new URLSearchParams({ week_start: weekStart, timezone: timezoneName }).toString()}`, fetcher, environment);
+  if (response.status === 200) return parse(() => parsePlanningCalendarWindow(payload, weekStart, timezoneName));
+  fixedFailure(response, payload);
+}
+
+async function bridgeIntegrationMutation(action: "reminders" | "notes/attach" | "notes/detach" | "calendar/link" | "calendar/unlink", taskId: string, expectedRevision: number, detail: Record<string, unknown>, fetcher: FetchLike, environment: Environment): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!TASK_ID.test(taskId) || !integrationRevision(expectedRevision)) throw new BridgePlanningError("planning_request_invalid");
+  const { response, payload } = await request(`${PRIVATE_TASK_INTEGRATIONS_PATH}/${encodeURIComponent(taskId)}/integrations/${action}`, fetcher, environment, { body: JSON.stringify({ expected_revision: expectedRevision, ...detail }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
+  if (response.status === 200) return parse(() => parsePlanningTaskIntegrationMutation(payload, taskId));
+  fixedFailure(response, payload);
+}
+
+export async function replaceBridgePlanningTaskReminders(taskId: string, expectedRevision: number, reminders: Array<Omit<PublicPlanningReminder, "channel" | "notified_at">>, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!Array.isArray(reminders) || reminders.length > 20 || !reminders.every(integrationReminder) || new Set(reminders.map((reminder) => reminder.id)).size !== reminders.length) throw new BridgePlanningError("planning_request_invalid");
+  const result = await bridgeIntegrationMutation("reminders", taskId, expectedRevision, { reminders }, fetcher, environment);
+  if (result.action !== "replace_reminders") throw new BridgePlanningError("bridge_response_invalid");
+  return result;
+}
+
+export async function attachBridgePlanningTaskNote(taskId: string, expectedRevision: number, path: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!integrationPath(path)) throw new BridgePlanningError("planning_request_invalid");
+  const result = await bridgeIntegrationMutation("notes/attach", taskId, expectedRevision, { path }, fetcher, environment);
+  if (result.action !== "attach_note") throw new BridgePlanningError("bridge_response_invalid");
+  return result;
+}
+
+export async function detachBridgePlanningTaskNote(taskId: string, expectedRevision: number, path: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!integrationPath(path)) throw new BridgePlanningError("planning_request_invalid");
+  const result = await bridgeIntegrationMutation("notes/detach", taskId, expectedRevision, { path }, fetcher, environment);
+  if (result.action !== "detach_note") throw new BridgePlanningError("bridge_response_invalid");
+  return result;
+}
+
+export async function linkBridgePlanningTaskCalendarEvent(taskId: string, expectedRevision: number, eventId: string, weekStart: string, timezoneName: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (!TASK_ID.test(eventId) || !integrationCalendarInput(weekStart, timezoneName)) throw new BridgePlanningError("planning_request_invalid");
+  const result = await bridgeIntegrationMutation("calendar/link", taskId, expectedRevision, { event_id: eventId, week_start: weekStart, timezone: timezoneName }, fetcher, environment);
+  if (result.action !== "calendar_link") throw new BridgePlanningError("bridge_response_invalid");
+  return result;
+}
+
+export async function unlinkBridgePlanningTaskCalendarEvent(taskId: string, expectedRevision: number, calendarId: "primary", eventId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskIntegrationMutation> {
+  if (calendarId !== "primary" || !TASK_ID.test(eventId)) throw new BridgePlanningError("planning_request_invalid");
+  const result = await bridgeIntegrationMutation("calendar/unlink", taskId, expectedRevision, { calendar_id: calendarId, event_id: eventId }, fetcher, environment);
+  if (result.action !== "calendar_unlink") throw new BridgePlanningError("bridge_response_invalid");
+  return result;
 }
 
 function delegationTarget(value: unknown, maximum: number): value is string { return typeof value === "string" && value.length <= maximum && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(value); }

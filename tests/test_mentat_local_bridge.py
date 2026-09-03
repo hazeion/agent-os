@@ -169,6 +169,120 @@ class LocalBridgeTests(unittest.TestCase):
                 self.assertEqual((rejected, body), (404, {"error": "bridge_route_not_found"}))
         self.assertEqual(delegation.call_count, 1)
 
+    def test_planning_integration_routes_are_named_and_exact(self):
+        ready = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "action": "replace_reminders",
+            "project": {"id": "project_alpha", "name": "Alpha", "status": "active", "revision": 1},
+            "task": {"id": "task_alpha", "revision": 2},
+        }
+        root = "/bridge/v1/planning/tasks/task_alpha/integrations"
+        with patch.object(
+            local_bridge,
+            "bridge_replace_planning_task_reminders_payload",
+            return_value=(ready, 200),
+        ) as replace:
+            status, payload, _headers = self.request(
+                method="POST",
+                path=f"{root}/reminders",
+                body=json.dumps({"expected_revision": 1, "reminders": []}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual((status, payload), (200, ready))
+        replace.assert_called_once_with("task_alpha", {"expected_revision": 1, "reminders": []})
+        for path, body, expected_status, expected_payload in (
+            (f"{root}/reminders", b'{"expected_revision":1,"reminders":[],"notified_at":"private"}', 404, {"error": "bridge_route_not_found"}),
+            (f"{root}/notes/attach", b'{"expected_revision":1,"path":"Plans/Alpha.md","title":"browser-selected"}', 404, {"error": "bridge_route_not_found"}),
+            # A non-capability route is method-rejected by the bridge's generic
+            # POST boundary rather than dispatched to Calendar or a note handler.
+            (f"{root}/notes/detach?extra=1", b'{"expected_revision":1,"path":"Plans/Alpha.md"}', 405, {"error": "method_not_allowed"}),
+            (f"{root}/calendar", b'{"expected_revision":1,"path":"Plans/Alpha.md"}', 405, {"error": "method_not_allowed"}),
+        ):
+            with self.subTest(path=path):
+                status, payload, _headers = self.request(
+                    method="POST",
+                    path=path,
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual((status, payload), (expected_status, expected_payload))
+
+    def test_planning_calendar_routes_are_named_and_exact(self):
+        window = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "calendar_id": "primary",
+            "week_start": "2026-09-06",
+            "week_end": "2026-09-13",
+            "timezone": "America/Los_Angeles",
+            "label": "September 6–12, 2026",
+            "events": [],
+            "event_count": 0,
+            "read_only": True,
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_planning_calendar_window_payload",
+            return_value=(window, 200),
+        ) as read:
+            status, payload, _headers = self.request(
+                path=(f"{local_bridge.BRIDGE_PLANNING_CALENDAR_PATH}"
+                      "?week_start=2026-09-06&timezone=America%2FLos_Angeles")
+            )
+        self.assertEqual((status, payload), (200, window))
+        read.assert_called_once_with({
+            "week_start": "2026-09-06", "timezone": "America/Los_Angeles",
+        })
+
+        root = "/bridge/v1/planning/tasks/task_alpha/integrations"
+        mutation = {
+            "schema_version": 1,
+            "service": "mentat-local-bridge",
+            "runtime": "python",
+            "status": "ready",
+            "action": "calendar_link",
+            "project": {"id": "project_alpha", "name": "Alpha", "status": "active", "revision": 1},
+            "task": {"id": "task_alpha", "revision": 2},
+        }
+        body = {
+            "expected_revision": 1,
+            "event_id": "event_focus",
+            "week_start": "2026-09-06",
+            "timezone": "America/Los_Angeles",
+        }
+        with patch.object(
+            local_bridge,
+            "bridge_link_planning_task_calendar_payload",
+            return_value=(mutation, 200),
+        ) as link:
+            status, payload, _headers = self.request(
+                method="POST", path=f"{root}/calendar/link",
+                body=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual((status, payload), (200, mutation))
+        link.assert_called_once_with("task_alpha", body)
+
+        for path, body, expected_status, expected_payload in (
+            (f"{local_bridge.BRIDGE_PLANNING_CALENDAR_PATH}?week_start=2026-09-06", None, 404, {"error": "bridge_route_not_found"}),
+            (f"{local_bridge.BRIDGE_PLANNING_CALENDAR_PATH}?week_start=2026-09-06&timezone=America%2FLos_Angeles&extra=1", None, 404, {"error": "bridge_route_not_found"}),
+            (f"{root}/calendar/link", b'{"expected_revision":1,"event_id":"event_focus"}', 404, {"error": "bridge_route_not_found"}),
+            (f"{root}/calendar/link?extra=1", json.dumps(body).encode("utf-8"), 405, {"error": "method_not_allowed"}),
+        ):
+            with self.subTest(path=path):
+                status, payload, _headers = self.request(
+                    method="POST" if body is not None else "GET",
+                    path=path,
+                    body=body,
+                    headers={"Content-Type": "application/json"} if body is not None else None,
+                )
+                self.assertEqual((status, payload), (expected_status, expected_payload))
+
     @staticmethod
     def _delegation_api_current(*, revision: int = 3) -> dict:
         return {

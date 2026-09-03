@@ -162,6 +162,13 @@ from delegation_artifacts import (
     remove_task_artifacts,
 )
 from planning_deletion import PlanningDeletionError, PlanningDeletionService
+from planning_calendar import (
+    CalendarWindow,
+    PlanningCalendarError,
+    calendar_window_projection,
+    link_calendar_event,
+    unlink_calendar_event,
+)
 from command_manifest import command_manifest_payload
 from json_store import (
     _durable_mutation_lock,
@@ -3092,6 +3099,9 @@ _PLANNING_TASK_EDIT_FIELDS = frozenset(
         "assigned_agent_id",
     }
 )
+_PLANNING_REMINDER_FIELDS = frozenset({"id", "at", "enabled", "timezone"})
+_PLANNING_NOTE_PICKER_LIMIT = 50
+_PLANNING_NOTE_PICKER_SCAN_LIMIT = 1_000
 _STAGE_STATUS = {
     "inbox": "todo",
     "planned": "todo",
@@ -3107,11 +3117,456 @@ def _planning_task_result(action: str, task_id: str) -> tuple[dict, int]:
     return {"schema_version": 1, "action": action, **payload}, 200
 
 
+def _planning_task_detail_result(action: str, task_id: str) -> tuple[dict, int]:
+    """Return a selected-Task mutation result without widening list surfaces."""
+
+    payload = mentat_planning_task_detail_payload(task_id)
+    return {"schema_version": 1, "action": action, **payload}, 200
+
+
+def _planning_note_relative_path(value: object) -> str | None:
+    """Accept only one portable vault-relative Markdown logical path."""
+
+    if not isinstance(value, str) or not value or value != value.strip() or len(value) > 500:
+        return None
+    lowered = value.lower()
+    parts = value.split("/")
+    if (
+        value.startswith(("/", "~", "\\"))
+        or "\\" in value
+        or re.match(r"^[A-Za-z]:", value) is not None
+        or lowered.startswith(("file:", "obsidian:"))
+        or any(part in {"", ".", ".."} for part in parts)
+        or value[-3:].lower() != ".md"
+        or re.search(r"[\x00-\x1f\x7f]", value) is not None
+    ):
+        return None
+    return value
+
+
+def _planning_existing_note(value: object) -> tuple[str, Path] | None:
+    """Resolve one existing non-symlink regular vault note, never its contents."""
+
+    relative_path = _planning_note_relative_path(value)
+    if relative_path is None:
+        return None
+    try:
+        root = OBSIDIAN_VAULT.resolve(strict=True)
+        root_stat = root.stat()
+        candidate = root.joinpath(*relative_path.split("/"))
+        candidate_stat = candidate.lstat()
+        if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(candidate_stat.st_mode) or not stat.S_ISREG(candidate_stat.st_mode):
+            return None
+        resolved = candidate.resolve(strict=True)
+    except OSError:
+        return None
+    if resolved.suffix.lower() != ".md" or root not in resolved.parents:
+        return None
+    return relative_path, resolved
+
+
+def _planning_note_title(path: Path) -> str | None:
+    title = path.stem
+    if not title or len(title) > 240 or re.search(r"[\x00-\x1f\x7f]", title) is not None:
+        return None
+    return title
+
+
+def _planning_note_picker_query(value: object) -> str | None:
+    if not isinstance(value, str) or value != value.strip() or len(value) > 120:
+        return None
+    if re.search(r"[\x00-\x1f\x7f]", value) is not None:
+        return None
+    return value
+
+
+def mentat_planning_note_picker_payload(query: object = "") -> dict:
+    """List a fixed small set of safe Markdown references from the configured vault.
+
+    This is deliberately not the legacy notes handler: no excerpts, timestamps,
+    byte sizes, absolute paths, or server-side open action cross this boundary.
+    """
+
+    normalized_query = _planning_note_picker_query(query)
+    if normalized_query is None:
+        raise ConversationPlanningError("planning.note_query_invalid")
+    try:
+        root = OBSIDIAN_VAULT.resolve(strict=True)
+        if not root.is_dir():
+            raise OSError("vault is not a directory")
+    except OSError:
+        return {
+            "schema_version": 1,
+            "query": normalized_query,
+            "notes": [],
+            "count": 0,
+            "truncated": False,
+            "available": False,
+        }
+
+    discovered: list[dict[str, str]] = []
+    scanned = 0
+    scan_truncated = False
+    for directory, directories, filenames in os.walk(root, topdown=True, followlinks=False):
+        directories[:] = sorted(
+            name for name in directories
+            if not (Path(directory) / name).is_symlink()
+        )
+        for filename in sorted(filenames):
+            if not filename.lower().endswith(".md"):
+                continue
+            if scanned >= _PLANNING_NOTE_PICKER_SCAN_LIMIT:
+                scan_truncated = True
+                directories[:] = []
+                break
+            scanned += 1
+            candidate = Path(directory) / filename
+            try:
+                relative_path = candidate.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            existing = _planning_existing_note(relative_path)
+            if existing is None:
+                continue
+            safe_path, resolved = existing
+            title = _planning_note_title(resolved)
+            if title is None:
+                continue
+            if normalized_query.casefold() not in f"{safe_path} {title}".casefold():
+                continue
+            discovered.append({"path": safe_path, "title": title})
+        if scan_truncated:
+            break
+    discovered.sort(key=lambda item: (item["title"].casefold(), item["path"].casefold()))
+    return {
+        "schema_version": 1,
+        "query": normalized_query,
+        "notes": discovered[:_PLANNING_NOTE_PICKER_LIMIT],
+        "count": min(len(discovered), _PLANNING_NOTE_PICKER_LIMIT),
+        "truncated": scan_truncated or len(discovered) > _PLANNING_NOTE_PICKER_LIMIT,
+        "available": True,
+    }
+
+
 def _planning_expected_revision(payload: object) -> int | None:
     if not isinstance(payload, dict):
         return None
     revision = payload.get("expected_revision")
     return revision if type(revision) is int and revision >= 1 else None
+
+
+def _planning_integration_snapshot(
+    task_id: object, payload: object
+) -> tuple[object | None, int | None, tuple[dict, int] | None]:
+    """Load the exact canonical Task revision for an integration-only edit."""
+
+    if (
+        not isinstance(task_id, str)
+        or TASK_ID_PATTERN.fullmatch(task_id) is None
+        or not isinstance(payload, dict)
+        or _planning_expected_revision(payload) is None
+    ):
+        return None, None, ({"error_code": "planning.task_invalid"}, 400)
+    expected_revision = _planning_expected_revision(payload)
+    assert expected_revision is not None
+    try:
+        snapshot = read_authoritative_task_snapshot(DATA_DIR, task_id)
+    except TaskRepositoryConflict:
+        return None, None, ({"error_code": "planning.task_not_found"}, 404)
+    except TaskRepositoryError:
+        return None, None, ({"error_code": "planning.unavailable"}, 503)
+    if snapshot.revision != expected_revision:
+        return None, None, ({"error_code": "planning.task_conflict"}, 409)
+    return snapshot, expected_revision, None
+
+
+def _same_browser_reminder(previous: dict, replacement: dict) -> bool:
+    """Compare a reminder occurrence as the detail projection presents it."""
+
+    # Delivery state is tied to the stable reminder ID and its actual instant.
+    # Toggling it or changing display-zone metadata must not cause a duplicate
+    # notification for an occurrence that was already delivered.
+    if previous.get("id") != replacement.get("id"):
+        return False
+    try:
+        return datetime.fromisoformat(str(previous["at"]).replace("Z", "+00:00")) == datetime.fromisoformat(
+            str(replacement["at"]).replace("Z", "+00:00")
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _replace_planning_integration_task(
+    task_id: str,
+    *,
+    action: str,
+    snapshot: object,
+    expected_revision: int,
+    candidate: dict,
+) -> tuple[dict, int]:
+    """Commit one canonical Task replacement without legacy task handlers."""
+
+    # TaskRepository owns validation and the exact CAS.  These capability
+    # handlers only construct the one permitted planning-field replacement.
+    candidate["updated_at"] = now_iso()
+    try:
+        replace_authoritative_task(
+            DATA_DIR,
+            candidate,
+            expected_revision=expected_revision,
+        )
+    except TaskRepositoryConflict:
+        return {"error_code": "planning.task_conflict"}, 409
+    except TaskRepositoryValidationError:
+        return {"error_code": "planning.task_invalid"}, 400
+    except TaskRepositoryError:
+        return {"error_code": "planning.unavailable"}, 503
+    try:
+        return _planning_task_detail_result(action, task_id)
+    except ConversationPlanningError as exc:
+        if exc.code == "planning.task_not_found":
+            return {"error_code": "planning.task_not_found"}, 404
+        return {"error_code": "planning.unavailable"}, 503
+
+
+def replace_mentat_planning_task_reminders(task_id: str, payload: object) -> tuple[dict, int]:
+    """Replace browser reminders at one exact Task revision.
+
+    Browser code can never set delivery state.  A prior ``notified_at`` value
+    survives only when the incoming logical reminder retains the same ID and
+    scheduled instant.
+    """
+
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"expected_revision", "reminders"}
+        or not isinstance(payload.get("reminders"), list)
+        or len(payload["reminders"]) > 20
+    ):
+        return {"error_code": "planning.task_invalid"}, 400
+    replacements: list[dict] = []
+    identifiers: set[str] = set()
+    for raw in payload["reminders"]:
+        if not isinstance(raw, dict) or set(raw) - _PLANNING_REMINDER_FIELDS:
+            return {"error_code": "planning.task_invalid"}, 400
+        identifier = raw.get("id")
+        at = raw.get("at")
+        enabled = raw.get("enabled", True)
+        timezone_name = raw.get("timezone")
+        if (
+            not isinstance(identifier, str)
+            or TASK_ID_PATTERN.fullmatch(identifier) is None
+            or identifier in identifiers
+            or not isinstance(at, str)
+            or not isinstance(enabled, bool)
+            or timezone_name is not None and not isinstance(timezone_name, str)
+        ):
+            return {"error_code": "planning.task_invalid"}, 400
+        identifiers.add(identifier)
+        reminder = {"id": identifier, "at": at, "channel": "browser", "enabled": enabled}
+        if timezone_name is not None:
+            reminder["timezone"] = timezone_name
+        replacements.append(reminder)
+
+    snapshot, expected_revision, failure = _planning_integration_snapshot(task_id, payload)
+    if failure is not None:
+        return failure
+    assert snapshot is not None and expected_revision is not None
+    current = snapshot.document.get("reminders", [])
+    if not isinstance(current, list):
+        return {"error_code": "planning.task_invalid"}, 400
+    previous_by_id = {
+        item.get("id"): item for item in current
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    for reminder in replacements:
+        previous = previous_by_id.get(reminder["id"])
+        if (
+            isinstance(previous, dict)
+            and previous.get("notified_at") is not None
+            and _same_browser_reminder(previous, reminder)
+        ):
+            # Detail reads normalize legacy offsets to portable UTC.  Retain the
+            # stored spelling for a semantically unchanged browser round-trip.
+            reminder["at"] = previous["at"]
+            reminder["notified_at"] = previous["notified_at"]
+    candidate = dict(snapshot.document)
+    candidate["reminders"] = replacements
+    return _replace_planning_integration_task(
+        task_id,
+        action="replace_reminders",
+        snapshot=snapshot,
+        expected_revision=expected_revision,
+        candidate=candidate,
+    )
+
+
+def attach_mentat_planning_task_note(task_id: str, payload: object) -> tuple[dict, int]:
+    """Attach one checked vault note at an exact Task revision."""
+
+    if not isinstance(payload, dict) or set(payload) != {"expected_revision", "path"}:
+        return {"error_code": "planning.task_invalid"}, 400
+    note = _planning_existing_note(payload.get("path"))
+    if note is None:
+        return {"error_code": "planning.note_invalid"}, 400
+    relative_path, resolved = note
+    title = _planning_note_title(resolved)
+    if title is None:
+        return {"error_code": "planning.note_invalid"}, 400
+    snapshot, expected_revision, failure = _planning_integration_snapshot(task_id, payload)
+    if failure is not None:
+        return failure
+    assert snapshot is not None and expected_revision is not None
+    links = snapshot.document.get("note_links", [])
+    if not isinstance(links, list):
+        return {"error_code": "planning.task_invalid"}, 400
+    if any(isinstance(item, dict) and item.get("path") == relative_path for item in links):
+        return _planning_task_detail_result("attach_note", task_id)
+    if len(links) >= 50:
+        return {"error_code": "planning.task_invalid"}, 400
+    candidate = dict(snapshot.document)
+    candidate["note_links"] = [*links, {"path": relative_path, "title": title}]
+    return _replace_planning_integration_task(
+        task_id,
+        action="attach_note",
+        snapshot=snapshot,
+        expected_revision=expected_revision,
+        candidate=candidate,
+    )
+
+
+def detach_mentat_planning_task_note(task_id: str, payload: object) -> tuple[dict, int]:
+    """Detach one safe logical note reference, even after the note was removed."""
+
+    if not isinstance(payload, dict) or set(payload) != {"expected_revision", "path"}:
+        return {"error_code": "planning.task_invalid"}, 400
+    relative_path = _planning_note_relative_path(payload.get("path"))
+    if relative_path is None:
+        return {"error_code": "planning.note_invalid"}, 400
+    snapshot, expected_revision, failure = _planning_integration_snapshot(task_id, payload)
+    if failure is not None:
+        return failure
+    assert snapshot is not None and expected_revision is not None
+    links = snapshot.document.get("note_links", [])
+    if not isinstance(links, list):
+        return {"error_code": "planning.task_invalid"}, 400
+    retained = [
+        item for item in links
+        if not (isinstance(item, dict) and item.get("path") == relative_path)
+    ]
+    if len(retained) == len(links):
+        return _planning_task_detail_result("detach_note", task_id)
+    candidate = dict(snapshot.document)
+    candidate["note_links"] = retained
+    return _replace_planning_integration_task(
+        task_id,
+        action="detach_note",
+        snapshot=snapshot,
+        expected_revision=expected_revision,
+        candidate=candidate,
+    )
+
+
+def _fresh_planning_calendar_window(window: CalendarWindow) -> object:
+    """Read one exact primary Calendar week immediately before linking.
+
+    This is deliberately not the legacy task-calendar handler: the calendar
+    module decides whether this read is linkable, and no Calendar detail is
+    persisted beyond its fixed public Task reference.
+    """
+
+    return google_calendar_events(
+        days=7,
+        limit=250,
+        start=window.week_start,
+        timezone_name=window.timezone,
+        refresh=True,
+    )
+
+
+def _planning_calendar_error_result(error: PlanningCalendarError) -> tuple[dict, int]:
+    """Map the Calendar capability's closed error vocabulary to HTTP."""
+
+    if error.code == "planning.task_not_found":
+        return {"error_code": error.code}, 404
+    if error.code == "planning.task_conflict":
+        return {"error_code": error.code}, 409
+    if error.code in {
+        "planning.calendar_unavailable",
+        "planning.calendar_event_unavailable",
+        "planning.unavailable",
+    }:
+        return {"error_code": error.code}, 503
+    return {"error_code": error.code}, 400
+
+
+def mentat_planning_calendar_window_payload(payload: object) -> tuple[dict, int]:
+    """Project one verified, read-only primary Calendar week for planning."""
+
+    try:
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise PlanningCalendarError("planning.unavailable")
+            # An explicit week read is intentionally refreshed: local fallback
+            # rows are presentation-only and can never become link targets.
+            window_request = payload
+            if not isinstance(window_request, dict):
+                raise PlanningCalendarError("planning.calendar_window_invalid")
+            week_start = window_request.get("week_start")
+            timezone_name = window_request.get("timezone")
+            source = google_calendar_events(
+                days=7,
+                limit=250,
+                start=week_start,
+                timezone_name=timezone_name,
+                refresh=True,
+            )
+            return calendar_window_projection(window_request, source), 200
+    except PlanningCalendarError as exc:
+        return _planning_calendar_error_result(exc)
+    except (TypeError, ValueError):
+        return {"error_code": "planning.calendar_window_invalid"}, 400
+    except Exception:
+        return {"error_code": "planning.unavailable"}, 503
+
+
+def link_mentat_planning_task_calendar_event(
+    task_id: str, payload: object
+) -> tuple[dict, int]:
+    """Link one freshly re-read primary Calendar event at an exact revision."""
+
+    try:
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise PlanningCalendarError("planning.unavailable")
+            mutation = link_calendar_event(
+                DATA_DIR,
+                task_id,
+                payload,
+                _fresh_planning_calendar_window,
+            )
+            return _planning_task_detail_result(mutation.action, task_id)
+    except PlanningCalendarError as exc:
+        return _planning_calendar_error_result(exc)
+    except Exception:
+        return {"error_code": "planning.unavailable"}, 503
+
+
+def unlink_mentat_planning_task_calendar_event(
+    task_id: str, payload: object
+) -> tuple[dict, int]:
+    """Unlink one fixed-primary Calendar reference at an exact revision."""
+
+    try:
+        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+            if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
+                raise PlanningCalendarError("planning.unavailable")
+            mutation = unlink_calendar_event(DATA_DIR, task_id, payload)
+            return _planning_task_detail_result(mutation.action, task_id)
+    except PlanningCalendarError as exc:
+        return _planning_calendar_error_result(exc)
+    except Exception:
+        return {"error_code": "planning.unavailable"}, 503
 
 
 def _planning_dependency_edit_is_unique(task_id: str, changes: dict) -> bool:
