@@ -286,6 +286,8 @@ class WebRuntimeTests(unittest.TestCase):
                 web_runtime, "find_free_bridge_port", return_value=49152
             ), patch.object(web_runtime, "reserve_mentat_server", side_effect=lambda _root: events.append("reserve")), patch.object(
                 web_runtime, "release_mentat_server", side_effect=lambda _root: events.append("release")
+            ), patch(
+                "owner_auth.cleanup_owner_auth_at_startup", side_effect=lambda _root: events.append("owner_auth_cleanup")
             ), patch.object(web_runtime, "establish_task_authority", side_effect=lambda _root: events.append("task_authority")), patch.object(
                 web_runtime, "establish_project_authority", side_effect=lambda _root: events.append("project_authority")
             ), patch.object(
@@ -305,6 +307,7 @@ class WebRuntimeTests(unittest.TestCase):
                     ),
                     1,
                 )
+        self.assertLess(events.index("owner_auth_cleanup"), events.index("task_authority"))
         self.assertLess(events.index("task_authority"), events.index("run_authority"))
         self.assertLess(events.index("task_authority"), events.index("project_authority"))
         self.assertLess(events.index("project_authority"), events.index("run_authority"))
