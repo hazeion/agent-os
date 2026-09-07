@@ -3261,6 +3261,7 @@ class RemoteHermesClient:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         maximum_bytes: int = MAX_RESPONSE_BYTES,
         connection_factory: Callable[..., Any] | None = None,
+        read_deadline_at: float | None = None,
     ):
         self.endpoint = normalize_endpoint(endpoint)
         self.api_key = _clean_api_key(api_key)
@@ -3271,6 +3272,11 @@ class RemoteHermesClient:
         self.timeout_seconds = float(timeout_seconds)
         self.maximum_bytes = maximum_bytes
         self.connection_factory = connection_factory
+        if read_deadline_at is not None and (
+            type(read_deadline_at) not in {int, float} or not 0 < read_deadline_at < 10**12
+        ):
+            raise RemoteHermesError("remote_timeout_invalid")
+        self.read_deadline_at = read_deadline_at
         self._trusted_feature_cache: frozenset[str] = frozenset()
 
     def _connection(self, *, timeout_seconds: float | None = None):
@@ -3278,24 +3284,36 @@ class RemoteHermesClient:
         host = parsed.hostname or ""
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         timeout = self.timeout_seconds if timeout_seconds is None else float(timeout_seconds)
+        deadline = self.read_deadline_at
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RemoteHermesError("remote_timeout")
+            timeout = min(timeout, remaining)
         if self.connection_factory is not None:
-            return self.connection_factory(
+            connection = self.connection_factory(
                 parsed.scheme,
                 host,
                 port,
                 timeout,
             )
-        if parsed.scheme == "https":
+        elif parsed.scheme == "https":
             context = ssl.create_default_context()
             context.check_hostname = True
             context.verify_mode = ssl.CERT_REQUIRED
-            return http.client.HTTPSConnection(
+            connection = http.client.HTTPSConnection(
                 host,
                 port=port,
                 timeout=timeout,
                 context=context,
             )
-        return http.client.HTTPConnection(host, port=port, timeout=timeout)
+        else:
+            connection = http.client.HTTPConnection(host, port=port, timeout=timeout)
+        if deadline is not None:
+            from http_read_deadline import DeadlineReadConnection
+
+            return DeadlineReadConnection(connection, deadline_at=min(deadline, time.monotonic() + timeout))
+        return connection
 
     def _request_json(
         self,

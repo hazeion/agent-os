@@ -5688,6 +5688,7 @@ def mentat_planning_task_delegation_options_payload(task_id: str) -> tuple[dict,
             timeout = phase_budget(operations)
             if remote:
                 adapter.client.timeout_seconds = timeout
+                adapter.client.read_deadline_at = deadline
             elif isinstance(adapter, HermesKanbanAdapter):
                 adapter.timeout = timeout
 
@@ -5699,6 +5700,9 @@ def mentat_planning_task_delegation_options_payload(task_id: str) -> tuple[dict,
             return unavailable("transient_failure")
         capabilities = detected.get("capabilities")
         if detected.get("status") == "unavailable":
+            error = detected.get("error")
+            if isinstance(error, dict) and error.get("code") == "remote_run_capability_unavailable":
+                return unavailable("capability_missing")
             return unavailable("connection_unavailable" if remote else "transient_failure")
         if detected.get("status") == "unsupported":
             return unavailable("capability_missing")
@@ -5706,7 +5710,7 @@ def mentat_planning_task_delegation_options_payload(task_id: str) -> tuple[dict,
             return unavailable("transient_failure")
         if not isinstance(capabilities, dict) or capabilities.get("tasks.create") is not True or capabilities.get("boards.read") is not True or capabilities.get("tasks.read") is not True:
             return unavailable("capability_missing")
-        profiles_payload = hermes_profiles_payload(timeout=phase_budget())
+        profiles_payload = hermes_profiles_payload(timeout=phase_budget(), **({"read_deadline_at": deadline} if remote else {}))
         if not isinstance(profiles_payload, dict) or profiles_payload.get("status") != "available":
             return unavailable("connection_unavailable" if remote else "profiles_unavailable")
         raw_profiles = profiles_payload.get("profiles")
@@ -5746,8 +5750,8 @@ def mentat_planning_task_delegation_options_payload(task_id: str) -> tuple[dict,
         phase_budget()
         if load_remote_hermes_connection(DATA_DIR).binding_id != kanban_adapter_binding(adapter):
             return unavailable("connection_unavailable")
-    except RemoteHermesError:
-        return unavailable("connection_unavailable")
+    except RemoteHermesError as exc:
+        return unavailable("capability_missing" if exc.code == "remote_run_capability_unavailable" else "connection_unavailable")
     except (OSError, sqlite3.Error, ValueError, TypeError):
         return unavailable("transient_failure")
     return {"schema_version": 1, **current, "options": {"available": True, "profiles": profiles, "boards": boards, "workspaces": ["scratch", "worktree"]}}, 200
@@ -11578,15 +11582,17 @@ def hermes_python_path() -> str | None:
     return None
 
 
-def hermes_profiles_payload(*, timeout: float | None = None) -> dict:
+def hermes_profiles_payload(*, timeout: float | None = None, read_deadline_at: float | None = None) -> dict:
     """Return normalized profile capabilities without exposing Hermes paths or secrets."""
     selection = load_remote_hermes_connection(DATA_DIR)
     if selection.mode == "remote":
         try:
             profiles = RemoteHermesKanbanAdapter(
-                RemoteHermesClient(selection.endpoint or "", selection.api_key or "", **({"timeout_seconds": timeout} if timeout is not None else {}))
+                RemoteHermesClient(selection.endpoint or "", selection.api_key or "", **({"timeout_seconds": timeout} if timeout is not None else {}), **({"read_deadline_at": read_deadline_at} if read_deadline_at is not None else {}))
             ).client.read_profiles()
         except RemoteHermesError:
+            if read_deadline_at is not None:
+                raise
             return {"status": "unavailable", "active_profile": None, "profiles": [], "capabilities": {}}
         active_profile = next((item["id"] for item in profiles if item["is_active"]), None)
         return {

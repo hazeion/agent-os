@@ -38,6 +38,7 @@ PUBLIC_MODULES = {
     "data_migration",
     "data_schema", "delegation_artifacts", "diagnostics_bundle", "health_checks",
     "hermes_browser_events", "hermes_event_refresh", "hermes_kanban", "hermes_local_control",
+    "http_read_deadline",
     "hermes_profile_creation",
     "hermes_profile_deletion", "hermes_profile_identity", "hermes_profiles", "hermes_runtime",
     "hermes_provider_switching", "hermes_skills", "hermes_stock_compatibility",

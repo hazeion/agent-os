@@ -71,6 +71,7 @@ py-modules = [
   "hermes_browser_events",
   "hermes_event_refresh",
   "hermes_kanban",
+  "http_read_deadline",
   "hermes_local_control",
   "hermes_profile_creation",
   "hermes_profile_deletion",
