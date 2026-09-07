@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
+from agent_registry import AgentRegistry
+from agent_runtime import AgentRuntimeRegistry
+from conversation_repository import ConversationRepository
+from conversation_planning import project_registry, validate_association_targets
 from mentat_db import connect
+from orchestration_service import OrchestrationService
 from planning_deletion import PlanningDeletionError, PlanningDeletionService
+from private_state import history_path
 from project_repository import ensure_project_sqlite_authority, read_authoritative_projects
 from task_repository import ensure_task_sqlite_authority, read_authoritative_tasks
+from run_repository import RunRepository
+from tests.sqlite_authority_support import ensure_run_sqlite_authority
+from tests.test_orchestration_service import FakeRuntime
 import server
 
 
@@ -32,6 +44,101 @@ def task(identifier: str, name: str, *, depends_on: list[str] | None = None) -> 
 
 
 class PlanningDeletionTests(unittest.TestCase):
+    def executed_root(self, temporary: str, *, retry_count: int = 1):
+        """Build the reported cascade using public repositories and orchestration."""
+        root = Path(temporary)
+        (root / "projects.json").write_text(json.dumps([
+            project("project_one", "One"), project("project_keep", "Keep"),
+        ]), encoding="utf-8")
+        assigned = task("task_run", "One")
+        assigned.update(source="dashboard", assigned_agent_id="agent_delete", planning_state="planned", workflow_stage="planned")
+        (root / "tasks.json").write_text(json.dumps([
+            assigned, task("task_other", "One"), task("task_keep", "Keep"),
+        ]), encoding="utf-8")
+        ensure_task_sqlite_authority(root, required_source_mode=None)
+        ensure_project_sqlite_authority(root, required_source_mode=None)
+        ensure_run_sqlite_authority(root, history_path(root))
+        runtime = FakeRuntime(root)
+        runtime.runtime_type = "codex"
+        runtime.runtime_agent_ref = "default"
+        runtime.capacity_scope = "codex-app-server:" + "a" * 64
+        runtime.rejects = True
+        registry = AgentRegistry(root, supported_runtime_types=("codex",))
+        registry.create_agent(
+            agent_id="agent_delete", name="Deletion test Agent",
+            runtime_config_id="config_delete", runtime_type="codex",
+            runtime_agent_ref="default", capabilities=("run.start", "run.message"),
+        )
+        service = OrchestrationService(root, runtime_registry=AgentRuntimeRegistry((runtime,)), agent_registry=registry)
+        conversations = ConversationRepository(root, supported_runtime_types=("codex",))
+        conversation = conversations.create(agent_id="agent_delete").conversation
+        keep = conversations.create(agent_id="agent_delete").conversation
+        projects = project_registry(read_authoritative_projects(root))
+        conversations.set_planning_association(
+            conversation.id, expected_revision=conversation.revision,
+            project_id="project_one", task_id="task_run",
+            validate_targets=lambda connection, project_id, task_id: validate_association_targets(connection, projects, project_id, task_id),
+        )
+        service.dispatch_task(task_id="task_run", expected_revision=1, idempotency_key="deletion-task-run-key", planning_execution=True)
+        # IDs deliberately put the predecessor first in SQLite key order.
+        service.id_factory = lambda prefix: f"{prefix}_aaa_initial"
+        first = service.submit_conversation_turn(conversation_id=conversation.id, text="A bounded question", idempotency_key="deletion-first-turn-key")
+        source_run_id = first.run.id
+        for attempt in range(retry_count):
+            service.id_factory = lambda prefix: f"{prefix}_zzz_retry_{attempt}"
+            retried = service.retry_conversation_run(conversation_id=conversation.id, source_run_id=source_run_id, idempotency_key=f"deletion-retry-turn-key-{attempt}")
+            source_run_id = retried.attempt.run_id
+        service.id_factory = lambda prefix: f"{prefix}_{uuid4().hex}"
+        service.submit_conversation_turn(conversation_id=keep.id, text="Retain this separate history", idempotency_key="deletion-keep-turn-key")
+        with closing(connect(root)) as connection:
+            RunRepository(connection).validate()
+        return root, conversation.id, keep.id
+
+    def test_project_with_task_execution_and_conversation_retry_deletes_exact_closure(self):
+        for retry_count in (0, 1, 2):
+            with self.subTest(retry_count=retry_count), TemporaryDirectory() as temporary:
+                root, deleted_conversation, kept_conversation = self.executed_root(temporary, retry_count=retry_count)
+                service = PlanningDeletionService(root)
+                plan = service.preview("project", "project_one")
+                self.assertEqual(plan.counts.public(), {"projects": 1, "tasks": 2, "conversations": 1, "runs": 2 + retry_count, "artifacts": 0})
+                self.assertEqual(plan.active_run_ids, ())
+                confirmed = service.begin_confirmation("project", "project_one", plan.confirmation_id)
+                self.assertEqual(service.finalize(confirmed), plan.counts)
+                self.assertEqual(service.completed_receipt("project", "project_one", plan.confirmation_id), plan.counts)
+                with closing(connect(root)) as connection:
+                    self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+                    self.assertEqual([row[0] for row in connection.execute("SELECT id FROM mentat_conversations")], [kept_conversation])
+                    for table in ("mentat_conversation_turns", "mentat_conversation_messages", "mentat_runs"):
+                        self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table} WHERE conversation_id = ?", (deleted_conversation,)).fetchone()[0], 0)
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM mentat_conversation_run_attempts").fetchone()[0], 0)
+                    RunRepository(connection).validate()
+                self.assertEqual([row["id"] for row in read_authoritative_tasks(root)], ["task_keep"])
+                self.assertEqual([row["id"] for row in read_authoritative_projects(root)], ["project_keep"])
+
+    def test_retry_cascade_rolls_back_all_evidence_and_receipt_on_late_failure(self):
+        with TemporaryDirectory() as temporary:
+            root, _deleted_conversation, _kept_conversation = self.executed_root(temporary)
+            service = PlanningDeletionService(root)
+            plan = service.preview("task", "task_run")
+            original_erase = PlanningDeletionService._erase
+
+            def fail_after_erase(connection, selected):
+                original_erase(connection, selected)
+                raise sqlite3.IntegrityError("injected late transaction failure")
+
+            with patch.object(PlanningDeletionService, "_erase", side_effect=fail_after_erase):
+                with self.assertRaisesRegex(PlanningDeletionError, "deletion_unavailable"):
+                    service.finalize(plan)
+            self.assertEqual(service.preview("task", "task_run"), plan)
+            self.assertIsNone(service.completed_receipt("task", "task_run", plan.confirmation_id))
+            with closing(connect(root)) as connection:
+                RunRepository(connection).validate()
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            # The exact original confirmation still works after the rollback.
+            self.assertEqual(service.finalize(plan), plan.counts)
+            self.assertEqual([row["id"] for row in read_authoritative_tasks(root)], ["task_other", "task_keep"])
+            self.assertEqual([row["id"] for row in read_authoritative_projects(root)], ["project_one", "project_keep"])
+
     def root(self, temporary: str) -> Path:
         root = Path(temporary)
         (root / "projects.json").write_text(json.dumps([

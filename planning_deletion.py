@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from graphlib import CycleError, TopologicalSorter
 import hashlib
 import hmac
 import json
@@ -119,6 +120,26 @@ def _validate_target(kind: object, identifier: object) -> tuple[str, str]:
 
 def _rows(connection: sqlite3.Connection, query: str, args: tuple = ()) -> list[sqlite3.Row]:
     return list(connection.execute(query, args).fetchall())
+
+
+def _run_deletion_order(rows: list[sqlite3.Row]) -> tuple[str, ...]:
+    # Retry/resume identity is immutable, including FK SET NULL updates. Delete
+    # descendants before predecessors so SQLite never rewrites retained lineage
+    # on a Run that is itself about to be erased by this exact confirmation.
+    descendants: dict[str, set[str]] = {str(row["id"]): set() for row in rows}
+    for row in rows:
+        for field in ("retry_of_run_id", "resume_of_run_id"):
+            predecessor = row[field]
+            if predecessor in descendants:
+                descendants[predecessor].add(str(row["id"]))
+    try:
+        return tuple(TopologicalSorter({
+            run_id: sorted(children) for run_id, children in descendants.items()
+        }).static_order())
+    except CycleError as exc:
+        # Reject corrupt lineage at preview instead of offering a confirmation
+        # that cannot commit. No identity guard or foreign key is disabled.
+        raise PlanningDeletionError("planning.deletion_graph_invalid") from exc
 
 
 def _require_authority(connection: sqlite3.Connection) -> None:
@@ -229,7 +250,7 @@ def _snapshot(connection: sqlite3.Connection, target_kind: str, target_id: str) 
             raise PlanningDeletionError("planning.deletion_unavailable")
         run_by_id.update({str(row["id"]): row for row in additions})
     run_rows = [run_by_id[key] for key in sorted(run_by_id)]
-    run_ids = tuple(str(row["id"]) for row in run_rows)
+    run_ids = _run_deletion_order(run_rows)
     run_sql, run_args = _placeholders(run_ids)
 
     artifact_rows = _rows(
@@ -439,7 +460,8 @@ class PlanningDeletionService:
             )
         connection.execute(f"DELETE FROM mentat_conversation_run_attempts WHERE run_id IN {run_sql} OR conversation_id IN {conversation_sql}", run_args + conversation_args)
         connection.execute(f"DELETE FROM mentat_conversation_submission_results WHERE run_id IN {run_sql}", run_args)
-        connection.execute(f"DELETE FROM mentat_runs WHERE id IN {run_sql}", run_args)
+        for run_id in plan.run_ids:
+            connection.execute("DELETE FROM mentat_runs WHERE id = ?", (run_id,))
         connection.execute(f"DELETE FROM mentat_conversations WHERE id IN {conversation_sql}", conversation_args)
         connection.execute(f"DELETE FROM mentat_tasks WHERE id IN {task_sql}", task_args)
         connection.execute(f"DELETE FROM mentat_projects WHERE id IN {project_sql}", project_args)
