@@ -821,6 +821,7 @@ export function HomeConsole() {
     ? selectedConversationNotice.message
     : notice.message;
   const detail = selectedConversationId ? details[selectedConversationId] ?? null : null;
+  const selectedConversationRevision = detail?.conversation.revision;
   const selectedAgent = detail?.agent ?? agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const configurationAgentId = selectedConversationId === null
     ? selectedAgentId
@@ -931,20 +932,6 @@ export function HomeConsole() {
     }).catch(() => { if (!cancelled) setPlanningOverviewState("unavailable"); });
     return () => { cancelled = true; };
   }, []);
-
-  useEffect(() => {
-    if (!selectedConversationId) return;
-    const conversationId = selectedConversationId;
-    let cancelled = false;
-    void Promise.resolve().then(() => { if (!cancelled) setPlanningContextStates((current) => ({ ...current, [conversationId]: "loading" })); });
-    void readConversationPlanningContext(conversationId).then((context) => {
-      if (cancelled) return;
-      setPlanningContexts((current) => ({ ...current, [conversationId]: context }));
-      setPlanningContextStates((current) => ({ ...current, [conversationId]: "ready" }));
-      setPlanningSelections((current) => conversationId in current ? current : { ...current, [conversationId]: { projectId: context.association?.project_id ?? null, taskId: context.association?.task_id ?? null } });
-    }).catch(() => { if (!cancelled) setPlanningContextStates((current) => ({ ...current, [conversationId]: "unavailable" })); });
-    return () => { cancelled = true; };
-  }, [selectedConversationId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1150,6 +1137,28 @@ export function HomeConsole() {
     detailRefreshes.current.set(conversationId, refresh);
     return refresh;
   }, []);
+
+  useEffect(() => {
+    if (!selectedConversationId || selectedConversationRevision === undefined) return;
+    const conversationId = selectedConversationId;
+    let cancelled = false;
+    void Promise.resolve().then(() => { if (!cancelled) setPlanningContextStates((current) => ({ ...current, [conversationId]: "loading" })); });
+    void readConversationPlanningContext(conversationId).then(async (context) => {
+      if (cancelled) return;
+      if (context.conversation_revision < selectedConversationRevision) throw new Error("planning_context_stale");
+      if (context.conversation_revision > selectedConversationRevision) {
+        // A separate operator may have changed lifecycle or work as well as
+        // planning. Refresh those controls before enabling an exact mutation.
+        const refreshed = await refreshConversationDetail(conversationId);
+        if (!cancelled && refreshed.conversation.revision < context.conversation_revision) throw new Error("conversation_stale");
+        return;
+      }
+      setPlanningContexts((current) => ({ ...current, [conversationId]: context }));
+      setPlanningContextStates((current) => ({ ...current, [conversationId]: "ready" }));
+      setPlanningSelections((current) => conversationId in current ? current : { ...current, [conversationId]: { projectId: context.association?.project_id ?? null, taskId: context.association?.task_id ?? null } });
+    }).catch(() => { if (!cancelled) setPlanningContextStates((current) => ({ ...current, [conversationId]: "unavailable" })); });
+    return () => { cancelled = true; };
+  }, [refreshConversationDetail, selectedConversationId, selectedConversationRevision]);
 
   const refreshConversationContext = useCallback(async (conversationId: string) => {
     setStagedContextStates((current) => ({ ...current, [conversationId]: "loading" }));
@@ -1405,9 +1414,9 @@ export function HomeConsole() {
 
   function mergeConversationSummary(conversation: PublicConversation) {
     setConversations((current) => current.some((item) => item.id === conversation.id)
-      ? current.map((item) => item.id === conversation.id ? conversation : item)
+      ? current.map((item) => item.id === conversation.id && conversation.revision >= item.revision ? conversation : item)
       : current);
-    setDetails((current) => current[conversation.id]
+    setDetails((current) => current[conversation.id] && conversation.revision >= current[conversation.id].conversation.revision
       ? { ...current, [conversation.id]: { ...current[conversation.id], conversation } }
       : current);
   }
@@ -2072,7 +2081,7 @@ export function HomeConsole() {
           <QueuedTurns busyTurnIds={queueBusyTurnIds} editDrafts={queueEditDrafts} editingTurnId={editingTurnId} onBeginEdit={(turn) => { if (!selectedConversationId) return; setConversationEditor(selectedConversationId, turn.id); setQueueEditDrafts((current) => ({ ...current, [turn.id]: turn.text })); }} onCancel={(turn) => void cancelQueuedTurn(turn)} onContinue={(turn) => void continueQueuedTurn(turn)} onDiscardEdit={(turn) => { if (!selectedConversationId) return; const conversationId = selectedConversationId; if (editingTurnIdsRef.current[conversationId] !== turn.id) return; setConversationEditor(conversationId, null); focusQueueTarget(conversationId, turn.id); }} onEditDraft={(turnId, text) => setQueueEditDrafts((current) => ({ ...current, [turnId]: text }))} onSaveEdit={(turn) => void editQueuedTurn(turn)} turns={detail?.queued_turns ?? []} />
           {setupRequired || selectedNeedsCodexReadiness ? <div className="codex-setup" data-state={codexReadiness ?? "unchecked"}><div><strong>{codexReadiness === "ready" ? "Codex sign-in confirmed" : "Codex subscription sign-in"}</strong><p>{codexReadiness === "sign_in_required" ? <>Run <code>codex login</code> in a terminal, finish the browser sign-in, then Recheck.</> : codexReadiness === "cli_missing" ? <>Install the Codex CLI, run <code>codex login</code>, then restart Mentat.</> : codexReadiness === "unavailable" ? "Mentat could not confirm local Codex readiness." : codexReadiness === "ready" ? "The local Codex CLI is signed in. This check does not verify model access or successful execution. Credentials stay with Codex." : "Mentat uses the Codex CLI's existing ChatGPT subscription sign-in; credentials stay with Codex."}</p></div><button disabled={checkingCodex} onClick={() => void recheckCodex()} type="button">{checkingCodex ? "Checking…" : codexReadiness === null ? "Check readiness" : "Recheck"}</button></div> : null}
           {selectedConversationId && detail ? <ConversationContextControls agent={selectedAgent} conversationId={selectedConversationId} disabledReason={contextDisabledReason} key={selectedConversationId} onAgentEnabled={(enabled) => { setAgents((current) => current.map((agent) => agent.id === enabled.id ? enabled : agent)); setDetails((current) => current[selectedConversationId] ? { ...current, [selectedConversationId]: { ...current[selectedConversationId], agent: enabled } } : current); }} onContext={(context) => setStagedContexts((current) => ({ ...current, [selectedConversationId]: context }))} onContextState={(state) => setStagedContextStates((current) => ({ ...current, [selectedConversationId]: state }))} onNotice={(message) => setConversationNotice(selectedConversationId, message)} onRefresh={() => void refreshConversationContext(selectedConversationId)} staged={stagedContext} stagingState={stagedContextState} /> : null}
-          {selectedConversationId && detail ? <ConversationPlanningControls busy={planningBusyIds.has(selectedConversationId)} clearDisabledReason={planningWorkDisabledReason} context={planningContexts[selectedConversationId] ?? null} contextState={planningContextStates[selectedConversationId] ?? "loading"} conversationId={selectedConversationId} conversationRevision={planningContexts[selectedConversationId]?.conversation_revision ?? detail.conversation.revision} disabledReason={planningDisabledReason} key={`planning-${selectedConversationId}`} onContext={(context) => setPlanningContexts((current) => ({ ...current, [selectedConversationId]: context }))} onConversation={mergeConversationSummary} onNotice={(message) => setConversationNotice(selectedConversationId, message)} onRefreshConversation={() => refreshConversationDetail(selectedConversationId).then(() => undefined)} onSelection={(selection) => setPlanningSelections((current) => ({ ...current, [selectedConversationId]: selection }))} overview={planningOverview} overviewState={planningOverviewState} selection={planningSelections[selectedConversationId] ?? { projectId: planningContexts[selectedConversationId]?.association?.project_id ?? null, taskId: planningContexts[selectedConversationId]?.association?.task_id ?? null }} /> : null}
+          {selectedConversationId && detail ? <ConversationPlanningControls busy={planningBusyIds.has(selectedConversationId)} clearDisabledReason={planningWorkDisabledReason} context={planningContexts[selectedConversationId] ?? null} contextState={planningContextStates[selectedConversationId] ?? "loading"} conversationId={selectedConversationId} conversationRevision={detail.conversation.revision} disabledReason={planningDisabledReason} key={`planning-${selectedConversationId}`} onContext={(context) => setPlanningContexts((current) => (current[selectedConversationId]?.conversation_revision ?? 0) > context.conversation_revision ? current : { ...current, [selectedConversationId]: context })} onConversation={mergeConversationSummary} onNotice={(message) => setConversationNotice(selectedConversationId, message)} onRefreshConversation={() => refreshConversationDetail(selectedConversationId).then(() => undefined)} onSelection={(selection) => setPlanningSelections((current) => ({ ...current, [selectedConversationId]: selection }))} overview={planningOverview} overviewState={planningOverviewState} selection={planningSelections[selectedConversationId] ?? { projectId: planningContexts[selectedConversationId]?.association?.project_id ?? null, taskId: planningContexts[selectedConversationId]?.association?.task_id ?? null }} /> : null}
           <PlanningSuggestions context={selectedConversationId ? planningContexts[selectedConversationId] ?? null : null} draftEmpty={draft.length === 0} onChoose={(text) => { setSelectedDraft(text); window.setTimeout(() => document.getElementById("console-prompt")?.focus(), 0); }} />
           {commandHelpOpen && commandManifest ? <section aria-label="Mentat command help" className="command-help"><div><strong>Mentat commands</strong><button aria-label="Close command help" onClick={() => { setCommandHelpOpen(false); document.getElementById("console-prompt")?.focus(); }} type="button">×</button></div><ul>{commandManifest.commands.map((item) => <li key={item.command}><code>{item.command}</code><span>{MENTAT_COMMAND_DESCRIPTIONS[item.command]}</span></li>)}</ul></section> : null}
           <form className="console-composer" onSubmit={(event) => { event.preventDefault(); void sendTurn(); }}>

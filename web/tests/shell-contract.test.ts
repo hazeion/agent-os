@@ -105,7 +105,7 @@ test("Slice 10 planning controls stay compact and mobile safe", () => {
   assert.match(consoleSource, /PlanningAttention/);
   assert.match(consoleSource, /PlanningSuggestions/);
   assert.match(consoleSource, /key=\{`planning-\$\{selectedConversationId\}`\}/);
-  assert.match(consoleSource, /conversationRevision=\{planningContexts\[selectedConversationId\]\?\.conversation_revision/);
+  assert.match(consoleSource, /conversationRevision=\{detail\.conversation\.revision\}/);
   assert.match(tasksSource, /createProject/);
   assert.match(tasksSource, /createProjectTask/);
   assert.match(tasksSource, /Title/);
