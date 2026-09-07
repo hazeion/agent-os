@@ -91,6 +91,71 @@ function mutationRefreshFixture() {
   return fixture;
 }
 
+test("delegation discovery explains setup and leaves unrelated planner controls usable", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture(); const late = deferred<Response>();
+  fixture.override = (url) => url.pathname.endsWith("/planning-task-delegation/options") ? late.promise : null;
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  const delegate = await screen.findByRole("button", { name: "Delegate" });
+  fireEvent.click(delegate); fireEvent.click(delegate);
+  await screen.findByText("Checking available Hermes profiles and boards...");
+  assert.equal(fixture.counts.get("/api/agent-console/planning-task-delegation/options"), 1);
+  for (const name of ["Select Alpha Project", "Add", "Edit details", "Manage reminders", "Delete Task"]) assert.equal((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, false);
+  assert.match(screen.getByLabelText("Task delegation").textContent ?? "", /Run once uses the assigned Mentat Agent/u);
+  late.resolve(Response.json({ ...envelope, task: { id: task.id, revision: 1 }, delegation: { available: false, reason: "not_delegated" }, options: { available: false, reason: "runtime_missing" } }));
+  await screen.findByText("Hermes is not installed or could not be found. Set up Hermes, restart Mentat, then Recheck.");
+  assert.equal(screen.getByRole("link", { name: "Hermes setup guide" }).getAttribute("href"), "https://hermes-agent.nousresearch.com/");
+  assert.equal((screen.getByRole("button", { name: "Recheck delegation options" }) as HTMLButtonElement).disabled, false);
+});
+
+test("a same-Task save invalidates pending delegation discovery before a fresh read can open its form", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture(); const late = deferred<Response>();
+  const options = (revision: number) => ({ ...envelope, task: { id: task.id, revision }, delegation: { available: false, reason: "not_delegated" }, options: { available: true, profiles: [{ id: "researcher", name: "Researcher" }], boards: [{ id: "default", name: "Default" }], workspaces: ["scratch", "worktree"] } });
+  fixture.override = (url) => url.pathname.endsWith("/planning-task-delegation/options") ? fixture.counts.get(url.pathname) === 1 ? late.promise : Response.json(options(fixture.rows[0].revision)) : null;
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await user.click(await screen.findByRole("button", { name: "Delegate" }));
+  await user.click(screen.getByRole("button", { name: "Manage reminders" })); await user.click(screen.getByRole("button", { name: "Save reminders" }));
+  await screen.findByText("Browser reminders saved.");
+  late.resolve(Response.json(options(1)));
+  await waitFor(() => assert.equal(within(screen.getByLabelText("Task delegation")).queryByLabelText("Agent"), null));
+  await user.click(await screen.findByRole("button", { name: "Delegate" }));
+  await within(screen.getByLabelText("Task delegation")).findByLabelText("Agent");
+  assert.equal(fixture.counts.get("/api/agent-console/planning-task-delegation/options"), 2);
+  assert.equal(fixture.counts.get(`/api/planning/tasks/${task.id}/delegation/preview`), undefined);
+});
+
+test("late discovery errors do not clear another Task's pending discovery or disable navigation", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture(); const alpha = deferred<Response>(); const beta = deferred<Response>();
+  fixture.rows.push({ ...fixture.rows[0], id: "task_beta_options", title: "Options Beta" });
+  fixture.override = (url) => url.pathname.endsWith("/planning-task-delegation/options") ? url.searchParams.get("task_id") === task.id ? alpha.promise : beta.promise : null;
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ })); await user.click(await screen.findByRole("button", { name: "Delegate" }));
+  await user.click(screen.getByRole("button", { name: /Options Beta/ })); await user.click(await screen.findByRole("button", { name: "Delegate" }));
+  alpha.reject(new Error("private adapter failure"));
+  await waitFor(() => assert.equal((screen.getByRole("button", { name: "Checking options..." }) as HTMLButtonElement).disabled, true));
+  assert.equal((screen.getByRole("button", { name: "Edit details" }) as HTMLButtonElement).disabled, false);
+  beta.resolve(Response.json({ ...envelope, task: { id: "task_beta_options", revision: 1 }, delegation: { available: false, reason: "not_delegated" }, options: { available: false, reason: "profile_missing" } }));
+  await screen.findByText("No supported Hermes profile is available. Set up a profile through Hermes, then Recheck.");
+  assert.doesNotMatch(document.body.textContent ?? "", /private adapter failure|did not finish successfully/u);
+});
+
+test("a newer Task revision returned by discovery is refreshed before an explicit Recheck", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+  fixture.override = (url) => {
+    if (!url.pathname.endsWith("/planning-task-delegation/options")) return null;
+    fixture.rows[0].revision = 2;
+    return Response.json({ ...envelope, task: { id: task.id, revision: 2 }, delegation: { available: false, reason: "not_delegated" }, options: { available: true, profiles: [{ id: "researcher", name: "Researcher" }], boards: [{ id: "default", name: "Default" }], workspaces: ["scratch", "worktree"] } });
+  };
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ })); await user.click(await screen.findByRole("button", { name: "Delegate" }));
+  await screen.findByRole("button", { name: "Recheck delegation options" });
+  assert.equal(within(screen.getByLabelText("Task delegation")).queryByLabelText("Agent"), null);
+  await user.click(screen.getByRole("button", { name: "Recheck delegation options" }));
+  await within(screen.getByLabelText("Task delegation")).findByLabelText("Agent");
+  assert.equal(fixture.counts.get("/api/agent-console/planning-task-delegation/options"), 2);
+});
+
 test("same-Task reminder save reloads both projections, rejects an old read, and offers bounded retry", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   const fixture = mutationRefreshFixture();

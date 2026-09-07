@@ -90,6 +90,7 @@ const PRIVATE_PLANNING_PATH = "/bridge/v1/planning";
 const MAXIMUM_RESPONSE_BYTES = 768 * 1024;
 const READ_TIMEOUT_MILLISECONDS = 3_500;
 export const PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS = 8_000;
+export const PLANNING_DELEGATION_OPTIONS_BRIDGE_TIMEOUT_MILLISECONDS = 10_000;
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/u;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
 const CONVERSATION_ID = /^conv_[A-Za-z0-9][A-Za-z0-9_.:-]{0,122}$/u;
@@ -362,7 +363,7 @@ function delegationRevision(value: unknown): value is number { return Number.isS
 
 export async function fetchBridgePlanningTaskDelegationOptions(taskId: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskDelegationOptions> {
   if (!TASK_ID.test(taskId)) throw new BridgePlanningError("planning_request_invalid");
-  const { response, payload } = await request(`${PRIVATE_TASK_DELEGATION_OPTIONS_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment);
+  const { response, payload } = await request(`${PRIVATE_TASK_DELEGATION_OPTIONS_PATH}?${new URLSearchParams({ task_id: taskId }).toString()}`, fetcher, environment, {}, PLANNING_DELEGATION_OPTIONS_BRIDGE_TIMEOUT_MILLISECONDS);
   if (response.status === 200) return parse(() => parsePlanningTaskDelegationOptions(payload, taskId));
   fixedFailure(response, payload);
 }

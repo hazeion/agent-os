@@ -29,6 +29,7 @@ import {
   readPlanningTaskDelegationOptions,
   recoverPlanningTaskDelegation,
   refreshPlanningTaskDelegation,
+  DELEGATION_DISCOVERY_GUIDANCE,
 } from "../src/lib/public-planning-task-delegation-actions.ts";
 import { PublicPlanningError } from "../src/lib/public-planning.ts";
 
@@ -53,6 +54,28 @@ test("delegation action parsers reject private fields and require a capability-s
   assert.deepEqual(parsePlanningTaskDelegationPreview(delegatePreview, task.id), delegatePreview);
   assert.throws(() => parsePlanningTaskDelegationOptions({ ...options, connection_binding_id: "private" }, task.id), PublicPlanningError);
   assert.throws(() => parsePlanningTaskDelegationPreview({ ...delegatePreview, target: { ...delegatePreview.target, run_id: "private" } }, task.id), PublicPlanningError);
+});
+
+test("delegation unavailability accepts only closed reason codes without provider detail", () => {
+  for (const reason of Object.keys(DELEGATION_DISCOVERY_GUIDANCE)) {
+    const unavailable = { ...current, options: { available: false, reason } };
+    assert.deepEqual(parsePlanningTaskDelegationOptions(unavailable).options, unavailable.options);
+  }
+  for (const invalid of [{ available: false }, { available: false, reason: ["runtime_missing"] }, { available: false, reason: "private-path" }, { available: false, reason: "runtime_missing", error: "private" }]) {
+    assert.throws(() => parsePlanningTaskDelegationOptions({ ...current, options: invalid }), PublicPlanningError);
+  }
+});
+
+test("delegation option reads leave time for bounded private discovery without changing mutation deadlines", async () => {
+  const originalTimeout = AbortSignal.timeout; const originalFetch = globalThis.fetch;
+  const deadlines: number[] = [];
+  AbortSignal.timeout = (milliseconds) => { deadlines.push(milliseconds); return originalTimeout(milliseconds); };
+  try {
+    await fetchBridgePlanningTaskDelegationOptions(task.id, async () => json(options), environment);
+    globalThis.fetch = async () => json(options);
+    await readPlanningTaskDelegationOptions(task.id);
+  } finally { AbortSignal.timeout = originalTimeout; globalThis.fetch = originalFetch; }
+  assert.deepEqual(deadlines, [10_000, 12_000]);
 });
 
 test("delegation bridge functions use only fixed paths and exact payloads", async () => {

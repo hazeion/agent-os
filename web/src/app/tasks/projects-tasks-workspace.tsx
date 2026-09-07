@@ -60,6 +60,8 @@ import {
   readPlanningTaskDelegationOptions,
   recoverPlanningTaskDelegation,
   refreshPlanningTaskDelegation,
+  DELEGATION_DISCOVERY_GUIDANCE,
+  type DelegationDiscoveryReason,
   type DelegationAction,
   type PublicPlanningTaskDelegationOptions,
   type PublicPlanningTaskDelegationPreview,
@@ -189,6 +191,8 @@ export function ProjectsTasksWorkspace() {
   const [executionState, setExecutionState] = useState<LoadState>("loading");
   const [taskDelegation, setTaskDelegation] = useState<PublicPlanningTaskDelegation | null>(null);
   const [delegationState, setDelegationState] = useState<LoadState>("loading");
+  const [delegationOptionsState, setDelegationOptionsState] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
+  const [delegationOptionsReason, setDelegationOptionsReason] = useState<DelegationDiscoveryReason | null>(null);
   const [delegationOptions, setDelegationOptions] = useState<PublicPlanningTaskDelegationOptions | null>(null);
   const [delegationForm, setDelegationForm] = useState(false);
   const [delegationProfile, setDelegationProfile] = useState("");
@@ -266,6 +270,7 @@ export function ProjectsTasksWorkspace() {
   const requestedTaskResolved = useRef(false);
   const executionGeneration = useRef(0);
   const delegationGeneration = useRef(0);
+  const delegationOptionsRequest = useRef<object | null>(null);
   // An ambiguous delegation delivery is an external mutation boundary. Keep the
   // exact receipt outside render state too, so a rapid second click cannot mint
   // a new key before React has repainted the recovery-only presentation.
@@ -292,6 +297,8 @@ export function ProjectsTasksWorkspace() {
       setExecutionState(taskId ? "loading" : "empty");
       setTaskDelegation(null);
       setDelegationState(taskId ? "loading" : "empty");
+      delegationOptionsRequest.current = null;
+      setDelegationOptionsState("idle"); setDelegationOptionsReason(null);
       setDelegationOptions(null);
       setDelegationForm(false);
       setDelegationPreview(null);
@@ -693,21 +700,40 @@ export function ProjectsTasksWorkspace() {
   }
 
   async function openDelegationForm() {
-    if (!selectedTask || busy) return;
-    setBusy(true); setNotice("Checking delegation options…");
+    if (!selectedTask || busy || delegationOptionsRequest.current) return;
+    const taskId = selectedTask.id;
+    const revision = selectedTask.revision;
+    const selection = taskSelectionGeneration.current;
+    const projection = delegationGeneration.current;
+    const request = {};
+    delegationOptionsRequest.current = request;
+    const isCurrent = () => delegationOptionsRequest.current === request && selectedTaskRef.current === taskId && taskSelectionGeneration.current === selection && delegationGeneration.current === projection;
+    setDelegationOptionsState("loading"); setDelegationOptionsReason(null); setDelegationOptions(null);
     try {
-      const options = await readPlanningTaskDelegationOptions(selectedTask.id);
-      if (selectedTaskRef.current !== selectedTask.id || options.task.revision !== selectedTask.revision) return;
+      const options = await readPlanningTaskDelegationOptions(taskId);
+      if (!isCurrent()) return;
+      if (options.task.revision !== revision) {
+        try { await refreshExecution(taskId); }
+        catch { if (isCurrent()) setExecutionState("unavailable"); }
+        if (!isCurrent()) return;
+        setDelegationOptionsState("unavailable"); setDelegationOptionsReason("transient_failure");
+        return;
+      }
       setDelegationOptions(options);
       if (options.options.available) {
         setDelegationProfile(options.options.profiles[0]?.id ?? "");
         setDelegationBoard(options.options.boards[0]?.id ?? "");
         setDelegationWorkspace(options.options.workspaces[0]);
-        setDelegationForm(true);
-        setNotice("Choose the Hermes target, then preview the delegation.");
-      } else setNotice("Delegation is unavailable for this Task right now.");
-    } catch { setNotice("Delegation options are temporarily unavailable."); }
-    finally { setBusy(false); }
+        setDelegationForm(true); setDelegationOptionsState("ready");
+      } else {
+        if (options.options.reason === "already_delegated") applyDelegationResult(options);
+        setDelegationOptionsReason(options.options.reason); setDelegationOptionsState("unavailable");
+      }
+    } catch {
+      if (isCurrent()) { setDelegationOptionsReason("transient_failure"); setDelegationOptionsState("unavailable"); }
+    } finally {
+      if (delegationOptionsRequest.current === request) delegationOptionsRequest.current = null;
+    }
   }
 
   async function previewDelegation() {
@@ -800,6 +826,8 @@ export function ProjectsTasksWorkspace() {
 
   function invalidateTaskProjections(taskId: string, invalidateDetails = false) {
     if (selectedTaskRef.current !== taskId) return;
+    delegationOptionsRequest.current = null;
+    setDelegationOptionsState("idle"); setDelegationOptionsReason(null); setDelegationOptions(null); setDelegationForm(false); setDelegationPreview(null);
     executionGeneration.current += 1;
     delegationGeneration.current += 1;
     if (invalidateDetails) taskDetailGeneration.current += 1;
@@ -810,6 +838,7 @@ export function ProjectsTasksWorkspace() {
   }
 
   function invalidatePlanningCollections() {
+    if (delegationOptionsRequest.current) { delegationOptionsRequest.current = null; setDelegationOptionsState("idle"); setDelegationOptionsReason(null); setDelegationOptions(null); }
     taskPageGeneration.current += 1;
     planningSearchGeneration.current += 1;
     setLoadingMore(false);
@@ -1279,9 +1308,12 @@ export function ProjectsTasksWorkspace() {
         </section>
         <section aria-label="Task delegation" className="planning-execution">
           <p className="console-kicker">Delegation</p>
+          <p>Run once uses the assigned Mentat Agent. Delegation creates durable work in Hermes Kanban using a supported Hermes profile and board.</p>
           {delegationRecovery ? <div className="planning-run-once-confirmation"><p>The prior delivery is indeterminate. Reconcile it without sending it again.</p><button disabled={busy} onClick={() => void recoverDelegation()} type="button">Reconcile prior delivery</button></div> : delegationState === "loading" ? <p>Loading delegation status…</p> : delegationState === "unavailable" || !selectedTaskDelegation ? <p>Delegation status is temporarily unavailable.</p> : selectedTaskDelegation.delegation.available === false ? <>
             <p>This Task has not been delegated.</p>
-            {!delegationForm ? <button disabled={busy} onClick={() => void openDelegationForm()} type="button">Delegate</button> : delegationOptions?.options.available ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void previewDelegation(); }}>
+            {delegationOptionsState === "loading" ? <p aria-live="polite">Checking available Hermes profiles and boards...</p> : null}
+            {delegationOptionsReason ? <div aria-live="polite"><p>{DELEGATION_DISCOVERY_GUIDANCE[delegationOptionsReason]}</p><a href="https://hermes-agent.nousresearch.com/" rel="noreferrer" target="_blank">Hermes setup guide</a></div> : null}
+            {!delegationForm ? <button disabled={busy || delegationOptionsState === "loading"} onClick={() => void openDelegationForm()} type="button">{delegationOptionsState === "loading" ? "Checking options..." : delegationOptionsState === "unavailable" ? "Recheck delegation options" : "Delegate"}</button> : delegationOptions?.options.available ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void previewDelegation(); }}>
               <label><span>Agent</span><select disabled={busy} onChange={(event) => setDelegationProfile(event.target.value)} value={delegationProfile}>{delegationOptions.options.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
               <label><span>Board</span><select disabled={busy} onChange={(event) => setDelegationBoard(event.target.value)} value={delegationBoard}>{delegationOptions.options.boards.map((board) => <option key={board.id} value={board.id}>{board.name}</option>)}</select></label>
               <label><span>Workspace</span><select disabled={busy} onChange={(event) => setDelegationWorkspace(event.target.value as "scratch" | "worktree")} value={delegationWorkspace}>{delegationOptions.options.workspaces.map((workspace) => <option key={workspace} value={workspace}>{workspace}</option>)}</select></label>

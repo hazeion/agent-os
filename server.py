@@ -5654,53 +5654,103 @@ def _planning_delegation_delegate_intent(payload: object) -> tuple[dict | None, 
     }, None
 
 
+PLANNING_DELEGATION_DISCOVERY_SECONDS = 8.0
+PLANNING_DELEGATION_DISCOVERY_PHASE_SECONDS = 2.0
+
+
 def mentat_planning_task_delegation_options_payload(task_id: str) -> tuple[dict, int]:
-    """Read the bounded selectable targets for a new delegation."""
+    """Read supported targets with bounded, secret-free unavailability reasons."""
 
     current, status = _planning_delegation_current_payload(task_id)
     if status != 200:
         return current, status
+
+    def unavailable(reason: str) -> tuple[dict, int]:
+        return {"schema_version": 1, **current, "options": {"available": False, "reason": reason}}, 200
+
     if current["delegation"]["available"]:
-        return {"schema_version": 1, **current, "options": {"available": False}}, 200
+        return unavailable("already_delegated")
+    deadline = time.monotonic() + PLANNING_DELEGATION_DISCOVERY_SECONDS
+
+    def phase_budget(operations: int = 1) -> float:
+        remaining = (deadline - time.monotonic()) / operations
+        if remaining < 0.1:
+            raise TimeoutError
+        return min(PLANNING_DELEGATION_DISCOVERY_PHASE_SECONDS, remaining)
+
     try:
         adapter = kanban_adapter()
-        capabilities = adapter.detect_capabilities().get("capabilities", {})
-        profiles_payload = hermes_profiles_payload()
-        boards_payload = adapter.list_boards() if capabilities.get("boards.read") else {"ok": False}
-    except (OSError, RemoteHermesError, sqlite3.Error):
-        return _planning_delegation_error("unavailable", 503)
-    if (
-        not capabilities.get("tasks.create")
-        or profiles_payload.get("status") != "available"
-        or not boards_payload.get("ok")
-    ):
-        return {"schema_version": 1, **current, "options": {"available": False}}, 200
-    profiles = []
-    for profile in profiles_payload.get("profiles", [])[:128]:
-        if not isinstance(profile, dict):
-            continue
-        identifier = _planning_delegation_text(profile.get("id"), 80)
-        if identifier is None:
-            continue
-        profiles.append({"id": identifier, "name": _planning_delegation_text(profile.get("name"), 160) or identifier})
-    boards = []
-    for board in boards_payload.get("boards", [])[:128]:
-        if not isinstance(board, dict):
-            continue
-        identifier = _planning_delegation_text(board.get("id"), 64)
-        if identifier is None:
-            continue
-        boards.append({"id": identifier, "name": _planning_delegation_text(board.get("name"), 160) or identifier})
-    return {
-        "schema_version": 1,
-        **current,
-        "options": {
-            "available": bool(profiles and boards),
-            "profiles": profiles,
-            "boards": boards,
-            "workspaces": ["scratch", "worktree"],
-        },
-    }, 200
+        remote = isinstance(adapter, RemoteHermesKanbanAdapter)
+        if isinstance(adapter, HermesKanbanAdapter) and not adapter.executable:
+            return unavailable("runtime_missing")
+
+        def adapter_budget(operations: int = 1) -> None:
+            timeout = phase_budget(operations)
+            if remote:
+                adapter.client.timeout_seconds = timeout
+            elif isinstance(adapter, HermesKanbanAdapter):
+                adapter.timeout = timeout
+
+        # Local detection invokes exactly version and Kanban help. The adapter
+        # is private to this read; no mutation timeout policy is changed.
+        adapter_budget(2)
+        detected = adapter.detect_capabilities()
+        if not isinstance(detected, dict):
+            return unavailable("transient_failure")
+        capabilities = detected.get("capabilities")
+        if detected.get("status") == "unavailable":
+            return unavailable("connection_unavailable" if remote else "transient_failure")
+        if detected.get("status") == "unsupported":
+            return unavailable("capability_missing")
+        if detected.get("status") != "available":
+            return unavailable("transient_failure")
+        if not isinstance(capabilities, dict) or capabilities.get("tasks.create") is not True or capabilities.get("boards.read") is not True or capabilities.get("tasks.read") is not True:
+            return unavailable("capability_missing")
+        profiles_payload = hermes_profiles_payload(timeout=phase_budget())
+        if not isinstance(profiles_payload, dict) or profiles_payload.get("status") != "available":
+            return unavailable("connection_unavailable" if remote else "profiles_unavailable")
+        raw_profiles = profiles_payload.get("profiles")
+        if not isinstance(raw_profiles, list):
+            return unavailable("transient_failure")
+        profiles = []
+        for profile in raw_profiles[:128]:
+            if not isinstance(profile, dict) or profile.get("available") is False or profile.get("served") is False:
+                continue
+            identifier = profile.get("id")
+            if not isinstance(identifier, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", identifier) is None:
+                continue
+            if any(item["id"] == identifier for item in profiles):
+                continue
+            profiles.append({"id": identifier, "name": _planning_delegation_text(profile.get("name"), 160) or identifier})
+        if not profiles:
+            return unavailable("profile_missing")
+        adapter_budget()
+        boards_payload = adapter.list_boards()
+        if not isinstance(boards_payload, dict) or boards_payload.get("ok") is not True:
+            return unavailable("connection_unavailable" if remote else "boards_unavailable")
+        raw_boards = boards_payload.get("boards")
+        if not isinstance(raw_boards, list):
+            return unavailable("transient_failure")
+        boards = []
+        for board in raw_boards[:128]:
+            if not isinstance(board, dict) or board.get("archived") is True:
+                continue
+            identifier = board.get("id")
+            if not isinstance(identifier, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", identifier) is None:
+                continue
+            if any(item["id"] == identifier for item in boards):
+                continue
+            boards.append({"id": identifier, "name": _planning_delegation_text(board.get("name"), 160) or identifier})
+        if not boards:
+            return unavailable("board_missing")
+        phase_budget()
+        if load_remote_hermes_connection(DATA_DIR).binding_id != kanban_adapter_binding(adapter):
+            return unavailable("connection_unavailable")
+    except RemoteHermesError:
+        return unavailable("connection_unavailable")
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return unavailable("transient_failure")
+    return {"schema_version": 1, **current, "options": {"available": True, "profiles": profiles, "boards": boards, "workspaces": ["scratch", "worktree"]}}, 200
 
 
 def mentat_planning_task_delegation_preview(task_id: str, payload: object) -> tuple[dict, int]:
@@ -11528,13 +11578,13 @@ def hermes_python_path() -> str | None:
     return None
 
 
-def hermes_profiles_payload() -> dict:
+def hermes_profiles_payload(*, timeout: float | None = None) -> dict:
     """Return normalized profile capabilities without exposing Hermes paths or secrets."""
     selection = load_remote_hermes_connection(DATA_DIR)
     if selection.mode == "remote":
         try:
             profiles = RemoteHermesKanbanAdapter(
-                RemoteHermesClient(selection.endpoint or "", selection.api_key or "")
+                RemoteHermesClient(selection.endpoint or "", selection.api_key or "", **({"timeout_seconds": timeout} if timeout is not None else {}))
             ).client.read_profiles()
         except RemoteHermesError:
             return {"status": "unavailable", "active_profile": None, "profiles": [], "capabilities": {}}
@@ -11564,6 +11614,7 @@ def hermes_profiles_payload() -> dict:
         hermes_python_path(),
         HERMES_HOME,
         cwd=BASE_DIR,
+        **({"timeout": timeout} if timeout is not None else {}),
     )
 
 

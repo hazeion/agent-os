@@ -2366,9 +2366,12 @@ def _planning_delegation_options(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or not isinstance(value.get("available"), bool):
         raise BridgeConversationProjectionError("planning_delegation_invalid")
     if value["available"] is False:
-        if set(value) != {"available"}:
+        if set(value) != {"available", "reason"} or not isinstance(value.get("reason"), str) or value["reason"] not in {
+            "already_delegated", "runtime_missing", "capability_missing", "profile_missing",
+            "profiles_unavailable", "board_missing", "boards_unavailable", "connection_unavailable", "transient_failure",
+        }:
             raise BridgeConversationProjectionError("planning_delegation_invalid")
-        return {"available": False}
+        return {"available": False, "reason": value["reason"]}
     required = {"available", "profiles", "boards", "workspaces"}
     profiles = value.get("profiles")
     boards = value.get("boards")
