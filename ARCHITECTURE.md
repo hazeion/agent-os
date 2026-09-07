@@ -1101,6 +1101,13 @@ operations. It omits workspace paths, process identifiers, arbitrary metadata,
 and secrets from browser payloads. Mentat advertises a Kanban operation only
 when runtime discovery reports the corresponding capability.
 
+Delegation option discovery is read-only and does not block unrelated planner
+navigation. It returns fixed unavailable reasons and uses an eight-second
+discovery budget inside longer Node/browser deadlines. Remote discovery shares
+an absolute GET-only deadline across nested HTTP reads, with exact socket
+shutdown and bounded credential-free DNS workers. This does not change the
+timeouts or confirmation rules for actual delegation mutations.
+
 Creating a delegation requires:
 
 1. a Mentat task, Hermes profile, Kanban board, supported workspace mode, and
