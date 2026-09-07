@@ -1637,7 +1637,7 @@ class RunRepository:
             "FROM mentat_task_execution_attempts a "
             "JOIN mentat_runs r ON r.id = a.run_id "
             "LEFT JOIN mentat_task_execution_reviews rv ON rv.run_id = a.run_id "
-            "WHERE a.task_id = ? ORDER BY a.created_at DESC, a.run_id DESC LIMIT 8",
+            "WHERE a.task_id = ? ORDER BY a.task_revision DESC, a.created_at DESC, a.run_id DESC LIMIT 8",
             (identifier,),
         ).fetchall()
         result: list[dict[str, Any]] = []

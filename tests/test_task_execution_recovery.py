@@ -194,6 +194,27 @@ class TaskExecutionRecoveryTests(unittest.TestCase):
                 with self.assertRaises(RunRepositoryConflict):
                     repository.review_task_execution(**request)
 
+    def test_latest_attempt_uses_task_revision_when_timestamps_tie(self):
+        tied_time = timestamp()
+        with patch(__name__ + ".timestamp", return_value=tied_time), self.fixture() as (_root, connection, repository, task, digest):
+            repository.review_task_execution(**self.request(repository, task["id"]))
+            planned = TaskRepository(connection).get(task["id"])
+            second = repository.reserve_dispatch(
+                idempotency_key="same-second-second-key", dispatch_id="dispatch_same_second", run_id="run_aaa_second",
+                task=planned.document, task_revision=planned.revision, agent_id="agent-main", runtime_type="codex",
+                runtime_config_id="default", binding_digest=digest, capabilities=("run.start",), planning_execution=True, now=tied_time,
+            )
+            repository.claim_dispatch_attempt(dispatch_id=second.dispatch_id, expected_binding_digest=digest, now=tied_time)
+            repository.record_submission_outcome(dispatch_id=second.dispatch_id, outcome=SubmissionOutcome(
+                SubmissionDisposition.ACCEPTED, run=AgentRun(id=second.run_id, task_id=task["id"], agent_id="agent-main", runtime_type="codex", status=RunStatus.FAILED),
+                runtime_run_ref="private-second-reference",
+            ), now=tied_time)
+            attempts = repository.task_execution_attempts(task["id"])
+            self.assertEqual(attempts[0]["created_at"], attempts[1]["created_at"])
+            self.assertEqual(attempts[0]["run_id"], second.run_id)
+            self.assertEqual(repository.task_execution_recovery(task["id"])["run_id"], second.run_id)
+            repository.validate()
+
 
 if __name__ == "__main__":
     unittest.main()
