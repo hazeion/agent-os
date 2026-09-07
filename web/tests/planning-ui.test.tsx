@@ -77,7 +77,7 @@ test("Task integrations use dedicated exact mutations and request notification p
     if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [{ ...listTask, revision: 1 }] });
     if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: detailed });
     if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_revision: 1 });
-    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: null, revision: 1 } });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: null, revision: 1 } });
     if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json({ ...envelope, delegation: { available: false, reason: "not_delegated" }, task: { id: task.id, revision: 1 } });
     if (url.pathname === "/api/agent-console/planning-calendar") { const start = url.searchParams.get("week_start")!; const end = new Date(`${start}T00:00:00Z`); end.setUTCDate(end.getUTCDate() + 7); return Response.json({ ...envelope, calendar_id: "primary", event_count: 1, events: [{ all_day: false, end: "2026-09-08T21:00:00Z", id: "event_alpha", start: "2026-09-08T20:00:00Z", title: "Focus" }], label: "This week", read_only: true, timezone: url.searchParams.get("timezone"), week_end: end.toISOString().slice(0, 10), week_start: start }); }
     if (url.pathname === "/api/agent-console/planning-note-picker") return Response.json({ ...envelope, available: true, count: 1, notes: [{ path: "Plans/Alpha.md", title: "Alpha" }], query: url.searchParams.get("q") ?? "", truncated: false });
@@ -236,9 +236,9 @@ test("Map is opt-in, follows the shared filter, and selects through the existing
 test("Task execution stays unavailable until its safe projection arrives, then previews and starts one exact Run", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   const executionTask = { ...task, assigned_agent_id: "agent_alpha", workflow_stage: "planned" as const };
-  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: executionTask };
+  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: executionTask };
   const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: executionTask };
-  const started = { ...envelope, action: "run_once" as const, duplicate: false, execution: { attempt_count: 1, attempts: [{ agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched" as const, status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" }], available: false, reason: "unavailable" as const, review: { available: false, run_id: null } }, task: { ...executionTask, revision: 2, workflow_stage: "in_progress" as const, planning_state: "in_progress" as const, status: "in progress" as const } };
+  const started = { ...envelope, action: "run_once" as const, duplicate: false, execution: { attempt_count: 1, attempts: [{ agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched" as const, status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" }], available: false, reason: "unavailable" as const, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...executionTask, revision: 2, workflow_stage: "in_progress" as const, planning_state: "in_progress" as const, status: "in progress" as const } };
   const calls: Array<{ body: unknown; path: string }> = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString(), origin); calls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, path: `${url.pathname}${url.search}` });
@@ -275,7 +275,7 @@ test("Task inspector presents the bounded delegation summary and an honest not-d
   dom.reconfigure({ url: `${origin}/tasks` });
   const beta = { ...task, id: "task_beta", title: "Prepare Beta" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
-  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
+  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
   const delegation = { ...envelope, delegation: { artifact_count: 0, attempts: 2, available: true as const, last_outcome: "completed" as const, last_synced_at: "2026-08-30T11:59:00Z", latest_question: "Confirm the deployment window.", review_state: "pending" as const, state: "ready_for_review" as const, summary: "The delegated implementation is ready for review.", sync_state: "synced" as const, updated_at: "2026-08-30T12:00:00Z" }, task: { id: task.id, revision: task.revision } };
   globalThis.fetch = async (input) => {
     const url = new URL(input.toString(), origin); const taskId = url.searchParams.get("task_id");
@@ -327,7 +327,7 @@ test("Task inspector presents selected Task planning details as bounded, read-on
     if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
     if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: detail });
     if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json(dependencies);
-    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task });
     if (url.pathname === "/api/agent-console/planning-task-delegation") return Response.json({ ...envelope, delegation: { available: false, reason: "not_delegated" }, task: { id: task.id, revision: task.revision } });
     throw new Error(`${init?.method ?? "GET"} ${url.pathname}`);
   };
@@ -347,7 +347,7 @@ test("Task inspector presents selected Task planning details as bounded, read-on
 
 test("an indeterminate delegation delivery can only be reconciled, never confirmed again", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
-  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task };
+  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task };
   const current = { ...envelope, delegation: { available: false as const, reason: "not_delegated" as const }, task: { id: task.id, revision: task.revision } };
   const options = { ...current, options: { available: true as const, boards: [{ id: "default", name: "Default" }], profiles: [{ id: "researcher", name: "Researcher" }], workspaces: ["scratch", "worktree"] as ["scratch", "worktree"] } };
   const preview = { ...current, action: "delegate" as const, confirmation_id: `task_delegate_${"a".repeat(24)}`, effects: ["Create one Hermes Task."], requires_confirmation: true as const, target: { board_id: "default", profile_id: "researcher", workspace: "scratch" as const } };
@@ -380,7 +380,7 @@ test("an indeterminate delegation delivery can only be reconciled, never confirm
 
 test("an indeterminate delegation action can only be reconciled, never confirmed again", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
-  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task };
+  const execution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task };
   const current = { ...envelope, delegation: { artifact_count: 0, attempts: 1, available: true as const, last_outcome: null, last_synced_at: null, latest_question: null, review_state: "pending" as const, state: "ready_for_review" as const, summary: null, sync_state: "synced" as const, updated_at: "2026-09-02T12:00:00Z" }, task: { id: task.id, revision: task.revision } };
   const preview = { ...current, action: "accept" as const, confirmation_id: `delegation_action_${"b".repeat(24)}`, effects: ["Accept the delegated result."], requires_confirmation: true as const };
   const calls: Array<{ body: unknown; path: string }> = [];
@@ -413,7 +413,7 @@ test("List selection clears a same-revision Task's pending Run-once confirmation
   const alpha = { ...task, assigned_agent_id: "agent_alpha" };
   const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
-  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: alpha };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: alpha };
   const betaExecution = deferred<Response>();
   const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: alpha };
   globalThis.fetch = async (input) => {
@@ -438,7 +438,7 @@ test("List selection clears a same-revision Task's pending Run-once confirmation
   await within(inspector).findByText("Prepare the Beta changes.");
   assert.equal(within(inspector).queryByRole("button", { name: "Start Run once" }), null);
   assert.equal(within(inspector).queryByRole("button", { name: "Accept" }), null);
-  betaExecution.resolve(Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta }));
+  betaExecution.resolve(Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: beta }));
   await within(inspector).findByRole("button", { name: "Run once" });
 });
 
@@ -449,7 +449,7 @@ test("Map selection clears a same-revision Task's review controls before its exe
   const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
   const reviewAttempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "review_ready" as const, status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
-  const alphaExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: true, run_id: "run_alpha" } }, task: alpha };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, recovery: { available: false, run_id: null, run_revision: null }, review: { available: true, run_id: "run_alpha" } }, task: alpha };
   const betaExecution = deferred<Response>();
   const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [{ ...dependencyMap.nodes[0], workflow_stage: "review" as const }, { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
   globalThis.fetch = async (input) => {
@@ -474,7 +474,7 @@ test("Map selection clears a same-revision Task's review controls before its exe
   await within(inspector).findByText("Prepare the Beta changes.");
   assert.equal(within(inspector).queryByRole("button", { name: "Accept" }), null);
   assert.equal(within(inspector).queryByRole("button", { name: "Start Run once" }), null);
-  betaExecution.resolve(Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta }));
+  betaExecution.resolve(Response.json({ ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: beta }));
   await within(inspector).findByRole("button", { name: "Run once" });
 });
 
@@ -485,8 +485,8 @@ test("a delayed off-page Map lookup cannot replace a newer List selection", asyn
   const gamma = { ...task, assigned_agent_id: "agent_alpha", id: "task_gamma", title: "Investigate Gamma" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
   const gammaLookup = deferred<Response>();
-  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
-  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: beta };
   const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: task.id, to_task_id: gamma.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 3, node_total: 3, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }, { blocked: false, id: gamma.id, project_id: project.id, project_name: project.name, title: gamma.title, workflow_stage: "planned" as const }] };
   globalThis.fetch = async (input) => {
     const url = new URL(input.toString(), origin);
@@ -522,8 +522,8 @@ test("a late Run once preview cannot confirm a Task selected from the dependency
   const alpha = { ...task, assigned_agent_id: "agent_alpha" };
   const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
-  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: alpha };
-  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: alpha };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: beta };
   const latePreview = deferred<Response>();
   const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
   globalThis.fetch = async (input) => {
@@ -564,8 +564,8 @@ test("a late Run once mutation cannot overwrite a Task selected from the depende
   const alpha = { ...task, assigned_agent_id: "agent_alpha" };
   const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
-  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: alpha };
-  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: alpha };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: beta };
   const preview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: alpha };
   const lateMutation = deferred<Response>();
   const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
@@ -594,7 +594,7 @@ test("a late Run once mutation cannot overwrite a Task selected from the depende
   const inspector = screen.getByLabelText("Task inspector");
   await within(inspector).findByText("Prepare the Beta changes.");
   await within(inspector).findByRole("button", { name: "Run once" });
-  lateMutation.resolve(Response.json({ ...envelope, action: "run_once", duplicate: false, execution: { attempt_count: 1, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...alpha, revision: 2, workflow_stage: "in_progress", planning_state: "in_progress", status: "in progress" } }, { status: 202 }));
+  lateMutation.resolve(Response.json({ ...envelope, action: "run_once", duplicate: false, execution: { attempt_count: 1, attempts: [], available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...alpha, revision: 2, workflow_stage: "in_progress", planning_state: "in_progress", status: "in progress" } }, { status: 202 }));
   await waitFor(() => {
     assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Beta changes/u);
     assert.ok(within(inspector).getByRole("button", { name: "Run once" }));
@@ -608,8 +608,8 @@ test("a delayed stage save cannot overwrite a Task selected from the dependency 
   const alpha = { ...task, assigned_agent_id: "agent_alpha" };
   const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
-  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: alpha };
-  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: alpha };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: beta };
   const stageSave = deferred<Response>();
   const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [dependencyMap.nodes[0], { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
   globalThis.fetch = async (input, init) => {
@@ -648,8 +648,8 @@ test("a stage revision change hides stale review actions until its execution ref
   const updatedTask = { ...task, revision: 2, workflow_stage: "waiting" as const };
   const updated = { ...updatedTask, assigned_agent_id: "agent_alpha" };
   const reviewAttempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "review_ready" as const, status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
-  const reviewExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: true, run_id: "run_alpha" } }, task: alpha };
-  const refreshedExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: false, run_id: null } }, task: updated };
+  const reviewExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, recovery: { available: false, run_id: null, run_revision: null }, review: { available: true, run_id: "run_alpha" } }, task: alpha };
+  const refreshedExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: updated };
   const staleDetail = deferred<Response>();
   let stageSaved = false;
   globalThis.fetch = async (input, init) => {
@@ -684,9 +684,9 @@ test("Request changes submits one bounded review note and resets the review edit
   const updatedTask = { ...task, revision: 2, workflow_stage: "planned" as const, planning_state: "planned" as const };
   const updated = { ...updatedTask, assigned_agent_id: "agent_alpha" };
   const reviewAttempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "review_ready" as const, status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
-  const initialExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: true, run_id: "run_alpha" } }, task: alpha };
+  const initialExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, recovery: { available: false, run_id: null, run_revision: null }, review: { available: true, run_id: "run_alpha" } }, task: alpha };
   const changedAttempt = { ...reviewAttempt, review_action: "request_changes" as const, review_note: "Please add the missing acceptance criteria.", review_task_revision: 1, state: "changes_requested" as const, task_revision: 2 };
-  const changedExecution = { ...envelope, execution: { attempt_count: 1, attempts: [changedAttempt], available: true, reason: null, review: { available: false, run_id: null } }, task: updated };
+  const changedExecution = { ...envelope, execution: { attempt_count: 1, attempts: [changedAttempt], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: updated };
   const reviewBodies: unknown[] = [];
   let changed = false;
   globalThis.fetch = async (input, init) => {
@@ -718,6 +718,47 @@ test("Request changes submits one bounded review note and resets the review edit
   assert.equal(typeof body.idempotency_key, "string");
 });
 
+test("failed Task recovery explicitly returns to Planned and retains its Run without dispatching", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` });
+  const alpha = { ...task, assigned_agent_id: "agent_alpha", workflow_stage: "in_progress" as const, planning_state: "in_progress" as const };
+  const planned = { ...task, revision: 2, assigned_agent_id: "agent_alpha" };
+  const attempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_failed_alpha", runtime_type: "codex", state: "dispatched" as const, status: "failed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
+  const recovery = { available: true, run_id: attempt.run_id, run_revision: 5 };
+  const initial = { ...envelope, execution: { attempt_count: 1, attempts: [attempt], available: false, reason: "unavailable", recovery, review: { available: false, run_id: null } }, task: alpha };
+  const resolved = { ...envelope, execution: { ...initial.execution, attempts: [{ ...attempt, state: "changes_requested", review_action: "request_changes", review_note: "Updated the CLI." }], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null } }, task: planned };
+  let changed = false;
+  const posts: Array<{ path: string; body: Record<string, unknown> }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input.toString(), origin);
+    if (init?.method === "POST") posts.push({ path: url.pathname, body: JSON.parse(String(init.body)) });
+    if (url.pathname === "/api/agent-console/planning-overview") return Response.json({ ...overview, attention: [], attention_count: 0 });
+    if (url.pathname === "/api/agents") return Response.json({ ...envelope, agents: [], count: 0 });
+    if (url.pathname === "/api/agent-console/planning-tasks") return Response.json({ ...envelope, count: 1, next_cursor: null, project, tasks: [listTask] });
+    if (url.pathname === "/api/agent-console/planning-task-detail") return Response.json({ ...envelope, project, task: { ...taskDetail, ...(changed ? planned : alpha) } });
+    if (url.pathname === "/api/agent-console/planning-task-dependencies") return Response.json({ ...dependencies, task_revision: changed ? planned.revision : alpha.revision });
+    if (url.pathname === "/api/agent-console/planning-task-execution") return Response.json(changed ? resolved : initial);
+    if (url.pathname.endsWith("/execution/review")) { changed = true; return Response.json({ ...resolved, action: "request_changes", duplicate: false }); }
+    if (url.pathname === "/api/agent-console/planning-task") return Response.json({ ...envelope, project, task: { ...task, revision: 2 } });
+    throw new Error(`Unexpected ${url.pathname}`);
+  };
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/u }));
+  await user.click(await screen.findByRole("button", { name: "Return to Planned" }));
+  assert.equal(screen.queryByRole("button", { name: "Accept" }), null);
+  assert.equal(posts.length, 0);
+  await user.type(screen.getByLabelText("Recovery note"), "Updated the CLI.");
+  await user.click(screen.getByRole("button", { name: "Confirm return to Planned" }));
+  await screen.findByText("Task returned to Planned. Prior Run evidence is retained; no new Run was started.");
+  await screen.findByRole("button", { name: "Run once" });
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].path, `/api/planning/tasks/${task.id}/execution/review`);
+  assert.deepEqual({ ...posts[0].body, idempotency_key: "verified" }, { action: "request_changes", expected_revision: 1, expected_run_revision: 5, recovery_run_id: attempt.run_id, note: "Updated the CLI.", idempotency_key: "verified" });
+  assert.ok(String(posts[0].body.idempotency_key).length >= 16);
+  assert.equal(screen.queryByLabelText("Recovery note"), null);
+  assert.match(screen.getByLabelText("Task inspector").textContent ?? "", /changes requested · failed/u);
+});
+
 test("a late review mutation cannot overwrite a Task selected from the dependency map", async () => {
   dom.reconfigure({ url: `${origin}/tasks` });
   Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ addEventListener: () => undefined, matches: true, removeEventListener: () => undefined }) });
@@ -725,8 +766,8 @@ test("a late review mutation cannot overwrite a Task selected from the dependenc
   const beta = { ...task, assigned_agent_id: "agent_alpha", id: "task_beta", title: "Prepare Beta" };
   const betaList = { ...listTask, id: beta.id, title: beta.title, description_preview: "Prepare the Beta changes." };
   const reviewAttempt = { agent_id: "agent_alpha", completed_at: "2026-08-30T12:00:00Z", completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "review_ready" as const, status: "completed", task_revision: 1, terminal_finalized: true, updated_at: "2026-08-30T12:00:00Z" };
-  const alphaExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, review: { available: true, run_id: "run_alpha" } }, task: alpha };
-  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: beta };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 1, attempts: [reviewAttempt], available: false, reason: "unavailable" as const, recovery: { available: false, run_id: null, run_revision: null }, review: { available: true, run_id: "run_alpha" } }, task: alpha };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: beta };
   const lateMutation = deferred<Response>();
   const map = { ...dependencyMap, edge_count: 1, edge_total: 1, edges: [{ from_task_id: alpha.id, to_task_id: beta.id }], external_stub_count: 0, external_stub_total: 0, external_stubs: [], node_count: 2, node_total: 2, nodes: [{ ...dependencyMap.nodes[0], workflow_stage: "review" as const }, { blocked: false, id: beta.id, project_id: project.id, project_name: project.name, title: beta.title, workflow_stage: "planned" as const }] };
   globalThis.fetch = async (input) => {
@@ -752,7 +793,7 @@ test("a late review mutation cannot overwrite a Task selected from the dependenc
   const inspector = screen.getByLabelText("Task inspector");
   await within(inspector).findByText("Prepare the Beta changes.");
   await within(inspector).findByRole("button", { name: "Run once" });
-  lateMutation.resolve(Response.json({ ...envelope, action: "accept", duplicate: false, execution: { attempt_count: 1, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...alpha, revision: 2, workflow_stage: "done", planning_state: "done", status: "completed" } }));
+  lateMutation.resolve(Response.json({ ...envelope, action: "accept", duplicate: false, execution: { attempt_count: 1, attempts: [], available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...alpha, revision: 2, workflow_stage: "done", planning_state: "done", status: "completed" } }));
   await waitFor(() => {
     assert.match(within(inspector).getByText("Prepare the Beta changes.").textContent ?? "", /Beta changes/u);
     assert.ok(within(inspector).getByRole("button", { name: "Run once" }));
@@ -766,8 +807,8 @@ test("moving an assigned Task to planned refreshes Run once availability", async
   const inboxDetail = { ...taskDetail, ...inboxTask, assigned_agent_id: "agent_alpha" };
   const plannedTask = { ...inboxTask, planning_state: "planned" as const, revision: 2, workflow_stage: "planned" as const };
   const plannedDetail = { ...inboxDetail, ...plannedTask };
-  const unavailableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...inboxTask, assigned_agent_id: "agent_alpha" } };
-  const availableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...plannedTask, assigned_agent_id: "agent_alpha" } };
+  const unavailableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...inboxTask, assigned_agent_id: "agent_alpha" } };
+  const availableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...plannedTask, assigned_agent_id: "agent_alpha" } };
   let moved = false;
   let executionReads = 0;
   globalThis.fetch = async (input, init) => {
@@ -800,8 +841,8 @@ test("a late initial execution read cannot replace a newer stage refresh for the
   dom.reconfigure({ url: `${origin}/tasks` });
   const inboxTask = { ...task, planning_state: "inbox" as const, status: "todo" as const, workflow_stage: "inbox" as const };
   const plannedTask = { ...inboxTask, planning_state: "planned" as const, revision: 2, workflow_stage: "planned" as const };
-  const unavailableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...inboxTask, assigned_agent_id: "agent_alpha" } };
-  const availableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...plannedTask, assigned_agent_id: "agent_alpha" } };
+  const unavailableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...inboxTask, assigned_agent_id: "agent_alpha" } };
+  const availableExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...plannedTask, assigned_agent_id: "agent_alpha" } };
   const initialExecution = deferred<Response>();
   let executionReads = 0;
   globalThis.fetch = async (input, init) => {
@@ -830,8 +871,8 @@ test("a late execution refresh cannot overwrite a newly selected Task", async ()
   dom.reconfigure({ url: `${origin}/tasks` });
   const beta = { ...task, id: "task_beta", project_name: project.name, revision: 1, title: "Prepare Beta", workflow_stage: "planned" as const };
   const alphaPlanned = { ...task, revision: 2, workflow_stage: "planned" as const };
-  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
-  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: { ...beta, assigned_agent_id: "agent_alpha" } };
+  const alphaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: false, reason: "unavailable", recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...task, assigned_agent_id: "agent_alpha" } };
+  const betaExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...beta, assigned_agent_id: "agent_alpha" } };
   const lateAlphaRefresh = deferred<Response>();
   let alphaExecutionReads = 0;
   globalThis.fetch = async (input, init) => {

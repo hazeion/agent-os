@@ -2038,11 +2038,12 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
     task = _planning_execution_task(source.get("task"))
     execution = source.get("execution")
     if not isinstance(execution, dict) or set(execution) != {
-        "available", "reason", "attempts", "attempt_count", "review"
+        "available", "reason", "attempts", "attempt_count", "review", "recovery"
     }:
         raise BridgeConversationProjectionError("planning_execution_invalid")
     attempts = execution.get("attempts")
     review = execution.get("review")
+    recovery = execution.get("recovery")
     if (
         source.get("schema_version") != 1
         or type(execution.get("available")) is not bool
@@ -2056,6 +2057,9 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
         or review.get("run_id") is not None and (
             not isinstance(review["run_id"], str) or _RUN_ID.fullmatch(review["run_id"]) is None
         )
+        or not isinstance(recovery, dict)
+        or set(recovery) != {"available", "run_id", "run_revision"}
+        or type(recovery.get("available")) is not bool
     ):
         raise BridgeConversationProjectionError("planning_execution_invalid")
     public_attempts: list[dict[str, object]] = []
@@ -2102,6 +2106,19 @@ def _planning_execution_payload(source: object) -> dict[str, object]:
         or review["available"] and review["run_id"] not in {item["run_id"] for item in public_attempts if item["state"] == "review_ready"}
         or not review["available"] and review["run_id"] is not None
     ):
+        raise BridgeConversationProjectionError("planning_execution_invalid")
+    if recovery["available"]:
+        latest = public_attempts[0] if public_attempts else None
+        if (
+            latest is None or recovery["run_id"] != latest["run_id"]
+            or type(recovery["run_revision"]) is not int or recovery["run_revision"] < 1
+            or latest["state"] != "dispatched"
+            or latest["status"] not in {"failed", "cancelled", "stopped", "interrupted"}
+            or latest["dispatch_state"] != "accepted" or latest["partial"] or not latest["terminal_finalized"]
+            or execution["available"] or review["available"]
+        ):
+            raise BridgeConversationProjectionError("planning_execution_invalid")
+    elif recovery["run_id"] is not None or recovery["run_revision"] is not None:
         raise BridgeConversationProjectionError("planning_execution_invalid")
     return {"schema_version": 1, "task": task, "execution": {**execution, "attempts": public_attempts}}
 
@@ -6728,6 +6745,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 expected = {"task_id", "expected_revision", "action", "idempotency_key"}
                 if body.get("action") == "request_changes":
                     expected.add("note")
+                    if "recovery_run_id" in body or "expected_run_revision" in body:
+                        expected.update({"recovery_run_id", "expected_run_revision"})
                 if set(body) != expected:
                     self._send_json({"error": "bridge_route_not_found"}, 404)
                     return
@@ -6737,6 +6756,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 }
                 if body["action"] == "request_changes":
                     review_body["note"] = body["note"]
+                    if "recovery_run_id" in body:
+                        review_body.update({key: body[key] for key in ("recovery_run_id", "expected_run_revision")})
                 payload, status = bridge_planning_task_review_payload(
                     task_id,
                     review_body,

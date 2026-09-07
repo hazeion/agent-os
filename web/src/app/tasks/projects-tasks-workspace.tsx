@@ -190,6 +190,7 @@ export function ProjectsTasksWorkspace() {
   const [delegationRecovery, setDelegationRecovery] = useState<DelegationRecovery | null>(null);
   const [runOnceConfirmation, setRunOnceConfirmation] = useState<{ confirmationId: string; idempotencyKey: string; revision: number; taskId: string } | null>(null);
   const [requestChanges, setRequestChanges] = useState(false);
+  const [recoveryConfirmation, setRecoveryConfirmation] = useState<{ taskId: string; revision: number; runId: string; runRevision: number; idempotencyKey: string } | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [dependencyMap, setDependencyMap] = useState<PublicPlanningDependencyMap | null>(null);
   const [dependencyMapState, setDependencyMapState] = useState<LoadState>("empty");
@@ -289,6 +290,7 @@ export function ProjectsTasksWorkspace() {
       setCalendarEditor(false); setCalendarWindow(null); setCalendarState("empty");
       setNoteEditor(false); setNotePicker(null); setNotePickerState("empty"); setNoteQuery("");
       setRequestChanges(false);
+      setRecoveryConfirmation(null);
       setReviewNote("");
     }
     setSelectedTaskId(taskId);
@@ -1092,8 +1094,10 @@ export function ProjectsTasksWorkspace() {
     }
     finally { setBusy(false); }
   }
-  async function reviewExecution(action: "accept" | "request_changes") {
-    if (!selectedTask || !selectedTaskExecution || busy || !selectedTaskExecution.execution.review.available || selectedTaskExecution.task.id !== selectedTask.id || selectedTaskExecution.task.revision !== selectedTask.revision) return;
+  async function reviewExecution(action: "accept" | "request_changes", recovering = false) {
+    if (!selectedTask || !selectedTaskExecution || busy || !(recovering ? selectedTaskExecution.execution.recovery.available : selectedTaskExecution.execution.review.available) || selectedTaskExecution.task.id !== selectedTask.id || selectedTaskExecution.task.revision !== selectedTask.revision) return;
+    const recovery = selectedTaskExecution.execution.recovery;
+    if (recovering && (action !== "request_changes" || !recoveryConfirmation || recoveryConfirmation.taskId !== selectedTask.id || recoveryConfirmation.revision !== selectedTask.revision || recoveryConfirmation.runId !== recovery.run_id || recoveryConfirmation.runRevision !== recovery.run_revision)) return;
     const taskId = selectedTask.id;
     const executionEpoch = executionGeneration.current;
     const isCurrent = () => selectedTaskRef.current === taskId && executionGeneration.current === executionEpoch;
@@ -1102,14 +1106,14 @@ export function ProjectsTasksWorkspace() {
     if (action === "request_changes" && !note) return;
     setBusy(true); setNotice(action === "accept" ? "Accepting Task…" : "Requesting changes…");
     try {
-      const result = await reviewPlanningTaskExecution(taskId, selectedTask.revision, action, note, crypto.randomUUID());
+      const result = await reviewPlanningTaskExecution(taskId, selectedTask.revision, action, note, recovering ? recoveryConfirmation!.idempotencyKey : crypto.randomUUID(), recovering ? { recovery_run_id: recoveryConfirmation!.runId, expected_run_revision: recoveryConfirmation!.runRevision } : undefined);
       if (!isCurrent()) return;
-      applyExecutionMutation(result); setRequestChanges(false); setReviewNote("");
+      applyExecutionMutation(result); setRequestChanges(false); setRecoveryConfirmation(null); setReviewNote("");
       try {
         await refreshExecution(taskId);
-        if (isSelected()) setNotice(action === "accept" ? "Task accepted." : "Changes requested; the Task is planned for another Run.");
+        if (isSelected()) setNotice(recovering ? "Task returned to Planned. Prior Run evidence is retained; no new Run was started." : action === "accept" ? "Task accepted." : "Changes requested; the Task is planned for another Run.");
       } catch {
-        if (isSelected()) setNotice(action === "accept" ? "Task accepted. Its latest details are temporarily unavailable." : "Changes requested. Its latest details are temporarily unavailable.");
+        if (isSelected()) setNotice(recovering ? "Task returned to Planned. Its latest details are temporarily unavailable." : action === "accept" ? "Task accepted. Its latest details are temporarily unavailable." : "Changes requested. Its latest details are temporarily unavailable.");
       }
     } catch {
       if (isCurrent()) setNotice("The Task changed or review is no longer available. Refresh and try again.");
@@ -1204,7 +1208,8 @@ export function ProjectsTasksWorkspace() {
         <section aria-label="Task execution" className="planning-execution">
           <p className="console-kicker">Execution</p>
           {executionState === "loading" ? <p>Loading execution status…</p> : executionState === "unavailable" || !selectedTaskExecution ? <p>Run once and review controls are temporarily unavailable.</p> : <>
-            {selectedTaskExecution.execution.attempts.length ? <ul aria-label="Execution attempts">{selectedTaskExecution.execution.attempts.map((attempt) => <li key={attempt.run_id}><span>{attempt.state.replaceAll("_", " ")} · {attempt.status.replaceAll("_", " ")}</span><time dateTime={attempt.updated_at}>{attempt.completed_at ? "Completed" : "Updated"} {attempt.updated_at}</time>{attempt.partial ? <small>Partial evidence</small> : null}</li>)}</ul> : <p>No Run attempts yet.</p>}
+            {selectedTaskExecution.execution.attempts.length ? <ul aria-label="Execution attempts">{selectedTaskExecution.execution.attempts.map((attempt) => <li key={attempt.run_id}><span>{attempt.state.replaceAll("_", " ")} · {attempt.status.replaceAll("_", " ")}</span><time dateTime={attempt.completed_at ?? attempt.updated_at}>{attempt.completed_at ? attempt.status === "completed" ? "Completed" : "Ended" : "Updated"} {attempt.completed_at ?? attempt.updated_at}</time>{attempt.partial ? <small>Partial evidence</small> : null}</li>)}</ul> : <p>No Run attempts yet.</p>}
+            {selectedTaskExecution.execution.recovery.available ? <div className="planning-review-actions"><p>This attempt ended without verified success. Return the Task to Planned to resolve the attempt while keeping its Run and history. Run once remains a separate action.</p>{recoveryConfirmation ? <form onSubmit={(event) => { event.preventDefault(); void reviewExecution("request_changes", true); }}><label><span>Recovery note</span><textarea maxLength={2000} onChange={(event) => setReviewNote(event.target.value)} value={reviewNote} /></label><div><button disabled={busy || !reviewNote.trim() || recoveryConfirmation.taskId !== selectedTask.id || recoveryConfirmation.revision !== selectedTask.revision || recoveryConfirmation.runId !== selectedTaskExecution.execution.recovery.run_id || recoveryConfirmation.runRevision !== selectedTaskExecution.execution.recovery.run_revision} type="submit">Confirm return to Planned</button><button disabled={busy} onClick={() => { setRecoveryConfirmation(null); setReviewNote(""); }} type="button">Cancel</button></div></form> : <button disabled={busy} onClick={() => { const recovery = selectedTaskExecution.execution.recovery; if (recovery.run_id && recovery.run_revision) { setRecoveryConfirmation({ taskId: selectedTask.id, revision: selectedTask.revision, runId: recovery.run_id, runRevision: recovery.run_revision, idempotencyKey: crypto.randomUUID() }); setReviewNote(""); } }} type="button">Return to Planned</button>}</div> : null}
             {selectedTaskExecution.execution.review.available ? <div className="planning-review-actions"><p>This Task is ready for your review.</p><div><button disabled={busy} onClick={() => void reviewExecution("accept")} type="button">Accept</button><button aria-expanded={requestChanges} disabled={busy} onClick={() => setRequestChanges((current) => !current)} type="button">Request changes</button></div>{requestChanges ? <form onSubmit={(event) => { event.preventDefault(); void reviewExecution("request_changes"); }}><label><span>Feedback for changes</span><textarea maxLength={2000} onChange={(event) => setReviewNote(event.target.value)} value={reviewNote} /></label><div><button disabled={busy || !reviewNote.trim()} type="submit">Send change request</button><button disabled={busy} onClick={() => { setRequestChanges(false); setReviewNote(""); }} type="button">Cancel</button></div></form> : null}</div> : selectedTaskExecution.execution.available ? runOnceConfirmation && runOnceConfirmation.taskId === selectedTask.id ? <div className="planning-run-once-confirmation"><p>Start one Run for this exact Task revision?</p><div><button disabled={busy || selectedTask.revision !== runOnceConfirmation.revision} onClick={() => void confirmRunOnce()} type="button">Start Run once</button><button disabled={busy} onClick={() => setRunOnceConfirmation(null)} type="button">Cancel</button></div></div> : <button disabled={busy} onClick={() => void previewRunOnce()} type="button">Run once</button> : <p>Run once is unavailable for this Task.</p>}
           </>}
         </section>

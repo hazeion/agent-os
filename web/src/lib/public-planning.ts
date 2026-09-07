@@ -114,6 +114,7 @@ export type PublicPlanningTaskExecution = ServiceEnvelope & {
     attempts: PublicPlanningExecutionAttempt[];
     attempt_count: number;
     review: { available: boolean; run_id: string | null };
+    recovery: { available: boolean; run_id: string | null; run_revision: number | null };
   };
 };
 export type PublicPlanningRunOncePreview = ServiceEnvelope & { action: "run_once"; task: PublicPlanningExecutionTask; requires_confirmation: true; confirmation_id: string };

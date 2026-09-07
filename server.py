@@ -4919,7 +4919,7 @@ def _planning_execution_binding_state(agent_id: object) -> str:
     ).hexdigest()
 
 
-def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict]:
+def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], dict, dict | None]:
     """Read the exact task, bounded execution history, and safe projection."""
 
     if not isinstance(task_id, str) or TASK_ID_PATTERN.fullmatch(task_id) is None:
@@ -4936,7 +4936,7 @@ def _planning_execution_snapshot(task_id: str) -> tuple[dict, tuple[dict, ...], 
             safe["revision"] = snapshot.revision
             safe["assigned_agent_id"] = snapshot.document.get("assigned_agent_id")
             attempts = repository.task_execution_attempts(task_id)
-            return snapshot.document, attempts, safe
+            return snapshot.document, attempts, safe, repository.task_execution_recovery(task_id)
         except TaskRepositoryConflict as exc:
             raise OrchestrationServiceError("dispatch.task_not_found") from exc
         except (TaskRepositoryError, RunRepositoryError, sqlite3.Error) as exc:
@@ -4949,6 +4949,7 @@ def _planning_execution_public(
     task: dict,
     attempts: tuple[dict, ...],
     safe_task: dict,
+    recovery: dict | None = None,
 ) -> dict:
     active_attempt = any(
         item["state"] in {"dispatched", "review_ready"} for item in attempts
@@ -4997,6 +4998,7 @@ def _planning_execution_public(
             "reason": None if available else "unavailable",
             "attempts": public_attempts,
             "attempt_count": len(public_attempts),
+            "recovery": {"available": recovery is not None, "run_id": recovery["run_id"] if recovery else None, "run_revision": recovery["run_revision"] if recovery else None},
             "review": (
                 {"available": False, "run_id": None}
                 if review is None
@@ -5007,8 +5009,8 @@ def _planning_execution_public(
 
 
 def mentat_planning_task_execution_payload(task_id: str) -> dict:
-    task, attempts, safe = _planning_execution_snapshot(task_id)
-    return _planning_execution_public(task, attempts, safe)
+    task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
+    return _planning_execution_public(task, attempts, safe, recovery)
 
 
 def mentat_planning_task_run_once_preview(
@@ -5021,13 +5023,13 @@ def mentat_planning_task_run_once_preview(
     if type(expected_revision) is not int or expected_revision < 1:
         return {"error_code": "planning_execution.invalid"}, 400
     try:
-        task, attempts, safe = _planning_execution_snapshot(task_id)
+        task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
         binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
     except RunRepositoryConflict:
         return {"error_code": "planning_execution.conflict"}, 409
     except OrchestrationServiceError as exc:
         return _planning_execution_error(exc)
-    public = _planning_execution_public(task, attempts, safe)
+    public = _planning_execution_public(task, attempts, safe, recovery)
     if expected_revision != safe["revision"] or not public["execution"]["available"]:
         return {"error_code": "planning_execution.unavailable"}, 409
     return {
@@ -5113,9 +5115,9 @@ def mentat_planning_task_run_once(
                 raise OrchestrationServiceError("dispatch.idempotency_conflict")
             response = mentat_planning_task_execution_payload(task_id)
             return {"schema_version": 1, "action": "run_once", "duplicate": True, **response}, 200
-        task, attempts, safe = _planning_execution_snapshot(task_id)
+        task, attempts, safe, recovery = _planning_execution_snapshot(task_id)
         binding_state = _planning_execution_binding_state(task.get("assigned_agent_id"))
-        public = _planning_execution_public(task, attempts, safe)
+        public = _planning_execution_public(task, attempts, safe, recovery)
         if (
             payload["expected_revision"] != safe["revision"]
             or not public["execution"]["available"]
@@ -5157,6 +5159,7 @@ def mentat_planning_task_execution_review(
         or set(payload) not in (
             {"expected_revision", "action", "idempotency_key"},
             {"expected_revision", "action", "note", "idempotency_key"},
+            {"expected_revision", "action", "note", "idempotency_key", "recovery_run_id", "expected_run_revision"},
         )
         or type(payload.get("expected_revision")) is not int
         or payload["expected_revision"] < 1
@@ -5164,11 +5167,18 @@ def mentat_planning_task_execution_review(
         or payload.get("note") is not None and not isinstance(payload.get("note"), str)
         or (payload.get("action") == "accept" and "note" in payload)
         or (payload.get("action") == "request_changes" and "note" not in payload)
+        or "recovery_run_id" in payload and (
+            payload.get("action") != "request_changes"
+            or not isinstance(payload.get("recovery_run_id"), str)
+            or re.fullmatch(r"run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}", payload["recovery_run_id"]) is None
+            or type(payload.get("expected_run_revision")) is not int
+            or payload["expected_run_revision"] < 1
+        )
         or not isinstance(payload.get("idempotency_key"), str)
     ):
         return {"error_code": "planning_execution.invalid"}, 400
     try:
-        with _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
+        with HERMES_KANBAN_LOCK, _durable_mutation_lock(DATA_DIR, cross_process_lock=True) as root_descriptor:
             if restore_status_under_lock(DATA_DIR, root_descriptor) != "clear":
                 raise OrchestrationServiceError("dispatch.unavailable")
             connection = connect_mentat_database(DATA_DIR)
@@ -5179,6 +5189,8 @@ def mentat_planning_task_execution_review(
                     action=payload["action"],
                     note=payload.get("note"),
                     idempotency_key=payload["idempotency_key"],
+                    recovery_run_id=payload.get("recovery_run_id"),
+                    expected_run_revision=payload.get("expected_run_revision"),
                 )
             finally:
                 connection.close()

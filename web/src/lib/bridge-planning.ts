@@ -41,6 +41,8 @@ import {
   parsePlanningRunOncePreview,
   parsePlanningTaskExecution,
   parsePlanningTaskExecutionMutation,
+  validTaskExecutionRecovery,
+  type TaskExecutionRecovery,
 } from "./public-planning-task-execution.ts";
 import {
   parsePlanningTaskDelegation,
@@ -427,10 +429,11 @@ export async function confirmBridgePlanningTaskRunOnce(taskId: string, expectedR
   fixedFailure(response, payload);
 }
 
-export async function reviewBridgePlanningTaskExecution(taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string, fetcher: FetchLike = fetch, environment: Environment = process.env): Promise<PublicPlanningTaskExecutionMutation> {
+export async function reviewBridgePlanningTaskExecution(taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string, fetcher: FetchLike = fetch, environment: Environment = process.env, recovery?: TaskExecutionRecovery): Promise<PublicPlanningTaskExecutionMutation> {
   if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !validIdempotencyKey(idempotencyKey) || action === "accept" && note !== null || action === "request_changes" && (typeof note !== "string" || !note || note.trim() !== note || [...note].length > 2_000 || /\p{C}/u.test(note))) throw new BridgePlanningError("planning_request_invalid");
+  if (recovery !== undefined && (action !== "request_changes" || !validTaskExecutionRecovery(recovery))) throw new BridgePlanningError("planning_request_invalid");
   const body = action === "request_changes"
-    ? { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, note, task_id: taskId }
+    ? { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, note, task_id: taskId, ...recovery }
     : { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, task_id: taskId };
   const { response, payload } = await request(PRIVATE_TASK_REVIEW_PATH, fetcher, environment, { body: JSON.stringify(body), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_BRIDGE_TIMEOUT_MILLISECONDS);
   if (response.status === 200) return parse(() => parsePlanningTaskExecutionMutation(payload, taskId));

@@ -17,6 +17,13 @@ import {
 } from "./public-planning.ts";
 
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,159}$/u;
+export type TaskExecutionRecovery = { recovery_run_id: string; expected_run_revision: number };
+
+export function validTaskExecutionRecovery(value: unknown): value is TaskExecutionRecovery {
+  return record(value) && keys(value, "expected_run_revision,recovery_run_id")
+    && typeof value.recovery_run_id === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(value.recovery_run_id)
+    && Number.isSafeInteger(value.expected_run_revision) && (value.expected_run_revision as number) >= 1;
+}
 
 function safeIdentifier(value: unknown, maximum: number): value is string {
   return typeof value === "string" && new RegExp(`^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,${maximum - 1}}$`, "u").test(value);
@@ -46,7 +53,10 @@ function validExecutionAttempt(value: unknown): value is PublicPlanningExecution
 }
 
 function validTaskExecution(value: unknown): value is PublicPlanningTaskExecution["execution"] {
-  if (!record(value) || !keys(value, "attempt_count,attempts,available,reason,review") || typeof value.available !== "boolean" || value.reason !== null && value.reason !== "unavailable" || !Array.isArray(value.attempts) || value.attempts.length > 8 || !value.attempts.every(validExecutionAttempt) || new Set(value.attempts.map((attempt) => attempt.run_id)).size !== value.attempts.length || !Number.isSafeInteger(value.attempt_count) || value.attempt_count !== value.attempts.length || !record(value.review) || !keys(value.review, "available,run_id")) return false;
+  if (!record(value) || !keys(value, "attempt_count,attempts,available,reason,recovery,review") || typeof value.available !== "boolean" || value.reason !== null && value.reason !== "unavailable" || !Array.isArray(value.attempts) || value.attempts.length > 8 || !value.attempts.every(validExecutionAttempt) || new Set(value.attempts.map((attempt) => attempt.run_id)).size !== value.attempts.length || !Number.isSafeInteger(value.attempt_count) || value.attempt_count !== value.attempts.length || !record(value.review) || !keys(value.review, "available,run_id") || !record(value.recovery) || !keys(value.recovery, "available,run_id,run_revision") || typeof value.recovery.available !== "boolean") return false;
+  const recovery = value.recovery;
+  const latest = value.attempts[0];
+  if (recovery.available ? !validTaskExecutionRecovery({ recovery_run_id: recovery.run_id, expected_run_revision: recovery.run_revision }) || !latest || latest.run_id !== recovery.run_id || latest.state !== "dispatched" || !["failed", "cancelled", "stopped", "interrupted"].includes(latest.status) || latest.dispatch_state !== "accepted" || latest.partial || !latest.terminal_finalized || value.available || value.review.available : recovery.run_id !== null || recovery.run_revision !== null) return false;
   const review = value.review;
   return typeof review.available === "boolean"
     && (review.run_id === null || typeof review.run_id === "string" && /^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,123}$/u.test(review.run_id))
@@ -99,9 +109,10 @@ export async function confirmPlanningTaskRunOnce(taskId: string, expectedRevisio
   failure(payload, response);
 }
 
-export async function reviewPlanningTaskExecution(taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string): Promise<PublicPlanningTaskExecutionMutation> {
+export async function reviewPlanningTaskExecution(taskId: string, expectedRevision: number, action: "accept" | "request_changes", note: string | null, idempotencyKey: string, recovery?: TaskExecutionRecovery): Promise<PublicPlanningTaskExecutionMutation> {
   if (!TASK_ID.test(taskId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !["accept", "request_changes"].includes(action) || !validIdempotencyKey(idempotencyKey) || action === "accept" && note !== null || action === "request_changes" && !text(note, 2_000)) throw new PublicPlanningError("invalid");
-  const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/execution/review`, { body: JSON.stringify(action === "accept" ? { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey } : { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, note }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
+  if (recovery !== undefined && (action !== "request_changes" || !validTaskExecutionRecovery(recovery))) throw new PublicPlanningError("invalid");
+  const { response, payload } = await request(`/api/planning/tasks/${encodeURIComponent(taskId)}/execution/review`, { body: JSON.stringify(action === "accept" ? { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey } : { action, expected_revision: expectedRevision, idempotency_key: idempotencyKey, note, ...recovery }), headers: { "Content-Type": "application/json" }, method: "POST" }, PLANNING_MUTATION_PUBLIC_TIMEOUT_MILLISECONDS);
   if (response.status === 200) return parsePlanningTaskExecutionMutation(payload, taskId);
   failure(payload, response);
 }

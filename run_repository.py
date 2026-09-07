@@ -1633,7 +1633,7 @@ class RunRepository:
             "SELECT a.run_id, a.task_id, a.task_revision, a.agent_id, a.state, "
             "a.review_task_revision, a.completion_reason, a.created_at, a.updated_at, "
             "r.runtime_type, r.status, r.dispatch_state, r.partial, "
-            "r.terminal_finalized, r.completed_at, rv.action AS review_action, rv.note "
+            "r.terminal_finalized, r.completed_at, r.state_revision, rv.action AS review_action, rv.note "
             "FROM mentat_task_execution_attempts a "
             "JOIN mentat_runs r ON r.id = a.run_id "
             "LEFT JOIN mentat_task_execution_reviews rv ON rv.run_id = a.run_id "
@@ -1666,6 +1666,7 @@ class RunRepository:
             result.append(
                 {
                     "run_id": str(row["run_id"]),
+                    "run_revision": int(row["state_revision"]),
                     "task_revision": int(row["task_revision"]),
                     "agent_id": str(row["agent_id"]),
                     "state": str(row["state"]),
@@ -1687,6 +1688,41 @@ class RunRepository:
             )
         return tuple(result)
 
+    def task_execution_recovery(self, task_id: str) -> dict[str, Any] | None:
+        """Identify only the latest verified unsuccessful Task attempt."""
+
+        identifier = _task_identifier(task_id)
+        task = TaskRepository(self.connection).get(identifier)
+        attempts = self.task_execution_attempts(identifier)
+        latest = attempts[0] if attempts else None
+        if (
+            latest is None
+            or latest["state"] != "dispatched"
+            or latest["status"] not in {"failed", "cancelled", "stopped", "interrupted"}
+            or latest["dispatch_state"] != "accepted"
+            or latest["partial"]
+            or not latest["terminal_finalized"]
+            or task.document.get("source") != "dashboard"
+            or task.document.get("delegation") is not None
+            or workflow_stage(task.document) == "done"
+            or task_is_deferred(task.document)
+            or any(item["state"] in {"dispatched", "review_ready"} for item in attempts[1:])
+            or self.connection.execute(
+                "SELECT 1 FROM mentat_runs WHERE task_id = ? AND status IN ("
+                + ",".join("?" for _ in _ACTIVE_STATUSES) + ") LIMIT 1",
+                (identifier, *tuple(sorted(_ACTIVE_STATUSES))),
+            ).fetchone() is not None
+        ):
+            return None
+        if self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mentat_task_delegation_action_receipts'"
+        ).fetchone() is not None and self.connection.execute(
+            "SELECT 1 FROM mentat_task_delegation_action_receipts WHERE task_id = ? "
+            "AND state NOT IN ('accepted', 'rejected') LIMIT 1", (identifier,),
+        ).fetchone() is not None:
+            return None
+        return {"run_id": latest["run_id"], "run_revision": latest["run_revision"]}
+
     def review_task_execution(
         self,
         *,
@@ -1695,6 +1731,8 @@ class RunRepository:
         action: str,
         note: str | None,
         idempotency_key: str,
+        recovery_run_id: str | None = None,
+        expected_run_revision: int | None = None,
         now: str | None = None,
     ) -> TaskExecutionReviewResult:
         """Apply one operator-only exact review without erasing Run evidence."""
@@ -1703,6 +1741,15 @@ class RunRepository:
         if type(expected_revision) is not int or expected_revision < 1:
             raise RunRepositoryValidationError("dispatch.revision_invalid")
         if action not in {"accept", "request_changes"}:
+            raise RunRepositoryValidationError("dispatch.review_invalid")
+        recovery = recovery_run_id is not None or expected_run_revision is not None
+        if recovery and (
+            action != "request_changes"
+            or not isinstance(recovery_run_id, str)
+            or _RUN_ID.fullmatch(recovery_run_id) is None
+            or type(expected_run_revision) is not int
+            or expected_run_revision < 1
+        ):
             raise RunRepositoryValidationError("dispatch.review_invalid")
         if note is not None and (
             not isinstance(note, str)
@@ -1729,6 +1776,7 @@ class RunRepository:
                     "task_revision": expected_revision,
                     "action": action,
                     "note": note,
+                    **({"recovery_run_id": recovery_run_id, "expected_run_revision": expected_run_revision} if recovery else {}),
                 },
                 maximum=8_192,
                 code="dispatch.review_invalid",
@@ -1758,16 +1806,25 @@ class RunRepository:
                 raise RunRepositoryConflict("dispatch.task_not_found") from exc
             if task.revision != expected_revision:
                 raise RunRepositoryConflict("dispatch.task_changed")
-            attempt = self.connection.execute(
-                "SELECT a.run_id, a.state, a.review_task_revision, r.status, "
-                "r.dispatch_state, r.partial, r.terminal_finalized "
-                "FROM mentat_task_execution_attempts a "
-                "JOIN mentat_runs r ON r.id = a.run_id "
-                "WHERE a.task_id = ? AND a.state = 'review_ready' "
-                "ORDER BY a.created_at DESC, a.run_id DESC LIMIT 1",
-                (identifier,),
-            ).fetchone()
-            if (
+            if recovery:
+                candidate = self.task_execution_recovery(identifier)
+                if candidate != {"run_id": recovery_run_id, "run_revision": expected_run_revision}:
+                    raise RunRepositoryConflict("dispatch.review_unavailable")
+                attempt = self.connection.execute(
+                    "SELECT run_id, state, review_task_revision FROM mentat_task_execution_attempts WHERE run_id = ?",
+                    (recovery_run_id,),
+                ).fetchone()
+            else:
+                attempt = self.connection.execute(
+                    "SELECT a.run_id, a.state, a.review_task_revision, r.status, "
+                    "r.dispatch_state, r.partial, r.terminal_finalized "
+                    "FROM mentat_task_execution_attempts a "
+                    "JOIN mentat_runs r ON r.id = a.run_id "
+                    "WHERE a.task_id = ? AND a.state = 'review_ready' "
+                    "ORDER BY a.created_at DESC, a.run_id DESC LIMIT 1",
+                    (identifier,),
+                ).fetchone()
+            if not recovery and (
                 attempt is None
                 or int(attempt["review_task_revision"] or 0) != expected_revision
                 or str(attempt["status"]) != "completed"
@@ -1826,10 +1883,11 @@ class RunRepository:
             )
             changed = self.connection.execute(
                 "UPDATE mentat_task_execution_attempts SET state = ?, updated_at = ? "
-                "WHERE run_id = ? AND state = 'review_ready' AND review_task_revision = ?",
+                "WHERE run_id = ? AND state = ? AND review_task_revision IS ?",
                 (
                     "accepted" if action == "accept" else "changes_requested",
-                    occurred_at, run_id, expected_revision,
+                    occurred_at, run_id, "dispatched" if recovery else "review_ready",
+                    attempt["review_task_revision"],
                 ),
             ).rowcount
             if changed != 1:

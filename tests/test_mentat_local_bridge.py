@@ -497,7 +497,7 @@ class LocalBridgeTests(unittest.TestCase):
             "schema_version": 1, "task": task,
             "execution": {
                 "available": False, "reason": "unavailable", "attempts": [attempt],
-                "attempt_count": 1, "review": {"available": True, "run_id": "run_execution"},
+                "attempt_count": 1, "recovery": {"available": False, "run_id": None, "run_revision": None}, "review": {"available": True, "run_id": "run_execution"},
             },
         }
         with patch.object(server, "mentat_planning_task_execution_payload", return_value=source):
@@ -516,6 +516,24 @@ class LocalBridgeTests(unittest.TestCase):
         review.assert_called_once_with("task_execution", {
             "expected_revision": 3, "action": "accept", "idempotency_key": "review-idempotency-key-0001",
         })
+        failed = {**attempt, "state": "dispatched", "status": "failed"}
+        recovery = {"available": True, "run_id": "run_execution", "run_revision": 5}
+        failure_source = {**source, "execution": {**source["execution"], "attempts": [failed], "review": {"available": False, "run_id": None}, "recovery": recovery}}
+        with patch.object(server, "mentat_planning_task_execution_payload", return_value=failure_source):
+            payload, status = local_bridge.bridge_planning_task_execution_payload("task_execution")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["execution"]["recovery"], recovery)
+        self.assertNotIn("runtime_run_ref", json.dumps(payload))
+        for changes in ({"run_id": "run_other"}, {"run_revision": True}, {"available": False}, {"private": "secret"}):
+            forged = {**failure_source, "execution": {**failure_source["execution"], "recovery": {**recovery, **changes}}}
+            with patch.object(server, "mentat_planning_task_execution_payload", return_value=forged):
+                _, status = local_bridge.bridge_planning_task_execution_payload("task_execution")
+            self.assertEqual(status, 500)
+        request = {"task_id": "task_execution", "expected_revision": 3, "action": "request_changes", "note": "Updated CLI.", "idempotency_key": "recover-idempotency-key-0001", "recovery_run_id": "run_execution", "expected_run_revision": 5}
+        with patch.object(local_bridge, "bridge_planning_task_review_payload", return_value=(ready, 200)) as review:
+            status, _, _ = self.request(method="POST", path=local_bridge.BRIDGE_PLANNING_TASK_REVIEW_PATH, headers={"Content-Type": "application/json"}, body=json.dumps(request).encode())
+        self.assertEqual(status, 200)
+        review.assert_called_once_with("task_execution", {key: value for key, value in request.items() if key != "task_id"})
 
     def test_planning_execution_run_once_rejects_invalid_idempotency_before_dispatch(self):
         for key in ("short", "x" * 257, "valid-enough-key\x00but-invalid"):

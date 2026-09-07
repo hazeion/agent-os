@@ -79,13 +79,13 @@ const nonAttentionTask = { ...task, attention_reasons: [] as [], due_date: null,
 const taskResult = { ...envelope, project, task: nonAttentionTask };
 const taskDetailResult = { ...envelope, project, task: { ...nonAttentionTask, assigned_agent_id: null, calendar_links: [{ calendar_id: "primary", event_id: "event_alpha", label: "Focus" }], description: "A bounded description.", estimated_minutes: 30, note_links: [{ path: "Projects/Alpha.md", title: "Alpha plan" }], recurrence: null, reminders: [{ at: "2026-08-30T11:50:00Z", channel: "browser" as const, enabled: true, id: "reminder_alpha" }], scheduled_block: { end: "2026-08-30T13:00:00Z", start: "2026-08-30T12:00:00Z" }, subtasks: [], tags: [] } };
 const executionTask = { ...nonAttentionTask, assigned_agent_id: "agent_alpha", workflow_stage: "planned" as const };
-const taskExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, review: { available: false, run_id: null } }, task: executionTask };
+const taskExecution = { ...envelope, execution: { attempt_count: 0, attempts: [], available: true, reason: null, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: executionTask };
 const taskDelegation = { ...envelope, delegation: { artifact_count: 0, attempts: 2, available: true as const, last_outcome: "completed" as const, last_synced_at: "2026-08-30T11:59:00Z", latest_question: "Confirm the deployment window.", review_state: "pending" as const, state: "ready_for_review" as const, summary: "The delegated implementation is ready for review.", sync_state: "synced" as const, updated_at: "2026-08-30T12:00:00Z" }, task: { id: nonAttentionTask.id, revision: nonAttentionTask.revision } };
 const notDelegated = { ...envelope, delegation: { available: false as const, reason: "not_delegated" as const }, task: { id: nonAttentionTask.id, revision: nonAttentionTask.revision } };
 const runOncePreview = { ...envelope, action: "run_once" as const, confirmation_id: "a".repeat(64), requires_confirmation: true as const, task: executionTask };
 const executionAttempt = { agent_id: "agent_alpha", completed_at: null, completion_reason: null, created_at: "2026-08-30T12:00:00Z", dispatch_state: "accepted", partial: false, review_action: null, review_note: null, review_task_revision: null, run_id: "run_alpha", runtime_type: "codex", state: "dispatched" as const, status: "running", task_revision: 1, terminal_finalized: false, updated_at: "2026-08-30T12:00:00Z" };
-const runOnceMutation = { ...envelope, action: "run_once" as const, duplicate: false, execution: { attempt_count: 1, attempts: [executionAttempt], available: false, reason: "unavailable" as const, review: { available: false, run_id: null } }, task: { ...executionTask, workflow_stage: "in_progress" as const } };
-const acceptMutation = { ...runOnceMutation, action: "accept" as const, execution: { ...runOnceMutation.execution, review: { available: false, run_id: null } }, task: { ...executionTask, revision: 2, workflow_stage: "done" as const } };
+const runOnceMutation = { ...envelope, action: "run_once" as const, duplicate: false, execution: { attempt_count: 1, attempts: [executionAttempt], available: false, reason: "unavailable" as const, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...executionTask, workflow_stage: "in_progress" as const } };
+const acceptMutation = { ...runOnceMutation, action: "accept" as const, execution: { ...runOnceMutation.execution, recovery: { available: false, run_id: null, run_revision: null }, review: { available: false, run_id: null } }, task: { ...executionTask, revision: 2, workflow_stage: "done" as const } };
 const dependencyReference = { blocked: false, id: "task_dependency", project_id: "project_beta", project_name: "Beta", title: "Prepare Beta", workflow_stage: "planned" as const };
 const dependencies = { ...envelope, dependent_count: 0, dependents: [], dependents_truncated: false, prerequisite_count: 1, prerequisites: [dependencyReference], prerequisites_truncated: false, task_id: nonAttentionTask.id, task_revision: 1 };
 const picker = { ...envelope, candidate_count: 1, candidates: [dependencyReference], match_count: 1, next_cursor: null, query: "Beta", task_id: nonAttentionTask.id, truncated: false };
@@ -448,6 +448,34 @@ test("Task execution routes keep all browser input exact and same-origin", async
   assert.equal((await review(post(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/review`, { action: "accept", expected_revision: 1, idempotency_key: "key_beta_1234567", note: "not allowed" }), params)).status, 400);
   assert.equal((await confirm(post(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/run-once`, { confirmation_id: runOncePreview.confirmation_id, expected_revision: 1, idempotency_key: "short_key" }), params)).status, 400);
   assert.equal((await get(new Request(`http://127.0.0.1:8890/api/agent-console/planning-task-execution?task_id=${nonAttentionTask.id}&extra=1`, { headers: browserHeaders }))).status, 400);
+});
+
+test("Task recovery projections and routes bind only the latest verified failed Run", async () => {
+  const failed = { ...executionAttempt, state: "dispatched" as const, status: "failed", terminal_finalized: true };
+  const recovery = { available: true, run_id: failed.run_id, run_revision: 7 };
+  const payload = { ...runOnceMutation, execution: { ...runOnceMutation.execution, attempts: [failed], recovery } };
+  const readPayload = { ...envelope, task: payload.task, execution: payload.execution };
+  assert.equal(parsePlanningTaskExecution(readPayload).execution.recovery.run_id, failed.run_id);
+  for (const patch of [{ run_id: "run_other" }, { run_revision: true }, { available: false }, { runtime_reference: "private" }]) {
+    assert.throws(() => parsePlanningTaskExecution({ ...readPayload, execution: { ...readPayload.execution, recovery: { ...recovery, ...patch } } }), PublicPlanningError);
+  }
+  for (const patch of [{ status: "unknown" }, { status: "completed" }, { partial: true }, { terminal_finalized: false }, { dispatch_state: "unknown" }]) {
+    assert.throws(() => parsePlanningTaskExecution({ ...readPayload, execution: { ...readPayload.execution, attempts: [{ ...failed, ...patch }] } }), PublicPlanningError);
+  }
+  const calls: unknown[][] = [];
+  const review = createPlanningTaskExecutionReviewHandler({ gatewayPort: "8890", review: async (...args) => { calls.push(args); return acceptMutation; } });
+  const value = { action: "request_changes", expected_revision: 3, idempotency_key: "recover-task-key-0001", note: "Updated the CLI.", recovery_run_id: failed.run_id, expected_run_revision: 7 };
+  const params = { params: Promise.resolve({ taskId: nonAttentionTask.id }) };
+  const post = (body: unknown) => new Request(`http://127.0.0.1:8890/api/planning/tasks/${nonAttentionTask.id}/execution/review`, { body: JSON.stringify(body), headers: { ...browserHeaders, "Content-Type": "application/json" }, method: "POST" });
+  assert.equal((await review(post(value), params)).status, 200);
+  assert.deepEqual(calls[0], [nonAttentionTask.id, 3, "request_changes", value.note, value.idempotency_key, { recovery_run_id: failed.run_id, expected_run_revision: 7 }]);
+  for (const patch of [{ expected_run_revision: true }, { recovery_run_id: "/private/path" }, { action: "accept" }, { arbitrary: "private" }]) {
+    assert.equal((await review(post({ ...value, ...patch }), params)).status, 400);
+  }
+  assert.equal(calls.length, 1);
+  const bridgeCalls: unknown[] = [];
+  await reviewBridgePlanningTaskExecution(nonAttentionTask.id, 3, "request_changes", value.note, value.idempotency_key, async (_input, init) => { bridgeCalls.push(JSON.parse(String(init?.body))); return json(acceptMutation); }, environment, { recovery_run_id: failed.run_id, expected_run_revision: 7 });
+  assert.deepEqual(bridgeCalls, [{ ...value, task_id: nonAttentionTask.id }]);
 });
 
 test("public Task execution clients use only named same-origin routes", async () => {
