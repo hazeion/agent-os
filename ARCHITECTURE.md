@@ -822,7 +822,10 @@ names and never start or wait for Codex.
 The Agent Console exposes a separate explicit Codex readiness check with only
 `cli_missing`, `sign_in_required`, `ready`, or `unavailable`. Setup directs the
 operator to the Codex-owned `codex login` browser flow and requires an explicit
-Recheck. Mentat never accepts a password, browser cookie, API key, access or
+Recheck. The UI describes `ready` as sign-in confirmed, not proof of model
+access or successful execution. Codex terminal failures expose only fixed
+categories and corrective guidance; raw provider errors remain private.
+Mentat never accepts a password, browser cookie, API key, access or
 refresh token, account identifier, or Codex auth-cache contents; routine Agent
 and Conversation reads never launch Codex.
 

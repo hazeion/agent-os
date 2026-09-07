@@ -56,8 +56,10 @@ codex login status
 Complete the browser sign-in opened by `codex login`, then start Mentat and use
 **Recheck** in the Agent Console. If you install the CLI while Mentat is already
 running, restart Mentat so readiness and dispatch use the same fixed CLI
-process. Mentat asks the Codex CLI only for a bounded readiness
-state; never paste a password, token, API key, cookie, or Codex auth file into
+process. Recheck confirms sign-in; it does not verify model access or execution.
+If a Run reports client/model compatibility, update the Codex CLI, restart
+Mentat, and try the same prompt again. Mentat asks the Codex CLI only for a
+bounded readiness state; never paste a password, token, API key, cookie, or Codex auth file into
 Mentat. See the [official Codex authentication guide](https://developers.openai.com/codex/auth/)
 for CLI setup. Hermes is still required for Hermes chat, delegation, sessions,
 and profile features.
