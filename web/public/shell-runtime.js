@@ -676,15 +676,26 @@ async function refreshRuns() {
   } catch { if (request === runsRequest) applyRunsState("error", "Mentat could not safely read Run data. Try again."); } finally { if (request === runsRequest) runsAbortController = null; }
 }
 
+function runEventPresentationIsSafe(event) {
+  const presentation = event.presentation;
+  if (presentation === null) return !["tool.requested", "tool.completed"].includes(event.type);
+  if (!presentation || typeof presentation !== "object" || Array.isArray(presentation) || Object.keys(presentation).sort().join(",") !== "kind,label,phase" || event.summary !== presentation.label) return false;
+  if (presentation.kind === "reasoning") return event.type === "message" && presentation.phase === "available" && presentation.label === "Reasoning summary available";
+  if (presentation.kind !== "tool") return false;
+  if (event.type === "tool.completed") return presentation.phase === "completed" && presentation.label === "Tool activity completed";
+  return event.type === "tool.requested" && (presentation.phase === "requested" && presentation.label === "Tool activity requested" || presentation.phase === "started" && presentation.label === "Tool activity started");
+}
+
 function runEventIsSafe(event, runId) {
   const metrics = new Set(["input_tokens", "output_tokens", "total_tokens", "context_tokens", "context_length"]);
   const timestamp = (value) => typeof value === "string" && value.length > 0 && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && !Number.isNaN(Date.parse(value));
-  return event && typeof event === "object" && !Array.isArray(event) && Object.keys(event).sort().join(",") === "id,message,metrics,occurred_at,run_id,sequence,summary,type"
+  return event && typeof event === "object" && !Array.isArray(event) && Object.keys(event).sort().join(",") === "id,message,metrics,occurred_at,presentation,run_id,sequence,summary,type"
     && typeof event.id === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(event.id) && event.run_id === runId
     && Number.isSafeInteger(event.sequence) && event.sequence >= 1 && event.sequence <= 1_000_000_000
     && ["run.created", "dispatch.reserved", "run.started", "submission.unknown", "run.interrupted", "tool.requested", "tool.completed", "approval.required", "artifact.created", "cost", "run.stopped", "run.completed", "run.failed", "message"].includes(event.type)
     && timestamp(event.occurred_at) && typeof event.summary === "string" && event.summary.length > 0 && event.summary.length <= 500 && event.summary.trim() === event.summary && !event.summary.includes("\0")
     && (event.message === null || (event.type === "message" && typeof event.message === "string" && event.message.length > 0 && event.message.length <= 20000 && event.message.trim() === event.message && !event.message.includes("\0")))
+    && runEventPresentationIsSafe(event)
     && event.metrics && typeof event.metrics === "object" && !Array.isArray(event.metrics) && Object.entries(event.metrics).every(([name, value]) => metrics.has(name) && Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000);
 }
 
