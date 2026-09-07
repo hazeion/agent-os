@@ -500,7 +500,7 @@ test("Home Console enables Send and normalizes an accidental trailing space", as
 
   const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
   await user.click(screen.getByRole("button", { name: "Check readiness" }));
-  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex sign-in confirmed. This check does not verify model execution."));
   await user.type(prompt, "Ready to send ");
 
   const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
@@ -645,7 +645,7 @@ test("Home Console executes Shift+Enter, IME, optimistic paint, and pre-admissio
   await waitFor(() => assert.equal(prompt.disabled, false));
   assert.equal((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled, true);
   await user.click(screen.getByRole("button", { name: "Check readiness" }));
-  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex sign-in confirmed. This check does not verify model execution."));
 
   await user.type(prompt, "First line");
   await user.keyboard("{Shift>}{Enter}{/Shift}Second line");
@@ -693,7 +693,7 @@ test("Home Console reuses the exact key only for the unchanged ambiguous draft",
   render(<HomeConsole />);
   const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
   await user.click(screen.getByRole("button", { name: "Check readiness" }));
-  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex sign-in confirmed. This check does not verify model execution."));
   await user.type(prompt, "Retry exactly");
   await user.click(screen.getByRole("button", { name: "Send" }));
   await waitFor(() => assert.match(screen.getByRole("status").textContent ?? "", /exact retry key were kept/u));
@@ -790,7 +790,7 @@ test("Home Console scopes in-flight drafts and exact retry keys per Conversation
   render(<HomeConsole />);
   const prompt = await screen.findByLabelText("Prompt") as HTMLTextAreaElement;
   await user.click(screen.getByRole("button", { name: "Check readiness" }));
-  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex is signed in and ready."));
+  await waitFor(() => assert.equal(screen.getByRole("status").textContent, "Codex sign-in confirmed. This check does not verify model execution."));
 
   await user.type(prompt, "Retry A");
   await user.click(screen.getByRole("button", { name: "Send" }));
@@ -1705,6 +1705,41 @@ test("Home Console keeps a duplicate Retry replay reconciling until exact readba
   await user.click(await screen.findByRole("button", { name: "Retry" }));
   await waitFor(() => assert.match(document.querySelector(".selected-run-progress")?.textContent ?? "", /Run Reconciling/u));
   assert.equal(screen.queryByRole("button", { name: "Stop" }), null);
+  assert.equal(MockEventSource.instances.length, 2);
+  assert.equal(MockEventSource.instances[0].closed, true);
+  assert.equal(MockEventSource.instances[1].url, `/api/runs/${replayedRun.id}/events`);
+});
+
+test("Home Console confirms sign-in without claiming successful model execution", async () => {
+  installFetch();
+  const user = userEvent.setup({ document: dom.window.document });
+  render(<HomeConsole />);
+  await user.click(await screen.findByRole("button", { name: "Check readiness" }));
+  await screen.findByText("Codex sign-in confirmed");
+  assert.match(screen.getByRole("status").textContent ?? "", /does not verify model execution/u);
+  assert.match(document.querySelector(".codex-setup")?.textContent ?? "", /does not verify model access or successful execution/u);
+  assert.equal(screen.queryByText("Codex ready"), null);
+});
+
+test("Home Console loads one exact failed Run snapshot and shows its safe recovery reason", async () => {
+  MockEventSource.instances = [];
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, value: MockEventSource });
+  const failedRun = { id: "run_failed_reason", partial: false, status: "failed", updated_at: timestamp };
+  installFetch({ currentRun: failedRun });
+  render(<HomeConsole />);
+  const recovery = await screen.findByLabelText("Run recovery");
+  assert.match(recovery.textContent ?? "", /Sign-in alone does not verify execution/u);
+  await waitFor(() => assert.equal(MockEventSource.instances.length, 1));
+  const source = MockEventSource.instances[0];
+  assert.equal(source.url, `/api/runs/${failedRun.id}/events`);
+  const summary = "Codex run failed: authentication. Sign in again with codex login in a terminal, then retry.";
+  const event = { id: "event_failed_reason", run_id: failedRun.id, sequence: 2, type: "run.failed", occurred_at: timestamp, summary, message: null, metrics: {}, presentation: null };
+  await act(async () => source.emit("snapshot", JSON.stringify({ events: [{ ...event, run_id: "run_other" }], reset: false })));
+  assert.doesNotMatch(recovery.textContent ?? "", /authentication/u);
+  assert.equal(source.closed, false);
+  await act(async () => source.emit("snapshot", JSON.stringify({ events: [event], reset: false })));
+  assert.match(recovery.textContent ?? "", /Codex run failed: authentication/u);
+  assert.equal(source.closed, true);
   assert.equal(MockEventSource.instances.length, 1);
 });
 
