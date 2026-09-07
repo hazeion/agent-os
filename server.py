@@ -2690,7 +2690,7 @@ def mentat_planning_overview_payload() -> dict:
 
 
 def mentat_planning_search_payload(query: object) -> dict:
-    """Read bounded title-only Project and Task navigation matches.
+    """Read bounded title matches with safe Task planning context.
 
     This named capability is intentionally separate from the legacy dashboard
     search.  It reads only the canonical SQLite Project and Task authorities.

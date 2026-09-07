@@ -83,6 +83,15 @@ def create_test_agent(root: Path) -> str:
 
 
 class ConversationPlanningTests(unittest.TestCase):
+    def test_search_bridge_keeps_only_typed_safe_planning_context(self):
+        from mentat.local_bridge import _planning_search_result, BridgeConversationProjectionError
+
+        value = {"id": "task_search", "title": "Daily check", "type": "task", "project_id": "project_mentat", "project_name": "Mentat", "due_date": "2026-09-08", "workflow_stage": "planned"}
+        self.assertEqual(_planning_search_result(value, "task"), value)
+        for changes in ({"workflow_stage": ["planned"]}, {"workflow_stage": {"private": "planned"}}, {"due_date": "2026-02-30"}, {"project_id": "/private/path"}, {"description": "must not cross"}):
+            with self.subTest(changes=changes), self.assertRaises(BridgeConversationProjectionError):
+                _planning_search_result({**value, **changes}, "task")
+
     def test_navigation_search_is_title_only_grouped_and_bounded(self):
         projects = [
             {
@@ -125,7 +134,7 @@ class ConversationPlanningTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["tasks"][0],
-            {"id": "task_search_00", "title": "Search Task 00", "type": "task"},
+            {"id": "task_search_00", "title": "Search Task 00", "type": "task", "project_id": "project_search_00", "project_name": "Search Project 00", "due_date": None, "workflow_stage": "inbox"},
         )
         self.assertNotIn("secret", str(payload))
         self.assertNotIn("Private/Search.md", str(payload))
@@ -354,7 +363,7 @@ class ConversationPlanningTests(unittest.TestCase):
                 legacy = server.mentat_planning_search_payload("Legacy")
             self.assertEqual(
                 canonical["tasks"],
-                [{"id": "task_canonical", "title": "Canonical Task", "type": "task"}],
+                [{"id": "task_canonical", "title": "Canonical Task", "type": "task", "project_id": "project_canonical", "project_name": "Canonical Project", "due_date": None, "workflow_stage": "inbox"}],
             )
             self.assertEqual(legacy["tasks"], [])
 

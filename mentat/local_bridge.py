@@ -1646,9 +1646,10 @@ def bridge_planning_overview_payload() -> tuple[dict[str, object], int]:
 
 
 def _planning_search_result(value: object, result_type: str) -> dict[str, object]:
+    expected = {"id", "title", "type"} | ({"project_id", "project_name", "due_date", "workflow_stage"} if result_type == "task" else set())
     if (
         not isinstance(value, dict)
-        or set(value) != {"id", "title", "type"}
+        or set(value) != expected
         or value.get("type") != result_type
         or not isinstance(value.get("id"), str)
         or (result_type == "project" and _PROJECT_ID.fullmatch(value["id"]) is None)
@@ -1656,11 +1657,19 @@ def _planning_search_result(value: object, result_type: str) -> dict[str, object
         or not _planning_text(value.get("title"), 160 if result_type == "task" else 120)
     ):
         raise BridgeConversationProjectionError("planning_search_invalid")
-    return {"id": value["id"], "title": value["title"], "type": result_type}
+    if result_type == "task" and (
+        not isinstance(value.get("project_id"), str) or _PROJECT_ID.fullmatch(value["project_id"]) is None
+        or not _planning_text(value.get("project_name"), 120)
+        or not isinstance(value.get("workflow_stage"), str)
+        or value["workflow_stage"] not in {"inbox", "planned", "in_progress", "waiting", "review", "done"}
+        or value.get("due_date") is not None and not _valid_iso_date(value["due_date"])
+    ):
+        raise BridgeConversationProjectionError("planning_search_invalid")
+    return {key: value[key] for key in sorted(expected)}
 
 
 def bridge_planning_search_payload(query: str) -> tuple[dict[str, object], int]:
-    """Return only bounded title-and-ID planning navigation matches."""
+    """Return bounded planning navigation matches with safe Task context."""
 
     from conversation_planning import ConversationPlanningError
 

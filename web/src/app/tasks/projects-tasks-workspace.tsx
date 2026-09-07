@@ -151,6 +151,15 @@ async function readAgents(): Promise<PublicAgent[]> {
   return agents.map((item) => ({ capabilities: [...item.capabilities as string[]], id: String(item.id), name: String(item.name), runtime_config_id: String(item.runtime_config_id), runtime_type: String(item.runtime_type) }));
 }
 
+function updatePlanningLocation(projectId: string | null, taskId: string | null, replace = false) {
+  const location = new URL(window.location.href);
+  location.pathname = "/tasks";
+  location.search = new URLSearchParams(projectId ? taskId ? { project: projectId, task: taskId } : { project: projectId } : {}).toString();
+  location.hash = "";
+  if (replace) window.history.replaceState(null, "", `${location.pathname}${location.search}`);
+  else window.history.pushState(null, "", `${location.pathname}${location.search}`);
+}
+
 export function ProjectsTasksWorkspace() {
   const [overview, setOverview] = useState<PublicPlanningOverview | null>(null);
   const [state, setState] = useState<LoadState>("loading");
@@ -159,7 +168,10 @@ export function ProjectsTasksWorkspace() {
   const [tasksState, setTasksState] = useState<LoadState>("loading");
   const [taskCursor, setTaskCursor] = useState<string | null>(null);
   const [taskPageRefreshVersion, setTaskPageRefreshVersion] = useState(0);
+  const [taskProjectionRefreshVersion, setTaskProjectionRefreshVersion] = useState(0);
+  const [planningSearchRefreshVersion, setPlanningSearchRefreshVersion] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshingTaskPages, setRefreshingTaskPages] = useState(false);
   const [agents, setAgents] = useState<PublicAgent[]>([]);
   const [agentsState, setAgentsState] = useState<"loading" | "ready" | "empty" | "unavailable">("loading");
   const [projectForm, setProjectForm] = useState(false);
@@ -239,6 +251,7 @@ export function ProjectsTasksWorkspace() {
   const newProjectButton = useRef<HTMLButtonElement>(null);
   const addTaskButton = useRef<HTMLButtonElement>(null);
   const projectSelectionGeneration = useRef(0);
+  const overviewGeneration = useRef(0);
   const projectVisibilityRef = useRef<ProjectVisibility>("active");
   const requestedTaskFocus = useRef<string | null>(null);
   const selectedProjectRef = useRef<string | null>(null);
@@ -247,6 +260,10 @@ export function ProjectsTasksWorkspace() {
   // cannot repaint a different Task (or an older read of the same Task).
   const selectedTaskRef = useRef<string | null>(null);
   const taskSelectionGeneration = useRef(0);
+  const taskPageGeneration = useRef(0);
+  const taskPagesLoaded = useRef(1);
+  const taskPagesRefreshing = useRef(false);
+  const requestedTaskResolved = useRef(false);
   const executionGeneration = useRef(0);
   const delegationGeneration = useRef(0);
   // An ambiguous delegation delivery is an external mutation boundary. Keep the
@@ -296,22 +313,18 @@ export function ProjectsTasksWorkspace() {
     setSelectedTaskId(taskId);
   }
 
-  async function refreshOverview(preferredProjectId: string | null = null, visibility: ProjectVisibility = projectVisibility) {
+  async function refreshOverview(preferredProjectId: string | null = null, visibility: ProjectVisibility = projectVisibility, expectedSelection = projectSelectionGeneration.current) {
+    const generation = ++overviewGeneration.current;
     const value = await readPlanningOverview();
+    if (generation !== overviewGeneration.current) return value;
     setOverview(value);
     setState(value.projects.length ? "ready" : "empty");
-    const requestedProject = requested && typeof requested === "object"
-      ? requested.projectId !== null
-        ? value.projects.some((item) => item.id === requested.projectId) ? requested.projectId : null
-        : null
-      : null;
     const visibleProjects = projectsForVisibility(value.projects, visibility);
     setSelectedProjectId((current) => {
-      const next = preferredProjectId && visibleProjects.some((item) => item.id === preferredProjectId)
+      const next = expectedSelection !== projectSelectionGeneration.current ? current
+        : preferredProjectId && visibleProjects.some((item) => item.id === preferredProjectId)
         ? preferredProjectId
-        : requestedProject && visibleProjects.some((item) => item.id === requestedProject)
-          ? requestedProject
-          : current && visibleProjects.some((item) => item.id === current)
+        : current && visibleProjects.some((item) => item.id === current)
             ? current
             : visibleProjects[0]?.id ?? null;
       selectedProjectRef.current = next;
@@ -325,7 +338,13 @@ export function ProjectsTasksWorkspace() {
   }
 
   function selectProject(projectId: string) {
+    if (selectedProjectRef.current === projectId) { projectSelectionGeneration.current += 1; requestedTaskResolved.current = true; return; }
+    setLoadingMore(false);
+    taskPagesRefreshing.current = true; setRefreshingTaskPages(true);
     projectSelectionGeneration.current += 1;
+    taskPageGeneration.current += 1;
+    taskPagesLoaded.current = 1;
+    requestedTaskResolved.current = true;
     requestedTaskFocus.current = null;
     selectedProjectRef.current = projectId;
     setSelectedProjectId(projectId);
@@ -407,49 +426,69 @@ export function ProjectsTasksWorkspace() {
   }, [requested]);
 
   useEffect(() => {
-    if (!selectedProjectId) { void Promise.resolve().then(() => { setTasks([]); setTaskCursor(null); setTasksState("empty"); }); return; }
+    const generation = ++taskPageGeneration.current;
+    taskPagesRefreshing.current = selectedProjectId !== null;
+    if (!selectedProjectId) { void Promise.resolve().then(() => { if (generation === taskPageGeneration.current) { setTasks([]); setTaskCursor(null); setTasksState("empty"); setRefreshingTaskPages(false); } }); return; }
     const projectId = selectedProjectId;
+    const selectedAtStart = selectedTaskRef.current;
+    const selectionGeneration = taskSelectionGeneration.current;
+    const desiredPages = taskPagesLoaded.current;
     let cancelled = false;
-    void Promise.resolve().then(() => { if (!cancelled) setTasksState("loading"); });
+    const isCurrent = () => !cancelled && generation === taskPageGeneration.current && selectedProjectRef.current === projectId;
+    void Promise.resolve().then(() => { if (isCurrent()) { setTasksState("loading"); setRefreshingTaskPages(true); } });
     void readPlanningTasks(projectId, null).then(async (page) => {
-      if (cancelled) return;
+      if (!isCurrent()) return;
       let rows = [...page.tasks];
       let cursor = page.next_cursor;
-      setTasks(rows);
-      selectTaskId(rows.some((task) => task.id === selectedTaskRef.current) ? selectedTaskRef.current : null);
-      setTaskCursor(cursor);
-      setTasksState(rows.length ? "ready" : "empty");
-      const requestedTaskId = requested && typeof requested === "object" && requested.taskId !== null && (requested.projectId === null || requested.projectId === projectId)
-        ? requested.taskId
-        : null;
+      let pages = 1;
+      const requestedTaskId = !requestedTaskResolved.current && requested && typeof requested === "object" && requested.taskId !== null && (requested.projectId === null || requested.projectId === projectId) ? requested.taskId : null;
       const pendingTaskId = pendingSearchTaskOpen.current?.projectId === projectId ? pendingSearchTaskOpen.current.taskId : null;
-      const targetTaskId = pendingTaskId ?? requestedTaskId;
-      if (targetTaskId) {
-        let target = rows.find((task) => task.id === targetTaskId) ?? null;
-        try {
-          for (let pageIndex = 1; !target && cursor && pageIndex < 42; pageIndex += 1) {
-            const next = await readPlanningTasks(projectId, cursor);
-            if (cancelled) return;
-            rows = [...rows, ...next.tasks.filter((task) => !rows.some((item) => item.id === task.id))];
-            cursor = next.next_cursor;
-            target = rows.find((task) => task.id === targetTaskId) ?? null;
-            setTasks(rows);
-            setTaskCursor(cursor);
-          }
-        } catch {
-          if (!cancelled) setNotice("More Tasks could not be loaded; the verified Tasks shown remain available.");
-          return;
+      const navigationTarget = pendingTaskId ?? requestedTaskId;
+      const targetTaskId = navigationTarget ?? selectedAtStart;
+      // Paint the first page immediately. Keep a selected later-page row only
+      // while its bounded replacement pages are being read.
+      const paint = () => {
+        setTasks((current) => {
+          const retained = current.find((task) => task.id === selectedTaskRef.current);
+          const refreshed = rows.map((row) => { const local = current.find((item) => item.id === row.id); return local && local.revision > row.revision ? local : row; });
+          return retained && !rows.some((task) => task.id === retained.id) ? [...refreshed, retained] : refreshed;
+        });
+        setTaskCursor(cursor);
+        setTasksState(rows.length ? "ready" : "empty");
+      };
+      paint();
+      try {
+        while (cursor && pages < 42 && (pages < desiredPages || targetTaskId && !rows.some((task) => task.id === targetTaskId))) {
+          const next = await readPlanningTasks(projectId, cursor);
+          if (!isCurrent()) return;
+          rows = [...rows, ...next.tasks.filter((task) => !rows.some((item) => item.id === task.id))];
+          cursor = next.next_cursor; pages += 1;
+          paint();
         }
-        if (target) {
-          if (pendingSearchTaskOpen.current?.projectId === projectId && pendingSearchTaskOpen.current.taskId === targetTaskId) pendingSearchTaskOpen.current = null;
-          requestedTaskFocus.current = targetTaskId;
-          selectTaskId(targetTaskId); setTaskDetail(null); setEditingTask(false);
-          setTasks([...rows]);
-        }
-        else setNotice("The requested Task could not be found in this Project.");
+      } catch {
+        if (isCurrent()) { taskPagesRefreshing.current = false; setRefreshingTaskPages(false); setNotice("More Tasks could not be loaded; the verified Tasks shown remain available."); }
+        return;
       }
-      else if (requested === false) setNotice("The requested Task link is invalid.");
-    }).catch(() => { if (!cancelled) setTasksState("unavailable"); });
+      if (!isCurrent()) return;
+      taskPagesRefreshing.current = false; setRefreshingTaskPages(false);
+      taskPagesLoaded.current = pages;
+      setTasks((current) => {
+        const refreshed = rows.map((row) => { const local = current.find((item) => item.id === row.id); return local && local.revision > row.revision ? local : row; });
+        const newerSelection = taskSelectionGeneration.current !== selectionGeneration ? current.find((item) => item.id === selectedTaskRef.current) : null;
+        return newerSelection && !rows.some((item) => item.id === newerSelection.id) ? [...refreshed, newerSelection] : refreshed;
+      }); setTaskCursor(cursor); setTasksState(rows.length ? "ready" : "empty");
+      if (navigationTarget && taskSelectionGeneration.current === selectionGeneration) {
+        requestedTaskResolved.current = true;
+        if (pendingTaskId) pendingSearchTaskOpen.current = null;
+        if (rows.some((task) => task.id === navigationTarget)) {
+          requestedTaskFocus.current = navigationTarget;
+          if (selectedTaskRef.current !== navigationTarget) { selectTaskId(navigationTarget); setTaskDetail(null); setEditingTask(false); }
+        } else setNotice("The requested Task could not be found in this Project.");
+      } else if (selectedAtStart && selectedTaskRef.current === selectedAtStart && !rows.some((task) => task.id === selectedAtStart)) {
+        selectTaskId(null); setTaskDetail(null); setTaskDependencies(null);
+        if (new URL(window.location.href).searchParams.get("task") === selectedAtStart) updatePlanningLocation(projectId, null, true);
+      } else if (requested === false) setNotice("The requested Task link is invalid.");
+    }).catch(() => { if (isCurrent()) { taskPagesRefreshing.current = false; setRefreshingTaskPages(false); setTasksState("unavailable"); } });
     return () => { cancelled = true; };
   }, [requested, selectedProjectId, taskPageRefreshVersion]);
 
@@ -472,7 +511,7 @@ export function ProjectsTasksWorkspace() {
       setTaskDelegation(result); setDelegationState("ready");
     }).catch(() => { if (!cancelled && generation === delegationGeneration.current && selectedTaskRef.current === taskId) setDelegationState("unavailable"); });
     return () => { cancelled = true; };
-  }, [selectedTaskId]);
+  }, [selectedTaskId, taskProjectionRefreshVersion]);
 
   useEffect(() => {
     if (!taskDetail) return;
@@ -527,7 +566,7 @@ export function ProjectsTasksWorkspace() {
       setTaskExecution(result); setExecutionState("ready");
     }).catch(() => { if (!cancelled && generation === executionGeneration.current && selectedTaskRef.current === taskId) setExecutionState("unavailable"); });
     return () => { cancelled = true; };
-  }, [selectedTaskId]);
+  }, [selectedTaskId, taskProjectionRefreshVersion]);
 
   useEffect(() => {
     if (!selectedProjectId || view !== "map") return;
@@ -599,15 +638,8 @@ export function ProjectsTasksWorkspace() {
       });
     }, 180);
     return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
-  }, [planningSearchQuery]);
+  }, [planningSearchQuery, planningSearchRefreshVersion]);
 
-  function updatePlanningLocation(projectId: string, taskId: string | null) {
-    const location = new URL(window.location.href);
-    location.pathname = "/tasks";
-    location.search = new URLSearchParams(taskId ? { project: projectId, task: taskId } : { project: projectId }).toString();
-    location.hash = "";
-    window.history.pushState(null, "", `${location.pathname}${location.search}`);
-  }
 
   async function openPlanningSearchResult(result: PublicPlanningSearchResult) {
     if (busy) return;
@@ -638,17 +670,19 @@ export function ProjectsTasksWorkspace() {
   }
 
   async function loadMoreTasks() {
-    if (!selectedProjectId || !taskCursor || loadingMore) return;
+    if (!selectedProjectId || !taskCursor || loadingMore || taskPagesRefreshing.current || tasksState === "loading" || taskPagesLoaded.current >= 42) return;
     const projectId = selectedProjectId;
+    const generation = taskPageGeneration.current;
     setLoadingMore(true);
     try {
       const page = await readPlanningTasks(projectId, taskCursor);
-      if (selectedProjectRef.current !== projectId) return;
+      if (selectedProjectRef.current !== projectId || generation !== taskPageGeneration.current) return;
+      taskPagesLoaded.current += 1;
       setTasks((current) => [...current, ...page.tasks.filter((task) => !current.some((item) => item.id === task.id))]);
       setTaskCursor(page.next_cursor);
       setTasksState("ready");
-    } catch { setNotice("More Tasks could not be loaded; the verified Tasks shown remain available."); }
-    finally { setLoadingMore(false); }
+    } catch { if (generation === taskPageGeneration.current) setNotice("More Tasks could not be loaded; the verified Tasks shown remain available."); }
+    finally { if (generation === taskPageGeneration.current) setLoadingMore(false); }
   }
 
   function applyDelegationResult(result: PublicPlanningTaskDelegation) {
@@ -757,10 +791,33 @@ export function ProjectsTasksWorkspace() {
       setProjectName(""); setProjectForm(false);
       changeProjectVisibility("active");
       await refreshOverview(created.id, "active");
+      invalidatePlanningCollections();
       setNotice(`Project ${created.name} created.`);
       window.setTimeout(() => document.querySelector<HTMLElement>(`[data-project-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
     } catch { setNotice("Project could not be created. Your name was kept."); projectInput.current?.focus(); }
     finally { setBusy(false); }
+  }
+
+  function invalidateTaskProjections(taskId: string, invalidateDetails = false) {
+    if (selectedTaskRef.current !== taskId) return;
+    executionGeneration.current += 1;
+    delegationGeneration.current += 1;
+    if (invalidateDetails) taskDetailGeneration.current += 1;
+    setTaskExecution(null); setExecutionState("loading");
+    setTaskDelegation(null); setDelegationState("loading");
+    setRunOnceConfirmation(null); setRecoveryConfirmation(null);
+    setTaskProjectionRefreshVersion((current) => current + 1);
+  }
+
+  function invalidatePlanningCollections() {
+    taskPageGeneration.current += 1;
+    planningSearchGeneration.current += 1;
+    setLoadingMore(false);
+    taskPagesRefreshing.current = selectedProjectRef.current !== null; setRefreshingTaskPages(taskPagesRefreshing.current);
+    setPlanningSearch(null);
+    setPlanningSearchRefreshVersion((current) => current + 1);
+    setTaskPageRefreshVersion((current) => current + 1);
+    invalidateDependencyMap();
   }
 
   function invalidateDependencyMap() {
@@ -783,7 +840,7 @@ export function ProjectsTasksWorkspace() {
         setTasksState("ready");
         window.setTimeout(() => document.querySelector<HTMLElement>(`[data-planning-task-id="${CSS.escape(created.id)}"]`)?.focus(), 0);
       }
-      invalidateDependencyMap();
+      invalidatePlanningCollections();
       setNotice(`Task ${created.title} created.`);
     } catch { setNotice("Task could not be created. Your details were kept."); taskInput.current?.focus(); }
     finally { setBusy(false); }
@@ -822,17 +879,25 @@ export function ProjectsTasksWorkspace() {
   async function confirmDeletion() {
     if (!deletionPreview || busy || !deletionTargetIsSelected(deletionPreview.target_kind, deletionPreview.target_id)) return;
     const preview = deletionPreview;
+    const selectionGeneration = projectSelectionGeneration.current;
     setBusy(true); setNotice("Stopping affected work and verifying deletion…");
     try {
       const result = await confirmPlanningDeletion(preview.target_kind, preview.target_id, preview.confirmation_id);
-      if (!deletionTargetIsSelected(preview.target_kind, preview.target_id)) return;
-      // Deletion previews deliberately disclose counts, never every cascaded
-      // dependent Task ID. Clear the browser-only scheduler instead of risking
-      // a later alert for a Task removed by that content-free cascade.
       clearBrowserTaskReminderSchedules();
+      const location = new URL(window.location.href);
+      if (preview.target_kind === "task" && location.searchParams.get("task") === preview.target_id) { requestedTaskResolved.current = true; updatePlanningLocation(location.searchParams.get("project"), null, true); }
+      if (preview.target_kind === "project" && location.searchParams.get("project") === preview.target_id) { requestedTaskResolved.current = true; updatePlanningLocation(null, null, true); }
+      if (!deletionTargetIsSelected(preview.target_kind, preview.target_id)) {
+        invalidatePlanningCollections();
+        await refreshOverview(null, projectVisibilityRef.current, selectionGeneration);
+        return;
+      }
       selectTaskId(null); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setDeletionPreview(null); setRenameProject(false);
-      await refreshOverview();
-      invalidateDependencyMap();
+      requestedTaskResolved.current = true; pendingSearchTaskOpen.current = null;
+      setTasks([]); setTaskCursor(null);
+      invalidatePlanningCollections();
+      updatePlanningLocation(preview.target_kind === "task" ? selectedProjectRef.current : null, null, true);
+      await refreshOverview(null, projectVisibilityRef.current, selectionGeneration);
       setNotice(`Deleted ${deletionSummary(result.deletion)}.`);
     } catch {
       if (deletionTargetIsSelected(preview.target_kind, preview.target_id)) setNotice("Deletion could not be verified. Some changes may have completed. Refresh and review the current state before trying again.");
@@ -875,6 +940,7 @@ export function ProjectsTasksWorkspace() {
     };
   }, [dependencyMap]);
   const selectTask = (task: PublicPlanningTaskListItem) => {
+    if (selectedTaskRef.current === task.id) return;
     selectTaskId(task.id); setTaskDetail(null); setTaskDependencies(null); setEditingTask(false); setNotice(`Selected Task ${task.title}.`);
   };
   async function selectMapTask(taskId: string) {
@@ -901,7 +967,8 @@ export function ProjectsTasksWorkspace() {
     try {
       result = await updatePlanningTask(taskId, selectedTask.revision, changes);
       setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
-      invalidateDependencyMap();
+      invalidateTaskProjections(taskId, true);
+      invalidatePlanningCollections();
     } catch (error) {
       if (error instanceof PublicPlanningError && error.code === "conflict") {
         try {
@@ -910,6 +977,8 @@ export function ProjectsTasksWorkspace() {
           setTaskDetail(detailed.task); setTaskDependencies(relationships); setDependenciesState("ready");
           const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
           setTasks((current) => current.map((task) => task.id === taskId ? { ...task, ...detailed.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+          invalidateTaskProjections(taskId, true);
+          invalidatePlanningCollections();
           setNotice("Task changed elsewhere; its latest dependencies are shown. Review and save again.");
         } catch { if (isCurrentSelection()) setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again."); }
       } else if (isCurrentSelection()) setNotice("Task changed elsewhere or could not be saved. Refresh the Project and try again.");
@@ -935,9 +1004,8 @@ export function ProjectsTasksWorkspace() {
     const preview = result.task.description.replace(/\s+/gu, " ").trim();
     setTaskDetail(result.task);
     setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
-    setTaskExecution(null); setExecutionState("loading");
-    setTaskDelegation(null); setDelegationState("loading");
-    invalidateDependencyMap();
+    invalidateTaskProjections(result.task.id, true);
+    invalidatePlanningCollections();
   }
   async function refreshIntegrationConflict(taskId: string, selectionGeneration: number) {
     try {
@@ -946,6 +1014,8 @@ export function ProjectsTasksWorkspace() {
       const preview = detailed.task.description.replace(/\s+/gu, " ").trim();
       setTaskDetail(detailed.task);
       setTasks((current) => current.map((task) => task.id === taskId ? { ...task, ...detailed.task, description_preview: preview.length > 280 ? `${preview.slice(0, 279).trimEnd()}…` : preview } : task));
+      invalidateTaskProjections(taskId, true);
+      invalidatePlanningCollections();
       setNotice("Task changed elsewhere. Latest details are shown; your integration draft was kept.");
     } catch { if (selectedTaskRef.current === taskId && taskSelectionGeneration.current === selectionGeneration) setNotice("Task changed elsewhere or could not be updated. Your integration draft was kept."); }
   }
@@ -1028,22 +1098,13 @@ export function ProjectsTasksWorkspace() {
     return `${dependency.title} · Project: ${dependency.project_name} · ${dependency.workflow_stage.replace("_", " ")}${dependency.blocked ? " · blocked" : ""}`;
   }
   async function changeStage(stage: PublicPlanningTask["workflow_stage"]) {
-    const taskId = selectedTask?.id;
-    const saved = await editSelected({ workflow_stage: stage }, `Task moved to ${stage.replace("_", " ")}.`);
-    if (!saved || !taskId || selectedTaskRef.current !== taskId) return;
-    try {
-      await refreshExecution(taskId);
-    } catch {
-      if (selectedTaskRef.current === taskId) {
-        setTaskExecution(null);
-        setExecutionState("unavailable");
-      }
-    }
+    await editSelected({ workflow_stage: stage }, `Task moved to ${stage.replace("_", " ")}.`);
   }
   function applyExecutionMutation(result: PublicPlanningTaskExecutionMutation) {
     setTaskExecution({ execution: result.execution, runtime: result.runtime, schema_version: result.schema_version, service: result.service, status: result.status, task: result.task });
     setExecutionState("ready");
     setTasks((current) => current.map((task) => task.id === result.task.id ? { ...task, ...result.task } : task));
+    invalidatePlanningCollections();
   }
   async function refreshExecution(taskId: string) {
     if (selectedTaskRef.current !== taskId) return;
@@ -1128,15 +1189,17 @@ export function ProjectsTasksWorkspace() {
       const visibility: ProjectVisibility = action === "archive" ? "archived" : "active";
       changeProjectVisibility(visibility);
       await refreshOverview(result.project.id, visibility);
+      invalidatePlanningCollections();
       setNotice(`Project ${action}d.`);
     }
     catch { setNotice("Project changed elsewhere or could not be updated."); }
     finally { setBusy(false); }
   }
   async function saveProjectName() {
+    const selectionGeneration = projectSelectionGeneration.current;
     if (!selectedProject || !projectRename.trim() || busy) return;
     setBusy(true); setNotice("Renaming Project…");
-    try { const result = await updatePlanningProject(selectedProject.id, selectedProject.revision, "rename", projectRename.trim()); setRenameProject(false); await refreshOverview(result.project.id); setNotice("Project renamed."); }
+    try { const result = await updatePlanningProject(selectedProject.id, selectedProject.revision, "rename", projectRename.trim()); setRenameProject(false); await refreshOverview(result.project.id, projectVisibility, selectionGeneration); invalidatePlanningCollections(); setNotice("Project renamed."); }
     catch { setNotice("Project changed elsewhere or could not be renamed."); }
     finally { setBusy(false); }
   }
@@ -1162,13 +1225,13 @@ export function ProjectsTasksWorkspace() {
         {planningSearchState === "empty" ? <p>No Projects or Tasks match this search.</p> : null}
         {planningSearchState === "ready" && planningSearch ? <div className="planning-navigation-search-results">
           {planningSearch.projects.length ? <section aria-label="Project search results"><h3>Projects</h3><ul>{planningSearch.projects.map((result) => <li key={`project:${result.id}`}><span>{result.title}</span><button aria-label={`Open Project ${result.title}`} disabled={busy} onClick={() => void openPlanningSearchResult(result)} type="button">Open</button></li>)}</ul></section> : null}
-          {planningSearch.tasks.length ? <section aria-label="Task search results"><h3>Tasks</h3><ul>{planningSearch.tasks.map((result) => <li key={`task:${result.id}`}><span>{result.title}</span><button aria-label={`Open Task ${result.title}`} disabled={busy} onClick={() => void openPlanningSearchResult(result)} type="button">Open</button></li>)}</ul></section> : null}
+          {planningSearch.tasks.length ? <section aria-label="Task search results"><h3>Tasks</h3><ul>{planningSearch.tasks.map((result) => <li key={`task:${result.id}`}><span>{result.title}<small>{result.project_name} � {result.workflow_stage.replaceAll("_", " ")} � {result.due_date ? `Due ${result.due_date}` : "No due date"}</small></span><button aria-label={`Open Task ${result.title} in ${result.project_name}, ${result.workflow_stage.replaceAll("_", " ")}, ${result.due_date ? `due ${result.due_date}` : "no due date"}`} disabled={busy} onClick={() => void openPlanningSearchResult(result)} type="button">Open</button></li>)}</ul></section> : null}
           {planningSearch.truncated ? <p>More matching results are available. Refine your search.</p> : null}
         </div> : null}
       </section>
       <div className="planning-workbench-tools"><label><span>Filter</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setFilter(event.target.value); }} placeholder="Find a task" type="search" value={filter} /></label><div aria-label="Display mode" className="planning-mode-toggle"><button aria-pressed={view === "list"} onClick={() => setView("list")} type="button">List</button><button aria-pressed={view === "board"} onClick={() => setView("board")} type="button">Board</button><button aria-pressed={view === "map"} onClick={() => setView("map")} type="button">Map</button></div></div>
       {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : view === "map" ? dependencyMapState === "loading" ? <p aria-live="polite" role="status">Loading the dependency map…</p> : dependencyMapState === "unavailable" || dependencyMapState === "error" ? <p role="status">The dependency map is temporarily unavailable. List and Board remain available.</p> : dependencyMapGraph ? <TaskDependencyMap graph={dependencyMapGraph} onSelectedTaskIdChange={(taskId) => void selectMapTask(taskId)} selectedTaskId={selectedTaskId} /> : <p role="status">No dependency map is available for this Project.</p> : filteredTasks.length ? view === "list" ? <ul className="project-task-list">{filteredTasks.map(taskCard)}</ul> : <div aria-label="Task board" className="planning-board">{stages.map((stage) => <section key={stage}><h3>{stage.replace("_", " ")}</h3><ul className="project-task-list">{filteredTasks.filter((task) => task.workflow_stage === stage).map(taskCard)}</ul></section>)}</div> : <p>{tasks.length ? "No Tasks match this view." : "No Tasks in this Project."}</p>}
-      {taskCursor ? <button className="project-tasks-more" disabled={loadingMore} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
+      {taskCursor ? <button className="project-tasks-more" disabled={loadingMore || refreshingTaskPages} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
     </div>
     <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector">
       <div className="projects-tasks-heading"><div><p className="console-kicker">Inspector</p><h2>{selectedTask ? "Task details" : "Select a Task"}</h2></div></div>
@@ -1205,6 +1268,7 @@ export function ProjectsTasksWorkspace() {
           </section>
         </section> : null}
         <div className="planning-stage-controls"><p className="console-kicker">Move stage</p>{stages.map((stage) => <button aria-pressed={selectedTask.workflow_stage === stage} disabled={busy || selectedTask.workflow_stage === stage || executionOwnsTerminalStages && (stage === "review" || stage === "done")} key={stage} onClick={() => void changeStage(stage)} type="button">{stage.replace("_", " ")}</button>)}{executionOwnsTerminalStages ? <p>Run and review controls own the Review and Done stages until this attempt is resolved.</p> : null}</div>
+        {executionState === "unavailable" || delegationState === "unavailable" ? <button disabled={busy} onClick={() => invalidateTaskProjections(selectedTask.id)} type="button">Reload execution and delegation</button> : null}
         <section aria-label="Task execution" className="planning-execution">
           <p className="console-kicker">Execution</p>
           {executionState === "loading" ? <p>Loading execution status…</p> : executionState === "unavailable" || !selectedTaskExecution ? <p>Run once and review controls are temporarily unavailable.</p> : <>

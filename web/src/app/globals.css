@@ -783,6 +783,7 @@ button {
 .planning-navigation-search-results li { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .planning-navigation-search-results li span { flex: 1; min-width: 0; overflow: hidden; color: var(--text-primary); font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
 .planning-navigation-search-results button { min-height: 30px; padding: 4px 8px; }
+.planning-navigation-search-results small { display: block; overflow: hidden; color: var(--text-secondary); font-size: .7rem; text-overflow: ellipsis; }
 .planning-mode-toggle { display: flex; gap: 4px; }
 .planning-mode-toggle button,
 .planning-stage-controls button,
