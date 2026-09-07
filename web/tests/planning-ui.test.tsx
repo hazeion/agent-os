@@ -91,6 +91,34 @@ function mutationRefreshFixture() {
   return fixture;
 }
 
+test("checklist titles validate, keep identity and order, and complete outside the editor", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+  fixture.rows[0].subtasks = [{ id: "check_keep", title: "Keep this step", completed: false, rank: 0 }, { id: "check_remove", title: "Remove this step", completed: false, rank: 1 }];
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  await user.click(await screen.findByRole("button", { name: "Edit details" }));
+  await user.click(screen.getByRole("button", { name: "Add checklist item" }));
+  assert.equal((screen.getByRole("button", { name: "Save details" }) as HTMLButtonElement).disabled, true);
+  assert.ok(screen.getByText("Give every checklist item a title before saving."));
+  await user.type(screen.getByLabelText("Checklist item 3 title"), "Verify output");
+  await user.click(screen.getByRole("button", { name: "Remove checklist item 2" }));
+  await user.click(screen.getByRole("button", { name: "Add checklist item" }));
+  await user.type(screen.getByLabelText("Checklist item 3 title"), "Review result");
+  await user.click(screen.getByRole("button", { name: "Save details" }));
+  await screen.findByText("Task details saved.");
+  const saved = fixture.rows[0].subtasks;
+  assert.deepEqual(saved.map((item) => item.title), ["Keep this step", "Verify output", "Review result"]);
+  assert.deepEqual(saved.map((item) => item.rank), [0, 1, 2]);
+  assert.equal(saved[0].id, "check_keep");
+  assert.equal(new Set(saved.map((item) => item.id)).size, 3);
+  const ids = saved.map((item) => item.id);
+  await user.click(screen.getByRole("checkbox", { name: "Checklist item 2: Verify output" }));
+  await screen.findByText("Checklist updated.");
+  assert.equal(fixture.rows[0].subtasks[1].completed, true);
+  assert.deepEqual(fixture.rows[0].subtasks.map((item) => item.id), ids);
+  assert.deepEqual(fixture.rows[0].subtasks.map((item) => item.rank), [0, 1, 2]);
+});
+
 test("delegation discovery explains setup and leaves unrelated planner controls usable", async () => {
   dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture(); const late = deferred<Response>();
   fixture.override = (url) => url.pathname.endsWith("/planning-task-delegation/options") ? late.promise : null;
