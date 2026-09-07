@@ -1071,15 +1071,13 @@ def _split_runtime_reference(value: object) -> tuple[str, str]:
 
 
 def _iso_timestamp(value: object, *, code: str) -> str:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(float(value))
-        or float(value) < 0
-    ):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise AgentRuntimeError(code)
     try:
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        timestamp = float(value)
+        if not math.isfinite(timestamp) or timestamp < 0:
+            raise AgentRuntimeError(code)
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
     except (OSError, OverflowError, ValueError) as exc:
         raise AgentRuntimeError(code) from exc
 

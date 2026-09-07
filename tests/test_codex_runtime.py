@@ -1005,6 +1005,19 @@ class CodexAppServerClientTests(unittest.TestCase):
             finally:
                 client.close()
 
+    def test_stdio_oversized_timestamp_does_not_kill_response_reader(self):
+        with TemporaryDirectory() as temporary:
+            client = self.client(Path(temporary))
+            try:
+                turn = {"id": TURN_ID, "status": "failed", "startedAt": 1787428800, "completedAt": 10**400, "error": {"codexErrorInfo": "sandboxError"}}
+                self.assertEqual(client.request("test/observe", {"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": turn}}), {})
+                observed = client.turn_observation(RUNTIME_REF)
+                self.assertEqual(observed["status"], "failed")
+                self.assertNotIn("completedAt", observed)
+                self.assertEqual(client.request("test/echo", {"still": "responsive"}), {"still": "responsive"})
+            finally:
+                client.close()
+
     def test_observation_bounds_generations_and_returned_copy(self):
         with TemporaryDirectory() as temporary:
             client = CodexAppServerClient(command=(sys.executable,), cwd=Path(temporary))
