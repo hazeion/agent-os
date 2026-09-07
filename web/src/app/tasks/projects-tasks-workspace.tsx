@@ -835,7 +835,7 @@ export function ProjectsTasksWorkspace() {
       invalidateDependencyMap();
       setNotice(`Deleted ${deletionSummary(result.deletion)}.`);
     } catch {
-      if (deletionTargetIsSelected(preview.target_kind, preview.target_id)) setNotice("Deletion was not verified. Nothing was removed; refresh and review it again.");
+      if (deletionTargetIsSelected(preview.target_kind, preview.target_id)) setNotice("Deletion could not be verified. Some changes may have completed. Refresh and review the current state before trying again.");
     } finally { setBusy(false); }
   }
 

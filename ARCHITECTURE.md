@@ -1069,6 +1069,13 @@ the completed instance as history. Scheduled blocks and reminders retain a
 validated IANA time zone so recurring wall-clock times remain stable across
 daylight-saving transitions.
 
+An unsuccessful Task execution may return to Planned only through an explicit
+operator recovery bound to the current Task revision and the exact latest Run
+and Run revision. The Run must be accepted, terminal, finalized, and nonpartial;
+unknown evidence or competing execution/delegation keeps recovery unavailable.
+Recovery records the operator decision and preserves Run/Event evidence. It
+neither accepts failed output nor starts another Run; Run once remains separate.
+
 Browser reminders are advisory UI behavior over Mentat-owned timestamps. The
 browser asks for notification permission only after an explicit operator action
 and locally deduplicates delivered notifications. No reminder mutates Hermes or

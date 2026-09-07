@@ -25,8 +25,8 @@ Complete it before resuming MDA implementation; preserve the existing MDA
 worktrees. Each batch remains a focused slice with regression evidence and two
 independent reviews for non-trivial changes. Publication is a separate step.
 
-1. Execution and visibility: issues #211, #210 (active).
-2. Failed Task recovery and cascade deletion: issues #209, #208.
+1. Execution and visibility: issues #211, #210 (locally verified; publication pending).
+2. Failed Task recovery and cascade deletion: issues #209, #208 (active).
 3. Integration and planner refresh: issues #214, #213.
 4. Delegation availability and Conversation restore: issues #219, #220.
 5. Checklist, Someday, and reminder usability: issues #215, #221, #218.
@@ -35,7 +35,7 @@ independent reviews for non-trivial changes. Publication is a separate step.
 
 The [Beta QA audit](https://github.com/hazeion/agent-os/issues/222) owns the
 findings and final end-to-end acceptance. The active evidence log is
-`reviews/2026-09-07-beta-qa-01-execution.md`. After QA acceptance, reconcile and
+`reviews/2026-09-07-beta-qa-02-recovery.md`. After QA acceptance, reconcile and
 verify MDA-4A, then rebase/verify MDA-4B and MDA-4C against the stabilized baseline.
 
 The runtime-neutral Python foundation, SQLite authority, Node gateway,
