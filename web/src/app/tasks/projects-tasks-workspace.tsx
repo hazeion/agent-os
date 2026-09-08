@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic.js";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { browserTimezone, inputTimestamp, localInputTimestamp, planningTimestamp } from "@/lib/planning-time";
 
 import type { TaskDependencyMapProps } from "./task-dependency-map";
 
@@ -118,29 +119,13 @@ function requestedTask(): { projectId: string | null; taskId: string | null } | 
   return { projectId, taskId };
 }
 
-function planningTimestamp(value: string, timezone?: string): string {
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: timezone ?? "UTC",
-      timeZoneName: "short",
-    }).format(new Date(value));
-  } catch {
-    return value;
-  }
-}
-
 function noteLinkLabel(path: string, title: string | undefined, index: number): string {
   if (title) return title;
   const filename = path.split("/").at(-1)?.replace(/\.md$/iu, "");
   return filename || `Note ${index + 1}`;
 }
 
-type ReminderDraft = { id: string; at: string; enabled: boolean; timezone?: string };
-function browserTimezone(): string { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } }
-function localInputTimestamp(value: string): string { const parsed = new Date(value); return Number.isNaN(parsed.valueOf()) ? "" : parsed.toISOString(); }
-function inputTimestamp(value: string): string { const parsed = new Date(value); if (Number.isNaN(parsed.valueOf())) return ""; const offset = parsed.getTimezoneOffset() * 60_000; return new Date(parsed.valueOf() - offset).toISOString().slice(0, 16); }
+type ReminderDraft = { id: string; at: string; enabled: boolean; timezone?: string; originalInstant?: string; originalInput?: string };
 function sundayFor(value: Date): string { const local = new Date(value.getFullYear(), value.getMonth(), value.getDate()); local.setDate(local.getDate() - local.getDay()); return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`; }
 function shiftSunday(weekStart: string, weeks: number): string { const date = new Date(`${weekStart}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + weeks * 7); return date.toISOString().slice(0, 10); }
 
@@ -252,6 +237,7 @@ export function ProjectsTasksWorkspace() {
   const [notice, setNotice] = useState("");
   const projectInput = useRef<HTMLInputElement>(null);
   const taskInput = useRef<HTMLInputElement>(null);
+  const pendingChecklistFocus = useRef<string | null>(null);
   const newProjectButton = useRef<HTMLButtonElement>(null);
   const addTaskButton = useRef<HTMLButtonElement>(null);
   const projectSelectionGeneration = useRef(0);
@@ -1066,12 +1052,16 @@ export function ProjectsTasksWorkspace() {
   }
   function openReminderEditor() {
     if (!taskDetail) return;
-    setReminderDrafts(taskDetail.reminders.map((item) => ({ id: item.id, at: inputTimestamp(item.at), enabled: item.enabled, ...(item.timezone ? { timezone: item.timezone } : {}) })));
+    setReminderDrafts(taskDetail.reminders.map((item) => ({ id: item.id, at: inputTimestamp(item.at), originalInput: inputTimestamp(item.at), originalInstant: item.at, enabled: item.enabled, ...(item.timezone ? { timezone: item.timezone } : {}) })));
     setReminderEditor(true);
   }
   async function saveReminders() {
-    if (!selectedTask || reminderDrafts.some((item) => !item.at || !localInputTimestamp(item.at))) { setNotice("Each browser reminder needs a date and time."); return; }
-    const reminders = reminderDrafts.map((item) => ({ id: item.id, at: localInputTimestamp(item.at), enabled: item.enabled, timezone: item.timezone ?? browserTimezone() }));
+    if (!selectedTask || reminderDrafts.some((item) => !item.at)) { setNotice("Each browser reminder needs a date and time."); return; }
+    const reminders = reminderDrafts.map((item) => {
+      const at = localInputTimestamp(item.at, item.originalInstant, item.originalInput);
+      return { id: item.id, at, enabled: item.enabled, timezone: at === item.originalInstant ? item.timezone ?? browserTimezone() : browserTimezone() };
+    });
+    if (reminders.some((item) => !item.at)) { setNotice("That local time is invalid or skipped by a daylight-saving change. Choose another time."); return; }
     const saved = await applyIntegration(() => replacePlanningTaskReminders(selectedTask.id, selectedTask.revision, reminders), "Browser reminders saved.");
     if (saved) setReminderEditor(false);
   }
@@ -1100,10 +1090,16 @@ export function ProjectsTasksWorkspace() {
     if (!selectedTask) return;
     await applyIntegration(() => detachPlanningTaskNote(selectedTask.id, selectedTask.revision, path), "Note detached.");
   }
+  function addChecklistItem() {
+    if (editSubtasks.length >= 200) return;
+    const id = `check_${crypto.randomUUID().replaceAll("-", "")}`;
+    pendingChecklistFocus.current = id;
+    setEditSubtasks((current) => [...current.map((item, rank) => ({ ...item, rank })), { id, title: "", completed: false, rank: current.length }]);
+  }
   async function toggleChecklistItem(itemId: string, completed: boolean) {
     if (!selectedTask || !taskDetail || busy || taskDetail.id !== selectedTask.id || taskDetail.revision !== selectedTask.revision) return;
     if (!taskDetail.subtasks.some((item) => item.id === itemId)) return;
-    await editSelected({ subtasks: taskDetail.subtasks.map((item) => item.id === itemId ? { ...item, completed } : item) }, "Checklist updated.");
+    await editSelected({ subtasks: taskDetail.subtasks.map((item, rank) => ({ ...item, rank, ...(item.id === itemId ? { completed } : {}) })) }, "Checklist updated.");
   }
   async function saveTaskDetails() {
     if (!selectedTask || !editTitle.trim()) return;
@@ -1266,7 +1262,7 @@ export function ProjectsTasksWorkspace() {
       </section>
       <div className="planning-workbench-tools"><label><span>Filter</span><input maxLength={160} onChange={(event) => { if (!/\p{C}/u.test(event.target.value)) setFilter(event.target.value); }} placeholder="Find a task" type="search" value={filter} /></label><div aria-label="Display mode" className="planning-mode-toggle"><button aria-pressed={view === "list"} onClick={() => setView("list")} type="button">List</button><button aria-pressed={view === "board"} onClick={() => setView("board")} type="button">Board</button><button aria-pressed={view === "map"} onClick={() => setView("map")} type="button">Map</button></div></div>
       {tasksState === "loading" ? <p>Loading Tasks…</p> : tasksState === "unavailable" || tasksState === "error" ? <p>Tasks are temporarily unavailable.</p> : view === "map" ? dependencyMapState === "loading" ? <p aria-live="polite" role="status">Loading the dependency map…</p> : dependencyMapState === "unavailable" || dependencyMapState === "error" ? <p role="status">The dependency map is temporarily unavailable. List and Board remain available.</p> : dependencyMapGraph ? <TaskDependencyMap graph={dependencyMapGraph} onSelectedTaskIdChange={(taskId) => void selectMapTask(taskId)} selectedTaskId={selectedTaskId} /> : <p role="status">No dependency map is available for this Project.</p> : filteredTasks.length ? view === "list" ? <ul className="project-task-list">{filteredTasks.map(taskCard)}</ul> : <div aria-label="Task board" className="planning-board">{stages.map((stage) => <section key={stage}><h3>{stage.replace("_", " ")}</h3><ul className="project-task-list">{filteredTasks.filter((task) => task.workflow_stage === stage).map(taskCard)}</ul></section>)}</div> : <p>{tasks.length ? "No Tasks match this view." : "No Tasks in this Project."}</p>}
-      {savedView === "someday" && (tasksState === "ready" || tasksState === "empty") && !tasks.some((task) => task.deferred) ? <div className="planning-empty-guidance"><p>No Tasks are deferred to Someday. Open a Task in All tasks and choose Move to Someday.</p><button onClick={() => setSavedView("all")} type="button">Browse all tasks</button></div> : null}
+      {savedView === "someday" && (tasksState === "ready" || tasksState === "empty") && !tasks.some((task) => task.deferred) ? <div className="planning-empty-guidance"><p>No deferred Tasks are shown. Open a Task in All tasks and choose Move to Someday.</p><button onClick={() => setSavedView("all")} type="button">Browse all tasks</button></div> : null}
       {taskCursor ? <button className="project-tasks-more" disabled={loadingMore || refreshingTaskPages} onClick={() => void loadMoreTasks()} type="button">{loadingMore ? "Loading…" : "More"}</button> : null}
     </div>
     <aside aria-label="Task inspector" className="project-tasks-pane planning-inspector">
@@ -1278,7 +1274,7 @@ export function ProjectsTasksWorkspace() {
         {taskDetail && hasPlanningMetadata ? <section aria-label="Planning details" className="planning-metadata">
           <p className="console-kicker">Planning details</p>
           {taskDetail.scheduled_block ? <dl className="planning-summary"><div><dt>{taskDetail.scheduled_block.label ?? "Schedule"}</dt><dd><time dateTime={taskDetail.scheduled_block.start}>{planningTimestamp(taskDetail.scheduled_block.start, taskDetail.scheduled_block.timezone)}</time> – <time dateTime={taskDetail.scheduled_block.end}>{planningTimestamp(taskDetail.scheduled_block.end, taskDetail.scheduled_block.timezone)}</time></dd></div></dl> : null}
-          {taskDetail.reminders.length ? <section aria-label="Browser reminders"><h3>Browser reminders</h3><ul>{taskDetail.reminders.map((reminder) => <li key={reminder.id}><span>{reminder.enabled ? "On" : "Off"}</span><time dateTime={reminder.at}>{planningTimestamp(reminder.at, reminder.timezone)}</time>{reminder.notified_at ? <small>Sent</small> : null}</li>)}</ul></section> : null}
+          {taskDetail.reminders.length ? <section aria-label="Browser reminders"><h3>Browser reminders</h3><ul>{taskDetail.reminders.map((reminder) => <li key={reminder.id}><span>{reminder.enabled ? "Enabled" : "Disabled"}</span><time dateTime={reminder.at}>{planningTimestamp(reminder.at, reminder.timezone)}</time>{reminder.notified_at ? <small>Sent</small> : null}</li>)}</ul></section> : null}
           {taskDetail.calendar_links.length ? <section aria-label="Calendar links"><h3>Calendar links</h3><ul>{taskDetail.calendar_links.map((link, index) => <li key={`${link.calendar_id}:${link.event_id}`}>{link.label ?? `Linked calendar event ${index + 1}`}</li>)}</ul></section> : null}
           {taskDetail.note_links.length ? <section aria-label="Notes"><h3>Notes</h3><ul>{taskDetail.note_links.map((link, index) => <li key={link.path}>{noteLinkLabel(link.path, link.title, index)}</li>)}</ul></section> : null}
         </section> : null}
@@ -1289,6 +1285,7 @@ export function ProjectsTasksWorkspace() {
             <p>{notificationPermission === "unsupported" ? "Notifications are unavailable in this browser." : notificationPermission === "granted" ? "Browser notifications are enabled." : notificationPermission === "denied" ? "Browser notifications are blocked by this browser." : "Browser notification permission has not been requested."}</p>
             {notificationPermission !== "unsupported" && notificationPermission !== "granted" ? <button disabled={busy} onClick={() => void requestBrowserNotifications()} type="button">Enable browser notifications</button> : null}
             {reminderEditor ? <form className="planning-review-actions" onSubmit={(event) => { event.preventDefault(); void saveReminders(); }}>
+              <p>Times are entered in {browserTimezone()}.</p>
               {reminderDrafts.length ? <ul aria-label="Reminder schedule">{reminderDrafts.map((reminder, index) => <li key={reminder.id}><label><span>Reminder {index + 1}</span><input aria-label={`Reminder ${index + 1} time`} disabled={busy} onChange={(event) => setReminderDrafts((current) => current.map((item) => item.id === reminder.id ? { ...item, at: event.target.value } : item))} required type="datetime-local" value={reminder.at} /></label><label className="planning-checkbox"><input checked={reminder.enabled} disabled={busy} onChange={(event) => setReminderDrafts((current) => current.map((item) => item.id === reminder.id ? { ...item, enabled: event.target.checked } : item))} type="checkbox" />Enabled</label><button aria-label={`Remove reminder ${index + 1}`} disabled={busy} onClick={() => setReminderDrafts((current) => current.filter((item) => item.id !== reminder.id))} type="button">Remove</button></li>)}</ul> : <p>No browser reminders are scheduled.</p>}
               <div><button disabled={busy || reminderDrafts.length >= 20} onClick={() => setReminderDrafts((current) => [...current, { id: `reminder_${crypto.randomUUID().replaceAll("-", "")}`, at: "", enabled: true, timezone: browserTimezone() }])} type="button">Add reminder</button><button disabled={busy} type="submit">Save reminders</button><button disabled={busy} onClick={() => setReminderEditor(false)} type="button">Cancel</button></div>
             </form> : null}
@@ -1356,9 +1353,9 @@ export function ProjectsTasksWorkspace() {
             {dependencyCursor ? <button disabled={busy || dependencyPickerState === "loading"} onClick={() => void loadMoreDependencyCandidates()} type="button">More Task choices</button> : null}
             <section><h3>Dependents ({taskDependencies?.dependent_count ?? 0})</h3>{taskDependencies?.dependents.length ? <ul>{taskDependencies.dependents.map((dependency) => <li key={dependency.id}>{dependencyText(dependency)}</li>)}</ul> : <p>No Tasks depend on this Task.</p>}{taskDependencies?.dependents_truncated ? <p>Some dependents are not shown.</p> : null}</section>
           </fieldset>
-          <div aria-label="Checklist editor" className="planning-checklist"><span>Checklist</span>{editSubtasks.map((item, index) => <div className="planning-checklist-row" key={item.id}><input aria-label={`Complete checklist item ${index + 1}`} checked={item.completed} onChange={(event) => setEditSubtasks((current) => current.map((entry) => entry.id === item.id ? { ...entry, completed: event.target.checked } : entry))} type="checkbox" /><input aria-describedby={!item.title.trim() ? "checklist-title-guidance" : undefined} aria-invalid={!item.title.trim()} aria-label={`Checklist item ${index + 1} title`} maxLength={240} onChange={(event) => setEditSubtasks((current) => current.map((entry) => entry.id === item.id ? { ...entry, title: event.target.value } : entry))} placeholder="Describe this step" required type="text" value={item.title} /><button aria-label={`Remove checklist item ${index + 1}`} onClick={() => setEditSubtasks((current) => current.filter((entry) => entry.id !== item.id).map((entry, rank) => ({ ...entry, rank })))} type="button">Remove</button></div>)}{editSubtasks.some((item) => !item.title.trim()) ? <p id="checklist-title-guidance">Give every checklist item a title before saving.</p> : null}<button disabled={editSubtasks.length >= 200} onClick={() => setEditSubtasks((current) => [...current, { id: `check_${crypto.randomUUID().replaceAll("-", "")}`, title: "", completed: false, rank: current.length }])} type="button">Add checklist item</button></div>
+          <div aria-label="Checklist editor" className="planning-checklist"><span>Checklist</span>{editSubtasks.map((item, index) => <div className="planning-checklist-row" key={item.id}><input aria-label={`Complete checklist item ${index + 1}`} checked={item.completed} onChange={(event) => setEditSubtasks((current) => current.map((entry) => entry.id === item.id ? { ...entry, completed: event.target.checked } : entry))} type="checkbox" /><input aria-describedby={!item.title.trim() ? "checklist-title-guidance" : undefined} aria-invalid={!item.title.trim()} aria-label={`Checklist item ${index + 1} title`} maxLength={240} onChange={(event) => setEditSubtasks((current) => current.map((entry) => entry.id === item.id ? { ...entry, title: event.target.value } : entry))} placeholder="Describe this step" ref={(input) => { if (input && pendingChecklistFocus.current === item.id) { pendingChecklistFocus.current = null; input.focus(); } }} required type="text" value={item.title} /><button aria-label={`Remove checklist item ${index + 1}`} onClick={() => setEditSubtasks((current) => current.filter((entry) => entry.id !== item.id).map((entry, rank) => ({ ...entry, rank })))} type="button">Remove</button></div>)}{editSubtasks.some((item) => !item.title.trim()) ? <p id="checklist-title-guidance">Give every checklist item a title before saving.</p> : null}<button disabled={editSubtasks.length >= 200} onClick={addChecklistItem} type="button">Add checklist item</button></div>
           <label className="planning-checkbox"><input checked={editToday} onChange={(event) => setEditToday(event.target.checked)} type="checkbox" />Today</label><div><button disabled={busy || !editTitle.trim() || editSubtasks.some((item) => !item.title.trim())} type="submit">Save details</button><button disabled={busy} onClick={() => setEditingTask(false)} type="button">Cancel</button></div>
-        </form> : <button disabled={busy || !taskDetail || dependenciesState === "loading"} onClick={() => { if (!taskDetail) return; setEditTitle(taskDetail.title); setEditDescription(taskDetail.description); setEditPriority(taskDetail.priority); setEditDue(taskDetail.due_date ?? ""); setEditToday(taskDetail.planned_for_today); setEditTags(taskDetail.tags.join(", ")); setEditEstimate(taskDetail.estimated_minutes?.toString() ?? ""); setEditRecurrence(taskDetail.recurrence?.frequency ?? ""); setEditSubtasks(taskDetail.subtasks); setEditAgent(taskDetail.assigned_agent_id ?? ""); setEditDependencies(taskDependencies?.prerequisites ?? []); setDependencyQuery(""); setDependencyCandidates([]); setDependencyCursor(null); setEditingTask(true); }} type="button">{taskDetail && dependenciesState !== "loading" ? "Edit details" : "Loading details…"}</button>}
+        </form> : <button disabled={busy || !taskDetail || dependenciesState === "loading"} onClick={() => { if (!taskDetail) return; setEditTitle(taskDetail.title); setEditDescription(taskDetail.description); setEditPriority(taskDetail.priority); setEditDue(taskDetail.due_date ?? ""); setEditToday(taskDetail.planned_for_today); setEditTags(taskDetail.tags.join(", ")); setEditEstimate(taskDetail.estimated_minutes?.toString() ?? ""); setEditRecurrence(taskDetail.recurrence?.frequency ?? ""); setEditSubtasks(taskDetail.subtasks.map((item, rank) => ({ ...item, rank }))); setEditAgent(taskDetail.assigned_agent_id ?? ""); setEditDependencies(taskDependencies?.prerequisites ?? []); setDependencyQuery(""); setDependencyCandidates([]); setDependencyCursor(null); setEditingTask(true); }} type="button">{taskDetail && dependenciesState !== "loading" ? "Edit details" : "Loading details…"}</button>}
         <section aria-label="Task deletion" className="planning-project-lifecycle">
           <p className="console-kicker">Task lifecycle</p>
           {deletionPreview?.target_kind === "task" && deletionPreview.target_id === selectedTask.id ? <div className="planning-run-once-confirmation">

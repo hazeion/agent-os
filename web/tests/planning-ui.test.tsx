@@ -93,13 +93,17 @@ function mutationRefreshFixture() {
 
 test("checklist titles validate, keep identity and order, and complete outside the editor", async () => {
   dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
-  fixture.rows[0].subtasks = [{ id: "check_keep", title: "Keep this step", completed: false, rank: 0 }, { id: "check_remove", title: "Remove this step", completed: false, rank: 1 }];
+  fixture.rows[0].subtasks = [{ id: "check_keep", title: "Keep this step", completed: false, rank: 0 }, { id: "check_remove", title: "Remove this step", completed: false, rank: 2 }];
   const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
   await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
   await user.click(await screen.findByRole("button", { name: "Edit details" }));
   await user.click(screen.getByRole("button", { name: "Add checklist item" }));
+  assert.equal(document.activeElement, screen.getByLabelText("Checklist item 3 title"));
   assert.equal((screen.getByRole("button", { name: "Save details" }) as HTMLButtonElement).disabled, true);
   assert.ok(screen.getByText("Give every checklist item a title before saving."));
+  await user.type(screen.getByLabelText("Checklist item 3 title"), "   ");
+  assert.equal((screen.getByRole("button", { name: "Save details" }) as HTMLButtonElement).disabled, true);
+  await user.clear(screen.getByLabelText("Checklist item 3 title"));
   await user.type(screen.getByLabelText("Checklist item 3 title"), "Verify output");
   await user.click(screen.getByRole("button", { name: "Remove checklist item 2" }));
   await user.click(screen.getByRole("button", { name: "Add checklist item" }));
@@ -126,7 +130,7 @@ test("Someday has explicit defer and return actions that preserve the workflow s
   const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
   await screen.findByRole("button", { name: /Ship Alpha/ });
   await user.click(screen.getByRole("button", { name: "someday" }));
-  await screen.findByText("No Tasks are deferred to Someday. Open a Task in All tasks and choose Move to Someday.");
+  await screen.findByText("No deferred Tasks are shown. Open a Task in All tasks and choose Move to Someday.");
   await user.click(screen.getByRole("button", { name: "Browse all tasks" }));
   await user.click(screen.getByRole("button", { name: /Ship Alpha/ }));
   await user.click(await screen.findByRole("button", { name: "Move to Someday" }));
@@ -141,6 +145,49 @@ test("Someday has explicit defer and return actions that preserve the workflow s
   assert.equal(fixture.rows[0].deferred, false);
   assert.equal(fixture.rows[0].workflow_stage, "planned");
   assert.deepEqual(edits, [{ expected_revision: 1, changes: { deferred: true } }, { expected_revision: 2, changes: { deferred: false } }]);
+});
+
+test("reminder enable toggles preserve the exact second autumn occurrence and spring gaps stay unsaved", async () => {
+  const originalZone = process.env.TZ; process.env.TZ = "America/Los_Angeles";
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+    const at = "2026-11-01T09:30:27.654321Z";
+    fixture.rows[0].reminders = [{ id: "reminder_fold", at, channel: "browser", enabled: true, timezone: "America/Los_Angeles" }];
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+    await user.click(await screen.findByRole("button", { name: "Manage reminders" }));
+    assert.equal((screen.getByLabelText("Reminder 1 time") as HTMLInputElement).value, "2026-11-01T01:30");
+    assert.match(screen.getByLabelText("Browser reminders").textContent ?? "", /1:30.*(?:PST|GMT-8)/u);
+    await user.click(screen.getByRole("checkbox", { name: "Enabled" }));
+    await user.click(screen.getByRole("button", { name: "Save reminders" }));
+    await screen.findByText("Browser reminders saved.");
+    assert.equal(fixture.rows[0].reminders[0].at, at);
+    assert.equal(fixture.rows[0].reminders[0].enabled, false);
+    assert.match(screen.getByLabelText("Browser reminders").textContent ?? "", /Disabled/u);
+    await user.click(screen.getByRole("button", { name: "Manage reminders" }));
+    fireEvent.change(screen.getByLabelText("Reminder 1 time"), { target: { value: "2026-03-08T02:30" } });
+    await user.click(screen.getByRole("button", { name: "Save reminders" }));
+    await screen.findByText("That local time is invalid or skipped by a daylight-saving change. Choose another time.");
+    assert.equal(fixture.counts.get(`/api/planning/tasks/${task.id}/integrations/reminders`), 1);
+    assert.equal((screen.getByLabelText("Reminder 1 time") as HTMLInputElement).value, "2026-03-08T02:30");
+  } finally { if (originalZone === undefined) delete process.env.TZ; else process.env.TZ = originalZone; }
+});
+
+test("editing an imported reminder uses the displayed device input zone for its new instant", async () => {
+  const originalZone = process.env.TZ; process.env.TZ = "America/Los_Angeles";
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+    fixture.rows[0].reminders = [{ id: "reminder_imported", at: "2026-09-06T13:00:00Z", channel: "browser", enabled: true, timezone: "America/New_York" }];
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    await user.click(await screen.findByRole("button", { name: /Ship Alpha/ })); await user.click(await screen.findByRole("button", { name: "Manage reminders" }));
+    assert.equal((screen.getByLabelText("Reminder 1 time") as HTMLInputElement).value, "2026-09-06T06:00");
+    assert.ok(screen.getByText("Times are entered in America/Los_Angeles."));
+    fireEvent.change(screen.getByLabelText("Reminder 1 time"), { target: { value: "2026-09-06T09:00" } });
+    await user.click(screen.getByRole("button", { name: "Save reminders" })); await screen.findByText("Browser reminders saved.");
+    assert.equal(fixture.rows[0].reminders[0].at, "2026-09-06T16:00:00.000Z");
+    assert.equal(fixture.rows[0].reminders[0].timezone, "America/Los_Angeles");
+    assert.match(screen.getByLabelText("Browser reminders").textContent ?? "", /9:00.*(?:PDT|GMT-7)/u);
+  } finally { if (originalZone === undefined) delete process.env.TZ; else process.env.TZ = originalZone; }
 });
 
 test("delegation discovery explains setup and leaves unrelated planner controls usable", async () => {
@@ -706,7 +753,7 @@ test("Task inspector presents selected Task planning details as bounded, read-on
   const planning = await within(inspector).findByLabelText("Planning details");
   assert.match(within(planning).getByText("Focus block").textContent ?? "", /Focus block/u);
   assert.equal(planning.querySelectorAll("time").length, 4);
-  assert.match(within(planning).getByLabelText("Browser reminders").textContent ?? "", /On.*Off.*Sent/us);
+  assert.match(within(planning).getByLabelText("Browser reminders").textContent ?? "", /Enabled.*Disabled.*Sent/us);
   assert.match(within(planning).getByLabelText("Calendar links").textContent ?? "", /Alpha review.*Linked calendar event 2/us);
   assert.match(within(planning).getByLabelText("Notes").textContent ?? "", /Alpha brief.*release-checklist/us);
   assert.equal(within(planning).queryAllByRole("button").length, 0);
