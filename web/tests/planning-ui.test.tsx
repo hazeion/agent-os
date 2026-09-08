@@ -91,6 +91,81 @@ function mutationRefreshFixture() {
   return fixture;
 }
 
+test("the inspector identifies the Task, summarizes saved planning, and submits from its primary header", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+  fixture.rows[0].estimated_minutes = 45;
+  fixture.rows[0].recurrence = { frequency: "weekly", interval: 2, weekdays: ["mon", "fri"], ends_on: "2026-12-31" };
+  fixture.rows[0].tags = ["release", "review"];
+  fixture.override = (url) => url.pathname === "/api/agents" ? Response.json({ ...envelope, count: 1, agents: [{ id: "agent_alpha", name: "Alpha Agent", runtime_config_id: "config_alpha", runtime_type: "codex", capabilities: [] }] }) : null;
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+  const inspector = screen.getByLabelText("Task inspector");
+  assert.ok(within(inspector).getByRole("heading", { name: "Ship Alpha" }));
+  const summary = await within(inspector).findByLabelText("Task planning summary");
+  assert.match(summary.textContent ?? "", /45 min/u);
+  assert.match(summary.textContent ?? "", /Every 2 weeks.*mon, fri.*2026-12-31/u);
+  assert.match(summary.textContent ?? "", /Alpha Agent.*release, review/u);
+  assert.match(screen.getByLabelText("Task dependency summary").textContent ?? "", /Dependents: 1.*Prepare Beta/u);
+  await user.click(within(inspector).getByRole("button", { name: "Edit details" }));
+  const title = within(inspector).getByLabelText("Title");
+  assert.equal(document.activeElement, title);
+  const save = within(inspector).getByRole("button", { name: "Save details" });
+  assert.equal(save.getAttribute("form"), "planning-task-editor");
+  assert.equal(save.closest("form"), null);
+  await user.clear(title); await user.type(title, "Revised Alpha");
+  await user.click(save);
+  await within(inspector).findByRole("heading", { name: "Revised Alpha" });
+  assert.equal(fixture.rows[0].title, "Revised Alpha");
+});
+
+test("mobile Task selection and compact jumps reach the inspector, Tasks, and Projects without changing drafts", async () => {
+  const originalWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+  try {
+    dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+    const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+    await user.click(await screen.findByRole("button", { name: /Ship Alpha/ }));
+    const inspector = screen.getByLabelText("Task inspector");
+    await waitFor(() => assert.equal(document.activeElement, within(inspector).getByRole("heading", { name: "Ship Alpha" })));
+    await user.click(await within(inspector).findByRole("button", { name: "Edit details" }));
+    const title = within(inspector).getByLabelText("Title") as HTMLInputElement;
+    await user.type(title, " draft");
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    window.dispatchEvent(new dom.window.Event("resize"));
+    assert.equal(title.value, "Ship Alpha draft");
+    await user.click(within(inspector).getByRole("button", { name: "Back to Tasks" }));
+    assert.equal(document.activeElement?.getAttribute("data-planning-task-id"), task.id);
+    await user.click(within(inspector).getByRole("button", { name: "Choose Project from Task details" }));
+    assert.equal(document.activeElement, screen.getByRole("heading", { name: "Projects" }));
+    assert.equal(title.value, "Ship Alpha draft");
+    assert.equal(fixture.counts.get(`/api/planning/tasks/${task.id}/edit`), undefined);
+  } finally { Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth }); }
+});
+
+test("Board exposes all six stages with explicit scroll controls and keyboard endpoints", async () => {
+  dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
+  const stages = ["inbox", "planned", "in_progress", "waiting", "review", "done"] as const;
+  fixture.rows = stages.map((stage, index) => ({ ...fixture.rows[0], id: `task_stage_${index}`, title: `Stage ${index}`, workflow_stage: stage, planning_state: stage }));
+  const user = userEvent.setup({ document: dom.window.document }); render(<ProjectsTasksWorkspace />);
+  await screen.findByRole("button", { name: /Stage 0/ });
+  await user.click(screen.getByRole("button", { name: "Board" }));
+  const board = screen.getByRole("region", { name: "Task board" });
+  const shifts: number[] = []; const positions: number[] = [];
+  Object.defineProperty(board, "clientWidth", { configurable: true, value: 320 });
+  Object.defineProperty(board, "scrollWidth", { configurable: true, value: 1600 });
+  board.scrollBy = ((options: ScrollToOptions) => shifts.push(Number(options.left))) as typeof board.scrollBy;
+  board.scrollTo = ((options: ScrollToOptions) => positions.push(Number(options.left))) as typeof board.scrollTo;
+  assert.equal(within(board).getAllByRole("heading", { level: 3 }).length, 6);
+  assert.equal(board.tabIndex, 0);
+  await user.click(screen.getByRole("button", { name: "Next board stages" }));
+  await user.click(screen.getByRole("button", { name: "Previous board stages" }));
+  fireEvent.keyDown(board, { key: "End" }); fireEvent.keyDown(board, { key: "Home" }); fireEvent.keyDown(board, { key: "ArrowRight" });
+  assert.deepEqual(shifts, [256, -256, 256]);
+  assert.deepEqual(positions, [1600, 0]);
+  await user.click(within(board).getByRole("button", { name: /Stage 5/ }));
+  await within(screen.getByLabelText("Task inspector")).findByRole("heading", { name: "Stage 5" });
+});
+
 test("checklist titles validate, keep identity and order, and complete outside the editor", async () => {
   dom.reconfigure({ url: `${origin}/tasks` }); const fixture = mutationRefreshFixture();
   fixture.rows[0].subtasks = [{ id: "check_keep", title: "Keep this step", completed: false, rank: 0 }, { id: "check_remove", title: "Remove this step", completed: false, rank: 2 }];
@@ -1474,7 +1549,7 @@ test("Add creates one Task inside the selected Project with only Title, Agent, a
   await user.selectOptions(screen.getByLabelText("Agent"), "agent_alpha");
   fireEvent.change(screen.getByLabelText("Due"), { target: { value: "2026-09-01" } });
   await user.click(screen.getByRole("button", { name: "Create Task" }));
-  await screen.findByText("New Task");
+  await screen.findByRole("heading", { name: "New Task" });
   const mutation = calls.find((call) => call.method === "POST");
   assert.equal(mutation?.path, `/api/projects/${project.id}/tasks`);
   assert.deepEqual(JSON.parse(mutation?.body ?? "{}"), { assigned_agent_id: "agent_alpha", due_date: "2026-09-01", title: "New Task" });
