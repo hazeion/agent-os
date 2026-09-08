@@ -769,7 +769,10 @@ button {
 
 .planning-workbench { grid-template-columns: minmax(144px, .3fr) minmax(240px, .7fr) minmax(380px, 1fr); align-items: start; }
 .planning-navigation { position: sticky; top: 12px; max-height: calc(100dvh - 100px); overflow-y: auto; }
-.planning-navigation-content { display: grid; gap: 10px; }
+.planning-navigation-content { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 10px; }
+.planning-navigation-content > .projects-tasks-heading { flex-wrap: wrap; }
+.planning-navigation-content ul { grid-template-columns: minmax(0, 1fr); }
+.planning-navigation-content li { min-width: 0; }
 .planning-navigation-content[hidden] { display: none; }
 .planning-navigation-content > p { margin: 0; color: var(--text-tertiary); font-size: .78rem; }
 .planning-navigation-toggle:not([hidden]) { min-height: 44px; padding: 7px 10px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--panel-raised); color: var(--text-primary); text-align: left; }
